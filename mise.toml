@@ -1,0 +1,26 @@
+[settings]
+locked = true
+http_timeout = "120s"
+
+[tools]
+java = "temurin-21"
+python = "3.14.7"
+"pipx:pre-commit" = "4.6.2"
+"cargo:mdbook" = "0.5.4"
+
+[tasks.docs]
+description = "Build the project documentation"
+run = "mdbook build docs"
+
+[tasks.pre-commit]
+description = "Run repository policy and formatting checks"
+run = "pre-commit run --all-files --show-diff-on-failure"
+
+[tasks.android]
+description = "Test, lint, and assemble the Android feasibility spike"
+dir = "apps/android"
+run = "./gradlew --no-daemon test lint assembleDebug"
+
+[tasks.check]
+description = "Run the local validation suite"
+depends = ["pre-commit", "android"]

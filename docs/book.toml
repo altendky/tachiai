@@ -1,0 +1,8 @@
+[book]
+title = "Tachiai"
+description = "Project documentation for aligned multi-stream viewing"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "rebaseWhen": "conflicted",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "pre-commit": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["mise"],
+      "postUpgradeTasks": {
+        "commands": ["mise lock {{{depName}}}"],
+        "fileFilters": ["mise.lock"],
+        "executionMode": "update"
+      }
+    }
+  ]
+}

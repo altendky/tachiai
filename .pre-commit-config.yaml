@@ -1,0 +1,47 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-toml
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.50.2
+    hooks:
+      - id: typos
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.3
+    hooks:
+      - id: markdownlint-cli2
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        args: [-verbose]
+
+  - repo: local
+    hooks:
+      - id: mise-lock
+        name: mise lock
+        entry: mise install --locked --dry-run
+        language: system
+        files: '(^|/)mise\.toml$|(^|/)mise\.lock$'
+        pass_filenames: false
+
+      - id: mdbook-build
+        name: Build documentation
+        entry: mdbook build docs
+        language: system
+        files: '(^|/)docs/|(^|/)README\.md$'
+        pass_filenames: false

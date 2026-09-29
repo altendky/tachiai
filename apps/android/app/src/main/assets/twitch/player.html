@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Twitch player</title>
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; background: #000; }
+      #controls {
+        box-sizing: border-box;
+        display: flex;
+        width: 100%;
+        height: 40px;
+        padding: 4px;
+        gap: 8px;
+        background: #18181b;
+      }
+      #start {
+        min-width: 80px;
+        border: 0;
+        border-radius: 4px;
+        background: #9147ff;
+        color: #fff;
+        font: bold 14px sans-serif;
+      }
+      #start:disabled { background: #53535f; }
+      #status {
+        box-sizing: border-box;
+        flex: 1;
+        padding: 7px 4px;
+        overflow: hidden;
+        color: #efeff1;
+        font: 12px sans-serif;
+        white-space: nowrap;
+      }
+      #player { width: 100%; height: calc(100% - 40px); }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <button id="start" type="button" disabled>Start</button>
+      <div id="status" role="status">Loading Twitch embed script</div>
+    </div>
+    <div id="player"></div>
+    <script src="https://player.twitch.tv/js/embed/v1.js"></script>
+    <script>
+      const status = document.getElementById("status");
+      const start = document.getElementById("start");
+      const setStatus = (value) => { status.textContent = value; };
+      const requestedChannel = new URLSearchParams(window.location.search).get("channel");
+      const channel = /^[A-Za-z0-9_]{3,25}$/.test(requestedChannel ?? "")
+        ? requestedChannel
+        : "midnightsumo";
+      document.title = `${channel} on Twitch`;
+      window.addEventListener("error", () => setStatus("Twitch page error"));
+      window.addEventListener("unhandledrejection", () => setStatus("Twitch promise rejected"));
+
+      let player = null;
+      if (typeof Twitch === "undefined") {
+        setStatus("Twitch embed script unavailable");
+      } else {
+        try {
+          player = new Twitch.Player("player", {
+            channel,
+            width: "100%",
+            height: "100%",
+            autoplay: false,
+            muted: false,
+            parent: ["appassets.androidplatform.net"]
+          });
+          [
+            [Twitch.Player.ONLINE, "online"],
+            [Twitch.Player.OFFLINE, "offline"],
+            [Twitch.Player.PLAY, "play requested"],
+            [Twitch.Player.PLAYBACK_BLOCKED, "playback blocked"],
+            [Twitch.Player.PLAYING, "playing"],
+            [Twitch.Player.PAUSE, "paused"],
+            [Twitch.Player.ENDED, "ended"]
+          ].forEach(([event, label]) => {
+            player.addEventListener(event, () => setStatus(`Twitch ${channel}: ${label}`));
+          });
+          player.addEventListener(Twitch.Player.READY, () => {
+            start.disabled = false;
+            setStatus(`Twitch ${channel}: ready`);
+          });
+          setStatus(`Twitch ${channel}: player created`);
+        } catch (_) {
+          setStatus("Twitch player initialization failed");
+        }
+      }
+
+      start.addEventListener("click", () => {
+        if (player === null) return;
+        setStatus(`Twitch ${channel}: start requested`);
+        player.play();
+      });
+
+      window.tachiaiPlayerCommand = (command) => {
+        if (player === null) return "unavailable";
+        switch (command) {
+          case "play": player.play(); return "ok";
+          case "pause": player.pause(); return "ok";
+          case "mute": player.setMuted(true); return "ok";
+          case "unmute": player.setMuted(false); return "ok";
+          case "volume_down": {
+            const volume = Math.max(0, Math.round((player.getVolume() - 0.1) * 10) / 10);
+            player.setVolume(volume);
+            return `volume ${Math.round(volume * 100)}%`;
+          }
+          case "volume_up": {
+            const volume = Math.min(1, Math.round((player.getVolume() + 0.1) * 10) / 10);
+            player.setVolume(volume);
+            return `volume ${Math.round(volume * 100)}%`;
+          }
+          default: return "unsupported";
+        }
+      };
+    </script>
+  </body>
+</html>

@@ -19,6 +19,11 @@ repos:
     hooks:
       - id: gitleaks
 
+  - repo: https://github.com/Mergifyio/mergify-pre-commit
+    rev: 1.1.0
+    hooks:
+      - id: validate-mergify-config
+
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.23.3
     hooks:

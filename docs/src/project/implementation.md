@@ -30,6 +30,16 @@ must use the documented stable debug certificate, so APK assembly and
 certificate verification remain in the controlled local/container workflow
 until CI can receive that identity securely.
 
+Repository automation follows the shared Carl and Onshape MCP pattern.
+Renovate runs under the narrowly scoped `altendky-renovate` GitHub App and
+updates the Gradle version catalog and wrapper, GitHub Actions, mise tools and
+lock data, and pre-commit hooks. Mergify admits only explicitly `enqueue`-labeled
+non-draft pull requests targeting `main`; Renovate approval does not enqueue a
+change. The queue relies on GitHub's protected aggregate `all` check. These
+behaviors require the corresponding GitHub Apps, repository credential names,
+label, and ruleset and must not be described as operational until a manual
+Renovate run and a queued pull request have succeeded.
+
 On 2026-09-27, the pinned Android tools container completed `test`, `lint`, and
 `assembleDebug` against compile SDK 37.2. The resulting APK passed
 `apksigner verify` and matched the documented shared debug certificate. This

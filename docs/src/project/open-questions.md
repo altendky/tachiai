@@ -103,11 +103,11 @@
 
 ## Repository and delivery
 
-- Whether and when to create the GitHub repository. If created, global policy
-  requires issue #1 to be an immediately closed blank placeholder titled
-  `this issue intentionally left blank`.
 - Whether Tachiai should be added to Tome's tracked repository registry.
-- CI scope before application code exists.
+- Whether the first manual Renovate run successfully updates all intended
+  dependency sources and regenerates `mise.lock` in its restricted runner.
+- Whether Mergify's injected branch protection and the aggregate `all` check
+  behave as expected on the first explicitly enqueued pull request.
 - Shared APK update and checksum distribution mechanism.
 - Whether reproducible Android builds are practical with the selected WebView
   and adapter asset approach.

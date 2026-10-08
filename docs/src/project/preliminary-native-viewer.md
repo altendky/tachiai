@@ -30,7 +30,7 @@ generic layout. There is no new playback or provider permission claim.
   threshold. Release, cancellation, dismissal, Stop or teardown ends repeat.
   A Centre mix button resets balance without changing overall volume or mute.
 - Timing names feeds rather than screen positions: Advance ABEMA relative to
-  Twitch, or the inverse. A one-/five-second step selector delegates the exact
+  Twitch, or the inverse. A 0.1/0.25/0.5/1/5-second step selector delegates the exact
   requested step to the existing capability planner. Busy actions disable
   nudges. Readback is requested adjustment, never measured synchronization.
 - More provides accessible primary swap, explicit per-live-feed catch-up,
@@ -38,6 +38,15 @@ generic layout. There is no new playback or provider permission claim.
   anchor invalidation and explicit-Play requirement.
 
 ## Provisional choices and limits
+
+The fine timing selector requests exact integer milliseconds. Relative full-step
+seeks below 200 ms use half the requested movement as their sampled-position
+settlement tolerance (50 ms for a 100 ms step), capped at the previous 100 ms
+for larger requests. An unchanged starting position cannot settle a 100 ms
+request. Historical direct-shift comparisons retain their prior tolerance;
+timeouts, joint hold/resume and one-dispatch/no-fallback rules are unchanged.
+Sampled-clock settlement is not exact frame/audio movement or common-event
+synchronization, and no polling/rate-correction change is introduced.
 
 The first fade curve is **centre-unity**, not constant-sum or equal-power:
 centre gives both feeds equal gain; moving toward either side keeps that feed
@@ -193,3 +202,30 @@ dispatch evidence, not a new provider-playback or acoustic test. Scoped hooks
 and documentation build passed. The general mise invocation hit an unrelated
 tool-lock/install error; explicitly selecting the installed pre-commit tool
 ran the same scoped checks without changing tool configuration.
+
+### Fine relative steps follow-up (issue #31)
+
+The selector offers 0.1, 0.25, 0.5, 1 and 5 seconds, passing exact signed
+millisecond requests. Relative 100-ms transactions use a 50-ms sampled settlement
+tolerance so an unchanged position is not accepted as a completed nudge; larger
+steps retain 100 ms. Historical direct-shift behavior is unchanged. These are
+requested increments, not promises of frame or acoustic precision.
+
+The controlled Android build passed JVM tests, lint, release isolation and both
+APK assemblies. Both certificates matched the shared debug identity. The app
+APK SHA-256 is
+`81586c19ad37484a75c006fb9231cfe6133c9abb2a9affd62edc6ed939f9e5ec`
+(16,204,047 bytes), installed without clearing storage. On the Pixel 6/Android
+17, existing guest state and system VPN marker present, two cached native ABEMA
+sumo replay copies prepared and rendered. At approximately 23:15–23:16 EDT on
+October 7, +0.1 and -0.1 requests settled, showed 0.1 then 0.0 seconds in the
+requested ledger, and both videos continued. No new listening or common-event
+alignment measurement was made. The session was stopped before its five-minute
+cap. The default platform menu scrolls when vertical space is limited.
+
+The first instrumentation fixture opened the menu through direct clicks before
+ensuring a visible anchor and failed popup visibility assertions. Tests now use
+normal Espresso button/scroll interactions rather than bypassing those checks.
+All seven focused phone tests then passed: five exact selector choices in both
+directions, owned-menu teardown, two background-touch and three source-picker
+regressions. The fixture checks require no provider content or credentials.

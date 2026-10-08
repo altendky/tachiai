@@ -90,6 +90,56 @@ class NativeMixedPairTest {
         assertEquals(5_000L, pair.requestedAdjustmentMs)
         assertTrue(a.sample.playing); assertTrue(b.sample.playing)
     }
+    @Test fun `all five relative steps dispatch exactly in both directions and source kinds`() {
+        for (sampleA in listOf(replay, live)) for (sampleB in listOf(replay, live.copy(windowStartMs = 9_000_000))) {
+            for (step in listOf(100L, 250L, 500L, 1_000L, 5_000L)) for (delta in listOf(-step, step)) {
+                val a = Member(sampleA); val b = Member(sampleB)
+                val pair = NativeMixedPair(a, b, { true }, {})
+                pair.play()
+                assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(delta).outcome)
+                assertEquals(sampleA.positionMs!! + delta, a.sample.positionMs)
+                assertEquals(sampleB.positionMs, b.sample.positionMs)
+                assertEquals(delta, pair.requestedAdjustmentMs)
+                assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+                assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+                pair.poll()
+                assertFalse(pair.busy); assertTrue(a.sample.playing); assertTrue(b.sample.playing)
+                pair.close()
+            }
+        }
+    }
+    @Test fun `unchanged position cannot settle a tenth-second request or redispatch on timeout`() {
+        for (delta in listOf(-100L, 100L)) {
+            val a = Member(replay); val b = Member(live)
+            var now = 0L
+            val pair = NativeMixedPair(a, b, { true }, {}, { now })
+            pair.play(); pair.shiftRelative(delta)
+            a.sample = a.sample.copy(positionMs = replay.positionMs)
+            pair.poll()
+            assertTrue(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            now = 8_000; pair.poll()
+            assertFalse(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+            assertTrue(pair.status.contains("timed out"))
+        }
+    }
+    @Test fun `tenth-second relative settlement uses fifty ms while historical shifts retain one hundred`() {
+        for (delta in listOf(-100L, 100L)) {
+            val a = Member(replay); val b = Member(replay)
+            val pair = NativeMixedPair(a, b, { true }, {})
+            pair.shiftRelative(delta)
+            val target = a.sample.positionMs!!
+            a.sample = a.sample.copy(positionMs = target + 51)
+            pair.poll(); assertTrue(pair.busy)
+            a.sample = a.sample.copy(positionMs = target + 50)
+            pair.poll(); assertFalse(pair.busy)
+            assertTrue(pair.status.contains("within 50 ms"))
+            pair.shift(NativeMixedSide.A, delta)
+            a.sample = a.sample.copy(positionMs = a.sample.positionMs!! + 100)
+            pair.poll(); assertFalse(pair.busy)
+            assertTrue(pair.status.contains("within 100 ms"))
+        }
+    }
     @Test fun `relative action during an active transaction does not cancel or redispatch`() {
         val a = Member(replay); val b = Member(replay)
         val pair = NativeMixedPair(a, b, { true }, {})

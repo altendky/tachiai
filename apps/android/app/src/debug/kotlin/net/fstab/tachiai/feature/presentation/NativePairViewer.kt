@@ -27,6 +27,7 @@ import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.presentation.FloatingPosition
 import net.fstab.tachiai.presentation.TwoFeedMix
 import net.fstab.tachiai.presentation.ViewerRect
+import net.fstab.tachiai.presentation.ViewerTimingStep
 import net.fstab.tachiai.presentation.twoFeedBounds
 import kotlin.math.abs
 
@@ -54,8 +55,9 @@ internal class NativePairViewer(
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private var mix = TwoFeedMix()
-    private var stepMs = 1_000L
+    private var timingStep = ViewerTimingStep.ONE_SECOND
     private var panel: String? = null
+    private var activeMenu: PopupMenu? = null
     private var requestedPlaying = false
     private var observedPair: NativeMixedPair? = null
     private var volumeApplied = false
@@ -84,9 +86,9 @@ internal class NativePairViewer(
     private val mixLabel = text("")
     private val muteA = button("") { changeMix(mix.copy(muteA = !mix.muteA)) }
     private val muteB = button("") { changeMix(mix.copy(muteB = !mix.muteB)) }
-    private val advanceA = button("Advance $labelA\nrelative to $labelB") { onRelative(stepMs); refresh() }
-    private val advanceB = button("Advance $labelB\nrelative to $labelA") { onRelative(-stepMs); refresh() }
-    private val step = button("") { stepMs = if (stepMs == 1_000L) 5_000L else 1_000L; updateLabels() }
+    private val advanceA = button("Advance $labelA\nrelative to $labelB") { onRelative(timingStep.milliseconds); refresh() }
+    private val advanceB = button("Advance $labelB\nrelative to $labelA") { onRelative(-timingStep.milliseconds); refresh() }
+    private val step = button("") { showTimingSteps(it) }
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -133,7 +135,7 @@ internal class NativePairViewer(
     }
     private fun cancelRepeats() { repeats.forEach { removeCallbacks(it) }; repeats.clear() }
     private fun togglePanel(value: String) {
-        cancelRepeats(); panel = if (panel == value) null else value
+        dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
         // Reused controls may still belong to a removed row container.
         listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, advanceA, advanceB, step).forEach {
@@ -197,12 +199,47 @@ internal class NativePairViewer(
         muteA.text = if (mix.muteA) "Unmute $labelA" else "Mute $labelA"
         muteB.text = if (mix.muteB) "Unmute $labelB" else "Mute $labelB"
         muteA.isSelected = mix.muteA; muteB.isSelected = mix.muteB
-        step.text = "Step: ${stepMs / 1_000} s · tap to change"
+        step.text = "Step: ${timingStep.label} · choose"
+        step.contentDescription = "Relative timing step: ${timingStep.label}; choose step"
+    }
+
+    private fun showTimingSteps(anchor: View) {
+        showMenu(anchor) {
+            ViewerTimingStep.entries.forEach { choice ->
+                menu.add(choice.label).apply {
+                    isCheckable = true; isChecked = choice == timingStep
+                    setOnMenuItemClickListener { timingStep = choice; updateLabels(); showControls(); true }
+                }
+            }
+        }
+    }
+
+    private fun dismissMenu() {
+        val previous = activeMenu
+        activeMenu = null
+        previous?.setOnDismissListener(null)
+        previous?.menu?.let { menu ->
+            for (index in 0 until menu.size()) menu.getItem(index).setOnMenuItemClickListener(null)
+        }
+        previous?.dismiss()
+    }
+
+    private fun showMenu(anchor: View, populate: PopupMenu.() -> Unit) {
+        dismissMenu(); cancelRepeats(); removeCallbacks(hideControls)
+        if (!isAttachedToWindow || visibility != VISIBLE) return
+        val popup = PopupMenu(context, anchor).apply(populate)
+        popup.setOnDismissListener {
+            if (activeMenu === popup) {
+                activeMenu = null
+                if (isAttachedToWindow && visibility == VISIBLE) showControls()
+            }
+        }
+        activeMenu = popup
+        popup.show()
     }
 
     private fun showMore(anchor: View) {
-        cancelRepeats(); removeCallbacks(hideControls)
-        PopupMenu(context, anchor).apply {
+        showMenu(anchor) {
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { onLandscape(!landscape()); true }
             menu.add("Swap primary video").setOnMenuItemClickListener { stage.swap(); true }
@@ -210,7 +247,6 @@ internal class NativePairViewer(
             menu.add("Catch up $labelB (holds both)").setOnMenuItemClickListener { onCatchUp(NativeMixedSide.B); refresh(); true }
             menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
             menu.add("Stop both").setOnMenuItemClickListener { suspendControls(); onStop(); true }
-            setOnDismissListener { showControls() }; show()
         }
     }
 
@@ -243,7 +279,7 @@ internal class NativePairViewer(
     }
     fun open() { visibility = VISIBLE; showControls(); refresh() }
     fun endSession() { suspendControls(); stage.unbindPlayers(); observedPair = null; visibility = GONE }
-    fun suspendControls() { cancelRepeats(); removeCallbacks(hideControls) }
+    fun suspendControls() { dismissMenu(); cancelRepeats(); removeCallbacks(hideControls) }
     override fun onDetachedFromWindow() { suspendControls(); stage.unbindPlayers(); super.onDetachedFromWindow() }
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {

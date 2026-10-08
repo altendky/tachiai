@@ -30,6 +30,7 @@ internal class NativeMixedPair(
         val liveClock: Boolean,
         val resume: Boolean,
         val startedMs: Long,
+        val settlementToleranceMs: Long,
     )
     private var pending: Pending? = null
     private data class Recovery(val side: NativeMixedSide, val startedMs: Long)
@@ -152,7 +153,10 @@ internal class NativeMixedPair(
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         }
         requestedAdjustmentMs = adjustment
-        pending = Pending(side, targetClock, liveClock, resume, clockMs())
+        // A full relative step smaller than 200 ms must not settle at its
+        // unchanged starting point. Historical direct shifts retain 100 ms.
+        val tolerance = if (requireFullStep) minOf(100L, kotlin.math.abs(movement) / 2) else 100L
+        pending = Pending(side, targetClock, liveClock, resume, clockMs(), tolerance)
         busy = true
         status = "Holding both; waiting for selected target clock (8 s maximum)."
         return plan
@@ -256,10 +260,10 @@ internal class NativeMixedPair(
         if ((selected.live || selected.dynamic) != transaction.liveClock) return
         val clock = if (transaction.liveClock) selected.contentTimeMs else selected.positionMs
         if (clock == null || clock < 0 ||
-            kotlin.math.abs(clock - transaction.targetClockMs) > 100) return
+            kotlin.math.abs(clock - transaction.targetClockMs) > transaction.settlementToleranceMs) return
         pending = null
         busy = false
-        status = "Selected held target observed within 100 ms; no frame/audio precision claim."
+        status = "Selected held target observed within ${transaction.settlementToleranceMs} ms; no frame/audio precision claim."
         if (transaction.resume) play()
     }
 

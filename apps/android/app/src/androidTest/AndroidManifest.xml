@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Test APK only: public synthetic bytes, never app files or real credentials. -->
+        <provider
+            android:name="net.fstab.tachiai.platform.network.ConnectionFixtureProvider"
+            android:authorities="net.fstab.fixture.connections"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

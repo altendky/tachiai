@@ -7,4 +7,8 @@ internal enum class PrivateAuthorizationSlot(val bindingName: String) {
     TWITCH_PROVIDER_PLAYBACK("twitch-provider-playback-authorization"),
     TWITCH_PROVIDER_SMART_TV("twitch-provider-smart-tv-authorization"),
     TWITCH_PROVIDER_SMART_TV_LOCAL("twitch-provider-smart-tv-local-authorization"),
+    // Separate import-only network profile record, never a provider authorization grant.
+    CONNECTION_PROFILES("connection-profiles"),
+    SOURCE_SETUP("source-setup"),
+    PROVIDER_SETUP("provider-setup"),
 }

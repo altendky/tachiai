@@ -1,5 +1,21 @@
 # Product-flow prototype
 
+## Current setup vocabulary and navigation
+
+The product terms are **route / provider / stream / feed**. The picker assigns
+streams to A/B feeds; its separate **Routes** and **Providers** buttons open
+network configuration management and provider configuration respectively.
+ABEMA and Twitch each choose a default route covering their live/replay streams
+and both feeds. The earlier per-stream setup buttons are no longer in this flow.
+Imported profiles and provider configuration are preserved. Obsolete four-stream
+settings are not migrated: the picker offers an explicit stream-settings reset
+before playback. Current-format ambiguous defaults/overrides require explicit
+provider review, with no fallback.
+The cached native prototype now connects imported WireGuard/HTTP CONNECT routes
+at Open viewer, without automatic System-network fallback. See
+[route and provider setup](connection-import.md) for implementation scope and
+verification limits. Historical observations below retain their original terms.
+
 ## October 7 direction
 
 The historical experiment home keeps its existing cases and gains a separate
@@ -97,6 +113,19 @@ inspection confirmed labelled checkboxes; rotating an incomplete draft to
 landscape retained B's replay selection and disabled Open viewer. The original
 portrait rotation was restored. No provider page, login or playback was needed
 for these checks, and no new decoding/audio evidence is claimed.
+
+## Historical source configuration follow-up
+
+The earlier **Source setup** on each picker row edited that resource's display name, default
+connection and optional independent A/B overrides. **Add connection · Proton /
+import** leads to the guided profile importer. This remains a fixed catalogue,
+not service/channel browsing. Names and profile references persist encrypted;
+unsaved nonsecret edits survive rotation. The picker shows the resolved routes.
+Imported-route playback is deliberately unavailable until a transport backend
+exists: Open viewer stops before preparation, preserves the selected pair and
+does not silently fall back. System network means Android's current connection,
+including an active external VPN. See [connection setup](connection-import.md)
+for storage, failure behavior and verification limits.
 
 ## Prototype theme
 

@@ -3,6 +3,7 @@ locked = true
 http_timeout = "120s"
 
 [tools]
+go = "1.27.2"
 java = "temurin-21"
 node = "24.21.0"
 python = "3.14.8"
@@ -21,7 +22,7 @@ run = "pre-commit run --all-files --show-diff-on-failure"
 [tasks.android]
 description = "Test, lint, and assemble the Android feasibility spike"
 dir = "apps/android"
-run = "./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation assembleDebug"
+run = "bash ../../scripts/build-android-routebridge.sh && ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation assembleDebug"
 
 [tasks.check]
 description = "Run the local validation suite"

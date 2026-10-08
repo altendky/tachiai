@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.HttpAuthHandler
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
@@ -33,6 +34,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.CookieHandler
 import java.net.URI
+import java.net.URL
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -53,12 +55,14 @@ import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.platform.media.awaitOpaqueResponse
+import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import org.json.JSONObject
 import org.json.JSONTokener
+import javax.net.ssl.HttpsURLConnection
 
 // Minimal app-owned bootstrap, not a provider player page. Each slot owns its
 // unchanged cached helper, anonymous bootstrap state and fresh one-exchange CDM.
@@ -69,6 +73,7 @@ internal class CachedPrototypeAbemaSession(
     private val replay: Boolean,
     private val active: () -> Boolean,
     private val onEvent: (PrototypeFeedEvent) -> Unit,
+    private val route: RouteSession? = null,
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -113,6 +118,8 @@ internal class CachedPrototypeAbemaSession(
     private fun preparationCurrent(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && SystemClock.elapsedRealtime() < deadline
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
+    private fun openConnection(url: URL): HttpsURLConnection =
+        route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
     override fun canContinue(): Boolean = current(revision.get())
     override fun checkAuthorization(): Boolean = canContinue()
 
@@ -146,6 +153,13 @@ internal class CachedPrototypeAbemaSession(
             override fun onJsPrompt(view: WebView, url: String, message: String, defaultValue: String?, result: android.webkit.JsPromptResult): Boolean { result.cancel(); return true }
         }
         view.webViewClient = object : WebViewClient() {
+            override fun onReceivedHttpAuthRequest(view: WebView, auth: HttpAuthHandler, host: String, realm: String) {
+                // A generated local-proxy credential, never a provider login or
+                // persistent browser credential. Reject every other challenger.
+                if (current(revision.get()) && route?.matchesProxyChallenge(host, realm) == true)
+                    auth.proceed(route.proxyUsername, route.proxyPassword)
+                else auth.cancel()
+            }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.isForMainFrame && allows(request.url.toString()) && !documentStarted) return false
                 fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED)); return true
@@ -221,6 +235,7 @@ internal class CachedPrototypeAbemaSession(
                 val http = AbemaPublicBundleHttp(
                     canRun = { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline },
                     identity = identity,
+                    open = ::openConnection,
                 )
                 bundleTransport.set(http)
                 return try {
@@ -344,7 +359,7 @@ internal class CachedPrototypeAbemaSession(
                 val requests = BoundedMediaRequests(checkNotNull(budget).child(), { current(run) && it == uri }, { event, code ->
                     record("manifest=${event.name} code=$code")
                     rememberMedia(event, code)
-                }, canRequest = { current(run) })
+                }, canRequest = { current(run) }, openConnection = ::openConnection)
                 sourceRequests.set(requests)
                 val source = try { readSource(uri, requests) }
                 finally { sourceRequests.compareAndSet(requests, null); requests.close() }
@@ -420,7 +435,8 @@ internal class CachedPrototypeAbemaSession(
                 keepDrmSessionForClearTransitions = !replay,
                 initialDrmFormat = if (replay) null else Format.Builder().setSampleMimeType(MimeTypes.VIDEO_H264)
                     .setDrmInitData(DrmInitData(C.CENC_TYPE_cenc, DrmInitData.SchemeData(
-                        C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build())
+                        C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build(),
+                openConnection = ::openConnection)
             nativeHost = created
             created.start(source.uri, playWhenReady = false)
         } catch (_: Exception) { policy.close(); fail() }

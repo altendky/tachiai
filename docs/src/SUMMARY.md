@@ -14,6 +14,7 @@
   - [Product-flow prototype](project/prototype-ux.md)
   - [Media-origin approvals](project/media-origin-approvals.md)
   - [Per-source network routing research](project/source-network-routing.md)
+  - [Route import and provider setup prototype](project/connection-import.md)
   - [Decisions](project/decisions.md)
   - [Evidence](project/evidence.md)
   - [Open questions](project/open-questions.md)

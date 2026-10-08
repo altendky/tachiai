@@ -10,6 +10,7 @@ internal enum class PrototypeFailureReason(val message: String) {
     MEDIA_NOT_FOUND("The stream could not be found. A live channel may be offline."),
     HTTP_REJECTED("The provider rejected a playback request."),
     NETWORK_FAILED("A playback network request failed. Check your connection."),
+    ROUTE_FAILED("The selected route could not be prepared. No System-network fallback was used."),
     MEDIA_BLOCKED("A media destination was blocked by this prototype's network policy."),
     MEDIA_APPROVAL_REQUIRED("A new media destination is blocked pending approval."),
     UNSUPPORTED_MEDIA("This prototype cannot play the media format or provider configuration."),

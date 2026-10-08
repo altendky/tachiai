@@ -285,8 +285,17 @@ must reuse the documented shared debug key and pass certificate verification.
 Use the documented Android-build container and signing procedure with:
 
 ```sh
+bash ../../scripts/build-android-routebridge.sh
 bash gradlew --no-daemon testDebugUnitTest testDiagnosticUnitTest lintDebug lintDiagnostic assembleDebug assembleDiagnostic
 ```
+
+The debug native route bindings require pinned Go 1.27.2 and Android NDK
+30.0.16248370 in that disposable SDK. The bridge script runs its fixture tests
+and cross-compiles ARM64/x86_64, then verifies 16-KiB ELF load alignment. It
+packages required dependency notices; the AAR remains generated/ignored under
+`routebridge/build/`. Build it before Gradle. These native bindings currently
+limit this debug APK to 64-bit ARM/x86 devices; 32-bit Android and Shield
+interoperability remain unverified. No emulated ARM compiler is used.
 
 Verify each APK separately with `apksigner verify --print-certs`, then inspect
 its application ID and merged launcher manifest. The fixture launcher should

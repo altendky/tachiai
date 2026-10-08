@@ -163,7 +163,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
     Column(modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
         Button(onClick = {
             context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.presentation.CachedPrototypeActivity"))
-        }) { Text("Prototype · choose two sources") }
+        }) { Text("Prototype · choose two streams") }
         Button(onClick = {
             context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.presentation.PrototypeActivity"))
         }) { Text("Prototype comparison · original web startup") }

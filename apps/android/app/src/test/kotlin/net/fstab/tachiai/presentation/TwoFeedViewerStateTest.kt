@@ -82,6 +82,17 @@ class TwoFeedViewerStateTest {
             assertEquals((h - r.height) * 0.75f, r.top.toFloat(), 0.6f)
         }
     }
+    @Test fun sideControlsConstrainOnlyFloatingPaneIncludingZeroSpace() {
+        val bounds = twoFeedBounds(1000, 600, true, true,
+            floating = FloatingPosition(1f, 1f), floatingRight = 640)
+        assertEquals(ViewerRect(0, 0, 1000, 600), bounds.a)
+        assertEquals(640, bounds.b.left + bounds.b.width)
+        assertTrue(bounds.b.top + bounds.b.height <= 600)
+        val zero = twoFeedBounds(1000, 600, true, true, floatingBottom = 0, floatingRight = 0)
+        assertEquals(ViewerRect(0, 0, 0, 0), zero.b)
+        val clamped = twoFeedBounds(1000, 600, true, true, floatingBottom = -1, floatingRight = -1)
+        assertEquals(zero, clamped)
+    }
     @Test fun zeroViewportAndInvalidAspectFallback() {
         assertEquals(ViewerRect(0, 0, 0, 0), twoFeedBounds(0, 0, true, true).a)
         assertEquals(twoFeedBounds(400, 1000, false, true),

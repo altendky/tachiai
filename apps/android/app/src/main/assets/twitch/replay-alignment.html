@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://player.twitch.tv; style-src 'unsafe-inline'; frame-src https://player.twitch.tv; base-uri 'none'; form-action 'none'">
+    <title>Same-replay alignment probe</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #15151a; color: white; font: 10px sans-serif; }
+      header { padding: 3px 4px; }
+      #panes { display: grid; grid-template-columns: repeat(2, minmax(400px, 1fr)); }
+      section { min-width: 400px; padding: 2px 0; }
+      .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 3px; }
+      button { color: white; background: #9147ff; border: 0; border-radius: 4px; padding: 4px; font: inherit; }
+      button:disabled { background: #53535f; }
+      select, input { padding: 3px; font: inherit; }
+      #summary { font-weight: bold; color: #bf94ff; }
+      .sample { margin: 3px 0; min-height: 14px; }
+      .player { width: 100%; height: max(300px, calc(100vh - 85px)); }
+      footer { padding: 4px; }
+    </style>
+    <script src="https://player.twitch.tv/js/embed/v1.js" defer></script>
+    <script src="../presentation/replay-coordinator.js" defer></script>
+    <script src="replay-alignment.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div id="summary" role="status">Loading identical Twitch replays</div>
+      <div class="controls">
+        <label>Move <select id="adjust-pane" aria-label="Pane to move relative to the other"><option value="right">Right</option><option value="left">Left</option></select></label>
+        <button id="adjust-0" disabled>Backward 5 s</button><button id="adjust-1" disabled>Backward 1 s</button>
+        <button id="adjust-2" disabled>Backward 250 ms</button><button id="adjust-3" disabled>Forward 250 ms</button>
+        <button id="adjust-4" disabled>Forward 1 s</button><button id="adjust-5" disabled>Forward 5 s</button>
+        <button id="align" disabled>Match clocks</button><button id="cancel" disabled>Cancel</button>
+      </div>
+      <div id="alignment-status" role="status">Loading</div>
+    </header>
+    <main id="panes">
+      <section aria-label="Left replay">
+        <div class="controls">
+          <strong>Left</strong>
+          <button id="left-play" disabled>Play</button><button id="left-pause" disabled>Pause</button>
+          <button id="left-sound" disabled>Sound</button><button id="left-mute" disabled>Mute</button>
+        </div>
+        <div id="left-player" class="player"></div>
+        <div id="left-status" class="sample" role="status">Loading SDK</div>
+        <div id="left-position" class="sample">Sample: unavailable</div>
+        <div id="left-audio" class="sample">Audio readback unavailable</div>
+      </section>
+      <section aria-label="Right replay">
+        <div class="controls">
+          <strong>Right</strong>
+          <button id="right-play" disabled>Play</button><button id="right-pause" disabled>Pause</button>
+          <button id="right-sound" disabled>Sound</button><button id="right-mute" disabled>Mute</button>
+        </div>
+        <div id="right-player" class="player"></div>
+        <div id="right-status" class="sample" role="status">Loading SDK</div>
+        <div id="right-position" class="sample">Sample: unavailable</div>
+        <div id="right-audio" class="sample">Audio readback unavailable</div>
+      </section>
+    </main>
+    <footer>
+      <div id="requested">Requested relative offset: unset</div>
+      <div class="controls">
+        <label>Public VOD ID <input id="video-id" inputmode="numeric" size="14" maxlength="20"></label>
+        <button id="load-video">Load both copies</button><span id="source-status"></span>
+        <span id="source-error" role="status"></span>
+      </div>
+      <div>Forward skips to later footage; Backward returns to earlier footage in the selected pane, relative to the other. Adjustments briefly hold both players. Keep players visible during playback. Original Play / speaker controls may be needed. Samples are not frame-accurate.</div>
+    </footer>
+  </body>
+</html>

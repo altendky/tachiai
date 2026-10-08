@@ -4,6 +4,7 @@ http_timeout = "120s"
 
 [tools]
 java = "temurin-21"
+node = "24.16.0"
 python = "3.14.7"
 uv = "0.12.21"
 "pipx:pre-commit" = "4.6.2"

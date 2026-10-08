@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>Tachiai credential-free browser fixture</title>
+  <link rel="stylesheet" href="lab.css">
+  <script defer src="lab.js"></script>
+</head>
+<body>
+  <h1>Browser inspection fixture</h1>
+  <p>No provider content, credentials or sessions. Screenshots and DevTools are enabled.</p>
+  <output id="metrics"></output>
+  <div id="surface">Full-height test surface</div>
+  <button id="alert">Test alert</button>
+  <button id="confirm">Test confirm</button>
+  <button id="prompt">Test prompt — dummy text only</button>
+  <button id="console">Test console</button>
+  <a href="https://example.invalid/">External navigation must stay blocked</a>
+  <output id="result">No dialog tested</output>
+</body>
+</html>

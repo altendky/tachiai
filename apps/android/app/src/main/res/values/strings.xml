@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Tachiai</string>
+    <string name="popup_waiting">Waiting for permitted HTTPS site</string>
+    <string name="popup_close">Close sign-in window</string>
+    <string name="popup_failure">Sign-in window blocked or unavailable: %1$s</string>
+    <string name="popup_origin">HTTPS · %1$s · provider sign-in</string>
 </resources>

@@ -125,6 +125,19 @@ validates the exact source origin and message shape. Never load Twitch's SDK
 script into ABEMA's top-level JavaScript realm; the cross-origin frame must
 retain Twitch's origin boundary.
 
+The independent-control follow-up adds an app-owned HTTPS child page served by
+`WebViewAssetLoader`. Twitch's documented SDK runs there and retains its own
+cross-origin player below it, not in ABEMA's JavaScript realm. The provider
+adapter translates generic pane commands into an origin-targeted `postMessage`
+exchange; Android hosting knows only the command script, optional bounded reply
+poll, and per-pane status. Both web endpoints validate source, origin, schema,
+request identity, and a fresh frame-session identifier. There is no native
+JavaScript bridge. Only the two explicitly approved child assets are exposed to
+the composite, and other synthetic-origin requests fail locally. SDK replies
+mean a command was requested, not that playback or acoustic output succeeded.
+This extra nesting remains a debug-only experiment until on-device testing
+verifies its minimum dimensions, activation, and mixed-audio behavior.
+
 ## Shared code
 
 Do not create a shared Rust or Kotlin Multiplatform core merely because several

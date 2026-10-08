@@ -1,0 +1,59 @@
+<resources>
+    <string name="abema_native_replay_warning">DEBUG NATIVE FREE REPLAY · isolated profile · DevTools OFF. No credentials. Exact provider-selected signed source remains transient; one opaque initial DRM exchange; 2 min foreground limit. Original web player remains intact.</string>
+    <string name="abema_replay_source_warning">DEBUG FREE REPLAY SOURCE CHECK · isolated profile · DevTools OFF. No credentials. Observe original selected DASH source shape and helper readiness only; no native media or license exchange.</string>
+    <string name="abema_replay_source_check">Source check</string>
+    <string name="abema_broker_warning">DEBUG ABEMA NATIVE/BROWSER BROKER · isolated profile · DevTools OFF. Do not enter credentials. One opaque license exchange; no native playback yet. Use your working playback connection.</string>
+    <string name="abema_broker_start">Native exchange</string>
+    <string name="abema_native_playback_warning">DEBUG NATIVE NEWS PLAYBACK · isolated profile · DevTools OFF. No credentials. Fresh Media3 DRM session; one opaque initial exchange; 2 min foreground limit. Original web player remains intact. Use your working playback connection.</string>
+    <string name="abema_native_playback_start">Start native</string>
+    <string name="abema_native_playback_status">native=%1$s code=%2$d</string>
+    <string name="abema_native_playback_mute_web">Mute web</string>
+    <string name="abema_native_playback_pause_web">Pause web</string>
+    <string name="native_mixed_warning" formatted="false">DEBUG NATIVE PAIR · A: ABEMA, B: Twitch. Saved LOCAL grant required. Both prepare paused, 50% each. Five-minute foreground cap; original web player remains attached. No synchronization lock or renewal guarantee.</string>
+    <string name="native_mixed_play">Play both</string>
+    <string name="native_mixed_pause">Pause both</string>
+    <string name="native_mixed_a_earlier">A earlier 5 s</string>
+    <string name="native_mixed_a_later">A later 5 s</string>
+    <string name="native_mixed_b_earlier">B earlier 5 s</string>
+    <string name="native_mixed_b_later">B later 5 s</string>
+    <string name="native_mixed_a_mute">Mute A</string>
+    <string name="native_mixed_a_sound" formatted="false">A 50%</string>
+    <string name="native_mixed_b_mute">Mute B</string>
+    <string name="native_mixed_b_sound" formatted="false">B 50%</string>
+    <string name="native_mixed_status">%1$s Requested relative adjustment: %2$d ms (positive = A later relative to B; not measured alignment).</string>
+    <string name="native_mixed_not_prepared">Pair not prepared.</string>
+    <string name="native_mixed_a_advance_relative">Advance A vs B · 5 s</string>
+    <string name="native_mixed_b_advance_relative">Advance B vs A · 5 s</string>
+    <string name="native_mixed_relative_explanation">Advance means later footage: move A forward or B backward (inverse for B). One full step only; chosen side is reported. No measured event alignment.</string>
+    <string name="native_mixed_relative_choice">\nRelative request chose %1$s (%2$d ms); see transaction status above.</string>
+    <string name="native_mixed_a_catch_up">Catch up A</string>
+    <string name="native_mixed_b_catch_up">Catch up B</string>
+    <string name="native_mixed_invalid_anchor">%1$s Prior timing adjustment invalid after catch-up; new anchor required (not measured alignment).</string>
+    <string name="abema_native_playback_mute">Mute native</string>
+    <string name="abema_native_playback_sound" formatted="false">Native 50%</string>
+    <string name="abema_broker_status">broker=%1$s</string>
+    <string name="abema_request_open">Native request format (no license traffic)</string>
+    <string name="abema_request_warning">DEBUG · News manifest → Android Clear Key request format only. No license/provisioning traffic, keys, playback or browser login. Manifest access does not establish entitlement.</string>
+    <string name="abema_request_ready">Ready · confirm playback connection before starting</string>
+    <string name="abema_request_start">Prepare request</string>
+    <string name="abema_request_stop">Stop</string>
+    <string name="abema_request_running">Fetching anonymous News metadata/manifest; request preparation only</string>
+    <string name="abema_request_time_limit">outcome=TIME_LIMIT</string>
+    <string name="abema_request_stopped">Stopped · any active worker is cleaning up; no automatic restart</string>
+    <string name="abema_inspection_warning">DEBUG ABEMA INSPECTION · isolated profile · DevTools has broad access. Do not enter credentials.</string>
+    <string name="abema_inspection_stopped">Inspection stopped</string>
+    <string name="abema_inspection_unsupported">Inspection requires Android 9 or newer; no browser opened</string>
+    <string name="abema_inspection_loading">Loading fixed ABEMA playback page</string>
+    <string name="abema_inspection_ready">Page loaded · playback unverified · metadata-only collector</string>
+    <string name="abema_inspection_tls_failure">TLS error · request cancelled</string>
+    <string name="abema_inspection_news">News</string>
+    <string name="abema_inspection_replay">Replay</string>
+    <string name="abema_inspection_reload">Reload</string>
+    <string name="abema_inspection_close">Close</string>
+    <string name="abema_native_pause">Pause</string>
+    <string name="abema_native_play">Play</string>
+    <string name="abema_native_back">Back 5 s</string>
+    <string name="abema_native_forward">Forward 5 s</string>
+    <string name="abema_native_live">Live</string>
+    <string name="native_viewer_return">Return to viewer</string>
+</resources>

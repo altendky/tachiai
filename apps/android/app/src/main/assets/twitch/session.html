@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://embed.twitch.tv; style-src 'unsafe-inline'; frame-src https://embed.twitch.tv https://player.twitch.tv; base-uri 'none'; form-action 'none'">
+    <title>Twitch full embed session probe</title>
+    <style>body { margin: 0; background: black; } #player { width: 100vw; min-width: 400px; height: 100vh; min-height: 300px; }</style>
+    <script src="https://embed.twitch.tv/embed/v1.js" defer></script>
+    <script src="session.js" defer></script>
+  </head>
+  <body><div id="player"></div></body>
+</html>

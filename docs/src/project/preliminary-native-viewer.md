@@ -15,11 +15,14 @@ generic layout. There is no new playback or provider permission claim.
   tap it to swap primary. Swap changes placement, never player identity,
   playback position, audio or source. Normalized floating position survives
   orientation changes within this foreground session.
-- Primary control tray: joint Play/Pause, Audio, Timing, More. Per-feed
+- Primary control tray: joint Play/Pause, Audio, Timing, More, Hide. Per-feed
   transport is deferred, not promoted into this control space.
-- Tapping the primary toggles ordinary controls; tapping empty viewing space
-  reveals them too. They hide after four idle
-  seconds while playing, but remain when paused or an adjustment panel is open.
+- Tapping the primary or empty viewing space toggles controls. Hide dismisses
+  the tray and any open panel in one action, even when paused, without changing
+  playback or values. Dismissal also cancels held mix-arrow repeats and queued
+  hide callbacks. Dismissing a More/step menu without selecting hides the tray;
+  selecting keeps it available. They hide after four idle seconds while playing,
+  but remain when paused or an adjustment panel is open.
   Audio and Timing replace one another rather than stacking.
 - Overall volume scales the whole mix. The mix/fade slider changes relative
   contributions. Each feed has a mute that does not move the slider or
@@ -229,3 +232,27 @@ normal Espresso button/scroll interactions rather than bypassing those checks.
 All seven focused phone tests then passed: five exact selector choices in both
 directions, owned-menu teardown, two background-touch and three source-picker
 regressions. The fixture checks require no provider content or credentials.
+
+### Direct dismissal follow-up (issue #32)
+
+The viewer now centralizes dismissal, including its popup, held mix repeats,
+open panel and tray, without changing playback or mix/timing values. Primary
+and background taps toggle all controls even while paused; Hide provides an
+explicit accessible alternative. An unselected popup dismissal also hides the
+tray, while a selected menu action keeps the controls available. Floating tap
+and drag remain separate gestures.
+
+The controlled Android build passed tests, lint, release isolation and app/test
+assembly; both certificates matched the shared identity. App APK SHA-256:
+`cece1212938be9f46f9e365d6fc00f6c6c951289cf20b6321525e2d0c4c45ea0`
+(16,204,341 bytes, host-owned). It was installed without clearing storage.
+On the same Pixel 6/Android 17 with guest ABEMA state and VPN marker present,
+two cached native sumo replay copies rendered and reported advancing READY
+playback. Around 23:26 EDT, one primary tap dismissed the complete Audio panel;
+the next revealed only the ordinary tray. Both videos continued, with no new
+listening or alignment accuracy claim. Back then stopped the bounded session.
+All twelve focused phone tests passed, including Audio/Timing dismissal paused
+and playing, mute/child-action preservation, delayed repeat cancellation,
+floating tap/drag identity, unselected More dismissal and earlier regressions.
+The reviewer caught incorrect positional playing flags in the first test fixture;
+they were corrected and Play/Pause labels asserted before the passing run.

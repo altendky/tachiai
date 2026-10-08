@@ -43,7 +43,8 @@ generic layout. There is no new playback or provider permission claim.
   chips and accessibility descriptions. Wide landscape uses a side strip;
   narrow landscape and portrait use a bottom tray. Content sizes naturally up
   to a scrollable viewport cap instead of reserving a blank 200-dp panel.
-- Fit video is an immediately reversible adjustment-panel toggle. In landscape
+- Fit video defaults to on for a new viewer and is an immediately reversible
+  adjustment-panel toggle. In landscape
   it reserves the visible controls' width (or height for the narrow bottom tray),
   without replacing players, pausing, seeking or changing mix. Hiding controls
   restores the landscape stage; the preference remains for the next panel.

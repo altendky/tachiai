@@ -5,8 +5,8 @@ http_timeout = "120s"
 [tools]
 java = "temurin-21"
 node = "24.16.0"
-python = "3.14.7"
-uv = "0.12.21"
+python = "3.14.8"
+uv = "0.12.23"
 "pipx:pre-commit" = "4.6.2"
 "cargo:mdbook" = "0.5.4"
 

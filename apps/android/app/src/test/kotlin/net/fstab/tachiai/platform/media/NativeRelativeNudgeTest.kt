@@ -10,10 +10,20 @@ class NativeRelativeNudgeTest {
 
     @Test fun `both signs work in all four source combinations without clock subtraction`() {
         for (a in listOf(replay, live)) for (b in listOf(replay, live.copy(windowStartMs = 9_000_000))) {
-            for (delta in listOf(-5_000L, 5_000L)) {
+            for (step in listOf(100L, 250L, 500L, 1_000L, 5_000L)) for (delta in listOf(-step, step)) {
                 assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.A, delta),
                     nativeRelativeNudgePlan(a, b, delta))
             }
+        }
+    }
+    @Test fun `fine steps fall back on B only when A cannot move the whole step`() {
+        for (step in listOf(100L, 250L, 500L)) {
+            assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.B, -step),
+                nativeRelativeNudgePlan(replay.copy(positionMs = 60_000), live, step))
+            assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.B, step),
+                nativeRelativeNudgePlan(replay.copy(positionMs = 0), live, -step))
+            assertEquals(NativeRelativeNudgeOutcome.NO_FULL_STEP,
+                nativeRelativeNudgePlan(replay.copy(positionMs = 60_000), live.copy(positionMs = 0), step).outcome)
         }
     }
     @Test fun `fallback uses opposite movement on B when A cannot deliver the whole step`() {

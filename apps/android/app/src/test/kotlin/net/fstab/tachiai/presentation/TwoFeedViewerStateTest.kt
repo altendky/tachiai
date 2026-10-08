@@ -4,6 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TwoFeedViewerStateTest {
+    @Test fun timingStepsRetainExactMillisecondsAndFractionalLabels() {
+        assertEquals(listOf(100L, 250L, 500L, 1_000L, 5_000L), ViewerTimingStep.entries.map { it.milliseconds })
+        assertEquals(listOf("0.1 s", "0.25 s", "0.5 s", "1 s", "5 s"), ViewerTimingStep.entries.map { it.label })
+    }
     @Test fun centreAndEndpoints() {
         assertEquals(0.5f, TwoFeedMix().gainA, 0f)
         assertEquals(0.5f, TwoFeedMix().gainB, 0f)

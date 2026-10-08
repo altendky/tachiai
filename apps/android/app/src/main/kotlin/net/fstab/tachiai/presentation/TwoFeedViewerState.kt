@@ -3,6 +3,14 @@ package net.fstab.tachiai.presentation
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+internal enum class ViewerTimingStep(val milliseconds: Long, val label: String) {
+    TENTH_SECOND(100, "0.1 s"),
+    QUARTER_SECOND(250, "0.25 s"),
+    HALF_SECOND(500, "0.5 s"),
+    ONE_SECOND(1_000, "1 s"),
+    FIVE_SECONDS(5_000, "5 s"),
+}
+
 // Presentation gains only; no provider/player knowledge or Android media volume.
 // Provisional centre-unity profile: retain one feed, attenuate the other.
 internal data class TwoFeedMix(

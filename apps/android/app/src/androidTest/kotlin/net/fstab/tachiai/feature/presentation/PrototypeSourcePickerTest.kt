@@ -1,8 +1,15 @@
 package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -19,10 +26,43 @@ class PrototypeSourcePickerTest {
         var opened: PrototypeSelection? = null
         compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
         compose.waitForIdle()
-        compose.onAllNodesWithText(PrototypeSource.ABEMA_LIVE.title)[1].performScrollTo().performClick()
+        PrototypeSource.entries.forEach { compose.onAllNodesWithText(it.title).assertCountEquals(1) }
+        assignment(PrototypeSource.ABEMA_LIVE, "B").performScrollTo().performClick()
+        assignment(PrototypeSource.TWITCH_LIVE, "B").assertIsOff()
         compose.onNodeWithText("Open viewer").performClick()
         compose.runOnIdle {
             assertEquals(PrototypeSelection(PrototypeSource.ABEMA_LIVE, PrototypeSource.ABEMA_LIVE), opened)
         }
+    }
+
+    @Test fun reassignmentAndClearingPreserveTheOtherSlot() {
+        var opened: PrototypeSelection? = null
+        compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.waitForIdle()
+        assignment(PrototypeSource.ABEMA_REPLAY, "A").performScrollTo().performClick()
+        assignment(PrototypeSource.ABEMA_LIVE, "A").assertIsOff()
+        assignment(PrototypeSource.TWITCH_LIVE, "B").assertIsOn()
+        assignment(PrototypeSource.ABEMA_REPLAY, "A").performClick()
+        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().performClick()
+        compose.onNodeWithText("Open viewer").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(PrototypeSelection(PrototypeSource.TWITCH_REPLAY, PrototypeSource.TWITCH_LIVE), opened)
+        }
+    }
+
+    private fun assignment(source: PrototypeSource, slot: String) =
+        compose.onNodeWithContentDescription("Assign ${source.title} to feed $slot")
+
+    @Test fun rapidSlotChangesBeforeRecompositionDoNotOverwriteEachOther() {
+        var opened: PrototypeSelection? = null
+        compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.waitForIdle()
+        val source = PrototypeSource.ABEMA_REPLAY
+        val assignA = assignment(source, "A").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        val assignB = assignment(source, "B").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        compose.runOnIdle { assignA(); assignB() }
+        compose.onNodeWithText("Open viewer").performClick()
+        compose.runOnIdle { assertEquals(PrototypeSelection(source, source), opened) }
     }
 }

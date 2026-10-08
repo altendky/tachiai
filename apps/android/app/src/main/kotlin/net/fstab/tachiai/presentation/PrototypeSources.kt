@@ -25,3 +25,20 @@ internal data class PrototypeSelection(
     // Duplicate source choices are intentional: each slot owns a separate host.
     val sources get() = listOf(a, b)
 }
+
+internal enum class PrototypeSlot { A, B }
+
+// An incomplete picker draft never reaches playback preparation.
+internal data class PrototypeSourceAssignments(
+    val a: PrototypeSource? = PrototypeSource.ABEMA_LIVE,
+    val b: PrototypeSource? = PrototypeSource.TWITCH_LIVE,
+) {
+    fun assign(slot: PrototypeSlot, source: PrototypeSource, checked: Boolean): PrototypeSourceAssignments {
+        val previous = if (slot == PrototypeSlot.A) a else b
+        val next = if (checked) source else previous?.takeUnless { it == source }
+        return if (slot == PrototypeSlot.A) copy(a = next) else copy(b = next)
+    }
+
+    fun selectionOrNull(): PrototypeSelection? =
+        if (a != null && b != null) PrototypeSelection(a, b) else null
+}

@@ -20,4 +20,22 @@ class PrototypeSourcesTest {
                 PrototypeSource.entries.filter { it.service == service }.map { it.kind }.toSet())
         }
     }
+    @Test fun `assignment replaces only the selected slot and permits both on one row`() {
+        val initial = PrototypeSourceAssignments()
+        val duplicate = initial.assign(PrototypeSlot.B, PrototypeSource.ABEMA_LIVE, true)
+        assertEquals(PrototypeSelection(PrototypeSource.ABEMA_LIVE, PrototypeSource.ABEMA_LIVE), duplicate.selectionOrNull())
+        val moved = duplicate.assign(PrototypeSlot.A, PrototypeSource.TWITCH_REPLAY, true)
+        assertEquals(PrototypeSource.ABEMA_LIVE, moved.b)
+        assertEquals(PrototypeSource.TWITCH_REPLAY, moved.a)
+        assertEquals(moved, moved.assign(PrototypeSlot.A, PrototypeSource.ABEMA_LIVE, false))
+    }
+    @Test fun `clearing either slot blocks complete playback selection until reassigned`() {
+        for (slot in PrototypeSlot.entries) {
+            val initial = PrototypeSourceAssignments()
+            val source = if (slot == PrototypeSlot.A) initial.a!! else initial.b!!
+            val cleared = initial.assign(slot, source, false)
+            assertNull(cleared.selectionOrNull())
+            assertEquals(initial, cleared.assign(slot, source, true))
+        }
+    }
 }

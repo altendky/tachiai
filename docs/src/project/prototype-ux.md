@@ -39,6 +39,13 @@ closes its own session while a healthy feed continues. If both fail, the viewer
 keeps both errors visible. Sources or Android Back explicitly stops playback
 and returns to the picker, retaining the selected sources.
 
+In landscape, tapping a floating preparation/error pane swaps it with the
+primary feed, just as tapping floating video does. Taps on either the message
+or empty panel space use the same action. Scrolling a long error only scrolls
+its text. Swapping retains the existing players; it does not restart or retry
+a feed. The More menu also offers Swap primary feed. Portrait retains its
+fixed A/B order, and tapping an error pane toggles the controls.
+
 The older full-page ABEMA comparison waits until its original web player can
 confirm paused/muted, or its slot fails and closes, before starting native
 playback. This prevents audio from a hidden provider page during preparation;

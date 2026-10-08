@@ -285,7 +285,7 @@ internal class NativePairViewer(
             menu.add("Playback status").setOnMenuItemClickListener { menuSelectionPerformed = true; togglePanel("Status"); true }
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { menuSelectionPerformed = true; onLandscape(!landscape()); true }
-            menu.add("Swap primary video").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
+            menu.add("Swap primary feed").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
             menu.add("Catch up $labelA (holds both)").apply {
                 isEnabled = pair() != null
                 setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.A); refresh(); true }
@@ -415,9 +415,31 @@ internal class NativePairViewer(
         private fun notice(pane: FrameLayout): TextView {
             val notice = text("").apply {
                 setPadding(dp(12), dp(36), dp(12), dp(12))
-                setOnClickListener { showControls() }
             }
-            val scroll = ScrollView(context).apply {
+            val scroll = object : ScrollView(context) {
+                private val slop = ViewConfiguration.get(context).scaledTouchSlop
+                private var downX = 0f
+                private var downY = 0f
+                private var tap = false
+                override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { downX = event.x; downY = event.y; tap = true }
+                        MotionEvent.ACTION_MOVE -> if (abs(event.x - downX) > slop || abs(event.y - downY) > slop) tap = false
+                        MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> tap = false
+                        MotionEvent.ACTION_UP -> if (tap && abs(event.x - downX) <= slop && abs(event.y - downY) <= slop) {
+                            tap = false
+                            // Finish native touch handling before forwarding one pane click.
+                            // Scrolling keeps its normal event stream and never swaps feeds.
+                            val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                            try { super.dispatchTouchEvent(cancel) } finally { cancel.recycle() }
+                            performClick()
+                            return true
+                        }
+                    }
+                    return super.dispatchTouchEvent(event)
+                }
+            }.apply {
+                setOnClickListener { pane.performClick() }
                 setBackgroundColor(context.getColor(R.color.prototype_background))
                 addView(notice, LayoutParams(-1, -2))
                 visibility = GONE
@@ -446,7 +468,7 @@ internal class NativePairViewer(
             // Parent handles viewing gestures, never the PlayerView's own transport.
             player.isClickable = false; player.isFocusable = false
             addView(text(label).apply { setTextColor(Color.WHITE); setBackgroundColor(0x99000000.toInt()); setPadding(dp(8), dp(2), dp(8), dp(2)) }, LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
-            contentDescription = "$label video; tap floating video to swap, drag to move"
+            contentDescription = "$label feed; tap floating feed to swap, drag to move"
             setOnClickListener { if (landscape() && sideA != primaryA) swap() else toggleControls() }
             var downX = 0f; var downY = 0f; var originLeft = 0; var originTop = 0; var dragged = false
             val slop = ViewConfiguration.get(context).scaledTouchSlop

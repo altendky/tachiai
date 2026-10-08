@@ -3,9 +3,96 @@
 Research for [issue #35](https://github.com/altendky/tachiai/issues/35), checked
 2026-10-08 against repository commit
 `0e6bb1ff66ab715c8b4824f7e4fb19b9a22fdebc`.
-This is a documentation-only assessment, not a routing implementation or a new
+This section is the original documentation-only assessment, not a routing implementation or a new
 playback experiment. No phone, VPN configuration, credentials or provider
 sessions were inspected or changed for this research.
+
+The subsequent [connection-import prototype](connection-import.md) implements
+guided Proton configuration handoff, protected local profile storage and separate
+route/provider setup screens. Provider defaults cover their streams/feeds;
+conflicting historical defaults require explicit review. Saved-profile playback stops before provider
+preparation; System network keeps the existing path.
+That importer-only milestone did not implement or test any routing backend described here. The user now
+prioritizes independent native playback routes, including necessary ABEMA setup
+and licensing requests, over external companion VPN automation; the external
+system network remains the current implementation, not the intended final UX.
+
+## Subsequent native transport implementation
+
+The user subsequently requested implementing both initial mechanisms: HTTP
+CONNECT and WireGuard, with Proton-exported profiles as the known VPN input.
+The debug native prototype now has session-owned authenticated loopback CONNECT
+bridges. One backend connects to an explicit HTTP proxy; the other uses upstream
+wireguard-go's in-memory netstack, not Android `VpnService`. Origin HTTPS remains
+end-to-end and uses normal certificate/hostname checks. No TLS interception,
+provider algorithm change, credential capture or System-network fallback is added.
+
+Provider route choices are frozen per presentation. Identical canonical profiles
+share one tunnel/bridge, including duplicate imports, to avoid competing
+WireGuard endpoints for one peer. Native Twitch validation/access/HLS and ABEMA
+bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA
+guest/source/initial-license requests remain unchanged Chromium requests, routed
+by an awaited process proxy override in its dedicated host. The two ABEMA
+helpers share their provider's route; different simultaneous ABEMA routes are
+not implemented. Twitch's native route is independent of that override. The
+historical page-backed comparison does not accept imported ABEMA routes.
+
+The loopback listener requires fresh ephemeral credentials before dialing and
+admits only reviewed HTTPS destination host families on port 443. HTTP upstream
+proxy credentials are scoped to its CONNECT handshake, not origin headers.
+HTTP proxies do not encrypt their outer authentication; do not treat them as
+HTTPS proxies. WireGuard destination DNS uses the profile's DNS inside its
+netstack; missing DNS is rejected instead of resolving destinations on System
+network. Endpoint bootstrap DNS and outer proxy/tunnel connections intentionally
+follow the system network, which may itself include an external VPN.
+
+Teardown closes players/helpers before clearing Chromium's override and closing
+owned transports. Stop, background and the existing presentation deadline govern
+route lifetime too. Failed or unconfirmed cleanup blocks another run; force-stop
+and relaunch may be required. Role swaps retain route ownership. Import/Save
+still does not activate a route; Open viewer is the explicit connection action.
+
+This is implementation, not verified provider compatibility. Build, native
+fixtures, installed-WebView proxy authentication, actual Proton playback and
+TV results must be recorded independently below; earlier system-Proton playback
+does not establish this new path. The remaining research sections retain their
+original evidence and estimates.
+
+### Transport verification on 2026-10-08
+
+- The pinned Android build passed 600 debug and 416 diagnostic JVM tests,
+  instrumentation compilation, release isolation and both APK assemblies.
+  Both APK signing certificates match the shared debug-key reference. Lint has
+  no errors; two new proxy-feature warnings remain despite explicit runtime
+  capability checks, alongside the existing warnings.
+- Seven Go fixtures passed, including a synthetic WireGuard peer handshake,
+  destination DNS inside the tunnel, authenticated HTTP CONNECT byte forwarding,
+  cancellation and rejection without direct fallback. Repeated race tests and
+  vet passed. Native binaries cover arm64 and x86_64 with 16 KiB ELF alignment;
+  this does not establish 32-bit Android or Shield compatibility.
+- On the Pixel 6, Android 17 and System WebView 153.0.8010.36, the installed
+  browser completed the local proxy authentication callback with synthetic
+  credentials. The fixture deliberately returned 502 without contacting any
+  provider; it proves the callback, not browser DNS-leak freedom.
+  All 27 focused device tests passed, including actual JNI initialization and
+  teardown for both transports, browser authentication and route/setup UI
+  regressions. Synthetic WireGuard JNI initialization alone is not a handshake.
+- With the user's saved Proton Japan configuration assigned to ABEMA and
+  System network assigned to Twitch, native ABEMA News completed fresh guest,
+  source and initial CDM setup and rendered video. Chillhop Radio also rendered,
+  and both native playback clocks advanced concurrently during the bounded run.
+  Android reported no active system VPN. The original provider page was not
+  loaded; this tests the in-app tunnel rather than the companion Proton app.
+  No fresh acoustic confirmation, packet-level leak audit or long-duration
+  reliability claim is made. The account state was anonymous ABEMA plus the
+  existing saved Twitch grant; no account credentials were inspected.
+- One interrupted preparation/retry reported a playback-cleanup
+  failure and refused another run. Force-stopping Tachiai restored operation;
+  teardown under interruption still warrants further device investigation.
+
+HTTP CONNECT has owned transport/TLS fixtures, not a commercial-proxy playback
+observation. Provider acceptance of any particular exit remains an independent
+condition; a saved profile name is not proof of its location or compatibility.
 
 ## Recommendation and scope
 

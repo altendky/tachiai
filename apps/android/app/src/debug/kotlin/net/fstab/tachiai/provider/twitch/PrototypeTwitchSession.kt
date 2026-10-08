@@ -9,6 +9,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.media.BoundedNativePlayer
 import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.NativePairMember
@@ -26,6 +28,7 @@ internal class PrototypeTwitchSession(
     private val resource: String,
     private val active: () -> Boolean,
     private val onEvent: (PrototypeFeedEvent) -> Unit,
+    private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -35,7 +38,7 @@ internal class PrototypeTwitchSession(
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     override var cleanupFailed: Boolean = false
         private set
-    private val preparation = NativePairTwitchPreparation(context) { !closed.get() && active() }
+    private val preparation = NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection)
     private var host: BoundedNativePlayer? = null
     override val providerView: View? = null
     override val member: NativePairMember? get() = host
@@ -71,6 +74,7 @@ internal class PrototypeTwitchSession(
                         val created = BoundedNativePlayer(context, budget, preparation.acceptanceDeadlineMs,
                             allowedUri = { allowedTwitchMediaUri(it, observedReplayCdn = replay) },
                             handleAudioFocus = false, canRequest = { preparation.checkStored() },
+                            openConnection = openConnection,
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
                             }, onEvent = { event, code ->

@@ -3,6 +3,23 @@
 Tachiai loads authenticated third-party pages and therefore handles sensitive
 browser state even though it does not operate an account service.
 
+The debug-only [connection importer](connection-import.md) separately handles
+user-exported WireGuard private keys and optional proxy credentials. It uses a
+distinct encrypted no-backup record, explicit preview/save and bounded file
+reads; it does not collect Proton account passwords, copy browser state or
+activate a network route by importing or saving. The subsequently requested
+[native transports](source-network-routing.md#subsequent-native-transport-implementation)
+connect only at Open viewer: authenticated loopback CONNECT, explicit native
+factories and a process-scoped proxy for cached ABEMA's unchanged Chromium
+requests. WireGuard uses upstream netstack without an OS VPN takeover. Normal
+TLS, reviewed destinations, no fallback and teardown guards remain mandatory.
+Its limits and pending device verification are recorded
+there rather than inferred from the earlier provider-grant experiments.
+Provider default routes use a separate encrypted metadata slot: profile IDs and
+display names, never copied keys/credentials. Conflicting earlier stream/feed
+route settings require explicit review; unsupported or failed routes stop before provider
+preparation instead of falling back to the system network.
+
 ## Authentication boundary
 
 - Provider credentials are entered only into provider-controlled pages.

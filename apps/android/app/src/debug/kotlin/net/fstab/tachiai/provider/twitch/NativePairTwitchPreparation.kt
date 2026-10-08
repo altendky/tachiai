@@ -2,6 +2,8 @@ package net.fstab.tachiai.provider.twitch
 
 import android.content.Context
 import java.io.IOException
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runBlocking
@@ -9,7 +11,9 @@ import net.fstab.tachiai.platform.net.AccessProbeHttp
 
 // Same-device saved LOCAL grant only. Worker owns validation/source resolution;
 // no token, signed URI or account field enters intents, UI, logs or toString.
-internal class NativePairTwitchPreparation(context: Context, private val active: () -> Boolean) : AutoCloseable {
+internal class NativePairTwitchPreparation(context: Context, private val active: () -> Boolean,
+    private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+) : AutoCloseable {
     private val cache = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
     private val valid = AtomicBoolean(true)
     private val validator = AtomicReference<TwitchDeviceHttpTransport?>()
@@ -48,7 +52,7 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
         lease = stored.lease ?: throw IOException("Pair authorization unavailable")
         if (!checkStored(force = true)) throw IOException("Pair authorization ended")
         var selected: TwitchPlaybackSource? = null
-        val validation = TwitchDeviceHttpTransport(canRequest = {
+        val validation = TwitchDeviceHttpTransport(open = openConnection, canRequest = {
             checkStored(force = true)
         }, onHttpStatus = { endpoint, code -> onStatus(endpoint.name, code) })
         validator.set(validation)
@@ -58,7 +62,7 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
                     lease = accepted
                     acceptanceDeadlineMs = deadline
                     if (!checkStored(force = true)) throw IOException("Pair authorization ended")
-                    val request = AccessProbeHttp(canRequest = {
+                    val request = AccessProbeHttp(open = openConnection, canRequest = {
                         checkStored(force = true) && System.nanoTime() / 1_000_000 < deadline
                     })
                     access.set(request)

@@ -9,6 +9,12 @@
 - The product model is generic multi-stream presentation, not a hard-coded
   ABEMA/Twitch or sumo client.
 - Both live and replay sources are in scope.
+- Product terminology is **route / provider / stream / feed**: a route is the
+  network path (saved configuration is not proof of an active connection), a
+  provider supplies selectable live/recorded streams, and a feed is an active
+  instance of a stream. Duplicate stream selections create independent feeds.
+  Routes and Providers have separate setup screens; provider default routes
+  apply to all their streams. Per-feed overrides are a later optional control.
 - User-adjustable relative timing is a central feature.
 - The first useful viewing experience has two simultaneous feeds with an
   overall volume, relative mix/fade with fine-adjust arrows, and per-feed mute;

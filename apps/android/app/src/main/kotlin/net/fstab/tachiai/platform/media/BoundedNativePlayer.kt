@@ -30,6 +30,8 @@ import androidx.media3.ui.PlayerView
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.URI
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import java.util.concurrent.atomic.AtomicBoolean
 
 @UnstableApi
@@ -43,13 +45,14 @@ internal class BoundedNativePlayer(
     private val onTimingDiscontinuity: (NativeTimingSnapshot, Int) -> Unit = { _, _ -> },
     handleAudioFocus: Boolean = true,
     canRequest: () -> Boolean = { true },
+    openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
     private var released = false
     private val requests = BoundedMediaRequests(budget, allowedUri, onEvent,
         canRequest = { canRequest() && (acceptedPlaylist.get() || System.nanoTime() / 1_000_000 < acceptanceDeadlineMs) },
-        onManifestRejection = onManifestRejection)
+        onManifestRejection = onManifestRejection, openConnection = openConnection)
     val player: ExoPlayer
 
     init {

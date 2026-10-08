@@ -1,6 +1,38 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
+            android:name=".feature.connections.ProvidersActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:exported="false" />
+        <activity
+            android:name=".feature.connections.SourceSetupActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:exported="false" />
+        <activity
+            android:name=".feature.connections.ConnectionProfilesActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:launchMode="singleTask"
+            android:exported="true">
+            <intent-filter android:label="Import connection into Tachiai">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/x-conf" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-wireguard-profile" />
+            </intent-filter>
+            <intent-filter android:label="Import connection into Tachiai">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/x-conf" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-wireguard-profile" />
+            </intent-filter>
+        </activity>
+        <activity
             android:name=".feature.presentation.CachedPrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="true"

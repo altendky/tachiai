@@ -78,9 +78,20 @@ The cached prototype's [media-origin approvals](media-origin-approvals.md)
 record user-approved CDN boundaries and the review process for new origins.
 
 [Per-source network routing research](source-network-routing.md) compares future
-proxy/VPN options and setup profiles. It is a documentation-only assessment:
-the current prototype still inherits the user-controlled system network, and
-independent feed routes have not been implemented or tested.
+proxy/VPN options and setup profiles. Its original assessment is historical;
+the subsequent debug implementation adds provider-owned HTTP CONNECT and
+userspace WireGuard routes, with verification limits recorded separately.
+Different simultaneous routes for duplicate ABEMA feeds remain unimplemented.
+The debug-only
+[connection importer](connection-import.md) adds guided Proton export and
+Share/Open/file-picker handoffs into encrypted saved profiles, without activating
+any route or changing playback. Separate Routes and Providers screens manage
+profiles and assign provider defaults for all their streams/feeds; ambiguous
+earlier per-stream route settings require explicit review. Obsolete four-stream
+settings require an explicit stream-settings reset rather than migration; saved
+routes and provider configuration are retained. The cached native viewer connects
+the selected route before provider preparation; unsupported or failed routes
+never silently fall back. System network retains existing playback.
 
 The historical web-first approach keeps provider-controlled web players intact
 inside embedded browser content and remains available for comparison:

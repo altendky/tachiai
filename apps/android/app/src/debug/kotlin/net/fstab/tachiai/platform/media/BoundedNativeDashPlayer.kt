@@ -33,6 +33,8 @@ import androidx.media3.exoplayer.upstream.ParsingLoadable
 import androidx.media3.exoplayer.source.MediaSource
 import java.io.IOException
 import java.net.URI
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import java.util.UUID
 
 internal enum class NativeDashEvent {
@@ -58,11 +60,12 @@ internal class BoundedNativeDashPlayer(
     private val beforeRelease: () -> Unit,
     keepDrmSessionForClearTransitions: Boolean = false,
     initialDrmFormat: Format? = null,
+    openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
-    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent)
-    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent)
+    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = openConnection)
+    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = openConnection)
     val player: ExoPlayer
 
     init {

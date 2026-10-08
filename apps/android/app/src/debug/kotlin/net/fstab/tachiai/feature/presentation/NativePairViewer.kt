@@ -64,7 +64,7 @@ internal class NativePairViewer(
     private var mix = TwoFeedMix()
     private var timingStep = ViewerTimingStep.ONE_SECOND
     private var panel: String? = null
-    private var fitVideo = false
+    private var fitVideo = true
     private var sideDock = false
     private var activeMenu: PopupMenu? = null
     private var menuSelectionPerformed = false

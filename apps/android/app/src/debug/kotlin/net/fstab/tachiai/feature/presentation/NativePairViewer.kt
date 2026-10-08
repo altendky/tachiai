@@ -58,6 +58,7 @@ internal class NativePairViewer(
     private var timingStep = ViewerTimingStep.ONE_SECOND
     private var panel: String? = null
     private var activeMenu: PopupMenu? = null
+    private var menuSelectionPerformed = false
     private var requestedPlaying = false
     private var observedPair: NativeMixedPair? = null
     private var volumeApplied = false
@@ -94,7 +95,7 @@ internal class NativePairViewer(
         setBackgroundColor(Color.BLACK)
         // Consume empty-area taps here rather than passing them to the hidden
         // provider page. Child controls and pane gestures keep their handlers.
-        setOnClickListener { showControls() }
+        setOnClickListener { toggleControls() }
         ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
@@ -103,7 +104,8 @@ internal class NativePairViewer(
         addView(dock)
         dock.addView(scroller, scrollerParams)
         dock.addView(row(play, button("Audio") { togglePanel("Audio") },
-            button("Timing") { togglePanel("Timing") }, button("More") { showMore(it) }))
+            button("Timing") { togglePanel("Timing") }, button("More") { showMore(it) },
+            button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }))
         dock.addView(readback)
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
@@ -134,6 +136,11 @@ internal class NativePairViewer(
         requestLayout()
     }
     private fun cancelRepeats() { repeats.forEach { removeCallbacks(it) }; repeats.clear() }
+    private fun toggleControls() { if (dock.isGone) showControls() else dismissControls() }
+    private fun dismissControls() {
+        suspendControls(); panel = null; content.removeAllViews()
+        scroller.visibility = GONE; dock.visibility = GONE; requestLayout()
+    }
     private fun togglePanel(value: String) {
         dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
@@ -208,7 +215,7 @@ internal class NativePairViewer(
             ViewerTimingStep.entries.forEach { choice ->
                 menu.add(choice.label).apply {
                     isCheckable = true; isChecked = choice == timingStep
-                    setOnMenuItemClickListener { timingStep = choice; updateLabels(); showControls(); true }
+                    setOnMenuItemClickListener { menuSelectionPerformed = true; timingStep = choice; updateLabels(); showControls(); true }
                 }
             }
         }
@@ -228,10 +235,13 @@ internal class NativePairViewer(
         dismissMenu(); cancelRepeats(); removeCallbacks(hideControls)
         if (!isAttachedToWindow || visibility != VISIBLE) return
         val popup = PopupMenu(context, anchor).apply(populate)
+        menuSelectionPerformed = false
         popup.setOnDismissListener {
             if (activeMenu === popup) {
                 activeMenu = null
-                if (isAttachedToWindow && visibility == VISIBLE) showControls()
+                if (isAttachedToWindow && visibility == VISIBLE) {
+                    if (menuSelectionPerformed) showControls() else dismissControls()
+                }
             }
         }
         activeMenu = popup
@@ -241,12 +251,12 @@ internal class NativePairViewer(
     private fun showMore(anchor: View) {
         showMenu(anchor) {
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
-                .setOnMenuItemClickListener { onLandscape(!landscape()); true }
-            menu.add("Swap primary video").setOnMenuItemClickListener { stage.swap(); true }
-            menu.add("Catch up $labelA (holds both)").setOnMenuItemClickListener { onCatchUp(NativeMixedSide.A); refresh(); true }
-            menu.add("Catch up $labelB (holds both)").setOnMenuItemClickListener { onCatchUp(NativeMixedSide.B); refresh(); true }
-            menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
-            menu.add("Stop both").setOnMenuItemClickListener { suspendControls(); onStop(); true }
+                .setOnMenuItemClickListener { menuSelectionPerformed = true; onLandscape(!landscape()); true }
+            menu.add("Swap primary video").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
+            menu.add("Catch up $labelA (holds both)").setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.A); refresh(); true }
+            menu.add("Catch up $labelB (holds both)").setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.B); refresh(); true }
+            menu.add(setupLabel).setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onDiagnostics(); true }
+            menu.add("Stop both").setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onStop(); true }
         }
     }
 
@@ -317,7 +327,7 @@ internal class NativePairViewer(
         private val paneA = pane(a, labelA, true)
         private val paneB = pane(b, labelB, false)
         init {
-            setOnClickListener { showControls() }
+            setOnClickListener { toggleControls() }
             addView(paneA); addView(paneB)
         }
         fun bindPlayers() {
@@ -337,7 +347,7 @@ internal class NativePairViewer(
             player.isClickable = false; player.isFocusable = false
             addView(text(label).apply { setBackgroundColor(0x99000000.toInt()); setPadding(dp(8), dp(2), dp(8), dp(2)) }, LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
             contentDescription = "$label video; tap floating video to swap, drag to move"
-            setOnClickListener { if (landscape() && sideA != primaryA) swap() else if (dock.isGone) showControls() else if (panel == null && requestedPlaying) { dock.visibility = GONE; requestLayout() } }
+            setOnClickListener { if (landscape() && sideA != primaryA) swap() else toggleControls() }
             var downX = 0f; var downY = 0f; var originLeft = 0; var originTop = 0; var dragged = false
             val slop = ViewConfiguration.get(context).scaledTouchSlop
             setOnTouchListener { view, event ->

@@ -50,6 +50,47 @@ landscape retained B's replay selection and disabled Open viewer. The original
 portrait rotation was restored. No provider page, login or playback was needed
 for these checks, and no new decoding/audio evidence is claimed.
 
+## Prototype theme
+
+The picker, preparation screen and native viewer now share a restrained warm
+neutral palette with gold actions and teal mix controls. Android day/night
+resources follow the system setting; Compose uses those same colour roles.
+Rounded control surfaces distinguish selected, normal and disabled states.
+The video stage stays black and its feed labels stay white on dark chips.
+Historical browser screens and provider pages are not restyled.
+
+The prototype Activity alone selects the matching platform theme for menus and
+preparation text. System-bar icons use the app theme outside playback and light
+icons over the black video stage. Explicit bar backgrounds support older Android
+versions, but visual verification remains limited to the phone below.
+Changing system theme during playback can recreate the Activity and stop the
+existing bounded session; seamless mid-session theme switching is not claimed.
+No provider, authentication, media or DRM handling changes accompany the theme.
+
+The October 8 theme APK passed controlled SDK 37.2 tests, lint, instrumentation
+compilation, release isolation and app/test assembly. An initial lint failure
+for an API-27 XML bar attribute was corrected without raising the minimum SDK;
+the settled build has no lint errors and retains eight existing warnings and
+one hint. Both signing certificates matched the shared debug identity. The app
+APK is 16,916,260 bytes, host-owned, with SHA-256
+`a016fbbbf65450a4d22c36cc900ee147212f92e72ad93cb8e9afbc827d2e860e`.
+
+On Pixel 6/oriole, Android 17 with System WebView 153.0.8010.36, fifteen focused
+provider-free phone tests passed in dark mode: picker assignment, resource and
+Compose palette selection, selected/disabled text, contrast, timing dispatch,
+dismissal and compact/large-font layout. The two theme tests also passed under
+system light mode. Text contrast tests include panel compositing over both black
+and white video. App storage was retained during installation.
+
+Actual picker and preparation screens, landscape Audio/Timing/Status panels
+and More popups were inspected in both modes. The light-mode mute selection was
+distinct; video labels remained white on dark chips and video-stage system icons
+remained light. Two cached guest ABEMA sumo replay copies rendered moving frames
+in each short inspection, with the VPN marker present and no original web video.
+Those observations concern theme/layout, not fresh acoustic confirmation or
+timing precision. Each run was stopped explicitly; original system dark mode
+was restored. No other device or older Android visual compatibility is verified.
+
 ## Playback and hosting boundaries
 
 The no-page follow-up now routes the normal Prototype entry to

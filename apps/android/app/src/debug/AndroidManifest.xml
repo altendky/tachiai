@@ -2,6 +2,7 @@
     <application>
         <activity
             android:name=".feature.presentation.CachedPrototypeActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="true"
             android:configChanges="orientation|screenSize"
             android:process=":prototype_cached_player" />
@@ -11,6 +12,7 @@
             android:process=":abema_cached_helper" />
         <activity
             android:name=".feature.presentation.PrototypeActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false"
             android:configChanges="orientation|screenSize"
             android:process=":prototype_player" />

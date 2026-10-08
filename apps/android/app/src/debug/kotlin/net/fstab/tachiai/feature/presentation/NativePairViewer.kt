@@ -2,6 +2,7 @@ package net.fstab.tachiai.feature.presentation
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
 import android.view.Gravity
@@ -23,6 +24,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.presentation.FloatingPosition
 import net.fstab.tachiai.presentation.TwoFeedMix
@@ -72,7 +74,7 @@ internal class NativePairViewer(
     private val stage = FeedStage()
     private val dock = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4))
-        setBackgroundColor(0xe6222222.toInt())
+        background = context.prototypeSurface(R.color.prototype_panel)
     }
     private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val scroller = CappedScrollView().apply { addView(content) }
@@ -121,6 +123,10 @@ internal class NativePairViewer(
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
         balance.contentDescription = "Mix: $labelA to $labelB; centre is equal"
+        volume.progressTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_primary))
+        volume.thumbTintList = volume.progressTintList
+        balance.progressTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_secondary))
+        balance.thumbTintList = balance.progressTintList
         fun listener(action: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, value: Int, user: Boolean) { if (user) action(value) }
             override fun onStartTrackingTouch(bar: SeekBar) { removeCallbacks(hideControls) }
@@ -132,11 +138,12 @@ internal class NativePairViewer(
     }
 
     private fun text(value: String) = TextView(context).apply {
-        text = value; setTextColor(Color.WHITE); textSize = 14f
+        text = value; setTextColor(context.getColor(R.color.prototype_text)); textSize = 14f
     }
     private fun button(value: String, action: (Button) -> Unit) = Button(context).apply {
         text = value; textSize = 12f; isAllCaps = false; minHeight = dp(48); minWidth = dp(48)
         setPadding(dp(4), 0, dp(4), 0); setOnClickListener { action(this) }
+        stylePrototypeControl()
     }
     private fun row(vararg views: View) = LinearLayout(context).apply {
         views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
@@ -394,7 +401,7 @@ internal class NativePairViewer(
             addView(player, LayoutParams(-1, -1))
             // Parent handles viewing gestures, never the PlayerView's own transport.
             player.isClickable = false; player.isFocusable = false
-            addView(text(label).apply { setBackgroundColor(0x99000000.toInt()); setPadding(dp(8), dp(2), dp(8), dp(2)) }, LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+            addView(text(label).apply { setTextColor(Color.WHITE); setBackgroundColor(0x99000000.toInt()); setPadding(dp(8), dp(2), dp(8), dp(2)) }, LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
             contentDescription = "$label video; tap floating video to swap, drag to move"
             setOnClickListener { if (landscape() && sideA != primaryA) swap() else toggleControls() }
             var downX = 0f; var downY = 0f; var originLeft = 0; var originTop = 0; var dragged = false

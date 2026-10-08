@@ -18,8 +18,8 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -94,7 +94,20 @@ open class PrototypeActivity : ComponentActivity() {
     private fun showPicker(message: String?) {
         root = null; progress = null; returnButton = null
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        setContent { MaterialTheme { PrototypeSourcePicker(selection, message, ::watch) } }
+        styleSystemBars(false)
+        setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(selection, message, ::watch) } }
+    }
+
+    @Suppress("DEPRECATION") // Pre-enforced-edge-to-edge Android still uses explicit bar colours.
+    private fun styleSystemBars(video: Boolean) {
+        val light = !video && resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK != Configuration.UI_MODE_NIGHT_YES
+        val color = if (video) android.graphics.Color.BLACK else getColor(R.color.prototype_background)
+        window.statusBarColor = color
+        window.navigationBarColor = color
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
     }
 
     private fun watch(selected: PrototypeSelection) {
@@ -106,21 +119,24 @@ open class PrototypeActivity : ComponentActivity() {
         val sharedBudget = NativePlaybackBudget(300_000, ::active, maximumDurationMs = 300_000)
         budget = sharedBudget
         startedViewer = false; initialCatchUp = false; lastAuthorizationPoll = 0; lastSample = 0
-        val frame = FrameLayout(this)
+        styleSystemBars(false)
+        val frame = FrameLayout(this).apply { setBackgroundColor(getColor(R.color.prototype_background)) }
         val setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(setup) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
+            val margin = (16 * resources.displayMetrics.density).toInt()
+            view.setPadding(bars.left + margin, bars.top + margin, bars.right + margin, bars.bottom + margin); insets
         }
-        progress = TextView(this).also { setup.addView(it) }
+        progress = TextView(this).apply { textSize = 18f; setTextColor(getColor(R.color.prototype_text)) }.also { setup.addView(it) }
         setup.addView(TextView(this).apply {
             text = if (useCachedAbema) "Preparing your feeds… ABEMA uses cached provider modules, without opening its player page. No account entry is needed."
                 else "Preparing your feeds… ABEMA may ask you to keep using the web player. No account entry is needed for these fixed sources."
         })
-        setup.addView(Button(this).apply { text = "Back to sources"; setOnClickListener { stopToPicker("Playback stopped.") } })
+        setup.addView(Button(this).apply { text = "Back to sources"; stylePrototypeControl(); setOnClickListener { stopToPicker("Playback stopped.") } })
         returnButton = Button(this).apply {
             text = "Return to viewer"; isEnabled = false
-            setOnClickListener { viewer?.open() }
+            stylePrototypeControl()
+            setOnClickListener { styleSystemBars(true); viewer?.open() }
         }.also { setup.addView(it) }
         frame.addView(setup, FrameLayout.LayoutParams(-1, -1))
         root = frame
@@ -226,7 +242,7 @@ open class PrototypeActivity : ComponentActivity() {
             { pair }, ::playPair, ::pausePair,
             onRelative = { delta -> invalidatePlay(); pair?.shiftRelative(delta) },
             onCatchUp = { side -> invalidatePlay(); pair?.catchUp(side) },
-            onDiagnostics = { pausePair(); viewer?.visibility = View.GONE },
+            onDiagnostics = { pausePair(); viewer?.visibility = View.GONE; styleSystemBars(false) },
             onStop = { stopToPicker("Playback stopped.") },
             onLandscape = { landscape -> requestedOrientation = if (landscape)
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT },
@@ -262,6 +278,7 @@ open class PrototypeActivity : ComponentActivity() {
                 ((value.live || value.dynamic) && (value.positionMs == null || value.durationMs == null ||
                     value.durationMs <= 0 || value.positionMs !in 0..value.durationMs)) }) return
         startedViewer = true
+        styleSystemBars(true)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         viewer?.open()
         playPair()

@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.Tachiai.Prototype" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/prototype_primary</item>
+        <item name="android:windowBackground">@color/prototype_background</item>
+        <item name="android:textColorPrimary">@color/prototype_text</item>
+        <item name="android:textColorSecondary">@color/prototype_muted</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/prototype_background</item>
+        <item name="android:navigationBarColor">@color/prototype_background</item>
+    </style>
+</resources>

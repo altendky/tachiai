@@ -44,9 +44,11 @@ import net.fstab.tachiai.platform.media.BoundedDashManifestParser
 import net.fstab.tachiai.platform.media.BoundedMediaRequests
 import net.fstab.tachiai.platform.media.BoundedNativeDashPlayer
 import net.fstab.tachiai.platform.media.DeclaredDashMediaPolicy
+import net.fstab.tachiai.platform.media.DashManifestPolicyEvent
 import net.fstab.tachiai.platform.media.NativeDashEvent
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
+import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.platform.media.awaitOpaqueResponse
@@ -55,6 +57,9 @@ import net.fstab.tachiai.platform.web.MediaPermissionPolicy
 import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.platform.web.userAgentFor
 import net.fstab.tachiai.provider.BrowserIdentity
+import net.fstab.tachiai.presentation.PrototypeFeedFailure
+import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
+import net.fstab.tachiai.presentation.PrototypeFailureReason
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -93,6 +98,10 @@ internal class PrototypeAbemaSession(
     private var preparingNative = false
     private var lastEvent: PrototypeFeedEvent? = null
     private var lastHelperState: String? = null
+    private val firstFailure = PrototypeFeedFailureLatch()
+    override val failure: PrototypeFeedFailure? get() = firstFailure.failure
+    override var cleanupFailed: Boolean = false
+        private set
 
     override val providerView: View = WebView(context)
     private val view get() = providerView as WebView
@@ -147,29 +156,29 @@ internal class PrototypeAbemaSession(
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!request.isForMainFrame || allows(request.url.toString())) return false
-                fail(); return true
+                fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED)); return true
             }
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 if (!request.isForMainFrame || allows(request.url.toString())) return null
-                handler.post { fail() }
+                handler.post { fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED)) }
                 return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(byteArrayOf()))
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 if (!documentStarted && (url == null || url == "about:blank")) return
                 if (closed.get()) return
                 // A second document must not inherit the first helper/session.
-                if (!allows(url) || documentStarted) { fail(); return }
+                if (!allows(url) || documentStarted) { fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED)); return }
                 documentStarted = true
                 routeCurrent.set(true)
             }
             override fun onPageFinished(view: WebView, url: String?) {
-                if (!allows(url) && documentStarted) fail()
+                if (!allows(url) && documentStarted) fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
             }
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-                if (!allows(url) && documentStarted) fail()
+                if (!allows(url) && documentStarted) fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
             }
             override fun onReceivedSslError(view: WebView, ssl: SslErrorHandler, error: SslError) {
-                ssl.cancel(); fail()
+                ssl.cancel(); fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 fail(); return true
@@ -195,10 +204,12 @@ internal class PrototypeAbemaSession(
         if (!BuildConfig.DEBUG || registration == null || !active() || !budget.active) { fail(); return }
         emit(PrototypeFeedEvent.PREPARING)
         val run = revision.incrementAndGet()
-        handler.postDelayed({ if (!closed.get() && revision.get() == run) fail() }, budget.remainingMs)
+        handler.postDelayed({ if (!closed.get() && revision.get() == run)
+            fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }, budget.remainingMs)
         val readinessDeadline = minOf(deadline, SystemClock.elapsedRealtime() + 90_000)
         handler.postDelayed({
-            if (!closed.get() && revision.get() == run && !preparingNative) fail()
+            if (!closed.get() && revision.get() == run && !preparingNative)
+                fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT))
         }, maxOf(0L, readinessDeadline - SystemClock.elapsedRealtime()))
         view.loadUrl(route)
         waitForHelper(run, readinessDeadline)
@@ -206,7 +217,9 @@ internal class PrototypeAbemaSession(
 
     private fun waitForHelper(run: Long, readinessDeadline: Long) {
         if (closed.get() || revision.get() != run) return
-        if (!active() || budget?.active != true || SystemClock.elapsedRealtime() >= readinessDeadline) { fail(); return }
+        if (!active() || budget?.active != true || SystemClock.elapsedRealtime() >= readinessDeadline) {
+            fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT)); return
+        }
         if (!allows(view.url) || !routeCurrent.get()) {
             handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 500)
             return
@@ -222,7 +235,8 @@ internal class PrototypeAbemaSession(
             }
             when (state) {
                 "READY" -> if (!preparingNative) { preparingNative = true; armAndPrepare(run) }
-                "FAILED", "STALE", "STOPPED", "TRANSPORT_REFUSED" -> fail()
+                "TRANSPORT_REFUSED" -> fail(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA))
+                "FAILED", "STALE", "STOPPED" -> fail()
                 else -> {
                     emit(PrototypeFeedEvent.WAITING_PROVIDER)
                     handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 500)
@@ -271,6 +285,7 @@ internal class PrototypeAbemaSession(
             ?: throw IllegalStateException()
         val requests = BoundedMediaRequests(checkNotNull(budget).child(), { it == uri }, { event, code ->
             Log.d("TachiaiPrototypeAbema", "phase=REPLAY_MANIFEST event=${event.name} code=$code")
+            rememberMedia(event, code)
         })
         sourceRequests.set(requests)
         return try {
@@ -291,7 +306,9 @@ internal class PrototypeAbemaSession(
             preflight = { body ->
                 if (transitions != null) transitions.accepts(body)
                 else parseAbemaRequestInitialization(body)?.kids?.toSet() == source.kids.toSet()
-            }, canRun = { current(run) }, onEvent = { _, _ -> },
+            }, canRun = { current(run) }, onEvent = { event, _ ->
+                if (event == DashManifestPolicyEvent.REFUSED) remember(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA))
+            },
             validateModel = { parsed ->
                 transitions?.requiresDeclarationFreeModel != true ||
                     (0 until parsed.periodCount).all { period ->
@@ -304,18 +321,21 @@ internal class PrototypeAbemaSession(
             val created = BoundedNativeDashPlayer(view.context, selectedBudget, source.kids,
                 allowedUri = policy::allows, manifestUri = source.uri, manifestParser = parser,
                 exchange = { challenge -> broker(challenge, run, minOf(deadline, SystemClock.elapsedRealtime() + 30_000)) },
-                onEvent = { event, _ -> handler.post {
-                    if (!current(run)) return@post
-                    when (event) {
-                        NativeDashEvent.READY -> emit(PrototypeFeedEvent.READY)
-                        NativeDashEvent.DRM_REQUESTED -> emit(PrototypeFeedEvent.LICENSE_REQUESTED)
-                        NativeDashEvent.DRM_KEYS_LOADED -> emit(PrototypeFeedEvent.LICENSE_READY)
-                        NativeDashEvent.VIDEO_FRAME -> emit(PrototypeFeedEvent.VIDEO_FRAME)
-                        NativeDashEvent.PLAYER_FAILED, NativeDashEvent.DRM_REFUSED, NativeDashEvent.DRM_FAILED,
-                        NativeDashEvent.DRM_PREWARM_FAILED, NativeDashEvent.LIMIT_REACHED, NativeDashEvent.STOPPED -> fail()
-                        else -> Unit
+                onEvent = { event, code ->
+                    rememberNative(event, code)
+                    handler.post {
+                        if (closed.get() || revision.get() != run || !active()) return@post
+                        when (event) {
+                            NativeDashEvent.READY -> emit(PrototypeFeedEvent.READY)
+                            NativeDashEvent.DRM_REQUESTED -> emit(PrototypeFeedEvent.LICENSE_REQUESTED)
+                            NativeDashEvent.DRM_KEYS_LOADED -> emit(PrototypeFeedEvent.LICENSE_READY)
+                            NativeDashEvent.VIDEO_FRAME -> emit(PrototypeFeedEvent.VIDEO_FRAME)
+                            NativeDashEvent.PLAYER_FAILED, NativeDashEvent.DRM_REFUSED, NativeDashEvent.DRM_FAILED,
+                            NativeDashEvent.DRM_PREWARM_FAILED, NativeDashEvent.LIMIT_REACHED, NativeDashEvent.STOPPED -> fail()
+                            else -> Unit
+                        }
                     }
-                } }, onMediaEvent = { _, _ -> },
+                }, onMediaEvent = ::rememberMedia,
                 beforeRelease = { policy.close(); pending.getAndSet(null)?.complete(null) },
                 keepDrmSessionForClearTransitions = !replay,
                 initialDrmFormat = if (replay) null else Format.Builder()
@@ -342,6 +362,8 @@ internal class PrototypeAbemaSession(
                     val uri = try { URI(quoted(raw, 12_000) ?: "") } catch (_: Exception) { null }
                     val policy = uri?.let(::abemaReplaySelectedSourcePolicy)
                     Log.d("TachiaiPrototypeAbema", "phase=REPLAY_SOURCE policy=${policy?.name ?: "UNAVAILABLE"}")
+                    if (uri != null && policy != AbemaReplayUriPolicy.ALLOWED)
+                        remember(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
                     completion.complete(uri?.takeIf { policy == AbemaReplayUriPolicy.ALLOWED })
                 }
             }
@@ -416,7 +438,39 @@ internal class PrototypeAbemaSession(
         if (raw == null || raw.length > limit) null else JSONTokener(raw).nextValue() as? String
     } catch (_: Exception) { null }
 
-    private fun fail() = finish(PrototypeFeedEvent.FAILED)
+    private fun remember(value: PrototypeFeedFailure) {
+        if (!closed.get() && active()) firstFailure.remember(value)
+    }
+
+    private fun rememberMedia(event: NativeMediaEvent, code: Int) {
+        val reason = when (event) {
+            NativeMediaEvent.HTTP_REJECTED -> if (code == 404) PrototypeFailureReason.MEDIA_NOT_FOUND else PrototypeFailureReason.HTTP_REJECTED
+            NativeMediaEvent.SOURCE_NOT_ALLOWLISTED -> PrototypeFailureReason.MEDIA_BLOCKED
+            NativeMediaEvent.REQUEST_FAILED -> PrototypeFailureReason.NETWORK_FAILED
+            NativeMediaEvent.ENCRYPTION_UNSUPPORTED, NativeMediaEvent.PLAYLIST_UNSUPPORTED -> PrototypeFailureReason.UNSUPPORTED_MEDIA
+            NativeMediaEvent.LIMIT_REACHED -> PrototypeFailureReason.PLAYBACK_LIMIT
+            else -> return
+        }
+        remember(PrototypeFeedFailure(reason, httpStatus = if (event == NativeMediaEvent.HTTP_REJECTED)
+            code.takeIf { it in 100..599 } else null))
+    }
+
+    private fun rememberNative(event: NativeDashEvent, code: Int) {
+        val reason = when (event) {
+            NativeDashEvent.DRM_REFUSED, NativeDashEvent.DRM_FAILED, NativeDashEvent.DRM_PREWARM_FAILED -> PrototypeFailureReason.LICENSE_FAILED
+            NativeDashEvent.PLAYER_FAILED -> PrototypeFailureReason.PLAYER_FAILED
+            NativeDashEvent.LIMIT_REACHED -> PrototypeFailureReason.PLAYBACK_LIMIT
+            NativeDashEvent.STOPPED -> PrototypeFailureReason.STOPPED
+            else -> return
+        }
+        remember(PrototypeFeedFailure(reason, playerCode = if (event == NativeDashEvent.PLAYER_FAILED)
+            code.takeIf { it in 1000..9999 } else null))
+    }
+
+    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) {
+        remember(value)
+        finish(PrototypeFeedEvent.FAILED)
+    }
     override fun close() = finish(PrototypeFeedEvent.STOPPED)
 
     private fun finish(event: PrototypeFeedEvent) {
@@ -428,7 +482,6 @@ internal class PrototypeAbemaSession(
         armPending.getAndSet(null)?.complete(false)
         sourcePending.getAndSet(null)?.complete(null)
         pending.getAndSet(null)?.complete(null)
-        var cleanupFailed = false
         // Seal the helper before release can wait for its native DRM worker.
         for (cleanup in listOf<() -> Unit>(
             { transport.getAndSet(null)?.close() },
@@ -444,6 +497,6 @@ internal class PrototypeAbemaSession(
             try { cleanup() } catch (_: Exception) { cleanupFailed = true }
         }
         nativeHost = null; registration = null
-        emit(if (cleanupFailed) PrototypeFeedEvent.FAILED else event)
+        emit(event)
     }
 }

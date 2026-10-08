@@ -4,7 +4,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PrototypeSourcesTest {
-    @Test fun `all sixteen ordered choices including duplicates retain slot identity`() {
+    @Test fun `all ordered choices including duplicates retain slot identity`() {
         var choices = 0
         for (a in PrototypeSource.entries) for (b in PrototypeSource.entries) {
             val selected = PrototypeSelection(a, b)
@@ -12,13 +12,16 @@ class PrototypeSourcesTest {
             assertNotEquals(a.slotLabel("A"), b.slotLabel("B"))
             choices++
         }
-        assertEquals(16, choices)
+        assertEquals(36, choices)
     }
     @Test fun `catalogue has live and replay for each initial service`() {
         for (service in PrototypeService.entries) {
             assertEquals(PrototypePlaybackKind.entries.toSet(),
                 PrototypeSource.entries.filter { it.service == service }.map { it.kind }.toSet())
         }
+        val twitch = PrototypeSource.entries.filter { it.service == PrototypeService.TWITCH }
+        assertTrue(twitch.all { !it.resourceId.isNullOrBlank() })
+        assertEquals(twitch.size, twitch.map { it.resourceId }.toSet().size)
     }
     @Test fun `assignment replaces only the selected slot and permits both on one row`() {
         val initial = PrototypeSourceAssignments()

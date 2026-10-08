@@ -32,10 +32,15 @@ internal class NativePlaybackAudioGroup(context: Context, private val onLoss: ()
         return granted
     }
 
-    override fun close() {
+    fun release() {
         if (closed) return
-        closed = true
         granted = false
         manager.abandonAudioFocusRequest(request)
+    }
+
+    override fun close() {
+        if (closed) return
+        release()
+        closed = true
     }
 }

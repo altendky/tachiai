@@ -2,14 +2,18 @@
 
 The immediate goal is evidence, not a polished cross-platform product.
 
-## Current handoff — 2026-10-07
+## Current handoff — 2026-10-08
 
 The debug application now preserves the historical experiment home and offers
 a separate [Prototype source-picker/native-viewer flow](prototype-ux.md).
-Four fixed ABEMA/Twitch live/replay entries can fill either slot, including
-duplicate selections. Opening the viewer explicitly starts automatic bounded
-preparation. Its cached ABEMA path no longer requires the full provider page
-or its consent overlay; the old web-page startup remains a comparison.
+Six fixed ABEMA/Twitch live/replay entries can fill either slot, including
+duplicate selections. Twitch live offers Izgonnabemei, Chillhop Radio and Virtual
+Japan. Opening the viewer explicitly starts automatic bounded preparation in
+two labelled panes. Each feed independently becomes video or a safe error
+message; a successful feed can play while the other prepares or fails. Sources
+returns to the picker with the choices retained. Its cached ABEMA path no longer
+requires the full provider page or its consent overlay; the old web-page startup
+remains a comparison.
 
 The agreed UX is portrait stacking without forced equal heights, landscape
 primary plus movable floating secondary with tap-to-swap, joint Play/Pause,

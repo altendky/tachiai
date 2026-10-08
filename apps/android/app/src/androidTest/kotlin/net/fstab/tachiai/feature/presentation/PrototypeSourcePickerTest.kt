@@ -53,6 +53,18 @@ class PrototypeSourcePickerTest {
     private fun assignment(source: PrototypeSource, slot: String) =
         compose.onNodeWithContentDescription("Assign ${source.title} to feed $slot")
 
+    @Test fun additionalLiveChannelsReachTheirAssignedViewerSlots() {
+        var opened: PrototypeSelection? = null
+        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.waitForIdle()
+        assignment(PrototypeSource.TWITCH_CHILLHOP_LIVE, "A").performScrollTo().performClick()
+        assignment(PrototypeSource.TWITCH_VIRTUAL_JAPAN_LIVE, "B").performScrollTo().performClick()
+        compose.onNodeWithText("Open viewer").performClick()
+        compose.runOnIdle {
+            assertEquals(PrototypeSelection(PrototypeSource.TWITCH_CHILLHOP_LIVE, PrototypeSource.TWITCH_VIRTUAL_JAPAN_LIVE), opened)
+        }
+    }
+
     @Test fun rapidSlotChangesBeforeRecompositionDoNotOverwriteEachOther() {
         var opened: PrototypeSelection? = null
         compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }

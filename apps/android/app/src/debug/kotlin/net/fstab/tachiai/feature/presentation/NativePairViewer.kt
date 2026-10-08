@@ -24,6 +24,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.presentation.FloatingPosition
@@ -54,6 +55,10 @@ internal class NativePairViewer(
     private val onLandscape: (Boolean) -> Unit,
     private val setupLabel: String = "Setup / diagnostics",
     private val statusOverride: () -> String? = { null },
+    private val members: () -> List<NativePairMember?> = { listOf(pair()?.a, pair()?.b) },
+    private val volumeRequest: (NativeMixedSide, Float) -> Boolean = { side, value -> pair()?.setVolume(side, value) == true },
+    private val feedMessage: (NativeMixedSide) -> String? = { null },
+    private val onSources: (() -> Unit)? = null,
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private var mix = TwoFeedMix()
@@ -102,9 +107,10 @@ internal class NativePairViewer(
     private val fit = button("") { fitVideo = !fitVideo; updateLabels(); showControls() }.apply {
         contentDescription = "Fit video beside visible controls; toggle without restarting playback"
     }
-    private val toolbar = row(play, button("Audio") { togglePanel("Audio") },
-        button("Timing") { togglePanel("Timing") }, button("More") { showMore(it) },
-        button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" })
+    private val toolbar = row(*listOfNotNull(play, button("Audio") { togglePanel("Audio") },
+        button("Timing") { togglePanel("Timing") }, onSources?.let { action -> button("Sources") { action() } },
+        button("More") { showMore(it) },
+        button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -197,7 +203,7 @@ internal class NativePairViewer(
         button.contentDescription = "Mix one percent toward $label; hold to repeat"
         val repeat = object : Runnable {
             override fun run() {
-                if (panel != "Audio" || visibility != VISIBLE || pair() == null) return
+                if (panel != "Audio" || visibility != VISIBLE || members().all { it == null }) return
                 changeMix(mix.nudge(delta)); postDelayed(this, 150)
             }
         }
@@ -215,10 +221,10 @@ internal class NativePairViewer(
         mix = value; volumeApplied = false; updateLabels(); applyVolume(); showControls()
     }
     private fun applyVolume() {
-        val current = pair() ?: return
+        if (members().all { it == null }) return
         // Evaluate both: a refusal must not short-circuit the second mute/gain.
-        val appliedA = current.setVolume(NativeMixedSide.A, mix.gainA)
-        val appliedB = current.setVolume(NativeMixedSide.B, mix.gainB)
+        val appliedA = volumeRequest(NativeMixedSide.A, mix.gainA)
+        val appliedB = volumeRequest(NativeMixedSide.B, mix.gainB)
         volumeApplied = appliedA && appliedB; volumeFailed = !volumeApplied
     }
     private fun updateLabels() {
@@ -280,8 +286,14 @@ internal class NativePairViewer(
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { menuSelectionPerformed = true; onLandscape(!landscape()); true }
             menu.add("Swap primary video").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
-            menu.add("Catch up $labelA (holds both)").setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.A); refresh(); true }
-            menu.add("Catch up $labelB (holds both)").setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.B); refresh(); true }
+            menu.add("Catch up $labelA (holds both)").apply {
+                isEnabled = pair() != null
+                setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.A); refresh(); true }
+            }
+            menu.add("Catch up $labelB (holds both)").apply {
+                isEnabled = pair() != null
+                setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.B); refresh(); true }
+            }
             menu.add(setupLabel).setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onDiagnostics(); true }
             menu.add("Stop both").setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onStop(); true }
         }
@@ -291,17 +303,19 @@ internal class NativePairViewer(
         val current = pair()
         if (observedPair !== current) {
             observedPair = current; volumeApplied = false
-            stage.bindPlayers()
         }
-        if (current != null && !volumeApplied) applyVolume()
+        if (stage.bindPlayers()) volumeApplied = false
+        stage.updateMessages()
+        val available = members()
+        if (available.any { it != null } && !volumeApplied) applyVolume()
         val wasPlaying = requestedPlaying
-        requestedPlaying = current?.let { it.a.timingSnapshot()?.playWhenReady == true || it.b.timingSnapshot()?.playWhenReady == true } == true
+        requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
         play.text = if (requestedPlaying || current?.busy == true) "Pause" else "Play"
-        play.isEnabled = current != null
+        play.isEnabled = available.any { it != null }
         advanceA.isEnabled = current != null && !current.busy
         advanceB.isEnabled = advanceA.isEnabled
         val adjustment = when {
-            current == null -> "No prepared pair."
+            current == null -> "Relative timing requires two playable feeds."
             !current.requestedAdjustmentValid -> "Timing anchor invalid; realign after catch-up."
             else -> "Requested A relative to B: ${current.requestedAdjustmentMs / 1_000.0} s (not measured)."
         }
@@ -315,7 +329,7 @@ internal class NativePairViewer(
         adjustmentLabel.text = adjustment
         adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"
         if (wasPlaying != requestedPlaying) showControls()
-        if (current == null) suspendControls()
+        if (available.all { it == null }) suspendControls()
     }
     fun open() { visibility = VISIBLE; showControls(); refresh() }
     fun endSession() { suspendControls(); stage.unbindPlayers(); observedPair = null; visibility = GONE }
@@ -327,9 +341,10 @@ internal class NativePairViewer(
         val contentW = (w - paddingLeft - paddingRight).coerceAtLeast(0)
         val contentH = (h - paddingTop - paddingBottom).coerceAtLeast(0)
         // A side strip keeps more video clear. Below 640 dp use the full-width
-        // bottom tray so its five controls keep at least 48 dp touch widths.
+        // bottom tray so the toolbar keeps at least 48 dp touch widths.
         sideDock = landscape() && panel != null && contentW >= dp(640)
-        val dockW = if (sideDock) minOf(dp(360), (contentW * 0.45f).toInt()) else contentW
+        val minimumDockWidth = toolbar.childCount * dp(48) + dock.paddingLeft + dock.paddingRight
+        val dockW = if (sideDock) minOf(dp(360), (contentW * 0.45f).toInt().coerceAtLeast(minimumDockWidth)) else contentW
         val innerW = (dockW - dock.paddingLeft - dock.paddingRight).coerceAtLeast(0)
         val childWidth = MeasureSpec.makeMeasureSpec(innerW, MeasureSpec.EXACTLY)
         val childHeight = MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST)
@@ -382,16 +397,45 @@ internal class NativePairViewer(
         private fun aspect(size: VideoSize) = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 16f / 9f
         private val paneA = pane(a, labelA, true)
         private val paneB = pane(b, labelB, false)
+        private val noticeA = notice(paneA)
+        private val noticeB = notice(paneB)
         init {
             setOnClickListener { toggleControls() }
             addView(paneA); addView(paneB)
         }
-        fun bindPlayers() {
+        fun bindPlayers(): Boolean {
+            if (playerA === a.player && playerB === b.player) return false
             unbindPlayers(); playerA = a.player; playerB = b.player
             playerA?.addListener(listenerA); playerB?.addListener(listenerB)
             ratioA = playerA?.videoSize?.let(::aspect) ?: ratioA
             ratioB = playerB?.videoSize?.let(::aspect) ?: ratioB
             requestLayout()
+            return true
+        }
+        private fun notice(pane: FrameLayout): TextView {
+            val notice = text("").apply {
+                setPadding(dp(12), dp(36), dp(12), dp(12))
+                setOnClickListener { showControls() }
+            }
+            val scroll = ScrollView(context).apply {
+                setBackgroundColor(context.getColor(R.color.prototype_background))
+                addView(notice, LayoutParams(-1, -2))
+                visibility = GONE
+            }
+            // Keep the source label above the scrollable preparation/error panel.
+            pane.addView(scroll, 1, LayoutParams(-1, -1))
+            return notice
+        }
+        fun updateMessages() {
+            fun update(side: NativeMixedSide, player: PlayerView, label: String, notice: TextView) {
+                val message = feedMessage(side)
+                notice.text = message.orEmpty()
+                (notice.parent as View).visibility = if (message == null) GONE else VISIBLE
+                player.visibility = if (message == null) VISIBLE else GONE
+                notice.contentDescription = "$label: ${message.orEmpty()}"
+            }
+            update(NativeMixedSide.A, a, labelA, noticeA)
+            update(NativeMixedSide.B, b, labelB, noticeB)
         }
         fun unbindPlayers() { playerA?.removeListener(listenerA); playerB?.removeListener(listenerB); playerA = null; playerB = null }
         fun swap() { primaryA = !primaryA; showControls(); requestLayout() }

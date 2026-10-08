@@ -83,8 +83,8 @@ jobs:
           ./gradlew --no-daemon :app:assembleDebug
           verification="$("$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)"
           printf '%s\n' "$verification"
-          fingerprint="$(printf '%s\n' "$verification" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
-          if [[ "${fingerprint^^}" != 'A258F5F71E7D828F51A3AAF6AA94F97B9DBFBD64E0CE08394A59C120914A7A17' ]]; then
+          fingerprints="$(printf '%s\n' "$verification" | sed -n 's/^.*certificate SHA-256 digest: //p' | tr '[:lower:]' '[:upper:]' | sort -u)"
+          if [[ "$fingerprints" != 'A258F5F71E7D828F51A3AAF6AA94F97B9DBFBD64E0CE08394A59C120914A7A17' ]]; then
             printf '%s\n' '::error::APK signer does not match the shared Android debug certificate'
             exit 1
           fi

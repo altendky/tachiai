@@ -26,6 +26,30 @@ need a provider-consent tap; the no-page runtime has no consent overlay.
 Subsequent Play/Pause, overall/mix/mute, timing, swap and drag reuse the generic
 viewer. Slot labels remain distinct even when both sources are identical.
 
+## Source assignment follow-up
+
+The picker now renders one catalogue with independent A/B checkboxes. Checking
+a row replaces only that slot's previous source; both boxes on one row are
+allowed. Unchecking the current choice leaves that slot unassigned and disables
+Open viewer until both have choices. Source identities remain saveable across
+rotation, and only a complete ordered selection reaches existing preparation.
+This changes selection UI, not duplicate-host ownership or provider handling.
+Build and device verification for this follow-up are recorded separately below.
+
+The October 7 follow-up passed the controlled SDK 37.2 `test`, lint,
+instrumentation compilation, release manifest/assets check and assembly of app
+and test APKs. Both certificates matched the shared signing procedure. The app
+APK SHA-256 is
+`25718a393dbe73e99cbabbcd2badd51ab735937d1ed9fb6575a9c79126bef4a7`
+(16,202,635 bytes, host-owned). Scoped hooks and documentation build passed.
+The Pixel 6/Android 17 installation retained app storage. All three focused
+provider-free picker tests passed: one catalogue/duplicate choice, replacement
+and clearing, and consecutive A/B callbacks before recomposition. Actual picker
+inspection confirmed labelled checkboxes; rotating an incomplete draft to
+landscape retained B's replay selection and disabled Open viewer. The original
+portrait rotation was restored. No provider page, login or playback was needed
+for these checks, and no new decoding/audio evidence is claimed.
+
 ## Playback and hosting boundaries
 
 The no-page follow-up now routes the normal Prototype entry to

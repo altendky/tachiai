@@ -12,8 +12,23 @@ concepts.
 
 ## Current status
 
-As of 2026-09-28, this repository contains planning documentation and an
-initial Android feasibility scaffold. One Pixel 6 experiment established that
+As of 2026-10-07, the Android debug application has a source-picker and native
+two-feed viewer alongside the retained experiment home. The default Prototype
+flow uses bounded native Twitch and cached ABEMA preparation; the older
+full-page ABEMA startup remains a comparison, not a required step in that flow.
+The [product prototype](prototype-ux.md),
+[native evidence](native-access-experiments.md) and
+[preliminary viewer](preliminary-native-viewer.md) record implementation and
+device conditions. Native video/audio and timing primitives have passed bounded
+Pixel 6 tests, but this is not a supported provider integration or a release
+readiness claim. The latest cached ABEMA runs rendered duplicate live and replay
+sources without a full provider page; those runs have no fresh acoustic
+confirmation.
+
+### Historical browser milestones
+
+The September 28 scaffold and browser investigations remain useful comparisons.
+One Pixel 6 experiment established that
 Twitch's original top-level mobile web player can play and fill Tachiai's
 landscape browser surface after a provider-specific focus correction. A
 follow-up briefly rendered and independently controlled two same-channel Twitch
@@ -38,31 +53,50 @@ the Android feasibility spike establishes which logic can actually be shared.
 
 ## Product direction
 
-The October 7 [product-flow prototype](prototype-ux.md) adds a separate source
-picker and native two-feed viewer workflow while preserving historical
-experiments. Its fixed catalogue, duplicate-slot ownership and automatic
-preparation are preliminary; build/device results belong in that document.
-Unsupported native playback adapters remain debug-only.
+The agreed preliminary interaction model is:
+
+- Select two sources, including two copies of the same source, then explicitly
+  open the viewer. The current catalogue has fixed live/replay entries for
+  ABEMA and Twitch; richer service/channel selection remains future work.
+- Portrait stacks the feeds without forcing equal heights. Landscape uses a
+  full-screen primary and movable floating secondary; tapping the secondary
+  swaps roles without replacing either session.
+- Joint Play/Pause is primary; individual transport controls are not yet in
+  the primary control space.
+- Overall volume and a relative mix/fade control, with fine-adjust arrows,
+  complement per-feed mute. Separate per-feed volume sliders are not the UX.
+- Relative timing names the feeds and uses their optional advance/delay
+  capabilities. A requested shift is not measured common-event synchronization.
+
+The [product-flow prototype](prototype-ux.md) records the current implementation.
+Exact fade curves, defaults, floating size and control-hide timing remain
+provisional. Unsupported native playback adapters remain debug-only.
 The cached prototype's [media-origin approvals](media-origin-approvals.md)
 record user-approved CDN boundaries and the review process for new origins.
 
-The initial approach keeps provider-controlled web players intact inside
-embedded browser content:
+The historical web-first approach keeps provider-controlled web players intact
+inside embedded browser content and remains available for comparison:
 
 - ABEMA remains the top-level site in an Android WebView.
-- The current mixed-audio candidate places Twitch's supported player embed in
+- That mixed-audio candidate places Twitch's supported player embed in
   a child frame of that same WebView so Chromium treats both media elements as
   one media-session/audio-focus group. The prior separate-WebView layout
-  remains useful diagnostic evidence but is not the current product candidate.
+  remains useful diagnostic evidence. Neither is the default native Prototype
+  flow.
 - Provider login stays inside provider-controlled pages and browser storage.
 - Focus mode reshapes a page around its original player instead of copying
   decoded video or initially reproducing private playback APIs.
 - Alignment begins as explicit user control and degrades according to the
   controls each source exposes.
 
-Native manifest extraction is not the first implementation path. It may be
-reconsidered only after a recorded limitation of intact web playback makes it
-necessary.
+Recorded browser limitations led to explicitly approved, bounded native
+experiments. The cached ABEMA path downloads and verifies public runtime bundles
+instead of packaging them, creates a fresh anonymous session, delegates the
+unchanged opaque helper exchange and uses a fresh native CDM. It does not
+establish supported authentication, complete provider advertisement behavior,
+renewal or unrestricted content access. See the
+[security boundaries](security-and-privacy.md) and
+[open questions](open-questions.md) before expanding these experiments.
 
 ## Repository direction
 

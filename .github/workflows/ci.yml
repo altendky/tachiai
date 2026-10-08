@@ -62,7 +62,7 @@ jobs:
           packages: platform-tools platforms;android-37.2 build-tools;37.0.0
 
       - working-directory: apps/android
-        run: ./gradlew --no-daemon test lint
+        run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation
 
   all:
     name: all

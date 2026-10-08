@@ -21,7 +21,7 @@ run = "pre-commit run --all-files --show-diff-on-failure"
 [tasks.android]
 description = "Test, lint, and assemble the Android feasibility spike"
 dir = "apps/android"
-run = "./gradlew --no-daemon test lint assembleDebug"
+run = "./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation assembleDebug"
 
 [tasks.check]
 description = "Run the local validation suite"

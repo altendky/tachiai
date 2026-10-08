@@ -1,7 +1,7 @@
 # Architecture
 
-Tachiai separates generic presentation behavior from platform browser hosting
-and provider-specific page knowledge.
+Tachiai separates generic presentation behavior from platform playback/browser
+hosting and provider-specific source, authentication and page knowledge.
 
 ```text
 native application shell
@@ -10,10 +10,11 @@ native application shell
        -> alignment requests
        -> capability-derived controls
   -> provider adapter per pane
-       -> full-site/focus-mode transition
+       -> source preparation and bounded authentication/licensing
        -> supported playback commands and observations
-  -> platform browser surface
-       -> provider-owned page, media element, DRM, cookies, and login
+  -> platform playback host
+       -> native media lifecycle and optional timing capabilities
+       -> or browser page, original media/DRM, cookies and login
 ```
 
 ## Presentation model
@@ -42,7 +43,7 @@ capability set. It does not reach into ABEMA or Twitch page structure.
 ## Provider adapter
 
 A provider adapter translates a small generic command and observation surface
-into provider-page behavior. Likely capabilities include:
+into native-source or provider-page behavior. Likely capabilities include:
 
 - ready and currently playing
 - play and pause
@@ -59,18 +60,26 @@ into provider-page behavior. Likely capabilities include:
 Every capability is optional. Unsupported and not-yet-measured are distinct
 states.
 
-Provider adapters may use injected CSS and JavaScript on allowlisted playback
+Historical browser adapters may use injected CSS and JavaScript on allowlisted playback
 pages. They should keep the provider's original player subtree attached to its
 document. Moving or cloning the media element is deferred because it can break
 site state, advertisements, fullscreen behavior, or DRM.
 
-The adapter must reacquire the visible media element after single-page-app
+A browser adapter must reacquire the visible media element after single-page-app
 navigation, advertisements, or player replacement. A DOM observer may help,
 but selectors and recovery behavior remain provider-specific.
 
 ## Alignment strategies
 
-Alignment is capability-driven:
+Alignment is capability-driven. The current native planner chooses a complete
+movement of one feed or the opposite movement of the other from normalized
+capability/window snapshots, then uses a joint hold/seek/check/resume transaction.
+It cannot advance a live source into the future, assume unlimited retained
+history or retry the other side after an uncertain dispatch. Requested relative
+shifts and sampled player clocks are not common-event synchronization.
+
+The historical browser strategies remain useful where native capabilities are
+unavailable:
 
 | Source combination | Initial strategy |
 | --- | --- |
@@ -79,7 +88,7 @@ Alignment is capability-driven:
 | Live + replay | Establish a manual event anchor, then seek or pause the controllable pane |
 | Opaque player | Expose manual provider controls and an external stopwatch-style offset aid |
 
-The first implementation should use Android's monotonic clock to record how
+Browser hold-based controls use Android's monotonic clock to record how
 long a pane was deliberately held. That is a requested offset, not proof that
 the provider retained the same media position.
 
@@ -89,7 +98,7 @@ provider player makes the correction objectionable.
 
 ## Android shell
 
-The initial Android application should use Kotlin and Jetpack Compose with one
+The Android implementation uses Kotlin and Jetpack Compose with one
 conventional Gradle `app` module. Avoid premature Android library modules.
 
 Probable feature areas are:
@@ -106,7 +115,49 @@ provider/            adapter interfaces and packaged adapter assets
 designsystem/        theme and reusable controls
 ```
 
-The current Android mixed-audio candidate uses one WebView/WebContents: ABEMA
+### Current debug native prototype
+
+The [product prototype](prototype-ux.md) separates its fixed source catalogue,
+slot ownership and viewer state from provider preparation. Generic presentation
+models and commands do not inspect DOM or licensing data. Platform Media3
+hosting owns decoding, lifecycle, bounded execution and advertised timing
+capabilities; provider adapters own source/authentication/licensing policy.
+Duplicate selections have independent hosts. Layout and primary/secondary swaps
+preserve feed identity and sessions.
+
+Twitch native playback uses the explicitly approved device-grant/private-playback
+comparisons, protected local grant storage and validation before use. It is not
+the official embedded player or a supported third-party playback SDK. Earlier
+own-client authorization and browser experiments remain separate examples.
+
+The cached ABEMA adapter downloads four hash-pinned public bundles at runtime
+and verifies cached bytes before reuse. Its small owned browser runtime loads
+selected unchanged factories, not a full provider page. Fresh anonymous guest,
+media and selected-source setup precede one opaque helper exchange with a fresh
+native CDM. The fixed free replay additionally requires conservative metadata
+checks. There is no helper-algorithm copy, key extraction, response reuse,
+renewal or provisioning fallback. See the
+[native evidence](native-access-experiments.md),
+[security boundaries](security-and-privacy.md) and
+[media-origin approvals](media-origin-approvals.md) for the exact scope.
+
+The direct selected-manifest path currently has no separate client ad player
+or tracking lifecycle. Accepting provider-ranked direct NONE, CSAI or
+ABEMA_DEFAULT sources through unchanged builders is not equivalent to complete
+provider advertising behavior; there is no ad-free alternate-source fallback.
+MediaTailor and unknown modes remain refused pending their required resolution.
+Supported provider operation, durable flags/entitlement handling, long-running
+licenses and release integration remain unresolved.
+
+The viewer's shared five-minute foreground budget includes preparation.
+Stop/background/error teardown closes both hosts; rotation and layout changes
+do not extend the budget. Bounded Pixel 6 successes do not establish Android TV
+or cross-platform support. The agreed portrait-stack/landscape-floating controls
+are documented in the [viewer layout](preliminary-native-viewer.md).
+
+### Historical browser composition
+
+The earlier Android mixed-audio candidate uses one WebView/WebContents: ABEMA
 remains the top-level document and the official Twitch player is hosted in a
 cross-origin child frame. A bounded Pixel 6 test found one Chromium audio-focus
 delegate and simultaneous audible output, while separate provider WebViews

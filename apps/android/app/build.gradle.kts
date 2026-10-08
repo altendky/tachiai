@@ -1,12 +1,21 @@
 import java.security.KeyStore
 import java.security.MessageDigest
 import com.android.build.api.variant.HostTestBuilder
+import com.android.build.api.artifact.SingleArtifact
+import javax.inject.Inject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
 
 plugins {
     alias(libs.plugins.android.application)
@@ -37,6 +46,38 @@ abstract class VerifyDebugKeystore : DefaultTask() {
         check(actual == expectedSha256.get()) {
             "The Android debug certificate fingerprint does not match the documented identity."
         }
+    }
+}
+
+abstract class VerifyReleaseIsolation @Inject constructor(private val execOperations: ExecOperations) : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val manifestFile: RegularFileProperty
+
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val assetsDirectory: DirectoryProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val checker: RegularFileProperty
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val prototypeManifests: ConfigurableFileCollection
+
+    @get:Input
+    abstract val applicationId: Property<String>
+
+    @TaskAction
+    fun verify() {
+        val arguments = listOf("uv", "run", checker.get().asFile.absolutePath,
+            "--manifest", manifestFile.get().asFile.absolutePath,
+            "--assets", assetsDirectory.get().asFile.absolutePath,
+            "--application-id", applicationId.get()) + prototypeManifests.files.sortedBy { it.path }.flatMap {
+                listOf("--forbidden-manifest", it.absolutePath)
+            }
+        execOperations.exec { commandLine(arguments) }
     }
 }
 
@@ -98,6 +139,18 @@ android {
 androidComponents {
     beforeVariants(selector().withBuildType("diagnostic")) { variant ->
         checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
+    }
+    onVariants(selector().withBuildType("release")) { variant ->
+        tasks.register<VerifyReleaseIsolation>("verifyReleaseIsolation") {
+            group = "verification"
+            description = "Check release manifest/assets exclude debug prototype and browser-lab entry points."
+            applicationId.set(variant.applicationId)
+            manifestFile.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
+            assetsDirectory.set(variant.artifacts.get(SingleArtifact.ASSETS))
+            checker.set(rootProject.layout.projectDirectory.file("../../scripts/verify-release-isolation.py"))
+            prototypeManifests.from(layout.projectDirectory.file("src/debug/AndroidManifest.xml"),
+                layout.projectDirectory.file("src/diagnostic/AndroidManifest.xml"))
+        }
     }
 }
 

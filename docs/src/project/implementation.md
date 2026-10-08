@@ -2,6 +2,79 @@
 
 The immediate goal is evidence, not a polished cross-platform product.
 
+## Current handoff — 2026-10-07
+
+The debug application now preserves the historical experiment home and offers
+a separate [Prototype source-picker/native-viewer flow](prototype-ux.md).
+Four fixed ABEMA/Twitch live/replay entries can fill either slot, including
+duplicate selections. Opening the viewer explicitly starts automatic bounded
+preparation. Its cached ABEMA path no longer requires the full provider page
+or its consent overlay; the old web-page startup remains a comparison.
+
+The agreed UX is portrait stacking without forced equal heights, landscape
+primary plus movable floating secondary with tap-to-swap, joint Play/Pause,
+overall volume, relative mix with fine-adjust arrows, per-feed mute and named
+relative timing controls. Individual transport is not primary. Capabilities
+are optional; exact curves/defaults and control sizing/timers remain
+provisional. See [the preliminary viewer](preliminary-native-viewer.md).
+
+Earlier bounded native pair runs have user-confirmed mixed audio and tested
+advance/delay primitives. The latest cached ABEMA duplicate News and fixed free
+sumo-replay runs rendered native video without a full page, but have no fresh
+acoustic confirmation. Neither result proves every source combination,
+sustained alignment or supported provider operation. Conditions and detailed
+results remain in [native-access experiments](native-access-experiments.md).
+
+The approved cached runtime uses verified public bundles downloaded outside the
+APK, fresh anonymous guest/source setup, unchanged provider selectors/helper
+and one initial opaque exchange with a fresh native CDM. Conservative free
+metadata, exact source/declared-file checks and explicit
+[media-origin approvals](media-origin-approvals.md) remain in force. There is no
+password collection, helper-algorithm copy, key dump, response reuse or renewal.
+The direct-manifest prototype does not implement a complete provider client-ad
+or tracking lifecycle; MediaTailor resolution and unknown modes remain blocked.
+These are debug experiments, not release/provider-support decisions. Follow the
+[security boundaries](security-and-privacy.md) before changing their scope.
+
+### Verification handoff
+
+The separate handoff/tooling change adds the omitted offline EME JavaScript
+observer fixture tests and two Python collector self-tests to local hooks/CI,
+plus synthetic tests for the release-isolation checker. Android CI also
+run `compileDebugAndroidTestKotlin`; this compiles instrumentation sources but
+does **not** execute device tests.
+
+The `verifyReleaseIsolation` smoke check inspects the merged release manifest
+for components declared in the debug/diagnostic manifests, and assets for the
+current `abema/` and `browser-lab/` roots. It is not a release APK or bytecode
+audit: guarded main-source Twitch diagnostic code remains present. Future
+prototype asset roots must be added to this check explicitly.
+CI does not assemble/sign an APK or require the shared debug signing key.
+Controlled development APK builds still require the documented signing identity
+and `apksigner` verification.
+
+Local verification on October 7 passed all repository hooks, including the
+secrets scan, offline fixtures and documentation build. The controlled Android
+build passed `test lint :app:compileDebugAndroidTestKotlin
+:app:verifyReleaseIsolation assembleDebug`; the debug APK certificate matched
+the shared signing procedure. The CI-only task graph contained no APK packaging
+or signing tasks. Existing compiler/lint/Gradle deprecation warnings remain;
+no new phone playback or instrumentation execution is claimed by this tidy.
+
+### Remaining integration work
+
+Continue bounded source-pair, mixed-audio, lifecycle and relative-timing checks,
+including live-window expiry and rebuffer/recovery behavior. Supported provider
+auth/entitlement, advertising, durable runtime dependencies/flags and any
+long-running licensing require separate review; the current prototype does not
+settle them. Broader source selection, presentation persistence and Android TV
+input/playback are still product work. Do not introduce shared Rust/KMP merely
+to tidy the prototype.
+
+The phase plan and chronology below preserve the original web-first work and
+comparison results. Statements about the then-current candidate are historical,
+not instructions to replace the native Prototype default.
+
 ## Phase 0: repository foundation
 
 - Initialize the Git repository with `main` as the default branch.
@@ -237,6 +310,10 @@ iOS shell. Treat application distribution and playback capability as separate
 go/no-go decisions.
 
 ## Native extraction decision gate
+
+The following chronology begins with the original access-only cases; the
+current approved debug native implementation and its limits are summarized in
+the handoff above. These early cases are preserved, not expanded retroactively.
 
 The user approved an additive native-playback access investigation on
 2026-10-05, prompted by live alignment and authenticated playback limitations.

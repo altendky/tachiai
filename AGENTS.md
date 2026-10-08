@@ -4,8 +4,10 @@ Start with [the project documentation](docs/src/project/index.md).
 
 ## Current project state
 
-Tachiai is in the documentation and feasibility-spike stage. There is no
-implemented application yet. Do not describe proposed behavior as tested.
+Tachiai has an Android feasibility implementation, not a production integration.
+The debug application preserves historical experiments and adds a separate
+[source-picker/native-viewer prototype](docs/src/project/prototype-ux.md).
+Distinguish implemented behavior, bounded device observations and proposals.
 
 The first concrete pairing is ABEMA's Grand Sumo coverage with the
 `midnightsumo` Twitch channel, but the product model must remain a generic
@@ -13,17 +15,29 @@ multi-stream presentation capable of live and replay sources.
 
 ## Architecture boundaries
 
-Prefer provider-supported web playback before private stream extraction. Keep
-the provider's original media element, DRM session, advertisements, and login
-flow intact. A focus mode may reshape the page around the original player; it
-must not capture, record, or re-encode protected video.
+Prefer provider-supported playback. Historical web comparisons keep the
+provider's original media element, DRM session, advertisements and login flow
+intact; focus mode must not capture, record or re-encode protected video.
+The user-approved debug native experiments are narrow exceptions documented in
+[native-access evidence](docs/src/project/native-access-experiments.md) and
+[security boundaries](docs/src/project/security-and-privacy.md), not permission
+to expand private APIs, authentication or DRM handling. The cached ABEMA path
+uses verified runtime-only public bundles, fresh guest/source setup and one
+opaque initial exchange with a fresh native CDM; it does not load the full
+provider page. Do not copy helper algorithms, extract keys, reuse responses or
+add renewal without a separately reviewed scope.
 
-Provider-specific DOM knowledge belongs behind narrow adapters. Generic
-presentation, layout, audio-selection, and alignment behavior must not depend
-directly on ABEMA or Twitch selectors.
+Provider-specific DOM, source, authentication and licensing knowledge belongs
+behind narrow adapters. Generic presentation, layout, audio mixing and alignment
+must not depend directly on ABEMA or Twitch selectors or private protocols.
+Capabilities are optional; requested offsets are not proof of synchronization.
+Review the explicit [media-origin approvals](docs/src/project/media-origin-approvals.md)
+before broadening cached prototype network policy; a review journal never
+grants access.
 
-Never collect provider passwords. Let provider pages authenticate inside a
-persistent, app-private browser profile. Do not inject scripts on login pages,
+Never collect provider passwords. Use provider-controlled login pages or the
+explicitly documented device-authorization cases and protected local grant
+storage. Do not inject scripts on login pages,
 expose native JavaScript bridges to provider content, transfer session cookies
 between devices, bypass TLS errors, or log URLs that may contain tokens.
 

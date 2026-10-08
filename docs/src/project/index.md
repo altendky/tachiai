@@ -74,6 +74,11 @@ provisional. Unsupported native playback adapters remain debug-only.
 The cached prototype's [media-origin approvals](media-origin-approvals.md)
 record user-approved CDN boundaries and the review process for new origins.
 
+[Per-source network routing research](source-network-routing.md) compares future
+proxy/VPN options and setup profiles. It is a documentation-only assessment:
+the current prototype still inherits the user-controlled system network, and
+independent feed routes have not been implemented or tested.
+
 The historical web-first approach keeps provider-controlled web players intact
 inside embedded browser content and remains available for comparison:
 

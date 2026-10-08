@@ -1,6 +1,5 @@
 package net.fstab.tachiai.feature.presentation
 
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -24,7 +23,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun duplicateChoiceReachesOpenViewerWithoutFiltering() {
         var opened: PrototypeSelection? = null
-        compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
         compose.waitForIdle()
         PrototypeSource.entries.forEach { compose.onAllNodesWithText(it.title).assertCountEquals(1) }
         assignment(PrototypeSource.ABEMA_LIVE, "B").performScrollTo().performClick()
@@ -37,7 +36,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun reassignmentAndClearingPreserveTheOtherSlot() {
         var opened: PrototypeSelection? = null
-        compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
         compose.waitForIdle()
         assignment(PrototypeSource.ABEMA_REPLAY, "A").performScrollTo().performClick()
         assignment(PrototypeSource.ABEMA_LIVE, "A").assertIsOff()
@@ -56,7 +55,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun rapidSlotChangesBeforeRecompositionDoNotOverwriteEachOther() {
         var opened: PrototypeSelection? = null
-        compose.setContent { MaterialTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(PrototypeSelection(), null) { opened = it } } }
         compose.waitForIdle()
         val source = PrototypeSource.ABEMA_REPLAY
         val assignA = assignment(source, "A").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!

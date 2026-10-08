@@ -1,0 +1,11 @@
+<resources>
+    <color name="prototype_background">#FAF8F3</color>
+    <color name="prototype_surface">#EEE8DD</color>
+    <color name="prototype_panel">#E6FAF7F0</color>
+    <color name="prototype_text">#202628</color>
+    <color name="prototype_muted">#54615D</color>
+    <color name="prototype_primary">#795900</color>
+    <color name="prototype_on_primary">#FFFFFF</color>
+    <color name="prototype_secondary">#296A67</color>
+    <color name="prototype_outline">#7B8580</color>
+</resources>

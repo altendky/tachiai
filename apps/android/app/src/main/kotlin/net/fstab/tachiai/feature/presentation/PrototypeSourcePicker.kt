@@ -1,6 +1,8 @@
 package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,7 +44,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         a = next.a?.name; b = next.b?.name
     }
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Tachiai · Prototype", style = MaterialTheme.typography.headlineSmall)
+        Text("Tachiai · Prototype", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         Text("Assign a source to A and B. Check both to use the same source twice.")
         message?.let { Text(it) }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -52,8 +54,9 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                 Text("B", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleMedium)
             }
             PrototypeSource.entries.forEach { source ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(source.title, Modifier.weight(1f))
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                    .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(source.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     for (slot in PrototypeSlot.entries) {
                         Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == source,
                             onCheckedChange = { assign(slot, source, it) },

@@ -31,6 +31,20 @@ embedded-browser and DRM behavior.
 
 Start with the [project overview](docs/src/project/index.md).
 
+## Android test builds
+
+Successful pushes to `main` and manual
+[CI runs](https://github.com/altendky/tachiai/actions/workflows/ci.yml) publish a
+`tachiai-debug-<commit>` artifact containing `app-debug.apk`. Sign in to GitHub,
+open the run and download its artifact, then unzip it and install the APK on
+an Android 8.0/API 26 or newer device. Downloads expire after 30 days.
+
+This is the experimental debug application, including the Prototype flow.
+One APK covers the configured phone, tablet and TV targets; playback and TV
+usability still require device verification. Builds use the stable shared debug
+certificate so they can replace existing installations signed with that key.
+Pull-request runs test and lint without publishing an APK or receiving the key.
+
 ## License
 
 Tachiai is available under either the [Apache License 2.0](LICENSE-APACHE) or

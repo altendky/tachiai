@@ -49,9 +49,12 @@ for components declared in the debug/diagnostic manifests, and assets for the
 current `abema/` and `browser-lab/` roots. It is not a release APK or bytecode
 audit: guarded main-source Twitch diagnostic code remains present. Future
 prototype asset roots must be added to this check explicitly.
-CI does not assemble/sign an APK or require the shared debug signing key.
-Controlled development APK builds still require the documented signing identity
-and `apksigner` verification.
+CI push and manual runs now restore the shared debug signing key from the
+`ANDROID_DEBUG_KEYSTORE_BASE64` Actions secret, assemble the debug APK and verify
+its signer with `apksigner` against the documented identity before publishing a
+`tachiai-debug-<commit>` artifact. The restored key is removed even if the build
+fails. Pull-request runs retain the checks without receiving the key or building
+an APK. The README documents downloading and installing the artifact.
 
 Local verification on October 7 passed all repository hooks, including the
 secrets scan, offline fixtures and documentation build. The controlled Android
@@ -98,10 +101,10 @@ origin, protected-media origins, cookie behavior, and mobile/TV layout all
 remain experimental assumptions recorded in the
 [Android playback spike](android-playback-spike.md).
 
-Hosted CI runs unit tests and lint but does not assemble a debug APK. An APK
-must use the documented stable debug certificate, so APK assembly and
-certificate verification remain in the controlled local/container workflow
-until CI can receive that identity securely.
+Hosted CI runs unit tests and lint. Push and manual runs also assemble a debug
+APK using the documented stable debug certificate supplied through the Actions
+secret and verify the resulting APK before upload. Controlled local/container
+builds continue to require that same identity and certificate verification.
 
 Repository automation follows the shared Carl and Onshape MCP pattern.
 Renovate runs under the narrowly scoped `altendky-renovate` GitHub App and

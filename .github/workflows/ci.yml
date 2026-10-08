@@ -45,7 +45,7 @@ jobs:
       - run: mise run pre-commit
 
   android:
-    name: Android / Test and lint
+    name: Android / Test, lint and APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,6 +63,46 @@ jobs:
 
       - working-directory: apps/android
         run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation
+
+      - name: Restore Android debug signing key
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set +x
+          : "${ANDROID_DEBUG_KEYSTORE_BASE64:?Android debug signing secret is missing}"
+          umask 077
+          mkdir -p "$HOME/.android"
+          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build and verify debug APK
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/android
+        run: |
+          ./gradlew --no-daemon :app:assembleDebug
+          verification="$("$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)"
+          printf '%s\n' "$verification"
+          fingerprints="$(printf '%s\n' "$verification" | sed -n 's/^.*certificate SHA-256 digest: //p' | tr '[:lower:]' '[:upper:]' | sort -u)"
+          if [[ "$fingerprints" != 'A258F5F71E7D828F51A3AAF6AA94F97B9DBFBD64E0CE08394A59C120914A7A17' ]]; then
+            printf '%s\n' '::error::APK signer does not match the shared Android debug certificate'
+            exit 1
+          fi
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Remove Android debug signing key
+        if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: rm -f "$HOME/.android/debug.keystore"
+
+      - name: Upload debug APK
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tachiai-debug-${{ github.sha }}
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
   all:
     name: all

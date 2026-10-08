@@ -47,6 +47,7 @@ internal fun twoFeedBounds(
     aspectB: Float = 16f / 9f,
     floating: FloatingPosition = FloatingPosition(),
     floatingBottom: Int = height,
+    floatingRight: Int = width,
 ): TwoFeedBounds {
     require(width >= 0 && height >= 0)
     fun ratio(value: Float) = value.takeIf { it.isFinite() && it > 0 } ?: (16f / 9f)
@@ -59,11 +60,12 @@ internal fun twoFeedBounds(
         return TwoFeedBounds(ViewerRect(0, 0, width, ha), ViewerRect(0, ha, width, hb))
     }
     val bottom = floatingBottom.coerceIn(0, height)
+    val right = floatingRight.coerceIn(0, width)
     val secondaryRatio = if (primaryA) rb else ra
-    val sw = min(width * 0.32f, bottom * secondaryRatio * 0.65f).roundToInt().coerceIn(0, width)
+    val sw = min(right * 0.32f, bottom * secondaryRatio * 0.65f).roundToInt().coerceIn(0, right)
     val sh = (sw / secondaryRatio).roundToInt().coerceIn(0, bottom)
     val position = floating.clamped()
-    val secondary = ViewerRect(((width - sw) * position.x).roundToInt(),
+    val secondary = ViewerRect(((right - sw) * position.x).roundToInt(),
         ((bottom - sh) * position.y).roundToInt(), sw, sh)
     val primary = ViewerRect(0, 0, width, height)
     return if (primaryA) TwoFeedBounds(primary, secondary) else TwoFeedBounds(secondary, primary)

@@ -37,8 +37,18 @@ generic layout. There is no new playback or provider permission claim.
   requested step to the existing capability planner. Busy actions disable
   nudges. Readback is requested adjustment, never measured synchronization.
 - More provides accessible primary swap, explicit per-live-feed catch-up,
-  setup/diagnostics and Stop both. Catch-up retains the existing joint hold,
+  full Playback status, setup/diagnostics and Stop both. Catch-up retains the existing joint hold,
   anchor invalidation and explicit-Play requirement.
+- Adjustment content uses concise A/B labels, with source identity on video
+  chips and accessibility descriptions. Wide landscape uses a side strip;
+  narrow landscape and portrait use a bottom tray. Content sizes naturally up
+  to a scrollable viewport cap instead of reserving a blank 200-dp panel.
+- Fit video is an immediately reversible adjustment-panel toggle. In landscape
+  it reserves the visible controls' width (or height for the narrow bottom tray),
+  without replacing players, pausing, seeking or changing mix. Hiding controls
+  restores the landscape stage; the preference remains for the next panel.
+  Portrait already reserves the bottom controls. Floating video stays outside
+  the side/bottom control boundary, and its normalized drag position is retained.
 
 ## Provisional choices and limits
 
@@ -256,3 +266,38 @@ and playing, mute/child-action preservation, delayed repeat cancellation,
 floating tap/drag identity, unselected More dismissal and earlier regressions.
 The reviewer caught incorrect positional playing flags in the first test fixture;
 they were corrected and Play/Pause labels asserted before the passing run.
+
+### Compact controls follow-up (issue #33)
+
+Audio, Timing and full Status now use content-sized, capped scroll bodies;
+wide landscape places them in a strip no wider than 360 dp or 45% of the
+viewport. Below 640 dp usable landscape width, the full-width bottom tray keeps
+touch targets viable. Full source identities remain on chips/descriptions;
+duplicated status prose moved to More → Playback status. The Fit video toggle
+reserves visible control space, retains both PlayerViews and restores full
+landscape space when hidden. Horizontal and vertical floating limits invalidate
+layout even when overlay stage dimensions stay unchanged. These sizing choices
+are provisional, not a new playback guarantee.
+
+The settled Android build passed tests, lint, release isolation and both APK
+assemblies; both signing identities matched. Lint retained eight warnings and
+one hint in existing paths. App APK SHA-256:
+`c1ed52f4a23817a338c1417585bd54143959acf5af1d85a917b48d92f5e24f67`
+(16,206,551 bytes, host-owned), installed without clearing storage. All fifteen
+focused phone tests passed, including large-font overflow/scrolling, target
+sizes, side avoidance before/after Hide with unchanged stage size, fit/player
+identity, Status access and prior UX regressions. Review caught a misplaced
+menu entry and missing measurement invalidations; both were fixed before the
+passing build/run.
+
+On the same Pixel 6/Android 17, existing ABEMA guest state and VPN marker
+present, two cached native sumo replays rendered. Around 23:42–23:46 EDT,
+Audio, Timing, More and Status were inspected; the three adjustment panels
+were checked in landscape and portrait. Fit-on kept video beside the side
+panel, and its state survived switching panels and orientation. PiP stayed
+clear of the side strip; both clocks remained READY/playing and advanced
+through the orientation change in the same process, with no observed session
+restart. No new acoustic or synchronization measurement was requested.
+The run ended near its existing five-minute cap, with a FAILED event before
+the follow-up Back. The event alone does not establish its cause, license
+expiration or a layout failure. No budget extension or provider changes were made.

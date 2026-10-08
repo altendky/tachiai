@@ -57,6 +57,8 @@ internal class NativePairViewer(
     private var mix = TwoFeedMix()
     private var timingStep = ViewerTimingStep.ONE_SECOND
     private var panel: String? = null
+    private var fitVideo = false
+    private var sideDock = false
     private var activeMenu: PopupMenu? = null
     private var menuSelectionPerformed = false
     private var requestedPlaying = false
@@ -73,23 +75,34 @@ internal class NativePairViewer(
         setBackgroundColor(0xe6222222.toInt())
     }
     private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val scroller = ScrollView(context).apply { addView(content) }
-    private val scrollerParams = LinearLayout.LayoutParams(-1, dp(200))
+    private val scroller = CappedScrollView().apply { addView(content) }
+    private val scrollerParams = LinearLayout.LayoutParams(-1, -2)
     private val play = button("Play") {
         if (requestedPlaying || pair()?.busy == true) onPause() else onPlay()
         showControls(); refresh()
     }
-    private val readback = text("").apply { textSize = 12f; maxLines = 3 }
+    private val readback = text("").apply { textSize = 12f; maxLines = 2 }
     private val details = text("")
-    private val volume = SeekBar(context).apply { max = 100; progress = mix.overall }
+    private val adjustmentLabel = text("").apply { textSize = 12f }
+    private val volume = SeekBar(context).apply { max = 100; progress = mix.overall; minimumHeight = dp(48) }
     private val balance = SeekBar(context).apply { max = 100; progress = mix.balance }
     private val volumeLabel = text("")
     private val mixLabel = text("")
     private val muteA = button("") { changeMix(mix.copy(muteA = !mix.muteA)) }
     private val muteB = button("") { changeMix(mix.copy(muteB = !mix.muteB)) }
-    private val advanceA = button("Advance $labelA\nrelative to $labelB") { onRelative(timingStep.milliseconds); refresh() }
-    private val advanceB = button("Advance $labelB\nrelative to $labelA") { onRelative(-timingStep.milliseconds); refresh() }
+    private val advanceA = button("Advance A") { onRelative(timingStep.milliseconds); refresh() }.apply {
+        contentDescription = "Advance $labelA relative to $labelB"
+    }
+    private val advanceB = button("Advance B") { onRelative(-timingStep.milliseconds); refresh() }.apply {
+        contentDescription = "Advance $labelB relative to $labelA"
+    }
     private val step = button("") { showTimingSteps(it) }
+    private val fit = button("") { fitVideo = !fitVideo; updateLabels(); showControls() }.apply {
+        contentDescription = "Fit video beside visible controls; toggle without restarting playback"
+    }
+    private val toolbar = row(play, button("Audio") { togglePanel("Audio") },
+        button("Timing") { togglePanel("Timing") }, button("More") { showMore(it) },
+        button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" })
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -103,9 +116,7 @@ internal class NativePairViewer(
         addView(stage)
         addView(dock)
         dock.addView(scroller, scrollerParams)
-        dock.addView(row(play, button("Audio") { togglePanel("Audio") },
-            button("Timing") { togglePanel("Timing") }, button("More") { showMore(it) },
-            button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }))
+        dock.addView(toolbar)
         dock.addView(readback)
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
@@ -124,7 +135,7 @@ internal class NativePairViewer(
         text = value; setTextColor(Color.WHITE); textSize = 14f
     }
     private fun button(value: String, action: (Button) -> Unit) = Button(context).apply {
-        text = value; textSize = 12f; isAllCaps = false; minHeight = dp(48)
+        text = value; textSize = 12f; isAllCaps = false; minHeight = dp(48); minWidth = dp(48)
         setPadding(dp(4), 0, dp(4), 0); setOnClickListener { action(this) }
     }
     private fun row(vararg views: View) = LinearLayout(context).apply {
@@ -145,11 +156,12 @@ internal class NativePairViewer(
         dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
         // Reused controls may still belong to a removed row container.
-        listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, advanceA, advanceB, step).forEach {
+        listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, advanceA, advanceB, step, fit, adjustmentLabel).forEach {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
         }
+        if (panel != null) content.addView(row(text("${checkNotNull(panel)} controls").apply { gravity = Gravity.CENTER_VERTICAL }, fit))
         if (panel == "Audio") {
-            content.addView(volumeLabel); content.addView(volume)
+            content.addView(row(volumeLabel.apply { gravity = Gravity.CENTER_VERTICAL }, volume))
             content.addView(mixLabel)
             val left = nudgeButton("◀", -1, labelA)
             val right = nudgeButton("▶", 1, labelB)
@@ -162,10 +174,13 @@ internal class NativePairViewer(
         } else if (panel == "Timing") {
             content.addView(row(advanceA, advanceB))
             content.addView(step)
-            content.addView(text("Requested adjustment only—not a measured lead/lag. Live movement is limited to the available window."))
+            content.addView(adjustmentLabel)
+        } else if (panel == "Status") {
+            content.addView(details)
+            content.addView(text("Requested offsets are not measured synchronization. Live movement is limited to the available window."))
         }
-        if (panel != null) content.addView(details)
         scroller.visibility = if (panel == null) GONE else VISIBLE
+        scroller.scrollTo(0, 0)
         updateLabels(); showControls(); refresh()
     }
 
@@ -200,14 +215,18 @@ internal class NativePairViewer(
         volumeApplied = appliedA && appliedB; volumeFailed = !volumeApplied
     }
     private fun updateLabels() {
-        volumeLabel.text = "Overall volume · ${mix.overall}%"
-        mixLabel.text = "$labelA  ─  Mix ${mix.balance}% toward $labelB  ─  $labelB\nCentre (50%) = both equal"
+        volumeLabel.text = "Overall · ${mix.overall}%"
+        mixLabel.text = "Mix A ↔ B · ${mix.balance}% toward B (50% = equal)"
         volume.progress = mix.overall; balance.progress = mix.balance
-        muteA.text = if (mix.muteA) "Unmute $labelA" else "Mute $labelA"
-        muteB.text = if (mix.muteB) "Unmute $labelB" else "Mute $labelB"
+        muteA.text = if (mix.muteA) "Unmute A" else "Mute A"
+        muteB.text = if (mix.muteB) "Unmute B" else "Mute B"
+        muteA.contentDescription = if (mix.muteA) "Unmute $labelA" else "Mute $labelA"
+        muteB.contentDescription = if (mix.muteB) "Unmute $labelB" else "Mute $labelB"
         muteA.isSelected = mix.muteA; muteB.isSelected = mix.muteB
         step.text = "Step: ${timingStep.label} · choose"
         step.contentDescription = "Relative timing step: ${timingStep.label}; choose step"
+        fit.text = "Fit video: ${if (fitVideo) "on" else "off"}"
+        fit.isSelected = fitVideo
     }
 
     private fun showTimingSteps(anchor: View) {
@@ -250,6 +269,7 @@ internal class NativePairViewer(
 
     private fun showMore(anchor: View) {
         showMenu(anchor) {
+            menu.add("Playback status").setOnMenuItemClickListener { menuSelectionPerformed = true; togglePanel("Status"); true }
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { menuSelectionPerformed = true; onLandscape(!landscape()); true }
             menu.add("Swap primary video").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
@@ -276,14 +296,17 @@ internal class NativePairViewer(
         val adjustment = when {
             current == null -> "No prepared pair."
             !current.requestedAdjustmentValid -> "Timing anchor invalid; realign after catch-up."
-            else -> "Requested $labelA adjustment relative to $labelB: ${current.requestedAdjustmentMs / 1_000.0} s (not measured)."
+            else -> "Requested A relative to B: ${current.requestedAdjustmentMs / 1_000.0} s (not measured)."
         }
         val playbackStatus = statusOverride() ?: current?.status ?: "Use setup to prepare playback."
         val audioWarning = if (volumeFailed) "Volume request failed; shown mix is requested, not confirmed.\n" else ""
         readback.text = audioWarning + playbackStatus + if (current?.requestedAdjustmentValid == false) "\nTiming anchor invalid." else ""
-        // Full status is scrollable in either panel; the compact tray prioritizes
+        // Full status is scrollable under More; the compact tray prioritizes
         // refusal/failure over the informational requested-adjustment ledger.
         details.text = "$audioWarning$playbackStatus\n$adjustment"
+        details.contentDescription = "Playback status: ${details.text}"
+        adjustmentLabel.text = adjustment
+        adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"
         if (wasPlaying != requestedPlaying) showControls()
         if (current == null) suspendControls()
     }
@@ -296,24 +319,50 @@ internal class NativePairViewer(
         val w = MeasureSpec.getSize(widthSpec); val h = MeasureSpec.getSize(heightSpec)
         val contentW = (w - paddingLeft - paddingRight).coerceAtLeast(0)
         val contentH = (h - paddingTop - paddingBottom).coerceAtLeast(0)
-        scrollerParams.height = minOf(dp(200), (contentH * 0.6f).toInt())
-        dock.measure(MeasureSpec.makeMeasureSpec(contentW, MeasureSpec.EXACTLY),
+        // A side strip keeps more video clear. Below 640 dp use the full-width
+        // bottom tray so its five controls keep at least 48 dp touch widths.
+        sideDock = landscape() && panel != null && contentW >= dp(640)
+        val dockW = if (sideDock) minOf(dp(360), (contentW * 0.45f).toInt()) else contentW
+        val innerW = (dockW - dock.paddingLeft - dock.paddingRight).coerceAtLeast(0)
+        val childWidth = MeasureSpec.makeMeasureSpec(innerW, MeasureSpec.EXACTLY)
+        val childHeight = MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST)
+        toolbar.measure(childWidth, childHeight); readback.measure(childWidth, childHeight)
+        scroller.maximumHeight = minOf((contentH * 0.6f).toInt(),
+            (contentH - toolbar.measuredHeight - readback.measuredHeight - dock.paddingTop - dock.paddingBottom).coerceAtLeast(0))
+        dock.measure(MeasureSpec.makeMeasureSpec(dockW, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST))
-        val reserve = if (landscape()) 0 else if (dock.isGone) dp(56) else dock.measuredHeight
-        stage.measure(MeasureSpec.makeMeasureSpec(contentW, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec((contentH - reserve).coerceAtLeast(0), MeasureSpec.EXACTLY))
+        val visible = !dock.isGone
+        val reserveW = if (visible && sideDock && fitVideo) dock.measuredWidth else 0
+        val reserveH = if (!landscape()) { if (visible) dock.measuredHeight else dp(56) }
+            else if (visible && !sideDock && fitVideo) dock.measuredHeight else 0
+        val stageW = (contentW - reserveW).coerceAtLeast(0)
+        val stageH = (contentH - reserveH).coerceAtLeast(0)
+        stage.floatingRight = if (visible && sideDock) (contentW - dock.measuredWidth).coerceIn(0, stageW) else stageW
+        stage.floatingBottom = if (visible && !sideDock && landscape()) (contentH - dock.measuredHeight).coerceIn(0, stageH) else stageH
+        stage.measure(MeasureSpec.makeMeasureSpec(stageW, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(stageH, MeasureSpec.EXACTLY))
         setMeasuredDimension(w, h)
     }
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val dockTop = height - paddingBottom - dock.measuredHeight
-        stage.floatingBottom = if (landscape() && dock.visibility != GONE) (dockTop - paddingTop).coerceAtLeast(0) else stage.measuredHeight
         stage.layout(paddingLeft, paddingTop, paddingLeft + stage.measuredWidth, paddingTop + stage.measuredHeight)
-        if (dock.visibility != GONE) dock.layout(paddingLeft, dockTop, width - paddingRight, height - paddingBottom)
+        if (dock.visibility != GONE) dock.layout(width - paddingRight - dock.measuredWidth, dockTop,
+            width - paddingRight, height - paddingBottom)
     }
     private fun landscape() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    private inner class CappedScrollView : ScrollView(context) {
+        var maximumHeight = 0
+            set(value) { if (field != value) { field = value; requestLayout() } }
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(minOf(maximumHeight, MeasureSpec.getSize(heightSpec)), MeasureSpec.AT_MOST))
+        }
+    }
+
     private inner class FeedStage : FrameLayout(context) {
         var floatingBottom = 0
+            set(value) { if (field != value) { field = value; requestLayout() } }
+        var floatingRight = 0
             set(value) { if (field != value) { field = value; requestLayout() } }
         private var primaryA = true
         private var floating = FloatingPosition()
@@ -362,7 +411,7 @@ internal class NativePairViewer(
                             if (abs(dx) > slop || abs(dy) > slop) dragged = true
                             if (dragged) {
                                 floating = FloatingPosition.fromPixels(originLeft + dx, originTop + dy,
-                                    this@FeedStage.width - view.width, floatingBottom - view.height)
+                                    floatingRight - view.width, floatingBottom - view.height)
                                 requestLayout()
                             }
                         }
@@ -377,12 +426,12 @@ internal class NativePairViewer(
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec))
             val bounds = twoFeedBounds(measuredWidth, measuredHeight, landscape(), primaryA, ratioA, ratioB, floating,
-                if (floatingBottom > 0) floatingBottom else measuredHeight)
+                floatingBottom, floatingRight)
             fun measure(view: View, rect: ViewerRect) { view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY)) }
             measure(paneA, bounds.a); measure(paneB, bounds.b)
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-            val bounds = twoFeedBounds(width, height, landscape(), primaryA, ratioA, ratioB, floating, floatingBottom)
+            val bounds = twoFeedBounds(width, height, landscape(), primaryA, ratioA, ratioB, floating, floatingBottom, floatingRight)
             fun place(view: View, rect: ViewerRect) {
                 view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY))
                 view.layout(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)

@@ -37,6 +37,69 @@ repos:
 
   - repo: local
     hooks:
+      - id: abema-cdn-review-tests
+        name: ABEMA sanitized CDN review reader tests
+        entry: node --test scripts/tests/abema-cdn-review.test.cjs
+        language: system
+        files: 'scripts/(abema-cdn-review\.cjs|tests/abema-cdn-review\.test\.cjs)$'
+        pass_filenames: false
+
+      - id: abema-native-bootstrap-tests
+        name: ABEMA no-page bootstrap fixture tests
+        entry: node scripts/tests/abema-native-bootstrap.test.cjs
+        language: system
+        files: 'abema/native-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-native-bootstrap\.test\.cjs$'
+        pass_filenames: false
+
+      - id: abema-cached-helper-tests
+        name: ABEMA downloaded helper fixture tests
+        entry: node scripts/tests/abema-cached-helper.test.cjs
+        language: system
+        files: 'abema/cached-helper[^/]*\.(html|js)$|scripts/tests/abema-cached-helper\.test\.cjs$'
+        pass_filenames: false
+
+      - id: abema-helper-runtime-tests
+        name: ABEMA offline helper runtime fixture tests
+        entry: node scripts/tests/abema-helper-runtime.test.cjs
+        language: system
+        files: 'scripts/(abema-helper-runtime\.cjs|tests/abema-helper-runtime\.test\.cjs)$'
+        pass_filenames: false
+
+      - id: abema-opaque-broker-tests
+        name: ABEMA opaque broker fixture tests
+        entry: node scripts/tests/abema-opaque-broker.test.cjs
+        language: system
+        files: 'opaque-broker\.js$|abema-opaque-broker\.test\.cjs$'
+        pass_filenames: false
+
+      - id: twitch-session-tests
+        name: Twitch full embed session tests
+        entry: node --test scripts/tests/twitch-session.test.cjs
+        language: system
+        files: 'twitch/session\.(html|js)$|scripts/tests/twitch-session\.test\.cjs$|TwitchSignInProbe\.kt$'
+        pass_filenames: false
+
+      - id: twitch-composite-tests
+        name: Twitch composite protocol tests
+        entry: node --test scripts/tests/twitch-composite.test.cjs
+        language: system
+        files: 'composite\.(html|js)$|scripts/tests/twitch-composite\.test\.cjs$|AbemaTwitchSingleWebContentsProbe\.kt$|TwitchCompositeEndpoint\.kt$'
+        pass_filenames: false
+
+      - id: twitch-replay-alignment-tests
+        name: Twitch replay alignment tests
+        entry: node --test scripts/tests/twitch-replay-alignment.test.cjs scripts/tests/replay-coordinator.test.cjs
+        language: system
+        files: 'replay-alignment\.(html|js)$|replay-coordinator\.(js|test\.cjs)$|scripts/tests/twitch-replay-alignment\.test\.cjs$|TwitchReplayAlignmentProbe\.kt$'
+        pass_filenames: false
+
+      - id: timing-tools-tests
+        name: Provider timing diagnostic tests
+        entry: node --test scripts/tests/timing-tools.test.cjs
+        language: system
+        files: 'timing-tools\.(js|test\.cjs)$|twitch/timing\.(html|js)$|ProviderTimingProbe\.kt$'
+        pass_filenames: false
+
       - id: mise-lock
         name: mise lock
         entry: mise install --locked --dry-run

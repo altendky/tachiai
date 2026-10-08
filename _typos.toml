@@ -1,0 +1,3 @@
+[default]
+# Exact public provider client identifier, not prose or a credential.
+extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b']

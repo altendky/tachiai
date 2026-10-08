@@ -1,0 +1,35 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".feature.presentation.CachedPrototypeActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize"
+            android:process=":prototype_cached_player" />
+        <activity
+            android:name=".feature.diagnostic.AbemaCachedHelperActivity"
+            android:exported="true"
+            android:process=":abema_cached_helper" />
+        <activity
+            android:name=".feature.presentation.PrototypeActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize"
+            android:process=":prototype_player" />
+        <activity
+            android:name=".feature.diagnostic.NativePairViewerActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize"
+            android:process=":abema_opaque_broker" />
+        <activity
+            android:name=".feature.diagnostic.AbemaOpaqueBrokerActivity"
+            android:exported="true"
+            android:process=":abema_opaque_broker" />
+        <activity
+            android:name=".feature.diagnostic.AbemaNativeRequestActivity"
+            android:exported="true"
+            android:process=":abema_request_probe" />
+        <activity
+            android:name=".feature.diagnostic.AbemaInspectionActivity"
+            android:exported="true"
+            android:process=":abema_inspection" />
+    </application>
+</manifest>

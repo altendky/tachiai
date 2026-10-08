@@ -114,6 +114,19 @@ TV support. The composition remains debug-only while those questions are open.
 
 ## Phase 1: Android playback spike
 
+The 2026-10-03 independent-control follow-up remains in the debug-only
+single-WebContents probe. It adds a narrow SDK wrapper for Twitch, per-pane
+native commands and status, bounded acknowledgment polling, and strict child
+asset/message policies. Eleven JavaScript protocol checks and forty Android unit
+tests passed, as did Android lint and debug APK assembly in the pinned tools
+container using SDK 37.2. `apksigner` matched the shared debug certificate, and
+the APK updated the Pixel 6 installation without clearing its private browser
+profile. A subsequent bounded Pixel 6 experiment rendered both original
+players, exercised native play/pause, and obtained user-confirmed mixed audio
+with the added SDK wrapper. Provider first-use audio activation and independent
+native mute/volume behavior remain unresolved; see the
+[recorded conditions and limits](android-playback-spike.md).
+
 Build the smallest application that can answer the blocking questions:
 
 1. Host ABEMA as the top-level document in an Android WebView and navigate to
@@ -159,6 +172,38 @@ architecture.
 
 ### Alignment experiment
 
+Before capability-aware relative actions, isolate forward and backward for
+each of Twitch/ABEMA and live/recorded. The
+[timing capability matrix](timing-capability-matrix.md) records the first
+eight-action classification and live hold-retention tests. Recording seeks
+worked in both directions; ABEMA live exposed bounded seekable media and
+retained delay, but needs moving-program confirmation. Twitch live seeking
+is unsupported by its official SDK and useful delay retention remains
+unverified. Do not build relative logic that assumes all four cases work.
+
+Before timing different providers, use the debug-only same-Twitch-VOD page to
+exercise independent forward seeks and sampled replay offsets. Its app-page
+controls call Twitch's documented SDK directly; they do not extend generic
+presentation commands with provider-specific seeking. Record measured device
+results and uncertainty in the [playback spike](android-playback-spike.md)
+before treating subsecond adjustments as usable product behavior.
+
+The first Pixel 6 test matched all three paused step sizes on both copies and
+the user heard delayed speech after original Twitch speaker interaction.
+Running seeks showed that rebuffer latency can change the final offset by more
+than the requested increment. The next timing-tooling experiment should compare
+explicit paired hold/seek/resume with observed post-seek correction before
+promoting a simple running relative seek into a generic alignment control.
+The debug-only replay diagnostic now implements the bounded paired-hold
+experiment through provider-independent packaged JavaScript and Twitch SDK
+adapters, with relative Forward/Backward and explicit sampled lead/lag. A
+bounded Pixel 6 test matched held targets and resumed both videos, but running
+offsets still missed requested targets by roughly a second. Keeping both
+players visible with a compact toolbar made app-page Play work where the large
+header/scroll layout did not. Accurate running correction, restoration
+acknowledgment, and smaller-viewport behavior remain unresolved; post-seek
+automatic correction is not implemented.
+
 Use the ABEMA Grand Sumo and `midnightsumo` pairing to record:
 
 - which feed is normally earlier and the observed offset range;
@@ -192,6 +237,133 @@ iOS shell. Treat application distribution and playback capability as separate
 go/no-go decisions.
 
 ## Native extraction decision gate
+
+The user approved an additive native-playback access investigation on
+2026-10-05, prompted by live alignment and authenticated playback limitations.
+The separate [access cases](native-access-experiments.md) test anonymous
+metadata/manifest access and Tachiai's own Twitch client, optionally after a
+fresh validated device grant. They do not resolve playlists, request ABEMA
+keys/licenses, or implement a native player. Keep prior browser and OAuth-only
+examples available for comparison. The gates below still apply before a real
+private playback integration is selected.
+
+The user subsequently requested retaining validated own-client tokens. An
+additional encrypted save case and explicit saved live/replay cases keep the
+fresh/discard experiments intact. Official validation precedes each reuse;
+local Forget affects only the saved slot. This is credential reuse for bounded
+access probes, not a playback implementation or active persistent OAuth session.
+
+After the own-token blank-header comparison also failed, the user explicitly
+approved a separate provider-client device-login experiment. Additive
+authorize/save, saved live and saved replay cases use a fixed observed public
+provider identity and a separate encrypted token slot. They preserve all earlier
+examples, independently implement the protocol pattern without Kodi code, and
+still stop at bounded access-field presence. This approval does not settle
+provider support, terms, Turbo, native playback or the integration gate below.
+
+The provider-web DEVICE request was rejected before challenge issuance. The user
+then approved researching currently viable identities and testing on the phone.
+An additional fixed Smart TV profile preserves both earlier profiles, with its
+own encrypted slot and three authorize/save/live/replay examples. The narrow
+comparison changes identity only; it does not relax scopes, request headers,
+activation checks or token validation. Equivalent-client reports justify a
+bounded test, not a supported product authentication direction.
+
+Private approval produced TOKEN HTTP 200, but the strict grant-lifetime check
+rejected it before validation/save. An additive fixed Smart TV lifetime-inspection
+case records expiry shapes and validates within a maximum 30-second local
+acceptance budget. This non-persistent, callback-free case can inspect
+omitted/zero grant expiry and integer-zero validation expiry. It does not change
+strict saved examples, establish permanent validity, or fetch playback access.
+The inspection subsequently passed official validation on the Pixel 6: grant
+expiry was omitted, validation expiry was zero, and the exact selected identity,
+user and experimental null/no-scopes checks passed. Its token was discarded.
+The user then approved additive local-save/live/replay cases with a chosen
+one-hour local retention cap, shorter for known expiry, in a fourth encrypted
+slot and profile-bound record. Official validation precedes save and every use;
+each use is capped at 30 seconds and remaining retention, without record renewal.
+This wall-clock-dependent experiment does not establish provider expiry or
+permission. Strict cases remain intact. On the Pixel 6, local save succeeded and
+two explicit saved uses each passed fresh official validation: both live and
+replay access returned HTTP 200 with no reported errors and expected access
+fields present. Their signature/value were discarded; no playlist or media was
+requested. Actual playback, Turbo, process-restart reuse and provider permission
+remain unverified; access success alone does not settle the integration gate.
+
+The user then approved an additive single-stream native playback prototype.
+The new Twitch native live/replay cases resolve a signed playlist and use a
+bounded Media3 host; prior examples remain intact and ABEMA is unchanged.
+The requirement motivating this test is useful retained live alignment plus
+authenticated playback, not visual polish. The public Twitch registration
+guidance was reviewed: sharing application client IDs may lead to API-access
+suspension. The current legal agreement pages returned footer-only content
+during retrieval, so a complete current terms review is not established.
+Private personal debug testing is the intended scope, not distribution or a
+supported integration selection. Access/client/account failure, changing private
+contracts, CDN-policy rejection and decoder failure remain risks. This prototype
+is a bounded evidence-gathering step; it does not settle the full integration
+gate or authorize ABEMA license/key work. See the
+[playback boundaries](native-access-experiments.md#additive-native-twitch-playback-prototype).
+
+On 2026-10-06, fresh approval renewed the locally expired grant. The native
+RelaxBeats live case then fetched/parsing playlists and media, rendered video,
+and played user-confirmed audible music; its two-minute budget subsequently
+released/stopped it. Recorded access and initial playlist parsing passed, but
+the strict policy blocked the advertised CloudFront distribution. An additional
+exact-observed-CDN replay comparison preserves that strict case and subsequently
+fetched media, rendered the RLCS replay introduction and played user-confirmed
+audio. Its two-minute timeout and explicit Stop cleared the player; an explicit
+restart revalidated and played again. These bounded single-stream live/replay
+results also observed background/return remaining stopped without auto-resume.
+They establish neither alignment primitives,
+dual-stream mixing, Turbo nor a supported authentication/integration decision.
+
+A subsequent additive native timing comparison observed replay backward/forward
+five-second seeks with settled clock and match-frame changes. Native Twitch live
+also moved its media clock in both directions within an advertised 30-second
+window. A bounded pause/resume retained about 37.5 seconds of added live delay,
+and explicit default-live catch-up returned to playing. These primitives are
+Media3 observations, not capabilities of the earlier official Twitch embed.
+The old buffered point can leave the advertised seek window: retention is not
+an unlimited DVR/seek guarantee. Rebuffering altered running offsets, and
+maximum history, moving-event live confirmation, transitions, simultaneous
+mixing and precise relative control remain untested. See the
+[recorded conditions](native-access-experiments.md#corrected-native-live-timing-results--2026-10-06).
+
+The next additive native replay-pair case compares two copies of the same
+moving replay under one Android audio-focus owner and unchanged shared budget.
+It adds independent volume, signed sampled A−B offsets, Sync and paired
+hold/seek/READY-check restoration. Build/device evidence must be recorded in
+the [comparison notes](native-access-experiments.md#additive-two-native-replay-comparison--2026-10-06)
+before claiming mixed output or reliable running alignment. Earlier examples
+remain available; live pairs and ABEMA native playback are not added here.
+
+A bounded Pixel 6 pair run subsequently rendered both native replay copies,
+obtained user-confirmed doubled audio and restored a running +1-second relative
+transaction near its requested offset. A negative running transaction had about
+178 ms target error; Sync converged sampled clocks near zero and background/
+return remained stopped. External focus behavior and sustained precision still
+need device checks. The user then
+requested longer saved-login retention only: seven-day LOCAL saves and a
+separate explicit fresh-validation extension, with ordinary starts nonrenewing
+and playback still capped at two minutes. See the
+[retention follow-up](native-access-experiments.md#seven-day-local-retention-follow-up--2026-10-06).
+The explicit extension passed fresh validation/save on the Pixel 6, and a cold
+restart reused it to prepare both copies without another private approval.
+
+The user then deferred per-feed routing and enabled system Proton Japan for
+ABEMA native feasibility checks. The unchanged News DASH access case returned
+HTTP 200 with protection markers, unlike the earlier unverified-network 403.
+Three appended format comparisons inspect DASH Widevine hints, the advertised
+HLS master and at most one allowlisted advertised child playlist. They request
+no media segments, keys or licenses and do not add ABEMA native playback.
+The HLS comparison found ABEMA-specific key signaling; refined DASH inspection
+found common encryption without a recognized DRM-system marker. An authorized
+standard DRM/license configuration remains the native playback gate, not
+manifest access or generic player plumbing. The final comparison APK passed
+625 unit tests, lint, assembly and the shared signing check before the phone's
+refined DASH run. No per-feed routing was added.
+See [conditions and assumptions](native-access-experiments.md#abema-native-format-comparison--2026-10-06).
 
 Do not begin private manifest or license integration merely to improve visual
 polish. Reconsider it only when all of the following are recorded:

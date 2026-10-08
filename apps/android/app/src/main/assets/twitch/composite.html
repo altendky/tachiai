@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://player.twitch.tv; style-src 'unsafe-inline'; frame-src https://player.twitch.tv; base-uri 'none'; form-action 'none'">
+    <title>Twitch composite player</title>
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; background: #000; }
+      #controls { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 4px; }
+      button { color: white; background: #9147ff; border: 0; border-radius: 4px; height: 32px; }
+      button:disabled { background: #53535f; }
+      #status { color: white; font: 12px sans-serif; }
+      #player { width: 100%; height: calc(100% - 40px); min-height: 300px; }
+    </style>
+    <script src="https://player.twitch.tv/js/embed/v1.js" defer></script>
+    <script src="composite.js" defer></script>
+  </head>
+  <body>
+    <div id="controls">
+      <button id="start" type="button" disabled>Start</button>
+      <button id="sound" type="button" disabled>Sound</button>
+      <span id="status" role="status">Loading Twitch</span>
+    </div>
+    <div id="player"></div>
+  </body>
+</html>

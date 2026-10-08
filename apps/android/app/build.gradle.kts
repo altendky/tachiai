@@ -1,5 +1,6 @@
 import java.security.KeyStore
 import java.security.MessageDigest
+import com.android.build.api.variant.HostTestBuilder
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
@@ -58,6 +59,12 @@ android {
     }
 
     buildTypes {
+        create("diagnostic") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".diagnostic"
+            versionNameSuffix = "-diagnostic"
+            matchingFallbacks += "debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -88,11 +95,21 @@ android {
     }
 }
 
+androidComponents {
+    beforeVariants(selector().withBuildType("diagnostic")) { variant ->
+        checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
+    }
+}
+
 dependencies {
     implementation(libs.activity.compose)
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.webkit)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
+    debugImplementation(libs.media3.exoplayer.dash)
+    implementation(libs.media3.ui)
 
     val composeBom = platform(libs.compose.bom)
     implementation(composeBom)
@@ -105,6 +122,7 @@ dependencies {
     debugImplementation(libs.compose.ui.test.manifest)
 
     testImplementation(libs.junit)
+    testDebugImplementation(libs.json)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
@@ -116,5 +134,5 @@ val verifySharedDebugKeystore = tasks.register<VerifyDebugKeystore>("verifyShare
 }
 
 tasks.configureEach {
-    if (name == "validateSigningDebug") dependsOn(verifySharedDebugKeystore)
+    if (name == "validateSigningDebug" || name == "validateSigningDiagnostic") dependsOn(verifySharedDebugKeystore)
 }

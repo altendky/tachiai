@@ -1,0 +1,13 @@
+html { color-scheme: dark; font: 16px system-ui; }
+body { margin: 16px; }
+h1 { font-size: 22px; }
+output { display: block; margin: 12px 0; white-space: pre-wrap; }
+#surface {
+  min-height: 100px;
+  height: 45vh;
+  border: 4px solid #8cf;
+  background: linear-gradient(135deg, #235, #162);
+  display: grid;
+  place-items: center;
+}
+button, a { display: inline-block; padding: 10px; margin: 4px; }

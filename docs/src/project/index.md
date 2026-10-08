@@ -38,6 +38,14 @@ the Android feasibility spike establishes which logic can actually be shared.
 
 ## Product direction
 
+The October 7 [product-flow prototype](prototype-ux.md) adds a separate source
+picker and native two-feed viewer workflow while preserving historical
+experiments. Its fixed catalogue, duplicate-slot ownership and automatic
+preparation are preliminary; build/device results belong in that document.
+Unsupported native playback adapters remain debug-only.
+The cached prototype's [media-origin approvals](media-origin-approvals.md)
+record user-approved CDN boundaries and the review process for new origins.
+
 The initial approach keeps provider-controlled web players intact inside
 embedded browser content:
 

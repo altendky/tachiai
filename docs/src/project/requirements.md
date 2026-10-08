@@ -15,9 +15,12 @@
   destroying or reloading either provider browser surface.
 - Each pane has independent visible, muted, volume, and focus state where the
   underlying player supports those operations.
-- Both panes can remain audible with independently adjustable levels where the
-  underlying players support volume control. Muting either pane remains a
-  convenient special case of that mix.
+- Both panes can remain audible. The preliminary two-feed controls expose
+  overall volume, a relative mix/fade with fine-adjust arrows, and per-feed mute
+  rather than independent per-feed volume sliders. Mute does not move the mix
+  or redistribute gain. Swapping visual primary leaves audio identities intact.
+  See the [preliminary native viewer](preliminary-native-viewer.md) for the
+  provisional gain curve and layout; acoustic behavior still needs testing.
 - The application provides an immediate way to leave focus mode and restore
   the complete provider page for login, consent, errors, account management,
   or channel selection.
@@ -71,6 +74,43 @@
   sharing flow when account state is needed.
 - Twitch viewing should not require OAuth merely to play a public stream.
   Twitch OAuth is added only for a feature that requires Twitch API access.
+- A user-authorized debug device-flow experiment is the narrow exception to
+  access-token non-collection: Tachiai's own public client may receive a token
+  transiently, validate its client/user identity and empty scopes, then drop
+  references. It must not persist, log or pass that token to playback. This
+  probe does not establish website login or a supported authenticated player.
+- Separately authorized debug [native access cases](native-access-experiments.md)
+  may use a freshly validated own-client token once for a selected Twitch
+  access query, then discard it. They do not fetch playlists or media, borrow
+  other client identities, transfer browser sessions or request ABEMA keys
+  or licenses. Earlier validation-only and browser examples remain available.
+- The user additionally authorized encrypted local retention of a validated
+  own-client access token in a separate save case. Explicit saved live/replay
+  cases must validate it before reuse, block expired/invalid tokens, offer
+  local Forget and keep the original fresh/discard examples intact. No refresh
+  token, password, cookie transfer or diagnostic token export is introduced.
+- A subsequent explicit user approval permits three additional debug cases for
+  a fixed provider-client device grant: separate encrypted save, live access and
+  replay access. This unsupported identity experiment must not replace or reuse
+  the own-client grant. Exact identity validation, zero scopes, independent
+  encryption/record binding and repository-owned leases separate both paths.
+  No playlists/media, provider secret, browser-session transfer, refresh,
+  integrity spoofing or claim of provider permission is authorized by this case.
+- A further explicit approval adds a fixed Smart TV identity comparison in its
+  own third encrypted slot, preserving the own-client and failed provider-web
+  examples. Challenge issuance, grant validation and live/replay access must be
+  recorded independently; no scope/header/activation relaxation or automatic
+  identity fallback is part of this comparison.
+- An additive Smart TV lifetime-inspection example records closed expiry shapes
+  and uses a maximum 30-second local validation-only acceptance budget. Omitted
+  or zero grant expiry and zero validation expiry remain experimental; this
+  inspection permits no save/access callback or permanent-validity assumption.
+- After observed Smart TV validation success, a separately selected local-save
+  case and live/replay checks retain tokens for at most one hour locally, reduced
+  by known expiry. Its fourth encrypted slot/profile-bound record preserves
+  strict examples. Every use validates officially and gets at most 30 seconds,
+  capped by remaining local retention; reuse never extends storage. No refresh,
+  playlist/media or permanent-validity interpretation is part of this case.
 
 ## Platforms and distribution
 

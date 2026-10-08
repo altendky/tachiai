@@ -62,6 +62,13 @@ phone installation was performed for this change.
 
 ## Source assignment follow-up
 
+The subsequent provider-tree picker groups the options under ABEMA and Twitch
+headings, with all children visible and indented. Source rows retain independent
+A/B checkboxes. A small read-only dash indicator in each provider's A/B column
+shows whether a child from that provider is selected for the column; it never
+assigns a source itself. Child labels omit the repeated provider name, while
+accessibility descriptions and viewer labels retain the full source identity.
+
 The picker now renders one catalogue with independent A/B checkboxes. Checking
 a row replaces only that slot's previous source; both boxes on one row are
 allowed. Unchecking the current choice leaves that slot unassigned and disables
@@ -205,6 +212,19 @@ the new flow reports failure rather than requesting credentials itself. These
 are remaining product tasks, not verified production behavior.
 
 ## Verification
+
+### October 8 provider-tree picker
+
+The provider-tree follow-up passed 545 debug and 407 diagnostic JVM tests, lint,
+instrumentation compilation, release isolation and app/test APK assembly in the
+pinned SDK 37.2 container. Both APK certificates matched the shared debug key.
+Scoped hooks and documentation build passed. On Pixel 6/oriole with Android 17,
+all six provider-free picker tests passed, covering grouping, passive parent
+indicators, per-column reassignment/clearing, duplicate choices, rapid callbacks
+and the added Twitch channels. The app was updated with storage retained, and
+its installed APK checksum matched the verified build. No provider playback or
+new audio observation was performed; visual inspection was blocked by the
+phone's lock screen.
 
 ### October 8 independent feed errors build
 

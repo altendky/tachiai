@@ -2,13 +2,16 @@ package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -23,9 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.presentation.PrototypeSelection
+import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.PrototypeSourceAssignments
 import net.fstab.tachiai.presentation.PrototypeSlot
@@ -50,17 +56,41 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Source", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                Text("A", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleMedium)
-                Text("B", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleMedium)
+                for (slot in PrototypeSlot.entries) {
+                    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                        Text(slot.name, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
             }
-            PrototypeSource.entries.forEach { source ->
-                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-                    .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(source.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    for (slot in PrototypeSlot.entries) {
-                        Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == source,
-                            onCheckedChange = { assign(slot, source, it) },
-                            modifier = Modifier.semantics { contentDescription = "Assign ${source.title} to feed ${slot.name}" })
+            PrototypeService.entries.forEach { service ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(service.title, Modifier.weight(1f).semantics { heading() },
+                            style = MaterialTheme.typography.titleMedium)
+                        for (slot in PrototypeSlot.entries) {
+                            val selected = (if (slot == PrototypeSlot.A) assignments.a else assignments.b)?.service == service
+                            Box(Modifier.size(48.dp).clearAndSetSemantics {
+                                contentDescription = if (selected) "${service.title}: a source is selected for feed ${slot.name}"
+                                    else "${service.title}: no source selected for feed ${slot.name}"
+                            }, contentAlignment = Alignment.Center) {
+                                if (selected) Box(Modifier.size(18.dp).border(1.dp, MaterialTheme.colorScheme.outline,
+                                    RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
+                                    Text("−", color = MaterialTheme.colorScheme.outline, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                    PrototypeSource.entries.filter { it.service == service }.forEach { source ->
+                        Row(Modifier.fillMaxWidth().padding(start = 24.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(source.optionTitle, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            for (slot in PrototypeSlot.entries) {
+                                Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == source,
+                                    onCheckedChange = { assign(slot, source, it) },
+                                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Assign ${source.title} to feed ${slot.name}" })
+                            }
+                        }
                     }
                 }
             }

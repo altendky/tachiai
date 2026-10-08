@@ -588,6 +588,17 @@ preparation; every original web player must confirm paused/muted before joint
 Play. Failures/background/Stop close both. This is a new UX over unsupported
 debug-only adapters, not a release integration or expanded provider permission.
 
+The October 8 user-requested follow-up isolates ordinary feed and authorization
+failures: the failed slot is closed and replaced with a safe error panel while
+a healthy slot may continue. Both retain the same presentation deadline and
+audio-focus owner. Each original player must confirm paused/muted before its
+native playback starts; late callbacks cannot start a removed slot. Background,
+Stop, deadline expiry and unsafe cleanup remain presentation-wide boundaries.
+The additional fixed Twitch live choices are public channel identifiers; no
+login grant, provider request, licensing or media-origin permissions expand.
+Errors use closed categories and bounded numeric codes, never raw provider
+messages, exceptions or source URLs. No device verification is claimed here.
+
 The subsequent no-page startup uses a different `:prototype_cached_player`
 process and `prototype-cached-player` profile, keeping the original case as a
 comparison. A tiny owned document serves four pinned, runtime-downloaded public

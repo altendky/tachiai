@@ -26,7 +26,55 @@ need a provider-consent tap; the no-page runtime has no consent overlay.
 Subsequent Play/Pause, overall/mix/mute, timing, swap and drag reuse the generic
 viewer. Slot labels remain distinct even when both sources are identical.
 
+## October 8 channel choices and independent feed errors
+
+The catalogue now also offers Twitch Chillhop Radio and Virtual Japan live,
+alongside Izgonnabemei. These are fixed public channel choices; availability is
+determined during preparation, not assumed from the catalogue.
+
+Open viewer immediately presents two labelled panes. Each starts with a
+preparation message and independently becomes video or a scrollable error.
+A successful feed starts without waiting for the other feed. A failed feed
+closes its own session while a healthy feed continues. If both fail, the viewer
+keeps both errors visible. Sources or Android Back explicitly stops playback
+and returns to the picker, retaining the selected sources.
+
+In landscape, tapping a floating preparation/error pane swaps it with the
+primary feed, just as tapping floating video does. Taps on either the message
+or empty panel space use the same action. Scrolling a long error only scrolls
+its text. Swapping retains the existing players; it does not restart or retry
+a feed. The More menu also offers Swap primary feed. Portrait retains its
+fixed A/B order, and tapping an error pane toggles the controls.
+
+The older full-page ABEMA comparison waits until its original web player can
+confirm paused/muted, or its slot fails and closes, before starting native
+playback. This prevents audio from a hidden provider page during preparation;
+the default cached flow has no original provider page to wait for.
+
+Errors retain the first known cause, using fixed messages and bounded HTTP or
+player codes. HTTP 404 says that the stream was not found and that a live
+channel may be offline; it does not assert that offline status was verified.
+Login, network-policy, licensing, unsupported media and preparation failures
+have distinct messages. Provider response text, exceptions and token-bearing
+URLs never enter these panels.
+
+Play/Pause and audio work with a single ready feed. Relative timing and joint
+catch-up require two playable feeds. A late second feed still passes its
+original-player pause checks before joining playback. Background, Stop and the
+unchanged shared five-minute deadline stop the presentation. A cleanup failure
+also stops both feeds because continued playback cannot be confirmed safe.
+This change adds no authentication, DRM exchange, retry or network permissions.
+Device playback and visual verification of this follow-up remain pending; no
+phone installation was performed for this change.
+
 ## Source assignment follow-up
+
+The subsequent provider-tree picker groups the options under ABEMA and Twitch
+headings, with all children visible and indented. Source rows retain independent
+A/B checkboxes. A small read-only dash indicator in each provider's A/B column
+shows whether a child from that provider is selected for the column; it never
+assigns a source itself. Child labels omit the repeated provider name, while
+accessibility descriptions and viewer labels retain the full source identity.
 
 The picker now renders one catalogue with independent A/B checkboxes. Checking
 a row replaces only that slot's previous source; both boxes on one row are
@@ -159,7 +207,8 @@ historical RelaxBeats/replay preparation overload remains unchanged.
 Both members share one presentation audio-focus owner and a five-minute
 foreground budget starting at Open viewer, including preparation waits. Source
 selection, rotation, return from provider-page setup and controls do not renew
-it. Stop, background, failed member/authorization or budget expiry closes both.
+it. Stop, background or budget expiry closes both. The October 8 follow-up
+isolates member/authorization failures to their own pane, except unsafe cleanup.
 Original-pause callbacks are aggregated once per slot; failure, timeout or a
 newer command prevents late callbacks from starting playback. Timing readback
 is requested adjustment, not measured common-event alignment.
@@ -171,11 +220,38 @@ are remaining product tasks, not verified production behavior.
 
 ## Verification
 
-Pure tests exercise all 16 ordered catalogue selections, distinct slot labels,
+### October 8 provider-tree picker
+
+The provider-tree follow-up passed 545 debug and 407 diagnostic JVM tests, lint,
+instrumentation compilation, release isolation and app/test APK assembly in the
+pinned SDK 37.2 container. Both APK certificates matched the shared debug key.
+Scoped hooks and documentation build passed. On Pixel 6/oriole with Android 17,
+all six provider-free picker tests passed, covering grouping, passive parent
+indicators, per-column reassignment/clearing, duplicate choices, rapid callbacks
+and the added Twitch channels. The app was updated with storage retained, and
+its installed APK checksum matched the verified build. No provider playback or
+new audio observation was performed; visual inspection was blocked by the
+phone's lock screen.
+
+### October 8 independent feed errors build
+
+The pinned SDK 37.2 container passed 545 debug and 407 diagnostic JVM tests,
+lint, instrumentation-test compilation, release manifest/assets isolation and
+debug assembly. Lint reported no errors, nine warnings in existing code and
+dependency-version notices, and one existing hint. The complete repository
+hooks and documentation build passed. Provider-free UI fixtures for the added
+channels, error visibility, Sources navigation, single-feed controls and compact
+toolbar targets were compiled but not run on a device. No phone installation,
+provider playback or new audio observation was performed.
+
+The actual APK certificate matched the shared debug identity. Its SHA-256 is
+`c7ba607448b0dd353c3bde715d019e02f4a8ddce00e27360dd05c94669039292`.
+
+Pure tests exercise all 36 ordered catalogue selections, distinct slot labels,
 service/kind coverage, original-pause aggregation/duplicates/failure/timeout/
 cancellation, remaining-budget invalidation and child-request ownership without
 renewing the parent's deadline. An Android UI fixture checks
-duplicate selection reaches Open viewer. These tests do not prove all 16
+duplicate selection reaches Open viewer. These tests do not prove all 36
 combinations decode simultaneously on the phone. Record build/device results
 below, including native audio confirmation and duplicate DRM-session evidence;
 retain untested combinations as pending.

@@ -12,7 +12,7 @@ concepts.
 
 ## Current status
 
-As of 2026-10-07, the Android debug application has a source-picker and native
+As of 2026-10-08, the Android debug application has a source-picker and native
 two-feed viewer alongside the retained experiment home. The default Prototype
 flow uses bounded native Twitch and cached ABEMA preparation; the older
 full-page ABEMA startup remains a comparison, not a required step in that flow.
@@ -57,7 +57,10 @@ The agreed preliminary interaction model is:
 
 - Select two sources, including two copies of the same source, then explicitly
   open the viewer. The current catalogue has fixed live/replay entries for
-  ABEMA and Twitch; richer service/channel selection remains future work.
+  ABEMA and Twitch, with Izgonnabemei, Chillhop Radio and Virtual Japan as Twitch
+  live choices. Each pane shows preparation or a safe error while available
+  feeds play. Sources returns to the picker; richer channel selection remains
+  future work.
 - Portrait stacks the feeds without forcing equal heights. Landscape uses a
   full-screen primary and movable floating secondary; tapping the secondary
   swaps roles without replacing either session.

@@ -1,6 +1,6 @@
 package net.fstab.tachiai.presentation
 
-internal enum class PrototypeService { ABEMA, TWITCH }
+internal enum class PrototypeService(val title: String) { ABEMA("ABEMA"), TWITCH("Twitch") }
 internal enum class PrototypePlaybackKind { LIVE, REPLAY }
 
 // A small initial catalogue, not a restriction that a service has one channel.
@@ -9,12 +9,16 @@ internal enum class PrototypeSource(
     val service: PrototypeService,
     val kind: PrototypePlaybackKind,
     val title: String,
+    val resourceId: String? = null,
 ) {
     ABEMA_LIVE(PrototypeService.ABEMA, PrototypePlaybackKind.LIVE, "ABEMA · News · Live"),
     ABEMA_REPLAY(PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY, "ABEMA · Sumo · Replay"),
-    TWITCH_LIVE(PrototypeService.TWITCH, PrototypePlaybackKind.LIVE, "Twitch · Izgonnabemei · Live"),
-    TWITCH_REPLAY(PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY, "Twitch · Rocket League · Replay");
+    TWITCH_LIVE(PrototypeService.TWITCH, PrototypePlaybackKind.LIVE, "Twitch · Izgonnabemei · Live", "izgonnabemei"),
+    TWITCH_CHILLHOP_LIVE(PrototypeService.TWITCH, PrototypePlaybackKind.LIVE, "Twitch · Chillhop Radio · Live", "chillhopradio"),
+    TWITCH_VIRTUAL_JAPAN_LIVE(PrototypeService.TWITCH, PrototypePlaybackKind.LIVE, "Twitch · Virtual Japan · Live", "virtualjapan"),
+    TWITCH_REPLAY(PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY, "Twitch · Rocket League · Replay", "2080217716");
 
+    val optionTitle: String get() = title.removePrefix("${service.title} · ")
     fun slotLabel(slot: String) = "$slot · $title"
 }
 

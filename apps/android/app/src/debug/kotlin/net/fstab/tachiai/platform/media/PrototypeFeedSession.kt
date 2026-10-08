@@ -2,6 +2,7 @@ package net.fstab.tachiai.platform.media
 
 import android.view.View
 import androidx.media3.common.Player
+import net.fstab.tachiai.presentation.PrototypeFeedFailure
 
 internal enum class PrototypeFeedEvent { PREPARING, WAITING_PROVIDER, READY, LICENSE_REQUESTED, LICENSE_READY, VIDEO_FRAME, NETWORK_APPROVAL_REQUIRED, FAILED, STOPPED }
 
@@ -11,6 +12,8 @@ internal interface PrototypeFeedSession : AutoCloseable {
     val providerView: View?
     val member: NativePairMember?
     val player: Player?
+    val failure: PrototypeFeedFailure? get() = null
+    val cleanupFailed: Boolean get() = false
     fun prepare(budget: NativePlaybackBudget)
     fun pauseOriginal(onResult: (Boolean) -> Unit)
     fun canContinue(): Boolean

@@ -29,14 +29,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.R
-import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
+import net.fstab.tachiai.platform.media.PrototypePlaybackController
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.presentation.PrototypePlayBarrier
+import net.fstab.tachiai.presentation.PrototypeFeedFailure
+import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.presentation.PrototypePlaybackKind
 import net.fstab.tachiai.presentation.PrototypeSelection
 import net.fstab.tachiai.presentation.PrototypeService
@@ -56,9 +58,14 @@ open class PrototypeActivity : ComponentActivity() {
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
     private var selection = PrototypeSelection()
-    private var sessions = listOf<PrototypeFeedSession>()
+    private var sessions = listOf<PrototypeFeedSession?>(null, null)
+    private val failures = arrayOfNulls<PrototypeFeedFailure>(2)
+    private val prepared = BooleanArray(2)
+    private val initialCatchUp = BooleanArray(2)
+    private val catchUpDeadline = LongArray(2)
+    private var surfaces = emptyList<PlayerView>()
     private var budget: NativePlaybackBudget? = null
-    private var pair: NativeMixedPair? = null
+    private var playback: PrototypePlaybackController? = null
     private var focus: NativePlaybackAudioGroup? = null
     private var viewer: NativePairViewer? = null
     private var root: FrameLayout? = null
@@ -69,9 +76,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var cleanupFailed = false
     private var disposing = false
     private var resumeMessage: String? = null
-    private var startedViewer = false
-    private var initialCatchUp = false
-    private var catchUpDeadline = 0L
+    private var desiredPlaying = false
     private var lastAuthorizationPoll = 0L
     private var lastSample = 0L
     private val authorizationPolling = AtomicBoolean()
@@ -86,7 +91,7 @@ open class PrototypeActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled(false)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onBackPressedDispatcher.addCallback(this) {
-            if (sessions.isNotEmpty()) stopToPicker("Playback stopped.") else finish()
+            if (budget != null) stopToPicker("Playback stopped.") else finish()
         }
         showPicker(null)
     }
@@ -118,7 +123,8 @@ open class PrototypeActivity : ComponentActivity() {
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
         val sharedBudget = NativePlaybackBudget(300_000, ::active, maximumDurationMs = 300_000)
         budget = sharedBudget
-        startedViewer = false; initialCatchUp = false; lastAuthorizationPoll = 0; lastSample = 0
+        failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
+        desiredPlaying = true; lastAuthorizationPoll = 0; lastSample = 0
         styleSystemBars(false)
         val frame = FrameLayout(this).apply { setBackgroundColor(getColor(R.color.prototype_background)) }
         val setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -141,26 +147,29 @@ open class PrototypeActivity : ComponentActivity() {
         frame.addView(setup, FrameLayout.LayoutParams(-1, -1))
         root = frame
         setContentView(frame)
-        try {
-            selected.sources.forEachIndexed { index, source ->
+        createViewer()
+        selected.sources.forEachIndexed { index, source ->
+            try {
                 val replay = source.kind == PrototypePlaybackKind.REPLAY
                 val events: (PrototypeFeedEvent) -> Unit = { event ->
                     if (disposing && event == PrototypeFeedEvent.FAILED) cleanupFailed = true
-                    else if (active()) {
+                    else if (active() && failures[index] == null) {
                         Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} source=${source.name} event=${event.name}")
                         if (event == PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED)
-                            stopToPicker("A new media destination is blocked pending approval. Ask the agent to check the saved CDN review log.")
+                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED))
                         else if (event == PrototypeFeedEvent.FAILED || event == PrototypeFeedEvent.STOPPED)
-                            stopToPicker("Could not continue ${source.title}. Check your connection and saved Twitch login, then try again.")
+                            failFeed(index, sessions[index]?.failure ?: PrototypeFeedFailure(
+                                if (event == PrototypeFeedEvent.STOPPED) PrototypeFailureReason.STOPPED else PrototypeFailureReason.PREPARATION_FAILED))
                         else updateProgress()
                     }
                 }
+                val feedActive = { active() && failures[index] == null }
                 val session = when (source.service) {
-                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, ::active, events)
-                        else PrototypeAbemaSession(this, replay, ::active, events)
-                    PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, ::active, events)
+                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events)
+                        else PrototypeAbemaSession(this, replay, feedActive, events)
+                    PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, checkNotNull(source.resourceId), feedActive, events)
                 }
-                sessions = sessions + session
+                sessions = sessions.toMutableList().also { it[index] = session }
                 session.providerView?.let { page ->
                     if (useCachedAbema) {
                         // Runtime only: no provider page/video or interactive consent UI.
@@ -171,16 +180,19 @@ open class PrototypeActivity : ComponentActivity() {
                         setup.addView(page, LinearLayout.LayoutParams(-1, 0, 1f))
                     }
                 }
-            }
-            updateProgress()
-            sessions.forEach { it.prepare(sharedBudget) }
-            handler.post(ticker)
-        } catch (_: Exception) { stopToPicker("Unable to prepare these feeds. Please try again.") }
+            } catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) }
+        }
+        sessions.forEachIndexed { index, host ->
+            try { host?.prepare(sharedBudget.child()) }
+            catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) }
+        }
+        updateProgress()
+        handler.post(ticker)
     }
 
     private fun updateProgress() {
         progress?.text = selection.sources.mapIndexed { index, source ->
-            val state = if (sessions.getOrNull(index)?.member?.timingSnapshot()?.state == Player.STATE_READY) "Ready" else "Preparing"
+            val state = failures[index]?.message ?: if (prepared[index]) "Ready" else "Preparing"
             "${source.slotLabel(if (index == 0) "A" else "B")}: $state"
         }.joinToString("\n")
     }
@@ -188,36 +200,48 @@ open class PrototypeActivity : ComponentActivity() {
     private val ticker = object : Runnable {
         override fun run() {
             val currentBudget = budget ?: return
-            if (!currentBudget.active) { stopToPicker("The five-minute prototype session ended."); return }
-            if (sessions.any { it.member != null && !it.canContinue() }) {
-                stopToPicker("Playback authorization ended. Reconnect through the existing login screen."); return
+            if (!currentBudget.active) {
+                failures.indices.forEach { failFeed(it, PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }
+                focus?.release()
+                viewer?.refresh()
+                return
+            }
+            sessions.forEachIndexed { index, host ->
+                try {
+                    if (host?.member != null && !host.canContinue()) failFeed(index, authorizationFailure(index, host))
+                    else if (host != null && failures[index] == null && !prepared[index]) prepareViewerSlot(index, host)
+                } catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)) }
             }
             updateProgress()
-            if (pair == null && sessions.size == 2 && sessions.all { it.member != null && it.player != null }) createViewer()
-            val current = pair
-            if (current != null) {
-                current.poll()
-                if (!startedViewer) startWhenReady(current)
-                viewer?.refresh()
+            playback?.poll()
+            val available = NativeMixedSide.entries.mapNotNull { playback?.member(it) }
+            if (desiredPlaying && playBarrier == null && playback?.busy != true && available.isNotEmpty() &&
+                available.all { it.timingSnapshot()?.let { value -> value.state == Player.STATE_READY && !value.playingAd } == true } &&
+                available.any { it.timingSnapshot()?.playWhenReady != true }) {
+                playReadyFeeds()
             }
+            viewer?.refresh()
             val now = SystemClock.elapsedRealtime()
-            if (now - lastSample >= 5_000 && current != null) {
+            if (now - lastSample >= 5_000) {
                 lastSample = now
-                listOf(current.a, current.b).forEachIndexed { index, member ->
-                    member.timingSnapshot()?.let { value ->
-                        Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} state=${value.state} playing=${value.playing} positionMs=${value.positionMs} contentTimeMs=${value.contentTimeMs}")
+                NativeMixedSide.entries.forEach { side ->
+                    playback?.member(side)?.timingSnapshot()?.let { value ->
+                        Log.d("TachiaiPrototype", "slot=${side.name} state=${value.state} playing=${value.playing} positionMs=${value.positionMs} contentTimeMs=${value.contentTimeMs}")
                     }
                 }
             }
-            if (now - lastAuthorizationPoll >= 5_000 && sessions.all { it.member != null } &&
+            if (now - lastAuthorizationPoll >= 5_000 && sessions.any { it?.member != null } &&
                 authorizationPolling.compareAndSet(false, true)) {
                 lastAuthorizationPoll = now
                 val run = epoch.get()
                 val hosts = sessions
                 worker.execute {
                     try {
-                        if (hosts.any { !it.checkAuthorization() }) handler.post {
-                            if (epoch.get() == run) stopToPicker("Saved login changed or expired. Reconnect before trying again.")
+                        hosts.forEachIndexed { index, host ->
+                            if (host?.member != null && !runCatching { host.checkAuthorization() }.getOrDefault(false)) handler.post {
+                                if (epoch.get() == run && sessions[index] === host)
+                                    failFeed(index, authorizationFailure(index, host))
+                            }
                         }
                     } finally { authorizationPolling.set(false) }
                 }
@@ -228,82 +252,145 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun createViewer() {
         val group = NativePlaybackAudioGroup(this) {
-            invalidatePlay(); pair?.focusLost()
-            if (sessions.any { it.member?.timingSnapshot()?.playWhenReady == true })
-                stopToPicker("Could not pause after audio focus changed.")
+            desiredPlaying = false; invalidatePlay(); playback?.focusLost()
+            sessions.forEachIndexed { index, host ->
+                if (host?.member?.timingSnapshot()?.playWhenReady == true)
+                    failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED))
+            }
+            viewer?.refresh()
         }
         focus = group
-        pair = NativeMixedPair(checkNotNull(sessions[0].member), checkNotNull(sessions[1].member),
-            group::acquire, releaseFocus = { budget?.stop(); group.close() }, requireCurrentLiveWindowOnPlay = true)
-        fun surface(index: Int) = (layoutInflater.inflate(R.layout.native_viewer_player, root, false) as PlayerView).apply {
-            player = sessions[index].player; useController = false; keepScreenOn = true
+        playback = PrototypePlaybackController(group::acquire)
+        fun surface() = (layoutInflater.inflate(R.layout.native_viewer_player, root, false) as PlayerView).apply {
+            useController = false; keepScreenOn = true
         }
-        val pane = NativePairViewer(this, surface(0), surface(1), selection.a.slotLabel("A"), selection.b.slotLabel("B"),
-            { pair }, ::playPair, ::pausePair,
-            onRelative = { delta -> invalidatePlay(); pair?.shiftRelative(delta) },
-            onCatchUp = { side -> invalidatePlay(); pair?.catchUp(side) },
+        surfaces = listOf(surface(), surface())
+        val pane = NativePairViewer(this, surfaces[0], surfaces[1], selection.a.slotLabel("A"), selection.b.slotLabel("B"),
+            { playback?.pair }, ::playPair, ::pausePair,
+            onRelative = { delta -> desiredPlaying = false; invalidatePlay(); playback?.shiftRelative(delta) },
+            onCatchUp = { side -> desiredPlaying = false; invalidatePlay(); playback?.catchUp(side) },
             onDiagnostics = { pausePair(); viewer?.visibility = View.GONE; styleSystemBars(false) },
             onStop = { stopToPicker("Playback stopped.") },
             onLandscape = { landscape -> requestedOrientation = if (landscape)
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT },
-            setupLabel = "Sources / provider pages", statusOverride = { playMessage })
+            setupLabel = "Preparation / provider pages", statusOverride = { playMessage ?: playback?.status },
+            members = { NativeMixedSide.entries.map { playback?.member(it) } },
+            volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
+            feedMessage = { side ->
+                val index = side.ordinal
+                failures[index]?.let { "Could not load this feed\n\n${it.message}\n\nUse Sources to choose another feed." }
+                    ?: if (!prepared[index]) "Preparing this feed…" else null
+            }, onSources = { stopToPicker("Playback stopped.") })
         viewer = pane
-        pane.visibility = View.GONE
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
         returnButton?.isEnabled = true
-    }
-
-    private fun startWhenReady(current: NativeMixedPair) {
-        if (initialCatchUp && SystemClock.elapsedRealtime() >= catchUpDeadline) {
-            stopToPicker("The initial live position did not settle. Please try again."); return
-        }
-        val members = listOf(current.a, current.b)
-        val snapshots = members.map { it.timingSnapshot() }
-        if (snapshots.any { it?.state != Player.STATE_READY }) return
-        if (!initialCatchUp) {
-            initialCatchUp = true
-            catchUpDeadline = SystemClock.elapsedRealtime() + 8_000
-            // Initial live position is chosen once, before establishing a timing
-            // anchor. No reload, retry, future seek or license exchange is added.
-            members.zip(snapshots).forEach { (member, snapshot) ->
-                if (snapshot?.live == true || snapshot?.dynamic == true) {
-                    if (member.seekLiveDefault().outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE)) {
-                        stopToPicker("Cannot start in the current live window."); return
-                    }
-                }
-            }
-            return
-        }
-        if (snapshots.any { value -> value == null || value.playWhenReady || value.playingAd ||
-                ((value.live || value.dynamic) && (value.positionMs == null || value.durationMs == null ||
-                    value.durationMs <= 0 || value.positionMs !in 0..value.durationMs)) }) return
-        startedViewer = true
         styleSystemBars(true)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        viewer?.open()
-        playPair()
+        pane.open()
+    }
+
+    private fun prepareViewerSlot(index: Int, host: PrototypeFeedSession) {
+        if (initialCatchUp[index] && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
+            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_POSITION_FAILED)); return
+        }
+        val member = host.member ?: return
+        val snapshot = member.timingSnapshot() ?: return
+        if (snapshot.state != Player.STATE_READY || snapshot.playWhenReady || snapshot.playingAd) return
+        if (!initialCatchUp[index] && (snapshot.live || snapshot.dynamic)) {
+            initialCatchUp[index] = true
+            catchUpDeadline[index] = SystemClock.elapsedRealtime() + 8_000
+            // Initial live position is chosen once, before establishing a timing
+            // anchor. No reload, retry, future seek or license exchange is added.
+            if (member.seekLiveDefault().outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE))
+                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_POSITION_FAILED))
+            return
+        }
+        if ((snapshot.live || snapshot.dynamic) && (snapshot.positionMs == null || snapshot.durationMs == null ||
+                snapshot.durationMs <= 0 || snapshot.positionMs !in 0..snapshot.durationMs)) return
+        prepared[index] = true
+        invalidatePlay()
+        playback?.setMember(NativeMixedSide.entries[index], member)
+        surfaces[index].player = host.player
     }
 
     private fun invalidatePlay() { playBarrier?.cancel(); playBarrier = null; playMessage = null }
-    private fun pausePair() { invalidatePlay(); pair?.pause(); viewer?.refresh() }
+    private fun pausePair() { desiredPlaying = false; invalidatePlay(); playback?.pause(); viewer?.refresh() }
 
     private fun playPair() {
+        desiredPlaying = true
+        playReadyFeeds()
+    }
+
+    private fun playReadyFeeds() {
         invalidatePlay()
-        val current = pair ?: return
+        val current = playback ?: return
+        // The comparison's original ABEMA page may autoplay while preparing.
+        // Its adapter can only confirm isolation once its native host is ready.
+        // The default cached flow has no original page and remains independent.
+        if (!useCachedAbema && sessions.indices.any { sessions[it]?.providerView != null && !prepared[it] }) {
+            playMessage = "Waiting to safely pause the original provider player."
+            return
+        }
+        val hosts = sessions.mapIndexedNotNull { index, host ->
+            if (host != null && prepared[index] && failures[index] == null) index to host else null
+        }
+        if (hosts.isEmpty()) return
         val run = epoch.get()
+        val waiting = hosts.indices.toMutableSet()
         lateinit var barrier: PrototypePlayBarrier
-        barrier = PrototypePlayBarrier(sessions.size) { accepted ->
-            if (playBarrier !== barrier || !resumed.get() || epoch.get() != run || pair !== current) return@PrototypePlayBarrier
+        barrier = PrototypePlayBarrier(hosts.size) { accepted ->
+            if (playBarrier !== barrier || !resumed.get() || epoch.get() != run || playback !== current) return@PrototypePlayBarrier
             playBarrier = null
-            if (accepted) current.play() else {
+            if (accepted) {
+                if (!current.play()) desiredPlaying = false
+            } else {
                 current.pause()
-                playMessage = "Could not pause the original provider player. Open provider pages, then retry Play."
+                desiredPlaying = false
             }
             viewer?.refresh()
         }
         playBarrier = barrier
-        sessions.forEachIndexed { index, host -> host.pauseOriginal { barrier.result(index, it) } }
-        handler.postDelayed({ if (playBarrier === barrier) barrier.fail() }, 3_000)
+        hosts.forEachIndexed { slot, (index, host) ->
+            try {
+                host.pauseOriginal { accepted -> handler.post {
+                    if (playBarrier !== barrier || epoch.get() != run || sessions[index] !== host) return@post
+                    if (accepted) { waiting.remove(slot); barrier.result(slot, true) }
+                    else failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ORIGINAL_PLAYER_NOT_PAUSED))
+                } }
+            } catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ORIGINAL_PLAYER_NOT_PAUSED)) }
+        }
+        handler.postDelayed({
+            if (playBarrier === barrier) waiting.map { hosts[it].first }.forEach {
+                failFeed(it, PrototypeFeedFailure(PrototypeFailureReason.ORIGINAL_PLAYER_NOT_PAUSED))
+            }
+        }, 3_000)
+    }
+
+    private fun authorizationFailure(index: Int, host: PrototypeFeedSession) = host.failure ?: PrototypeFeedFailure(
+        if (selection.sources[index].service == PrototypeService.TWITCH) PrototypeFailureReason.LOGIN_EXPIRED
+        else PrototypeFailureReason.PREPARATION_FAILED)
+
+    private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
+        if (failures[index] != null) return
+        failures[index] = failure
+        Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} failure=${failure.reason.name} http=${failure.httpStatus ?: 0}")
+        invalidatePlay()
+        playback?.setMember(NativeMixedSide.entries[index], null)
+        prepared[index] = false
+        surfaces.getOrNull(index)?.player = null
+        val host = sessions[index]
+        sessions = sessions.toMutableList().also { it[index] = null }
+        val closed = runCatching { host?.close() }.isSuccess && host?.cleanupFailed != true
+        if (!closed) {
+            cleanupFailed = true
+            budget?.stop()
+            failures.indices.filter { failures[it] == null }.forEach {
+                failFeed(it, PrototypeFeedFailure(PrototypeFailureReason.CLEANUP_FAILED))
+            }
+        }
+        if (NativeMixedSide.entries.all { playback?.member(it) == null }) focus?.release()
+        updateProgress()
+        viewer?.refresh()
     }
 
     private fun stopToPicker(message: String) {
@@ -318,10 +405,10 @@ open class PrototypeActivity : ComponentActivity() {
         budget?.stop()
         if (runCatching { viewer?.endSession() }.isFailure) cleanupFailed = true
         viewer = null
-        sessions.forEach { if (runCatching { it.close() }.isFailure) cleanupFailed = true }; sessions = emptyList()
-        pair?.close()
-        if (pair?.cleanupFailed == true) cleanupFailed = true
-        pair = null
+        playback?.close(); playback = null
+        surfaces.forEach { it.player = null }; surfaces = emptyList()
+        sessions.forEach { if (runCatching { it?.close() }.isFailure || it?.cleanupFailed == true) cleanupFailed = true }
+        sessions = listOf(null, null)
         if (runCatching { focus?.close() }.isFailure) cleanupFailed = true
         focus = null
         budget = null
@@ -339,7 +426,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
     override fun onPause() {
         resumed.set(false)
-        if (sessions.isNotEmpty()) { dispose(); resumeMessage = "Playback stopped while the app was in the background." }
+        if (budget != null) { dispose(); resumeMessage = "Playback stopped while the app was in the background." }
         super.onPause()
     }
     override fun onDestroy() { resumed.set(false); dispose(); worker.shutdownNow(); super.onDestroy() }

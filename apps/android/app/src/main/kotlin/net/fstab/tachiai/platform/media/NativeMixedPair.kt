@@ -267,6 +267,19 @@ internal class NativeMixedPair(
         if (transaction.resume) play()
     }
 
+    // A presentation borrowing its sessions may end coordination without ending
+    // either session or shared audio focus. Cancel automatic seek restoration;
+    // deliberately preserve each member's current transport state.
+    fun detach() {
+        if (closed) return
+        pending = null
+        recovery = null
+        busy = false
+        closed = true
+        requestedAdjustmentValid = false
+        status = "Pair coordination ended."
+    }
+
     override fun close() {
         if (closed) return
         pause()

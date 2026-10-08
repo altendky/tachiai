@@ -37,6 +37,34 @@ repos:
 
   - repo: local
     hooks:
+      - id: release-isolation-tests
+        name: Release manifest/assets isolation fixture tests
+        entry: uv run scripts/verify-release-isolation.py --self-test
+        language: system
+        files: '^scripts/verify-release-isolation\.py$|^apps/android/app/build\.gradle\.kts$'
+        pass_filenames: false
+
+      - id: abema-eme-startup-tests
+        name: ABEMA EME startup observer fixture tests
+        entry: node --test scripts/tests/abema-eme-startup.test.cjs
+        language: system
+        files: '^scripts/(abema-eme-startup\.js|tests/abema-eme-startup\.test\.cjs)$'
+        pass_filenames: false
+
+      - id: abema-inspection-self-tests
+        name: ABEMA inspection collector self-tests
+        entry: uv run scripts/abema-inspection.py --self-test
+        language: system
+        files: '^scripts/abema-inspection\.py$'
+        pass_filenames: false
+
+      - id: abema-eme-collector-self-tests
+        name: ABEMA EME collector self-tests
+        entry: uv run scripts/abema-eme-startup.py --self-test
+        language: system
+        files: '^scripts/(abema-eme-startup\.(py|js)|abema-inspection\.py)$'
+        pass_filenames: false
+
       - id: abema-cdn-review-tests
         name: ABEMA sanitized CDN review reader tests
         entry: node --test scripts/tests/abema-cdn-review.test.cjs

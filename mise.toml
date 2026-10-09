@@ -7,7 +7,7 @@ go = "1.27.2"
 java = "temurin-21"
 node = "24.21.0"
 python = "3.14.8"
-uv = "0.12.23"
+uv = "0.12.24"
 "pipx:pre-commit" = "4.6.2"
 "cargo:mdbook" = "0.5.4"
 

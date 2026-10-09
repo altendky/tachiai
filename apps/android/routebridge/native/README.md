@@ -68,13 +68,17 @@ vendor notice also describes toolchain components beyond the linked runtime.
 
 `scripts/build-android-routebridge.sh` invokes that helper, copies static archives
 from an external cache into the module's cgo ABI paths, then binds gomobile with
-`openvpn_validation`. Copies avoid host-only symlinks across container mounts.
+`openvpn_validation,openconnect_validation`. Copies avoid host-only symlinks
+across container mounts.
 The resulting `libgojni.so` files must have the expected machine, 16-KiB LOAD
-alignment, and only Android libc/libdl/libm/liblog dependencies. All license texts
+alignment, and only Android system and the reviewed dynamic OpenConnect
+closure dependencies. All license texts
 and notices are embedded in the AAR's `assets/routebridge-licenses` directory.
-The builder also creates `build/routebridge-openvpn-source.tar.gz` containing
-exact upstream archives, our native and Go sources/build recipes, notices and a
-relative-path SHA-256 manifest. CI uploads this companion with each signed debug
+The builder also creates `build/routebridge-native-source.tar.xz` containing
+both transports' exact upstream archives, application/native/Go sources, build
+recipes, notices, replacement/relink instructions and a relative-path SHA-256
+manifest. The [OpenConnect replacement instructions](../../openconnect-fixture/RELINKING.md)
+describe the dynamic library boundary. CI uploads this companion with each signed debug
 APK in the same artifact; it must remain available with redistributed binaries.
 
 ## Profile and ownership boundary

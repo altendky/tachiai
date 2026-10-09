@@ -4,9 +4,8 @@ import android.net.Uri
 import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.TransferListener
 import java.io.IOException
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
@@ -35,7 +34,7 @@ internal class BoundedMediaRequests(
     fun create(type: Int): Source = Source(type)
     override fun close() { budget.stop(); active.forEach { it.disconnect() }; active.clear() }
 
-    internal inner class Source(private val type: Int) : DataSource {
+    internal inner class Source(private val type: Int) : BaseDataSource(true) {
         private var connection: HttpsURLConnection? = null
         private var input: InputStream? = null
         private var source: URI? = null
@@ -43,26 +42,29 @@ internal class BoundedMediaRequests(
         private var remaining = C.LENGTH_UNSET.toLong()
         private var requestStarted = 0L
         private var responseHttp = 0
+        private var transferOpen = false
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
             budget.check()
             if (!canRequest() || clockMs() - requestStarted >= 30_000) throw IOException("Playback acceptance ended")
         }
 
-        override fun addTransferListener(transferListener: TransferListener) = Unit
         override fun getUri(): Uri? = source?.toString()?.toUri()
         override fun getResponseHeaders(): Map<String, List<String>> = emptyMap()
         override fun open(dataSpec: DataSpec): Long {
             try {
                 require(dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET && dataSpec.httpBody == null &&
                     dataSpec.httpRequestHeaders.isEmpty())
-                return openUri(URI(dataSpec.uri.toString()), dataSpec.position, dataSpec.length)
+                transferInitializing(dataSpec)
+                return openUri(URI(dataSpec.uri.toString()), dataSpec.position, dataSpec.length, dataSpec)
             } catch (_: Exception) { throw IOException("Native media request failed") }
         }
 
         // Android-free seam for deterministic transport tests, not a public player API.
-        internal fun openUri(uri: URI, position: Long = 0, length: Long = C.LENGTH_UNSET.toLong()): Long {
+        internal fun openUri(uri: URI, position: Long = 0, length: Long = C.LENGTH_UNSET.toLong(),
+            transferSpec: DataSpec? = null): Long {
             try {
+                check(connection == null && !transferOpen)
                 requestStarted = clockMs()
                 checkActive()
                 if (type == C.DATA_TYPE_DRM) {
@@ -122,6 +124,12 @@ internal class BoundedMediaRequests(
                 input = request.inputStream
                 readBytes = 0
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
+                // Only real Media3 opens report transfers; openUri remains the
+                // Android-free transport seam used by existing policy fixtures.
+                if (transferSpec != null) {
+                    transferOpen = true
+                    transferStarted(transferSpec)
+                }
                 return remaining
             } catch (_: Exception) {
                 close(); report(NativeMediaEvent.REQUEST_FAILED)
@@ -141,9 +149,11 @@ internal class BoundedMediaRequests(
                 readBytes += count
                 if (readBytes > limit) { report(NativeMediaEvent.LIMIT_REACHED); throw IOException() }
                 if (remaining >= 0) remaining -= count
+                if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)
                 return count
             } catch (_: Exception) {
+                close()
                 report(NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")
             }
@@ -153,9 +163,16 @@ internal class BoundedMediaRequests(
             connection = null
             try { input?.close() } catch (_: Exception) { /* no raw exception */ }
             input = null
-            request?.disconnect()
-            if (request != null) active.remove(request)
-            source = null
+            try {
+                request?.disconnect()
+            } finally {
+                if (request != null) active.remove(request)
+                source = null
+                if (transferOpen) {
+                    transferOpen = false
+                    transferEnded()
+                }
+            }
         }
     }
 }

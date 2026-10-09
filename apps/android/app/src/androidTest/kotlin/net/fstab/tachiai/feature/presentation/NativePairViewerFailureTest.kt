@@ -83,8 +83,9 @@ class NativePairViewerFailureTest {
                 assertEquals(1, plays)
                 assertEquals(NativeMixedSide.entries.toSet(), volumes)
                 button(viewer, "Timing").performClick()
-                assertFalse(button(viewer, "Advance A").isEnabled)
-                assertFalse(button(viewer, "Advance B").isEnabled)
+                val steps = descendants(viewer).filterIsInstance<Button>().filter { it.contentDescription?.startsWith("Advance ") == true }
+                assertEquals(10, steps.size)
+                assertTrue(steps.none { it.isEnabled })
                 fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
                 viewer.measure(View.MeasureSpec.makeMeasureSpec(dp(640), View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(dp(420), View.MeasureSpec.EXACTLY))

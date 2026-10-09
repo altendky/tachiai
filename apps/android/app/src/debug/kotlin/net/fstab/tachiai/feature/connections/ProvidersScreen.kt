@@ -66,7 +66,7 @@ private fun ProviderRouteEditor(provider: PrototypeService, initial: ProviderSet
             Text(route.title + if (route.mode == SourceRouteMode.SAVED_CONNECTION) " · connects at playback" else "")
         }
     }
-    Button(onClick = onRoutes, enabled = !busy) { Text("Add route · Proton / import") }
+    Button(onClick = onRoutes, enabled = !busy) { Text("Add route · setup / import") }
     Button(onClick = { choice?.let(onSave) }, enabled = !busy && choice != null) { Text("Save ${provider.title} setup") }
     TextButton(onClick = onBack, enabled = !busy) { Text("Back to providers") }
 }

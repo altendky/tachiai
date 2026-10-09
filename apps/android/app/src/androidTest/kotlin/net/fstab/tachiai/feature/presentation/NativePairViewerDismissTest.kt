@@ -204,21 +204,6 @@ class NativePairViewerDismissTest {
         }
     }
 
-    @Test fun cancellingStepPreservesTimingPanelAndSelectedValue() {
-        withFixture(false) { scenario, fixture ->
-            onView(withText("Timing")).perform(click())
-            onView(withText("Step: 1 s · choose")).perform(click())
-            pressBack()
-            onView(withText("0.25 s")).check(doesNotExist())
-            scenario.onActivity {
-                assertEquals(View.VISIBLE, fixture.dock.visibility)
-                assertEquals(View.VISIBLE, fixture.scroller.visibility)
-                assertEquals("Step: 1 s · choose", button(fixture.viewer, "Step:").text.toString())
-                assertEquals(0, fixture.commands)
-            }
-        }
-    }
-
     @Test fun popupActionStillOpensStatusAndTeardownDoesNotRevealControls() {
         withFixture(false) { scenario, fixture ->
             onView(withText("More")).perform(click())

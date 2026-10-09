@@ -16,6 +16,10 @@ Routes for importing another configuration. Importing never automatically
 selects it. Selecting a route is an explicit Save action. Per-feed route
 overrides are not exposed in this provider-default workflow yet.
 
+Routes offers guided Proton and Windscribe exports alongside the generic file
+and manual importer. **Add route · setup / import** in Providers opens those
+choices; neither setup link selects or starts a route.
+
 The subsequent [native transport implementation](source-network-routing.md#subsequent-native-transport-implementation)
 adds HTTP CONNECT and userspace WireGuard backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
@@ -244,6 +248,50 @@ selection, Smart Protocol or Stealth. Plan availability, configuration lifetime,
 revocation, simultaneous tunnel behavior and provider acceptance are not inferred
 from a successful import. A genuine browser handoff requires a separate
 user-controlled export test; no private account-site API is added.
+
+## Guided Windscribe setup
+
+**Set up Windscribe** opens the official
+[My Account WireGuard generator](https://windscribe.com/myaccount#configgenerator-wireguard)
+in an external browser, alongside the existing Proton action. Sign in there,
+choose Config Generator → WireGuard, then a location and port (Windscribe suggests
+443 when unsure). Generate a new key pair for this device and choose Download
+Config. Windscribe also permits selecting an existing generated key pair; using
+a separate pair avoids accidentally reusing one peer on multiple devices.
+Open or share the downloaded configuration file with Tachiai, then review and
+explicitly save it. Use **Import file (fallback)** if the browser offers neither
+handoff. Tachiai receives only the selected file, not provider passwords,
+browser cookies, an account session or Windscribe app state.
+
+Official guidance checked on 2026-10-08 says configuration generation requires
+a paid account: Full Pro includes all locations, while Build-A-Plan permits
+its paid locations. This flow uses WireGuard; Windscribe's OpenVPN and IKEv2
+exports are not supported by Tachiai's importer.
+[Windscribe export instructions](https://windscribe.com/knowledge-base/articles/where-do-i-access-my-wireguard-configs),
+[supported export protocols](https://windscribe.com/features/config-generators).
+
+The existing generic one-peer parser supports the fields documented in
+[Windscribe's manual setup guide](https://windscribe.com/knowledge-base/articles/manual-wireguard-router-setup-guide-dd-wrt),
+including a preshared key, DNS IP, interface address and endpoint. The added
+synthetic fixtures use invented keys and an `.example.test` endpoint. They
+cover parser canonicalization/redaction and the warm Share preview path with
+keys hidden and explicit save still required. They are not genuine exported
+configurations or evidence that a Windscribe connection works.
+
+Public documentation establishes the export steps and plan requirements. Local
+Android JVM tests, lint, instrumentation compilation, release isolation and both
+APK assemblies passed; both certificates matched the shared debug identity.
+All 13 connection screen, warm handoff, provider and historical source-editor
+instrumentation tests passed on a separate clean Android 16/API 36 x86-64
+emulator. The historical restoration test now dismisses the keyboard and checks
+selection before and after restoration, distinguishing a missed tap from a
+restoration defect. The persistent development emulator was untouched.
+
+No authenticated browser export, actual Windscribe file handoff or Windscribe
+tunnel/playback observation was performed. Warm handoff used synthetic files;
+it does not establish provider connectivity. Importing does not control
+Windscribe's app, provide automatic server selection, or establish endpoint
+reachability or content availability.
 
 ## Supported data and boundaries
 

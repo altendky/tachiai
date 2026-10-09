@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.performScrollTo
+import java.util.Base64
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
@@ -44,6 +45,15 @@ class ConnectionProfilesHandoffTest {
         launchClean().use {
             deliver(Intent.ACTION_SEND, "wireguard")
             awaitPreview("Endpoint: vpn.example.test:51820")
+        }
+    }
+
+    @Test fun windscribeShapedSharedFileUsesExistingPreviewAndHidesKeys() {
+        launchClean().use {
+            deliver(Intent.ACTION_SEND, "windscribe")
+            awaitPreview("Endpoint: windscribe.example.test:443")
+            val syntheticKey = Base64.getEncoder().encodeToString(ByteArray(32) { (it + 1).toByte() })
+            compose.onNodeWithText(syntheticKey, substring = true).assertDoesNotExist()
         }
     }
 

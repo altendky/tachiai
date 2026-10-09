@@ -54,7 +54,7 @@ class ConnectionProfilesActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this) { if (draft != null) discard() else finish() }
         setContent {
             TachiaiPrototypeTheme {
-                ConnectionProfilesScreen(profiles, draft, busy, message, ::openProton,
+                ConnectionProfilesScreen(profiles, draft, busy, message, ::openProton, ::openWindscribe,
                     { picker.launch(arrayOf("*/*")) },
                     { text -> loadDraft { parseConnectionProfile(text.toByteArray(Charsets.UTF_8)) } },
                     ::save, ::discard, ::remove, ::finish)
@@ -160,6 +160,11 @@ class ConnectionProfilesActivity : ComponentActivity() {
     private fun openProton() {
         try { startActivity(Intent(Intent.ACTION_VIEW, "https://account.protonvpn.com/downloads".toUri())) }
         catch (_: Exception) { message = "No browser could open Proton. Use your browser to visit account.protonvpn.com → Downloads." }
+    }
+
+    private fun openWindscribe() {
+        try { startActivity(Intent(Intent.ACTION_VIEW, "https://windscribe.com/myaccount#configgenerator-wireguard".toUri())) }
+        catch (_: Exception) { message = "No browser could open Windscribe. Use your browser to visit windscribe.com → My Account → Config Generator → WireGuard." }
     }
 
     override fun onDestroy() {

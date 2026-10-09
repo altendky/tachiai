@@ -52,7 +52,7 @@ internal fun SourceSetupScreen(source: PrototypeSource, initial: SourceSetup, pr
         Text("These are the four existing live/replay resources. Channel and replay browsing are not implemented yet.")
         OutlinedTextField(name, { if (it.length <= 64) name = it }, label = { Text("Source name · max 64 characters") }, singleLine = true, enabled = !busy)
         Text("System network follows Android’s current connection, which may already include a VPN. Saved profiles are configured only: their playback routing is not implemented yet.")
-        Button(onClick = onImport, enabled = !busy) { Text("Add connection · Proton / import") }
+        Button(onClick = onImport, enabled = !busy) { Text("Add connection · setup / import") }
         RouteOptions("Source default connection", default, profiles, false, !busy) { default = it }
         Text("Optional feed overrides let two copies of this source use different connections. A/B identifies the feeds, not primary/floating video.")
         RouteOptions("Feed A connection", a, profiles, true, !busy) { a = it }

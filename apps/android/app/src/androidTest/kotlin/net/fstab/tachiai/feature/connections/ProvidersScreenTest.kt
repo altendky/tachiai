@@ -38,7 +38,7 @@ class ProvidersScreenTest {
         } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().performClick()
-        compose.onNodeWithText("Add route · Proton / import").performScrollTo().performClick()
+        compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         restoration.emulateSavedInstanceStateRestore()
         compose.runOnIdle { assertTrue(imported); assertNull(saved) }
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().assertIsSelected()
@@ -75,7 +75,7 @@ class ProvidersScreenTest {
         } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().performClick()
-        compose.onNodeWithText("Add route · Proton / import").performScrollTo().performClick()
+        compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         compose.onNodeWithText("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().assertIsNotSelected()
         compose.onNodeWithText("Save ABEMA setup").performScrollTo().assertIsNotEnabled()

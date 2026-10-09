@@ -6,7 +6,11 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.StateRestorationTester
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.test.espresso.Espresso.closeSoftKeyboard
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.ConnectionKind
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -40,15 +44,23 @@ class SourceSetupScreenTest {
 
     @Test fun recreationRetainsOnlyNonsecretUnsavedSetupMetadata() {
         val restoration = StateRestorationTester(compose)
+        lateinit var focusManager: FocusManager
         var saved: SourceSetup? = null
         val connection = ConnectionSummary("12345678-1234-1234-1234-123456789abc", "Proton Japan", ConnectionKind.WIREGUARD, "fixture.example.test:51820")
         restoration.setContent { TachiaiPrototypeTheme {
+            focusManager = LocalFocusManager.current
             SourceSetupScreen(PrototypeSource.ABEMA_REPLAY, SourceSetup("Sumo"), listOf(connection), false, null,
                 {}, { saved = it }, {})
         } }
         compose.onNodeWithText("Source name · max 64 characters").performTextReplacement("My sumo")
+        // Settle IME/inset changes before scrolling and tapping the route radio button.
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
+        closeSoftKeyboard()
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("Source default connection: Proton Japan").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Source default connection: Proton Japan").assertIsSelected()
         restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithContentDescription("Source default connection: Proton Japan").assertIsSelected()
         compose.runOnIdle { assertNull(saved) }
         compose.onNodeWithText("Save source setup").performScrollTo().performClick()
         compose.runOnIdle {

@@ -3,6 +3,8 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        # Retain upstream license notices byte-for-byte.
+        exclude: '^apps/android/routebridge/licenses/'
       - id: end-of-file-fixer
       - id: check-toml
       - id: check-yaml

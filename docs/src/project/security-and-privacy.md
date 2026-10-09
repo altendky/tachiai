@@ -4,7 +4,8 @@ Tachiai loads authenticated third-party pages and therefore handles sensitive
 browser state even though it does not operate an account service.
 
 The debug-only [connection importer](connection-import.md) separately handles
-user-exported WireGuard private keys and optional proxy credentials. It uses a
+user-exported WireGuard keys, inline OpenVPN certificates/private keys and
+optional proxy credentials. It uses a
 distinct encrypted no-backup record, explicit preview/save and bounded file
 reads; it does not collect Proton account passwords, copy browser state or
 activate a network route by importing or saving. The subsequently requested

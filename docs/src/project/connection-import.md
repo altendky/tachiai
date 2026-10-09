@@ -94,7 +94,8 @@ and manual importer. **Add route · setup / import** in Providers opens those
 choices; neither setup link selects or starts a route.
 
 The subsequent [native transport implementation](source-network-routing.md#subsequent-native-transport-implementation)
-adds HTTP CONNECT, SOCKS5 and userspace WireGuard backends to the cached native viewer.
+adds HTTP CONNECT, SOCKS5, userspace WireGuard and certificate-only OpenVPN
+backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
 its transport explicitly. System network retains the existing playback path.
 The transport integration added no provider login, new stream or DRM behavior.
@@ -105,7 +106,8 @@ contents were inspected, and that report does not establish an active tunnel.
 
 ### Route protocol boundaries
 
-The debug route registry currently registers WireGuard, HTTP CONNECT and SOCKS5.
+The debug route registry currently registers WireGuard, HTTP CONNECT, SOCKS5
+and certificate-only OpenVPN.
 Each handler owns format recognition, strict configuration validation, safe
 setup labels, canonical configuration, sharing/conflict identities and backend
 creation. The generic session owns the authenticated loopback proxy, HTTPS
@@ -139,6 +141,59 @@ APK certificates matched the shared debug identity. All six existing importer
 screen and warm-handoff tests passed on a separate clean Android 16/API 36
 x86-64 emulator. Registry/backend tests use controlled fixtures and do not
 establish a genuine tunnel or provider playback result.
+
+### OpenVPN configuration
+
+The certificate-only prototype accepts one OpenVPN profile within the existing
+8 KiB UTF-8 input and total protected-storage bounds. It requires `client`,
+`dev tun`, `proto udp` or `proto tcp-client`, one `remote NUMERIC_IP PORT`,
+`remote-cert-tls server`, `verify-x509-name NAME name`, `tls-version-min 1.2`
+or `1.3`, and inline `<ca>`, `<cert>` and unencrypted `<key>` blocks.
+`nobind` is optional. Only whole-line comments are accepted. The server name
+is verified independently of its numeric transport address. Hostname remotes
+are unsupported because the upstream bootstrap resolver does not provide
+confirmed cancellable worker termination.
+
+Unknown/duplicate options, passwords, external files, scripts/plugins, encrypted
+keys, authentication challenges, TAP, compression directives, `tls-auth` and
+`tls-crypt` are rejected. Standard commercial-provider exports that require
+username/password authentication are outside this subset. The Windscribe setup
+flow continues to use its WireGuard export.
+
+Import preview hides certificates, private keys and the certificate-name
+directive; it exposes only the numeric endpoint. Import/Save validates the
+bounded grammar, not cryptographic validity or a working connection. The native
+engine must validate the actual inline key/certificates and complete the TLS
+handshake when playback starts. Protected storage and provider assignment use
+the existing generic route records; credentials are never copied to provider
+metadata or saved presentations. Canonical option order, port and IP spelling
+share a route; any certificate/key/security-option change changes its identity.
+
+OpenVPN3 runs through an owned datagram socketpair and private userspace stack,
+without an Android system VPN. Destination DNS uses only the tunnel's assigned
+DNS; unsupported pushed routes/DNS/proxy settings fail instead of falling back
+to System. Normal origin HTTPS verification and the reviewed destination
+allowlist remain unchanged. Preparation has an independent 30-second deadline.
+Stop/background/destruction signal cancellation before the backend is published.
+Unconfirmed bounded native cleanup retains its worker safely and prevents
+another OpenVPN initialization until process shutdown.
+
+The pinned native source/build recipe and licensing provenance are recorded in
+[`routebridge/native/README.md`](../../../apps/android/routebridge/native/README.md).
+Every distributed debug APK must retain the embedded notices and its matching
+`routebridge-openvpn-source.tar.gz` companion. Owned tunnel results do not establish
+commercial-provider compatibility, media playback, physical-device performance
+or Android TV behavior.
+
+Nine new parser/protected-store JVM tests passed alongside the complete Android
+JVM suite, lint, release isolation, instrumentation compilation and both APK
+assemblies. Both certificates match the shared debug identity. All 41 combined
+importer/provider/picker/JNI tests passed on the disposable Android 16/API 36
+x86-64 emulator, including the registered OpenVPN preview's redaction and real
+explicit Save tap. Each of the three owned native tunnel cases passed with
+outer UDP and TCP on that emulator, and with TCP on the measured 16 KiB emulator.
+The actual ARM64 and x86-64 JNI libraries have verified 16 KiB LOAD and APK data
+alignment; this does not claim ARM64 execution.
 
 ### SOCKS5 configuration
 

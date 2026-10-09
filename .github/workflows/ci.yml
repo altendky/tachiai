@@ -62,7 +62,10 @@ jobs:
           packages: platform-tools platforms;android-37.2 build-tools;37.0.0 ndk;30.0.16248370
 
       - name: Build and test route transports
-        run: bash scripts/build-android-routebridge.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build perl
+          bash scripts/build-android-routebridge.sh
 
       - working-directory: apps/android
         run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation
@@ -97,12 +100,14 @@ jobs:
         if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: rm -f "$HOME/.android/debug.keystore"
 
-      - name: Upload debug APK
+      - name: Upload debug APK and native source companion
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tachiai-debug-${{ github.sha }}
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            apps/android/app/build/outputs/apk/debug/app-debug.apk
+            apps/android/routebridge/build/routebridge-openvpn-source.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

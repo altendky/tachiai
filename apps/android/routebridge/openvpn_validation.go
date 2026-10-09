@@ -11,7 +11,7 @@ package routebridge
 #cgo android LDFLAGS: -lc++_static -lc++abi -lunwind -ldl -lm -Wl,--exclude-libs,ALL
 #include <stdlib.h>
 #include <string.h>
-#include "adapter.h"
+#include "native/adapter.h"
 */
 import "C"
 

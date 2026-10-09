@@ -35,3 +35,16 @@ The Android native backend pins OpenSSL 3.5.5 (Apache-2.0,
 and unwind notices are preserved in the full vendor
 `licenses/NDK30-LLVM-NOTICE.txt`. `native/README.md` and the native build helper
 identify immutable source archives, hashes and the accompanying source payload.
+
+The certificate-only OpenConnect backend dynamically packages OpenConnect 9.21
+(LGPL-2.1), GnuTLS 3.8.13 (LGPL-2.1-or-later), Nettle 3.10.2 and GMP 6.3.0
+(the LGPL-3-or-later options), libxml2 2.15.4 (MIT) and zlib 1.3.2 (zlib license).
+The selected combined dependency path uses the LGPL-3 license option; the
+application retains its existing licensing. Exact archive pins, modifications
+and per-file/bundled source notices are in `../openconnect-fixture/`, including
+GnuTLS's bundled libtasn1/unistring. The AAR embeds the retained license texts
+under `assets/routebridge-licenses/openconnect/`. Every distributed debug APK
+accompanies the matching `routebridge-native-source.tar.xz`, which contains the
+exact application/native sources and replacement/rebuild instructions in
+`RELINKING.md`. Optional GPL-only tools, Nettle generators and GnuTLS's disabled
+OpenSSL compatibility library are not linked.

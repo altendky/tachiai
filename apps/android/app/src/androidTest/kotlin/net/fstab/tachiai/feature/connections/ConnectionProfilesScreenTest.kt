@@ -10,10 +10,18 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.test.espresso.Espresso.closeSoftKeyboard
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.ConnectionProfile
+import net.fstab.tachiai.platform.network.ConnectionProfileStore
+import net.fstab.tachiai.platform.network.ConnectionSummary
 import net.fstab.tachiai.platform.network.parseConnectionProfile
+import net.fstab.tachiai.platform.network.routeProtocols
+import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -116,5 +124,78 @@ class ConnectionProfilesScreenTest {
         settleNamedPreview("Owned VPN")
         compose.onNodeWithText("Save route").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("Owned VPN", saved) }
+    }
+
+    @Test fun openConnectManualPreviewRedactsMaterialAndOnlyExplicitSavePersists() {
+        // Grammar-only PEM: parsing and saving cannot validate these synthetic
+        // bodies cryptographically or authenticate to any gateway.
+        val configuration = """
+            [OpenConnect]
+            Server=https://vpn.example.test/private-sentinel/path
+            Bootstrap=192.0.2.10
+            <ca>
+            -----BEGIN CERTIFICATE-----
+            c3ludGhldGljLWNh
+            -----END CERTIFICATE-----
+            </ca>
+            <cert>
+            -----BEGIN CERTIFICATE-----
+            c3ludGhldGljLWNlcnQ=
+            -----END CERTIFICATE-----
+            </cert>
+            <key>
+            -----BEGIN PRIVATE KEY-----
+            c3ludGhldGljLWtleQ==
+            -----END PRIVATE KEY-----
+            </key>
+        """.trimIndent()
+        var stored: ByteArray? = null
+        var writes = 0
+        val secrets = object : PrivateSecretStore {
+            override fun read() = stored?.copyOf()
+            override fun write(plaintext: ByteArray) { stored = plaintext.copyOf(); writes++ }
+        }
+        val store = ConnectionProfileStore(secrets)
+        compose.setContent { TachiaiPrototypeTheme {
+            focusManager = LocalFocusManager.current
+            var draft by remember { mutableStateOf<ConnectionProfile?>(null) }
+            var profiles by remember { mutableStateOf(emptyList<ConnectionSummary>()) }
+            ConnectionProfilesScreen(profiles, draft, false, null, {}, {}, {},
+                { draft = parseConnectionProfile(it.toByteArray()) },
+                { name ->
+                    profiles = store.add(name, checkNotNull(draft))
+                    saved = name
+                    draft = null
+                }, { draft = null }, {}, {})
+        } }
+        compose.onNodeWithText("Paste / enter manually").performScrollTo().performClick()
+        compose.onNodeWithText(routeProtocols.formatLabel).performScrollTo().performTextInput(configuration)
+        compose.runOnIdle { focusManager.clearFocus(force = true); assertNull(stored); assertEquals(0, writes) }
+        closeSoftKeyboard()
+        compose.waitForIdle()
+        compose.onNodeWithText("Preview import").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("OpenConnect\nEndpoint: vpn.example.test:443\nPrivate keys and credentials: hidden")
+            .performScrollTo().assertExists()
+        val hidden = listOf("private-sentinel", "192.0.2.10", "c3ludGhldGljLWNh", "c3ludGhldGljLWNlcnQ=", "c3ludGhldGljLWtleQ==", "BEGIN PRIVATE KEY")
+        hidden.forEach { compose.onNodeWithText(it, substring = true).assertDoesNotExist() }
+        compose.onNodeWithText("Save route").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle { assertNull(stored); assertEquals(0, writes); assertTrue(store.summaries().isEmpty()) }
+        compose.onNodeWithText("Route name").performScrollTo().performTextInput("Owned OpenConnect")
+        settleNamedPreview("Owned OpenConnect")
+        compose.runOnIdle { assertNull(stored); assertEquals(0, writes) }
+        compose.onNodeWithText("Save route").performScrollTo().performClick()
+        compose.onNodeWithText("Owned OpenConnect · OpenConnect\nvpn.example.test:443\nSaved only · not connected")
+            .performScrollTo().assertExists()
+        hidden.forEach { compose.onNodeWithText(it, substring = true).assertDoesNotExist() }
+        compose.runOnIdle {
+            assertEquals("Owned OpenConnect", saved)
+            assertEquals(1, writes)
+            val restored = ConnectionProfileStore(secrets)
+            val summary = restored.summaries().single()
+            assertEquals("openconnect", summary.kind.id)
+            assertEquals("vpn.example.test:443", summary.endpoint)
+            assertEquals(parseConnectionProfile(configuration.toByteArray()).configuration, restored.selected(summary.id).configuration)
+            assertEquals(1, writes)
+        }
     }
 }

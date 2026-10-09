@@ -13,6 +13,24 @@ import routebridge.Routebridge
 // loopback discard port 9; no provider request, imported profile, system VPN or
 // real peer is used. WireGuard initialization is NOT a successful handshake.
 class NativeRouteBindingTest {
+    @Test(timeout = 20_000) fun actualOpenConnectPreparationRejectsConfigurationWithoutPublishingRoute() {
+        assertNotSame(Looper.getMainLooper(), Looper.myLooper())
+        val result = Routebridge.newOpenConnectPrepared("", "", "", "", "", "owned_username_012345", "owned_password_012345",
+            "owned_realm_01234567", "origin.owned-route.test", Routebridge.newRoutePreparation())
+        assertEquals(1, result.code.toInt())
+        assertNull(result.route)
+    }
+
+    @Test(timeout = 20_000) fun actualOpenConnectPreCancelledOwnerDoesNotStartNativeConnection() {
+        val owner = Routebridge.newRoutePreparation()
+        owner.cancel()
+        val result = Routebridge.newOpenConnectPrepared("", "", "", "", "", "owned_username_012345", "owned_password_012345",
+            "owned_realm_01234567", "origin.owned-route.test", owner)
+        assertEquals(4, result.code.toInt())
+        assertNull(result.route)
+        owner.cancel()
+    }
+
     @Test(timeout = 20_000) fun actualOpenVpnPreparationRejectsConfigurationWithoutPublishingRoute() {
         assertNotSame(Looper.getMainLooper(), Looper.myLooper())
         val result = Routebridge.newOpenVPNPrepared("client\n", "owned_username_012345", "owned_password_012345",

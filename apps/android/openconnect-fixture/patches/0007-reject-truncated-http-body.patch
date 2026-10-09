@@ -1,0 +1,26 @@
+--- a/http.c
++++ b/http.c
+@@ -412,7 +412,9 @@
+ 			i = vpninfo->ssl_read(vpninfo, body->data + body->pos, bodylen - body->pos);
+-			if (i < 0) {
++			/* Modified by Tachiai, 2026-10-09: TLS EOF before the
++			 * declared length is an error, never a zero-progress loop. */
++			if (i <= 0) {
+ 				vpn_progress(vpninfo, PRG_ERR,
+ 					     _("Error reading HTTP response body\n"));
+-				ret = i;
++				ret = i ? i : -EIO;
+ 				goto err;
+ 			}
+@@ -469,7 +471,9 @@
+ 				i = vpninfo->ssl_read(vpninfo, body->data + body->pos, chunklen);
+-				if (i < 0) {
++				/* Modified by Tachiai, 2026-10-09: reject incomplete
++				 * chunks at TLS EOF before polling/cancellation can spin. */
++				if (i <= 0) {
+ 					vpn_progress(vpninfo, PRG_ERR,
+ 						     _("Error reading HTTP response body\n"));
+-					ret = i;
++					ret = i ? i : -EIO;
+ 					goto err;
+ 				}

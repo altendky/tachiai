@@ -1,0 +1,17 @@
+--- a/auth.c
++++ b/auth.c
+@@ -701,2 +701,12 @@
+-			http_add_cookie(vpninfo, "webvpn",
+-					(const char *)xmlNodeGetContent(xml_node), 1);
++			/* Modified by Tachiai, 2026-10-09: http_add_cookie copies
++			 * the XML allocation; release the temporary token too. */
++			xmlChar *token = xmlNodeGetContent(xml_node);
++			if (!token) {
++				ret = -ENOMEM;
++			} else {
++				ret = http_add_cookie(vpninfo, "webvpn", (char *)token, 1);
++				volatile xmlChar *wipe = token;
++				size_t count = strlen((char *)token);
++				while (count--) *wipe++ = 0;
++				xmlFree(token);
++			}

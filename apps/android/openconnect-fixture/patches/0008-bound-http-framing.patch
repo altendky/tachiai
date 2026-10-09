@@ -1,0 +1,250 @@
+--- a/http.c
++++ b/http.c
+@@ -177,11 +177,15 @@
+  * an empty line (signifying end of headers) is received. Will only
+  * return success when hdrbuf is valid. */
+ static int read_http_header(struct openconnect_info *vpninfo, char *nextchar,
+-			    struct oc_text_buf *hdrbuf, int allow_cont)
++			    struct oc_text_buf *hdrbuf, int allow_cont, unsigned *header_bytes)
+ {
+ 	int eol = 0;
+ 	int ret;
+ 	char c;
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: bounded HTTP metadata. */
++	unsigned continuations = 0;
++#endif
+ 
+ 
+ 	buf_truncate(hdrbuf);
+@@ -198,6 +202,14 @@
+ 			return ret;
+ 		if (ret != 1)
+ 			return -EINVAL;
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		if (++*header_bytes > 8192)
++			return -E2BIG;
++		if (!c)
++			return -EINVAL;
++#else
++		(void)header_bytes;
++#endif
+ 
+ 		/* If we were looking for a continuation line and didn't get it,
+ 		 * stash the character we *did* get into *nextchar for next time. */
+@@ -205,6 +217,10 @@
+ 			*nextchar = c;
+ 			return buf_error(hdrbuf);
+ 		}
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		if (eol && ++continuations > 16)
++			return -E2BIG;
++#endif
+ 		eol = 0;
+ 
+ 	skip_first:
+@@ -223,7 +239,13 @@
+ 
+ 			return buf_error(hdrbuf);
+ 		}
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		if (hdrbuf->pos >= 1024)
++			return -E2BIG;
++#endif
+ 		buf_append_bytes(hdrbuf, &c, 1);
++		if (buf_error(hdrbuf))
++			return buf_error(hdrbuf);
+ 	}
+ 	return buf_error(hdrbuf);
+ }
+@@ -242,6 +264,12 @@
+ 	int result;
+ 	int ret = -EINVAL;
+ 	int i;
++	unsigned header_bytes = 0;
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: budgets survive interim responses. */
++	unsigned header_count = 0;
++	int length_seen = 0, transfer_seen = 0;
++#endif
+ 
+ 	buf_truncate(body);
+ 
+@@ -250,12 +278,18 @@
+ 	 * what read_http_header() uses for its return code anyway). */
+ 	buf_append_bytes(hdrbuf, "\0", 1);
+  cont:
+-	ret = read_http_header(vpninfo, &nextchar, hdrbuf, 0);
++	ret = read_http_header(vpninfo, &nextchar, hdrbuf, 0, &header_bytes);
+ 	if (ret) {
+ 		vpn_progress(vpninfo, PRG_ERR, _("Error reading HTTP response: %s\n"),
+ 			     strerror(-ret));
+ 		goto err;
+ 	}
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	if (++header_count > 64) {
++		ret = -E2BIG;
++		goto err;
++	}
++#endif
+ 
+ 	if (!strncmp(hdrbuf->data, "HTTP/1.0 ", 9))
+ 		closeconn = 1;
+@@ -276,7 +310,7 @@
+ 		char *colon;
+ 		char *hdrline;
+ 
+-		ret = read_http_header(vpninfo, &nextchar, hdrbuf, 1);
++		ret = read_http_header(vpninfo, &nextchar, hdrbuf, 1, &header_bytes);
+ 		if (ret) {
+ 			vpn_progress(vpninfo, PRG_ERR, _("Error reading HTTP response: %s\n"),
+ 				     strerror(-ret));
+@@ -284,6 +318,12 @@
+ 		}
+ 
+ 		/* Empty line ends headers */
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		if (++header_count > 64) {
++			ret = -E2BIG;
++			goto err;
++		}
++#endif
+ 		if (!hdrbuf->pos)
+ 			break;
+ 
+@@ -361,7 +401,27 @@
+ 			}
+ 		}
+ 		if (!strcasecmp(hdrline, "Content-Length")) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			/* Modified by Tachiai, 2026-10-09: no atoi overflow or
++			 * ambiguous framing; validate before any body allocation. */
++			unsigned length = 0;
++			const unsigned char *digit = (unsigned char *)colon;
++			if (length_seen++ || transfer_seen || !*digit) {
++				ret = -EINVAL;
++				goto err;
++			}
++			for (; *digit; digit++) {
++				if (*digit < '0' || *digit > '9' ||
++				    length > (65536U - (*digit - '0')) / 10U) {
++					ret = -E2BIG;
++					goto err;
++				}
++				length = length * 10 + (*digit - '0');
++			}
++			bodylen = length;
++#else
+ 			bodylen = atoi(colon);
++#endif
+ 			if (bodylen < 0) {
+ 				vpn_progress(vpninfo, PRG_ERR,
+ 					     _("Response body has negative size (%d)\n"),
+@@ -371,6 +431,12 @@
+ 			}
+ 		}
+ 		if (!strcasecmp(hdrline, "Transfer-Encoding")) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			if (transfer_seen++ || length_seen) {
++				ret = -EINVAL;
++				goto err;
++			}
++#endif
+ 			if (!strcasecmp(colon, "chunked"))
+ 				bodylen = BODY_CHUNKED;
+ 			else {
+@@ -386,8 +452,14 @@
+ 	}
+ 
+ 	/* Handle 'HTTP/1.1 100 Continue'. Not that we should ever see it */
+-	if (result == 100)
++	if (result == 100) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		length_seen = transfer_seen = 0;
++		bodylen = BODY_HTTP10;
++		closeconn = 0;
++#endif
+ 		goto cont;
++	}
+ 
+ 	/* On successful CONNECT or upgrade, there is no body. Return success */
+ 	if (connect && (result == 200 || result == 101)) {
+@@ -423,11 +495,27 @@
+ 	} else if (bodylen == BODY_CHUNKED) {
+ 		char clen_buf[16];
+ 		/* ... else, chunked */
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		while (1) {
++			i = read_http_header(vpninfo, &nextchar, hdrbuf, 0, &header_bytes);
++			if (i || !hdrbuf->pos || hdrbuf->pos >= sizeof(clen_buf)) {
++				ret = i ? i : -E2BIG;
++				goto err;
++			}
++			memcpy(clen_buf, hdrbuf->data, hdrbuf->pos + 1);
++#else
+ 		while ((i = vpninfo->ssl_gets(vpninfo, clen_buf, sizeof(clen_buf)))) {
++#endif
+ 			char *endp;
+ 			int lastchunk = 0;
+ 			long chunklen;
+ 
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			if (!isxdigit((unsigned char)clen_buf[0])) {
++				ret = -EINVAL;
++				goto err;
++			}
++#endif
+ 			if (i < 0) {
+ 				vpn_progress(vpninfo, PRG_ERR,
+ 					     _("Error fetching chunk header\n"));
+@@ -463,6 +551,12 @@
+ 				ret = -EINVAL;
+ 				goto err;
+ 			}
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			if (body->pos > 65536 || chunklen > 65536 - body->pos) {
++				ret = -E2BIG;
++				goto err;
++			}
++#endif
+ 			if (buf_ensure_space(body, chunklen + 1)) {
+ 				ret = buf_error(body);
+ 				goto err;
+@@ -481,6 +575,13 @@
+ 				body->pos += i;
+ 			}
+ 		skip:
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			i = read_http_header(vpninfo, &nextchar, hdrbuf, 0, &header_bytes);
++			if (i || hdrbuf->pos) {
++				ret = i ? i : -EINVAL;
++				goto err;
++			}
++#else
+ 			if ((i = vpninfo->ssl_gets(vpninfo, clen_buf, sizeof(clen_buf)))) {
+ 				if (i < 0) {
+ 					vpn_progress(vpninfo, PRG_ERR,
+@@ -494,6 +595,7 @@
+ 				}
+ 				goto err;
+ 			}
++#endif
+ 
+ 			if (lastchunk)
+ 				break;
+@@ -509,6 +611,15 @@
+ 
+ 		/* HTTP 1.0 response. Just eat all we can in 4KiB chunks */
+ 		while (1) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			if (body->pos >= 65536) {
++				char overflow;
++				i = vpninfo->ssl_read(vpninfo, &overflow, 1);
++				if (i < 0) { ret = i; goto err; }
++				if (i > 0) { ret = -E2BIG; goto err; }
++				break;
++			}
++#endif
+ 			if (buf_ensure_space(body, 4096 + 1)) {
+ 				ret = buf_error(body);
+ 				goto err;

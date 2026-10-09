@@ -1,0 +1,35 @@
+--- a/http.c
++++ b/http.c
+@@ -406,11 +406,15 @@
+ 			 * ambiguous framing; validate before any body allocation. */
+ 			unsigned length = 0;
+ 			const unsigned char *digit = (unsigned char *)colon;
+-			if (length_seen++ || transfer_seen || !*digit) {
++			/* Modified by Tachiai, 2026-10-09: trim HTTP OWS only. */
++			while (*digit == 32 || *digit == 9) digit++;
++			const unsigned char *last = digit + strlen((const char *)digit);
++			while (last > digit && (last[-1] == 32 || last[-1] == 9)) last--;
++			if (length_seen++ || transfer_seen || digit == last) {
+ 				ret = -EINVAL;
+ 				goto err;
+ 			}
+-			for (; *digit; digit++) {
++			for (; digit < last; digit++) {
+ 				if (*digit < '0' || *digit > '9' ||
+ 				    length > (65536U - (*digit - '0')) / 10U) {
+ 					ret = -E2BIG;
+@@ -624,7 +628,14 @@
+ 				ret = buf_error(body);
+ 				goto err;
+ 			}
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			/* Modified by Tachiai, 2026-10-09: constrain each read. */
++			int remaining = 65536 - body->pos;
++			i = vpninfo->ssl_read(vpninfo, body->data + body->pos,
++					 remaining < 4096 ? remaining : 4096);
++#else
+ 			i = vpninfo->ssl_read(vpninfo, body->data + body->pos, 4096);
++#endif
+ 			if (i < 0) {
+ 				/* Error */
+ 				ret = i;

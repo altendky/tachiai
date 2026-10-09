@@ -3,5 +3,5 @@
 extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b']
 
 [files]
-# Upstream legal notices and copyright names must remain verbatim.
-extend-exclude = ['apps/android/routebridge/licenses/**']
+# Upstream notices, copyright names and patch context must remain verbatim.
+extend-exclude = ['apps/android/routebridge/licenses/**', 'apps/android/openconnect-fixture/notices/**', 'apps/android/openconnect-fixture/COPYING.LGPL', 'apps/android/openconnect-fixture/patches/**']

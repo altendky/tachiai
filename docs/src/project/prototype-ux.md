@@ -104,6 +104,49 @@ AAC/48 kHz, then at 1920 × 1080 AVC/4 Mb/s with the same audio format. Both
 native players reported playing at 1080p. No provider login, route settings or
 licensing behavior was changed.
 
+## Hard-failure recovery
+
+Unconfirmed playback or route cleanup blocks **Open viewer** and presents one
+recovery dialog while the prototype Activity is resumed. The dialog names a
+closed recovery category, explains the blocked operation and offers **Ignore**
+and **Restart**. Ignore acknowledges the incident; it never clears the cleanup
+guard or permits another viewing session. **Recovery options** remains available
+on the picker, along with Routes and readable Providers setup. Ordinary route
+shutdown temporarily disables playback without raising a hard-failure incident.
+The first incident persists across Activity recreation; background dismissal is
+not an acknowledgement and repeated callbacks do not open overlapping dialogs.
+
+Restart writes a bounded private, one-use picker checkpoint, launches the normal
+main menu and terminates only the originating dedicated prototype process using
+Android's [process termination API](https://developer.android.com/reference/android/os/Process#killProcess(int)).
+It does not clear saved routes, provider instances, authorization, cached bundles
+or diagnostics. The next fresh prototype restores selected, cleared and stale
+instance choices without starting playback. A malformed checkpoint leaves both
+feeds unassigned and requires recovery rather than selecting default identities.
+Checkpoint or main-menu launch failure keeps the process alive and playback
+blocked with fixed safe feedback. Neither raw exception messages nor provider
+URLs enter the dialog. This recovery presentation is independent of the
+[failure journal](failure-diagnostics.md) and does not repair the underlying
+cleanup failure itself.
+
+October 9 verification used the owned disposable Android 16/API 36 x86-64
+emulator, with no provider playback or route connection. Fifteen JVM cases,
+thirteen picker cases (including a 240 dp recovery viewport) and ten actual
+dedicated-process cleanup/recreation cases passed. A System UI ANR initially
+held input focus; after closing that system error, the unchanged interaction
+tests passed. This was a test-device condition, not a playback recovery result.
+
+A separate ordinary-app run used an intentionally malformed private checkpoint
+to trigger the real dialog on a 640 × 320 landscape screen. Ignore kept recovery
+active; scrolling allowed replay A to be chosen while B stayed unassigned.
+Restart removed the old prototype PID, preserved the main PID and returned to
+the main menu. A fresh prototype PID restored those choices and consumed the
+checkpoint. Synthetic encrypted route, provider and authorization records and
+an owned cache-state sentinel kept identical checksums; subsequent store reads
+and decryption passed. This checks shared recovery/process behavior without
+using real grants, provider content or the persistent development device for
+failure injection.
+
 ## Current setup vocabulary and navigation
 
 ### Manual quality preferences

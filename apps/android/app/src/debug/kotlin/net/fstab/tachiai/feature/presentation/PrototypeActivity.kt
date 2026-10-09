@@ -1,6 +1,7 @@
 package net.fstab.tachiai.feature.presentation
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
@@ -28,6 +29,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
+import androidx.lifecycle.Lifecycle
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -93,6 +95,7 @@ open class PrototypeActivity : ComponentActivity() {
         private var routeCleanupPending = false
         private var routeCleanupFailed = false
         private var routeDiagnostics = FailureReporter.NONE
+        private val recoveryState = PrototypeRecoveryState()
         private val routeCloser = Executors.newSingleThreadExecutor()
     }
     protected open val useCachedAbema: Boolean = false
@@ -139,6 +142,13 @@ open class PrototypeActivity : ComponentActivity() {
     private val authorizationPolling = AtomicBoolean()
     private var routes = emptyMap<String, RouteSession>()
     private var diagnostics = FailureReporter.NONE
+    private var playbackAvailable by mutableStateOf(true)
+    private var recoveryMessage by mutableStateOf<String?>(null)
+    private var hasRecovery by mutableStateOf(false)
+    private var recoveryDialog: AlertDialog? = null
+    private var restartMessage: String? = null
+    private val recoveryObserver: () -> Unit = { handler.post { updateRecoveryState() } }
+    private var restartOperation: () -> Unit = { restartPrototypeProcess(this, useCachedAbema, pickerAssignments) }
 
     private fun feedDiagnostics(index: Int) = diagnostics.forSlot(if (index == 0) FailureSlot.A else FailureSlot.B)
 
@@ -147,6 +157,16 @@ open class PrototypeActivity : ComponentActivity() {
         pickerAssignments = restorePrototypeFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
+        if (savedInstanceState == null) {
+            when (val checkpoint = PrototypeRecoveryCheckpoint(noBackupFilesDir, useCachedAbema).consume()) {
+                PrototypeRecoveryCheckpoint.Result.Absent -> Unit
+                is PrototypeRecoveryCheckpoint.Result.Restored -> pickerAssignments = checkpoint.assignments
+                PrototypeRecoveryCheckpoint.Result.Invalid -> {
+                    pickerAssignments = net.fstab.tachiai.presentation.PrototypeFeedAssignments(null, null)
+                    recoveryState.fail(PrototypeRecoveryKind.PICKER_RESTORE_FAILED)
+                }
+            }
+        }
         initializeDiagnostics()
         if (!profileConfigured) {
             WebView.setDataDirectorySuffix(if (useCachedAbema) "prototype-cached-player" else "prototype-player")
@@ -182,7 +202,55 @@ open class PrototypeActivity : ComponentActivity() {
             initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
+            playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
+            onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
             onWatch = ::watch) } }
+    }
+
+    private fun updateRecoveryState() {
+        if (routeCleanupFailed) recoveryState.fail(PrototypeRecoveryKind.ROUTE_CLEANUP_UNCONFIRMED)
+        else if (cleanupFailed) recoveryState.fail(PrototypeRecoveryKind.PLAYBACK_CLEANUP_UNCONFIRMED)
+        val incident = recoveryState.incident
+        hasRecovery = incident != null
+        playbackAvailable = incident == null && !routesPending && !routeCleanupPending && !webRoute.busy
+        recoveryMessage = incident?.let { "Playback blocked. Recovery category: ${it.kind.code}." }
+            ?: if (!playbackAvailable) "The previous route is still stopping. Please wait." else null
+        if (incident?.restarting == true) dismissRecoveryDialog()
+        else if (!disposing && incident?.acknowledged == false) showRecoveryDialog(false)
+    }
+
+    private fun showRecoveryDialog(explicit: Boolean) {
+        val incident = recoveryState.incident ?: return
+        if (!resumed.get() || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || isFinishing || isDestroyed ||
+            incident.restarting || (!explicit && incident.acknowledged) || recoveryDialog != null) return
+        recoveryDialog = AlertDialog.Builder(this)
+            .setTitle("Playback recovery required")
+            .setMessage("${incident.kind.message}\n\nIgnore dismisses this dialog; playback stays blocked. Restart returns to the main menu and preserves your saved setup and picker choices.\n\nRecovery category: ${incident.kind.code}." +
+                (restartMessage?.let { "\n\n$it" } ?: ""))
+            .setNegativeButton("Ignore") { _, _ -> recoveryState.ignore(incident.id) }
+            .setPositiveButton("Restart") { _, _ -> restartRecovery(incident.id) }
+            .setOnCancelListener { recoveryState.ignore(incident.id) }
+            .create().also { dialog ->
+                dialog.setOnDismissListener { if (recoveryDialog === dialog) recoveryDialog = null }
+                dialog.show()
+            }
+    }
+
+    private fun dismissRecoveryDialog() {
+        recoveryDialog?.dismiss()
+        recoveryDialog = null
+    }
+
+    private fun restartRecovery(id: Long) {
+        if (!recoveryState.beginRestart(id)) return
+        dismissRecoveryDialog()
+        try {
+            restartOperation()
+        } catch (_: Exception) {
+            restartMessage = "Restart could not be completed. Playback remains blocked; your saved setup was not cleared."
+            recoveryState.restartFailed(id)
+            handler.post { showRecoveryDialog(true) }
+        }
     }
 
     @Suppress("DEPRECATION") // Pre-enforced-edge-to-edge Android still uses explicit bar colours.
@@ -200,11 +268,16 @@ open class PrototypeActivity : ComponentActivity() {
     private fun watch(selected: PrototypeSelection) {
         selection = selected
         pickerAssignments = prototypeFeedAssignments(selected)
+        updateRecoveryState()
+        if (recoveryState.incident != null) {
+            diagnostics.blocked(if (routeCleanupFailed) FailureStage.ROUTE_BLOCKED else FailureStage.VIEWER_BLOCKED)
+            showPicker(null); showRecoveryDialog(true); return
+        }
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy) {
             if (cleanupFailed || routeCleanupFailed) routeDiagnostics.blocked(FailureStage.ROUTE_BLOCKED)
             showPicker(if (cleanupFailed || routeCleanupFailed)
-                "Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying."
+                "Route cleanup could not be confirmed. Use Recovery options to restart."
                 else "The previous route is still stopping. Please retry shortly.")
             return
         }
@@ -216,8 +289,9 @@ open class PrototypeActivity : ComponentActivity() {
         activeInstances = providerInstances.toList()
         dispose()
         if (cleanupFailed) {
+            updateRecoveryState()
             diagnostics.blocked(FailureStage.VIEWER_BLOCKED)
-            showPicker("Previous playback cleanup reported a failure. Close and reopen Tachiai before retrying."); return
+            showPicker("Playback stopped because cleanup could not be confirmed."); return
         }
         diagnostics = diagnostics.newSession()
         val run = epoch.incrementAndGet()
@@ -260,11 +334,13 @@ open class PrototypeActivity : ComponentActivity() {
         routeDiagnostics = diagnostics
         val choices = activeInstances.toList()
         routesPending = true
+        recoveryState.notifyChanged()
         worker.execute {
             val plan = planProviderInstanceRoutes(selected, choices, connectionProfileStore(this)::selected)
             if (!plan.abemaCompatible) {
                 handler.post {
                     routesPending = false
+                    recoveryState.notifyChanged()
                     if (sharedBudget.active && epoch.get() == run) stopToPicker(
                         "Selected ABEMA instances need available, identical routes. Their WebView proxy is shared; no route or playback was started.")
                 }
@@ -290,12 +366,14 @@ open class PrototypeActivity : ComponentActivity() {
                         if (!accepted || !preparation.cleanupConfirmed) {
                             routeCleanupFailed = true; routeCleanupPending = true; cleanupFailed = true
                             if (sharedBudget.active && epoch.get() == run && !isDestroyed && !isFinishing)
-                                stopToPicker("Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying.")
+                                stopToPicker("Route cleanup could not be confirmed. Use Recovery options to restart.")
                         }
+                        updateRecoveryState(); recoveryState.notifyChanged()
                     }
                     return@post
                 }
                 routesPending = false
+                recoveryState.notifyChanged()
                 routes = results.mapNotNull { (provider, result) -> result.getOrNull()?.let { provider to it } }.toMap()
                 results.filterValues { it.isFailure }.keys.forEach { instanceId ->
                     selected.feeds.forEachIndexed { index, feed -> if (feed.instanceId == instanceId)
@@ -641,6 +719,8 @@ open class PrototypeActivity : ComponentActivity() {
         if (failures.all { it != null }) releaseRoutes()
         updateProgress()
         viewer?.refresh()
+        updateRecoveryState()
+        if (cleanupFailed && !disposing) stopToPicker("Playback stopped because cleanup could not be confirmed.")
     }
 
     private fun stopToPicker(message: String) {
@@ -671,6 +751,7 @@ open class PrototypeActivity : ComponentActivity() {
         focus = null
         budget = null
         disposing = false
+        updateRecoveryState()
         if (cleanupFailed) Log.d("TachiaiPrototype", "cleanup=FAILED")
     }
 
@@ -680,6 +761,7 @@ open class PrototypeActivity : ComponentActivity() {
         routes = emptyMap()
         if (oldRoutes.isEmpty()) return
         routeCleanupPending = true
+        recoveryState.notifyChanged()
         var completed = false
         fun closeRoutes(confirmed: Boolean) {
             if (completed) return
@@ -687,9 +769,11 @@ open class PrototypeActivity : ComponentActivity() {
             closeRoutesAsync(oldRoutes) { accepted ->
                 if (!accepted || !confirmed) { cleanupFailed = true; routeCleanupFailed = true }
                 routeCleanupPending = routeCleanupFailed
+                updateRecoveryState(); recoveryState.notifyChanged()
             }
             // A lost/failed Chromium clear keeps the coordinator busy: no next run can load directly.
             if (!confirmed) { cleanupFailed = true; routeCleanupFailed = true }
+            updateRecoveryState(); recoveryState.notifyChanged()
         }
         if (useCachedAbema) {
             webRoute.clear(diagnostics) { closeRoutes(true) }
@@ -714,6 +798,7 @@ open class PrototypeActivity : ComponentActivity() {
             cleanupFailed = true; routeCleanupFailed = true; routeCleanupPending = true
         }
         routePreparation = null
+        updateRecoveryState(); recoveryState.notifyChanged()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -722,6 +807,8 @@ open class PrototypeActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume(); resumed.set(true)
+        recoveryState.addObserver(recoveryObserver)
+        handler.post { updateRecoveryState() }
         resumeMessage?.let { resumeMessage = null; showPicker(it) }
         if (budget == null) refreshSetup()
     }
@@ -769,12 +856,16 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
     override fun onPause() {
+        recoveryState.removeObserver(recoveryObserver)
+        dismissRecoveryDialog()
         setupRevision++
         resumed.set(false)
         if (budget != null) { dispose(); resumeMessage = "Playback stopped while the app was in the background." }
         super.onPause()
     }
     override fun onDestroy() {
+        recoveryState.removeObserver(recoveryObserver)
+        dismissRecoveryDialog()
         resumed.set(false); dispose()
         // Let queued route preparation reach its cancellation/result cleanup;
         // dropping the task would strand process-wide routesPending forever.

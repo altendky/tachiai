@@ -74,9 +74,20 @@ bindings, grant/lease/Forget isolation and canonical ABEMA route preflight.
 Compose fixtures exercise create/name validation, instance-specific login
 placement, explicit save, duplicate streams across instances and recreation.
 A repository-accessor fixture checks default-object identity without reading or
-writing grants. These newly added checks have not yet been run for this change;
-no multiple-account authorization, provider playback or device/region behavior
-has been observed.
+writing grants. All 16 newly added JVM checks passed, along with the complete
+Android JVM suite, lint, instrumentation compilation, release isolation and both
+APK assemblies. Both APK certificates matched the shared debug identity. All
+37 combined instance, picker, provider, importer, handoff and JNI checks passed
+on the disposable Android 16/API 36 x86-64 emulator. The importer fixtures first
+settle text focus and the keyboard before their real Save taps.
+
+Two additional checks passed in the real cached-prototype Activity process:
+feed bindings survive replacing Compose with the native view and then Activity
+recreation, while malformed saved slots remain unassigned. That dedicated run
+used a temporary test-only instrumentation process override; the ordinary test
+manifest was restored before the final build. No saved grants were accessed or
+changed. No multiple-account authorization, provider playback or device/region
+behavior has been observed; the persistent development emulator was preserved.
 
 Routes offers guided Proton and Windscribe exports alongside the generic file
 and manual importer. **Add route · setup / import** in Providers opens those

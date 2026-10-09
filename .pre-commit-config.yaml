@@ -37,6 +37,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: android-dev-device-tests
+        name: Persistent Android development device safety tests
+        entry: uv run scripts/tests/android-dev-device.test.py
+        language: system
+        files: '^scripts/(android-dev-device\.py|tests/android-dev-device\.test\.py)$|^apps/android/dev-device\.toml$'
+        pass_filenames: false
+
       - id: release-isolation-tests
         name: Release manifest/assets isolation fixture tests
         entry: uv run scripts/verify-release-isolation.py --self-test

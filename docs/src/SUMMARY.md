@@ -7,6 +7,7 @@
   - [Platform plan](project/platforms.md)
   - [Security and privacy](project/security-and-privacy.md)
   - [Implementation plan](project/implementation.md)
+  - [Persistent Android development device](project/android-development.md)
   - [Android playback spike](project/android-playback-spike.md)
   - [Timing capability matrix](project/timing-capability-matrix.md)
   - [Native access experiments](project/native-access-experiments.md)

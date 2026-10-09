@@ -13,6 +13,27 @@ The first concrete pairing is ABEMA's Grand Sumo coverage with the
 `midnightsumo` Twitch channel, but the product model must remain a generic
 multi-stream presentation capable of live and replay sources.
 
+## Default development device
+
+Use the persistent `tachiai-dev` Android emulator for routine local deployment,
+UI inspection, debugging and playback experiments. Follow the
+[development-device guide](docs/src/project/android-development.md); explicitly
+target and verify its AVD identity rather than selecting whichever ADB device is
+attached. Preserve its saved authorization, routes and app data. Do not run
+destructive/resetting tests on this persistent device.
+
+An explicit user request to deploy to, inspect or debug their phone overrides
+the emulator default for that task. Verify the physical device identity and
+availability before operating on it. The emulator default does not prohibit
+requested phone work or require another device-choice approval for that same
+task.
+
+If the emulator is unavailable or a check needs physical-device fidelity,
+diagnose/report the limitation and ask before using the phone unless the user
+has already requested or authorized phone use for the current task. Never
+silently fall back to an attached phone. Emulator observations do not establish
+physical-device DRM, decoding, audio or performance behavior.
+
 ## Architecture boundaries
 
 Prefer provider-supported playback. Historical web comparisons keep the

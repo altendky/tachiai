@@ -119,6 +119,11 @@ renewal or unrestricted content access. See the
 
 ## Repository direction
 
+The [persistent Android development device](android-development.md) defines
+reproducible local emulator setup and safe lifecycle/install commands. Its
+private app state remains local, outside the repository; emulator setup is not
+evidence of provider playback or physical-device parity.
+
 The intended layout follows the documentation-first and platform-shell
 conventions used by sibling projects such as Dose Goose:
 

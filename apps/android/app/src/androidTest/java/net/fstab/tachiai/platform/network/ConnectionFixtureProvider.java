@@ -67,6 +67,8 @@ public class ConnectionFixtureProvider extends ContentProvider {
         String key = Base64.getEncoder().encodeToString(keyBytes);
         String text;
         if ("wireguard".equals(path)) text = "[Interface]\nPrivateKey = " + key + "\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n[Peer]\nPublicKey = " + key + "\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.test:51820";
+        // Invented values matching documented fields, never a real account export or key.
+        else if ("windscribe".equals(path)) text = "[Interface]\nPrivateKey = " + key + "\nAddress = 10.100.0.2/32\nDNS = 10.255.255.3\n[Peer]\nPublicKey = " + key + "\nPresharedKey = " + key + "\nAllowedIPs = 0.0.0.0/0\nEndpoint = windscribe.example.test:443\nPersistentKeepalive = 25";
         else if ("proxy".equals(path)) text = "http://fixture:synthetic-password@proxy.example.test:3128";
         else text = "not a configuration";
         return text.getBytes(StandardCharsets.UTF_8);

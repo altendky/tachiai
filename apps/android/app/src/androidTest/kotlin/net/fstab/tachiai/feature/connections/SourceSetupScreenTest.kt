@@ -26,7 +26,7 @@ class SourceSetupScreenTest {
                 { imported = true }, { saved = it }, {})
         } }
         compose.waitForIdle()
-        compose.onNodeWithText("Add connection · Proton / import").performScrollTo().performClick()
+        compose.onNodeWithText("Add connection · setup / import").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Source default connection: Proton Japan").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Feed A connection: System network").performScrollTo().performClick()
         compose.runOnIdle { assertTrue(imported); assertNull(saved) }

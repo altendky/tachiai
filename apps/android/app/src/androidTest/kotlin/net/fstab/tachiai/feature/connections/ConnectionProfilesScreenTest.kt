@@ -18,11 +18,12 @@ class ConnectionProfilesScreenTest {
     private var saved: String? = null
     private var discarded = false
     private var openedProton = false
+    private var openedWindscribe = false
     private var openedPicker = false
     private fun screen(draft: ConnectionProfile? = null) {
         compose.setContent { TachiaiPrototypeTheme {
             ConnectionProfilesScreen(emptyList(), draft, false, null,
-                { openedProton = true }, { openedPicker = true }, {}, { saved = it }, { discarded = true }, {}, {})
+                { openedProton = true }, { openedWindscribe = true }, { openedPicker = true }, {}, { saved = it }, { discarded = true }, {}, {})
         } }
         compose.waitForIdle()
     }
@@ -30,8 +31,12 @@ class ConnectionProfilesScreenTest {
     @Test fun guidanceAndFallbackAreExplicitAndNeverSaveAutomatically() {
         screen()
         compose.onNodeWithText("Set up Proton").performScrollTo().performClick()
+        compose.onNodeWithText("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.")
+            .performScrollTo().assertExists()
+        compose.onNodeWithText("Choose WireGuard, not OpenVPN or IKEv2.", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("Set up Windscribe").performScrollTo().performClick()
         compose.onNodeWithText("Import file (fallback)").performScrollTo().performClick()
-        compose.runOnIdle { assertTrue(openedProton); assertTrue(openedPicker); assertNull(saved) }
+        compose.runOnIdle { assertTrue(openedProton); assertTrue(openedWindscribe); assertTrue(openedPicker); assertNull(saved) }
     }
 
     @Test fun previewHidesCredentialsAndNeedsNameAndExplicitSave() {

@@ -28,7 +28,7 @@ internal interface RouteProtocol {
     fun parse(text: String): ConnectionProfile
     fun configurationIdentity(profile: ConnectionProfile): String
     fun conflictIdentity(profile: ConnectionProfile): String? = null
-    fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity): RouteBackend
+    fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend
 }
 
 internal class RouteProtocols(protocols: List<RouteProtocol>) {

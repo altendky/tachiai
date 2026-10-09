@@ -13,7 +13,7 @@ internal object Socks5RouteProtocol : RouteProtocol {
     override val importHint = "a socks5:// proxy URL with an explicit port"
     override fun recognizes(text: String) = text.startsWith("socks5://")
     override fun configurationIdentity(profile: ConnectionProfile) = profile.configuration
-    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity): RouteBackend = NativeRouteBackend(
+    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend = NativeRouteBackend(
         Routebridge.newSocks5(profile.configuration, security.username, security.password, security.realm, security.allowedHosts),
     )
 

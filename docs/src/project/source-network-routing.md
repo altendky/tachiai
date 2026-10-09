@@ -66,6 +66,30 @@ route lifetime too. Failed or unconfirmed cleanup blocks another run; force-stop
 and relaunch may be required. Role swaps retain route ownership. Import/Save
 still does not activate a route; Open viewer is the explicit connection action.
 
+Route initialization receives a per-presentation preparation owner before a
+backend constructor starts. Stop, background, destruction and presentation expiry
+signal pending initialization; a backend returned after cancellation is closed
+instead of published. Native adapters must register only bounded, nonblocking
+cancel signals before network work, remove those registrations after initialization
+and before freeing handles, and perform wait/join/destruction on their worker.
+Signal or late-backend cleanup failure remains a process-wide admission blocker,
+including after Activity recreation. This contract adds no VPN engine; the
+registered proxy/WireGuard constructors retain their existing behavior.
+
+Eight new JVM checks passed, including blocked initialization, late completion,
+cleanup failure and 200 cancellation/removal races. Three Go token checks and the
+existing complete Go race suite passed. The actual ARM64/x86-64 API-26 JNI build
+passed 16 KiB LOAD checks; packaged native entries are uncompressed and 16 KiB
+aligned. Full Android tests, lint, instrumentation compilation, release isolation,
+both APK assemblies and scoped hooks passed; both certificates match the shared
+debug identity. All 38 combined route/provider/picker and actual JNI checks passed
+on the disposable Android 16/API 36 x86-64 emulator. Four additional real cached
+Activity checks passed for Back, background/destruction, expiry while routes are
+empty and cleanup-failure admission after recreation. Their temporary test-only
+process override was restored before the final ordinary-manifest build. No new
+VPN handshake, provider playback, persistent-device modification or 16 KiB runtime
+observation is claimed by this contract change.
+
 This is implementation, not verified provider compatibility. Build, native
 fixtures, installed-WebView proxy authentication, actual Proton playback and
 TV results must be recorded independently below; earlier system-Proton playback

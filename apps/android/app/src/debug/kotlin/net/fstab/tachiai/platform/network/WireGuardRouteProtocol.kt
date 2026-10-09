@@ -16,7 +16,7 @@ internal object WireGuardRouteProtocol : RouteProtocol {
         listOf("[Interface].PrivateKey", "[Peer].PublicKey").joinToString("\n") { checkNotNull(fields[it]) }
     }
 
-    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity): RouteBackend = NativeRouteBackend(
+    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend = NativeRouteBackend(
         Routebridge.newWireGuard(profile.configuration, security.username, security.password, security.realm, security.allowedHosts),
     )
 

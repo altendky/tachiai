@@ -67,7 +67,6 @@ internal class NativePairViewer(
     private var fitVideo = true
     private var sideDock = false
     private var activeMenu: PopupMenu? = null
-    private var menuSelectionPerformed = false
     private var requestedPlaying = false
     private var observedPair: NativeMixedPair? = null
     private var volumeApplied = false
@@ -247,7 +246,7 @@ internal class NativePairViewer(
             ViewerTimingStep.entries.forEach { choice ->
                 menu.add(choice.label).apply {
                     isCheckable = true; isChecked = choice == timingStep
-                    setOnMenuItemClickListener { menuSelectionPerformed = true; timingStep = choice; updateLabels(); showControls(); true }
+                    setOnMenuItemClickListener { timingStep = choice; updateLabels(); showControls(); true }
                 }
             }
         }
@@ -267,12 +266,11 @@ internal class NativePairViewer(
         dismissMenu(); cancelRepeats(); removeCallbacks(hideControls)
         if (!isAttachedToWindow || visibility != VISIBLE) return
         val popup = PopupMenu(context, anchor).apply(populate)
-        menuSelectionPerformed = false
         popup.setOnDismissListener {
             if (activeMenu === popup) {
                 activeMenu = null
                 if (isAttachedToWindow && visibility == VISIBLE) {
-                    if (menuSelectionPerformed) showControls() else dismissControls()
+                    showControls()
                 }
             }
         }
@@ -282,20 +280,20 @@ internal class NativePairViewer(
 
     private fun showMore(anchor: View) {
         showMenu(anchor) {
-            menu.add("Playback status").setOnMenuItemClickListener { menuSelectionPerformed = true; togglePanel("Status"); true }
+            menu.add("Playback status").setOnMenuItemClickListener { togglePanel("Status"); true }
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
-                .setOnMenuItemClickListener { menuSelectionPerformed = true; onLandscape(!landscape()); true }
-            menu.add("Swap primary feed").setOnMenuItemClickListener { menuSelectionPerformed = true; stage.swap(); true }
+                .setOnMenuItemClickListener { onLandscape(!landscape()); true }
+            menu.add("Swap primary feed").setOnMenuItemClickListener { stage.swap(); true }
             menu.add("Catch up $labelA (holds both)").apply {
                 isEnabled = pair() != null
-                setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.A); refresh(); true }
+                setOnMenuItemClickListener { onCatchUp(NativeMixedSide.A); refresh(); true }
             }
             menu.add("Catch up $labelB (holds both)").apply {
                 isEnabled = pair() != null
-                setOnMenuItemClickListener { menuSelectionPerformed = true; onCatchUp(NativeMixedSide.B); refresh(); true }
+                setOnMenuItemClickListener { onCatchUp(NativeMixedSide.B); refresh(); true }
             }
-            menu.add(setupLabel).setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onDiagnostics(); true }
-            menu.add("Stop both").setOnMenuItemClickListener { menuSelectionPerformed = true; suspendControls(); onStop(); true }
+            menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
+            menu.add("Stop both").setOnMenuItemClickListener { suspendControls(); onStop(); true }
         }
     }
 

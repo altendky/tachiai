@@ -3,10 +3,10 @@ package net.fstab.tachiai.presentation
 import java.util.concurrent.atomic.AtomicReference
 
 internal enum class PrototypeFailureReason(val message: String) {
-    LOGIN_MISSING("No saved Twitch login is available. Connect through the login screen."),
-    LOGIN_EXPIRED("The saved Twitch login expired. Reconnect through the login screen."),
-    LOGIN_UNAVAILABLE("The saved Twitch login could not be read. Reconnect through the login screen."),
-    LOGIN_REJECTED("Twitch rejected the saved login. Reconnect through the login screen."),
+    LOGIN_MISSING("No saved Twitch login is available. Connect in Providers → Twitch."),
+    LOGIN_EXPIRED("The saved Twitch login expired. Reconnect in Providers → Twitch."),
+    LOGIN_UNAVAILABLE("The saved Twitch login could not be read. Reconnect in Providers → Twitch."),
+    LOGIN_REJECTED("Twitch rejected the saved login. Reconnect in Providers → Twitch."),
     MEDIA_NOT_FOUND("The stream could not be found. A live channel may be offline."),
     HTTP_REJECTED("The provider rejected a playback request."),
     NETWORK_FAILED("A playback network request failed. Check your connection."),

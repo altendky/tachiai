@@ -4,6 +4,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.*
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.Text
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.ConnectionKind
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -15,6 +16,18 @@ import org.junit.Test
 class ProvidersScreenTest {
     @get:Rule val compose = createComposeRule()
     private val profile = ConnectionSummary("12345678-1234-1234-1234-123456789abc", "Proton Japan", ConnectionKind.WIREGUARD, "fixture.example.test:51820")
+    @Test fun loginSectionBelongsOnlyToTwitchBesideItsRouteEditor() {
+        compose.setContent { TachiaiPrototypeTheme {
+            ProvidersScreen(legacyProviderSetups(defaultSourceSetups()), emptyList(), false, null, {}, { _, _ -> }, {},
+                twitchLogin = { Text("Twitch login fixture") })
+        } }
+        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithText("Twitch login fixture").assertDoesNotExist()
+        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.onNodeWithText("Configure Twitch").performScrollTo().performClick()
+        compose.onNodeWithText("Twitch login fixture").performScrollTo().assertExists()
+        compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
+    }
     @Test fun providerDefaultNeedsExplicitSaveAndDraftSurvivesRecreation() {
         val restoration = StateRestorationTester(compose)
         var imported = false

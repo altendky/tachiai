@@ -1,5 +1,9 @@
 package net.fstab.tachiai.platform.network
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.util.concurrent.CountDownLatch
 import javax.crypto.spec.SecretKeySpec
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
@@ -122,12 +126,56 @@ class ConnectionProfileStoreTest {
             groups[0] + "[Peer]\n" + groups[1].lines().filter { it.isNotBlank() }.reversed().joinToString("\n")
         }.toByteArray())
         assertEquals(routeConfigurationKey(original), routeConfigurationKey(reordered))
-        assertEquals(wireGuardPeerKey(original), wireGuardPeerKey(reordered))
+        assertEquals(routeConflictKey(original), routeConflictKey(reordered))
         val different = parseConnectionProfile(fixtureWireGuard().replace("PersistentKeepalive = 25", "PersistentKeepalive = 20").toByteArray())
         assertNotEquals(routeConfigurationKey(original), routeConfigurationKey(different))
-        assertEquals(wireGuardPeerKey(original), wireGuardPeerKey(different))
+        assertEquals(routeConflictKey(original), routeConflictKey(different))
         val endpointChanged = parseConnectionProfile(fixtureWireGuard().replace("Endpoint = ", "Endpoint = alternative.").toByteArray())
         assertNotEquals(routeConfigurationKey(original), routeConfigurationKey(endpointChanged))
-        assertEquals(wireGuardPeerKey(original), wireGuardPeerKey(endpointChanged))
+        assertEquals(routeConflictKey(original), routeConflictKey(endpointChanged))
+    }
+
+    @Test fun legacyRecordsAreReadWithoutRewritingAndExplicitMutationPreservesRemainingProfiles() {
+        val wireGuardId = "12345678-1234-1234-1234-123456789abc"
+        val proxyId = "abcdefab-abcd-abcd-abcd-abcdefabcdef"
+        val secrets = MemorySecrets()
+        secrets.bytes = ByteArrayOutputStream().also { output ->
+            DataOutputStream(output).use { data ->
+                data.writeInt(1); data.writeInt(2)
+                data.writeUTF(wireGuardId); data.writeUTF("Legacy WireGuard"); data.writeUTF(fixtureWireGuard())
+                data.writeUTF(proxyId); data.writeUTF("Legacy proxy"); data.writeUTF("http://user:secret@proxy.example.test:3128")
+            }
+        }.toByteArray()
+        val legacy = secrets.bytes!!.copyOf()
+        val store = ConnectionProfileStore(secrets)
+        assertEquals(listOf(wireGuardId, proxyId), store.summaries().map { it.id })
+        assertEquals(ConnectionKind.WIREGUARD, store.selected(wireGuardId).kind)
+        assertEquals(ConnectionKind.HTTP_PROXY, store.selected(proxyId).kind)
+        assertArrayEquals(legacy, secrets.bytes)
+
+        store.remove(wireGuardId)
+        DataInputStream(ByteArrayInputStream(secrets.bytes!!)).use { assertEquals(2, it.readInt()) }
+        val reloaded = ConnectionProfileStore(secrets)
+        assertEquals(proxyId, reloaded.summaries().single().id)
+        assertEquals("Legacy proxy", reloaded.summaries().single().name)
+        assertEquals("http://user:secret@proxy.example.test:3128", reloaded.selected(proxyId).configuration)
+    }
+
+    @Test fun unknownOrMismatchedPersistedProtocolsFailClosedWithoutOverwriting() {
+        val secrets = MemorySecrets()
+        listOf("unknown-protocol", "wireguard").forEach { protocolId ->
+            secrets.bytes = ByteArrayOutputStream().also { output ->
+                DataOutputStream(output).use { data ->
+                    data.writeInt(2); data.writeInt(1)
+                    data.writeUTF("12345678-1234-1234-1234-123456789abc"); data.writeUTF("Existing")
+                    data.writeUTF(protocolId); data.writeUTF("http://proxy.example.test:3128")
+                }
+            }.toByteArray()
+            val previous = secrets.bytes!!.copyOf()
+            val store = ConnectionProfileStore(secrets)
+            assertThrows(Exception::class.java) { store.summaries() }
+            assertThrows(Exception::class.java) { store.add("New", profile()) }
+            assertArrayEquals(previous, secrets.bytes)
+        }
     }
 }

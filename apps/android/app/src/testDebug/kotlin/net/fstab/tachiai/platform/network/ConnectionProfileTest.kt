@@ -45,11 +45,28 @@ class ConnectionProfileTest {
         assertEquals("[2001:db8::1]:443", profile.endpoint)
     }
 
+    @Test fun windscribeShapedConfigurationWithPresharedKeyUsesGenericImport() {
+        // Invented values matching documented fields, not an observed Windscribe export.
+        val preshared = Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
+        val profile = parse(fixtureWireGuard()
+            .replace("Address = 10.2.0.2/32, fd00::2/128", "Address = 10.100.0.2/32")
+            .replace("DNS = 10.2.0.1, fd00::1", "DNS = 10.255.255.3")
+            .replace("MTU = 1280\n", "")
+            .replace("Endpoint = vpn.example.test:51820", "Endpoint = windscribe.example.test:443\nPresharedKey = $preshared"))
+        assertEquals(ConnectionKind.WIREGUARD, profile.kind)
+        assertEquals("windscribe.example.test:443", profile.endpoint)
+        assertTrue(profile.configuration.contains("PresharedKey = $preshared"))
+        assertFalse(profile.toString().contains(preshared))
+        assertEquals(profile.configuration, parse(profile.configuration).configuration)
+    }
+
     @Test fun unsupportedOptionsScriptsAndExtraPeersAreRejectedNotDropped() {
         listOf("PreUp", "PostUp", "PreDown", "PostDown", "SaveConfig", "Table", "ListenPort", "FwMark", "Unknown")
             .forEach { rejects(fixtureWireGuard().replace("MTU = 1280", "$it = secret-should-not-leak"), ConnectionImportFailure.Category.OPTION) }
         rejects(fixtureWireGuard() + "\n[Peer]\n", ConnectionImportFailure.Category.PEERS)
         rejects(fixtureWireGuard().replace("[Peer]", "[Unknown]"), ConnectionImportFailure.Category.OPTION)
+        val error = assertThrows(ConnectionImportFailure::class.java) { parse(fixtureWireGuard() + "\n[Peer]\n") }
+        assertEquals("This first importer supports exactly one WireGuard peer.", error.message)
     }
 
     @Test fun missingDuplicateAndMalformedFieldsStopImport() {

@@ -16,6 +16,10 @@ Routes for importing another configuration. Importing never automatically
 selects it. Selecting a route is an explicit Save action. Per-feed route
 overrides are not exposed in this provider-default workflow yet.
 
+Routes offers guided Proton and Windscribe exports alongside the generic file
+and manual importer. **Add route · setup / import** in Providers opens those
+choices; neither setup link selects or starts a route.
+
 The subsequent [native transport implementation](source-network-routing.md#subsequent-native-transport-implementation)
 adds HTTP CONNECT and userspace WireGuard backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
@@ -24,6 +28,42 @@ No provider login, new stream or DRM behavior is added. Earlier importer-only
 evidence below predates transport integration and does not verify it.
 The user reported loading a Proton file in the preceding build; no configuration
 contents were inspected, and that report does not establish an active tunnel.
+
+### Route protocol boundaries
+
+The debug route registry currently registers only WireGuard and HTTP CONNECT.
+Each handler owns format recognition, strict configuration validation, safe
+setup labels, canonical configuration, sharing/conflict identities and backend
+creation. The generic session owns the authenticated loopback proxy, HTTPS
+connection lifecycle and cleanup through a backend contract. Concrete Go types
+remain behind the native backend adapter; the Go transports and reviewed host
+allowlist are unchanged.
+
+A playback run shares one session for identical canonical configurations,
+including duplicate imports. WireGuard's handler supplies a separate peer
+identity so differing settings for the same private/public-key pair cannot start
+competing peers. That conflict policy is applied by the generic registry, without
+WireGuard-specific logic in the viewer. Failed initialization remains a failed
+route; it never selects System network automatically.
+
+Saved records now write version 2 with a stable protocol ID and handler-owned
+configuration text inside the existing encrypted, no-backup envelope. Version 1
+records remain readable without rewriting; an explicit save/delete writes the
+new format and retains the remaining profile IDs, names and canonical configurations.
+Older APKs that understand only version 1 cannot read a record after that first
+version 2 mutation; downgrading does not migrate the record back automatically.
+Unknown protocol IDs, mismatched formats and corrupt records fail closed without
+replacement. The eight-profile, 8 KiB total storage bound and strict 8 KiB UTF-8
+import bound remain in force; version metadata also counts toward total storage.
+Manual entry applies the same byte bound. This refactor adds no protocol or
+provider authorization and supplies no new device playback evidence.
+
+The final refactor passed local Android JVM tests, lint, instrumentation
+compilation, release isolation, both APK builds and Go transport tests. Both
+APK certificates matched the shared debug identity. All six existing importer
+screen and warm-handoff tests passed on a separate clean Android 16/API 36
+x86-64 emulator. Registry/backend tests use controlled fixtures and do not
+establish a genuine tunnel or provider playback result.
 
 ### Existing settings and reset
 
@@ -208,6 +248,50 @@ selection, Smart Protocol or Stealth. Plan availability, configuration lifetime,
 revocation, simultaneous tunnel behavior and provider acceptance are not inferred
 from a successful import. A genuine browser handoff requires a separate
 user-controlled export test; no private account-site API is added.
+
+## Guided Windscribe setup
+
+**Set up Windscribe** opens the official
+[My Account WireGuard generator](https://windscribe.com/myaccount#configgenerator-wireguard)
+in an external browser, alongside the existing Proton action. Sign in there,
+choose Config Generator → WireGuard, then a location and port (Windscribe suggests
+443 when unsure). Generate a new key pair for this device and choose Download
+Config. Windscribe also permits selecting an existing generated key pair; using
+a separate pair avoids accidentally reusing one peer on multiple devices.
+Open or share the downloaded configuration file with Tachiai, then review and
+explicitly save it. Use **Import file (fallback)** if the browser offers neither
+handoff. Tachiai receives only the selected file, not provider passwords,
+browser cookies, an account session or Windscribe app state.
+
+Official guidance checked on 2026-10-08 says configuration generation requires
+a paid account: Full Pro includes all locations, while Build-A-Plan permits
+its paid locations. This flow uses WireGuard; Windscribe's OpenVPN and IKEv2
+exports are not supported by Tachiai's importer.
+[Windscribe export instructions](https://windscribe.com/knowledge-base/articles/where-do-i-access-my-wireguard-configs),
+[supported export protocols](https://windscribe.com/features/config-generators).
+
+The existing generic one-peer parser supports the fields documented in
+[Windscribe's manual setup guide](https://windscribe.com/knowledge-base/articles/manual-wireguard-router-setup-guide-dd-wrt),
+including a preshared key, DNS IP, interface address and endpoint. The added
+synthetic fixtures use invented keys and an `.example.test` endpoint. They
+cover parser canonicalization/redaction and the warm Share preview path with
+keys hidden and explicit save still required. They are not genuine exported
+configurations or evidence that a Windscribe connection works.
+
+Public documentation establishes the export steps and plan requirements. Local
+Android JVM tests, lint, instrumentation compilation, release isolation and both
+APK assemblies passed; both certificates matched the shared debug identity.
+All 13 connection screen, warm handoff, provider and historical source-editor
+instrumentation tests passed on a separate clean Android 16/API 36 x86-64
+emulator. The historical restoration test now dismisses the keyboard and checks
+selection before and after restoration, distinguishing a missed tap from a
+restoration defect. The persistent development emulator was untouched.
+
+No authenticated browser export, actual Windscribe file handoff or Windscribe
+tunnel/playback observation was performed. Warm handoff used synthetic files;
+it does not establish provider connectivity. Importing does not control
+Windscribe's app, provide automatic server selection, or establish endpoint
+reachability or content availability.
 
 ## Supported data and boundaries
 

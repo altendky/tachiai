@@ -57,7 +57,7 @@ private fun ProviderRouteEditor(provider: PrototypeService, initial: ProviderSet
         initial.previousRoutes.forEach { Text("Earlier route: ${it.title}") }
     }
     if (selected != null && choice == null) Text("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.")
-    Text("System network inherits Android’s current network, including an external VPN. WireGuard and HTTP CONNECT routes connect when you open the native viewer. A failed route never falls back to System network.")
+    Text("System network inherits Android’s current network, including an external VPN. Saved routes connect when you open the native viewer. A failed route never falls back to System network.")
     Text("Provider default route", style = MaterialTheme.typography.titleMedium)
     choices.forEach { route ->
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -66,7 +66,7 @@ private fun ProviderRouteEditor(provider: PrototypeService, initial: ProviderSet
             Text(route.title + if (route.mode == SourceRouteMode.SAVED_CONNECTION) " · connects at playback" else "")
         }
     }
-    Button(onClick = onRoutes, enabled = !busy) { Text("Add route · Proton / import") }
+    Button(onClick = onRoutes, enabled = !busy) { Text("Add route · setup / import") }
     Button(onClick = { choice?.let(onSave) }, enabled = !busy && choice != null) { Text("Save ${provider.title} setup") }
     TextButton(onClick = onBack, enabled = !busy) { Text("Back to providers") }
 }

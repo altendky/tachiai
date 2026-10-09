@@ -14,23 +14,21 @@ import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.OkHttpClient
-import routebridge.Route
-import routebridge.Routebridge
 
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
 // It never installs Android VpnService or changes the device's active VPN.
 internal class RouteSession private constructor(
-    private val engine: Route?,
+    private val backend: RouteBackend?,
     val proxyUsername: String,
     val proxyPassword: String,
     val proxyRealm: String,
 ) : AutoCloseable {
-    val isSystem get() = engine == null
-    val proxyPort: Int get() = engine?.port?.toInt() ?: 0
+    val isSystem get() = backend == null
+    val proxyPort: Int = backend?.proxyPort ?: 0
     private val closed = AtomicBoolean()
     private val connections = Collections.newSetFromMap(ConcurrentHashMap<RoutedHttpsConnection, Boolean>())
-    private val client: OkHttpClient? = if (engine == null) null else OkHttpClient.Builder()
+    private val client: OkHttpClient? = if (backend == null) null else OkHttpClient.Builder()
         .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
         .proxyAuthenticator(routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
         .authenticator(Authenticator.NONE)
@@ -58,7 +56,7 @@ internal class RouteSession private constructor(
         for (cleanup in listOf<() -> Unit>(
             { connections.forEach { if (runCatching { it.disconnect() }.isFailure) failed = true }; connections.clear() },
             { client?.dispatcher?.cancelAll() }, { client?.connectionPool?.evictAll() },
-            { client?.dispatcher?.executorService?.shutdownNow() }, { engine?.close() },
+            { client?.dispatcher?.executorService?.shutdownNow() }, { backend?.close() },
         )) if (runCatching(cleanup).isFailure) failed = true
         if (failed) throw IOException("Route cleanup failed")
     }
@@ -73,20 +71,21 @@ internal class RouteSession private constructor(
             "streaming-api-cf.p-c2-x.abema-tv.com,license.p-c3-e.abema-tv.com,*-abematv.akamaized.net," +
             "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net"
 
-        fun create(profile: ConnectionProfile?): RouteSession {
+        fun create(profile: ConnectionProfile?,
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security)
+            },
+        ): RouteSession {
             if (profile == null) return RouteSession(null, "", "", "")
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
-            var engine: Route? = null
+            var backend: RouteBackend? = null
             return try {
-                engine = when (profile.kind) {
-                    ConnectionKind.HTTP_PROXY -> Routebridge.newHttpProxy(profile.configuration, username, password, realm, ALLOWED_HOSTS)
-                    ConnectionKind.WIREGUARD -> Routebridge.newWireGuard(profile.configuration, username, password, realm, ALLOWED_HOSTS)
-                }
-                check(engine.port in 1L..65535L)
-                RouteSession(engine, username, password, realm)
+                backend = createBackend(profile, RouteProxySecurity(username, password, realm, ALLOWED_HOSTS))
+                check(backend.proxyPort in 1..65535)
+                RouteSession(backend, username, password, realm)
             } catch (_: Exception) {
-                runCatching { engine?.close() }
+                runCatching { backend?.close() }
                 throw IOException("Imported route could not be initialized")
             }
         }

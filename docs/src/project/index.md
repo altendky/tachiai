@@ -70,6 +70,10 @@ The agreed preliminary interaction model is:
   complement per-feed mute. Separate per-feed volume sliders are not the UX.
 - Relative timing names the feeds and uses their optional advance/delay
   capabilities. A requested shift is not measured common-event synchronization.
+- More → Quality offers separate video/audio preferences: saved stream defaults
+  and independent feed overrides for the current session. Supported manual
+  requests and actual consumed formats are shown separately; Auto retains the
+  audio-first selection policy and device constraints.
 
 The [product-flow prototype](prototype-ux.md) records the current implementation.
 Exact fade curves, defaults, floating size and control-hide timing remain

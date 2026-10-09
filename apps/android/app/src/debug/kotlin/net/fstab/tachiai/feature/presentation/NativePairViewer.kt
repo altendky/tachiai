@@ -27,6 +27,9 @@ import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
+import net.fstab.tachiai.platform.media.NativeQualityKind
+import net.fstab.tachiai.platform.media.NativeQualityRequest
+import net.fstab.tachiai.presentation.ViewerQualityReadback
 import net.fstab.tachiai.presentation.FloatingPosition
 import net.fstab.tachiai.presentation.TwoFeedMix
 import net.fstab.tachiai.presentation.ViewerRect
@@ -59,6 +62,10 @@ internal class NativePairViewer(
     private val volumeRequest: (NativeMixedSide, Float) -> Boolean = { side, value -> pair()?.setVolume(side, value) == true },
     private val feedMessage: (NativeMixedSide) -> String? = { null },
     private val onSources: (() -> Unit)? = null,
+    private val qualityState: (NativeMixedSide, NativeQualityKind) -> ViewerQualityReadback? = { _, _ -> null },
+    private val onQualityOverride: (NativeMixedSide, NativeQualityKind, NativeQualityRequest?) -> Unit = { _, _, _ -> },
+    private val onSaveQuality: (NativeMixedSide, NativeQualityKind) -> Unit = { _, _ -> },
+    private val onResetQuality: (NativeMixedSide, NativeQualityKind) -> Unit = { _, _ -> },
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private var mix = TwoFeedMix()
@@ -71,6 +78,9 @@ internal class NativePairViewer(
     private var volumeApplied = false
     private var volumeFailed = false
     private val repeats = mutableListOf<Runnable>()
+    private data class QualityField(val side: NativeMixedSide, val kind: NativeQualityKind,
+        val choose: Button, val readback: TextView, val capability: TextView, val save: Button, val reset: Button)
+    private val qualityFields = mutableListOf<QualityField>()
     private val hideControls = Runnable {
         if (panel == null && requestedPlaying) { dock.visibility = GONE; requestLayout() }
     }
@@ -173,11 +183,13 @@ internal class NativePairViewer(
     private fun toggleControls() { if (dock.isGone) showControls() else dismissControls() }
     private fun dismissControls() {
         suspendControls(); panel = null; content.removeAllViews()
+        qualityFields.clear()
         scroller.visibility = GONE; dock.visibility = GONE; requestLayout()
     }
     private fun togglePanel(value: String) {
         dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
+        qualityFields.clear()
         // Reused controls may still belong to a removed row container.
         (listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, fit, adjustmentLabel) + advanceA + advanceB).forEach {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
@@ -203,6 +215,23 @@ internal class NativePairViewer(
         } else if (panel == "Status") {
             content.addView(details)
             content.addView(text("Requested offsets are not measured synchronization. Live movement is limited to the available window."))
+        } else if (panel == "Quality") {
+            content.addView(text("Feed overrides last for this session. Save stream defaults explicitly. Auto retains audio-first selection and device constraints."))
+            NativeMixedSide.entries.forEach { side ->
+                val label = if (side == NativeMixedSide.A) labelA else labelB
+                content.addView(text(label))
+                NativeQualityKind.entries.forEach { kind ->
+                    val choose = button("") { showQualityChoices(it, side, kind) }
+                    val readback = text("")
+                    val capability = text("").apply { textSize = 12f }
+                    val save = button("Save stream default") { onSaveQuality(side, kind); refresh() }
+                    val reset = button("Reset stream default") { onResetQuality(side, kind); refresh() }
+                    save.contentDescription = "Save $label ${kind.name.lowercase()} preference as stream default"
+                    reset.contentDescription = "Reset $label stream ${kind.name.lowercase()} default to Auto; retain feed override"
+                    qualityFields += QualityField(side, kind, choose, readback, capability, save, reset)
+                    content.addView(choose); content.addView(readback); content.addView(capability); content.addView(row(save, reset))
+                }
+            }
         }
         scroller.visibility = if (panel == null) GONE else VISIBLE
         scroller.scrollTo(0, 0)
@@ -281,6 +310,10 @@ internal class NativePairViewer(
     private fun showMore(anchor: View) {
         showMenu(anchor) {
             menu.add("Playback status").setOnMenuItemClickListener { togglePanel("Status"); true }
+            menu.add("Quality").apply {
+                isEnabled = NativeMixedSide.entries.any { qualityState(it, NativeQualityKind.VIDEO) != null }
+                setOnMenuItemClickListener { togglePanel("Quality"); true }
+            }
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { onLandscape(!landscape()); true }
             menu.add("Swap primary feed").setOnMenuItemClickListener { stage.swap(); true }
@@ -294,6 +327,23 @@ internal class NativePairViewer(
             }
             menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
             menu.add("Stop both").setOnMenuItemClickListener { suspendControls(); onStop(); true }
+        }
+    }
+
+    private fun showQualityChoices(anchor: View, side: NativeMixedSide, kind: NativeQualityKind) {
+        val state = qualityState(side, kind) ?: return
+        if (state.saving || pair()?.busy == true) return
+        val control = members().getOrNull(side.ordinal)?.qualitySnapshot()?.controls?.get(kind)
+        showMenu(anchor) {
+            fun choice(title: String, request: NativeQualityRequest?, checked: Boolean) {
+                menu.add(title).apply {
+                    isCheckable = true; isChecked = checked
+                    setOnMenuItemClickListener { onQualityOverride(side, kind, request); refresh(); true }
+                }
+            }
+            choice("Use stream default (${state.streamDefault.title})", null, state.feedOverride == null)
+            choice("Auto for this feed", NativeQualityRequest.auto, state.feedOverride == NativeQualityRequest.auto)
+            control?.options.orEmpty().forEach { option -> choice(option.title, option, state.feedOverride == option) }
         }
     }
 
@@ -328,6 +378,23 @@ internal class NativePairViewer(
         details.contentDescription = "Playback status: ${details.text}"
         adjustmentLabel.text = adjustment
         adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"
+        qualityFields.forEach { field ->
+            val state = qualityState(field.side, field.kind)
+            val snapshot = available.getOrNull(field.side.ordinal)?.qualitySnapshot()
+            val control = snapshot?.controls?.get(field.kind)
+            val label = if (field.side == NativeMixedSide.A) labelA else labelB
+            val kind = field.kind.name.lowercase().replaceFirstChar { it.uppercase() }
+            field.choose.text = "$kind · ${state?.effective?.title ?: "unavailable"} · choose"
+            field.choose.contentDescription = "$label $kind quality; ${state?.scope ?: "unavailable"}; requested ${state?.effective?.title ?: "unavailable"}; choose"
+            val actual = if (field.kind == NativeQualityKind.VIDEO) snapshot?.video else snapshot?.audio
+            field.readback.text = "${state?.scope ?: "Unavailable"} · requested: ${state?.effective?.title ?: "unavailable"}\nActual $kind: ${actual?.summary() ?: "unavailable"}"
+            field.capability.text = (control?.let { "${it.explanation}. ${it.capability}." +
+                if (it.omitted > 0) " ${it.omitted} additional options omitted." else "" }
+                ?: "Waiting for this feed's supported tracks; no quality change confirmed.") +
+                (state?.message?.let { "\n$it" } ?: "")
+            val enabled = state != null && !state.saving && current?.busy != true
+            field.choose.isEnabled = enabled; field.save.isEnabled = enabled; field.reset.isEnabled = enabled
+        }
         if (wasPlaying != requestedPlaying) showControls()
         if (available.all { it == null }) suspendControls()
     }

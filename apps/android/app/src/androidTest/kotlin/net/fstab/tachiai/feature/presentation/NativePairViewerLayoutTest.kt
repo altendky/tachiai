@@ -55,7 +55,7 @@ class NativePairViewerLayoutTest {
             assertTrue(f.stage.width < fullWidth)
             assertTrue(f.dock.width <= f.dp(360))
             assertTrue(f.dock.width < f.viewer.width / 2)
-            assertTrue("Short content has no fixed 200dp blank area", f.scroller.height < f.dp(200))
+            assertTrue("Content remains capped to the available video area", f.scroller.height <= (f.viewer.height * 0.6f).toInt())
             val stageWidth = f.stage.width
             val paneA = f.stage.getChildAt(0) as ViewGroup
             val paneB = f.stage.getChildAt(1) as ViewGroup
@@ -112,6 +112,27 @@ class NativePairViewerLayoutTest {
                 assertFalse(descendants(f.scroller).any { it.contentDescription?.startsWith("Playback status:") == true })
             }
         }
+    }
+
+    @Test fun timingRowsKeepAllTargetsAtLargeFontsAndCompactWidths() {
+        for (landscape in listOf(false, true)) withFixture(landscape, 1.8f) { scenario, f -> scenario.onActivity {
+            button(f.viewer, "Timing").performClick()
+            f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
+            val steps = descendants(f.scroller).filterIsInstance<Button>().filter { it.contentDescription?.startsWith("Advance ") == true }
+            assertEquals(10, steps.size)
+            steps.forEach {
+                assertTrue(it.width >= f.dp(48))
+                assertTrue(it.height >= f.dp(48))
+                assertTrue(it.right <= (it.parent as View).width)
+            }
+            assertTrue(f.scroller.height <= (f.viewer.height * 0.6f).toInt())
+            val body = f.scroller.getChildAt(0)
+            if (body.height > f.scroller.height) {
+                f.scroller.scrollTo(0, body.height)
+                assertTrue(f.scroller.scrollY > 0)
+            }
+            assertEquals(0, f.commands)
+        } }
     }
 
     private fun withFixture(landscape: Boolean, fontScale: Float = 1f,

@@ -62,7 +62,6 @@ internal class NativePairViewer(
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private var mix = TwoFeedMix()
-    private var timingStep = ViewerTimingStep.ONE_SECOND
     private var panel: String? = null
     private var fitVideo = true
     private var sideDock = false
@@ -96,13 +95,8 @@ internal class NativePairViewer(
     private val mixLabel = text("")
     private val muteA = button("") { changeMix(mix.copy(muteA = !mix.muteA)) }
     private val muteB = button("") { changeMix(mix.copy(muteB = !mix.muteB)) }
-    private val advanceA = button("Advance A") { onRelative(timingStep.milliseconds); refresh() }.apply {
-        contentDescription = "Advance $labelA relative to $labelB"
-    }
-    private val advanceB = button("Advance B") { onRelative(-timingStep.milliseconds); refresh() }.apply {
-        contentDescription = "Advance $labelB relative to $labelA"
-    }
-    private val step = button("") { showTimingSteps(it) }
+    private val advanceA = timingButtons(true)
+    private val advanceB = timingButtons(false)
     private val fit = button("") { fitVideo = !fitVideo; updateLabels(); showControls() }.apply {
         contentDescription = "Fit video beside visible controls; toggle without restarting playback"
     }
@@ -112,6 +106,10 @@ internal class NativePairViewer(
         button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
 
     init {
+        for (index in advanceA.indices) {
+            advanceA[index].nextFocusDownId = advanceB[index].id
+            advanceB[index].nextFocusUpId = advanceA[index].id
+        }
         setBackgroundColor(Color.BLACK)
         // Consume empty-area taps here rather than passing them to the hidden
         // provider page. Child controls and pane gestures keep their handlers.
@@ -153,6 +151,19 @@ internal class NativePairViewer(
     private fun row(vararg views: View) = LinearLayout(context).apply {
         views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
     }
+    private fun timingButtons(forA: Boolean) = ViewerTimingStep.entries.map { choice ->
+        button(choice.label) {
+            onRelative(if (forA) choice.milliseconds else -choice.milliseconds); refresh()
+        }.apply {
+            id = View.generateViewId()
+            contentDescription = "Advance ${if (forA) labelA else labelB} by ${choice.label} relative to ${if (forA) labelB else labelA}"
+        }
+    }.also { buttons ->
+        buttons.forEachIndexed { index, button ->
+            if (index > 0) button.nextFocusLeftId = buttons[index - 1].id
+            if (index < buttons.lastIndex) button.nextFocusRightId = buttons[index + 1].id
+        }
+    }
     private fun showControls() {
         dock.visibility = VISIBLE; removeCallbacks(hideControls)
         if (panel == null && requestedPlaying) postDelayed(hideControls, 4_000)
@@ -168,7 +179,7 @@ internal class NativePairViewer(
         dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
         // Reused controls may still belong to a removed row container.
-        listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, advanceA, advanceB, step, fit, adjustmentLabel).forEach {
+        (listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, fit, adjustmentLabel) + advanceA + advanceB).forEach {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
         }
         if (panel != null) content.addView(row(text("${checkNotNull(panel)} controls").apply { gravity = Gravity.CENTER_VERTICAL }, fit))
@@ -184,8 +195,10 @@ internal class NativePairViewer(
             })
             content.addView(row(muteA, button("Centre mix") { changeMix(mix.copy(balance = 50)) }, muteB))
         } else if (panel == "Timing") {
-            content.addView(row(advanceA, advanceB))
-            content.addView(step)
+            content.addView(text("Advance A · $labelA"))
+            content.addView(row(*advanceA.toTypedArray()))
+            content.addView(text("Advance B · $labelB"))
+            content.addView(row(*advanceB.toTypedArray()))
             content.addView(adjustmentLabel)
         } else if (panel == "Status") {
             content.addView(details)
@@ -235,21 +248,8 @@ internal class NativePairViewer(
         muteA.contentDescription = if (mix.muteA) "Unmute $labelA" else "Mute $labelA"
         muteB.contentDescription = if (mix.muteB) "Unmute $labelB" else "Mute $labelB"
         muteA.isSelected = mix.muteA; muteB.isSelected = mix.muteB
-        step.text = "Step: ${timingStep.label} · choose"
-        step.contentDescription = "Relative timing step: ${timingStep.label}; choose step"
         fit.text = "Fit video: ${if (fitVideo) "on" else "off"}"
         fit.isSelected = fitVideo
-    }
-
-    private fun showTimingSteps(anchor: View) {
-        showMenu(anchor) {
-            ViewerTimingStep.entries.forEach { choice ->
-                menu.add(choice.label).apply {
-                    isCheckable = true; isChecked = choice == timingStep
-                    setOnMenuItemClickListener { timingStep = choice; updateLabels(); showControls(); true }
-                }
-            }
-        }
     }
 
     private fun dismissMenu() {
@@ -310,8 +310,7 @@ internal class NativePairViewer(
         requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
         play.text = if (requestedPlaying || current?.busy == true) "Pause" else "Play"
         play.isEnabled = available.any { it != null }
-        advanceA.isEnabled = current != null && !current.busy
-        advanceB.isEnabled = advanceA.isEnabled
+        (advanceA + advanceB).forEach { it.isEnabled = current != null && !current.busy }
         val adjustment = when {
             current == null -> "Relative timing requires two playable feeds."
             !current.requestedAdjustmentValid -> "Timing anchor invalid; realign after catch-up."

@@ -106,6 +106,16 @@ licensing behavior was changed.
 
 ## Current setup vocabulary and navigation
 
+The native viewer's Timing panel has two direct-action rows, **Advance A** and
+**Advance B**, each with 0.1 s, 0.25 s, 0.5 s, 1 s and 5 s buttons in that order.
+A press immediately requests that feed's relative advance; there is no shared
+step selector. Descriptions name both sources and the duration, and directional
+focus follows the rows. All steps are disabled while an adjustment is busy or
+two playable feeds are unavailable. Feedback still reports requested timing,
+not measured synchronization. Compact layouts retain scrollable controls and
+48 dp button targets. Cancelling More preserves the open controls and panel;
+Hide and video/background taps retain their explicit dismissal behavior.
+
 The product terms are **route / provider / stream / feed**. The picker assigns
 streams to A/B feeds; its separate **Routes** and **Providers** buttons open
 network configuration management and provider configuration respectively.

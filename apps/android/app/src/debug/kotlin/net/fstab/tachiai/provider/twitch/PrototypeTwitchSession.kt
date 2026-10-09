@@ -1,5 +1,9 @@
 package net.fstab.tachiai.provider.twitch
 
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+import net.fstab.tachiai.platform.diagnostics.nativeObserver
+
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -30,6 +34,7 @@ internal class PrototypeTwitchSession(
     private val onEvent: (PrototypeFeedEvent) -> Unit,
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
+    private val diagnostics: FailureReporter = FailureReporter.NONE,
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -76,6 +81,7 @@ internal class PrototypeTwitchSession(
                             allowedUri = { allowedTwitchMediaUri(it, observedReplayCdn = replay) },
                             handleAudioFocus = false, canRequest = { preparation.checkStored() },
                             openConnection = openConnection,
+                            onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
                             }, onEvent = { event, code ->
@@ -96,9 +102,15 @@ internal class PrototypeTwitchSession(
                         host = created
                         created.start(source.uri, playWhenReady = false)
                         if (replay) created.player.seekTo(70 * 60 * 1_000L)
-                    } catch (_: Exception) { if (!closed.get() && active()) fail() }
+                    } catch (error: Exception) {
+                        if (!closed.get() && active()) {
+                            diagnostics.report(FailureStage.TWITCH_PLAYER_CREATE, error)
+                            fail()
+                        }
+                    }
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                if (!closed.get() && active() && budget.active) diagnostics.report(FailureStage.TWITCH_PREPARE, error)
                 handler.post { if (!closed.get() && active()) fail() }
             }
         }
@@ -136,8 +148,12 @@ internal class PrototypeTwitchSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        for (cleanup in listOf<() -> Unit>({ preparation.close() }, { host?.close() }, { worker.shutdownNow() })) {
-            try { cleanup() } catch (_: Exception) { cleanupFailed = true }
+        for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
+            FailureStage.TWITCH_PREPARATION_CLOSE to { preparation.close() },
+            FailureStage.NATIVE_HOST_CLOSE to { host?.close() },
+            FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
+        )) {
+            if (!diagnostics.cleanup(stage, cleanup)) cleanupFailed = true
         }
         host = null
     }

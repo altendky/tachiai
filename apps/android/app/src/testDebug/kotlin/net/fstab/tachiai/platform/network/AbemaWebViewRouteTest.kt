@@ -2,6 +2,10 @@ package net.fstab.tachiai.platform.network
 
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
+import net.fstab.tachiai.platform.diagnostics.FailureObservation
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
 
 class AbemaWebViewRouteTest {
     private class Backend(override var supported: Boolean = true) : AbemaWebViewProxyBackend {
@@ -141,5 +145,21 @@ class AbemaWebViewRouteTest {
         route.installProxy(65536) { results += it }
         assertEquals(listOf(false, false), results)
         assertTrue(backend.operations.isEmpty())
+    }
+
+    @Test fun installAndCleanupExceptionsHaveDistinctDiagnosticsAndKeepCleanupBlocked() {
+        val observations = mutableListOf<FailureObservation>()
+        val diagnostics = FailureReporter(observations::add)
+        val backend = Backend().apply { throwOnInstall = true; throwOnClear = true }
+        val route = route(backend)
+        var installed: Boolean? = null
+        route.installProxy(12345, diagnostics) { installed = it }
+        assertEquals(false, installed)
+        var cleared = false
+        route.clear(diagnostics) { cleared = true }
+        assertFalse(cleared)
+        assertTrue(route.busy)
+        assertEquals(listOf(FailureStage.WEB_ROUTE_INSTALL, FailureStage.WEB_ROUTE_CLEAR), observations.map { it.stage })
+        assertTrue(observations.all { it.failure.category == FailureCategory.ILLEGAL_STATE })
     }
 }

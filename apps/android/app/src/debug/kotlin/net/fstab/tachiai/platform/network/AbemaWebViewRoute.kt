@@ -5,6 +5,8 @@ import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
 import java.util.concurrent.Executor
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
 
 // This override belongs only to the cached-player process. Both anonymous
 // ABEMA helpers use the same provider route; native Twitch sockets do not use it.
@@ -25,11 +27,11 @@ internal class AbemaWebViewRoute(
     private val clearWaiters = mutableListOf<() -> Unit>()
     private var clearing = false
 
-    fun install(route: RouteSession, onComplete: (Boolean) -> Unit) =
-        installProxy(if (route.isSystem) null else route.proxyPort, onComplete)
+    fun install(route: RouteSession, onComplete: (Boolean) -> Unit, diagnostics: FailureReporter = FailureReporter.NONE) =
+        installProxy(if (route.isSystem) null else route.proxyPort, diagnostics, onComplete)
 
     // Android-free backend seam for asynchronous ordering/failure tests.
-    internal fun installProxy(port: Int?, onComplete: (Boolean) -> Unit) {
+    internal fun installProxy(port: Int?, diagnostics: FailureReporter = FailureReporter.NONE, onComplete: (Boolean) -> Unit) {
         assertThread()
         if (busy || (port != null && port !in 1..65535)) { onComplete(false); return }
         if (!backend.supported) {
@@ -54,7 +56,8 @@ internal class AbemaWebViewRoute(
                 }
             }
             if (port == null) backend.clear(applied) else backend.installLocalProxy(port, applied)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            diagnostics.report(FailureStage.WEB_ROUTE_INSTALL, error)
             if (currentGeneration == generation && !clearing) {
                 busy = false
                 val completion = pendingInstall
@@ -64,7 +67,7 @@ internal class AbemaWebViewRoute(
         }
     }
 
-    fun clear(onComplete: () -> Unit) {
+    fun clear(diagnostics: FailureReporter = FailureReporter.NONE, onComplete: () -> Unit) {
         assertThread()
         clearWaiters += onComplete
         if (clearing) return
@@ -87,7 +90,8 @@ internal class AbemaWebViewRoute(
         if (!backend.supported && !overrideMayExist) { finish(); return }
         // On cleanup failure remain busy, blocking future helpers. The caller's
         // bounded lifecycle timeout reports the failure; never load directly.
-        try { backend.clear(::finish) } catch (_: Exception) { }
+        try { backend.clear(::finish) }
+        catch (error: Exception) { diagnostics.report(FailureStage.WEB_ROUTE_CLEAR, error) }
     }
 }
 

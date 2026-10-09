@@ -12,6 +12,7 @@ internal class AbemaPublicBundleHttp(
     private val identity: AbemaPublicBundleIdentity = AbemaPublicBundleIdentity(),
     private val open: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val onFailure: (Exception) -> Unit = {},
 ) : AutoCloseable {
     private val lock = Any()
     private var closed = false
@@ -99,6 +100,9 @@ internal class AbemaPublicBundleHttp(
 
     private fun disconnect(connection: HttpsURLConnection?) {
         try { connection?.disconnect() }
-        catch (_: Exception) { throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED) }
+        catch (error: Exception) {
+            runCatching { onFailure(error) }
+            throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
+        }
     }
 }

@@ -61,11 +61,12 @@ internal class BoundedNativeDashPlayer(
     keepDrmSessionForClearTransitions: Boolean = false,
     initialDrmFormat: Format? = null,
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    private val onFailure: NativeFailureObserver = { _, _ -> },
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
-    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = openConnection)
-    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = openConnection)
+    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = openConnection, onFailure = onFailure)
+    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = openConnection, onFailure = onFailure)
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context)
 
@@ -116,6 +117,7 @@ internal class BoundedNativeDashPlayer(
                     if (!released && budget.active) onEvent(NativeDashEvent.DRM_PREWARM_KEYS_LOADED, 0)
                 }
                 override fun onDrmSessionManagerError(windowIndex: Int, mediaPeriodId: MediaSource.MediaPeriodId?, error: Exception) {
+                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, onFailure, error)
                     if (!released && budget.active) onEvent(NativeDashEvent.DRM_PREWARM_FAILED, 0)
                 }
             })
@@ -155,6 +157,7 @@ internal class BoundedNativeDashPlayer(
                     if (!released) onEvent(NativeDashEvent.VIDEO_FRAME, 0)
                 }
                 override fun onPlayerError(error: PlaybackException) {
+                    if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
                     if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); close() }
                 }
             })
@@ -163,6 +166,7 @@ internal class BoundedNativeDashPlayer(
                     if (!released) onEvent(NativeDashEvent.DRM_KEYS_LOADED, 0)
                 }
                 override fun onDrmSessionManagerError(eventTime: AnalyticsListener.EventTime, error: Exception) {
+                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, onFailure, error)
                     if (!released) onEvent(NativeDashEvent.DRM_FAILED, 0)
                 }
             })
@@ -251,10 +255,11 @@ internal class BoundedNativeDashPlayer(
         released = true
         handler.removeCallbacks(ticker)
         budget.stop()
-        beforeRelease() // Seal browser wait first; releasing a player may wait on its DRM worker.
+        observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease)
         requests.close()
         manifests.close()
-        try { player.release() } finally { quality.close() } // Media3 owns source/manager/session lifetime.
+        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
+        finally { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } }
         onEvent(NativeDashEvent.STOPPED, 0)
     }
 }

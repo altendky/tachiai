@@ -62,6 +62,9 @@ import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import org.json.JSONObject
 import org.json.JSONTokener
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+import net.fstab.tachiai.platform.diagnostics.nativeObserver
 
 // Additive prototype adapter, not a replacement for historical experiments.
 // Each slot owns an original page/helper and a fresh, one-exchange native CDM.
@@ -72,6 +75,7 @@ internal class PrototypeAbemaSession(
     private val replay: Boolean,
     private val active: () -> Boolean,
     private val onEvent: (PrototypeFeedEvent) -> Unit,
+    private val diagnostics: FailureReporter = FailureReporter.NONE,
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -266,11 +270,16 @@ internal class PrototypeAbemaSession(
                 check(current(run))
                 if (replay) check(selectedReplaySource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == source.uri)
                 handler.post { if (current(run) && allows(view.url)) createNative(source, run) }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                if (current(run)) diagnostics.report(FailureStage.ABEMA_SOURCE_PREPARE, error)
                 handler.post { if (!closed.get() && revision.get() == run) fail() }
             } finally {
                 armPending.compareAndSet(arm, null)
-                transport.getAndSet(null)?.close()
+                try { transport.getAndSet(null)?.close() }
+                catch (error: Exception) {
+                    diagnostics.report(FailureStage.BUNDLE_TRANSPORT_CLOSE, error)
+                    throw error
+                }
             }
         }
     }
@@ -342,10 +351,11 @@ internal class PrototypeAbemaSession(
                     .setSampleMimeType(MimeTypes.VIDEO_H264)
                     .setDrmInitData(DrmInitData(C.CENC_TYPE_cenc, DrmInitData.SchemeData(
                         C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids))))
-                    .build())
+                    .build(), onFailure = diagnostics.nativeObserver())
             nativeHost = created
             created.start(source.uri, playWhenReady = false)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            if (current(run)) diagnostics.report(FailureStage.ABEMA_PLAYER_CREATE, error)
             policy.close()
             fail()
         }
@@ -483,18 +493,18 @@ internal class PrototypeAbemaSession(
         sourcePending.getAndSet(null)?.complete(null)
         pending.getAndSet(null)?.complete(null)
         // Seal the helper before release can wait for its native DRM worker.
-        for (cleanup in listOf<() -> Unit>(
-            { transport.getAndSet(null)?.close() },
-            { sourceRequests.getAndSet(null)?.close() },
-            { if (allows(view.url)) view.evaluateJavascript("window['$name']?.stop()", null) },
-            { nativeHost?.close() },
-            { registration?.remove() },
-            { view.stopLoading() }, { view.onPause() },
-            { (view.parent as? ViewGroup)?.removeView(view) },
-            { view.webChromeClient = null; view.destroy() },
-            { worker.shutdownNow() },
+        for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
+            FailureStage.BUNDLE_TRANSPORT_CLOSE to { transport.getAndSet(null)?.close() },
+            FailureStage.SOURCE_REQUESTS_CLOSE to { sourceRequests.getAndSet(null)?.close() },
+            FailureStage.HELPER_STOP to { if (allows(view.url)) view.evaluateJavascript("window['$name']?.stop()", null) },
+            FailureStage.NATIVE_HOST_CLOSE to { nativeHost?.close() },
+            FailureStage.SCRIPT_REGISTRATION_REMOVE to { registration?.remove() },
+            FailureStage.WEBVIEW_STOP to { view.stopLoading() }, FailureStage.WEBVIEW_PAUSE to { view.onPause() },
+            FailureStage.WEBVIEW_DETACH to { (view.parent as? ViewGroup)?.removeView(view) },
+            FailureStage.WEBVIEW_DESTROY to { view.webChromeClient = null; view.destroy() },
+            FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
         )) {
-            try { cleanup() } catch (_: Exception) { cleanupFailed = true }
+            if (!diagnostics.cleanup(stage, cleanup)) cleanupFailed = true
         }
         nativeHost = null; registration = null
         emit(event)

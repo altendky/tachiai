@@ -46,13 +46,14 @@ internal class BoundedNativePlayer(
     handleAudioFocus: Boolean = true,
     canRequest: () -> Boolean = { true },
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    private val onFailure: NativeFailureObserver = { _, _ -> },
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
     private var released = false
     private val requests = BoundedMediaRequests(budget, allowedUri, onEvent,
         canRequest = { canRequest() && (acceptedPlaylist.get() || System.nanoTime() / 1_000_000 < acceptanceDeadlineMs) },
-        onManifestRejection = onManifestRejection, openConnection = openConnection)
+        onManifestRejection = onManifestRejection, openConnection = openConnection, onFailure = onFailure)
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context)
 
@@ -89,6 +90,7 @@ internal class BoundedNativePlayer(
                 timingSnapshot()?.let { onTimingDiscontinuity(it, reason) }
             }
             override fun onPlayerError(error: PlaybackException) {
+                if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
                 // Never report error.message, cause, MediaItem or signed source.
                 if (!released) { onEvent(NativeMediaEvent.PLAYER_FAILED, error.errorCode); close() }
             }
@@ -172,7 +174,8 @@ internal class BoundedNativePlayer(
         released = true
         handler.removeCallbacks(ticker)
         requests.close()
-        try { player.release() } finally { quality.close() }
+        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
+        finally { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } }
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

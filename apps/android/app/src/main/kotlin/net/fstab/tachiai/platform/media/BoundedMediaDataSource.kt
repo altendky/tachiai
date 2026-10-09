@@ -25,6 +25,7 @@ internal class BoundedMediaRequests(
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val onManifestRejection: (Int, String) -> Unit = { _, _ -> },
+    private val onFailure: NativeFailureObserver = { _, _ -> },
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
@@ -32,7 +33,11 @@ internal class BoundedMediaRequests(
         if (reported.add(event)) onEvent(event, http)
     }
     fun create(type: Int): Source = Source(type)
-    override fun close() { budget.stop(); active.forEach { it.disconnect() }; active.clear() }
+    override fun close() {
+        budget.stop()
+        active.forEach { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { it.disconnect() } }
+        active.clear()
+    }
 
     internal inner class Source(private val type: Int) : BaseDataSource(true) {
         private var connection: HttpsURLConnection? = null
@@ -161,10 +166,12 @@ internal class BoundedMediaRequests(
         override fun close() {
             val request = connection
             connection = null
-            try { input?.close() } catch (_: Exception) { /* no raw exception */ }
+            try { input?.close() } catch (error: Exception) {
+                runCatching { onFailure(NativeFailureStage.MEDIA_DISCONNECT, error) }
+            }
             input = null
             try {
-                request?.disconnect()
+                observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { request?.disconnect() }
             } finally {
                 if (request != null) active.remove(request)
                 source = null

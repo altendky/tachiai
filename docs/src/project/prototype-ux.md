@@ -167,8 +167,14 @@ Hide and video/background taps retain their explicit dismissal behavior.
 The product terms are **route / provider / stream / feed**. The picker assigns
 streams to A/B feeds; its separate **Routes** and **Providers** buttons open
 network configuration management and provider configuration respectively.
-ABEMA and Twitch each choose a default route covering their live/replay streams
-and both feeds. The earlier per-stream setup buttons are no longer in this flow.
+Provider type is separate from a configured instance: multiple named ABEMA or
+Twitch instances may each choose their own route, and Twitch instances have
+separate saved LOCAL logins. The default Twitch instance retains the original
+grant without copying it. The picker assigns each feed a stream and instance
+together; duplicate streams remain independent playback sessions. Simultaneous
+ABEMA instances must use the same canonical route because their WebView proxy
+override is shared; incompatible routes block the run before any route starts.
+The earlier per-stream setup buttons are no longer in this flow.
 Imported profiles and provider configuration are preserved. Obsolete four-stream
 settings are not migrated: the picker offers an explicit stream-settings reset
 before playback. Current-format ambiguous defaults/overrides require explicit

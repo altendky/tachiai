@@ -29,6 +29,7 @@ internal class PrototypeTwitchSession(
     private val active: () -> Boolean,
     private val onEvent: (PrototypeFeedEvent) -> Unit,
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -38,7 +39,7 @@ internal class PrototypeTwitchSession(
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     override var cleanupFailed: Boolean = false
         private set
-    private val preparation = NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection)
+    private val preparation = NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection, authorization)
     private var host: BoundedNativePlayer? = null
     override val providerView: View? = null
     override val member: NativePairMember? get() = host

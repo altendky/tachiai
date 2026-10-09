@@ -13,10 +13,16 @@ import javax.crypto.SecretKey
 
 // No export/backup, SharedPreferences, plaintext fallback, password or browser
 // session access. All key/file I/O is invoked from the worker, never Compose.
-internal class AndroidPrivateSecretStore(context: Context, slot: PrivateAuthorizationSlot = PrivateAuthorizationSlot.TWITCH_OWN) : PrivateSecretStore {
-    private val file = AtomicFile(File(context.noBackupFilesDir, "${slot.bindingName}.enc"))
-    private val alias = "tachiai.${slot.bindingName}.v1"
-    private val binding = "${context.packageName}:${slot.bindingName}:v1".toByteArray()
+internal class AndroidPrivateSecretStore private constructor(context: Context, bindingName: String) : PrivateSecretStore {
+    constructor(context: Context, slot: PrivateAuthorizationSlot = PrivateAuthorizationSlot.TWITCH_OWN) : this(context, slot.bindingName)
+    companion object {
+        fun twitchProviderInstance(context: Context, id: String): AndroidPrivateSecretStore {
+            return AndroidPrivateSecretStore(context, twitchProviderInstanceBindingName(id))
+        }
+    }
+    private val file = AtomicFile(File(context.noBackupFilesDir, "$bindingName.enc"))
+    private val alias = "tachiai.$bindingName.v1"
+    private val binding = "${context.packageName}:$bindingName:v1".toByteArray()
 
     private fun key(create: Boolean): SecretKey {
         val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

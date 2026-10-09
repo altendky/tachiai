@@ -25,9 +25,13 @@ internal enum class PrototypeSource(
 internal data class PrototypeSelection(
     val a: PrototypeSource = PrototypeSource.ABEMA_LIVE,
     val b: PrototypeSource = PrototypeSource.TWITCH_LIVE,
+    val aInstanceId: String = defaultProviderInstanceId(a.service),
+    val bInstanceId: String = defaultProviderInstanceId(b.service),
 ) {
+    init { require(validProviderInstanceId(aInstanceId) && validProviderInstanceId(bInstanceId)) }
     // Duplicate source choices are intentional: each slot owns a separate host.
     val sources get() = listOf(a, b)
+    val feeds get() = listOf(PrototypeFeedChoice(a, aInstanceId), PrototypeFeedChoice(b, bInstanceId))
 }
 
 internal enum class PrototypeSlot { A, B }

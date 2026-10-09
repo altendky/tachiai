@@ -13,8 +13,9 @@ import net.fstab.tachiai.platform.net.AccessProbeHttp
 // no token, signed URI or account field enters intents, UI, logs or toString.
 internal class NativePairTwitchPreparation(context: Context, private val active: () -> Boolean,
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    private val cache: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
 ) : AutoCloseable {
-    private val cache = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
+    init { require(cache.profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL) }
     private val valid = AtomicBoolean(true)
     private val validator = AtomicReference<TwitchDeviceHttpTransport?>()
     private val access = AtomicReference<AccessProbeHttp?>()

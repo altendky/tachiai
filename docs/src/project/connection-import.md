@@ -2,19 +2,81 @@
 
 ## Route / provider / stream / feed
 
-The agreed vocabulary separates four concepts: **route** (system network,
-VPN or proxy path), **provider** (ABEMA/Twitch), **stream** (specific live or
+The setup vocabulary separates **route** (system network,
+VPN or proxy path), **provider type** (ABEMA/Twitch), **provider instance** (a
+named configuration of one type), **stream** (specific live or
 recorded content) and **feed** (a running instance assigned to A or B). A saved
 route configuration does not mean traffic is using that route. Two copies of
 one stream create independent feeds. Provider-native channel/video/replay terms
 may appear when browsing content; broader browsing is not implemented yet.
 
 **Prototype → Routes** opens the existing import/manage screen. **Prototype →
-Providers** opens a separate ABEMA/Twitch list; Configure chooses that provider's
-default route for all its streams and both feeds. Provider setup also links to
+Providers** opens the configured instances. Add ABEMA/Twitch instance creates a
+separate configuration; Configure edits its name and default route for its
+streams. The picker lists the catalogue under each instance and assigns a
+stream together with that instance to A or B. Provider setup also links to
 Routes for importing another configuration. Importing never automatically
 selects it. Selecting a route is an explicit Save action. Per-feed route
-overrides are not exposed in this provider-default workflow yet.
+overrides are not exposed in this instance-default workflow yet.
+
+### Multiple provider instances
+
+The initial ABEMA and Twitch instances have fixed reserved UUIDs and names.
+New instances receive random stable UUIDs and persisted default names such as
+Twitch 2; a custom name never changes identity. Names are limited to 64 printable
+characters, unique within a provider type, and may be reset to that instance's
+own default by leaving the field blank. The prototype permits at most 16
+instances. Creating or saving an instance starts no route or playback. It does
+not clone another instance's route or login; new instances use System network
+and have no saved Twitch grant.
+
+The default Twitch UUID returns the exact historical Smart TV LOCAL repository,
+file, keystore alias and authenticated-encryption binding. Its grant is never
+copied. Each new Twitch UUID derives a separate constrained encrypted no-backup
+slot and process repository; Connect, revalidation and Forget affect only that
+instance. The authorization identity, zero scopes, retention, foreground gates
+and playback validation remain unchanged. Historical diagnostic cases continue
+to use their original fixed repositories. ABEMA instances retain anonymous guest
+playback; no ABEMA account authorization is introduced.
+
+Both feeds may run one stream through one instance, or the same stream through
+different instances. Each feed still owns a separate playback session; the
+selected instance supplies its route and, for Twitch, its grant. Missing or
+type-mismatched instance IDs block playback until explicit reassignment rather
+than choosing another account. Feed source and UUID are saved together in
+Activity and picker recreation state, including after the native view replaces
+Compose. Malformed or unchecked saved slots stay unassigned; recreation opens
+the picker without automatically restarting playback. Secrets and account
+identities are not saved there. Viewer labels include the instance name.
+
+ABEMA's WebView proxy override remains process-wide. A worker preflight checks
+every selected ABEMA instance against canonical route configurations before
+creating any route backend: simultaneous ABEMA feeds need the same configuration
+(duplicate imports qualify), or all need System network. Missing routes among
+simultaneous ABEMA instances or a System/imported mismatch block the run with an
+explicit explanation. Independent
+Twitch routes remain supported, and existing route sharing/conflict constraints
+remain in force. Names or imported record IDs do not establish route equality.
+
+The separately encrypted instance registry uses a JVM lock plus an OS file lock
+across each complete read or mutation. An absent registry presents a read-only
+view of existing provider settings under the deterministic default IDs. Pending
+legacy choices and their earlier references remain pending. The first explicit
+create/save atomically persists the complete view, including unresolved choices;
+it rewrites no legacy source/provider/imported-route/grant record. Later reads
+use that registry. Corruption, failed saves and stale IDs cannot replace it or
+silently invent System routing. Obsolete stream metadata still requires the
+existing explicit reset.
+
+Provider-free JVM fixtures cover migration, retained pending routes, corruption,
+failed writes, cross-store locks, bounds, stable names, stale/type-mismatched
+bindings, grant/lease/Forget isolation and canonical ABEMA route preflight.
+Compose fixtures exercise create/name validation, instance-specific login
+placement, explicit save, duplicate streams across instances and recreation.
+A repository-accessor fixture checks default-object identity without reading or
+writing grants. These newly added checks have not yet been run for this change;
+no multiple-account authorization, provider playback or device/region behavior
+has been observed.
 
 Routes offers guided Proton and Windscribe exports alongside the generic file
 and manual importer. **Add route · setup / import** in Providers opens those
@@ -98,7 +160,7 @@ picker. The sections below record its earlier implementation and verification.
 
 ### Twitch login in Providers
 
-**Prototype → Providers → Configure Twitch** now presents saved login status,
+**Prototype → Providers → Configure a Twitch instance** presents saved login status,
 Connect/Reconnect, explicit revalidation and local Forget beside the route
 editor. The available/expired/unreadable status describes protected storage;
 availability is not a claim that Twitch currently accepts the grant. Twitch
@@ -107,12 +169,13 @@ user back to Providers → Twitch.
 
 This reuses the already approved debug Smart TV LOCAL device-authorization
 flow, exact identity and zero scopes, the same process repository and the
-unchanged encrypted no-backup slot. Existing records remain usable without
+unchanged encrypted no-backup slot for the deterministic default instance. Existing records remain usable without
 copying, migration or a second grant. Historical diagnostic cases remain
 available with their original behavior. No provider password, cookie, token,
 account identity or raw response enters observable or saved UI state. Only
 the transient activation code and the validated browser handoff appear while
-connecting; neither is retained in recreation state or logs.
+connecting; neither is retained in recreation state or logs. Additional instances
+use separate protected slots as described above.
 
 Protected reads and writes run on a worker. Rotation, editor departure and
 explicit Cancel cancel pending network operations and close their transports.

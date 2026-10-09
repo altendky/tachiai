@@ -37,21 +37,26 @@ import net.fstab.tachiai.feature.connections.ConnectionProfilesActivity
 import net.fstab.tachiai.feature.connections.ObsoleteSourceSetupException
 import net.fstab.tachiai.feature.connections.ProvidersActivity
 import net.fstab.tachiai.feature.connections.sourceSetupStore
-import net.fstab.tachiai.feature.connections.providerSetupStore
 import net.fstab.tachiai.feature.connections.streamQualityStore
 import net.fstab.tachiai.platform.media.NativeQualityKind
 import net.fstab.tachiai.platform.media.NativeQualityPreferences
 import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.presentation.ViewerQualityState
+import net.fstab.tachiai.feature.connections.providerInstanceStore
+import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.defaultSourceSetups
-import net.fstab.tachiai.presentation.legacyProviderSetups
-import net.fstab.tachiai.presentation.SourceRouteMode
+import net.fstab.tachiai.presentation.defaultProviderInstances
+import net.fstab.tachiai.presentation.ProviderInstance
+import net.fstab.tachiai.presentation.prototypeFeedAssignments
+import net.fstab.tachiai.presentation.restorePrototypeFeedAssignments
+import net.fstab.tachiai.presentation.encodePrototypeFeedChoice
 import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.RouteSessionRegistry
+import net.fstab.tachiai.platform.network.planProviderInstanceRoutes
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -68,6 +73,7 @@ import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
+import net.fstab.tachiai.provider.twitch.AndroidTwitchAuthorization
 
 // Product-flow prototype, separate from historical experiment screens. The
 // unsupported playback adapters deliberately remain confined to the debug APK.
@@ -89,8 +95,10 @@ open class PrototypeActivity : ComponentActivity() {
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
     private var selection = PrototypeSelection()
+    private var pickerAssignments = prototypeFeedAssignments(selection)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
-    private var providerSetups by mutableStateOf(legacyProviderSetups(defaultSourceSetups()))
+    private var providerInstances by mutableStateOf(defaultProviderInstances())
+    private var activeInstances: List<ProviderInstance> = defaultProviderInstances()
     private var setupReady by mutableStateOf(false)
     private var setupMessage by mutableStateOf<String?>(null)
     private var obsoleteSetup by mutableStateOf(false)
@@ -122,10 +130,12 @@ open class PrototypeActivity : ComponentActivity() {
     private var lastAuthorizationPoll = 0L
     private var lastSample = 0L
     private val authorizationPolling = AtomicBoolean()
-    private var routes = emptyMap<PrototypeService, RouteSession>()
+    private var routes = emptyMap<String, RouteSession>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pickerAssignments = restorePrototypeFeedAssignments(savedInstanceState != null,
+            savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
         if (!profileConfigured) {
             WebView.setDataDirectorySuffix(if (useCachedAbema) "prototype-cached-player" else "prototype-player")
@@ -139,6 +149,12 @@ open class PrototypeActivity : ComponentActivity() {
         showPicker(null)
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("prototype.feed.a", encodePrototypeFeedChoice(pickerAssignments.a))
+        outState.putString("prototype.feed.b", encodePrototypeFeedChoice(pickerAssignments.b))
+        super.onSaveInstanceState(outState)
+    }
+
     private fun showPicker(message: String?) {
         root = null; progress = null; returnButton = null
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -146,7 +162,8 @@ open class PrototypeActivity : ComponentActivity() {
         setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(selection, setupMessage ?: message,
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
             sourceSetups = sourceSetups, setupReady = setupReady,
-            providerSetups = providerSetups,
+            providerInstances = providerInstances,
+            initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             onWatch = ::watch) } }
@@ -166,6 +183,7 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun watch(selected: PrototypeSelection) {
         selection = selected
+        pickerAssignments = prototypeFeedAssignments(selected)
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         if (routesPending || routeCleanupPending || webRoute.busy) {
             showPicker(if (cleanupFailed || routeCleanupFailed)
@@ -173,11 +191,12 @@ open class PrototypeActivity : ComponentActivity() {
                 else "The previous route is still stopping. Please retry shortly.")
             return
         }
-        if (selected.sources.any { providerSetups[it.service]?.route == null }) {
-            showPicker("A provider route needs review. Open Providers and save a route; no playback or fallback occurred.")
+        if (selected.feeds.any { it.resolve(providerInstances)?.setup?.route == null }) {
+            showPicker("A provider instance is unavailable or its route needs review. Choose an instance and save its route in Providers; no playback or fallback occurred.")
             return
         }
         activeSetups = sourceSetups.toMap()
+        activeInstances = providerInstances.toList()
         dispose()
         if (cleanupFailed) { showPicker("Previous playback cleanup reported a failure. Close and reopen Tachiai before retrying."); return }
         val run = epoch.incrementAndGet()
@@ -216,20 +235,27 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun prepareRoutes(selected: PrototypeSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
-        val choices = providerSetups.toMap()
+        val choices = activeInstances.toList()
         routesPending = true
         worker.execute {
+            val plan = planProviderInstanceRoutes(selected, choices, connectionProfileStore(this)::selected)
+            if (!plan.abemaCompatible) {
+                handler.post {
+                    routesPending = false
+                    if (sharedBudget.active && epoch.get() == run) stopToPicker(
+                        "Selected ABEMA instances need available, identical routes. Their WebView proxy is shared; no route or playback was started.")
+                }
+                return@execute
+            }
             val registry = RouteSessionRegistry { profile ->
                 check(sharedBudget.active)
                 RouteSession.create(profile)
             }
-            val results = selected.sources.map { it.service }.distinct().associateWith { provider ->
+            val results = selected.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to
                 runCatching {
-                    val choice = checkNotNull(choices[provider]?.route)
-                    if (provider == PrototypeService.ABEMA && !useCachedAbema && choice.mode != SourceRouteMode.SYSTEM)
+                    val profile = checkNotNull(plan.profiles[feed.instanceId]).getOrThrow()
+                    if (feed.source.service == PrototypeService.ABEMA && !useCachedAbema && profile != null)
                         error("Historical page comparison has no imported route support")
-                    val profile = if (choice.mode == SourceRouteMode.SYSTEM) null else
-                        connectionProfileStore(this).selected(checkNotNull(choice.connectionId))
                     registry.acquire(profile)
                 }
             }
@@ -244,12 +270,12 @@ open class PrototypeActivity : ComponentActivity() {
                 }
                 routesPending = false
                 routes = results.mapNotNull { (provider, result) -> result.getOrNull()?.let { provider to it } }.toMap()
-                results.filterValues { it.isFailure }.keys.forEach { provider ->
-                    selected.sources.forEachIndexed { index, source -> if (source.service == provider)
+                results.filterValues { it.isFailure }.keys.forEach { instanceId ->
+                    selected.feeds.forEachIndexed { index, feed -> if (feed.instanceId == instanceId)
                         failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED)) }
                 }
                 createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.TWITCH))
-                val abema = routes[PrototypeService.ABEMA]
+                val abema = selected.feeds.firstOrNull { it.source.service == PrototypeService.ABEMA }?.let { routes[it.instanceId] }
                 if (useCachedAbema && abema != null) {
                     var completed = false
                     fun complete(accepted: Boolean) {
@@ -291,10 +317,11 @@ open class PrototypeActivity : ComponentActivity() {
                 }
                 val feedActive = { active() && failures[index] == null }
                 val session = when (source.service) {
-                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events, route = checkNotNull(routes[source.service]))
+                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events, route = checkNotNull(routes[selected.feeds[index].instanceId]))
                         else PrototypeAbemaSession(this, replay, feedActive, events)
                     PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, checkNotNull(source.resourceId), feedActive, events,
-                        openConnection = checkNotNull(routes[source.service])::open)
+                        openConnection = checkNotNull(routes[selected.feeds[index].instanceId])::open,
+                        authorization = AndroidTwitchAuthorization.forProviderInstance(this, selected.feeds[index].instanceId))
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 created += index to session
@@ -638,12 +665,12 @@ open class PrototypeActivity : ComponentActivity() {
         worker.execute {
             val result = runCatching {
                 val streams = sourceSetupStore(this).read()
-                Triple(streams, providerSetupStore(this).read(streams), streamQualityStore(this).read())
+                Triple(streams, providerInstanceStore(this).read { legacyProviderSettings(this) }, streamQualityStore(this).read())
             }
             handler.post {
                 if (isDestroyed || isFinishing || !resumed.get() || setupRevision != current || budget != null) return@post
                 result.fold(onSuccess = {
-                    sourceSetups = it.first; providerSetups = it.second; qualityDefaults = it.third; setupReady = true
+                    sourceSetups = it.first; providerInstances = it.second; qualityDefaults = it.third; setupReady = true
                 }, onFailure = {
                     if (it is ObsoleteSourceSetupException) {
                         obsoleteSetup = true
@@ -685,6 +712,10 @@ open class PrototypeActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun sourceLabel(source: PrototypeSource, index: Int) =
-        "${if (index == 0) "A" else "B"} · ${checkNotNull(activeSetups[source]).name}"
+    private fun sourceLabel(source: PrototypeSource, index: Int): String {
+        val instance = checkNotNull(selection.feeds[index].resolve(activeInstances))
+        val setup = checkNotNull(activeSetups[source])
+        val title = if (setup.name == source.title) source.optionTitle else setup.name
+        return "${if (index == 0) "A" else "B"} · ${instance.name} · $title"
+    }
 }

@@ -65,6 +65,8 @@ class ConnectionProfileTest {
             .forEach { rejects(fixtureWireGuard().replace("MTU = 1280", "$it = secret-should-not-leak"), ConnectionImportFailure.Category.OPTION) }
         rejects(fixtureWireGuard() + "\n[Peer]\n", ConnectionImportFailure.Category.PEERS)
         rejects(fixtureWireGuard().replace("[Peer]", "[Unknown]"), ConnectionImportFailure.Category.OPTION)
+        val error = assertThrows(ConnectionImportFailure::class.java) { parse(fixtureWireGuard() + "\n[Peer]\n") }
+        assertEquals("This first importer supports exactly one WireGuard peer.", error.message)
     }
 
     @Test fun missingDuplicateAndMalformedFieldsStopImport() {

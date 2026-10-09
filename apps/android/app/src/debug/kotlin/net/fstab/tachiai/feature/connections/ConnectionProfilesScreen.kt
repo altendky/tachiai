@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.platform.network.ConnectionProfile
 import net.fstab.tachiai.platform.network.ConnectionSummary
 import net.fstab.tachiai.platform.network.validConnectionName
+import net.fstab.tachiai.platform.network.routeProtocols
+import net.fstab.tachiai.platform.network.CONNECTION_IMPORT_LIMIT
 
 @Composable
 internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: ConnectionProfile?, busy: Boolean,
@@ -37,7 +39,7 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Routes", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-        Text("Import and save WireGuard or HTTP CONNECT route configurations, then assign one in Providers. Saving does not connect or change your system VPN; the native viewer opens the selected route at playback.")
+        Text("Import and save ${routeProtocols.titles} route configurations, then assign one in Providers. Saving does not connect or change your system VPN; the native viewer opens the selected route at playback.")
         message?.let { Text(it) }
         if (busy) Text("Processing…")
         if (draft == null) {
@@ -56,8 +58,8 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
             Button(onClick = onFile, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Import file (fallback)") }
             TextButton(onClick = { editor = !editor; input = "" }, enabled = !busy) { Text(if (editor) "Close manual entry" else "Paste / enter manually") }
             if (editor) {
-                OutlinedTextField(value = input, onValueChange = { if (it.length <= 8192) input = it },
-                    label = { Text("WireGuard configuration or http:// proxy URL") },
+                OutlinedTextField(value = input, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= CONNECTION_IMPORT_LIMIT) input = it },
+                    label = { Text(routeProtocols.formatLabel) },
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 Text("Input is hidden because configurations can contain private keys or proxy credentials.", style = MaterialTheme.typography.bodySmall)
                 Button(onClick = { val value = input; input = ""; editor = false; onParse(value) }, enabled = !busy && input.isNotBlank()) { Text("Preview import") }

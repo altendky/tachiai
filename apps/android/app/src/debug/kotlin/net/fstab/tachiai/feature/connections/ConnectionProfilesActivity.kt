@@ -107,7 +107,7 @@ class ConnectionProfilesActivity : ComponentActivity() {
                 if (revision != current || isDestroyed) return@runOnUiThread
                 busy = false; importSignal = null
                 result.fold(onSuccess = { draft = it; message = "Review before saving. No connection was started." },
-                    onFailure = { message = (it as? ConnectionImportFailure)?.category?.message
+                    onFailure = { message = (it as? ConnectionImportFailure)?.message
                         ?: "Could not read the configuration. Try sharing the downloaded file again, or use Import file." })
             }
         }

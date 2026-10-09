@@ -29,6 +29,42 @@ evidence below predates transport integration and does not verify it.
 The user reported loading a Proton file in the preceding build; no configuration
 contents were inspected, and that report does not establish an active tunnel.
 
+### Route protocol boundaries
+
+The debug route registry currently registers only WireGuard and HTTP CONNECT.
+Each handler owns format recognition, strict configuration validation, safe
+setup labels, canonical configuration, sharing/conflict identities and backend
+creation. The generic session owns the authenticated loopback proxy, HTTPS
+connection lifecycle and cleanup through a backend contract. Concrete Go types
+remain behind the native backend adapter; the Go transports and reviewed host
+allowlist are unchanged.
+
+A playback run shares one session for identical canonical configurations,
+including duplicate imports. WireGuard's handler supplies a separate peer
+identity so differing settings for the same private/public-key pair cannot start
+competing peers. That conflict policy is applied by the generic registry, without
+WireGuard-specific logic in the viewer. Failed initialization remains a failed
+route; it never selects System network automatically.
+
+Saved records now write version 2 with a stable protocol ID and handler-owned
+configuration text inside the existing encrypted, no-backup envelope. Version 1
+records remain readable without rewriting; an explicit save/delete writes the
+new format and retains the remaining profile IDs, names and canonical configurations.
+Older APKs that understand only version 1 cannot read a record after that first
+version 2 mutation; downgrading does not migrate the record back automatically.
+Unknown protocol IDs, mismatched formats and corrupt records fail closed without
+replacement. The eight-profile, 8 KiB total storage bound and strict 8 KiB UTF-8
+import bound remain in force; version metadata also counts toward total storage.
+Manual entry applies the same byte bound. This refactor adds no protocol or
+provider authorization and supplies no new device playback evidence.
+
+The final refactor passed local Android JVM tests, lint, instrumentation
+compilation, release isolation, both APK builds and Go transport tests. Both
+APK certificates matched the shared debug identity. All six existing importer
+screen and warm-handoff tests passed on a separate clean Android 16/API 36
+x86-64 emulator. Registry/backend tests use controlled fixtures and do not
+establish a genuine tunnel or provider playback result.
+
 ### Existing settings and reset
 
 Imported configurations keep their existing encrypted record and IDs. Provider

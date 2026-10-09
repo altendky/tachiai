@@ -1,0 +1,13 @@
+Subject: [PATCH] Keep TLS handshake waiting in the cancellable external loop
+
+Tachiai adaptation of OpenConnect 9.21 gnutls.c, 2026-10-09.
+The TCP FD is already nonblocking. Tell GnuTLS not to wait internally under
+its handshake timeout, so the existing command-FD select remains cancellable.
+No protocol, certificate validation, cipher or trust changes.
+
+--- a/gnutls.c
++++ b/gnutls.c
+@@ -2362 +2362,2 @@
+-	gnutls_init(&vpninfo->https_sess, GNUTLS_CLIENT|GNUTLS_FORCE_CLIENT_CERT);
++	/* Modified by Tachiai, 2026-10-09: keep command-pipe cancellation live. */
++	gnutls_init(&vpninfo->https_sess, GNUTLS_CLIENT|GNUTLS_FORCE_CLIENT_CERT|GNUTLS_NONBLOCK);

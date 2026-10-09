@@ -1,0 +1,70 @@
+--- a/http.c
++++ b/http.c
+@@ -647,0 +648,8 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: never change the configured endpoint. */
++	free(vpninfo->redirect_url);
++	vpninfo->redirect_url = NULL;
++	return -EPERM;
++#endif
++
++
+--- a/auth.c
++++ b/auth.c
+@@ -618,0 +619,27 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: reject interactive/host-scan XML
++	 * before parsing can populate script, browser, or POST state. */
++	if (strlen(response) > 65536 || xml_doc->intSubset || xml_doc->extSubset) {
++		ret = -EPERM;
++		goto out;
++	}
++	{
++		xmlNode *node = xmlDocGetRootElement(xml_doc);
++		while (node) {
++			if (node->type == XML_ELEMENT_NODE &&
++			    (xmlnode_is_named(node, "form") ||
++			     !strncmp((const char *)node->name, "sso", 3) ||
++			     !strncmp((const char *)node->name, "csd", 3) ||
++			     !strncmp((const char *)node->name, "host-scan", 9) ||
++			     xmlnode_is_named(node, "authentication-complete"))) {
++				ret = -EPERM;
++				goto out;
++			}
++			if (node->children) { node = node->children; continue; }
++			while (node && !node->next) node = node->parent;
++			if (node) node = node->next;
++		}
++	}
++#endif
++
++
+--- a/cstp.c
++++ b/cstp.c
+@@ -786,0 +787,5 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: immutable first-session parameters. */
++	return -EPERM;
++#endif
++
+--- a/library.c
++++ b/library.c
+@@ -1342,0 +1343,11 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: no inherited cancellation handles. */
++	if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) ||
++	    fcntl(pipefd[1], F_SETFD, FD_CLOEXEC)) {
++		closesocket(pipefd[0]);
++		closesocket(pipefd[1]);
++		return CMD_PIPE_ERR;
++	}
++#endif
++
++
+@@ -1355,0 +1367,6 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: adapter refuses an unrestricted build. */
++	return "9.21-tachiai-certificate-only-1";
++#endif
++
++

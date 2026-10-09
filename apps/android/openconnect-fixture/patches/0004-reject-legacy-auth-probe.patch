@@ -1,0 +1,9 @@
+--- a/auth.c
++++ b/auth.c
+@@ -1466,0 +1467,6 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++			/* Modified by Tachiai, 2026-10-09: rejected XML must not
++			 * trigger a legacy GET probe or another TLS connection. */
++			result = -EPERM;
++			goto out;
++#endif

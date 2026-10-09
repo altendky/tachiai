@@ -1,0 +1,19 @@
+--- a/auth.c
++++ b/auth.c
+@@ -604,0 +605,5 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: bound XML before tree allocation. */
++	if (strlen(response) > 65536)
++		return -EPERM;
++#endif
+@@ -609 +614 @@
+-				XML_PARSE_NOERROR|XML_PARSE_RECOVER);
++				XML_PARSE_NOERROR|XML_PARSE_RECOVER|XML_PARSE_NONET);
+--- a/library.c
++++ b/library.c
+@@ -1339 +1339,5 @@
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	if (pipe2(pipefd, O_CLOEXEC) < 0)
++#else
+ 	if (pipe(pipefd) < 0)
++#endif

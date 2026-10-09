@@ -83,8 +83,9 @@ record user-approved CDN boundaries and the review process for new origins.
 
 [Per-source network routing research](source-network-routing.md) compares future
 proxy/VPN options and setup profiles. Its original assessment is historical;
-the subsequent debug implementation adds provider-owned HTTP CONNECT and
-userspace WireGuard routes, with verification limits recorded separately.
+the subsequent debug implementation adds session-owned proxy and userspace VPN
+routes, with supported configurations and staged verification recorded in the
+[connection importer](connection-import.md).
 Different simultaneous routes for duplicate ABEMA feeds remain unimplemented.
 The debug-only
 [connection importer](connection-import.md) adds guided Proton export and

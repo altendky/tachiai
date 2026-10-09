@@ -94,8 +94,8 @@ and manual importer. **Add route · setup / import** in Providers opens those
 choices; neither setup link selects or starts a route.
 
 The subsequent [native transport implementation](source-network-routing.md#subsequent-native-transport-implementation)
-adds HTTP CONNECT, SOCKS5, userspace WireGuard and certificate-only OpenVPN
-backends to the cached native viewer.
+adds HTTP CONNECT, SOCKS5, userspace WireGuard and certificate-only OpenVPN and
+OpenConnect backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
 its transport explicitly. System network retains the existing playback path.
 The transport integration added no provider login, new stream or DRM behavior.
@@ -107,7 +107,7 @@ contents were inspected, and that report does not establish an active tunnel.
 ### Route protocol boundaries
 
 The debug route registry currently registers WireGuard, HTTP CONNECT, SOCKS5
-and certificate-only OpenVPN.
+and certificate-only OpenVPN and OpenConnect.
 Each handler owns format recognition, strict configuration validation, safe
 setup labels, canonical configuration, sharing/conflict identities and backend
 creation. The generic session owns the authenticated loopback proxy, HTTPS
@@ -128,6 +128,7 @@ records remain readable without rewriting; an explicit save/delete writes the
 new format and retains the remaining profile IDs, names and canonical configurations.
 Older APKs that understand only version 1 cannot read a record after that first
 version 2 mutation; downgrading does not migrate the record back automatically.
+An older APK also cannot read records containing a protocol it does not register.
 Unknown protocol IDs, mismatched formats and corrupt records fail closed without
 replacement. The eight-profile, 8 KiB total storage bound and strict 8 KiB UTF-8
 import bound remain in force; version metadata also counts toward total storage.
@@ -181,7 +182,7 @@ another OpenVPN initialization until process shutdown.
 The pinned native source/build recipe and licensing provenance are recorded in
 [`routebridge/native/README.md`](../../../apps/android/routebridge/native/README.md).
 Every distributed debug APK must retain the embedded notices and its matching
-`routebridge-openvpn-source.tar.gz` companion. Owned tunnel results do not establish
+`routebridge-native-source.tar.xz` companion. Owned tunnel results do not establish
 commercial-provider compatibility, media playback, physical-device performance
 or Android TV behavior.
 
@@ -194,6 +195,63 @@ explicit Save tap. Each of the three owned native tunnel cases passed with
 outer UDP and TCP on that emulator, and with TCP on the measured 16 KiB emulator.
 The actual ARM64 and x86-64 JNI libraries have verified 16 KiB LOAD and APK data
 alignment; this does not claim ARM64 execution.
+
+### OpenConnect configuration
+
+The certificate-only OpenConnect prototype accepts one `[OpenConnect]` section
+with `Server=https://HOST[:PORT][/PATH]`, `Bootstrap=NUMERIC_IPV4`, and inline
+`<ca>`, `<cert>` and unencrypted `<key>` PEM blocks. The existing 8 KiB UTF-8
+input and total protected-storage bounds apply. The server's HTTPS hostname is
+verified against the explicit CA independently of its numeric bootstrap address;
+bootstrap performs no hostname lookup. Unknown/duplicate fields, external files,
+encrypted keys and passwords are rejected.
+
+Preview exposes only the server host and port; paths, bootstrap addresses and
+credential material are hidden. Import/Save validates grammar without connecting
+or establishing cryptographic validity. Canonical field/block order, host case,
+default port and root path share an identity; changing credentials or endpoint
+path changes it. The existing encrypted records and provider assignments contain
+the profile without copying credentials to provider metadata or presentations.
+
+Pinned OpenConnect 9.21 runs IPv4 TLS/CSTP through an owned datagram socketpair
+and private userspace packet stack, without an Android system VPN. Only explicit
+CA, certificate-only authentication to the original HTTPS endpoint is accepted.
+Redirects, password/forms, HTTP authentication, browser/SSO, CSD/scripts,
+DTLS, compression, IPv6, unsupported pushed network settings and post-establishment
+reconnects fail closed. Session cookies remain in memory; destination DNS stays
+inside the assigned tunnel. Normal origin TLS, reviewed HTTPS destinations on
+port 443 and no System-network fallback remain unchanged. The outer connection
+to the numeric bootstrap follows the system network.
+
+Preparation has an independent 30-second deadline. Stop/background/destruction
+signal its pre-existing cancellation owner before publication; a late backend
+is closed. Unconfirmed bounded native cleanup retains the worker handle safely
+and blocks another OpenConnect initialization until process shutdown. Credential
+inputs use sealed anonymous FDs and direct bounded reads inside the patched
+library; no plaintext credential file or procfs reopening is used. Temporary PEM
+read buffers are wiped; wiping every upstream heap copy is not established.
+
+The native recipe, patches and staged evidence are in
+[`openconnect-fixture/README.md`](../../../apps/android/openconnect-fixture/README.md).
+Eight separately packaged dynamic libraries retain their notices. The selected
+GnuTLS/Nettle/GMP path requires LGPL-3 materials alongside OpenConnect's LGPL-2.1
+license. Every distributed debug APK accompanies its matching
+`routebridge-native-source.tar.xz`, including exact application/native sources
+and [`RELINKING.md`](../../../apps/android/openconnect-fixture/RELINKING.md)
+replacement/rebuild instructions; application licensing remains unchanged.
+
+With all eleven patches, fresh host lifecycle/FD checks, bounded HTTP fixtures
+and ten Go race-suite runs passed. Fresh all-eleven-patch owned ocserv
+interoperability passed independently. All three actual Android owned cases
+passed on Android 16/API 36 x86-64 emulators with measured 4,096-byte and
+16,384-byte pages: malformed/pre-cancelled preparation, wrong gateway CA/name,
+and independent sessions with distinct credentials/CAs, identical inner address
+ranges, tunnel DNS and distinct 40 KiB HTTPS responses. Wrong origin CA,
+cancellation, repeated close and the unaffected second route were checked.
+Both ARM64 and x86-64 dynamic closures and 16 KiB ELF alignment passed static
+checks. These runtime observations use the actual JNI and sealed-FD credential path.
+These results do not establish commercial-provider compatibility, media playback,
+ARM64 execution, physical-device performance or Android TV behavior.
 
 ### SOCKS5 configuration
 

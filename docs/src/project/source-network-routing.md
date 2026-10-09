@@ -86,6 +86,29 @@ bounded, joined candidate attempts. The full Go race suite passed ten runs.
 These are owned transport results, not commercial-provider playback, ARM64
 runtime, physical-device decoding/audio/performance or Android TV evidence.
 
+The certificate-only OpenConnect backend uses pinned OpenConnect 9.21 and eight
+separately packaged dynamic libraries, with the selected LGPL-3 dependency path
+and matching application/native source and replacement materials. Its HTTPS
+server hostname is checked against an explicit CA while a numeric IPv4 bootstrap
+avoids outer DNS. IPv4 TLS/CSTP connects to a private userspace stack; destination
+DNS stays inside that tunnel. Redirects, password/forms, browser/SSO, CSD/scripts,
+HTTP authentication, DTLS, compression, IPv6, unsupported pushed settings and
+post-establishment reconnects are rejected. Existing reviewed origins, normal
+origin TLS, cancellation and fail-closed cleanup remain unchanged.
+[Configuration, source and staged verification](connection-import.md#openconnect-configuration)
+describe this subset.
+
+With all eleven patches, host lifecycle/FD and bounded HTTP fixtures, ten Go race
+runs and fresh owned ocserv interoperability passed. All three actual Android
+owned cases passed on Android 16/API 36 x86-64 emulators with measured 4,096-byte
+and 16,384-byte pages. They checked gateway CA/name refusal, two sessions with
+distinct credentials/CAs and identical
+inner address ranges, tunnel DNS, distinct 40 KiB HTTPS responses, wrong origin
+CA, cancellation and repeated close without disrupting the second route.
+Both ABI dynamic closures and 16 KiB ELF alignment passed static checks.
+These owned results do not establish commercial-provider playback, ARM64 runtime
+or Android TV behavior.
+
 Teardown closes players/helpers before clearing Chromium's override and closing
 owned transports. Stop, background and the existing presentation deadline govern
 route lifetime too. Failed or unconfirmed cleanup blocks another run; force-stop

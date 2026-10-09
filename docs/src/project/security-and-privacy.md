@@ -4,7 +4,7 @@ Tachiai loads authenticated third-party pages and therefore handles sensitive
 browser state even though it does not operate an account service.
 
 The debug-only [connection importer](connection-import.md) separately handles
-user-exported WireGuard keys, inline OpenVPN certificates/private keys and
+user-exported WireGuard keys, inline OpenVPN/OpenConnect certificates/private keys and
 optional proxy credentials. It uses a
 distinct encrypted no-backup record, explicit preview/save and bounded file
 reads; it does not collect Proton account passwords, copy browser state or
@@ -14,7 +14,12 @@ connect only at Open viewer: authenticated loopback CONNECT, explicit native
 factories and a process-scoped proxy for cached ABEMA's unchanged Chromium
 requests. WireGuard uses upstream netstack without an OS VPN takeover. Normal
 TLS, reviewed destinations, no fallback and teardown guards remain mandatory.
-Its limits and pending device verification are recorded
+OpenConnect uses an explicit CA and certificate-only HTTPS authentication;
+redirects, forms/browser authentication and scripts are rejected. Sealed anonymous
+credential FDs are read directly inside the patched library without plaintext
+disk files. Temporary PEM read buffers are wiped; all upstream heap copies are
+not proven wiped. Runtime cookies are never persisted.
+Its limits and executed device verification are recorded
 there rather than inferred from the earlier provider-grant experiments.
 Provider default routes use a separate encrypted metadata slot: profile IDs and
 display names, never copied keys/credentials. Conflicting earlier stream/feed

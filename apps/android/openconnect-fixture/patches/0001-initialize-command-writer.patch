@@ -1,0 +1,11 @@
+Subject: [PATCH] Initialize the command writer before construction can fail
+
+Tachiai adaptation of OpenConnect 9.21 library.c, 2026-10-09.
+The calloc default of zero otherwise causes vpninfo_free to close unrelated
+FD 0 before setup_cmd_pipe succeeds. No protocol or cryptographic changes.
+
+--- a/library.c
++++ b/library.c
+@@ -198,0 +199,2 @@ struct openconnect_info *openconnect_vpninfo_new(const char *useragent,
++	/* Modified by Tachiai, 2026-10-09: preserve unrelated FD 0 on cleanup. */
++	vpninfo->cmd_fd_write = -1;

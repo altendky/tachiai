@@ -1,0 +1,86 @@
+--- a/cstp.c
++++ b/cstp.c
+@@ -223,6 +223,39 @@
+ }
+ #endif
+ 
++static int cstp_readline(struct openconnect_info *vpninfo, char *buf, size_t size,
++			 unsigned *bytes, unsigned *count)
++{
++#ifdef TACHIAI_CERTIFICATE_ONLY
++	/* Modified by Tachiai, 2026-10-09: immutable, bounded CSTP metadata.
++	 * Distinguish a real empty CRLF line from early TLS EOF. */
++	size_t pos = 0;
++	if (++*count > 64)
++		return -E2BIG;
++	for (;;) {
++		char c;
++		int result = vpninfo->ssl_read(vpninfo, &c, 1);
++		if (result <= 0)
++			return result ? result : -EIO;
++		if (++*bytes > 8192 || pos >= 1024 || pos >= size - 1)
++			return -E2BIG;
++		if (!c || (!pos && (c == ' ' || c == '\t')))
++			return -EINVAL;
++		if (c == '\n') {
++			if (!pos || buf[pos - 1] != '\r')
++				return -EINVAL;
++			buf[pos - 1] = 0;
++			return pos - 1;
++		}
++		buf[pos++] = c;
++	}
++#else
++	(void)bytes;
++	(void)count;
++	return vpninfo->ssl_gets(vpninfo, buf, size);
++#endif
++}
++
+ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rekey)
+ {
+ 	struct oc_text_buf *reqbuf;
+@@ -234,6 +267,7 @@
+ 	const char *old_addr6 = vpninfo->ip_info.addr6;
+ 	const char *banner = NULL;
+ 	int base_mtu = 0, mtu = 0;
++	unsigned header_bytes = 0, header_count = 0;
+ 
+  retry:
+ 	calculate_dtls_mtu(vpninfo, &base_mtu, &mtu);
+@@ -338,7 +372,10 @@
+ 
+ 	/* FIXME: Use process_http_response() instead of reimplementing it. It has
+ 	   a header callback function, and can cope with CONNECT requests. */
+-	if ((i = vpninfo->ssl_gets(vpninfo, buf, 65536)) < 0) {
++	if ((i = cstp_readline(vpninfo, buf, sizeof(buf), &header_bytes, &header_count)) < 0) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		return i; /* Malformed/oversized metadata never initiates a retry. */
++#endif
+ 		if (i == -EINTR)
+ 			return i;
+ 		vpn_progress(vpninfo, PRG_ERR,
+@@ -359,10 +396,13 @@
+ 	}
+ 
+ 	if (strncmp(buf, "HTTP/1.1 200 ", 13)) {
++#ifdef TACHIAI_CERTIFICATE_ONLY
++		return -EINVAL; /* Do not scan unbounded 503 explanatory headers. */
++#endif
+ 		if (!strncmp(buf, "HTTP/1.1 503 ", 13)) {
+ 			/* "Service Unavailable. Why? */
+ 			const char *reason = "<unknown>";
+-			while ((vpninfo->ssl_gets(vpninfo, buf, sizeof(buf)))) {
++			while ((cstp_readline(vpninfo, buf, sizeof(buf), &header_bytes, &header_count))) {
+ 				if (!strncmp(buf, "X-Reason: ", 10)) {
+ 					reason = buf + 10;
+ 					break;
+@@ -394,7 +434,7 @@
+ 	struct oc_ip_info new_ip_info = {};
+ 	int ret = 0;
+ 
+-	while ((ret = vpninfo->ssl_gets(vpninfo, buf, sizeof(buf)))) {
++	while ((ret = cstp_readline(vpninfo, buf, sizeof(buf), &header_bytes, &header_count))) {
+ 		struct oc_vpn_option *new_option;
+ 		char *colon;
+ 

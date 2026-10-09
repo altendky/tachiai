@@ -12,6 +12,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.matcher.ViewMatchers.withText
+import net.fstab.tachiai.platform.media.NativeQualityRequest
+import net.fstab.tachiai.presentation.ViewerQualityReadback
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -31,7 +33,8 @@ class NativePairViewerLayoutTest {
         val b = PlayerView(context)
         var commands = 0
         val viewer = NativePairViewer(context, a, b, "A · full source title", "B · full source title", { null },
-            { commands++ }, { commands++ }, { commands++ }, { commands++ }, {}, {}, {})
+            { commands++ }, { commands++ }, { commands++ }, { commands++ }, {}, {}, {},
+            qualityState = { _, _ -> ViewerQualityReadback(NativeQualityRequest.auto, null) })
         val stage get() = viewer.getChildAt(0) as ViewGroup
         val dock get() = viewer.getChildAt(1) as ViewGroup
         val scroller get() = dock.getChildAt(0) as ScrollView
@@ -133,6 +136,22 @@ class NativePairViewerLayoutTest {
             }
             assertEquals(0, f.commands)
         } }
+    }
+
+    @Test fun qualityControlsKeepTouchTargetsAndScrollAtCompactLargeFontSizes() {
+        for (landscape in listOf(false, true)) withFixture(landscape, 1.8f) { scenario, f ->
+            onView(withText("More")).perform(click()); onView(withText("Quality")).perform(click())
+            scenario.onActivity {
+                f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
+                val buttons = descendants(f.scroller).filterIsInstance<Button>()
+                assertEquals(13, buttons.size) // Fit + 4 choices + per-kind Save/Reset.
+                buttons.forEach { assertTrue(it.width >= f.dp(48)); assertTrue(it.height >= f.dp(48)) }
+                val body = f.scroller.getChildAt(0)
+                assertTrue(body.height > f.scroller.height)
+                f.scroller.scrollTo(0, body.height); assertTrue(f.scroller.scrollY > 0)
+                assertEquals(0, f.commands)
+            }
+        }
     }
 
     private fun withFixture(landscape: Boolean, fontScale: Float = 1f,

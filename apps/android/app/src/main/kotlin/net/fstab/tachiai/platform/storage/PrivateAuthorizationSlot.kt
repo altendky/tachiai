@@ -11,4 +11,5 @@ internal enum class PrivateAuthorizationSlot(val bindingName: String) {
     CONNECTION_PROFILES("connection-profiles"),
     SOURCE_SETUP("source-setup"),
     PROVIDER_SETUP("provider-setup"),
+    STREAM_QUALITY("stream-quality"),
 }

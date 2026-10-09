@@ -17,7 +17,8 @@ import net.fstab.tachiai.presentation.*
 
 @Composable
 internal fun ProvidersScreen(settings: Map<PrototypeService, ProviderSetup>, profiles: List<ConnectionSummary>, busy: Boolean,
-    message: String?, onRoutes: () -> Unit, onSave: (PrototypeService, SourceRouteChoice) -> Unit, onBack: () -> Unit) {
+    message: String?, onRoutes: () -> Unit, onSave: (PrototypeService, SourceRouteChoice) -> Unit, onBack: () -> Unit,
+    twitchLogin: @Composable () -> Unit = {}) {
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(enabled = editing != null && !busy) { editing = null }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -37,7 +38,7 @@ internal fun ProvidersScreen(settings: Map<PrototypeService, ProviderSetup>, pro
             TextButton(onClick = onBack, enabled = !busy) { Text("Back to streams") }
         } else key(provider) {
             ProviderRouteEditor(provider, checkNotNull(settings[provider]), profiles, busy, onRoutes,
-                { onSave(provider, it) }, { editing = null })
+                { onSave(provider, it) }, { editing = null }, twitchLogin)
         }
     }
 }
@@ -46,11 +47,12 @@ private fun routeKey(route: SourceRouteChoice) = "${route.mode.name}:${route.con
 
 @Composable
 private fun ProviderRouteEditor(provider: PrototypeService, initial: ProviderSetup, profiles: List<ConnectionSummary>, busy: Boolean,
-    onRoutes: () -> Unit, onSave: (SourceRouteChoice) -> Unit, onBack: () -> Unit) {
+    onRoutes: () -> Unit, onSave: (SourceRouteChoice) -> Unit, onBack: () -> Unit, twitchLogin: @Composable () -> Unit) {
     var selected by rememberSaveable { mutableStateOf(initial.route?.let(::routeKey)) }
     val choices = listOf(SourceRouteChoice.system) + profiles.map { SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, it.id, it.name) }
     val choice = choices.firstOrNull { routeKey(it) == selected }
     Text("${provider.title} setup", style = MaterialTheme.typography.titleLarge)
+    if (provider == PrototypeService.TWITCH) twitchLogin()
     Text("Default route for every ${provider.title} live or replay stream. This choice applies to both feeds, regardless of primary/floating position.")
     if (initial.route == null) {
         Text("Earlier stream defaults or feed overrides need review. Choose one provider route explicitly; the old settings remain stored.")

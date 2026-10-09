@@ -32,7 +32,8 @@ class ProvidersActivity : ComponentActivity() {
             val value = settings
             if (value == null) Text(message ?: "Reading provider setup…")
             else ProvidersScreen(value, profiles, busy, message,
-                { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish)
+                { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
+                twitchLogin = { TwitchProviderLogin() })
         } }
     }
 

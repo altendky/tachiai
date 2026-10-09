@@ -50,7 +50,7 @@ class ConnectionProfilesScreenTest {
         compose.onNodeWithText("Set up Proton").performScrollTo().performClick()
         compose.onNodeWithText("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.")
             .performScrollTo().assertExists()
-        compose.onNodeWithText("Choose WireGuard, not OpenVPN or IKEv2.", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("For this Windscribe export, choose WireGuard.", substring = true).performScrollTo().assertExists()
         compose.onNodeWithText("Set up Windscribe").performScrollTo().performClick()
         compose.onNodeWithText("Import file (fallback)").performScrollTo().performClick()
         compose.runOnIdle { assertTrue(openedProton); assertTrue(openedWindscribe); assertTrue(openedPicker); assertNull(saved) }
@@ -83,5 +83,38 @@ class ConnectionProfilesScreenTest {
         settleNamedPreview("SOCKS route")
         compose.onNodeWithText("Save route").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("SOCKS route", saved) }
+    }
+
+    @Test fun openVpnPreviewHidesInlineMaterialAndRequiresExplicitSave() {
+        // Grammar-only fixture; Save must not initiate native cryptographic
+        // validation, authenticate to a server or expose inline key material.
+        val configuration = """
+            client
+            dev tun
+            proto udp
+            remote 192.0.2.10 1194
+            remote-cert-tls server
+            verify-x509-name owned-route.test name
+            tls-version-min 1.2
+            <ca>
+            synthetic-ca-sentinel
+            </ca>
+            <cert>
+            synthetic-cert-sentinel
+            </cert>
+            <key>
+            synthetic-key-sentinel
+            </key>
+        """.trimIndent()
+        screen(parseConnectionProfile(configuration.toByteArray()))
+        compose.onNodeWithText("OpenVPN\nEndpoint: 192.0.2.10:1194\nPrivate keys and credentials: hidden")
+            .performScrollTo().assertExists()
+        listOf("synthetic-ca-sentinel", "synthetic-cert-sentinel", "synthetic-key-sentinel", "owned-route.test")
+            .forEach { compose.onNodeWithText(it, substring = true).assertDoesNotExist() }
+        compose.onNodeWithText("Save route").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Route name").performScrollTo().performTextInput("Owned VPN")
+        settleNamedPreview("Owned VPN")
+        compose.onNodeWithText("Save route").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("Owned VPN", saved) }
     }
 }

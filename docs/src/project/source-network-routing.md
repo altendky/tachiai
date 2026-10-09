@@ -60,6 +60,32 @@ No UDP association, proxy TLS, system VPN, provider login, or new media origin i
 added. [Configuration and executed fixture coverage](connection-import.md#socks5-configuration)
 describe the implemented subset; there is no commercial SOCKS5 playback result.
 
+The subsequent certificate-only OpenVPN backend statically links pinned
+OpenVPN3 under its documented MPL-2.0 option. It connects through an owned
+datagram socketpair to a private userspace packet stack. The first profile subset
+requires a numeric outer endpoint and independent verified server certificate
+name; destination DNS remains inside the assigned tunnel. Passwords, challenges,
+scripts/files, compression directives and unsupported pushed network features
+are refused. Existing reviewed destination admission, normal origin TLS and
+provider preparation boundaries remain unchanged.
+[Profile, source/license and verification details](connection-import.md#openvpn-configuration)
+describe the implemented subset.
+
+Owned host and actual Android UDP/TCP fixtures passed gateway TLS refusal,
+two simultaneous independent tunnels with identical inner address ranges,
+explicit tunnel DNS, authenticated CONNECT, separate origin CAs and distinct
+40 KiB HTTPS responses, traffic cancellation and confirmed cleanup. The actual
+TCP cases also passed on the separate Android 16/API 36 x86-64 16 KiB emulator;
+its measured page size was 16,384 bytes. An initially observed Android teardown
+crash was repaired by making the cancellation owner outlive the native base
+client; both ABIs and the actual JNI link were rebuilt before the successful
+reruns. Native ASAN/UBSAN and Go race fixtures passed in separate compatible
+runtime regimes. A same-family DNS regression that stalled on a silent first
+address and returned a typed-nil connection was reproduced and repaired with
+bounded, joined candidate attempts. The full Go race suite passed ten runs.
+These are owned transport results, not commercial-provider playback, ARM64
+runtime, physical-device decoding/audio/performance or Android TV evidence.
+
 Teardown closes players/helpers before clearing Chromium's override and closing
 owned transports. Stop, background and the existing presentation deadline govern
 route lifetime too. Failed or unconfirmed cleanup blocks another run; force-stop

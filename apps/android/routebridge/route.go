@@ -28,6 +28,7 @@ var localCredentialPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 var errConfig = errors.New("Invalid route configuration")
 var errClosed = errors.New("Route closed")
 var errConnect = errors.New("Route connection failed")
+var errRouteCleanup = errors.New("Route cleanup unconfirmed")
 
 type dialFunc func(context.Context, string) (net.Conn, error)
 
@@ -41,7 +42,8 @@ type Route struct {
 	allowed  []string
 	auth     string
 	realm    string
-	cleanup  func()
+	cleanup  func() error
+	closeErr error
 	mu       sync.Mutex
 	closed   bool
 	sockets  map[net.Conn]struct{}
@@ -95,6 +97,14 @@ func (r *Route) permits(host string) bool {
 }
 
 func newRoute(username, password, realm, allowedHosts string, dial dialFunc, cleanup func()) (*Route, error) {
+	var checked func() error
+	if cleanup != nil {
+		checked = func() error { cleanup(); return nil }
+	}
+	return newRouteWithCleanup(username, password, realm, allowedHosts, dial, checked)
+}
+
+func newRouteWithCleanup(username, password, realm, allowedHosts string, dial dialFunc, cleanup func() error) (*Route, error) {
 	hosts, err := parseHosts(allowedHosts)
 	if err != nil || !localCredentialPattern.MatchString(username) || !localCredentialPattern.MatchString(password) || !localCredentialPattern.MatchString(realm) {
 		return nil, errConfig
@@ -131,11 +141,13 @@ func (r *Route) Close() error {
 		}
 		r.mu.Unlock()
 		if r.cleanup != nil {
-			r.cleanup()
+			if r.cleanup() != nil {
+				r.closeErr = errRouteCleanup
+			}
 		}
 		r.workers.Wait()
 	})
-	return nil
+	return r.closeErr
 }
 
 func (r *Route) track(socket net.Conn) bool {

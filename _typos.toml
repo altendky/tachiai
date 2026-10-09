@@ -1,3 +1,7 @@
 [default]
 # Exact public provider client identifier, not prose or a credential.
 extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b']
+
+[files]
+# Upstream legal notices and copyright names must remain verbatim.
+extend-exclude = ['apps/android/routebridge/licenses/**']

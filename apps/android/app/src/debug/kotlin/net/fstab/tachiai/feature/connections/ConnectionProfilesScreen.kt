@@ -53,7 +53,7 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
             Text("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.",
                 style = MaterialTheme.typography.bodySmall)
             Text("1. Sign in on Windscribe’s site in your browser.\n2. My Account → Config Generator → WireGuard: choose a location, a port (443 if unsure), and a new key pair for this device.\n3. Download Config, then open or share the downloaded file with Tachiai.\n4. Preview and save here. Use Import file if Open/Share is unavailable.")
-            Text("Choose WireGuard, not OpenVPN or IKEv2. This imports one configuration; it does not control Windscribe’s app or automatic server selection.",
+            Text("For this Windscribe export, choose WireGuard. Password-based OpenVPN exports and IKEv2 are unsupported. This imports one configuration; it does not control Windscribe’s app or automatic server selection.",
                 style = MaterialTheme.typography.bodySmall)
             Button(onClick = onFile, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Import file (fallback)") }
             TextButton(onClick = { editor = !editor; input = "" }, enabled = !busy) { Text(if (editor) "Close manual entry" else "Paste / enter manually") }

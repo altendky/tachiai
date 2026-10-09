@@ -54,17 +54,16 @@ internal class BoundedNativePlayer(
         canRequest = { canRequest() && (acceptedPlaylist.get() || System.nanoTime() / 1_000_000 < acceptanceDeadlineMs) },
         onManifestRejection = onManifestRejection, openConnection = openConnection)
     val player: ExoPlayer
+    private val quality = NativePlayerQuality(context)
 
     init {
         // ExoPlayer itself logs cause chains containing signed URIs. Do this before
         // construction and leave it off for this process; no signed failure can leak
         // from a late loader callback after release. Our closed events remain visible.
         Log.setLogLevel(Log.LOG_LEVEL_OFF)
-        player = ExoPlayer.Builder(context.applicationContext)
+        player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
             .build()
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setMaxVideoSize(1280, 720).build()
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), handleAudioFocus)
         player.volume = 0.5f
@@ -163,12 +162,14 @@ internal class BoundedNativePlayer(
         return true
     }
 
+    override fun qualitySnapshot(): NativeQualitySnapshot? = if (timingActive()) quality.snapshot(player) else null
+
     override fun close() {
         if (released) return
         released = true
         handler.removeCallbacks(ticker)
         requests.close()
-        player.release()
+        try { player.release() } finally { quality.close() }
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

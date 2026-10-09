@@ -67,6 +67,7 @@ internal class BoundedNativeDashPlayer(
     private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = openConnection)
     private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = openConnection)
     val player: ExoPlayer
+    private val quality = NativePlayerQuality(context)
 
     init {
         // Media3 error chains may carry source/license URIs. Keep logging off
@@ -129,12 +130,11 @@ internal class BoundedNativeDashPlayer(
             .setManifestParser(acceptedParser)
             .setLoadErrorHandlingPolicy(policy)
             .setDrmSessionManagerProvider { prewarm ?: manager }
-        player = ExoPlayer.Builder(context.applicationContext)
+        player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setMediaSourceFactory(sourceFactory)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
             .build()
         try {
-            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setMaxVideoSize(1280, 720).build()
             player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), false)
             player.volume = 0.5f
@@ -171,7 +171,9 @@ internal class BoundedNativeDashPlayer(
             released = true
             budget.stop()
             try { beforeRelease() } finally {
-                try { requests.close(); manifests.close() } finally { player.release() }
+                try { requests.close(); manifests.close() } finally {
+                    try { player.release() } finally { quality.close() }
+                }
             }
             throw IOException("Native player initialization refused")
         }
@@ -239,6 +241,8 @@ internal class BoundedNativeDashPlayer(
         return true
     }
 
+    override fun qualitySnapshot(): NativeQualitySnapshot? = if (timingActive()) quality.snapshot(player) else null
+
     override fun close() {
         if (released) return
         released = true
@@ -247,7 +251,7 @@ internal class BoundedNativeDashPlayer(
         beforeRelease() // Seal browser wait first; releasing a player may wait on its DRM worker.
         requests.close()
         manifests.close()
-        player.release() // Media source/manager/session ownership remains with Media3.
+        try { player.release() } finally { quality.close() } // Media3 owns source/manager/session lifetime.
         onEvent(NativeDashEvent.STOPPED, 0)
     }
 }

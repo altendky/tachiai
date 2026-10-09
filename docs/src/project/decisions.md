@@ -24,6 +24,9 @@
   and movable floating secondary, tapped to swap roles.
 - Joint Play/Pause is primary. Per-feed transport can be added later outside
   the initial primary control space.
+- Native playback defaults to video Auto rather than a fixed 720p preference;
+  audio preference is independent of pane size, primary role and mix volume.
+  Auto retains player display/device constraints, not a verified TV capability.
 - One feed is normally primary and the other secondary, with an easy swap that
   preserves both provider sessions and playback surfaces.
 - Manual alignment controls are required in that two-feed experience.

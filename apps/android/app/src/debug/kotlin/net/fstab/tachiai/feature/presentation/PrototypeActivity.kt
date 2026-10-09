@@ -355,6 +355,9 @@ open class PrototypeActivity : ComponentActivity() {
                 NativeMixedSide.entries.forEach { side ->
                     playback?.member(side)?.timingSnapshot()?.let { value ->
                         Log.d("TachiaiPrototype", "slot=${side.name} state=${value.state} playing=${value.playing} positionMs=${value.positionMs} contentTimeMs=${value.contentTimeMs}")
+                        playback?.member(side)?.qualitySnapshot()?.let { quality ->
+                            Log.d("TachiaiPrototype", "slot=${side.name} quality=${quality.summary().replace('\n', ' ')}")
+                        }
                     }
                 }
             }

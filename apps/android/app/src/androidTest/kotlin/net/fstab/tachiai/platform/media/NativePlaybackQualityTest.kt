@@ -1,0 +1,182 @@
+package net.fstab.tachiai.platform.media
+
+import android.net.Uri
+import android.os.SystemClock
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Timeline
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.RendererCapabilities
+import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId
+import androidx.media3.exoplayer.source.TrackGroupArray
+import androidx.media3.exoplayer.source.chunk.MediaChunkIterator
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.trackselection.FixedTrackSelection
+import androidx.media3.exoplayer.trackselection.TrackSelector
+import androidx.media3.exoplayer.upstream.BandwidthMeter
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.atomic.AtomicReference
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+
+// Provider-free SDK tests: synthetic formats/capabilities and bandwidth samples,
+// no media downloads, decoder, provider account, route or DRM setup. These prove
+// selection policy and meter isolation, not end-to-end provider adaptation.
+@UnstableApi
+@RunWith(AndroidJUnit4::class)
+class NativePlaybackQualityTest {
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    @Test fun audioKeepsBestSupportedComparableTrackWhileVideoRemainsAdaptive() = onSelectorThread {
+        val quality = NativePlayerQuality(context)
+        try {
+            val parameters = quality.trackSelector.parameters
+            assertEquals(Int.MAX_VALUE, parameters.maxVideoWidth)
+            assertEquals(Int.MAX_VALUE, parameters.maxVideoHeight)
+            assertTrue(parameters.isViewportSizeLimitedByPhysicalDisplaySize)
+            assertFalse(parameters.allowMultipleAdaptiveSelections)
+            assertFalse(parameters.forceHighestSupportedBitrate)
+            assertFalse(parameters.forceLowestBitrate)
+            val result = selections(quality.trackSelector, ControlledMeter(quality.bandwidthMeter))
+            val audio = checkNotNull(result.selections[1])
+            assertTrue(audio is FixedTrackSelection)
+            assertEquals(1, audio.length())
+            assertEquals(192_000, audio.selectedFormat.bitrate)
+            val video = checkNotNull(result.selections[0])
+            assertTrue(video is AdaptiveTrackSelection)
+            assertEquals(3, video.length())
+            assertTrue((0 until video.length()).any { video.getFormat(it).height == 1080 })
+            assertTrue((0 until video.length()).all { video.getFormat(it).height <= 1080 })
+        } finally { quality.close(); quality.trackSelector.release() }
+    }
+
+    @Test fun videoFallsAndRecoversUnderControlledBandwidthWithoutChangingAudio() = onSelectorThread {
+        val quality = NativePlayerQuality(context)
+        try {
+            val meter = ControlledMeter(quality.bandwidthMeter)
+            val result = selections(quality.trackSelector, meter)
+            val video = checkNotNull(result.selections[0])
+            val audio = checkNotNull(result.selections[1])
+            fun update(bufferUs: Long) {
+                video.updateSelectedTrack(0, bufferUs, C.TIME_UNSET, emptyList(),
+                    Array(video.length()) { MediaChunkIterator.EMPTY })
+                assertEquals(192_000, audio.selectedFormat.bitrate)
+            }
+            meter.estimate = 20_000_000
+            update(0)
+            assertEquals(1080, video.selectedFormat.height)
+            meter.estimate = 700_000
+            update(0) // A low buffer allows the normal SDK downgrade hysteresis.
+            assertEquals(360, video.selectedFormat.height)
+            meter.estimate = 20_000_000
+            update(0)
+            assertEquals("Recovery waits for sufficient buffer", 360, video.selectedFormat.height)
+            update(15_000_000)
+            assertEquals(1080, video.selectedFormat.height)
+        } finally { quality.close(); quality.trackSelector.release() }
+    }
+
+    @Test fun autoCanSelect4kWhenViewportAndBandwidthAllow() = onSelectorThread {
+        val quality = NativePlayerQuality(context)
+        try {
+            val meter = ControlledMeter(quality.bandwidthMeter).apply { estimate = 40_000_000 }
+            val result = selections(quality.trackSelector, meter, 3840, 2160)
+            val video = checkNotNull(result.selections[0])
+            assertTrue(video is AdaptiveTrackSelection)
+            assertEquals(4, video.length())
+            video.updateSelectedTrack(0, 0, C.TIME_UNSET, emptyList(),
+                Array(video.length()) { MediaChunkIterator.EMPTY })
+            assertEquals(2160, video.selectedFormat.height)
+            assertEquals(192_000, checkNotNull(result.selections[1]).selectedFormat.bitrate)
+        } finally { quality.close(); quality.trackSelector.release() }
+    }
+
+    @Test fun onePlayersTransferSampleDoesNotChangeTheOtherPlayersEstimate() {
+        val first = NativePlayerQuality(context)
+        val second = NativePlayerQuality(context)
+        try {
+            assertNotSame(first.bandwidthMeter, second.bandwidthMeter)
+            assertNotSame(first.trackSelector, second.trackSelector)
+            val unchanged = second.bandwidthMeter.bitrateEstimate
+            val before = first.bandwidthMeter.bitrateEstimate
+            val listener = first.bandwidthMeter.transferListener
+            val spec = DataSpec.Builder().setUri("https://fixture.invalid/media").build()
+            listener.onTransferInitializing(unusedSource, spec, true)
+            listener.onTransferStart(unusedSource, spec, true)
+            listener.onBytesTransferred(unusedSource, spec, true, 512 * 1024)
+            SystemClock.sleep(20) // Non-zero SDK sample duration; no network or playback wait.
+            listener.onTransferEnd(unusedSource, spec, true)
+            assertNotEquals(before, first.bandwidthMeter.bitrateEstimate)
+            assertEquals(unchanged, second.bandwidthMeter.bitrateEstimate)
+        } finally {
+            first.close(); second.close()
+            first.trackSelector.release(); second.trackSelector.release()
+        }
+    }
+
+    private fun selections(selector: DefaultTrackSelector, meter: BandwidthMeter,
+        viewportWidth: Int = 1920, viewportHeight: Int = 1080) = run {
+        // Owned render targets make Auto tests deterministic on any test phone.
+        // Production keeps the SDK's physical-display viewport default.
+        selector.parameters = selector.parameters.buildUpon()
+            .setViewportSize(viewportWidth, viewportHeight, false).build()
+        selector.init(TrackSelector.InvalidationListener { selector.onParametersActivated(it) }, meter)
+        selector.onParametersActivated(selector.parameters)
+        val video = TrackGroup("fixture-video", video(640, 360, 500_000),
+            video(1280, 720, 2_000_000), video(1920, 1080, 8_000_000), video(3840, 2160, 16_000_000))
+        val audio = TrackGroup("fixture-audio", audio(64_000), audio(192_000), audio(384_000))
+        selector.selectTracks(arrayOf(Capabilities(C.TRACK_TYPE_VIDEO), Capabilities(C.TRACK_TYPE_AUDIO)),
+            TrackGroupArray(video, audio), MediaPeriodId(Any()), Timeline.EMPTY)
+    }
+
+    private fun onSelectorThread(block: () -> Unit) {
+        // A real ExoPlayer calls selectTracks on its Looper-backed playback
+        // thread. The selector's API 32+ spatializer listener requires a Looper;
+        // the instrumentation runner worker has none. This synchronous owned
+        // fixture uses the main Looper without changing device constraints.
+        val failure = AtomicReference<Throwable>()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            try { block() } catch (error: Throwable) { failure.set(error) }
+        }
+        failure.get()?.let { throw it }
+    }
+
+    private fun video(width: Int, height: Int, bitrate: Int) = Format.Builder()
+        .setSampleMimeType(MimeTypes.VIDEO_H264).setWidth(width).setHeight(height)
+        .setAverageBitrate(bitrate).build()
+    private fun audio(bitrate: Int) = Format.Builder().setSampleMimeType(MimeTypes.AUDIO_AAC)
+        .setChannelCount(2).setSampleRate(48_000).setAverageBitrate(bitrate).build()
+
+    private class ControlledMeter(delegate: BandwidthMeter) : BandwidthMeter by delegate {
+        var estimate = 10_000_000L
+        override fun getBitrateEstimate() = estimate
+    }
+
+    private class Capabilities(private val type: Int) : RendererCapabilities {
+        override fun getName() = "Owned quality fixture"
+        override fun getTrackType() = type
+        override fun supportsFormat(format: Format): Int = RendererCapabilities.create(
+            when {
+                MimeTypes.getTrackType(format.sampleMimeType) != type -> C.FORMAT_UNSUPPORTED_TYPE
+                type == C.TRACK_TYPE_AUDIO && format.bitrate == 384_000 -> C.FORMAT_UNSUPPORTED_SUBTYPE
+                else -> C.FORMAT_HANDLED
+            }, RendererCapabilities.ADAPTIVE_SEAMLESS, RendererCapabilities.TUNNELING_NOT_SUPPORTED)
+        override fun supportsMixedMimeTypeAdaptation() = RendererCapabilities.ADAPTIVE_SEAMLESS
+    }
+
+    private val unusedSource = object : DataSource {
+        override fun addTransferListener(transferListener: TransferListener) = Unit
+        override fun open(dataSpec: DataSpec): Long = error("No transport in this fixture")
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int = error("No media in this fixture")
+        override fun getUri(): Uri? = null
+        override fun close() = Unit
+    }
+}

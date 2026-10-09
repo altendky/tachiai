@@ -1,5 +1,109 @@
 # Product-flow prototype
 
+## Audio-first adaptation follow-up
+
+The agreed first step is correct native transfer measurement, independent
+per-player bandwidth estimates and audio-first track selection. The subsequent
+user-approved default is video Auto, without the provisional 1280 × 720 maximum.
+Audio preference must not depend on pane size, primary/floating role, mute or
+mix volume. Video remains independently
+adaptive within the provider's available tracks and device capabilities.
+Auto retains Media3's physical-display viewport and device constraints alongside
+bandwidth/buffer adaptation. It does not force the highest quality, infer each
+pane's size or establish external-TV/casting behavior. 1080p/4K can be eligible
+when the source, display and decoder support them; this is not a device-tested
+TV or 4K capability claim.
+
+Use Media3's supported audio ranking (including language, role, codec and device
+constraints), with multiple simultaneous adaptive selections disabled: when
+video is present, retain a fixed best-ranked audio selection while video adapts.
+This does not manufacture better audio or separate bundled audio/video. A
+single audio track has no quality alternatives; an audio-only source may still
+adapt. This is an audio preference, not an audio continuity guarantee under
+insufficient bandwidth or a global highest-bitrate/video preference.
+
+Transfer lifecycle callbacks must preserve all existing request policies,
+deadlines, byte limits, cancellation, route ownership and token-safe failures.
+Diagnostics expose bounded numeric track characteristics and bandwidth
+estimates only, never provider URLs, IDs, labels, tokens or raw Format objects.
+Controlled provider-free tests must show video reduction/recovery, fixed audio
+selection and isolated measurements; actual provider switching remains a
+separate device observation.
+
+The implementation uses the pinned SDK's [transfer lifecycle](https://developer.android.com/reference/androidx/media3/datasource/BaseDataSource)
+and [track selector policy](https://github.com/androidx/media/blob/1.11.1/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/trackselection/DefaultTrackSelector.java).
+More → Playback status reports actual input video/audio formats separately from
+eligible/selected adaptive tracks, a per-player bandwidth estimate and bounded
+track alternatives. "Samples observed" means callbacks reached the meter;
+short samples can still leave its startup estimate in use. No provider
+identifier, language, label or raw metadata is displayed or logged.
+
+Per-pane/render-target policy, manual quality controls and coordinated shared-route
+budgets follow later. Auto does not restore the removed 720p preference.
+Android TV, mirrored displays, remote casting receivers and future non-Android
+players need platform-specific render-target information; phone screen size
+must not silently define every target's video quality. Generic preferences and
+reported capabilities remain separate from platform/player implementation.
+
+### October 8 quality verification — before Auto
+
+The pinned build passed 1,024 JVM tests, instrumentation compilation, release
+isolation and APK assembly; lint reported zero errors, ten warnings and one
+hint. Both APKs matched the shared debug signing certificate. Scoped repository
+hooks, including secret scanning and the documentation build, passed.
+
+On Pixel 6, Android 17/API 37, all eleven provider-free instrumentation tests
+passed: transfer lifecycle/error/cancellation accounting, independent meters,
+fixed supported audio selection and controlled video downshift/recovery. The
+selector fixtures require a Looper-backed thread, matching real ExoPlayer;
+their first runner-thread attempt failed before assertions during spatializer
+initialization. The corrected fixtures do not disable device constraints.
+
+A bounded native live run of Twitch Virtual Japan and Chillhop Radio on their
+configured System-network route, using the existing saved device grant,
+showed both players running. Actual input video changed from 852 × 480 to
+1280 × 720 AVC, with independent sampled bandwidth estimates. More → Playback
+status displayed numeric current formats and alternatives. Stereo AAC remained
+reported at 48 kHz and 44.1 kHz respectively; bitrate was unavailable and shown
+as unknown. These manifests exposed one audio track each, so this is not
+evidence of choosing between real-provider audio qualities. Region/exit and
+Turbo/subscription effects were not verified. Controlled bandwidth reduction,
+TV/casting behavior and acoustic quality remain separate checks.
+
+An additional bounded native ABEMA News + Twitch Chillhop live run used the
+existing imported Proton Japan route for ABEMA and System network for Twitch.
+Fresh guest licensing reached ready, both players reported playing and video
+frames, and ABEMA input video changed from 854 × 480 to 1280 × 720 AVC. ABEMA's
+status offered AAC alternatives at 192/128/64 kb/s, selected only the 192 kb/s
+option, and reported consumed stereo AAC at approximately 190 kb/s/48 kHz.
+Twitch remained stereo AAC/44.1 kHz with bitrate unavailable. The two meters
+reported separate samples. Swapping primary/floating roles retained the reported
+audio formats and both players' playing state. This observes the existing guest
+live adapter, not new DRM handling, a replay test or a verified account/region
+entitlement.
+
+### October 8 Auto verification
+
+After removing the video maximum, the same pinned build passed 1,024 JVM tests,
+lint (zero errors, ten warnings, one hint), release isolation and both APK
+assemblies/signature checks. The verified debug APK updated the phone in place.
+All twelve provider-free instrumentation tests passed on Pixel 6/Android 17:
+the production policy retains the SDK's physical-display viewport default;
+owned 1080p and 4K viewport/capability fixtures permit those video selections,
+and controlled 1080p downshift/recovery retains fixed supported audio.
+The 4K fixture is a selection test, not actual 4K decoding or TV verification.
+Scoped repository hooks and the documentation build passed.
+
+In a bounded live check with the same device, saved Twitch grant and configured
+ABEMA Proton Japan/Twitch System routes, Twitch Chillhop consumed 1920 × 1080
+AVC with unchanged stereo AAC/44.1 kHz. Initial ABEMA preparation failed with
+the generic preparation category; its cause was not established. A single
+retry completed fresh guest/helper/CDM preparation and rendered native News
+alongside Twitch, initially at 854 × 480 AVC with approximately 189 kb/s stereo
+AAC/48 kHz, then at 1920 × 1080 AVC/4 Mb/s with the same audio format. Both
+native players reported playing at 1080p. No provider login, route settings or
+licensing behavior was changed.
+
 ## Current setup vocabulary and navigation
 
 The product terms are **route / provider / stream / feed**. The picker assigns

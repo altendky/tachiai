@@ -324,7 +324,10 @@ internal class NativePairViewer(
         readback.text = audioWarning + playbackStatus + if (current?.requestedAdjustmentValid == false) "\nTiming anchor invalid." else ""
         // Full status is scrollable under More; the compact tray prioritizes
         // refusal/failure over the informational requested-adjustment ledger.
-        details.text = "$audioWarning$playbackStatus\n$adjustment"
+        val quality = available.mapIndexedNotNull { index, member ->
+            member?.qualitySnapshot()?.let { "${if (index == 0) "A" else "B"} quality:\n${it.details()}" }
+        }.joinToString("\n")
+        details.text = "$audioWarning$playbackStatus\n$adjustment" + if (quality.isEmpty()) "" else "\n$quality"
         details.contentDescription = "Playback status: ${details.text}"
         adjustmentLabel.text = adjustment
         adjustmentLabel.contentDescription = "$labelA relative to $labelB: $adjustment"

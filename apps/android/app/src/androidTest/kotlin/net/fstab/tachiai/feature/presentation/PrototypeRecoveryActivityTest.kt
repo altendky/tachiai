@@ -21,6 +21,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
+import net.fstab.tachiai.platform.diagnostics.FailureObservation
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.network.RouteBackend
 import net.fstab.tachiai.platform.network.RoutePreparation
 import net.fstab.tachiai.platform.network.RouteSession
@@ -160,10 +164,12 @@ class PrototypeRecoveryActivityTest {
     }
 
     @Test fun failedRestartShowsSafeFeedbackAndRetryInvokesOperationOnce() = withCleanRecovery {
+        val observations = mutableListOf<FailureObservation>()
         ActivityScenario.launch(CachedPrototypeActivity::class.java).use { scenario ->
             awaitStartupReads(scenario)
             installAvailableCatalogue(scenario)
             scenario.onActivity { activity ->
+                field("diagnostics").set(activity, FailureReporter({ observations += it }))
                 val owner = RoutePreparation().apply { onCancel { throw IOException("Injected cancellation failure") } }
                 field("routePreparation").set(activity, owner)
                 invoke(activity, "cancelRoutePreparation")
@@ -176,6 +182,9 @@ class PrototypeRecoveryActivityTest {
                 val feedback = dialog(activity).findViewById<TextView>(android.R.id.message).text.toString()
                 assertTrue(feedback.contains("Restart could not be completed. Playback remains blocked"))
                 assertFalse(feedback.contains("Injected restart failure"))
+                val observed = observations.single { it.stage == FailureStage.RECOVERY_RESTART }
+                assertEquals(FailureCategory.IO, observed.failure.category)
+                assertFalse(observed.toString().contains("Injected restart failure"))
                 dialog(activity).getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
             }
             assertBlockedPicker(scenario)

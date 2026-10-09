@@ -124,7 +124,8 @@ or diagnostics. The next fresh prototype restores selected, cleared and stale
 instance choices without starting playback. A malformed checkpoint leaves both
 feeds unassigned and requires recovery rather than selecting default identities.
 Checkpoint or main-menu launch failure keeps the process alive and playback
-blocked with fixed safe feedback. Neither raw exception messages nor provider
+blocked with fixed safe feedback and a bounded `RECOVERY_RESTART` diagnostic
+observation. Neither raw exception messages nor provider
 URLs enter the dialog. This recovery presentation is independent of the
 [failure journal](failure-diagnostics.md) and does not repair the underlying
 cleanup failure itself.

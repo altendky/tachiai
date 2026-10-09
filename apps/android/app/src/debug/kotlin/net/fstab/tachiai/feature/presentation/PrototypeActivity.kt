@@ -246,7 +246,8 @@ open class PrototypeActivity : ComponentActivity() {
         dismissRecoveryDialog()
         try {
             restartOperation()
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            diagnostics.report(FailureStage.RECOVERY_RESTART, error)
             restartMessage = "Restart could not be completed. Playback remains blocked; your saved setup was not cleared."
             recoveryState.restartFailed(id)
             handler.post { showRecoveryDialog(true) }

@@ -36,6 +36,7 @@ class CollectorTests(unittest.TestCase):
         words = module.vocabulary()
         self.assertIn("NETWORK_ON_MAIN_THREAD", words["FailureCategory"])
         self.assertIn("VIEWER_BLOCKED", words["FailureStage"])
+        self.assertIn("RECOVERY_RESTART", words["FailureStage"])
         self.assertIn("NATIVE_DASH_PLAYER", words["FailureOwner"])
         self.assertIn("HTTP_REJECTED", words["PrototypeFailureReason"])
         self.assertEqual(words["FailureRelation"], {"FIRST", "SECONDARY", "BLOCKED"})

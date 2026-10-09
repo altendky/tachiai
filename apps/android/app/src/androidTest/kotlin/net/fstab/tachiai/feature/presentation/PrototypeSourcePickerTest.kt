@@ -1,6 +1,10 @@
 package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertCountEquals
@@ -28,6 +32,40 @@ import org.junit.Test
 
 class PrototypeSourcePickerTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun cleanupBlockKeepsSetupAndRecoveryAvailable() {
+        var routes = false
+        var providers = false
+        var recovery = false
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(PrototypeSelection(), null, onConnections = { routes = true },
+                onProviders = { providers = true }, playbackAvailable = false,
+                recoveryMessage = "Playback cleanup could not be confirmed.", onRecovery = { recovery = true }, onWatch = {})
+        } }
+        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Playback cleanup could not be confirmed.").assertExists()
+        compose.onNodeWithText("Recovery options").performClick()
+        compose.onNodeWithText("Routes").assertIsEnabled().performClick()
+        compose.onNodeWithText("Providers").assertIsEnabled().performClick()
+        compose.runOnIdle { assertTrue(routes); assertTrue(providers); assertTrue(recovery) }
+    }
+
+    @Test fun compactRecoveryKeepsAssignmentsBlockedViewerAndRecoveryReachable() {
+        var recovery = false
+        var assignments: net.fstab.tachiai.presentation.PrototypeFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            Box(Modifier.height(240.dp)) {
+                PrototypeSourcePicker(PrototypeSelection(), null, playbackAvailable = false,
+                    recoveryMessage = "Playback blocked. Recovery category: PLAYBACK_CLEANUP_UNCONFIRMED.",
+                    onAssignmentsChanged = { assignments = it }, onRecovery = { recovery = true }, onWatch = {})
+            }
+        } }
+        assignment(PrototypeSource.ABEMA_REPLAY, "A").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(PrototypeSource.ABEMA_REPLAY, assignments?.a?.source) }
+        compose.onNodeWithText("Open viewer").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Recovery options").performScrollTo().performClick()
+        compose.runOnIdle { assertTrue(recovery) }
+    }
 
     @Test fun duplicateChoiceReachesOpenViewerWithoutFiltering() {
         var opened: PrototypeSelection? = null

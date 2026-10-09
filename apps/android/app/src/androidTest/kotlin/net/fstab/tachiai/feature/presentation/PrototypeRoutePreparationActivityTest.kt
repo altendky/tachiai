@@ -101,16 +101,21 @@ class PrototypeRoutePreparationActivityTest {
             }
             scenario.recreate()
             awaitStartupReads(scenario)
+            Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.withText("Ignore"))
+                .inRoot(androidx.test.espresso.matcher.RootMatchers.isDialog())
+                .perform(androidx.test.espresso.action.ViewActions.click())
             installAvailableCatalogue(scenario)
             val stream = PrototypeSource.TWITCH_LIVE
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed A")
                 .performScrollTo().assertIsOff().performClick()
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed B")
                 .performScrollTo().assertIsOn()
-            compose.onNodeWithText("Open viewer").assertIsEnabled().performClick()
-            compose.onNodeWithText("Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying.")
-                .assertIsDisplayed()
+            compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+            compose.onNodeWithText("Recovery options").assertIsEnabled()
             scenario.onActivity { activity ->
+                // Even a programmatic admission attempt must retain the guard.
+                PrototypeActivity::class.java.getDeclaredMethod("watch", PrototypeSelection::class.java)
+                    .apply { isAccessible = true }.invoke(activity, PrototypeSelection(stream, stream))
                 assertNull(field("budget").get(activity))
                 assertNull(field("routePreparation").get(activity))
                 assertTrue((field("routes").get(activity) as Map<*, *>).isEmpty())
@@ -174,7 +179,12 @@ class PrototypeRoutePreparationActivityTest {
     private fun withCleanRouteFlags(test: () -> Unit) {
         val names = listOf("routesPending", "routeCleanupPending", "routeCleanupFailed")
         val saved = mutableMapOf<String, Boolean>()
+        val recovery = field("recoveryState").get(null) as PrototypeRecoveryState
+        val incident = PrototypeRecoveryState::class.java.getDeclaredField("incident").apply { isAccessible = true }
+        var savedIncident: Any? = null
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            savedIncident = incident.get(recovery)
+            incident.set(recovery, null)
             names.forEach { name ->
                 saved[name] = field(name).getBoolean(null)
                 field(name).setBoolean(null, false)
@@ -185,6 +195,7 @@ class PrototypeRoutePreparationActivityTest {
         } finally {
             InstrumentationRegistry.getInstrumentation().runOnMainSync {
                 saved.forEach { (name, value) -> field(name).setBoolean(null, value) }
+                incident.set(recovery, savedIncident)
             }
         }
     }

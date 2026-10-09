@@ -56,6 +56,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
     onAssignmentsChanged: (PrototypeFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
+    playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
     onWatch: (PrototypeSelection) -> Unit) {
     var a by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.a)) }
     var b by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.b)) }
@@ -68,7 +69,12 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         a = encodePrototypeFeedChoice(next.a); b = encodePrototypeFeedChoice(next.b)
         onAssignmentsChanged(next)
     }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Recovery instructions must not consume the entire assignment viewport on
+    // compact screens. Keep every blocked-picker control reachable by scrolling.
+    val recoveryScroll = rememberScrollState()
+    Column(Modifier.fillMaxSize().safeDrawingPadding()
+        .then(if (onRecovery != null) Modifier.verticalScroll(recoveryScroll) else Modifier)
+        .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Tachiai · Prototype", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         Text("Assign a stream to feeds A and B. Check both to run the same stream twice.")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -76,8 +82,14 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
             onProviders?.let { action -> Button(onClick = action, enabled = setupReady) { Text("Providers") } }
         }
         message?.let { Text(it) }
+        if (onRecovery != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            recoveryMessage?.let { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall) }
+            Button(onClick = onRecovery) { Text("Recovery options") }
+        } else recoveryMessage?.let { Text(it) }
         if (obsoleteSetup) Button(onClick = onResetStreamSettings) { Text("Reset stream settings") }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Stream", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 for (slot in PrototypeSlot.entries) {
@@ -139,7 +151,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         if (!setupReady) Text("Provider setup must be read successfully before playback.")
         Text("Experimental playback · five-minute foreground sessions. ABEMA needs your usual playback connection.",
             style = MaterialTheme.typography.bodySmall)
-        Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady,
+        Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady && playbackAvailable,
             modifier = Modifier.fillMaxWidth()) { Text("Open viewer") }
     }
 }

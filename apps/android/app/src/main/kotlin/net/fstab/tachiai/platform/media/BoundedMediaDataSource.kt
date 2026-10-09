@@ -35,8 +35,11 @@ internal class BoundedMediaRequests(
     fun create(type: Int): Source = Source(type)
     override fun close() {
         budget.stop()
-        active.forEach { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { it.disconnect() } }
-        active.clear()
+        try {
+            closeNativeResources(*active.toList().map { request ->
+                { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { request.disconnect() } }
+            }.toTypedArray())
+        } finally { active.clear() }
     }
 
     internal inner class Source(private val type: Int) : BaseDataSource(true) {

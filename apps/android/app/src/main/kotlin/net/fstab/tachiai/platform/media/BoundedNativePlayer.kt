@@ -173,9 +173,11 @@ internal class BoundedNativePlayer(
         if (released) return
         released = true
         handler.removeCallbacks(ticker)
-        requests.close()
-        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
-        finally { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } }
+        closeNativeResources(
+            { requests.close() },
+            { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } },
+            { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } },
+        )
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

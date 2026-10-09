@@ -251,6 +251,41 @@ This change adds no authentication, DRM exchange, retry or network permissions.
 Device playback and visual verification of this follow-up remain pending; no
 phone installation was performed for this change.
 
+## Routed playback cleanup
+
+Safe diagnostics on `tachiai-dev` (Android 16/API 36, x86-64) captured a
+main-thread `ILLEGAL_STATE` at routed HTTPS response closure after backgrounding
+cached ABEMA live playback. Native-host cleanup then became unconfirmed and
+blocked another viewer request. Two earlier Back cleanups completed normally.
+Twitch's separate `MEDIA_NOT_FOUND` observation does not establish a cleanup
+cause. Saved routes, authorization and cached bundles were preserved; ABEMA
+used the existing anonymous guest path. Region and saved Twitch account state
+were not revalidated for this bounded experiment.
+
+A real synthetic TCP/TLS fixture reproduces a cancelled body read racing
+response closure with an `Unbalanced enter/exit` exception. Routed body reads
+and closure now share ownership, with cancellation sent before waiting for the
+reader. Ownership waiting is limited to one second per connection; a timeout
+remains an unconfirmed cleanup failure and leaves the connection available for
+cleanup retry. The limit is per connection, so pathological waits can accumulate.
+No TLS, credential, redirect, origin or fallback acceptance changes are added.
+
+Media teardown attempts all owned request groups, player and quality releases
+even when an earlier step fails. The first failure is still rethrown, later
+failures remain associated, and cleanup admission gates are retained. The DASH
+opaque-exchange waiter is sealed before the other release attempts. Repeated
+close calls remain idempotent. Recovery dialogs are separate work.
+
+The tested follow-up APK completed two ordinary background cleanups after
+ABEMA reached native `READY`/`VIDEO_FRAME` on the same emulator, and a new viewer
+request was admitted between them. The journal retained the old failure evidence
+and recorded no new cleanup failure in those two runs. An earlier guest
+preparation attempt failed before native playback and succeeded on one normal
+retry; its cause was not established. Four focused disposable-emulator tests
+passed, including actual HLS/DASH player release after injected transport
+failures and diagnostic retention. These observations do not qualify phone
+playback, audio, performance or provider reliability.
+
 ## Source assignment follow-up
 
 The subsequent provider-tree picker groups the options under ABEMA and Twitch

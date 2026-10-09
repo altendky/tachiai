@@ -255,11 +255,13 @@ internal class BoundedNativeDashPlayer(
         released = true
         handler.removeCallbacks(ticker)
         budget.stop()
-        observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease)
-        requests.close()
-        manifests.close()
-        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
-        finally { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } }
+        closeNativeResources(
+            { observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease) },
+            { requests.close() },
+            { manifests.close() },
+            { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } },
+            { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } },
+        )
         onEvent(NativeDashEvent.STOPPED, 0)
     }
 }

@@ -46,8 +46,7 @@ import net.fstab.tachiai.presentation.SourceRouteMode
 import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
-import net.fstab.tachiai.platform.network.routeConfigurationKey
-import net.fstab.tachiai.platform.network.wireGuardPeerKey
+import net.fstab.tachiai.platform.network.RouteSessionRegistry
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -210,8 +209,10 @@ open class PrototypeActivity : ComponentActivity() {
         val choices = providerSetups.toMap()
         routesPending = true
         worker.execute {
-            val shared = mutableMapOf<String, Result<RouteSession>>()
-            val wireGuardPeers = mutableMapOf<String, String>()
+            val registry = RouteSessionRegistry { profile ->
+                check(sharedBudget.active)
+                RouteSession.create(profile)
+            }
             val results = selected.sources.map { it.service }.distinct().associateWith { provider ->
                 runCatching {
                     val choice = checkNotNull(choices[provider]?.route)
@@ -219,18 +220,7 @@ open class PrototypeActivity : ComponentActivity() {
                         error("Historical page comparison has no imported route support")
                     val profile = if (choice.mode == SourceRouteMode.SYSTEM) null else
                         connectionProfileStore(this).selected(checkNotNull(choice.connectionId))
-                    // Duplicate imports of one canonical profile must not start competing WG peers.
-                    val key = profile?.let(::routeConfigurationKey) ?: "SYSTEM"
-                    profile?.let(::wireGuardPeerKey)?.let { peer ->
-                        val previous = wireGuardPeers.putIfAbsent(peer, key)
-                        check(previous == null || previous == key) // Conflicting same-peer settings cannot compete.
-                    }
-                    shared.getOrPut(key) {
-                        runCatching {
-                            check(sharedBudget.active)
-                            RouteSession.create(profile)
-                        }
-                    }.getOrThrow()
+                    registry.acquire(profile)
                 }
             }
             handler.post {

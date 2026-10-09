@@ -12,6 +12,22 @@ import org.junit.Test
 // loopback discard port 9; no provider request, imported profile, system VPN or
 // real peer is used. WireGuard initialization is NOT a successful handshake.
 class NativeRouteBindingTest {
+    @Test(timeout = 20_000) fun actualSocks5BindingCreatesAndClosesWithoutContactingProxy() {
+        assertNotSame("Native initialization and shutdown must stay off the UI thread", Looper.getMainLooper(), Looper.myLooper())
+        val profile = parseConnectionProfile("socks5://fixture:synthetic-password@127.0.0.1:9".toByteArray())
+        val route = RouteSession.create(profile)
+        try {
+            assertFalse(route.isSystem)
+            assertTrue(route.proxyPort in 1..65535)
+            assertTrue(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
+            assertFalse(route.toString().contains("synthetic-password"))
+            // Initialization opens only the authenticated loopback listener.
+        } finally { route.close() }
+        route.close()
+        assertFalse(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
+        assertThrows(IOException::class.java) { route.open(URL("https://api.abema.io/v1/channels")) }
+    }
+
     @Test(timeout = 20_000) fun actualHttpProxyBindingCreatesAndClosesItsLocalListener() {
         assertNotSame("Native initialization and shutdown must stay off the UI thread", Looper.getMainLooper(), Looper.myLooper())
         val profile = parseConnectionProfile("http://127.0.0.1:9".toByteArray())

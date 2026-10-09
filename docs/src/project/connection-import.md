@@ -21,7 +21,7 @@ and manual importer. **Add route · setup / import** in Providers opens those
 choices; neither setup link selects or starts a route.
 
 The subsequent [native transport implementation](source-network-routing.md#subsequent-native-transport-implementation)
-adds HTTP CONNECT and userspace WireGuard backends to the cached native viewer.
+adds HTTP CONNECT, SOCKS5 and userspace WireGuard backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
 its transport explicitly. System network retains the existing playback path.
 No provider login, new stream or DRM behavior is added. Earlier importer-only
@@ -31,13 +31,13 @@ contents were inspected, and that report does not establish an active tunnel.
 
 ### Route protocol boundaries
 
-The debug route registry currently registers only WireGuard and HTTP CONNECT.
+The debug route registry currently registers WireGuard, HTTP CONNECT and SOCKS5.
 Each handler owns format recognition, strict configuration validation, safe
 setup labels, canonical configuration, sharing/conflict identities and backend
 creation. The generic session owns the authenticated loopback proxy, HTTPS
 connection lifecycle and cleanup through a backend contract. Concrete Go types
-remain behind the native backend adapter; the Go transports and reviewed host
-allowlist are unchanged.
+remain behind the native backend adapter. SOCKS5 uses the same reviewed
+destination allowlist and authenticated loopback CONNECT bridge.
 
 A playback run shares one session for identical canonical configurations,
 including duplicate imports. WireGuard's handler supplies a separate peer
@@ -55,8 +55,9 @@ version 2 mutation; downgrading does not migrate the record back automatically.
 Unknown protocol IDs, mismatched formats and corrupt records fail closed without
 replacement. The eight-profile, 8 KiB total storage bound and strict 8 KiB UTF-8
 import bound remain in force; version metadata also counts toward total storage.
-Manual entry applies the same byte bound. This refactor adds no protocol or
-provider authorization and supplies no new device playback evidence.
+Manual entry applies the same byte bound. The protocol refactor added no
+provider authorization or device playback evidence; the subsequent SOCKS5
+extension below uses those same boundaries.
 
 The final refactor passed local Android JVM tests, lint, instrumentation
 compilation, release isolation, both APK builds and Go transport tests. Both
@@ -64,6 +65,48 @@ APK certificates matched the shared debug identity. All six existing importer
 screen and warm-handoff tests passed on a separate clean Android 16/API 36
 x86-64 emulator. Registry/backend tests use controlled fixtures and do not
 establish a genuine tunnel or provider playback result.
+
+### SOCKS5 configuration
+
+The debug importer accepts `socks5://proxy.example.test:1080` and an optional
+`socks5://username:password@proxy.example.test:1080`. The port must be explicit.
+IPv4 and bracketed IPv6 proxy endpoints are supported. Usernames and passwords
+must each decode to 1–255 UTF-8 bytes; controls, invisible formatting characters
+and malformed UTF-8 are rejected. In credentials, encode every character except
+ASCII letters, digits, `-`, `.`, `_` and `~` as UTF-8 percent escapes. For example,
+the synthetic password `p@ss+word` becomes `p%40ss%2Bword`; `+` never means space.
+Only an empty path or `/` is accepted. Queries, fragments, extra options,
+`socks5h://`, scripts and other authentication mechanisms are unsupported.
+
+Canonical saved text normalizes host case, port spelling, the optional trailing
+slash and credential escapes, so equivalent imports share one route. Distinct
+endpoints or credentials retain separate sessions. The preview shows only proxy
+type and endpoint; credentials remain in the existing encrypted, no-backup
+configuration store and never enter provider settings or playback intent data.
+Save and provider assignment still do not activate a route.
+
+An anonymous profile requires the SOCKS5 no-auth method. A profile containing
+credentials requires RFC 1929 username/password authentication and rejects a
+proxy that selects no-auth instead. SOCKS5 does not encrypt its outer connection
+or its username/password exchange; provider HTTPS remains end-to-end with its
+existing CA and hostname checks. This backend supports TCP CONNECT only, with
+destination hostnames resolved by the configured proxy. Only proxy bootstrap
+DNS uses System network. Failure never tries a direct destination or changes the
+saved provider selection. No Android VPN or device route is installed.
+
+New owned-server fixtures cover negotiation, decoded authentication, remote
+hostname forwarding, opaque bytes, TLS success and certificate/name rejection,
+malformed/refused replies, cancellation, independent routes and teardown. JVM
+fixtures cover canonical import identity, protected storage with existing
+profiles, provider assignment, byte bounds and safe summaries. A JNI smoke
+fixture initializes/closes the listener without contacting a proxy. Host Go
+race tests and Android JVM tests, lint, release isolation and signed APK builds
+passed. The pinned Go/NDK build produced ARM64 and x86-64 API-26 libraries with
+16 KiB-compatible load segments. Both APK certificates match the shared debug
+identity. All 15 JNI/import/handoff/provider-setting fixtures passed on the
+disposable Android 16/API 36 x86-64 emulator, including credential-free SOCKS5
+preview and explicit save. This does not establish commercial-proxy or provider
+playback behavior; the persistent development device was preserved.
 
 ### Existing settings and reset
 

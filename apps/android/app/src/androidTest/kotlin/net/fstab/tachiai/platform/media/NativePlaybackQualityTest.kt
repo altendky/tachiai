@@ -107,6 +107,10 @@ class NativePlaybackQualityTest {
         try {
             assertNotSame(first.bandwidthMeter, second.bandwidthMeter)
             assertNotSame(first.trackSelector, second.trackSelector)
+            // Pin both meters before sampling: asynchronous SDK network-type
+            // initialization may otherwise reset an untouched meter's estimate.
+            first.bandwidthMeter.setNetworkTypeOverride(C.NETWORK_TYPE_WIFI)
+            second.bandwidthMeter.setNetworkTypeOverride(C.NETWORK_TYPE_WIFI)
             val unchanged = second.bandwidthMeter.bitrateEstimate
             val before = first.bandwidthMeter.bitrateEstimate
             val listener = first.bandwidthMeter.transferListener

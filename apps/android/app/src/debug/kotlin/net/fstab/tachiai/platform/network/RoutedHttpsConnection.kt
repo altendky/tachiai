@@ -8,6 +8,7 @@ import java.io.OutputStream
 import java.net.URL
 import java.security.cert.Certificate
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLSocketFactory
@@ -46,7 +47,13 @@ internal class RoutedHttpsConnection(
     private val onDisconnect: (RoutedHttpsConnection) -> Unit = {},
 ) : HttpsURLConnection(url) {
     private val lock = Any()
+    // OkHttp body streams are not safe for concurrent read/close. Cancellation
+    // must happen outside this lock so it can interrupt the current reader.
+    private val responseBodyLock = ReentrantLock()
     private var disconnected = false
+    private var disconnectReported = false
+    private var responseBodyClosed = false
+    private var responseStream: InputStream? = null
     private var call: Call? = null
     private var reply: Response? = null
     private val headers = linkedMapOf<String, MutableList<String>>()
@@ -145,17 +152,64 @@ internal class RoutedHttpsConnection(
     }
 
     override fun disconnect() {
-        val owned = synchronized(lock) {
-            if (disconnected) return
+        val pending = synchronized(lock) {
+            if (disconnectReported) return
             disconnected = true
             body.erase()
             headers.clear()
-            (call to reply).also { call = null; reply = null }
+            call
         }
-        try {
-            owned.first?.cancel()
-            owned.second?.close()
-        } finally { onDisconnect(this) }
+        pending?.cancel()
+        withResponseBodyLock {
+            closeResponseBody()
+            synchronized(lock) { call = null; reply = null }
+        }
+        val notify = synchronized(lock) {
+            if (disconnectReported) false else { disconnectReported = true; true }
+        }
+        if (notify) onDisconnect(this)
+    }
+
+    private fun <T> withResponseBodyLock(action: () -> T): T {
+        val acquired = try { responseBodyLock.tryLock(RESPONSE_CLOSE_WAIT_MS, TimeUnit.MILLISECONDS) }
+        catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("Routed response ownership wait interrupted")
+        }
+        if (!acquired) throw IOException("Routed response ownership could not be confirmed")
+        try { return action() } finally { responseBodyLock.unlock() }
+    }
+
+    // Called only with responseBodyLock held. A failed close remains owned and
+    // retryable; it must not unregister the connection as confirmed cleanup.
+    private fun closeResponseBody() {
+        if (responseBodyClosed) return
+        synchronized(lock) { reply }?.close()
+        responseBodyClosed = true
+    }
+
+    private fun checkBodyReadable() {
+        if (responseBodyClosed || synchronized(lock) { disconnected } || !routeActive())
+            throw IOException("Routed response is closed")
+    }
+
+    private fun bodyStream(response: Response): InputStream = withResponseBodyLock {
+        checkBodyReadable()
+        responseStream ?: object : InputStream() {
+            private val input = response.body.byteStream()
+            private fun <T> readBody(action: () -> T): T = withResponseBodyLock {
+                checkBodyReadable()
+                val result = action()
+                checkBodyReadable()
+                result
+            }
+            override fun read(): Int = readBody { input.read() }
+            override fun read(bytes: ByteArray, offset: Int, length: Int): Int =
+                readBody { input.read(bytes, offset, length) }
+            override fun skip(count: Long): Long = readBody { input.skip(count) }
+            override fun available(): Int = readBody { input.available() }
+            override fun close() = withResponseBodyLock { closeResponseBody() }
+        }.also { responseStream = it }
     }
 
     override fun usingProxy() = true
@@ -168,11 +222,11 @@ internal class RoutedHttpsConnection(
     override fun getInputStream(): InputStream {
         val result = response()
         if (result.code >= 400) throw FileNotFoundException("Provider HTTP request rejected")
-        return result.body.byteStream()
+        return bodyStream(result)
     }
     override fun getErrorStream(): InputStream? {
         val result = response()
-        return if (result.code >= 400) result.body.byteStream() else null
+        return if (result.code >= 400) bodyStream(result) else null
     }
     override fun getCipherSuite() = response().handshake?.cipherSuite?.javaName ?: throw IOException("TLS handshake missing")
     override fun getLocalCertificates(): Array<Certificate>? = response().handshake?.localCertificates?.toTypedArray()
@@ -182,5 +236,8 @@ internal class RoutedHttpsConnection(
     override fun setSSLSocketFactory(factory: SSLSocketFactory) = throw UnsupportedOperationException("TLS overrides are not allowed")
     override fun toString() = "RoutedHttpsConnection(redacted)"
 
-    companion object { private const val MAXIMUM_BODY = 64 * 1024 }
+    companion object {
+        private const val MAXIMUM_BODY = 64 * 1024
+        private const val RESPONSE_CLOSE_WAIT_MS = 1_000L
+    }
 }

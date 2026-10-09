@@ -45,7 +45,7 @@ class BoundedMediaRequestsTest {
     @Test fun `active media cancellation preserves the original disconnect failure and reports its stage`() {
         val error = IllegalStateException("synthetic token must not be rendered by observer")
         val connection = Connection(uri.toURL(), disconnectFailure = error)
-        val seen = mutableListOf<Pair<NativeFailureStage, Exception>>()
+        val seen = mutableListOf<Pair<NativeFailureStage, Throwable>>()
         val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true }, { _, _ -> },
             openConnection = { connection }, onFailure = { stage, value -> seen += stage to value })
         requests.create(C.DATA_TYPE_MANIFEST).openUri(uri)

@@ -9,6 +9,8 @@ versions and integrity hashes are in `go.mod` and `go.sum`.
   `licenses/GVISOR-Apache-2.0.txt` and `licenses/GO-BSD-3-Clause.txt`.
 - Go runtime and golang.org/x/mobile, x/crypto, x/net, x/sys, x/time,
   The Go Authors: BSD-3-Clause, `licenses/GO-BSD-3-Clause.txt`.
+  The SOCKS5 backend imports the pinned x/net/proxy client; it adds no module
+  or separate cryptographic implementation.
 - github.com/google/btree, Google: Apache-2.0,
   `licenses/BTREE-Apache-2.0.txt`.
 

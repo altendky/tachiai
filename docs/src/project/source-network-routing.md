@@ -22,8 +22,8 @@ system network remains the current implementation, not the intended final UX.
 The user subsequently requested implementing both initial mechanisms: HTTP
 CONNECT and WireGuard, with Proton-exported profiles as the known VPN input.
 The debug native prototype now has session-owned authenticated loopback CONNECT
-bridges. One backend connects to an explicit HTTP proxy; the other uses upstream
-wireguard-go's in-memory netstack, not Android `VpnService`. Origin HTTPS remains
+bridges. HTTP CONNECT and SOCKS5 backends connect to explicit proxies; WireGuard
+uses upstream wireguard-go's in-memory netstack, not Android `VpnService`. Origin HTTPS remains
 end-to-end and uses normal certificate/hostname checks. No TLS interception,
 provider algorithm change, credential capture or System-network fallback is added.
 
@@ -45,6 +45,20 @@ HTTPS proxies. WireGuard destination DNS uses the profile's DNS inside its
 netstack; missing DNS is rejected instead of resolving destinations on System
 network. Endpoint bootstrap DNS and outer proxy/tunnel connections intentionally
 follow the system network, which may itself include an external VPN.
+
+The subsequent SOCKS5 backend uses the already-pinned `golang.org/x/net/proxy`
+client with `ContextDialer`, TCP CONNECT and remote hostname resolution. Its
+small method guard rejects unsupported negotiation and requires RFC 1929 when
+the profile contains credentials. Destination DNS never falls back locally.
+Like HTTP proxy authentication, SOCKS5 username/password authentication is
+unencrypted on the outer proxy connection.
+[Pinned Go client API](https://pkg.go.dev/golang.org/x/net@v0.59.0/proxy#SOCKS5),
+[RFC 1929](https://www.rfc-editor.org/rfc/rfc1929.html).
+The same loopback admission,
+provider-origin/TLS policies, cancellation and tracked-socket cleanup apply.
+No UDP association, proxy TLS, system VPN, provider login, or new media origin is
+added. [Configuration and executed fixture coverage](connection-import.md#socks5-configuration)
+describe the implemented subset; there is no commercial SOCKS5 playback result.
 
 Teardown closes players/helpers before clearing Chromium's override and closing
 owned transports. Stop, background and the existing presentation deadline govern

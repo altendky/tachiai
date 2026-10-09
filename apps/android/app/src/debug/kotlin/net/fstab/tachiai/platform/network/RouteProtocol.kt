@@ -8,6 +8,7 @@ internal class ConnectionKind(val id: String, val title: String) {
     companion object {
         val WIREGUARD get() = WireGuardRouteProtocol.kind
         val HTTP_PROXY get() = HttpProxyRouteProtocol.kind
+        val SOCKS5 get() = Socks5RouteProtocol.kind
     }
 }
 
@@ -66,7 +67,7 @@ internal class RouteProtocols(protocols: List<RouteProtocol>) {
     }
 }
 
-internal val routeProtocols = RouteProtocols(listOf(WireGuardRouteProtocol, HttpProxyRouteProtocol))
+internal val routeProtocols = RouteProtocols(listOf(WireGuardRouteProtocol, HttpProxyRouteProtocol, Socks5RouteProtocol))
 
 // Sharing/conflict keys are ephemeral digests, never persisted or logged.
 internal fun routeConfigurationKey(profile: ConnectionProfile): String = routeDigest(

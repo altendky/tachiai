@@ -53,4 +53,16 @@ class ConnectionProfilesScreenTest {
         compose.onNodeWithText("Discard import").performScrollTo().performClick()
         compose.runOnIdle { assertTrue(discarded); assertNull(saved) }
     }
+
+    @Test fun socksPreviewHidesEncodedAndDecodedCredentialsAndRequiresExplicitSave() {
+        screen(parseConnectionProfile("socks5://fixture:private%2Dpassword@proxy.example.test:1080".toByteArray()))
+        compose.onNodeWithText("SOCKS5 proxy\nEndpoint: proxy.example.test:1080\nPrivate keys and credentials: hidden")
+            .performScrollTo().assertExists()
+        compose.onNodeWithText("fixture", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("private", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("Save route").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Route name").performScrollTo().performTextInput("SOCKS route")
+        compose.onNodeWithText("Save route").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("SOCKS route", saved) }
+    }
 }

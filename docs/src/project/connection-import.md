@@ -24,8 +24,9 @@ The subsequent [native transport implementation](source-network-routing.md#subse
 adds HTTP CONNECT and userspace WireGuard backends to the cached native viewer.
 Selecting and saving a profile is still configuration only; Open viewer starts
 its transport explicitly. System network retains the existing playback path.
-No provider login, new stream or DRM behavior is added. Earlier importer-only
-evidence below predates transport integration and does not verify it.
+The transport integration added no provider login, new stream or DRM behavior.
+Earlier importer-only evidence below predates transport integration and does
+not verify it.
 The user reported loading a Proton file in the preceding build; no configuration
 contents were inspected, and that report does not establish an active tunnel.
 
@@ -94,6 +95,61 @@ per-stream editor is retained as historical code, not linked from the current
 picker. The sections below record its earlier implementation and verification.
 
 ## Provider setup verification
+
+### Twitch login in Providers
+
+**Prototype → Providers → Configure Twitch** now presents saved login status,
+Connect/Reconnect, explicit revalidation and local Forget beside the route
+editor. The available/expired/unreadable status describes protected storage;
+availability is not a claim that Twitch currently accepts the grant. Twitch
+live/replay preparation still validates before use. Playback errors direct the
+user back to Providers → Twitch.
+
+This reuses the already approved debug Smart TV LOCAL device-authorization
+flow, exact identity and zero scopes, the same process repository and the
+unchanged encrypted no-backup slot. Existing records remain usable without
+copying, migration or a second grant. Historical diagnostic cases remain
+available with their original behavior. No provider password, cookie, token,
+account identity or raw response enters observable or saved UI state. Only
+the transient activation code and the validated browser handoff appear while
+connecting; neither is retained in recreation state or logs.
+
+Protected reads and writes run on a worker. Rotation, editor departure and
+explicit Cancel cancel pending network operations and close their transports.
+Connect pauses during the existing package-targeted Brave/Chrome handoff and resumes
+after returning, subject to the original challenge and validation deadlines.
+Revalidation cancels when backgrounded. Forget cancels pending network work;
+once accepted, its bounded local clear runs independently of the editor
+lifecycle, including when rotation/departure cancels its UI observer. New
+commands wait until that clear completes. The existing repository lock orders
+an already-entered save before the clear, preventing that save from restoring
+the grant afterward. Successful Forget clears only the existing local slot
+and invalidates playback through the existing stored-grant checks; it neither
+revokes the provider grant nor clears browser sessions. If clearing fails,
+the retained on-disk grant may remain usable by another process; the UI asks
+the user to retry Forget before playback.
+
+Revalidation calls the existing explicit local-retention extension: only a
+still-available grant that passes fresh official validation can be retained
+for up to seven days, shorter for known expiry. Expired grants require
+Reconnect. Ordinary playback never extends stored retention automatically.
+Provider route selection remains a separate explicit save; configuring or
+changing login does not connect a route or start playback.
+
+Added fake-transport controller coverage exercises exact authorization,
+unexpected scopes, failed-save preservation, stored expiry, browser pause/resume,
+explicit revalidation, delayed authorization after Forget, queued-clear editor
+departure, pending-clear busy state, synchronous completion, foreground return,
+already-entered saves, failed clears and background cancellation of revalidation.
+Focused Compose
+tests cover the Twitch-only section, safe status and explicit action controls.
+All 14 controller JVM tests passed, along with the complete Android JVM suite,
+lint, instrumentation compilation, release isolation and both APK assemblies.
+Both certificates matched the shared debug identity. The focused seven
+provider/login Compose tests passed on a separate clean Android 16/API 36
+x86-64 emulator. Scoped repository checks and documentation build passed.
+No private authorization, genuine account-site handoff, encrypted Android
+persistence or provider playback test was performed for this change.
 
 ### Merged six-stream build
 

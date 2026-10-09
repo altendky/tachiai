@@ -13,7 +13,12 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.action.GeneralClickAction
+import androidx.test.espresso.action.Press
+import androidx.test.espresso.action.Tap
+import androidx.test.espresso.matcher.ViewMatchers.isRoot
 import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
@@ -52,7 +57,7 @@ class NativePairViewerDismissTest {
         val playerA = PlayerView(context)
         val playerB = PlayerView(context)
         val viewer = NativePairViewer(context, playerA, playerB, "A", "B", { pair },
-            { commands++ }, { commands++ }, { commands++ }, { commands++ }, {}, {}, {})
+            { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ })
         val stage get() = viewer.getChildAt(0) as ViewGroup
         val dock get() = viewer.getChildAt(1) as ViewGroup
         val scroller get() = dock.getChildAt(0)
@@ -158,11 +163,75 @@ class NativePairViewerDismissTest {
         }
     }
 
-    @Test fun dismissingMoreWithoutSelectionHidesAllControls() {
+    @Test fun cancellingPopupPreservesPanelWithoutActionsOrTapThrough() {
+        for (playing in listOf(false, true)) for (panel in listOf("Audio", "Timing")) {
+            for (dismissal in listOf("Back", "outside", "anchor")) {
+                withFixture(playing) { scenario, fixture ->
+                    var calls = 0
+                    var anchor = floatArrayOf()
+                    var outside = floatArrayOf()
+                    scenario.onActivity {
+                        button(fixture.viewer, panel).performClick()
+                        calls = fixture.a.volumeCalls + fixture.b.volumeCalls
+                    }
+                    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                    scenario.onActivity {
+                        val location = IntArray(2)
+                        val more = button(fixture.viewer, "More")
+                        more.getLocationOnScreen(location)
+                        anchor = floatArrayOf(location[0] + more.width / 2f, location[1] + more.height / 2f)
+                        fixture.stage.getLocationOnScreen(location)
+                        outside = floatArrayOf(location[0] + 8f, location[1] + 8f)
+                        // The popup occupies the control area; the video's top-left
+                        // is outside it and would hide the tray if the tap leaked.
+                    }
+                    onView(withText("More")).perform(click())
+                    if (dismissal == "Back") pressBack() else {
+                        val target = if (dismissal == "anchor") anchor else outside
+                        onView(isRoot()).perform(GeneralClickAction(Tap.SINGLE, { target }, Press.FINGER))
+                    }
+                    onView(withText("Playback status")).check(doesNotExist())
+                    scenario.onActivity {
+                        assertEquals(View.VISIBLE, fixture.dock.visibility)
+                        assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                        assertEquals(0, fixture.commands)
+                        assertEquals(calls, fixture.a.volumeCalls + fixture.b.volumeCalls)
+                        button(fixture.viewer, "Hide").performClick()
+                        assertEquals(View.GONE, fixture.dock.visibility)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test fun cancellingStepPreservesTimingPanelAndSelectedValue() {
+        withFixture(false) { scenario, fixture ->
+            onView(withText("Timing")).perform(click())
+            onView(withText("Step: 1 s · choose")).perform(click())
+            pressBack()
+            onView(withText("0.25 s")).check(doesNotExist())
+            scenario.onActivity {
+                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                assertEquals("Step: 1 s · choose", button(fixture.viewer, "Step:").text.toString())
+                assertEquals(0, fixture.commands)
+            }
+        }
+    }
+
+    @Test fun popupActionStillOpensStatusAndTeardownDoesNotRevealControls() {
         withFixture(false) { scenario, fixture ->
             onView(withText("More")).perform(click())
-            pressBack()
-            scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility) }
+            onView(withText("Playback status")).perform(click())
+            scenario.onActivity {
+                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                assertEquals(0, fixture.commands)
+            }
+            onView(withText("More")).perform(click())
+            scenario.onActivity { fixture.viewer.endSession() }
+            onView(withText("Playback status")).check(doesNotExist())
+            scenario.onActivity { assertEquals(View.GONE, fixture.viewer.visibility) }
         }
     }
 

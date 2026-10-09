@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,6 +26,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
@@ -75,13 +78,16 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
     Column(Modifier.fillMaxSize().safeDrawingPadding()
         .then(if (onRecovery != null) Modifier.verticalScroll(recoveryScroll) else Modifier)
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Tachiai · Prototype", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-        Text("Assign a stream to feeds A and B. Check both to run the same stream twice.")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            onConnections?.let { action -> Button(onClick = action) { Text("Routes") } }
-            onProviders?.let { action -> Button(onClick = action, enabled = setupReady) { Text("Providers") } }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            onConnections?.let { action -> Button(onClick = action,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Routes") } }
+            onProviders?.let { action -> Button(onClick = action, enabled = setupReady,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
+            Text("Tachiai", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End, maxLines = 1)
         }
-        message?.let { Text(it) }
+        message?.takeUnless { it == "Playback stopped." }?.let { Text(it) }
         if (onRecovery != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             recoveryMessage?.let { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall) }
@@ -90,20 +96,14 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         if (obsoleteSetup) Button(onClick = onResetStreamSettings) { Text("Reset stream settings") }
         Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Stream", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                for (slot in PrototypeSlot.entries) {
-                    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                        Text(slot.name, style = MaterialTheme.typography.titleMedium)
-                    }
-                }
-            }
             providerInstances.forEach { instance ->
                 val service = instance.service
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(instance.name, Modifier.weight(1f).semantics { heading() },
-                            style = MaterialTheme.typography.titleMedium)
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (setupReady) Text(instance.setup.title, Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         for (slot in PrototypeSlot.entries) {
                             val selectedChoice = if (slot == PrototypeSlot.A) assignments.a else assignments.b
                             val selected = selectedChoice?.instanceId == instance.id && selectedChoice.source.service == service
@@ -141,16 +141,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
             }
         }
         if (selection == null) Text("Choose an available provider instance and stream for each feed before opening the viewer.")
-        if (setupReady && onProviders != null && selection != null) {
-            PrototypeSlot.entries.forEach { slot ->
-                val instance = checkNotNull(selection.feeds[slot.ordinal].resolve(providerInstances))
-                Text("${slot.name} · ${instance.name}: ${instance.setup.title}",
-                    style = MaterialTheme.typography.bodySmall)
-            }
-        }
         if (!setupReady) Text("Provider setup must be read successfully before playback.")
-        Text("Experimental playback · five-minute foreground sessions. ABEMA needs your usual playback connection.",
-            style = MaterialTheme.typography.bodySmall)
         Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady && playbackAvailable,
             modifier = Modifier.fillMaxWidth()) { Text("Open viewer") }
     }

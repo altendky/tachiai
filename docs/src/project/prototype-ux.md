@@ -211,6 +211,11 @@ Hide and video/background taps retain their explicit dismissal behavior.
 The product terms are **route / provider / stream / feed**. The picker assigns
 streams to A/B feeds; its separate **Routes** and **Providers** buttons open
 network configuration management and provider configuration respectively.
+Routes and Providers share the upper-left header; Tachiai sits at the upper
+right. Each provider heading includes its configured route on the same line.
+The picker omits the assignment introduction, Stream/A/B header row, routine
+playback-stopped message, separate A/B route summaries and experimental-playback
+footer. Assignment checkboxes retain their accessible feed labels.
 Provider type is separate from a configured instance: multiple named ABEMA or
 Twitch instances may each choose their own route, and Twitch instances have
 separate saved LOCAL logins. The default Twitch instance retains the original

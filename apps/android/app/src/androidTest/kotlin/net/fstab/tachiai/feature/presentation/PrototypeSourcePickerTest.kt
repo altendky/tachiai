@@ -169,7 +169,7 @@ class PrototypeSourcePickerTest {
         } }
         compose.waitForIdle()
         PrototypeSource.entries.forEach { compose.onAllNodesWithText(it.optionTitle).assertCountEquals(1) }
-        compose.onNodeWithText("Stream").assertExists()
+        compose.onNodeWithText("Stream").assertDoesNotExist()
         compose.onNodeWithText("Routes").performClick()
         compose.onNodeWithText("Providers").performClick()
         compose.onNodeWithText("Source setup").assertDoesNotExist()
@@ -208,8 +208,7 @@ class PrototypeSourcePickerTest {
         compose.onNodeWithText("Open viewer").assertIsNotEnabled()
         compose.onNodeWithText("Setup could not be read.").assertExists()
         compose.onNodeWithText("Provider setup must be read successfully before playback.").assertExists()
-        compose.onNodeWithText("A · ABEMA: System network").assertDoesNotExist()
-        compose.onNodeWithText("B · Twitch: System network").assertDoesNotExist()
+        compose.onAllNodesWithText("System network").assertCountEquals(0)
         compose.onNodeWithText("Reset stream settings").assertDoesNotExist()
         compose.runOnIdle { assertTrue(routes) }
     }
@@ -223,8 +222,8 @@ class PrototypeSourcePickerTest {
                     PrototypeService.TWITCH to ProviderSetup(null)), onProviders = {}, onWatch = {})
         } }
         compose.waitForIdle()
-        compose.onNodeWithText("A · ABEMA: Japan route").assertExists()
-        compose.onNodeWithText("B · Twitch: Route choice required").assertExists()
+        compose.onNodeWithText("Japan route").assertExists()
+        compose.onNodeWithText("Route choice required").assertExists()
         // Open viewer is an explicit request; the Activity owns route admission.
         compose.onNodeWithText("Open viewer").assertIsEnabled()
     }

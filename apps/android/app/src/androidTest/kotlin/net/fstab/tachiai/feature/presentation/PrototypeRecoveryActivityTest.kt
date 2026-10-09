@@ -54,7 +54,7 @@ class PrototypeRecoveryActivityTest {
         ActivityScenario.launch(CachedPrototypeActivity::class.java).use { scenario ->
             awaitStartupReads(scenario)
             installAvailableCatalogue(scenario)
-            compose.onNodeWithText("Open viewer").assertIsEnabled()
+            compose.onNodeWithText("Watch").assertIsEnabled()
             val session = FailedSession()
             scenario.onActivity { activity ->
                 field("sessions").set(activity, listOf(session, null))
@@ -232,7 +232,7 @@ class PrototypeRecoveryActivityTest {
     private fun activeBudget() = NativePlaybackBudget(300_000, { true }, maximumDurationMs = 300_000)
 
     private fun assertBlockedPicker(scenario: ActivityScenario<CachedPrototypeActivity>) {
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithText("Recovery options").assertIsDisplayed()
         scenario.onActivity { activity ->
             assertNull(field("budget").get(activity))

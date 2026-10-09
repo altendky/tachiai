@@ -27,3 +27,27 @@ run = "bash ../../scripts/build-android-routebridge.sh && ./gradlew --no-daemon 
 [tasks.check]
 description = "Run the local validation suite"
 depends = ["pre-commit", "android"]
+
+[tasks.android-emulator-setup]
+description = "Create the persistent local development device without replacing existing data"
+run = "uv run scripts/android-dev-device.py setup"
+
+[tasks.android-emulator-start]
+description = "Start the persistent local development device"
+run = "uv run scripts/android-dev-device.py start"
+
+[tasks.android-emulator-stop]
+description = "Shut down only the persistent local development device"
+run = "uv run scripts/android-dev-device.py stop"
+
+[tasks.android-emulator-status]
+description = "Check the persistent local development device identity and boot status"
+run = "uv run scripts/android-dev-device.py status"
+
+[tasks.android-emulator-install]
+description = "Verify and update the debug APK on the persistent emulator, preserving app data"
+run = "uv run scripts/android-dev-device.py install"
+
+[tasks.android-emulator-configure]
+description = "Apply the repo's dark-mode and navigation preferences to the owned emulator"
+run = "uv run scripts/android-dev-device.py configure"

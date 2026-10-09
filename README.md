@@ -33,6 +33,9 @@ Start with the [project overview](docs/src/project/index.md).
 
 ## Android test builds
 
+For local persistent emulator setup, see the
+[Android development device guide](docs/src/project/android-development.md).
+
 Successful pushes to `main` and manual
 [CI runs](https://github.com/altendky/tachiai/actions/workflows/ci.yml) publish a
 `tachiai-debug-<commit>` artifact containing `app-debug.apk`. Sign in to GitHub,

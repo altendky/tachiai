@@ -1,0 +1,32 @@
+# Persistent development device, not a disposable instrumentation runner.
+[device]
+name = "tachiai-dev"
+hardware = "pixel_6"
+system_image = "system-images;android-36;google_apis;x86_64"
+ram_mb = 4096
+cores = 4
+port = 5580
+keyboard = true
+
+[runtime]
+# Provisional workaround for intermittent host-GPU video corruption.
+gpu = "software"
+
+[preferences]
+# Non-secret Android defaults, applied by start/configure without wiping data.
+night_mode = "yes"
+navigation = "threebutton"
+
+[sdk]
+command_line_version = "19.0"
+bootstrap_url = "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
+# Google's SDK repository checksum, checked before extracting the bootstrap.
+bootstrap_sha1 = "5fdcc763663eefb86a5b8879697aa6088b041e70"
+
+# sdkmanager package IDs are stable; revisions can change upstream. Refuse
+# mismatches rather than silently upgrading an established development device.
+[sdk.revisions]
+emulator = "37.2.12"
+platform-tools = "37.0.1"
+"system-images;android-36;google_apis;x86_64" = "7"
+"build-tools;37.0.0" = "37.0.0"

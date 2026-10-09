@@ -124,6 +124,10 @@ renewal or unrestricted content access. See the
 
 ## Repository direction
 
+[Safe failure diagnostics](failure-diagnostics.md) describes bounded local
+evidence for debug playback/route failures and targeted collection without
+provider secrets or unrestricted error dumps.
+
 The [persistent Android development device](android-development.md) defines
 reproducible local emulator setup and safe lifecycle/install commands. Its
 private app state remains local, outside the repository; emulator setup is not

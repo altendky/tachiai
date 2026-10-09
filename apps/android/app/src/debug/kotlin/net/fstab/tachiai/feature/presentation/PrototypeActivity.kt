@@ -75,6 +75,10 @@ import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.AndroidTwitchAuthorization
+import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+import net.fstab.tachiai.platform.diagnostics.FailureSlot
 
 // Product-flow prototype, separate from historical experiment screens. The
 // unsupported playback adapters deliberately remain confined to the debug APK.
@@ -88,6 +92,7 @@ open class PrototypeActivity : ComponentActivity() {
         private var routesPending = false
         private var routeCleanupPending = false
         private var routeCleanupFailed = false
+        private var routeDiagnostics = FailureReporter.NONE
         private val routeCloser = Executors.newSingleThreadExecutor()
     }
     protected open val useCachedAbema: Boolean = false
@@ -133,12 +138,16 @@ open class PrototypeActivity : ComponentActivity() {
     private var lastSample = 0L
     private val authorizationPolling = AtomicBoolean()
     private var routes = emptyMap<String, RouteSession>()
+    private var diagnostics = FailureReporter.NONE
+
+    private fun feedDiagnostics(index: Int) = diagnostics.forSlot(if (index == 0) FailureSlot.A else FailureSlot.B)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pickerAssignments = restorePrototypeFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
+        initializeDiagnostics()
         if (!profileConfigured) {
             WebView.setDataDirectorySuffix(if (useCachedAbema) "prototype-cached-player" else "prototype-player")
             profileConfigured = true
@@ -155,6 +164,11 @@ open class PrototypeActivity : ComponentActivity() {
         outState.putString("prototype.feed.a", encodePrototypeFeedChoice(pickerAssignments.a))
         outState.putString("prototype.feed.b", encodePrototypeFeedChoice(pickerAssignments.b))
         super.onSaveInstanceState(outState)
+    }
+
+    private fun initializeDiagnostics() {
+        diagnostics = if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy)
+            routeDiagnostics else FailureDiagnostics.create(this)
     }
 
     private fun showPicker(message: String?) {
@@ -188,6 +202,7 @@ open class PrototypeActivity : ComponentActivity() {
         pickerAssignments = prototypeFeedAssignments(selected)
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy) {
+            if (cleanupFailed || routeCleanupFailed) routeDiagnostics.blocked(FailureStage.ROUTE_BLOCKED)
             showPicker(if (cleanupFailed || routeCleanupFailed)
                 "Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying."
                 else "The previous route is still stopping. Please retry shortly.")
@@ -200,7 +215,11 @@ open class PrototypeActivity : ComponentActivity() {
         activeSetups = sourceSetups.toMap()
         activeInstances = providerInstances.toList()
         dispose()
-        if (cleanupFailed) { showPicker("Previous playback cleanup reported a failure. Close and reopen Tachiai before retrying."); return }
+        if (cleanupFailed) {
+            diagnostics.blocked(FailureStage.VIEWER_BLOCKED)
+            showPicker("Previous playback cleanup reported a failure. Close and reopen Tachiai before retrying."); return
+        }
+        diagnostics = diagnostics.newSession()
         val run = epoch.incrementAndGet()
         qualitySession = ViewerQualityState(selected.sources, qualityDefaults)
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
@@ -237,7 +256,8 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun prepareRoutes(selected: PrototypeSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
-        val preparation = RoutePreparation().also { routePreparation = it }
+        val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
+        routeDiagnostics = diagnostics
         val choices = activeInstances.toList()
         routesPending = true
         worker.execute {
@@ -295,8 +315,12 @@ open class PrototypeActivity : ComponentActivity() {
                             else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
                         }
                     }
-                    webRoute.install(abema, ::complete)
-                    handler.postDelayed({ complete(false) }, 3_000)
+                    webRoute.install(abema, ::complete, diagnostics)
+                    handler.postDelayed({
+                        if (!completed && sharedBudget.active && epoch.get() == run)
+                            diagnostics.report(FailureStage.ROUTE_INSTALL_TIMEOUT)
+                        complete(false)
+                    }, 3_000)
                 } else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
             }
         }
@@ -311,7 +335,10 @@ open class PrototypeActivity : ComponentActivity() {
             try {
                 val replay = source.kind == PrototypePlaybackKind.REPLAY
                 val events: (PrototypeFeedEvent) -> Unit = { event ->
-                    if (disposing && event == PrototypeFeedEvent.FAILED) cleanupFailed = true
+                    if (disposing && event == PrototypeFeedEvent.FAILED) {
+                        feedDiagnostics(index).report(FailureStage.DISPOSING_FEED_FAILED)
+                        cleanupFailed = true
+                    }
                     else if (active() && failures[index] == null) {
                         Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} source=${source.name} event=${event.name}")
                         if (event == PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED)
@@ -324,11 +351,13 @@ open class PrototypeActivity : ComponentActivity() {
                 }
                 val feedActive = { active() && failures[index] == null }
                 val session = when (source.service) {
-                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events, route = checkNotNull(routes[selected.feeds[index].instanceId]))
-                        else PrototypeAbemaSession(this, replay, feedActive, events)
+                    PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
+                        route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index))
+                        else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
                     PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, checkNotNull(source.resourceId), feedActive, events,
                         openConnection = checkNotNull(routes[selected.feeds[index].instanceId])::open,
-                        authorization = AndroidTwitchAuthorization.forProviderInstance(this, selected.feeds[index].instanceId))
+                        authorization = AndroidTwitchAuthorization.forProviderInstance(this, selected.feeds[index].instanceId),
+                        diagnostics = feedDiagnostics(index))
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 created += index to session
@@ -342,11 +371,17 @@ open class PrototypeActivity : ComponentActivity() {
                         setup.addView(page, LinearLayout.LayoutParams(-1, 0, 1f))
                     }
                 }
-            } catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) }
+            } catch (error: Exception) {
+                feedDiagnostics(index).report(FailureStage.FEED_CONSTRUCT, error)
+                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED))
+            }
         }
         created.forEach { (index, host) ->
             try { host.prepare(sharedBudget.child()) }
-            catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) }
+            catch (error: Exception) {
+                feedDiagnostics(index).report(FailureStage.FEED_PREPARE, error)
+                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED))
+            }
         }
         updateProgress()
     }
@@ -372,7 +407,10 @@ open class PrototypeActivity : ComponentActivity() {
                 try {
                     if (host?.member != null && !host.canContinue()) failFeed(index, authorizationFailure(index, host))
                     else if (host != null && failures[index] == null && !prepared[index]) prepareViewerSlot(index, host)
-                } catch (_: Exception) { failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)) }
+                } catch (error: Exception) {
+                    feedDiagnostics(index).report(FailureStage.FEED_POLL, error)
+                    failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED))
+                }
             }
             updateProgress()
             playback?.poll()
@@ -579,6 +617,9 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
         if (failures[index] != null) return
+        // Deadline/normal stop is an expected lifecycle outcome, not a new error.
+        if (failure.reason !in setOf(PrototypeFailureReason.STOPPED, PrototypeFailureReason.PLAYBACK_LIMIT))
+            feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
         failures[index] = failure
         Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} failure=${failure.reason.name} http=${failure.httpStatus ?: 0}")
         invalidatePlay()
@@ -587,8 +628,9 @@ open class PrototypeActivity : ComponentActivity() {
         surfaces.getOrNull(index)?.player = null
         val host = sessions[index]
         sessions = sessions.toMutableList().also { it[index] = null }
-        val closed = runCatching { host?.close() }.isSuccess && host?.cleanupFailed != true
+        val closed = feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { host?.close() } && host?.cleanupFailed != true
         if (!closed) {
+            feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)
             cleanupFailed = true
             budget?.stop()
             failures.indices.filter { failures[it] == null }.forEach {
@@ -612,15 +654,20 @@ open class PrototypeActivity : ComponentActivity() {
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()
-        if (runCatching { viewer?.endSession() }.isFailure) cleanupFailed = true
+        if (!diagnostics.cleanupAll(FailureStage.VIEWER_END) { viewer?.endSession() }) cleanupFailed = true
         viewer = null
         qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
         playback?.close(); playback = null
         surfaces.forEach { it.player = null }; surfaces = emptyList()
-        sessions.forEach { if (runCatching { it?.close() }.isFailure || it?.cleanupFailed == true) cleanupFailed = true }
+        sessions.forEachIndexed { index, session ->
+            if (!feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { session?.close() } || session?.cleanupFailed == true) {
+                feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)
+                cleanupFailed = true
+            }
+        }
         sessions = listOf(null, null)
         releaseRoutes()
-        if (runCatching { focus?.close() }.isFailure) cleanupFailed = true
+        if (!diagnostics.cleanupAll(FailureStage.AUDIO_FOCUS_CLOSE) { focus?.close() }) cleanupFailed = true
         focus = null
         budget = null
         disposing = false
@@ -645,20 +692,25 @@ open class PrototypeActivity : ComponentActivity() {
             if (!confirmed) { cleanupFailed = true; routeCleanupFailed = true }
         }
         if (useCachedAbema) {
-            webRoute.clear { closeRoutes(true) }
-            handler.postDelayed({ closeRoutes(false) }, 3_000)
+            webRoute.clear(diagnostics) { closeRoutes(true) }
+            handler.postDelayed({
+                if (!completed) diagnostics.report(FailureStage.ROUTE_CLEAR_TIMEOUT)
+                closeRoutes(false)
+            }, 3_000)
         } else closeRoutes(true)
     }
 
     private fun closeRoutesAsync(owned: List<RouteSession>, onComplete: (Boolean) -> Unit) {
+        val reporter = diagnostics
         routeCloser.execute {
-            val accepted = owned.map { runCatching { it.close() }.isSuccess }.all { it }
+            val accepted = owned.map { reporter.cleanupAll(FailureStage.ROUTE_CLOSE) { it.close() } }.all { it }
             handler.post { onComplete(accepted) }
         }
     }
 
     private fun cancelRoutePreparation() {
         if (routePreparation?.cancel() == false) {
+            diagnostics.report(FailureStage.ROUTE_CANCEL_UNCONFIRMED)
             cleanupFailed = true; routeCleanupFailed = true; routeCleanupPending = true
         }
         routePreparation = null
@@ -688,6 +740,7 @@ open class PrototypeActivity : ComponentActivity() {
                 result.fold(onSuccess = {
                     sourceSetups = it.first; providerInstances = it.second; qualityDefaults = it.third; setupReady = true
                 }, onFailure = {
+                    if (it !is ObsoleteSourceSetupException) diagnostics.report(FailureStage.PROVIDER_SETUP_READ, it)
                     if (it is ObsoleteSourceSetupException) {
                         obsoleteSetup = true
                         setupMessage = "Stream settings belong to the previous catalogue. Reset stream settings to continue. Saved routes and provider configuration will be kept. No playback started."
@@ -709,6 +762,7 @@ open class PrototypeActivity : ComponentActivity() {
             handler.post {
                 if (isDestroyed || isFinishing || !resumed.get() || setupRevision != current || budget != null) return@post
                 result.fold(onSuccess = { refreshSetup() }, onFailure = {
+                    diagnostics.report(FailureStage.STREAM_SETTINGS_RESET, it)
                     setupMessage = "Stream settings could not be reset. Playback remains unavailable; saved routes and provider configuration were not changed. Close and reopen to retry."
                 })
             }

@@ -18,12 +18,13 @@ class BoundedMediaRequestsTest {
     private val uri = URI("https://media.ttvnw.net/fixture.m3u8?token=synthetic")
     private class Connection(url: URL, val status: Int = 200, val length: Long = -1,
         val body: ByteArray = "#EXTM3U\n".toByteArray(), val beforeResponse: () -> Unit = {},
-        val stream: InputStream? = null, val errorBody: ByteArray? = null) : HttpsURLConnection(url) {
+        val stream: InputStream? = null, val errorBody: ByteArray? = null,
+        val disconnectFailure: Exception? = null) : HttpsURLConnection(url) {
         var disconnected = false
         var bodyRead = false
         var errorRead = false
         override fun connect() = Unit
-        override fun disconnect() { disconnected = true }
+        override fun disconnect() { disconnected = true; disconnectFailure?.let { throw it } }
         override fun usingProxy() = false
         override fun getCipherSuite() = "fixture"
         override fun getLocalCertificates(): Array<Certificate>? = null
@@ -40,6 +41,18 @@ class BoundedMediaRequestsTest {
         clock: () -> Long = { 1_000L }, events: MutableList<NativeMediaEvent> = mutableListOf()) =
         BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { it.host == uri.host },
             { event, _ -> events += event }, canRequest, { connection }, clock)
+
+    @Test fun `active media cancellation preserves the original disconnect failure and reports its stage`() {
+        val error = IllegalStateException("synthetic token must not be rendered by observer")
+        val connection = Connection(uri.toURL(), disconnectFailure = error)
+        val seen = mutableListOf<Pair<NativeFailureStage, Exception>>()
+        val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true }, { _, _ -> },
+            openConnection = { connection }, onFailure = { stage, value -> seen += stage to value })
+        requests.create(C.DATA_TYPE_MANIFEST).openUri(uri)
+        assertSame(error, assertThrows(IllegalStateException::class.java) { requests.close() })
+        assertTrue(connection.disconnected)
+        assertEquals(listOf(NativeFailureStage.MEDIA_DISCONNECT to error), seen)
+    }
 
     @Test fun `media sends no authorization client or cookie headers`() {
         val connection = Connection(uri.toURL())

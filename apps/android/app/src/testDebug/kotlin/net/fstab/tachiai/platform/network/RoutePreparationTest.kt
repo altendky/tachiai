@@ -7,6 +7,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
+import net.fstab.tachiai.platform.diagnostics.FailureObservation
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
 
 class RoutePreparationTest {
     private class Fixture(private val start: (RoutePreparation) -> RouteBackend) : RouteProtocol {
@@ -106,7 +110,8 @@ class RoutePreparationTest {
     }
 
     @Test fun failedSignalDoesNotSkipOtherHooksAndFailureRemainsVisible() {
-        val owner = RoutePreparation()
+        val observations = mutableListOf<FailureObservation>()
+        val owner = RoutePreparation(FailureReporter(observations::add))
         val signals = AtomicInteger()
         owner.onCancel { throw IOException("private-native-error") }
         owner.onCancel { signals.incrementAndGet() }
@@ -115,6 +120,41 @@ class RoutePreparationTest {
         assertEquals(1, signals.get())
         val error = assertThrows(IOException::class.java) { owner.checkActive() }
         assertFalse(error.message.orEmpty().contains("private-native-error"))
+        assertEquals(listOf(FailureStage.ROUTE_CANCEL), observations.map { it.stage })
+        assertEquals(FailureCategory.IO, observations.single().failure.category)
+    }
+
+    @Test fun cancelledCreationDoesNotReportFailureButFailedRollbackDoes() {
+        val observations = mutableListOf<FailureObservation>()
+        val owner = RoutePreparation(FailureReporter(observations::add))
+        val closes = AtomicInteger()
+        val fixture = Fixture { received -> received.cancel(); backend(closes) }
+        assertThrows(IOException::class.java) { RouteSession.create(fixture.parse("fixture"), owner) }
+        assertTrue(observations.isEmpty())
+        assertEquals(1, closes.get())
+
+        val failedOwner = RoutePreparation(FailureReporter(observations::add))
+        val failedFixture = Fixture { received ->
+            received.cancel()
+            object : RouteBackend {
+                override val proxyPort = 12345
+                override fun close() { throw IOException("private-native-error") }
+            }
+        }
+        assertThrows(IOException::class.java) { RouteSession.create(failedFixture.parse("fixture"), failedOwner) }
+        assertEquals(listOf(FailureStage.ROUTE_CREATE_ROLLBACK), observations.map { it.stage })
+        assertEquals(FailureCategory.IO, observations.single().failure.category)
+        assertFalse(failedOwner.cleanupConfirmed)
+    }
+
+    @Test fun failingLateCancellationSignalReportsFailureBeforeRefusal() {
+        val observations = mutableListOf<FailureObservation>()
+        val owner = RoutePreparation(FailureReporter(observations::add))
+        assertTrue(owner.cancel())
+        assertThrows(IOException::class.java) { owner.onCancel { throw IllegalStateException("private-native-error") } }
+        assertEquals(listOf(FailureStage.ROUTE_CANCEL), observations.map { it.stage })
+        assertEquals(FailureCategory.ILLEGAL_STATE, observations.single().failure.category)
+        assertFalse(owner.cancel())
     }
 
     @Test fun concurrentRemovalAndCancellationNeverSignalAfterHandleRelease() {

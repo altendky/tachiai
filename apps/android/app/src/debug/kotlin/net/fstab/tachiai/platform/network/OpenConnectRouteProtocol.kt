@@ -1,5 +1,7 @@
 package net.fstab.tachiai.platform.network
 
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+
 import java.io.IOException
 import java.util.Locale
 import routebridge.Route
@@ -131,11 +133,14 @@ internal object OpenConnectRouteProtocol : RouteProtocol {
             if (result.code.toInt() != 0 || route == null) throw IOException("OpenConnect route preparation failed")
             preparation.checkActive()
             return NativeRouteBackend(checkNotNull(route)).also { route = null }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.OPENCONNECT_PREPARE, error)
             registration?.close()
             registration = null
             native.cancel()
-            if (runCatching { route?.close() }.isFailure) preparation.recordCleanupFailure()
+            runCatching { route?.close() }.onFailure {
+                preparation.recordCleanupFailure(FailureStage.ROUTE_CREATE_ROLLBACK, it)
+            }
             throw IOException("OpenConnect route could not be initialized")
         } finally { registration?.close() }
     }

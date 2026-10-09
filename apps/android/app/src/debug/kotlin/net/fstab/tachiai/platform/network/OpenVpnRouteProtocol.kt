@@ -1,5 +1,7 @@
 package net.fstab.tachiai.platform.network
 
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+
 import java.io.IOException
 import routebridge.Route
 import routebridge.Routebridge
@@ -97,11 +99,14 @@ internal object OpenVpnRouteProtocol : RouteProtocol {
             if (result.code.toInt() != 0 || route == null) throw IOException("OpenVPN route preparation failed")
             preparation.checkActive()
             return NativeRouteBackend(checkNotNull(route)).also { route = null }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.OPENVPN_PREPARE, error)
             registration?.close()
             registration = null
             native.cancel()
-            if (runCatching { route?.close() }.isFailure) preparation.recordCleanupFailure()
+            runCatching { route?.close() }.onFailure {
+                preparation.recordCleanupFailure(FailureStage.ROUTE_CREATE_ROLLBACK, it)
+            }
             throw IOException("OpenVPN route could not be initialized")
         } finally {
             registration?.close()

@@ -4,6 +4,11 @@ import java.io.IOException
 import java.net.URL
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
+import net.fstab.tachiai.platform.diagnostics.FailureObservation
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
+import okhttp3.OkHttpClient
 
 class RouteSessionTest {
     private class FakeBackend(override val proxyPort: Int = 12345, private val failCleanup: Boolean = false) : RouteBackend {
@@ -84,5 +89,72 @@ class RouteSessionTest {
         route.close()
         assertEquals(1, backend.closes)
         assertThrows(IOException::class.java) { route.open(URL("https://example.invalid/")) }
+    }
+
+    @Test fun creationAndBackendCleanupPreserveStagesWithoutChangingPublicErrors() {
+        val observations = mutableListOf<FailureObservation>()
+        val preparation = RoutePreparation(FailureReporter(observations::add))
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        val setup = assertThrows(IOException::class.java) {
+            RouteSession.create(profile, preparation) { _, _ -> error("private-password") }
+        }
+        assertNull(setup.cause)
+        assertEquals(listOf(FailureStage.ROUTE_CREATE), observations.map { it.stage })
+        assertEquals(FailureCategory.ILLEGAL_STATE, observations.single().failure.category)
+
+        val backend = FakeBackend(failCleanup = true)
+        val route = RouteSession.create(profile, preparation) { _, _ -> backend }
+        val cleanup = assertThrows(IOException::class.java) { route.close() }
+        assertNull(cleanup.cause)
+        assertEquals(listOf(FailureStage.ROUTE_CREATE, FailureStage.ROUTE_BACKEND_CLOSE), observations.map { it.stage })
+        route.close()
+        assertEquals(1, backend.closes)
+        assertEquals(2, observations.size)
+    }
+
+    @Test fun disconnectAssertionErrorStillClosesOtherConnectionsAndBackendAndBlocksReuse() {
+        val observations = mutableListOf<FailureObservation>()
+        val preparation = RoutePreparation(FailureReporter(observations::add))
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        val backend = FakeBackend()
+        val route = RouteSession.create(profile, preparation) { _, _ -> backend }
+        val client = OkHttpClient()
+        var otherClosed = false
+        val failing = RoutedHttpsConnection(URL("https://example.invalid/"), client, { true }) {
+            throw AssertionError("private-native-error")
+        }
+        val other = RoutedHttpsConnection(URL("https://example.invalid/"), client, { true }) { otherClosed = true }
+        // Populate the owned set without opening sockets or adding a production-only test seam.
+        val field = RouteSession::class.java.getDeclaredField("connections").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val connections = field.get(route) as MutableSet<RoutedHttpsConnection>
+        connections.add(failing)
+        connections.add(other)
+        val cleanup = assertThrows(IOException::class.java) { route.close() }
+        assertEquals("Route cleanup failed", cleanup.message)
+        assertTrue(otherClosed)
+        assertEquals(1, backend.closes)
+        assertTrue(connections.isEmpty())
+        assertEquals(listOf(FailureStage.ROUTE_DISCONNECT), observations.map { it.stage })
+        assertEquals(FailureCategory.OTHER, observations.single().failure.category)
+        assertThrows(IOException::class.java) { route.open(URL("https://example.invalid/")) }
+        route.close()
+        assertEquals(1, backend.closes)
+    }
+
+    @Test fun rollbackAssertionErrorDoesNotReplaceOriginalSetupFailureAndRemainsBlocked() {
+        val observations = mutableListOf<FailureObservation>()
+        val preparation = RoutePreparation(FailureReporter(observations::add))
+        val backend = object : RouteBackend {
+            override val proxyPort = 0
+            override fun close() { throw AssertionError("private-native-error") }
+        }
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        val setup = assertThrows(IOException::class.java) { RouteSession.create(profile, preparation) { _, _ -> backend } }
+        assertEquals("Imported route could not be initialized", setup.message)
+        assertNull(setup.cause)
+        assertFalse(preparation.cleanupConfirmed)
+        assertEquals(listOf(FailureStage.ROUTE_CREATE, FailureStage.ROUTE_CREATE_ROLLBACK), observations.map { it.stage })
+        assertEquals(FailureCategory.OTHER, observations.last().failure.category)
     }
 }

@@ -14,6 +14,8 @@ import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.OkHttpClient
+import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
 
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
@@ -23,6 +25,7 @@ internal class RouteSession private constructor(
     val proxyUsername: String,
     val proxyPassword: String,
     val proxyRealm: String,
+    private val diagnostics: FailureReporter,
 ) : AutoCloseable {
     val isSystem get() = backend == null
     val proxyPort: Int = backend?.proxyPort ?: 0
@@ -53,11 +56,18 @@ internal class RouteSession private constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         var failed = false
-        for (cleanup in listOf<() -> Unit>(
-            { connections.forEach { if (runCatching { it.disconnect() }.isFailure) failed = true }; connections.clear() },
-            { client?.dispatcher?.cancelAll() }, { client?.connectionPool?.evictAll() },
-            { client?.dispatcher?.executorService?.shutdownNow() }, { backend?.close() },
-        )) if (runCatching(cleanup).isFailure) failed = true
+        for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
+            FailureStage.ROUTE_DISCONNECT to {
+                connections.forEach { connection ->
+                    if (!diagnostics.cleanupAll(FailureStage.ROUTE_DISCONNECT) { connection.disconnect() }) failed = true
+                }
+                connections.clear()
+            },
+            FailureStage.ROUTE_CANCEL_REQUESTS to { client?.dispatcher?.cancelAll() },
+            FailureStage.ROUTE_CONNECTION_POOL to { client?.connectionPool?.evictAll() },
+            FailureStage.ROUTE_EXECUTOR to { client?.dispatcher?.executorService?.shutdownNow() },
+            FailureStage.ROUTE_BACKEND_CLOSE to { backend?.close() },
+        )) if (!diagnostics.cleanupAll(stage, cleanup)) failed = true
         if (failed) throw IOException("Route cleanup failed")
     }
 
@@ -78,7 +88,7 @@ internal class RouteSession private constructor(
             },
         ): RouteSession {
             preparation.checkActive()
-            if (profile == null) return RouteSession(null, "", "", "")
+            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics)
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
@@ -86,9 +96,12 @@ internal class RouteSession private constructor(
                 backend = createBackend(profile, RouteProxySecurity(username, password, realm, ALLOWED_HOSTS))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
-                RouteSession(backend, username, password, realm)
-            } catch (_: Exception) {
-                if (runCatching { backend?.close() }.isFailure) preparation.recordCleanupFailure()
+                RouteSession(backend, username, password, realm, preparation.diagnostics)
+            } catch (error: Exception) {
+                if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.ROUTE_CREATE, error)
+                runCatching { backend?.close() }.onFailure { cleanupError ->
+                    preparation.recordCleanupFailure(FailureStage.ROUTE_CREATE_ROLLBACK, cleanupError)
+                }
                 throw IOException("Imported route could not be initialized")
             }
         }

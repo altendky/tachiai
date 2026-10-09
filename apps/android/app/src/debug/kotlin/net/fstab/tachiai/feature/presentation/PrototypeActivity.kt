@@ -38,6 +38,11 @@ import net.fstab.tachiai.feature.connections.ObsoleteSourceSetupException
 import net.fstab.tachiai.feature.connections.ProvidersActivity
 import net.fstab.tachiai.feature.connections.sourceSetupStore
 import net.fstab.tachiai.feature.connections.providerSetupStore
+import net.fstab.tachiai.feature.connections.streamQualityStore
+import net.fstab.tachiai.platform.media.NativeQualityKind
+import net.fstab.tachiai.platform.media.NativeQualityPreferences
+import net.fstab.tachiai.platform.media.NativeQualityRequest
+import net.fstab.tachiai.presentation.ViewerQualityState
 import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.defaultSourceSetups
@@ -92,6 +97,10 @@ open class PrototypeActivity : ComponentActivity() {
     private var obsoleteSetup by mutableStateOf(false)
     private var setupRevision = 0L
     private var activeSetups: Map<PrototypeSource, SourceSetup> = defaultSourceSetups()
+    private var qualityDefaults = emptyMap<PrototypeSource, NativeQualityPreferences>()
+    private var qualitySession: ViewerQualityState? = null
+    private var savingQuality = false
+    private var qualityMessage: String? = null
     private var sessions = listOf<PrototypeFeedSession?>(null, null)
     private val failures = arrayOfNulls<PrototypeFeedFailure>(2)
     private val prepared = BooleanArray(2)
@@ -173,6 +182,7 @@ open class PrototypeActivity : ComponentActivity() {
         dispose()
         if (cleanupFailed) { showPicker("Previous playback cleanup reported a failure. Close and reopen Tachiai before retrying."); return }
         val run = epoch.incrementAndGet()
+        qualitySession = ViewerQualityState(selected.sources, qualityDefaults)
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
         val sharedBudget = NativePlaybackBudget(300_000, ::active, maximumDurationMs = 300_000)
         budget = sharedBudget
@@ -411,7 +421,16 @@ open class PrototypeActivity : ComponentActivity() {
                 val index = side.ordinal
                 failures[index]?.let { "Could not load this feed\n\n${it.message}\n\nUse Sources to choose another feed." }
                     ?: if (!prepared[index]) "Preparing this feed…" else null
-            }, onSources = { stopToPicker("Playback stopped.") })
+            }, onSources = { stopToPicker("Playback stopped.") },
+            qualityState = { side, kind -> qualitySession?.read(side, kind)?.copy(saving = savingQuality, message = qualityMessage) },
+            onQualityOverride = { side, kind, request ->
+                if (!savingQuality && playback?.busy != true) {
+                    qualitySession?.setOverride(side, kind, request)
+                    applyQuality(side); viewer?.refresh()
+                }
+            },
+            onSaveQuality = { side, kind -> saveQuality(side, kind, false) },
+            onResetQuality = { side, kind -> saveQuality(side, kind, true) })
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
         returnButton?.isEnabled = true
@@ -441,7 +460,40 @@ open class PrototypeActivity : ComponentActivity() {
         prepared[index] = true
         invalidatePlay()
         playback?.setMember(NativeMixedSide.entries[index], member)
+        applyQuality(NativeMixedSide.entries[index])
         surfaces[index].player = host.player
+    }
+
+    private fun applyQuality(side: NativeMixedSide): Boolean {
+        val preferences = qualitySession?.effective(side) ?: return true
+        val member = playback?.member(side) ?: return true
+        val accepted = runCatching { member.setQualityPreferences(preferences) }.getOrDefault(false)
+        qualityMessage = if (accepted) null else "Quality request refused; actual playback is shown separately."
+        return accepted
+    }
+
+    private fun saveQuality(side: NativeMixedSide, kind: NativeQualityKind, reset: Boolean) {
+        val state = qualitySession ?: return
+        if (savingQuality || playback?.busy == true) return
+        val source = selection.sources[side.ordinal]
+        val request = if (reset) NativeQualityRequest.auto else state.read(side, kind).effective
+        val run = epoch.get()
+        savingQuality = true; qualityMessage = "Saving stream quality…"; viewer?.refresh()
+        worker.execute {
+            val result = runCatching { streamQualityStore(this).save(source, kind, request) }
+            handler.post {
+                if (epoch.get() != run || qualitySession !== state || isDestroyed) return@post
+                savingQuality = false
+                result.fold(onSuccess = { values ->
+                    qualityDefaults = values; state.replaceDefaults(values)
+                    val applied = NativeMixedSide.entries.map(::applyQuality).all { it }
+                    qualityMessage = if (reset) "Stream ${kind.name.lowercase()} default reset to Auto. Feed overrides stay in this session."
+                        else "Stream ${kind.name.lowercase()} default saved. Feed overrides stay in this session."
+                    if (!applied) qualityMessage += "\nQuality request refused; actual playback is shown separately."
+                }, onFailure = { qualityMessage = "Stream quality could not be saved. Saved preferences were not replaced." })
+                viewer?.refresh()
+            }
+        }
     }
 
     private fun invalidatePlay() { playBarrier?.cancel(); playBarrier = null; playMessage = null }
@@ -537,6 +589,7 @@ open class PrototypeActivity : ComponentActivity() {
         budget?.stop()
         if (runCatching { viewer?.endSession() }.isFailure) cleanupFailed = true
         viewer = null
+        qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
         playback?.close(); playback = null
         surfaces.forEach { it.player = null }; surfaces = emptyList()
         sessions.forEach { if (runCatching { it?.close() }.isFailure || it?.cleanupFailed == true) cleanupFailed = true }
@@ -595,18 +648,18 @@ open class PrototypeActivity : ComponentActivity() {
         worker.execute {
             val result = runCatching {
                 val streams = sourceSetupStore(this).read()
-                streams to providerSetupStore(this).read(streams)
+                Triple(streams, providerSetupStore(this).read(streams), streamQualityStore(this).read())
             }
             handler.post {
                 if (isDestroyed || isFinishing || !resumed.get() || setupRevision != current || budget != null) return@post
                 result.fold(onSuccess = {
-                    sourceSetups = it.first; providerSetups = it.second; setupReady = true
+                    sourceSetups = it.first; providerSetups = it.second; qualityDefaults = it.third; setupReady = true
                 }, onFailure = {
                     if (it is ObsoleteSourceSetupException) {
                         obsoleteSetup = true
                         setupMessage = "Stream settings belong to the previous catalogue. Reset stream settings to continue. Saved routes and provider configuration will be kept. No playback started."
                     } else {
-                        setupMessage = "Provider or stream setup could not be read. Nothing was replaced or routed through a fallback. Close and reopen to retry."
+                        setupMessage = "Provider, stream setup or quality preferences could not be read. Nothing was replaced or routed through a fallback. Close and reopen to retry."
                     }
                 })
             }

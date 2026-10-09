@@ -7,11 +7,13 @@ import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Timeline
 import androidx.media3.common.TrackGroup
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.RendererCapabilities
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId
 import androidx.media3.exoplayer.source.TrackGroupArray
 import androidx.media3.exoplayer.source.chunk.MediaChunkIterator
@@ -122,13 +124,145 @@ class NativePlaybackQualityTest {
         }
     }
 
+    @Test fun exactManualVideoKeepsAutoAudioAndManualAudioKeepsVideoAdaptive() = onSelectorThread {
+        val quality = NativePlayerQuality(context)
+        try {
+            assertTrue(quality.trackSelector.parameters.isViewportSizeLimitedByPhysicalDisplaySize)
+            val tracks = qualityTracks()
+            val meter = ControlledMeter(quality.bandwidthMeter)
+            val video = NativeQualityRequest(nativeQualityTrack(tracks.groups[0].getTrackFormat(1), C.TRACK_TYPE_VIDEO))
+            val audio = NativeQualityRequest(nativeQualityTrack(tracks.groups[1].getTrackFormat(0), C.TRACK_TYPE_AUDIO))
+            fun apply(preferences: NativeQualityPreferences) {
+                val resolution = resolveNativeQuality(tracks, preferences)
+                val parameters = quality.trackSelector.parameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO).clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                resolution.overrides.forEach { parameters.setOverrideForType(it) }
+                quality.trackSelector.parameters = parameters.build()
+            }
+            apply(NativeQualityPreferences(video = video))
+            val first = selections(quality.trackSelector, meter)
+            assertTrue(first.selections[0] is FixedTrackSelection)
+            assertEquals(720, checkNotNull(first.selections[0]).selectedFormat.height)
+            assertEquals(192_000, checkNotNull(first.selections[1]).selectedFormat.bitrate)
+            apply(NativeQualityPreferences(audio = audio))
+            val second = selections(quality.trackSelector, meter, initialize = false)
+            assertTrue(second.selections[0] is AdaptiveTrackSelection)
+            assertEquals(64_000, checkNotNull(second.selections[1]).selectedFormat.bitrate)
+            apply(NativeQualityPreferences())
+            assertTrue(quality.trackSelector.parameters.overrides.isEmpty())
+            val reset = selections(quality.trackSelector, meter, initialize = false)
+            assertTrue(reset.selections[0] is AdaptiveTrackSelection)
+            assertEquals(192_000, checkNotNull(reset.selections[1]).selectedFormat.bitrate)
+            assertFalse(quality.trackSelector.parameters.allowMultipleAdaptiveSelections)
+        } finally { quality.close(); quality.trackSelector.release() }
+    }
+
+    @Test fun changedGroupsReResolveDescriptorsAndMissingUnsupportedRequestsStayVisible() = onSelectorThread {
+        val tracks = qualityTracks()
+        val video = NativeQualityRequest(nativeQualityTrack(tracks.groups[0].getTrackFormat(1), C.TRACK_TYPE_VIDEO))
+        val request = NativeQualityPreferences(video = video)
+        val initial = resolveNativeQuality(tracks, request)
+        assertEquals(NativeQualityOutcome.REQUESTED, initial.controls[NativeQualityKind.VIDEO]?.outcome)
+        val changed = qualityTracks("replacement-video")
+        val replacement = resolveNativeQuality(changed, request)
+        assertEquals(changed.groups[0].mediaTrackGroup, replacement.overrides.single().mediaTrackGroup)
+        assertNotEquals(initial.overrides.single().mediaTrackGroup, replacement.overrides.single().mediaTrackGroup)
+        val absent = NativeQualityRequest(video.track!!.copy(height = 600))
+        val missing = resolveNativeQuality(changed, NativeQualityPreferences(video = absent))
+        assertTrue(missing.overrides.isEmpty())
+        assertEquals(absent, missing.controls[NativeQualityKind.VIDEO]?.requested)
+        assertEquals(NativeQualityOutcome.UNAVAILABLE, missing.controls[NativeQualityKind.VIDEO]?.outcome)
+        val unsupported = NativeQualityRequest(nativeQualityTrack(tracks.groups[1].getTrackFormat(2), C.TRACK_TYPE_AUDIO))
+        val refused = resolveNativeQuality(tracks, NativeQualityPreferences(audio = unsupported))
+        assertTrue(refused.overrides.isEmpty())
+        assertEquals(NativeQualityOutcome.UNAVAILABLE, refused.controls[NativeQualityKind.AUDIO]?.outcome)
+        val pending = resolveNativeQuality(Tracks.EMPTY, request)
+        assertEquals(NativeQualityOutcome.PENDING, pending.controls[NativeQualityKind.VIDEO]?.outcome)
+    }
+
+    @Test fun otherContentGroupsAndCoupledOrSingleTrackSourcesDoNotInventAlternatives() = onSelectorThread {
+        val tracks = qualityTracks()
+        val separateContent = Tracks.Group(TrackGroup("different-language", audio(128_000)), false,
+            intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(false))
+        val combined = Tracks(tracks.groups + separateContent)
+        val other = NativeQualityRequest(nativeQualityTrack(separateContent.getTrackFormat(0), C.TRACK_TYPE_AUDIO))
+        val resolution = resolveNativeQuality(combined, NativeQualityPreferences(audio = other))
+        assertTrue(resolution.overrides.isEmpty())
+        assertFalse(resolution.controls[NativeQualityKind.AUDIO]!!.options.contains(other))
+        val single = Tracks(listOf(Tracks.Group(TrackGroup("single-muxed-audio", audio(192_000)), false,
+            intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(true))))
+        val control = resolveNativeQuality(single, NativeQualityPreferences()).controls[NativeQualityKind.AUDIO]!!
+        assertEquals(1, control.options.size)
+        assertTrue(control.capability.contains("bundled tracks may be coupled"))
+        val ambiguous = Tracks(single.groups + Tracks.Group(TrackGroup("other-content", audio(192_000)), false,
+            intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(true)))
+        assertTrue(resolveNativeQuality(ambiguous, NativeQualityPreferences()).controls[NativeQualityKind.AUDIO]!!.options.isEmpty())
+    }
+
+    @Test fun duplicateNumericDescriptorsNeverChooseAnArbitrarySdkTrack() = onSelectorThread {
+        val first = video(1280, 720, 2_000_000).buildUpon().setId("private-first-identity").build()
+        val second = first.buildUpon().setId("private-second-identity").build()
+        val tracks = Tracks(listOf(Tracks.Group(TrackGroup("private-group-identity", first, second), true,
+            intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED), booleanArrayOf(true, true))))
+        val request = NativeQualityRequest(nativeQualityTrack(first, C.TRACK_TYPE_VIDEO))
+        assertEquals(request, NativeQualityRequest(nativeQualityTrack(second, C.TRACK_TYPE_VIDEO)))
+        val result = resolveNativeQuality(tracks, NativeQualityPreferences(video = request))
+        assertTrue(result.overrides.isEmpty())
+        val control = result.controls[NativeQualityKind.VIDEO]!!
+        assertEquals(request, control.requested)
+        assertEquals(NativeQualityOutcome.UNAVAILABLE, control.outcome)
+        assertTrue(control.options.isEmpty())
+        assertFalse(control.toString().contains("private"))
+    }
+
+    @Test fun manualOverridesCannotBypassRetainedVideoAudioOrViewportLimits() = onSelectorThread {
+        val quality = NativePlayerQuality(context)
+        try {
+            val tracks = qualityTracks()
+            val large = NativeQualityRequest(nativeQualityTrack(tracks.groups[0].getTrackFormat(3), C.TRACK_TYPE_VIDEO))
+            val limited = quality.trackSelector.parameters.buildUpon().setMaxAudioBitrate(128_000).build()
+            val audio = NativeQualityRequest(nativeQualityTrack(tracks.groups[1].getTrackFormat(1), C.TRACK_TYPE_AUDIO))
+            val result = resolveNativeQuality(tracks, NativeQualityPreferences(large, audio), limited, 1920, 1080)
+            assertTrue(result.overrides.isEmpty())
+            assertEquals(NativeQualityOutcome.UNAVAILABLE, result.controls[NativeQualityKind.VIDEO]?.outcome)
+            assertEquals(NativeQualityOutcome.UNAVAILABLE, result.controls[NativeQualityKind.AUDIO]?.outcome)
+        } finally { quality.close(); quality.trackSelector.release() }
+    }
+
+    @Test fun preferenceRequestsAreGuardedByPlayerThreadOwnershipAndCleanup() {
+        lateinit var quality: NativePlayerQuality
+        lateinit var player: ExoPlayer
+        onSelectorThread {
+            quality = NativePlayerQuality(context)
+            player = quality.configure(ExoPlayer.Builder(context)).build()
+            quality.bind(player)
+            assertTrue(quality.request(player, NativeQualityPreferences()))
+        }
+        try {
+            assertFalse(quality.request(player, NativeQualityPreferences())) // Runner has no player Looper.
+            onSelectorThread {
+                quality.close()
+                assertFalse(quality.request(player, NativeQualityPreferences()))
+            }
+        } finally { onSelectorThread { quality.close(); player.release() } }
+    }
+
+    private fun qualityTracks(videoId: String = "fixture-video") = Tracks(listOf(
+        Tracks.Group(TrackGroup(videoId, video(640, 360, 500_000), video(1280, 720, 2_000_000),
+            video(1920, 1080, 8_000_000), video(3840, 2160, 16_000_000)), true,
+            IntArray(4) { C.FORMAT_HANDLED }, BooleanArray(4) { true }),
+        Tracks.Group(TrackGroup("fixture-audio", audio(64_000), audio(192_000), audio(384_000)), true,
+            intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED, C.FORMAT_UNSUPPORTED_SUBTYPE),
+            booleanArrayOf(false, true, false)),
+    ))
+
     private fun selections(selector: DefaultTrackSelector, meter: BandwidthMeter,
-        viewportWidth: Int = 1920, viewportHeight: Int = 1080) = run {
+        viewportWidth: Int = 1920, viewportHeight: Int = 1080, initialize: Boolean = true) = run {
         // Owned render targets make Auto tests deterministic on any test phone.
         // Production keeps the SDK's physical-display viewport default.
         selector.parameters = selector.parameters.buildUpon()
             .setViewportSize(viewportWidth, viewportHeight, false).build()
-        selector.init(TrackSelector.InvalidationListener { selector.onParametersActivated(it) }, meter)
+        if (initialize) selector.init(TrackSelector.InvalidationListener { selector.onParametersActivated(it) }, meter)
         selector.onParametersActivated(selector.parameters)
         val video = TrackGroup("fixture-video", video(640, 360, 500_000),
             video(1280, 720, 2_000_000), video(1920, 1080, 8_000_000), video(3840, 2160, 16_000_000))

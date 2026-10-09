@@ -38,7 +38,7 @@ track alternatives. "Samples observed" means callbacks reached the meter;
 short samples can still leave its startup estimate in use. No provider
 identifier, language, label or raw metadata is displayed or logged.
 
-Per-pane/render-target policy, manual quality controls and coordinated shared-route
+Per-pane/render-target policy and coordinated shared-route
 budgets follow later. Auto does not restore the removed 720p preference.
 Android TV, mirrored displays, remote casting receivers and future non-Android
 players need platform-specific render-target information; phone screen size
@@ -105,6 +105,54 @@ native players reported playing at 1080p. No provider login, route settings or
 licensing behavior was changed.
 
 ## Current setup vocabulary and navigation
+
+### Manual quality preferences
+
+**More → Quality** opens per-feed video and audio choices inside the viewer.
+**Use stream default** inherits that stream's saved choice; **Auto for this
+feed** explicitly overrides it for this session. Supported manual choices name
+only numeric resolution/bitrate/channel/sample-rate properties and a closed
+codec name. Audio and video have separate preferences. **Save stream default**
+persists the effective choice only for that stream and media kind; **Reset stream
+default** restores that kind's Auto default without removing either feed's
+session override. Resetting a feed means choosing **Use stream default**.
+
+Precedence is feed override → saved stream default → Auto. Two copies of one
+stream share saved defaults and retain independent feed overrides. Saving or
+resetting a stream default updates currently inheriting copies. Stop, Sources,
+background disposal and a new viewing session discard feed overrides. Saved
+defaults use a separate bounded encrypted record with process/file locking;
+they do not rewrite routes, legacy stream settings or authorization. An unreadable
+record blocks setup and is never silently replaced with Auto.
+
+Manual requests resolve exact numeric descriptors within the currently selected
+content-equivalent SDK group, using supported tracks and retained video/audio
+and physical-viewport constraints. They do not select another language, role or
+camera group. Unknown codecs, incomplete dimensions/audio properties and
+unsupported choices are unavailable. Track changes rebuild runtime overrides;
+missing or ambiguous preferences stay visible while the SDK uses Auto. A single
+audio track offers no separate quality ladder. Bundled audio/video can be coupled;
+the UI does not promise independent changes merely because two controls exist.
+Auto retains the prior audio-first ranking, adaptive video, device constraints
+and separate per-player bandwidth meters.
+
+The panel distinguishes requested preference and selection status from actual
+consumed formats, which can lag or differ. Saving is explicit and failures retain
+the previous stored record. Controls pause during a save or timing transaction,
+and remain scrollable at compact sizes. No SDK group, format identity, provider
+metadata, token or URL enters stored preferences or UI. This adds no provider
+endpoints, reload, authorization, media-origin permission or DRM handling.
+
+Provider-free model/store, selector, lifecycle, redaction and UI fixtures accompany
+this implementation. Local Android JVM tests, lint, instrumentation compilation,
+release isolation and both APK assemblies passed; both certificates matched
+the shared debug identity. All 30 quality/selector and affected viewer UI tests
+passed on a separate clean Android 16/API 36 x86-64 emulator. The existing
+bandwidth isolation fixture now pins its SDK network type before sampling,
+retaining the real meters and transfer assertions while avoiding asynchronous
+initial-estimate resets. Scoped repository checks and documentation build passed;
+no actual provider manual-switching, new audio observation, TV, casting or
+physical-device performance result is claimed here.
 
 The native viewer's Timing panel has two direct-action rows, **Advance A** and
 **Advance B**, each with 0.1 s, 0.25 s, 0.5 s, 1 s and 5 s buttons in that order.

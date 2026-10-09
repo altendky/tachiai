@@ -135,6 +135,7 @@ internal class BoundedNativeDashPlayer(
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
             .build()
         try {
+            quality.bind(player)
             player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), false)
             player.volume = 0.5f
@@ -242,6 +243,8 @@ internal class BoundedNativeDashPlayer(
     }
 
     override fun qualitySnapshot(): NativeQualitySnapshot? = if (timingActive()) quality.snapshot(player) else null
+    override fun setQualityPreferences(preferences: NativeQualityPreferences): Boolean =
+        Looper.myLooper() == player.applicationLooper && timingActive() && quality.request(player, preferences)
 
     override fun close() {
         if (released) return

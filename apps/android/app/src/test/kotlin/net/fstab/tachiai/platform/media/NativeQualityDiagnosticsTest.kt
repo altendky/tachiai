@@ -54,4 +54,16 @@ class NativeQualityDiagnosticsTest {
         assertTrue(snapshot.details().contains("eligible/selected"))
         assertTrue(snapshot.details().contains("+2 omitted"))
     }
+
+    @Test fun retainedUnavailablePreferenceNeverClaimsToBeConsumedOrExposeSdkHandles() {
+        val requested = NativeQualityRequest(NativeQualityTrack(NativeQualityKind.VIDEO, NativeQualityCodec.AVC, 2_000_000, 1280, 720))
+        val actual = NativeQualityTrack(NativeQualityKind.VIDEO, NativeQualityCodec.AVC, 500_000, 640, 360)
+        val snapshot = NativeQualitySnapshot(actual, null, 1_000_000, null, emptyList(), 0,
+            mapOf(NativeQualityKind.VIDEO to NativeQualityControl(requested, NativeQualityOutcome.UNAVAILABLE, emptyList())))
+        assertTrue(snapshot.summary().contains("640×360"))
+        assertFalse(snapshot.summary().contains("1280×720"))
+        assertTrue(snapshot.details().contains("VIDEO requested: 1280×720"))
+        assertTrue(snapshot.details().contains("unavailable or ambiguous; Auto until available"))
+        assertFalse(snapshot.details().contains("TrackGroup")); assertFalse(snapshot.details().contains("Format("))
+    }
 }

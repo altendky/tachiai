@@ -25,13 +25,14 @@ import java.util.Date
 import net.fstab.tachiai.provider.twitch.*
 
 @Composable
-internal fun TwitchProviderLogin() {
+internal fun TwitchProviderLogin(instanceId: String = net.fstab.tachiai.presentation.defaultProviderInstanceId(
+    net.fstab.tachiai.presentation.PrototypeService.TWITCH)) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val controller = remember(context, owner, scope) {
+    val controller = remember(context, owner, scope, instanceId) {
         TwitchProviderLoginController(
-            AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
+            AndroidTwitchAuthorization.forProviderInstance(context, instanceId),
             scope, { gate -> TwitchDeviceHttpTransport(canRequest = gate) },
             initiallyForeground = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
     }
@@ -92,7 +93,7 @@ internal fun TwitchProviderLoginSection(state: TwitchProviderLoginState, copied:
             else -> "Saved Twitch login unavailable. Reconnect or retry reading it."
         })
         state.expiresAtMs?.let { Text("Local retention until ${DateFormat.getDateTimeInstance().format(Date(it))}.") }
-        Text("This debug login uses Twitch’s Smart TV application identity and requests no permissions. Check the identity privately before approving. Login is encrypted on this device and used by Twitch live/replay feeds.",
+        Text("This debug login uses Twitch’s Smart TV application identity and requests no permissions. Check the identity privately before approving. Login is encrypted on this device and used only by this instance’s Twitch live/replay feeds.",
             style = MaterialTheme.typography.bodySmall)
         Button(onClick = onConnect, enabled = !state.busy && state.storage != null) {
             Text(if (state.storage == SavedAuthorizationState.MISSING || state.storage == SavedAuthorizationState.FORGOTTEN)

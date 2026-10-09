@@ -17,8 +17,7 @@ import net.fstab.tachiai.presentation.*
 
 class ProvidersActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
-    private var legacy = defaultSourceSetups()
-    private var settings by mutableStateOf<Map<PrototypeService, ProviderSetup>?>(null)
+    private var settings by mutableStateOf<List<ProviderInstance>?>(null)
     private var profiles by mutableStateOf(emptyList<ConnectionSummary>())
     private var busy by mutableStateOf(true)
     private var message by mutableStateOf<String?>(null)
@@ -31,9 +30,9 @@ class ProvidersActivity : ComponentActivity() {
         setContent { TachiaiPrototypeTheme {
             val value = settings
             if (value == null) Text(message ?: "Reading provider setup…")
-            else ProvidersScreen(value, profiles, busy, message,
+            else ProviderInstancesScreen(value, profiles, busy, message,
                 { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
-                twitchLogin = { TwitchProviderLogin() })
+                onCreate = ::create, twitchLogin = { TwitchProviderLogin(it) })
         } }
     }
 
@@ -43,29 +42,34 @@ class ProvidersActivity : ComponentActivity() {
         val current = ++revision; busy = true
         worker.execute {
             val result = runCatching {
-                val previous = sourceSetupStore(this).read()
-                val providers = providerSetupStore(this).read(previous)
+                val providers = providerInstanceStore(this).read { legacyProviderSettings(this) }
                 val routes = connectionProfileStore(this).summaries()
-                Triple(previous, providers, routes)
+                providers to routes
             }
             runOnUiThread {
                 if (isDestroyed || revision != current) return@runOnUiThread
-                result.fold(onSuccess = { legacy = it.first; settings = it.second; profiles = it.third; busy = false; message = null },
+                result.fold(onSuccess = { settings = it.first; profiles = it.second; busy = false; message = null },
                     onFailure = { message = "Provider settings or routes could not be read. Nothing was replaced. Close and reopen to retry." })
             }
         }
     }
 
-    private fun save(provider: PrototypeService, route: SourceRouteChoice) {
+    private fun save(id: String, name: String?, route: SourceRouteChoice) = mutate {
+        providerInstanceStore(this).save(id, name, route) { legacyProviderSettings(this) }
+    }
+    private fun create(service: PrototypeService) = mutate {
+        providerInstanceStore(this).create(service) { legacyProviderSettings(this) }
+    }
+    private fun mutate(action: () -> List<ProviderInstance>) {
         if (busy) return
         val current = ++revision; busy = true
         worker.execute {
-            val result = runCatching { providerSetupStore(this).save(provider, route, legacy) }
+            val result = runCatching(action)
             runOnUiThread {
                 if (isDestroyed || revision != current) return@runOnUiThread
                 busy = false
-                result.fold(onSuccess = { settings = it; message = "${provider.title} setup saved. No route was started or tested." },
-                    onFailure = { message = "Provider setup could not be saved. Nothing was replaced." })
+                result.fold(onSuccess = { settings = it; message = "Provider instances saved. No route was started or tested." },
+                    onFailure = { message = "Provider instance could not be saved. Nothing was replaced; check the name or instance limit." })
             }
         }
     }

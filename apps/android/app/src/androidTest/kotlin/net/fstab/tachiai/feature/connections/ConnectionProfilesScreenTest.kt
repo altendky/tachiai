@@ -3,9 +3,14 @@ package net.fstab.tachiai.feature.connections
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.test.espresso.Espresso.closeSoftKeyboard
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.ConnectionProfile
 import net.fstab.tachiai.platform.network.parseConnectionProfile
@@ -20,12 +25,24 @@ class ConnectionProfilesScreenTest {
     private var openedProton = false
     private var openedWindscribe = false
     private var openedPicker = false
+    private lateinit var focusManager: FocusManager
     private fun screen(draft: ConnectionProfile? = null) {
         compose.setContent { TachiaiPrototypeTheme {
+            focusManager = LocalFocusManager.current
             ConnectionProfilesScreen(emptyList(), draft, false, null,
                 { openedProton = true }, { openedWindscribe = true }, { openedPicker = true }, {}, { saved = it }, { discarded = true }, {}, {})
         } }
         compose.waitForIdle()
+    }
+
+    private fun settleNamedPreview(name: String) {
+        compose.onNodeWithText(name).assertExists()
+        // Settle IME/inset changes before scrolling and tapping Save.
+        compose.runOnIdle { focusManager.clearFocus(force = true); assertNull(saved) }
+        closeSoftKeyboard()
+        compose.waitForIdle()
+        compose.onNodeWithText("Route name").assertIsNotFocused()
+        compose.onNodeWithText("Save route").performScrollTo().assertIsEnabled()
     }
 
     @Test fun guidanceAndFallbackAreExplicitAndNeverSaveAutomatically() {
@@ -44,6 +61,7 @@ class ConnectionProfilesScreenTest {
         compose.onNodeWithText("private-password", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Save route").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Route name").performScrollTo().performTextInput("Japan proxy")
+        settleNamedPreview("Japan proxy")
         compose.onNodeWithText("Save route").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("Japan proxy", saved) }
     }
@@ -62,6 +80,7 @@ class ConnectionProfilesScreenTest {
         compose.onNodeWithText("private", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Save route").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Route name").performScrollTo().performTextInput("SOCKS route")
+        settleNamedPreview("SOCKS route")
         compose.onNodeWithText("Save route").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("SOCKS route", saved) }
     }

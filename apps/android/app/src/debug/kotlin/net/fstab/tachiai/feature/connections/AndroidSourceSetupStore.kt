@@ -14,3 +14,10 @@ internal fun providerSetupStore(context: Context): ProviderSetupStore = Provider
     AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.PROVIDER_SETUP),
     File(context.noBackupFilesDir, "provider-setup.lock"),
 )
+
+internal fun providerInstanceStore(context: Context): ProviderInstanceStore = ProviderInstanceStore(
+    AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.PROVIDER_INSTANCES),
+    File(context.noBackupFilesDir, "provider-instances.lock"),
+)
+
+internal fun legacyProviderSettings(context: Context) = providerSetupStore(context).read(sourceSetupStore(context).read())

@@ -33,30 +33,40 @@ import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.presentation.PrototypeSelection
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.PrototypeSource
-import net.fstab.tachiai.presentation.PrototypeSourceAssignments
 import net.fstab.tachiai.presentation.PrototypeSlot
 import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.defaultSourceSetups
 import net.fstab.tachiai.presentation.ProviderSetup
 import net.fstab.tachiai.presentation.legacyProviderSetups
+import net.fstab.tachiai.presentation.ProviderInstance
+import net.fstab.tachiai.presentation.defaultProviderInstances
+import net.fstab.tachiai.presentation.defaultProviderInstanceId
+import net.fstab.tachiai.presentation.PrototypeFeedChoice
+import net.fstab.tachiai.presentation.PrototypeFeedAssignments
+import net.fstab.tachiai.presentation.encodePrototypeFeedChoice
+import net.fstab.tachiai.presentation.decodePrototypeFeedChoice
+import net.fstab.tachiai.presentation.prototypeFeedAssignments
 
 @Composable
 internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?, onConnections: (() -> Unit)? = null,
     sourceSetups: Map<PrototypeSource, SourceSetup> = defaultSourceSetups(), setupReady: Boolean = true,
     providerSetups: Map<PrototypeService, ProviderSetup> = legacyProviderSetups(sourceSetups),
+    providerInstances: List<ProviderInstance> = defaultProviderInstances(providerSetups),
+    initialAssignments: PrototypeFeedAssignments = prototypeFeedAssignments(initial),
+    onAssignmentsChanged: (PrototypeFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
     onWatch: (PrototypeSelection) -> Unit) {
-    var a by rememberSaveable { mutableStateOf<String?>(initial.a.name) }
-    var b by rememberSaveable { mutableStateOf<String?>(initial.b.name) }
-    val assignments = PrototypeSourceAssignments(a?.let(PrototypeSource::valueOf), b?.let(PrototypeSource::valueOf))
-    val selection = assignments.selectionOrNull()
-    fun assign(slot: PrototypeSlot, source: PrototypeSource, checked: Boolean) {
+    var a by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.a)) }
+    var b by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.b)) }
+    val assignments = PrototypeFeedAssignments(decodePrototypeFeedChoice(a), decodePrototypeFeedChoice(b))
+    val selection = assignments.selectionOrNull(providerInstances)
+    fun assign(slot: PrototypeSlot, choice: PrototypeFeedChoice, checked: Boolean) {
         // Consecutive A/B callbacks can precede recomposition; read current saved
         // state rather than replacing the other slot from a rendered snapshot.
-        val next = PrototypeSourceAssignments(a?.let(PrototypeSource::valueOf), b?.let(PrototypeSource::valueOf))
-            .assign(slot, source, checked)
-        a = next.a?.name; b = next.b?.name
+        val next = PrototypeFeedAssignments(decodePrototypeFeedChoice(a), decodePrototypeFeedChoice(b)).assign(slot, choice, checked)
+        a = encodePrototypeFeedChoice(next.a); b = encodePrototypeFeedChoice(next.b)
+        onAssignmentsChanged(next)
     }
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Tachiai · Prototype", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
@@ -76,16 +86,18 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                     }
                 }
             }
-            PrototypeService.entries.forEach { service ->
+            providerInstances.forEach { instance ->
+                val service = instance.service
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(service.title, Modifier.weight(1f).semantics { heading() },
+                        Text(instance.name, Modifier.weight(1f).semantics { heading() },
                             style = MaterialTheme.typography.titleMedium)
                         for (slot in PrototypeSlot.entries) {
-                            val selected = (if (slot == PrototypeSlot.A) assignments.a else assignments.b)?.service == service
+                            val selectedChoice = if (slot == PrototypeSlot.A) assignments.a else assignments.b
+                            val selected = selectedChoice?.instanceId == instance.id && selectedChoice.source.service == service
                             Box(Modifier.size(48.dp).clearAndSetSemantics {
-                                contentDescription = if (selected) "${service.title}: a stream is selected for feed ${slot.name}"
-                                    else "${service.title}: no stream selected for feed ${slot.name}"
+                                contentDescription = if (selected) "${instance.name}: a stream is selected for feed ${slot.name}"
+                                    else "${instance.name}: no stream selected for feed ${slot.name}"
                             }, contentAlignment = Alignment.Center) {
                                 if (selected) Box(Modifier.size(18.dp).border(1.dp, MaterialTheme.colorScheme.outline,
                                     RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
@@ -96,27 +108,31 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                     }
                     PrototypeSource.entries.filter { it.service == service }.forEach { source ->
                         val setup = checkNotNull(sourceSetups[source])
+                        val feedChoice = PrototypeFeedChoice(source, instance.id)
                         Row(Modifier.fillMaxWidth().padding(start = 24.dp)
                             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                             .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(if (setup.name == source.title) source.optionTitle else setup.name,
                                 Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                             for (slot in PrototypeSlot.entries) {
-                                Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == source,
-                                    onCheckedChange = { assign(slot, source, it) },
-                                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Assign ${source.title} to feed ${slot.name}" })
+                                Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice,
+                                    onCheckedChange = { assign(slot, feedChoice, it) },
+                                    modifier = Modifier.size(48.dp).semantics {
+                                        contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
+                                            "Assign ${source.title} to feed ${slot.name}"
+                                        else "Assign ${source.title} using ${instance.name} to feed ${slot.name}"
+                                    })
                             }
                         }
                     }
                 }
             }
         }
-        if (selection == null) Text("Choose a stream for each feed before opening the viewer.")
+        if (selection == null) Text("Choose an available provider instance and stream for each feed before opening the viewer.")
         if (setupReady && onProviders != null && selection != null) {
             PrototypeSlot.entries.forEach { slot ->
-                val source = if (slot == PrototypeSlot.A) selection.a else selection.b
-                val route = checkNotNull(providerSetups[source.service])
-                Text("${slot.name} · ${source.service.title}: ${route.title}",
+                val instance = checkNotNull(selection.feeds[slot.ordinal].resolve(providerInstances))
+                Text("${slot.name} · ${instance.name}: ${instance.setup.title}",
                     style = MaterialTheme.typography.bodySmall)
             }
         }

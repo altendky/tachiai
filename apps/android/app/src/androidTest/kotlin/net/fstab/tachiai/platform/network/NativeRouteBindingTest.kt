@@ -7,11 +7,24 @@ import java.security.SecureRandom
 import java.util.Base64
 import org.junit.Assert.*
 import org.junit.Test
+import routebridge.Routebridge
 
 // Provider-free JNI/ABI/initialization smoke tests. The synthetic endpoint is
 // loopback discard port 9; no provider request, imported profile, system VPN or
 // real peer is used. WireGuard initialization is NOT a successful handshake.
 class NativeRouteBindingTest {
+    @Test(timeout = 20_000) fun actualPreparationTokenSignalsBeforeAnyNativeBackendExists() {
+        val native = Routebridge.newRoutePreparation()
+        val owner = RoutePreparation()
+        owner.onCancel(native::cancel).use {
+            assertTrue(owner.cancel())
+            assertTrue(owner.cancel())
+            assertThrows(IOException::class.java) { owner.checkActive() }
+        }
+        native.cancel()
+        // The factory creates only a cancellable context, no listener or peer.
+    }
+
     @Test(timeout = 20_000) fun actualSocks5BindingCreatesAndClosesWithoutContactingProxy() {
         assertNotSame("Native initialization and shutdown must stay off the UI thread", Looper.getMainLooper(), Looper.myLooper())
         val profile = parseConnectionProfile("socks5://fixture:synthetic-password@127.0.0.1:9".toByteArray())

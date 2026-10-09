@@ -18,7 +18,7 @@ class RouteProtocolTest {
         override fun parse(text: String) = ConnectionProfile(this, "fixture.example.test:443", text)
         override fun configurationIdentity(profile: ConnectionProfile) = profile.configuration
         override fun conflictIdentity(profile: ConnectionProfile) = "fixture-peer"
-        override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity): RouteBackend {
+        override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend {
             creations++
             return object : RouteBackend {
                 override val proxyPort = 12345

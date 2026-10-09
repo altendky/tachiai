@@ -56,6 +56,7 @@ import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.RouteSessionRegistry
+import net.fstab.tachiai.platform.network.RoutePreparation
 import net.fstab.tachiai.platform.network.planProviderInstanceRoutes
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
@@ -94,6 +95,7 @@ open class PrototypeActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
+    private var routePreparation: RoutePreparation? = null
     private var selection = PrototypeSelection()
     private var pickerAssignments = prototypeFeedAssignments(selection)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
@@ -185,7 +187,7 @@ open class PrototypeActivity : ComponentActivity() {
         selection = selected
         pickerAssignments = prototypeFeedAssignments(selected)
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
-        if (routesPending || routeCleanupPending || webRoute.busy) {
+        if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy) {
             showPicker(if (cleanupFailed || routeCleanupFailed)
                 "Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying."
                 else "The previous route is still stopping. Please retry shortly.")
@@ -235,6 +237,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun prepareRoutes(selected: PrototypeSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
+        val preparation = RoutePreparation().also { routePreparation = it }
         val choices = activeInstances.toList()
         routesPending = true
         worker.execute {
@@ -249,7 +252,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
             val registry = RouteSessionRegistry { profile ->
                 check(sharedBudget.active)
-                RouteSession.create(profile)
+                RouteSession.create(profile, preparation)
             }
             val results = selected.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to
                 runCatching {
@@ -261,10 +264,14 @@ open class PrototypeActivity : ComponentActivity() {
             }
             handler.post {
                 val created = results.mapNotNull { it.value.getOrNull() }.distinct()
-                if (!sharedBudget.active || epoch.get() != run || isDestroyed || isFinishing) {
+                if (!sharedBudget.active || epoch.get() != run || isDestroyed || isFinishing || !preparation.cleanupConfirmed) {
                     closeRoutesAsync(created) { accepted ->
                         routesPending = false
-                        if (!accepted) { routeCleanupFailed = true; routeCleanupPending = true }
+                        if (!accepted || !preparation.cleanupConfirmed) {
+                            routeCleanupFailed = true; routeCleanupPending = true; cleanupFailed = true
+                            if (sharedBudget.active && epoch.get() == run && !isDestroyed && !isFinishing)
+                                stopToPicker("Route cleanup could not be confirmed. Force-stop Tachiai and relaunch before retrying.")
+                        }
                     }
                     return@post
                 }
@@ -602,6 +609,7 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun dispose() {
         disposing = true
+        cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()
         if (runCatching { viewer?.endSession() }.isFailure) cleanupFailed = true
@@ -620,6 +628,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun releaseRoutes() {
+        cancelRoutePreparation()
         val oldRoutes = routes.values.distinct()
         routes = emptyMap()
         if (oldRoutes.isEmpty()) return
@@ -646,6 +655,13 @@ open class PrototypeActivity : ComponentActivity() {
             val accepted = owned.map { runCatching { it.close() }.isSuccess }.all { it }
             handler.post { onComplete(accepted) }
         }
+    }
+
+    private fun cancelRoutePreparation() {
+        if (routePreparation?.cancel() == false) {
+            cleanupFailed = true; routeCleanupFailed = true; routeCleanupPending = true
+        }
+        routePreparation = null
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

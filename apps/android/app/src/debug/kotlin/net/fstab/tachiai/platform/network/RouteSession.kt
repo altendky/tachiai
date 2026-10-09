@@ -72,20 +72,23 @@ internal class RouteSession private constructor(
             "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net"
 
         fun create(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
-                selected.protocol.createBackend(selected, security)
+                selected.protocol.createBackend(selected, security, preparation)
             },
         ): RouteSession {
+            preparation.checkActive()
             if (profile == null) return RouteSession(null, "", "", "")
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
             return try {
                 backend = createBackend(profile, RouteProxySecurity(username, password, realm, ALLOWED_HOSTS))
+                preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
                 RouteSession(backend, username, password, realm)
             } catch (_: Exception) {
-                runCatching { backend?.close() }
+                if (runCatching { backend?.close() }.isFailure) preparation.recordCleanupFailure()
                 throw IOException("Imported route could not be initialized")
             }
         }

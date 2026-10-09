@@ -56,7 +56,7 @@ class PrototypeBindingActivityRecreationTest {
             installInstances(scenario, defaultProviderInstances())
             scenario.onActivity { assertEquals(expected, assignments(it)) }
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed A").performScrollTo().assertIsOff()
-            compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+            compose.onNodeWithText("Watch").assertIsNotEnabled()
             installInstances(scenario, defaultProviderInstances() + extra)
             compose.onNodeWithContentDescription("Assign ${stream.title} using Twitch 2 to feed A").performScrollTo().assertIsOn()
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().assertIsOn()
@@ -95,14 +95,14 @@ class PrototypeBindingActivityRecreationTest {
                 scenario.onActivity { assertEquals(expected, assignments(it)) }
                 compose.onNodeWithContentDescription("Assign ${PrototypeSource.ABEMA_LIVE.title} to feed A").performScrollTo().assertIsOff()
                 compose.onNodeWithContentDescription("Assign ${replay.title} to feed B").performScrollTo().assertIsOn()
-                compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+                compose.onNodeWithText("Watch").assertIsNotEnabled()
                 // A second save writes null explicitly; it must remain null
                 // without the one-time malformed-state injection.
                 replacePickerWithNativeView(scenario)
                 scenario.recreate()
                 awaitStartupReads(scenario)
                 scenario.onActivity { assertEquals(expected, assignments(it)) }
-                compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+                compose.onNodeWithText("Watch").assertIsNotEnabled()
             }
         } finally { app.unregisterActivityLifecycleCallbacks(callback) }
     }

@@ -110,7 +110,7 @@ class PrototypeRoutePreparationActivityTest {
                 .performScrollTo().assertIsOff().performClick()
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed B")
                 .performScrollTo().assertIsOn()
-            compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+            compose.onNodeWithText("Watch").assertIsNotEnabled()
             compose.onNodeWithText("Recovery options").assertIsEnabled()
             scenario.onActivity { activity ->
                 // Even a programmatic admission attempt must retain the guard.

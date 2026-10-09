@@ -84,8 +84,13 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Routes") } }
             onProviders?.let { action -> Button(onClick = action, enabled = setupReady,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
-            Text("Tachiai", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End, maxLines = 1)
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady && playbackAvailable,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Watch") }
+                Text("Tachiai", Modifier.weight(1f, fill = false), style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End, maxLines = 1)
+            }
         }
         message?.takeUnless { it == "Playback stopped." }?.let { Text(it) }
         if (onRecovery != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -142,7 +147,5 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
         }
         if (selection == null) Text("Choose an available provider instance and stream for each feed before opening the viewer.")
         if (!setupReady) Text("Provider setup must be read successfully before playback.")
-        Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady && playbackAvailable,
-            modifier = Modifier.fillMaxWidth()) { Text("Open viewer") }
     }
 }

@@ -25,7 +25,7 @@ class PrototypeProviderInstancePickerTest {
         restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithContentDescription("Assign ${stream.title} using Twitch 2 to feed A").performScrollTo().assertIsOn()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().assertIsOn()
-        compose.onNodeWithText("Open viewer").performClick()
+        compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle {
             assertEquals(PrototypeSelection(stream, stream, extra.id, defaultProviderInstanceId(PrototypeService.TWITCH)), opened)
         }
@@ -38,13 +38,13 @@ class PrototypeProviderInstancePickerTest {
             PrototypeSourcePicker(PrototypeSelection(stream, stream, extra.id, defaultProviderInstanceId(PrototypeService.ABEMA)),
                 null, providerInstances = instances.value, onWatch = { opened = it })
         } }
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().performClick()
-        compose.onNodeWithText("Open viewer").assertIsEnabled()
+        compose.onNodeWithText("Watch").assertIsEnabled()
         compose.runOnIdle { instances.value = defaultProviderInstances() }
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed A").performScrollTo().assertIsOff().performClick()
-        compose.onNodeWithText("Open viewer").assertIsEnabled().performClick()
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(PrototypeSelection(stream, stream), opened) }
     }
 }

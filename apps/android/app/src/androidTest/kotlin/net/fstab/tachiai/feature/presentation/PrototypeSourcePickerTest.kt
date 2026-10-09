@@ -42,7 +42,7 @@ class PrototypeSourcePickerTest {
                 onProviders = { providers = true }, playbackAvailable = false,
                 recoveryMessage = "Playback cleanup could not be confirmed.", onRecovery = { recovery = true }, onWatch = {})
         } }
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithText("Playback cleanup could not be confirmed.").assertExists()
         compose.onNodeWithText("Recovery options").performClick()
         compose.onNodeWithText("Routes").assertIsEnabled().performClick()
@@ -62,7 +62,7 @@ class PrototypeSourcePickerTest {
         } }
         assignment(PrototypeSource.ABEMA_REPLAY, "A").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(PrototypeSource.ABEMA_REPLAY, assignments?.a?.source) }
-        compose.onNodeWithText("Open viewer").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Watch").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Recovery options").performScrollTo().performClick()
         compose.runOnIdle { assertTrue(recovery) }
     }
@@ -74,7 +74,7 @@ class PrototypeSourcePickerTest {
         PrototypeSource.entries.forEach { compose.onAllNodesWithText(it.optionTitle).assertCountEquals(1) }
         assignment(PrototypeSource.ABEMA_LIVE, "B").performScrollTo().performClick()
         assignment(PrototypeSource.TWITCH_LIVE, "B").assertIsOff()
-        compose.onNodeWithText("Open viewer").performClick()
+        compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle {
             assertEquals(PrototypeSelection(PrototypeSource.ABEMA_LIVE, PrototypeSource.ABEMA_LIVE), opened)
         }
@@ -88,9 +88,9 @@ class PrototypeSourcePickerTest {
         assignment(PrototypeSource.ABEMA_LIVE, "A").assertIsOff()
         assignment(PrototypeSource.TWITCH_LIVE, "B").assertIsOn()
         assignment(PrototypeSource.ABEMA_REPLAY, "A").performClick()
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().performClick()
-        compose.onNodeWithText("Open viewer").assertIsEnabled().performClick()
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle {
             assertEquals(PrototypeSelection(PrototypeSource.TWITCH_REPLAY, PrototypeSource.TWITCH_LIVE), opened)
         }
@@ -133,7 +133,7 @@ class PrototypeSourcePickerTest {
         assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().performClick()
         indicator(PrototypeService.TWITCH, "B", false)
         indicator(PrototypeService.TWITCH, "A", true)
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
     }
 
     @Test fun additionalLiveChannelsReachTheirAssignedViewerSlots() {
@@ -142,7 +142,7 @@ class PrototypeSourcePickerTest {
         compose.waitForIdle()
         assignment(PrototypeSource.TWITCH_CHILLHOP_LIVE, "A").performScrollTo().performClick()
         assignment(PrototypeSource.TWITCH_VIRTUAL_JAPAN_LIVE, "B").performScrollTo().performClick()
-        compose.onNodeWithText("Open viewer").performClick()
+        compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle {
             assertEquals(PrototypeSelection(PrototypeSource.TWITCH_CHILLHOP_LIVE, PrototypeSource.TWITCH_VIRTUAL_JAPAN_LIVE), opened)
         }
@@ -156,7 +156,7 @@ class PrototypeSourcePickerTest {
         val assignA = assignment(source, "A").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         val assignB = assignment(source, "B").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
         compose.runOnIdle { assignA(); assignB() }
-        compose.onNodeWithText("Open viewer").performClick()
+        compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle { assertEquals(PrototypeSelection(source, source), opened) }
     }
 
@@ -192,7 +192,7 @@ class PrototypeSourcePickerTest {
         val heading = compose.onNodeWithText(PrototypeService.ABEMA.title).fetchSemanticsNode()
         assertTrue(heading.positionInRoot.y < compose.onNodeWithText(customName).fetchSemanticsNode().positionInRoot.y)
         assignment(source, "A").performScrollTo().performClick()
-        compose.onNodeWithText("Open viewer").performClick()
+        compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle { assertEquals(PrototypeSelection(source, PrototypeSource.TWITCH_LIVE), opened) }
     }
 
@@ -205,7 +205,7 @@ class PrototypeSourcePickerTest {
         compose.waitForIdle()
         compose.onNodeWithText("Routes").assertIsEnabled().performClick()
         compose.onNodeWithText("Providers").assertIsNotEnabled()
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithText("Setup could not be read.").assertExists()
         compose.onNodeWithText("Provider setup must be read successfully before playback.").assertExists()
         compose.onAllNodesWithText("System network").assertCountEquals(0)
@@ -225,7 +225,7 @@ class PrototypeSourcePickerTest {
         compose.onNodeWithText("Japan route").assertExists()
         compose.onNodeWithText("Route choice required").assertExists()
         // Open viewer is an explicit request; the Activity owns route admission.
-        compose.onNodeWithText("Open viewer").assertIsEnabled()
+        compose.onNodeWithText("Watch").assertIsEnabled()
     }
 
     @Test fun obsoleteSettingsOfferOnlyAnExplicitResetWithoutOpeningPlayback() {
@@ -236,7 +236,7 @@ class PrototypeSourcePickerTest {
         } }
         compose.waitForIdle()
         compose.onNodeWithText("Providers").assertIsNotEnabled()
-        compose.onNodeWithText("Open viewer").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.runOnIdle { assertEquals(0, resets) }
         compose.onNodeWithText("Reset stream settings").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, resets) }

@@ -51,8 +51,15 @@ internal data class CatalogCapabilities(
     val refresh: CatalogAccess = CatalogAccess.UNSUPPORTED,
     val playback: CatalogAccess = CatalogAccess.UNSUPPORTED,
     val collections: List<CatalogCollection> = emptyList(),
+    val browseTitle: String = "All",
+    val initialCollectionId: String? = null,
 ) {
-    init { require(collections.size <= 16 && collections.map { it.id }.distinct().size == collections.size) }
+    init {
+        require(collections.size <= 16 && collections.map { it.id }.distinct().size == collections.size)
+        require(browseTitle == browseTitle.trim() && browseTitle.length in 1..64 &&
+            browseTitle.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
+        require(initialCollectionId == null || collections.any { it.id == initialCollectionId })
+    }
 }
 
 // Cursors are transient and adapter-owned. Never serialize them as item IDs or

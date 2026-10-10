@@ -26,6 +26,7 @@ internal class RouteSession private constructor(
     val proxyPassword: String,
     val proxyRealm: String,
     private val diagnostics: FailureReporter,
+    private val twitchCatalog: Boolean = false,
 ) : AutoCloseable {
     val isSystem get() = backend == null
     val proxyPort: Int = backend?.proxyPort ?: 0
@@ -43,6 +44,7 @@ internal class RouteSession private constructor(
     fun open(url: URL): HttpsURLConnection {
         if (closed.get()) throw IOException("Route is closed")
         require(url.protocol == "https" && url.userInfo == null && url.ref == null && url.port in listOf(-1, 443))
+        if (twitchCatalog) require(url.host in setOf("id.twitch.tv", "api.twitch.tv"))
         if (isSystem) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
         connections.add(connection)
@@ -86,17 +88,32 @@ internal class RouteSession private constructor(
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
                 selected.protocol.createBackend(selected, security, preparation)
             },
+        ): RouteSession = createOwned(profile, preparation, createBackend, twitchCatalog = false)
+
+        // Closed metadata/OAuth purpose. Both System and imported routes enforce
+        // these hosts; playback's historical policy is unchanged.
+        fun createTwitchCatalog(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, twitchCatalog = true)
+
+        private fun createOwned(profile: ConnectionProfile?, preparation: RoutePreparation,
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend,
+            twitchCatalog: Boolean,
         ): RouteSession {
             preparation.checkActive()
-            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics)
+            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics, twitchCatalog)
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
             return try {
-                backend = createBackend(profile, RouteProxySecurity(username, password, realm, ALLOWED_HOSTS))
+                backend = createBackend(profile, RouteProxySecurity(username, password, realm,
+                    if (twitchCatalog) "id.twitch.tv,api.twitch.tv" else ALLOWED_HOSTS))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
-                RouteSession(backend, username, password, realm, preparation.diagnostics)
+                RouteSession(backend, username, password, realm, preparation.diagnostics, twitchCatalog)
             } catch (error: Exception) {
                 if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.ROUTE_CREATE, error)
                 runCatching { backend?.close() }.onFailure { cleanupError ->

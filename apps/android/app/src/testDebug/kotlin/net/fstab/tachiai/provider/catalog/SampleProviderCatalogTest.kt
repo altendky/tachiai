@@ -14,6 +14,8 @@ class SampleProviderCatalogTest {
             assertTrue(page.entries.all { it.availability == CatalogAvailability.UNKNOWN })
             assertNull(page.nextCursor)
             val collection = catalog.capabilities().collections.single()
+            assertEquals("All", catalog.capabilities().browseTitle)
+            assertNull(catalog.capabilities().initialCollectionId)
             assertEquals(CatalogAccess.NOT_VERIFIED, collection.access)
             assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.browse(CatalogQuery(collectionId = collection.id)))
             assertEquals(CatalogAccess.UNSUPPORTED, catalog.capabilities().lookup)

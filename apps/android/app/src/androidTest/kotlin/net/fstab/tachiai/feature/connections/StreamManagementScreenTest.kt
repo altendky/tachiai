@@ -72,6 +72,38 @@ class StreamManagementScreenTest {
         }
     }
 
+    @Test fun adapterBrowseLabelIsTruthfulAndBlankSearchCannotDispatch() {
+        val fixture = Fixture(PrototypeService.TWITCH)
+        fixture.state = fixture.state.copy(capabilities = fixture.state.capabilities!!.copy(
+            browseTitle = "Live channels", initialCollectionId = fixture.collection.id),
+            query = CatalogQuery(collectionId = fixture.collection.id), entries = listOf(fixture.offline), nextCursor = null)
+        compose.setContent { fixture.Render() }
+        text("Following").assertExists()
+        text("Live channels").performClick()
+        compose.onNodeWithText("All").assertDoesNotExist()
+        compose.runOnIdle { assertTrue(fixture.calls.contains("all")); assertEquals(CatalogQuery(), fixture.state.query) }
+        text("Search").assertIsNotEnabled()
+        text("Search streams").performTextInput("   ")
+        text("Search").assertIsNotEnabled()
+        text("Search streams").performTextReplacement("Offline")
+        text("Search").performClick()
+        compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
+    }
+
+    @Test fun unavailableBrowseLabelExplainsAccessAndPreservesConfiguredItems() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        fixture.state = fixture.state.copy(configured = listOf(ConfiguredSource(UUID.randomUUID().toString(),
+            fixture.state.instance.id, fixture.offline)), capabilities = fixture.state.capabilities!!.copy(
+            browse = CatalogAccess.RECONNECT_REQUIRED, browseTitle = "Available streams"),
+            entries = emptyList(), nextCursor = null, failure = CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED))
+        compose.setContent { fixture.Render() }
+        text("Available streams: Reconnect the catalog account to access this list.").assertExists()
+        text("Catalog account access is required. Your configured streams are retained.").assertExists()
+        description("Remove Offline channel").assertIsEnabled()
+        compose.onNodeWithText("No catalog items found.").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(fixture.offline.resource, fixture.state.configured!!.single().entry.resource) }
+    }
+
     @Test fun sameScreenShowsProviderCollectionsAndPreservesOfflineUpcomingAndOnDemandChoices() {
         val fixtures = defaultProviderInstances().map { Fixture(it.service) }
         val active = mutableStateOf(fixtures.first())
@@ -99,7 +131,7 @@ class StreamManagementScreenTest {
         }
     }
 
-    @Test fun searchLookupPagesAndSavedDraftUseSharedCallbacks() {
+    @Test fun searchLookupPagesUseSharedCallbacksWithoutRestoringDiscoveryInputs() {
         val fixture = Fixture(PrototypeService.TWITCH)
         val restoration = StateRestorationTester(compose)
         restoration.setContent { fixture.Render() }
@@ -107,6 +139,8 @@ class StreamManagementScreenTest {
         text("Never-live episode").assertExists()
         text("Search streams").performTextInput("Offline")
         restoration.emulateSavedInstanceStateRestore()
+        text("Search").assertIsNotEnabled()
+        text("Search streams").performTextInput("Offline")
         text("Search").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
         text("Provider URL or channel").performTextInput("https://provider.example.test/video/1")

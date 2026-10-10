@@ -58,7 +58,7 @@ internal class TwitchCatalogReplacement(
 // the same process and OS lock. This is deliberately a blocking worker API.
 internal class TwitchCatalogGrantStore(
     private val storage: PrivateSecretStore,
-    private val instanceId: String,
+    val instanceId: String,
     private val lockFile: File? = null,
     private val wallMs: () -> Long = System::currentTimeMillis,
 ) {

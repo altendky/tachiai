@@ -16,6 +16,32 @@ class RouteSessionTest {
         override fun close() { closes++; if (failCleanup) error("private cleanup detail") }
     }
 
+    @Test fun catalogPurposeConfinesBothSystemAndImportedRoutesWithoutExpandingPlayback() {
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        for (selected in listOf(null, profile)) {
+            val backend = FakeBackend()
+            var security: RouteProxySecurity? = null
+            val route = RouteSession.createTwitchCatalog(selected) { _, parameters ->
+                security = parameters; backend
+            }
+            try {
+                if (selected != null) assertEquals("id.twitch.tv,api.twitch.tv", security?.allowedHosts)
+                for (host in listOf("id.twitch.tv", "api.twitch.tv")) {
+                    route.open(URL("https://$host/fixture")).disconnect() // No network.
+                }
+                for (host in listOf("example.invalid", "gql.twitch.tv", "abema.tv",
+                    "api.twitch.tv.evil.invalid", "sub.api.twitch.tv")) {
+                    assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://$host/")) }
+                }
+            } finally { route.close() }
+            assertEquals(if (selected == null) 0 else 1, backend.closes)
+        }
+        var legacy: RouteProxySecurity? = null
+        RouteSession.create(profile) { _, security -> legacy = security; FakeBackend() }.close()
+        assertFalse(checkNotNull(legacy).allowedHosts.split(',').contains("api.twitch.tv"))
+        assertTrue(checkNotNull(legacy).allowedHosts.split(',').contains("gql.twitch.tv"))
+    }
+
     @Test fun systemIsExplicitAndClosedSessionCannotFallback() {
         val route = RouteSession.create(null) { _, _ -> error("System route must not initialize a backend") }
         assertTrue(route.isSystem)

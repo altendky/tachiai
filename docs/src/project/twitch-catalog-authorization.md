@@ -6,9 +6,10 @@ The debug Providers screen has a separate **Catalog account** action for each
 Twitch instance. It uses Tachiai's public application registration and requests
 only `user:read:follows`, through Twitch's documented device authorization flow.
 The experimental playback login remains a separate record and may represent a
-different account. Connecting a catalog account does not connect native discovery
-or Following yet; those operations remain in
-[#99](https://github.com/altendky/tachiai/issues/99).
+different account. The [connected catalog prototype](twitch-connected-catalog.md)
+uses this separate session for supported Following and metadata discovery.
+Real account/route evidence, anonymous native browsing and selected-resource
+playback remain in [#99](https://github.com/altendky/tachiai/issues/99).
 
 Implementation and synthetic fixture evidence are distinct from provider
 acceptance. Scoped consent, refresh, provider revocation and routed authorization
@@ -33,7 +34,8 @@ saved choice. Forget needs no network and remains available for an unreadable ro
 
 Every OAuth exchange owns and releases its temporary route. The adapter admits
 only the exact device, token and validation endpoints on `id.twitch.tv`; no
-Helix or media-origin policy is broadened. Cancellation signals route preparation,
+media-origin policy is broadened. The closed catalog route purpose also admits
+`api.twitch.tv` for the separate supported metadata adapter. Cancellation signals route preparation,
 coalesces request interruption on bounded workers, and rejects late responses.
 Unconfirmed cleanup blocks reuse of that transport and its owning binding.
 

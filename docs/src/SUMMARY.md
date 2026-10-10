@@ -4,6 +4,8 @@
   - [Requirements](project/requirements.md)
   - [Architecture](project/architecture.md)
   - [Provider integrations](project/provider-integrations.md)
+  - [ABEMA catalog and account access](project/abema-catalog-access.md)
+  - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Platform plan](project/platforms.md)
   - [Security and privacy](project/security-and-privacy.md)
   - [Implementation plan](project/implementation.md)

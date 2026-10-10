@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.Locale
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
+import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchVideo
 
 internal enum class ConfiguredPrototypeSelectionFailure {
     MISSING_CHOICE, STALE_ITEM, STALE_INSTANCE, PROVIDER_MISMATCH, ROUTE_REQUIRED,
@@ -11,7 +12,7 @@ internal enum class ConfiguredPrototypeSelectionFailure {
 }
 
 internal sealed interface ConfiguredPrototypeSelectionResult {
-    data class Ready(val selection: PrototypeSelection, val sources: List<ConfiguredSource>) : ConfiguredPrototypeSelectionResult
+    data class Ready(val selection: ConfiguredPlaybackSelection, val sources: List<ConfiguredSource>) : ConfiguredPrototypeSelectionResult
     data class Failure(val reason: ConfiguredPrototypeSelectionFailure) : ConfiguredPrototypeSelectionResult
 }
 
@@ -26,7 +27,7 @@ internal fun resolveConfiguredPrototypeSelection(
     val choices = listOf(assignments.a, assignments.b)
     if (choices.any { it == null }) return failure(ConfiguredPrototypeSelectionFailure.MISSING_CHOICE)
     val selected = mutableListOf<ConfiguredSource>()
-    val legacy = mutableListOf<PrototypeSource>()
+    val feeds = mutableListOf<ConfiguredPlaybackFeed>()
     for (choice in choices.filterNotNull()) {
         val source = choice.resolve(sources) ?: return failure(ConfiguredPrototypeSelectionFailure.STALE_ITEM)
         val instance = instances.singleOrNull { it.id == choice.instanceId }
@@ -39,14 +40,18 @@ internal fun resolveConfiguredPrototypeSelection(
                 CatalogAvailability.EXPIRED, CatalogAvailability.UNAVAILABLE))
             return failure(ConfiguredPrototypeSelectionFailure.UNAVAILABLE)
         if (instance.setup.route == null) return failure(ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED)
-        val supported = legacyPrototypeSource(source)
-            ?: return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
+        val historical = legacyPrototypeSource(source)
+        val supported = if (historical != null) {
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, historical.service, historical.kind, historical)
+        } else if (supportedConfiguredTwitchVideo(source.entry.resource)) {
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY)
+        } else return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
         if (supported.service != instance.service) return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
         selected += source
-        legacy += supported
+        feeds += supported
     }
     return ConfiguredPrototypeSelectionResult.Ready(
-        PrototypeSelection(legacy[0], legacy[1], selected[0].instanceId, selected[1].instanceId),
+        ConfiguredPlaybackSelection(feeds[0], feeds[1]),
         Collections.unmodifiableList(selected.toList()),
     )
 }

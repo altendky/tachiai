@@ -1,6 +1,7 @@
 package net.fstab.tachiai.platform.network
 
 import net.fstab.tachiai.presentation.*
+import net.fstab.tachiai.provider.catalog.*
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -10,6 +11,64 @@ class ProviderInstanceRoutePlanTest {
     private val duplicateRouteId = "12345678-1234-1234-1234-123456789abe"
     private fun choice(id: String) = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, id, "Route")
     private fun profile(text: String) = parseConnectionProfile(text.toByteArray())
+    private fun video(instanceId: String, id: String = "12345") = ConfiguredPlaybackFeed(
+        ConfiguredFeedChoice(routeId, instanceId),
+        CatalogResource(ProviderId("twitch"), "video", id, CatalogIntent.VIDEO),
+        PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY,
+    )
+    @Test fun exactVideosKeepOwningRoutesAndDuplicateFeedsReadOneSnapshot() {
+        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId)))
+        val second = ProviderInstance(secondId, PrototypeService.TWITCH, "Twitch 2", setup = ProviderSetup(choice(duplicateRouteId)))
+        val a = video(first.id)
+        var reads = 0
+        val duplicate = planProviderInstanceRoutes(ConfiguredPlaybackSelection(a, a), listOf(first, second)) {
+            reads++; profile("http://fixture.example.test:8080")
+        }
+        assertEquals(1, reads); assertEquals(setOf(first.id), duplicate.profiles.keys)
+        val distinct = planProviderInstanceRoutes(ConfiguredPlaybackSelection(a, video(second.id, "67890")), listOf(first, second)) {
+            profile(if (it == routeId) "http://fixture.example.test:8080" else "http://other.example.test:8080")
+        }
+        assertTrue(distinct.abemaCompatible)
+        assertNotEquals(routeConfigurationKey(distinct.profiles[first.id]!!.getOrThrow()!!),
+            routeConfigurationKey(distinct.profiles[second.id]!!.getOrThrow()!!))
+    }
+    @Test fun exactVideoRouteFailureNeverSubstitutesDefaultOrReadsAmbiguousOwner() {
+        val first = defaultProviderInstances().last()
+        val stale = video(secondId)
+        assertTrue(planProviderInstanceRoutes(ConfiguredPlaybackSelection(stale, stale), listOf(first)) {
+            error("Must not replace absent owner")
+        }.profiles.values.single().isFailure)
+        val feed = video(first.id)
+        assertTrue(planProviderInstanceRoutes(ConfiguredPlaybackSelection(feed, feed), listOf(first, first)) {
+            error("Must not resolve duplicate owner")
+        }.profiles.values.single().isFailure)
+        val failed = planProviderInstanceRoutes(ConfiguredPlaybackSelection(feed, feed),
+            listOf(first.copy(setup = ProviderSetup(choice(routeId))))) { error("Deleted route") }
+        assertTrue(failed.profiles.values.single().isFailure)
+        val pending = planProviderInstanceRoutes(ConfiguredPlaybackSelection(feed, feed), listOf(first.copy(setup = ProviderSetup(null)))) {
+            error("Must not read pending route")
+        }
+        assertTrue(pending.profiles.values.single().isFailure)
+    }
+    @Test fun configuredVideoDoesNotHideMixedAbemaRouteIncompatibility() {
+        val defaults = defaultProviderInstances()
+        val abema = defaults.first().copy(setup = ProviderSetup(choice(routeId)))
+        val historical = ConfiguredPlaybackFeed(
+            ConfiguredFeedChoice(routeId, abema.id), prototypeCatalogResource(PrototypeSource.ABEMA_LIVE),
+            PrototypeService.ABEMA, PrototypePlaybackKind.LIVE, PrototypeSource.ABEMA_LIVE,
+        )
+        val mixed = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, video(defaults.last().id)),
+            listOf(abema, defaults.last())) { error("Deleted ABEMA route") }
+        assertTrue(mixed.abemaCompatible)
+        assertTrue(mixed.profiles[abema.id]!!.isFailure)
+        assertTrue(mixed.profiles[defaults.last().id]!!.isSuccess)
+        val second = abema.copy(id = secondId)
+        val other = historical.copy(choice = historical.choice.copy(instanceId = secondId))
+        val conflict = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, other), listOf(abema, second)) {
+            error("Deleted route")
+        }
+        assertFalse(conflict.abemaCompatible)
+    }
     @Test fun twoAbemaInstancesRequireCanonicalRouteEqualityBeforeAnyBackendIsCreated() {
         val initial = defaultProviderInstances()
         val first = initial.first().copy(setup = ProviderSetup(choice(routeId)))

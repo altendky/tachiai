@@ -44,6 +44,39 @@ class PrototypeSourcePickerTest {
         net.fstab.tachiai.presentation.prototypeCatalogResource(source) }
     private fun expected(a: PrototypeSource, b: PrototypeSource) = ConfiguredFeedAssignments(item(a).choice, item(b).choice)
 
+    @Test fun configuredExactVideosEnableWatchAndKeepItemAndOwnerForBothSlots() {
+        val twitch = providers.single { it.service == PrototypeService.TWITCH }
+        val first = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,
+            net.fstab.tachiai.provider.catalog.CatalogEntry(net.fstab.tachiai.provider.catalog.CatalogResource(
+                net.fstab.tachiai.presentation.ProviderId("twitch"), "video", "789", CatalogIntent.VIDEO), "Saved replay"))
+        val second = first.copy(id = "12345678-1234-1234-1234-123456789abd", entry = first.entry.copy(
+            resource = first.entry.resource.copy(identity = "98765432101234567890"), title = "Other replay"))
+        var opened: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(first, second),
+                initialAssignments = ConfiguredFeedAssignments(first.choice, second.choice), onWatch = { opened = it })
+        } }
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(ConfiguredFeedAssignments(first.choice, second.choice), opened) }
+        compose.onNodeWithContentDescription("Assign Saved replay to feed B").performScrollTo().performClick()
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(ConfiguredFeedAssignments(first.choice, first.choice), opened) }
+    }
+
+    @Test fun configuredVideoBeyondNativeBoundStaysVisibleAndWatchExplainsUnsupported() {
+        val twitch = providers.single { it.service == PrototypeService.TWITCH }
+        val long = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,
+            net.fstab.tachiai.provider.catalog.CatalogEntry(net.fstab.tachiai.provider.catalog.CatalogResource(
+                net.fstab.tachiai.presentation.ProviderId("twitch"), "video", "1".repeat(21), CatalogIntent.VIDEO), "Long video"))
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(long),
+                initialAssignments = ConfiguredFeedAssignments(long.choice, long.choice), onWatch = { error("Unsupported choice opened") })
+        } }
+        compose.onNodeWithText("Long video").assertExists()
+        compose.onNodeWithText("Watch").assertIsNotEnabled()
+        compose.onNodeWithText("Playback for a selected item is not supported yet. It stays configured.").assertExists()
+    }
+
     @Test fun cleanupBlockKeepsSetupAndRecoveryAvailable() {
         var routes = false
         var providers = false

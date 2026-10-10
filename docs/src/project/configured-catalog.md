@@ -54,7 +54,8 @@ original sample. Removing and re-adding that resource may change its local UUID
 without changing playback support. A different identity, provider, kind or intent
 cannot become the fixed News or replay sample through that bridge. Consumers
 validate the item's owning instance before preparing playback. Provider-specific
-dynamic resolution is subsequent integration work.
+dynamic channel resolution is subsequent integration work. Exact Twitch videos
+also use the bounded native replay path described below without a sample bridge.
 
 ## Persistence and migration
 
@@ -154,7 +155,7 @@ Channel URLs, logins and bare numeric IDs still require connected lookup to obta
 an immutable broadcaster identity. Credentials, queries, fragments, encoded paths,
 clips and unrecognized hosts or paths are rejected. Local import does not verify
 existence, title, schedule, entitlement or playback. Newly imported videos remain
-not verified for native playback.
+unverified as provider content; bounded exact-video preparation is described below.
 
 Connected lookup retains its metadata behavior and failures. An account, route,
 rate-limit or missing-item failure never becomes local success within that request.
@@ -162,6 +163,33 @@ After access loss clears private discovery and drafts, an explicit reload can
 offer local lookup for a fresh input. Metadata capability assessment may validate
 an existing grant; the local lookup itself does not use OAuth, Helix or a route.
 Unavailable metadata routes do not select System as a fallback.
+
+### Configured Twitch video playback
+
+[Issue #126](https://github.com/altendky/tachiai/issues/126) connects exact Twitch
+video resources to the existing debug native replay prototype. Both connected
+catalog videos and locally imported video links can be selected without becoming
+the historical replay sample. Watch freezes the exact resource, configured-item
+UUID and owning provider-instance UUID. Duplicate choices create independent
+feed sessions; saved quality defaults and UUID-only recovery remain unchanged.
+
+Only canonical positive video IDs within the native resolver's existing limit of
+20 ASCII digits are supported. Longer IDs remain configured and fail as unsupported
+before route/session preparation. Collections, immutable broadcaster resources
+and other unsupported identities do not select a sample. Known unavailable items
+stay configured and retain their existing playback block.
+
+Preparation uses the selected instance's exact route and separate existing LOCAL
+playback grant. Catalog credentials never substitute for that grant, and missing
+routes or grants never fall back to another instance. New videos start at zero;
+the exact historical replay retains its 70-minute experimental start position.
+This adds no endpoints, protocol, scope, media origin, DRM behavior or background
+playback. Existing rejection, foreground, retention and cleanup gates still apply.
+
+Provider-free model, route and Android session fixtures verify identity, ownership,
+initial position and lifecycle behavior. They do not establish that an arbitrary
+video exists, is accessible, uses an approved CDN or plays with a real account and
+route. Actual newly configured video playback remains unobserved.
 
 ### ABEMA public-link import
 

@@ -78,7 +78,7 @@ import net.fstab.tachiai.presentation.PrototypePlayBarrier
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.presentation.PrototypePlaybackKind
-import net.fstab.tachiai.presentation.PrototypeSelection
+import net.fstab.tachiai.presentation.ConfiguredPlaybackSelection
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
@@ -111,7 +111,7 @@ open class PrototypeActivity : ComponentActivity() {
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
     private var routePreparation: RoutePreparation? = null
-    private var selection = PrototypeSelection()
+    private var selection: ConfiguredPlaybackSelection? = null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
     private var providerInstances by mutableStateOf(defaultProviderInstances())
@@ -342,7 +342,7 @@ open class PrototypeActivity : ComponentActivity() {
         handler.post(ticker)
     }
 
-    private fun prepareRoutes(selected: PrototypeSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
+    private fun prepareRoutes(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
         val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
         routeDiagnostics = diagnostics
         val choices = activeInstances.toList()
@@ -366,7 +366,7 @@ open class PrototypeActivity : ComponentActivity() {
             val results = selected.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to
                 runCatching {
                     val profile = checkNotNull(plan.profiles[feed.instanceId]).getOrThrow()
-                    if (feed.source.service == PrototypeService.ABEMA && !useCachedAbema && profile != null)
+                    if (feed.service == PrototypeService.ABEMA && !useCachedAbema && profile != null)
                         error("Historical page comparison has no imported route support")
                     registry.acquire(profile)
                 }
@@ -393,14 +393,14 @@ open class PrototypeActivity : ComponentActivity() {
                         failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED)) }
                 }
                 createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.TWITCH))
-                val abema = selected.feeds.firstOrNull { it.source.service == PrototypeService.ABEMA }?.let { routes[it.instanceId] }
+                val abema = selected.feeds.firstOrNull { it.service == PrototypeService.ABEMA }?.let { routes[it.instanceId] }
                 if (useCachedAbema && abema != null) {
                     var completed = false
                     fun complete(accepted: Boolean) {
                         if (completed) return
                         completed = true
                         if (sharedBudget.active && epoch.get() == run) {
-                            if (!accepted) selected.sources.forEachIndexed { index, source ->
+                            if (!accepted) selected.feeds.forEachIndexed { index, source ->
                                 if (source.service == PrototypeService.ABEMA) failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED))
                             }
                             else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
@@ -417,11 +417,11 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    private fun createFeeds(selected: PrototypeSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout,
+    private fun createFeeds(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout,
         providers: Set<PrototypeService>) {
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
         val created = mutableListOf<Pair<Int, PrototypeFeedSession>>()
-        selected.sources.forEachIndexed { index, source ->
+        selected.feeds.forEachIndexed { index, source ->
             if (source.service !in providers || failures[index] != null || sessions[index] != null) return@forEachIndexed
             try {
                 val replay = source.kind == PrototypePlaybackKind.REPLAY
@@ -431,7 +431,7 @@ open class PrototypeActivity : ComponentActivity() {
                         cleanupFailed = true
                     }
                     else if (active() && failures[index] == null) {
-                        Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} source=${source.name} event=${event.name}")
+                        Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} source=${source.diagnosticName} event=${event.name}")
                         if (event == PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED)
                             failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED))
                         else if (event == PrototypeFeedEvent.FAILED || event == PrototypeFeedEvent.STOPPED)
@@ -445,10 +445,11 @@ open class PrototypeActivity : ComponentActivity() {
                     PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
                         route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index))
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
-                    PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, checkNotNull(source.resourceId), feedActive, events,
+                    PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
                         openConnection = checkNotNull(routes[selected.feeds[index].instanceId])::open,
                         authorization = AndroidTwitchAuthorization.forProviderInstance(this, selected.feeds[index].instanceId),
-                        diagnostics = feedDiagnostics(index))
+                        diagnostics = feedDiagnostics(index),
+                        initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L)
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 created += index to session
@@ -478,7 +479,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun updateProgress() {
-        progress?.text = selection.sources.mapIndexed { index, _ ->
+        progress?.text = (selection ?: return).feeds.mapIndexed { index, _ ->
             val state = failures[index]?.message ?: if (prepared[index]) "Ready" else "Preparing"
             "${sourceLabel(index)}: $state"
         }.joinToString("\n")
@@ -711,7 +712,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun authorizationFailure(index: Int, host: PrototypeFeedSession) = host.failure ?: PrototypeFeedFailure(
-        if (selection.sources[index].service == PrototypeService.TWITCH) PrototypeFailureReason.LOGIN_EXPIRED
+        if (checkNotNull(selection).feeds[index].service == PrototypeService.TWITCH) PrototypeFailureReason.LOGIN_EXPIRED
         else PrototypeFailureReason.PREPARATION_FAILED)
 
     private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
@@ -907,7 +908,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun sourceLabel(index: Int): String {
-        val instance = checkNotNull(selection.feeds[index].resolve(activeInstances))
+        val instance = checkNotNull(checkNotNull(selection).feeds[index].resolve(activeInstances))
         val title = configuredSourceDisplayTitle(activeConfiguredSources[index])
         return "${if (index == 0) "A" else "B"} · ${instance.name} · $title"
     }

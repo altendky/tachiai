@@ -2,6 +2,7 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -14,33 +15,41 @@ import net.fstab.tachiai.provider.twitch.catalog.*
 internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, onConnect: () -> Unit,
     onValidate: () -> Unit, onForget: () -> Unit, onCancel: () -> Unit, onBrowser: (String) -> Unit,
     onBack: () -> Unit, onRetryOpen: (() -> Unit)? = null) {
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Twitch account", style = MaterialTheme.typography.headlineSmall)
-        state.name?.let { Text("Provider instance: $it") }
-        state.routeTitle?.let { Text("Saved request route: $it") }
-        Text("Connect this instance for Following, stream discovery and playback. The connection uses the Smart TV client identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.")
-        Text("Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.")
-        Text(state.status)
-        Button(onConnect, enabled = state.ready && !state.busy) {
-            Text(if (state.hasSavedGrant) "Reconnect Twitch" else "Connect Twitch")
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
+        // A scrollable column has unbounded content height. Capture its actual
+        // viewport first so a landscape QR can be scrolled fully into view.
+        val maxQrSize = minOf(320.dp, maxWidth, maxHeight)
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Twitch account", style = MaterialTheme.typography.headlineSmall)
+            state.name?.let { Text("Provider instance: $it") }
+            state.routeTitle?.let { Text("Saved request route: $it") }
+            Text("Connect this instance for Following, stream discovery and playback. The connection uses the Smart TV client identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.")
+            Text("Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.")
+            Text(state.status)
+            Button(onConnect, enabled = state.ready && !state.busy) {
+                Text(if (state.hasSavedGrant) "Reconnect Twitch" else "Connect Twitch")
+            }
+            Button(onValidate, enabled = state.ready && state.hasSavedGrant && !state.busy) { Text("Validate Twitch account") }
+            TextButton(onForget, enabled = state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
+                Text("Forget Twitch account on this device")
+            }
+            Text("Forget disconnects discovery and playback for this instance. Browser login, configured streams, routes and other provider instances are retained.")
+            if (state.operation == TwitchCatalogConnectionOperation.CONNECT || state.operation == TwitchCatalogConnectionOperation.VALIDATE)
+                TextButton(onCancel) { Text("Cancel Twitch action") }
+            state.activation?.takeIf { state.operation == TwitchCatalogConnectionOperation.CONNECT &&
+                (state.phase == null || state.phase == DeviceAuthPhase.BROWSER_UNAVAILABLE ||
+                    (!state.phase.terminal && state.phase != DeviceAuthPhase.VALIDATING)) }?.let {
+                TwitchActivationQr(it, maxSize = maxQrSize)
+                SelectionContainer { Text("Your activation code: ${it.userCode}") }
+                Button({ onBrowser("com.brave.browser") }) { Text("Open Twitch activation in Brave") }
+                Button({ onBrowser("com.android.chrome") }) { Text("Open Twitch activation in Chrome") }
+            }
+            state.phase?.let { Text(catalogPhaseMessage(it)) }
+            state.message?.let { Text(it) }
+            onRetryOpen?.let { retry -> TextButton(retry, enabled = !state.busy) { Text("Retry opening Twitch connection") } }
+            TextButton(onBack, enabled = state.operation != TwitchCatalogConnectionOperation.FORGET) { Text("Back to providers") }
         }
-        Button(onValidate, enabled = state.ready && state.hasSavedGrant && !state.busy) { Text("Validate Twitch account") }
-        TextButton(onForget, enabled = state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
-            Text("Forget Twitch account on this device")
-        }
-        Text("Forget disconnects discovery and playback for this instance. Browser login, configured streams, routes and other provider instances are retained.")
-        if (state.operation == TwitchCatalogConnectionOperation.CONNECT || state.operation == TwitchCatalogConnectionOperation.VALIDATE)
-            TextButton(onCancel) { Text("Cancel Twitch action") }
-        state.activation?.let {
-            Text("Your activation code: ${it.userCode}")
-            Button({ onBrowser("com.brave.browser") }) { Text("Open Twitch activation in Brave") }
-            Button({ onBrowser("com.android.chrome") }) { Text("Open Twitch activation in Chrome") }
-        }
-        state.phase?.let { Text(catalogPhaseMessage(it)) }
-        state.message?.let { Text(it) }
-        onRetryOpen?.let { retry -> TextButton(retry, enabled = !state.busy) { Text("Retry opening Twitch connection") } }
-        TextButton(onBack, enabled = state.operation != TwitchCatalogConnectionOperation.FORGET) { Text("Back to providers") }
     }
 }
 

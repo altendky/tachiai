@@ -158,7 +158,9 @@ internal class TwitchCatalogConnectionController(
         val request = binding.transport { current(token) && foreground.isForeground }
         active.set(request)
         val result = try { requestTwitchCatalogAuthorization(request, foreground, clockMs, waitMs,
-            onPhase = { phase -> if (current(token)) publish { it.copy(phase = phase) } },
+            onPhase = { phase -> if (current(token)) publish { it.copy(phase = phase,
+                activation = if (phase == DeviceAuthPhase.VALIDATING ||
+                    (phase.terminal && phase != DeviceAuthPhase.BROWSER_UNAVAILABLE)) null else it.activation) } },
             onActivation = { activation -> if (current(token)) publish { it.copy(activation = activation) } },
             onResponseShape = { shape ->
                 debugLog("endpoint=${shape.endpoint.name} lifetime=${shape.lifetime.name} scopes=${shape.scopes.name} refresh=${shape.refresh.name}")
@@ -242,6 +244,10 @@ internal class TwitchCatalogConnectionController(
     fun cancel(phase: DeviceAuthPhase = DeviceAuthPhase.CANCELLED) {
         cancelOperation()
         publish { it.copy(operation = null, phase = phase, activation = null) }
+    }
+    fun browserUnavailable() {
+        publish { if (it.operation == TwitchCatalogConnectionOperation.CONNECT && it.activation != null)
+            it.copy(phase = DeviceAuthPhase.BROWSER_UNAVAILABLE) else it }
     }
     override fun close() {
         if (closed) return

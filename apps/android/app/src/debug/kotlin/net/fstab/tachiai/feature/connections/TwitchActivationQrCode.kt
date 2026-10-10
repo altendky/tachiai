@@ -6,7 +6,7 @@ import com.google.zxing.common.BitMatrix
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import net.fstab.tachiai.provider.twitch.DeviceActivation
-import net.fstab.tachiai.provider.twitch.parseDeviceActivation
+import net.fstab.tachiai.provider.twitch.twitchActivationUri
 
 // Transient local modules only: never saved, logged, or sent to an image service.
 internal class TwitchActivationQrCode(private val modules: BitMatrix) {
@@ -16,10 +16,10 @@ internal class TwitchActivationQrCode(private val modules: BitMatrix) {
 }
 
 internal fun createTwitchActivationQrCode(activation: DeviceActivation): TwitchActivationQrCode {
-    // Reuse the challenge parser's exact first-party/code binding policy. Preserve
-    // the provider's URI spelling, query order and encoding, including a bare URI.
-    val validated = parseDeviceActivation(activation.userCode, activation.verificationUri.toString())
-    val modules = QRCodeWriter().encode(validated.verificationUri.toString(), BarcodeFormat.QR_CODE, 0, 0,
+    // The provider adapter validates the first-party/code binding and supplies
+    // a prefilled destination while preserving any existing matching URL.
+    val uri = twitchActivationUri(activation)
+    val modules = QRCodeWriter().encode(uri.toString(), BarcodeFormat.QR_CODE, 0, 0,
         mapOf(EncodeHintType.MARGIN to 4, EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M))
     return TwitchActivationQrCode(modules)
 }

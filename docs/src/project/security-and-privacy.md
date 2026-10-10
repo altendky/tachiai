@@ -347,9 +347,14 @@ access and native playback remain unverified; the
 the observed device conditions and limits.
 
 The pending shared connection can display a locally encoded activation QR.
-Only the same allowlisted provider URI and matching public user code enter that
-image; private device codes and grant credentials do not. QR generation makes no
-request, uses no external service and adds no persistent state or diagnostic
+Only an allowlisted Twitch activation URI and matching public user code enter
+that image. A missing `device-code` query parameter is added using the validated
+public user code; existing matching parameters and client-mode flags are
+preserved. Browser activation buttons use the same validated destination,
+including the public user code. Private device codes and grant credentials do
+not enter either handoff.
+QR generation makes no request, uses no external service and adds no persistent
+state or diagnostic
 payload. The image and readable code disappear when validation consumes the
 challenge or the attempt ends. A browser-launch failure retains the pending
 challenge for another browser or scan, without starting another authorization.

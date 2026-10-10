@@ -1,10 +1,8 @@
 package net.fstab.tachiai.feature.connections
 
-import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
-import android.content.Intent
 import android.os.Build
 import android.os.PersistableBundle
 import androidx.compose.foundation.layout.Arrangement
@@ -16,7 +14,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -65,13 +62,7 @@ internal fun TwitchProviderLogin(instanceId: String = net.fstab.tachiai.presenta
         }, onBrowser = { packageName ->
             state.activation?.let { prompt ->
                 controller.setForeground(false)
-                try {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, prompt.verificationUri.toString().toUri())
-                        .addCategory(Intent.CATEGORY_BROWSABLE).setPackage(packageName))
-                } catch (_: ActivityNotFoundException) {
-                    controller.cancel(DeviceAuthPhase.BROWSER_UNAVAILABLE)
-                    controller.setForeground(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
-                } catch (_: SecurityException) {
+                if (!openTwitchActivationBrowser(prompt, packageName, context::startActivity)) {
                     controller.cancel(DeviceAuthPhase.BROWSER_UNAVAILABLE)
                     controller.setForeground(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
                 }

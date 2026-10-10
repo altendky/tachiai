@@ -99,6 +99,21 @@ internal fun parseDeviceActivation(code: String, verificationUri: String): Devic
     return DeviceActivation(code, uri)
 }
 
+// QR and browser links carry the public user code using Twitch's documented
+// prefill parameter, preserving an already-prefilled provider URI exactly.
+internal fun twitchActivationUri(activation: DeviceActivation): URI {
+    val validated = parseDeviceActivation(activation.userCode, activation.verificationUri.toString())
+    val uri = validated.verificationUri
+    val hasCode = uri.rawQuery?.split("&")?.any {
+        URLDecoder.decode(it.substringBefore("="), "UTF-8") == "device-code"
+    } == true
+    if (hasCode) return uri
+    val separator = if (uri.rawQuery == null) "?" else "&"
+    // Validated user codes contain only URI-unreserved alphanumerics and hyphens.
+    return parseDeviceActivation(validated.userCode,
+        "$uri${separator}device-code=${validated.userCode}").verificationUri
+}
+
 internal fun parseDeviceChallenge(response: DeviceAuthResponse): DeviceChallenge {
     val fields = response.fields
     val activation = parseDeviceActivation(fields.boundedString("user_code", 64),

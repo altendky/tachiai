@@ -27,11 +27,16 @@ Connect requests an activation code on a worker using the saved route. Consent
 opens a provider-controlled page in an installed external browser. That browser
 uses its own network and login, independently of Tachiai's selected route.
 
-While activation is pending, a locally generated QR code opens that same
-provider-returned activation URL on another device. A matching public code in the
-URL is preserved; a bare URL opens the activation page for manual code entry.
+While activation is pending, a locally generated QR code opens Twitch activation
+on another device with the matching public user code in the URL. An existing
+prefilled provider URL is preserved exactly. When the provider URL omits the
+code, the Twitch adapter appends only the documented `device-code` parameter,
+retaining any existing public flag. The external-browser buttons use the same
+code-filled destination; neither handoff changes the client mode.
 The readable code is selectable, and the existing external-browser buttons remain
-available. The scanning device uses its own browser, network and login.
+available. The scanning device uses its own browser, network and login. The user
+still reviews Twitch consent; real browser prefill remains a separate observation
+from the decode-based destination fixtures.
 An unavailable browser leaves the same pending challenge available for another
 browser or QR scan. Cancellation, expiry, validation and loss of ownership remove
 the activation instructions. Recomposition and rotation do not request another code.
@@ -170,3 +175,12 @@ in-memory fixture state and callbacks were used; saved app data and device
 settings were retained. No provider request or account state was involved.
 These checks do not establish physical camera scanning, real provider prefill,
 Android TV behavior or successful shared account/native acceptance.
+
+The subsequent code-prefill update passed five selected synthetic checks on the
+same emulator: browser intents for bare/public-only and encoded existing links,
+invalid-destination rejection, bounded link-construction and browser-launch
+failures, and rendered QR challenge replacement/removal with the new bare-link
+destination. Browser intents were inspected without launching a browser; these
+fixtures made no provider request or account-storage change. Both browser button
+paths and the QR now use the same validated activation destination. Real Twitch
+prefill and consent remain unverified.

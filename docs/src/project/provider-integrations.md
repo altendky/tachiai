@@ -7,6 +7,12 @@ ordinary ABEMA site as the top-level page of an Android WebView. It must not be
 placed in an iframe, because Tachiai should not depend on ABEMA permitting
 third-party framing.
 
+The [catalog and account-access research](abema-catalog-access.md) separates
+published channel, scheduled-slot, series and episode identities from provider
+account collections and playback. It records a public-link import direction;
+supported external catalog/My List access and an instance-owned account
+connection remain unverified.
+
 ABEMA currently documents Android Chrome and current Android WebView as
 supported environments. It also documents that some content is unavailable in
 phone and tablet browsers and must be watched in its native app. The available

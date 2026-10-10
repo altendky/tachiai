@@ -102,6 +102,18 @@
 
 ## ABEMA
 
+- What supported structured catalog/My List access and instance-owned account
+  connection can Tachiai provide? The
+  [2026-10-09 catalog research](abema-catalog-access.md) documents public resource
+  identities and provider-controlled account sharing, but leaves external
+  collection access, connection verification, session isolation and selected
+  routes unresolved. Public-link import does not satisfy account-backed access.
+- Does the sumo channel remain available between basho, and how do annual title
+  identities, exact broadcast slots and catch-up episodes relate across years?
+  Channel ordering is documented, but its account ownership, synchronization and
+  retrieval are unverified. A series needs explicit child selection until a
+  recurring resolver is established.
+
 - Can the cached no-page bootstrap cover replay and durable operation as well
   as News? Two independently initialized native News copies rendered and advanced
   for the five-minute foreground budget without an original web video. A cached

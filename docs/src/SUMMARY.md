@@ -4,6 +4,7 @@
   - [Requirements](project/requirements.md)
   - [Architecture](project/architecture.md)
   - [Provider integrations](project/provider-integrations.md)
+  - [ABEMA catalog and account access](project/abema-catalog-access.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
   - [Platform plan](project/platforms.md)

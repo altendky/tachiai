@@ -235,8 +235,11 @@ Configured exact Twitch videos within the existing native ID bound can also open
 the debug replay viewer, starting at zero with that instance's own LOCAL grant
 and route. The exact historical replay keeps its experimental start position.
 This path has provider-free session fixtures; arbitrary-video playback with a
-real provider remains unobserved. Immutable broadcaster resources still need
-their own integration before native playback.
+real provider remains unobserved. Configured immutable Twitch broadcasters now
+use worker-only current-login/live assessment, the separate LOCAL grant, and a
+post-preparation ownership confirmation. Saved offline channels can be reassessed;
+catalog connection failures remain distinct from playback-login failures. This
+path also has provider-free fixtures; real connected-channel playback is unobserved.
 Imported profiles and provider configuration are preserved. Obsolete four-stream
 settings are not migrated: the picker offers an explicit stream-settings reset
 before playback. Current-format ambiguous defaults/overrides require explicit

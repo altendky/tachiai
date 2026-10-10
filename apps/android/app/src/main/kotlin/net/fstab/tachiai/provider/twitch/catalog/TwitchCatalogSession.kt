@@ -171,6 +171,12 @@ internal class TwitchCatalogSession(
         lease === value && monotonicMs() < value.deadlineMs &&
             allowed(value.localRevision, value.grant.revision) && store.isStoredCurrent(value.grant)
 
+    // Queued UI publication only: no owner callback, protected store or HTTP.
+    // This supplements, never replaces, worker-side durable ownership checks.
+    fun isLocallyCurrent(value: TwitchCatalogLease): Boolean =
+        lease === value && !closed && foreground && value.localRevision == localRevision.get() &&
+            monotonicMs() < value.deadlineMs && store.isRevisionCurrent(value.grant.revision)
+
     private fun <T> withTransport(local: Long, revision: Long, action: (TwitchCatalogTransport) -> T): T {
         check(allowed(local, revision))
         val transport = transportFactory()

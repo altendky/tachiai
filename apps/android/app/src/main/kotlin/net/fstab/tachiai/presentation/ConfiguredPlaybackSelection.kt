@@ -3,6 +3,7 @@ package net.fstab.tachiai.presentation
 import java.util.Collections
 import java.util.Locale
 import net.fstab.tachiai.provider.catalog.CatalogResource
+import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchVideo
 
 // Frozen public identity and local ownership. Signed sources and authorization
@@ -20,13 +21,15 @@ internal data class ConfiguredPlaybackFeed(
             require(historicalSource.service == service && historicalSource.kind == kind &&
                 prototypeCatalogResource(historicalSource) == resource)
         } else {
-            require(service == PrototypeService.TWITCH && kind == PrototypePlaybackKind.REPLAY &&
-                supportedConfiguredTwitchVideo(resource))
+            require(service == PrototypeService.TWITCH &&
+                (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredTwitchVideo(resource) ||
+                    kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)))
         }
     }
 
     val instanceId: String get() = choice.instanceId
-    val diagnosticName: String get() = historicalSource?.name ?: "TWITCH_CONFIGURED_VIDEO"
+    val diagnosticName: String get() = historicalSource?.name ?: if (kind == PrototypePlaybackKind.LIVE)
+        "TWITCH_CONFIGURED_BROADCASTER" else "TWITCH_CONFIGURED_VIDEO"
 
     fun resolve(instances: List<ProviderInstance>): ProviderInstance? =
         instances.singleOrNull { it.id == instanceId }?.takeIf { it.service == service &&

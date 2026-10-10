@@ -9,10 +9,11 @@ import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
 import net.fstab.tachiai.presentation.validProviderInstanceId
 import net.fstab.tachiai.provider.catalog.*
+import net.fstab.tachiai.provider.twitch.TwitchAccessCase
+import net.fstab.tachiai.provider.twitch.validTwitchPlaybackResource
 
-// Supported, account-backed discovery only. Legacy sample aliases keep their
-// separate exact playback bridge; this adapter never promotes discovered media
-// to the native experiment or persists a login, raw cursor, or provider URL.
+// Supported, account-backed discovery and transient live identity preparation.
+// Native entitlement stays separate; no login, cursor or provider URL is saved.
 internal class TwitchProviderCatalog(
     override val instanceId: String,
     private val session: TwitchCatalogSession,
@@ -20,7 +21,8 @@ internal class TwitchProviderCatalog(
     private val canPublish: () -> Boolean = { true },
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val waitMs: (Long) -> Unit = Thread::sleep,
-) : ProviderCatalog {
+    private val canPublishLocally: () -> Boolean = { true },
+) : ProviderCatalog, TwitchLiveIdentityResolver {
     init {
         require(validProviderInstanceId(instanceId))
         require(instanceId != defaultProviderInstanceId(PrototypeService.ABEMA))
@@ -29,6 +31,8 @@ internal class TwitchProviderCatalog(
     override val providerId = ProviderId("twitch")
     private val operationLock = Any()
     private val cursorLock = Any()
+    private val identityLock = Any()
+    private val identities = linkedMapOf<TwitchLiveIdentity, LiveHandle>()
     private val revision = AtomicLong()
     private val active = AtomicReference<TwitchHelixTransport?>()
     @Volatile private var closed = false
@@ -44,9 +48,11 @@ internal class TwitchProviderCatalog(
     private class Restart(val lease: TwitchCatalogLease) : Exception("AUTHORIZATION_CHANGED")
     private class RetryBudget(var refreshed: Boolean = false, var retriedService: Boolean = false)
     private class Context(val localRevision: Long, val lease: TwitchCatalogLease, val budget: RetryBudget)
+    private class LiveHandle(val context: Context, var confirming: Boolean = false, var confirmed: Boolean = false)
     private companion object {
         const val MAX_CURSOR_HANDLES = 32
         const val MAX_CURSOR_HOPS = 256
+        const val MAX_LIVE_HANDLES = 32
         val publicId = Regex("[1-9][0-9]{0,31}")
     }
 
@@ -60,9 +66,12 @@ internal class TwitchProviderCatalog(
         TwitchCatalogSessionState.UNVERIFIED -> CatalogFailure.NOT_VERIFIED
         else -> CatalogFailure.TEMPORARY
     }
-    private fun clearContinuations() = synchronized(cursorLock) {
-        cursors.clear()
-        cursorGeneration = null
+    private fun clearContinuations() {
+        synchronized(cursorLock) {
+            cursors.clear()
+            cursorGeneration = null
+        }
+        synchronized(identityLock) { identities.clear() }
     }
     private fun selectGeneration(lease: TwitchCatalogLease) = synchronized(cursorLock) {
         if (closed) throw Abort(CatalogFailure.ACCESS_REQUIRED)
@@ -70,6 +79,7 @@ internal class TwitchProviderCatalog(
         if (cursorGeneration != lease.grant.generation) {
             cursors.clear()
             cursorGeneration = lease.grant.generation
+            synchronized(identityLock) { identities.clear() }
         }
     }
 
@@ -96,15 +106,19 @@ internal class TwitchProviderCatalog(
             browseTitle = "Live channels", initialCollectionId = "following")
     }
 
-    private fun <T> operation(work: (Context) -> T): CatalogResult<T> = synchronized(operationLock) {
+    private fun <T> operation(required: Context? = null, work: (Context) -> T): CatalogResult<T> = synchronized(operationLock) {
         try {
             if (!available()) throw Abort(if (closed || synchronized(cursorLock) { authorizedBefore })
                 CatalogFailure.ACCESS_REQUIRED else CatalogFailure.TEMPORARY)
             val local = revision.get()
-            val authorization = session.validate()
-            var lease = authorization.lease ?: throw Abort(accessFailure(authorization.summary))
+            // Confirmation must keep its original lease and retry budget. Do
+            // not validate/refresh an expired handle into a different admission.
+            required?.let(::requireCurrent)
+            var lease = required?.lease ?: session.validate().let { authorization ->
+                authorization.lease ?: throw Abort(accessFailure(authorization.summary))
+            }
             selectGeneration(lease)
-            val budget = RetryBudget()
+            val budget = required?.budget ?: RetryBudget()
             while (true) {
                 val context = Context(local, lease, budget)
                 requireCurrent(context)
@@ -113,6 +127,7 @@ internal class TwitchProviderCatalog(
                     requireCurrent(context)
                     return@synchronized CatalogResult.Value(value)
                 } catch (restart: Restart) {
+                    if (required != null) throw Abort(CatalogFailure.ACCESS_REQUIRED)
                     lease = restart.lease
                     selectGeneration(lease)
                 } catch (error: Exception) {
@@ -332,6 +347,77 @@ internal class TwitchProviderCatalog(
     }
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> =
         CatalogResult.Failure(if (resource.providerId != providerId) CatalogFailure.INVALID_INPUT else CatalogFailure.NOT_VERIFIED)
+
+    private fun memoryCurrent(context: Context): Boolean = !closed && context.localRevision == revision.get() &&
+        session.isLocallyCurrent(context.lease)
+    private fun locallyCurrent(context: Context): Boolean =
+        (try { canPublishLocally() } catch (_: Exception) { false }) && memoryCurrent(context)
+
+    override fun begin(resource: CatalogResource): CatalogResult<TwitchLiveIdentity> {
+        if (!broadcaster(resource)) return CatalogResult.Failure(
+            if (resource.providerId != providerId) CatalogFailure.INVALID_INPUT else CatalogFailure.UNSUPPORTED)
+        return operation { context ->
+            val user = exactUser(context, TwitchCatalogPublicInput.BroadcasterId(resource.identity))
+                ?: throw Abort(CatalogFailure.NOT_FOUND)
+            if (!validTwitchPlaybackResource(TwitchAccessCase.LIVE, user.login)) throw Abort(CatalogFailure.UNSUPPORTED)
+            val streams = parseTwitchStreams(execute(context, TwitchHelixRequest.streams(listOf(user.id))))
+            if (streams.nextCursor != null || streams.items.size > 1 || streams.items.any {
+                    it.broadcaster.id != user.id || it.broadcaster.login != user.login
+                }) throw Abort(CatalogFailure.TEMPORARY)
+            if (streams.items.isEmpty()) throw Abort(CatalogFailure.NOT_FOUND)
+            requireCurrent(context)
+            val identity = TwitchLiveIdentity(resource, user.login)
+            if (!locallyCurrent(context)) throw Abort(CatalogFailure.ACCESS_REQUIRED)
+            synchronized(identityLock) {
+                if (!memoryCurrent(context)) throw Abort(CatalogFailure.ACCESS_REQUIRED)
+                identities.entries.removeAll { !session.isLocallyCurrent(it.value.context.lease) }
+                if (identities.size >= MAX_LIVE_HANDLES) identities.remove(identities.keys.first())
+                identities[identity] = LiveHandle(context)
+            }
+            identity
+        }
+    }
+
+    override fun confirm(identity: TwitchLiveIdentity): CatalogResult<Unit> {
+        val handle = synchronized(identityLock) {
+            identities[identity]?.takeUnless { it.confirming || it.confirmed }?.also { it.confirming = true }
+        } ?: return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+        var admitted = false
+        try {
+            val result = operation(required = handle.context) {
+                requireCurrent(handle.context)
+                val users = try {
+                    parseTwitchUsers(execute(handle.context, TwitchHelixRequest.userByLogin(identity.login)))
+                } catch (_: Restart) {
+                    // A repaired catalog grant cannot admit the old native source.
+                    throw Abort(CatalogFailure.ACCESS_REQUIRED)
+                }
+                if (users.nextCursor != null || users.items.size != 1 || users.items.single().id != identity.resource.identity ||
+                    users.items.single().login != identity.login) throw Abort(CatalogFailure.NOT_FOUND)
+                requireCurrent(handle.context)
+                if (!locallyCurrent(handle.context)) throw Abort(CatalogFailure.ACCESS_REQUIRED)
+                synchronized(identityLock) {
+                    if (identities[identity] !== handle || !memoryCurrent(handle.context)) throw Abort(CatalogFailure.ACCESS_REQUIRED)
+                    handle.confirmed = true
+                }
+                Unit
+            }
+            admitted = result is CatalogResult.Value
+            return result
+        } finally {
+            synchronized(identityLock) {
+                if (!admitted) identities.remove(identity)
+                handle.confirming = false
+            }
+        }
+    }
+
+    override fun canPublish(identity: TwitchLiveIdentity): Boolean {
+        val context = synchronized(identityLock) { identities[identity]?.takeIf { it.confirmed }?.context } ?: return false
+        val current = locallyCurrent(context)
+        if (!current) synchronized(identityLock) { identities.remove(identity) }
+        return current
+    }
 
     override fun close() {
         if (closed) return

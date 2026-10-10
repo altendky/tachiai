@@ -13,6 +13,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.media.BoundedNativePlayer
@@ -24,6 +25,21 @@ import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.presentation.ProviderId
+import net.fstab.tachiai.provider.catalog.*
+import net.fstab.tachiai.provider.twitch.catalog.*
+
+// The immutable configured ID is never a native login. Its current alias stays
+// inside this provider-owned preparation flow and is not retained by the viewer.
+@UnstableApi
+internal fun configuredTwitchBroadcasterSession(context: Context, resource: CatalogResource,
+    active: () -> Boolean, onEvent: (PrototypeFeedEvent) -> Unit,
+    liveIdentityResolverFactory: () -> TwitchLiveIdentityResolver,
+    openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
+    diagnostics: FailureReporter = FailureReporter.NONE): PrototypeTwitchSession =
+    PrototypeTwitchSession(context, false, resource.identity, active, onEvent, openConnection,
+        authorization, diagnostics, broadcasterResource = resource, liveIdentityResolverFactory = liveIdentityResolverFactory)
 
 @UnstableApi
 internal class PrototypeTwitchSession(
@@ -36,9 +52,18 @@ internal class PrototypeTwitchSession(
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
     private val diagnostics: FailureReporter = FailureReporter.NONE,
     private val initialPositionMs: Long = 0,
+    private val broadcasterResource: CatalogResource? = null,
+    private val liveIdentityResolverFactory: (() -> TwitchLiveIdentityResolver)? = null,
 ) : PrototypeFeedSession {
     init {
-        require(validTwitchPlaybackResource(if (replay) TwitchAccessCase.REPLAY else TwitchAccessCase.LIVE, resource))
+        if (broadcasterResource == null) {
+            require(liveIdentityResolverFactory == null)
+            require(validTwitchPlaybackResource(if (replay) TwitchAccessCase.REPLAY else TwitchAccessCase.LIVE, resource))
+        } else {
+            require(!replay && liveIdentityResolverFactory != null && broadcasterResource.providerId == ProviderId("twitch") &&
+                broadcasterResource.kind == "broadcaster" && broadcasterResource.intent == CatalogIntent.CHANNEL &&
+                broadcasterResource.identity == resource && Regex("[1-9][0-9]{0,31}").matches(resource))
+        }
         require(initialPositionMs >= 0 && (replay || initialPositionMs == 0L))
         require(authorization.profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
     }
@@ -47,6 +72,7 @@ internal class PrototypeTwitchSession(
     private val closed = AtomicBoolean()
     private val started = AtomicBoolean()
     private val firstFailure = PrototypeFeedFailureLatch()
+    private val identityResolver = AtomicReference<TwitchLiveIdentityResolver?>()
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     override var cleanupFailed: Boolean = false
         private set
@@ -61,8 +87,20 @@ internal class PrototypeTwitchSession(
         onEvent(PrototypeFeedEvent.PREPARING)
         worker.execute {
             try {
+                var identity: TwitchLiveIdentity? = null
+                val resolver = liveIdentityResolverFactory?.invoke()?.also {
+                    check(identityResolver.compareAndSet(null, it))
+                    if (closed.get() || !active() || !budget.active) { releaseIdentityResolver(); return@execute }
+                }
+                val nativeResource = if (resolver != null) {
+                    val resolved = catalogValue(resolver.begin(checkNotNull(broadcasterResource)))
+                    identity = resolved
+                    check(resolved.resource == broadcasterResource && validTwitchPlaybackResource(TwitchAccessCase.LIVE, resolved.login))
+                    resolved.login
+                } else resource
+                if (closed.get() || !active() || !budget.active) { releaseIdentityResolver(); return@execute }
                 var accessReached = false
-                val source = preparation.resolve(replay, resource) { phase, code ->
+                val source = preparation.resolve(replay, nativeResource) { phase, code ->
                     Log.d("TachiaiPrototypeTwitch", "phase=$phase http=$code")
                     if (phase == "ACCESS") accessReached = true
                     val reason = when (phase) {
@@ -80,10 +118,29 @@ internal class PrototypeTwitchSession(
                     }
                     reason?.let { remember(PrototypeFeedFailure(it, httpStatus = code.takeIf { value -> value in 300..599 })) }
                 }
+                if (resolver != null) {
+                    catalogValue(resolver.confirm(checkNotNull(identity)))
+                    if (!preparation.checkStored(force = true)) {
+                        remember(PrototypeFeedFailure(PrototypeFailureReason.LOGIN_EXPIRED))
+                        throw IllegalStateException("Playback authorization ended")
+                    }
+                }
                 handler.post {
-                    if (closed.get() || !active() || !budget.active) return@post
+                    if (closed.get() || !active() || !budget.active) { releaseIdentityResolver(); return@post }
                     if (!preparation.canContinue()) {
                         fail(PrototypeFeedFailure(PrototypeFailureReason.LOGIN_EXPIRED))
+                        return@post
+                    }
+                    if (resolver != null && !resolver.canPublish(checkNotNull(identity))) {
+                        fail(PrototypeFeedFailure(PrototypeFailureReason.CATALOG_CONNECTION_REQUIRED))
+                        return@post
+                    }
+                    // Successful exchanges have already closed their route and
+                    // HTTP resources on workers. Resolver close now only ends
+                    // local admission/signals cancellation; no protected IO.
+                    releaseIdentityResolver()
+                    if (cleanupFailed) {
+                        fail(PrototypeFeedFailure(PrototypeFailureReason.CLEANUP_FAILED))
                         return@post
                     }
                     try {
@@ -121,8 +178,33 @@ internal class PrototypeTwitchSession(
                 }
             } catch (error: Exception) {
                 if (!closed.get() && active() && budget.active) diagnostics.report(FailureStage.TWITCH_PREPARE, error)
-                handler.post { if (!closed.get() && active()) fail() }
+                handler.post {
+                    if (!closed.get() && active() && budget.active) fail()
+                    else releaseIdentityResolver()
+                }
             }
+        }
+    }
+
+    private fun <T> catalogValue(result: CatalogResult<T>): T = when (result) {
+        is CatalogResult.Value -> result.value
+        is CatalogResult.Failure -> {
+            val reason = when (result.reason) {
+                CatalogFailure.ACCESS_REQUIRED, CatalogFailure.NOT_VERIFIED -> PrototypeFailureReason.CATALOG_CONNECTION_REQUIRED
+                CatalogFailure.RATE_LIMITED -> PrototypeFailureReason.CATALOG_RATE_LIMITED
+                CatalogFailure.TEMPORARY -> PrototypeFailureReason.CATALOG_UNAVAILABLE
+                CatalogFailure.NOT_FOUND -> PrototypeFailureReason.MEDIA_NOT_FOUND
+                CatalogFailure.UNSUPPORTED -> PrototypeFailureReason.UNSUPPORTED_MEDIA
+                CatalogFailure.INVALID_INPUT -> PrototypeFailureReason.PREPARATION_FAILED
+            }
+            remember(PrototypeFeedFailure(reason))
+            throw IllegalStateException("Catalog identity unavailable")
+        }
+    }
+
+    private fun releaseIdentityResolver() {
+        identityResolver.getAndSet(null)?.let {
+            if (!diagnostics.cleanup(FailureStage.CATALOG_CLOSE) { it.close() }) cleanupFailed = true
         }
     }
 
@@ -158,6 +240,7 @@ internal class PrototypeTwitchSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        releaseIdentityResolver()
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.TWITCH_PREPARATION_CLOSE to { preparation.close() },
             FailureStage.NATIVE_HOST_CLOSE to { host?.close() },

@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.Locale
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
+import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchVideo
 
 internal enum class ConfiguredPrototypeSelectionFailure {
@@ -36,8 +37,10 @@ internal fun resolveConfiguredPrototypeSelection(
             return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
         if (source.entry.resource.intent == CatalogIntent.COLLECTION)
             return failure(ConfiguredPrototypeSelectionFailure.COLLECTION)
-        if (source.entry.availability in setOf(CatalogAvailability.UPCOMING, CatalogAvailability.OFFLINE,
-                CatalogAvailability.EXPIRED, CatalogAvailability.UNAVAILABLE))
+        val broadcaster = supportedConfiguredTwitchBroadcaster(source.entry.resource)
+        if (source.entry.availability in setOf(CatalogAvailability.UPCOMING,
+                CatalogAvailability.EXPIRED, CatalogAvailability.UNAVAILABLE) ||
+            source.entry.availability == CatalogAvailability.OFFLINE && !broadcaster)
             return failure(ConfiguredPrototypeSelectionFailure.UNAVAILABLE)
         if (instance.setup.route == null) return failure(ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED)
         val historical = legacyPrototypeSource(source)
@@ -45,6 +48,8 @@ internal fun resolveConfiguredPrototypeSelection(
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, historical.service, historical.kind, historical)
         } else if (supportedConfiguredTwitchVideo(source.entry.resource)) {
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY)
+        } else if (broadcaster) {
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.TWITCH, PrototypePlaybackKind.LIVE)
         } else return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
         if (supported.service != instance.service) return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
         selected += source

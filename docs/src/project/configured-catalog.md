@@ -112,8 +112,9 @@ The explicit metadata-refresh action below can update that snapshot in place.
 Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections
-cannot silently resolve to the News or replay sample, and known unavailable items
-remain saved while Watch explains why playback is blocked.
+cannot silently resolve to the News or replay sample. Known unavailable items
+remain saved; the broadcaster-specific offline assessment below is the only
+exception to blocking their saved availability state before preparation.
 
 ### Explicit metadata refresh
 
@@ -175,8 +176,8 @@ feed sessions; saved quality defaults and UUID-only recovery remain unchanged.
 
 Only canonical positive video IDs within the native resolver's existing limit of
 20 ASCII digits are supported. Longer IDs remain configured and fail as unsupported
-before route/session preparation. Collections, immutable broadcaster resources
-and other unsupported identities do not select a sample. Known unavailable items
+before route/session preparation. Collections and other unsupported identities
+do not select a sample. Known unavailable video items
 stay configured and retain their existing playback block.
 
 Preparation uses the selected instance's exact route and separate existing LOCAL
@@ -190,6 +191,41 @@ Provider-free model, route and Android session fixtures verify identity, ownersh
 initial position and lifecycle behavior. They do not establish that an arbitrary
 video exists, is accessible, uses an approved CDN or plays with a real account and
 route. Actual newly configured video playback remains unobserved.
+
+### Configured Twitch broadcaster playback
+
+[Issue #128](https://github.com/altendky/tachiai/issues/128) connects canonical
+numeric `broadcaster`/CHANNEL resources to the existing debug live resolver.
+Watch freezes the resource and local item/instance UUIDs. The saved identity is
+never replaced with a login or transient stream ID. A saved OFFLINE snapshot can
+receive a fresh assessment; UPCOMING, EXPIRED and UNAVAILABLE snapshots retain
+their block. Offline or deleted channels fail visibly before native preparation.
+
+On the worker, the owning instance's connected catalog grant resolves the exact
+ID to its current login and verifies live status. That login must satisfy the
+unchanged native live resolver's narrower grammar. The selected native route and
+its independent LOCAL playback grant then prepare the source. A second lookup by
+login must still match the original broadcaster ID before player publication.
+These separate provider operations are not atomic; they reject observed rename
+or reuse changes rather than claiming an atomic provider identity guarantee.
+
+Metadata and native playback keep separate grant and route ownership. Missing or
+changed ownership never falls back to another instance or System networking.
+The worker performs durable ownership checks; queued publication uses only local
+lease identity, revision, expiry and lifecycle admission, without protected-store
+IO on the main thread. Catalog access is preparation authority, not continuing
+playback entitlement after publication. The existing LOCAL checks continue.
+
+Identity phases share bounded catalog repair/retry limits. Rate-limited attempts
+retain a transient per-instance retry deadline for the Activity; explicit retry
+does not automatically wait or skip it. Catalog connection, availability and rate
+failures have fixed messages separate from playback-login errors. Duplicate choices
+retain independent hosts, UUID recovery and saved quality ownership. This adds no
+native endpoints, scopes, origins, DRM behavior or background playback.
+
+Provider-free core, binding and native-session fixtures exercise these boundaries.
+Actual connected-account playback, renamed channels, imported-route acceptance
+and provider login reuse remain unobserved.
 
 ### ABEMA public-link import
 

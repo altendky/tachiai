@@ -34,18 +34,25 @@ internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
             !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
             runCatching { captured.sameOwnership(binding.owner()) }
                 .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
+        // Public identity import needs the current instance, not a usable
+        // account or metadata route. It never constructs a route/transport.
+        fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
+            runCatching { providerInstanceStore(application).read { legacyProviderSettings(application) }
+                .any { it.id == instanceId && it.service == PrototypeService.TWITCH } }
+                .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
         val catalog = TwitchProviderCatalog(instanceId, binding.session(),
             transportFactory = { gate -> OwnedTwitchHelixTransport(route?.profile,
                 canRequest = { gate() && current() },
                 onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics) },
             canPublish = ::current)
-        return object : ProviderCatalog by catalog {
+        val owned = object : ProviderCatalog by catalog {
             override fun close() {
                 if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return
                 try { catalog.close() } finally { binding.close() }
             }
             override fun toString() = "AndroidTwitchProviderCatalog(redacted)"
         }
+        return TwitchLocalVideoImportCatalog(owned, ::canImport)
     } catch (error: Throwable) {
         runCatching { binding.close() }.onFailure { diagnostics.report(FailureStage.CATALOG_CLOSE, it) }
         throw error

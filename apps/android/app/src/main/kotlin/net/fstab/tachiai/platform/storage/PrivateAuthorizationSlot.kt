@@ -27,3 +27,10 @@ internal fun configuredProviderInstanceBindingName(id: String): String {
     require(net.fstab.tachiai.presentation.validProviderInstanceId(id))
     return "configured-provider-instance-$id"
 }
+
+// Catalog grants belong to Tachiai's own OAuth client, including the default
+// instance. They never alias the historical playback authorization slots.
+internal fun twitchCatalogInstanceBindingName(id: String): String {
+    require(net.fstab.tachiai.presentation.validProviderInstanceId(id))
+    return "twitch-catalog-instance-$id-authorization"
+}

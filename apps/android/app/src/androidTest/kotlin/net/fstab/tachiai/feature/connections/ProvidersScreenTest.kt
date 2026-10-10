@@ -16,6 +16,23 @@ import org.junit.Test
 class ProvidersScreenTest {
     @get:Rule val compose = createComposeRule()
     private val profile = ConnectionSummary("12345678-1234-1234-1234-123456789abc", "Proton Japan", ConnectionKind.WIREGUARD, "fixture.example.test:51820")
+    @Test fun catalogAccountUsesSavedTwitchOwnerWithoutSavingEditorDraft() {
+        val second = ProviderInstance("12345678-1234-1234-1234-123456789abd", PrototypeService.TWITCH, "Twitch 2")
+        var connected: String? = null
+        var saved = false
+        compose.setContent { TachiaiPrototypeTheme {
+            ProviderInstancesScreen(defaultProviderInstances() + second, listOf(profile), false, null,
+                {}, { _, _, _ -> saved = true }, {}, onCatalogConnection = { connected = it })
+        } }
+        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithText("Catalog account").assertDoesNotExist()
+        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
+        compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
+        compose.onNodeWithContentDescription("Twitch route: Proton Japan").performScrollTo().performClick()
+        compose.onNodeWithText("Catalog account").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
+    }
     @Test fun manageStreamsUsesStableSelectedInstanceWithoutSavingItsDraft() {
         val second = ProviderInstance("12345678-1234-1234-1234-123456789abd", PrototypeService.TWITCH, "Twitch 2")
         var managed: String? = null

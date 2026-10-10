@@ -28,7 +28,7 @@ internal fun ProvidersScreen(settings: Map<PrototypeService, ProviderSetup>, pro
 internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles: List<ConnectionSummary>, busy: Boolean,
     message: String?, onRoutes: () -> Unit, onSave: (String, String?, SourceRouteChoice) -> Unit, onBack: () -> Unit,
     onCreate: ((PrototypeService) -> Unit)? = null, twitchLogin: @Composable (String) -> Unit = {},
-    onManageStreams: ((String) -> Unit)? = null) {
+    onManageStreams: ((String) -> Unit)? = null, onCatalogConnection: ((String) -> Unit)? = null) {
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(enabled = editing != null && !busy) { editing = null }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -55,6 +55,9 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,
                 { name, route -> onSave(instance.id, name, route) }, { editing = null }, { twitchLogin(instance.id) })
             onManageStreams?.let { manage -> Button(onClick = { manage(instance.id) }, enabled = !busy) { Text("Manage streams") } }
+            if (instance.service == PrototypeService.TWITCH) onCatalogConnection?.let { connect ->
+                Button(onClick = { connect(instance.id) }, enabled = !busy) { Text("Catalog account") }
+            }
         }
     }
 }

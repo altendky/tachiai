@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
+            android:name=".feature.connections.TwitchCatalogConnectionActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:exported="false" />
+        <activity
             android:name=".feature.connections.ManageStreamsActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false" />

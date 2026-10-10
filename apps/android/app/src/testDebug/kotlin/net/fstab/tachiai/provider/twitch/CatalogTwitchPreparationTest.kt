@@ -158,11 +158,13 @@ class CatalogTwitchPreparationTest {
             fixture.validationSeconds = 9
             fixture.resolve(second, replay = true)
             assertEquals(saved.generation, fixture.store.read()!!.generation)
-            assertTrue(first.checkStored(force = true)); assertTrue(second.checkStored(force = true))
+            // Media3 uses the default gate, including immediately after a
+            // successful check before the other viewer's tighter deadline.
+            assertTrue(first.checkStored()); assertTrue(second.checkStored())
             fixture.advance(8_999L)
-            assertTrue(first.checkStored(force = true)); assertTrue(second.checkStored(force = true))
+            assertTrue(first.checkStored()); assertTrue(second.checkStored())
             fixture.advance(1L)
-            assertFalse(first.checkStored(force = true)); assertFalse(second.checkStored(force = true))
+            assertFalse(first.checkStored()); assertFalse(second.checkStored())
             assertFalse(first.canContinue()); assertFalse(second.canContinue())
             assertEquals(2, fixture.validationCalls); assertEquals(2, fixture.mediaCalls)
         } finally { first.close(); second.close() }
@@ -220,7 +222,7 @@ class CatalogTwitchPreparationTest {
             }
             // Refresh rotates the durable generation without a local revision
             // signal; the worker gate observes it before further media access.
-            assertFalse(preparation.checkStored(force = true)); assertFalse(preparation.canContinue()); preparation.close()
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue()); preparation.close()
         }
     }
 
@@ -235,7 +237,7 @@ class CatalogTwitchPreparationTest {
         val changed = Fixture(); changed.connect(); val changedPreparation = changed.preparation(); changed.resolve(changedPreparation)
         changed.owner = TwitchCatalogConnectionOwner(changed.id, "Changed", "Changed", "OTHER")
         assertTrue(changedPreparation.canContinue())
-        assertFalse(changedPreparation.checkStored(force = true)); assertFalse(changedPreparation.canContinue())
+        assertFalse(changedPreparation.checkStored()); assertFalse(changedPreparation.canContinue())
         changedPreparation.close()
     }
 

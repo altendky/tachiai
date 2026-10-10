@@ -108,7 +108,7 @@ class ConfiguredTwitchBroadcasterSessionDeviceTest {
                                 override fun validate(accessToken: String): DeviceAuthResponse {
                                     check(canRequest()); assertEquals("fixture-catalog-access", accessToken)
                                     order.add("catalog-validate")
-                                    return DeviceAuthResponse(200, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID,
+                                    return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID,
                                         "user_id" to "catalog-user", "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 7200))
                                 }
                                 override fun close() = Unit

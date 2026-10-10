@@ -29,9 +29,9 @@ class NativeAuthorizationProfileTest {
         webCases.forEach { assertEquals(TwitchAuthorizationProfile.PROVIDER_PLAYBACK, nativeAuthorizationProfile(it)) }
     }
 
-    @Test fun `all other existing cases retain the own-client default`() {
+    @Test fun `non-Twitch cases use a harmless Smart TV profile default`() {
         NativeAccessCase.entries.filter { it !in webCases && it !in tvCases && it !in localCases }.forEach {
-            assertEquals(TwitchAuthorizationProfile.TACHIAI, nativeAuthorizationProfile(it))
+            assertEquals(TwitchAuthorizationProfile.PROVIDER_SMART_TV, nativeAuthorizationProfile(it))
         }
     }
 }

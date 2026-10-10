@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -8,7 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.provider.twitch.DeviceAuthResponse
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -23,13 +25,15 @@ class TwitchCatalogSessionTest {
         var failWrite = false
         var denyRead = false
         var reads = 0
+        var writes = 0
         override fun read(): ByteArray? { check(!denyRead); reads++; return bytes?.copyOf() }
         override fun write(plaintext: ByteArray) {
             if (failWrite) throw IOException("fixture failure")
             bytes = plaintext.copyOf()
+            writes++
         }
     }
-    private fun validation(user: String = "123", client: String = TACHIAI_TWITCH_CLIENT_ID,
+    private fun validation(user: String = "123", client: String = SMART_TV_TWITCH_CLIENT_ID,
         scopes: List<String> = listOf(TWITCH_CATALOG_SCOPE), seconds: Int = 7200) = DeviceAuthResponse(200,
         mapOf("client_id" to client, "user_id" to user, "scopes" to scopes, "expires_in" to seconds))
     private fun token(access: String = "rotated-access", refresh: String = "rotated-refresh") = DeviceAuthResponse(200,
@@ -78,6 +82,51 @@ class TwitchCatalogSessionTest {
         val restarted = fixture.session()
         assertEquals(TwitchCatalogSessionState.UNVERIFIED, restarted.readSummary().state)
         assertNotNull(restarted.validate().lease); assertEquals(3, fixture.requests.validations.get())
+    }
+
+    @Test fun differentClientRecordNeedsReconnectWithoutNetworkOrImplicitWriteAndAcceptsExplicitReplacement() {
+        val fixture = Fixture()
+        fixture.memory.bytes = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(1); out.writeUTF(fixture.instance); out.writeUTF("FixturePriorClient123456789")
+            }
+        }.toByteArray()
+        val previous = fixture.memory.bytes!!.copyOf(); val session = fixture.session()
+        val summary = session.readSummary()
+        assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, summary.state)
+        assertEquals(TwitchCatalogAuthFailure.CLIENT_MISMATCH, summary.failure)
+        val rejected = session.validate(force = true)
+        assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, rejected.summary.state)
+        assertEquals(TwitchCatalogAuthFailure.CLIENT_MISMATCH, rejected.summary.failure)
+        assertNull(rejected.lease); assertEquals(0, fixture.requests.validations.get())
+        assertEquals(0, fixture.requests.refreshes.get()); assertEquals(0, fixture.memory.writes)
+        assertArrayEquals(previous, fixture.memory.bytes)
+        val attempt = session.beginConnection()
+        val approved = TwitchCatalogAuthorizationResult.Approved(
+            TwitchCatalogCredentials("connected-access", "connected-refresh", 7200_000L),
+            TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), 7200_000L),
+            fixture.clock.mono + 7200_000L, fixture.clock.mono)
+        val accepted = session.accept(approved, attempt)
+        assertEquals(TwitchCatalogSessionState.CONNECTED, accepted.summary.state)
+        assertTrue(session.isCurrent(accepted.lease!!))
+        assertTrue(String(fixture.memory.bytes!!, Charsets.ISO_8859_1).contains(SMART_TV_TWITCH_CLIENT_ID))
+        assertFalse(String(fixture.memory.bytes!!, Charsets.ISO_8859_1).contains("FixturePriorClient123456789"))
+    }
+
+    @Test fun sharedRefreshAndForgetInvalidatePreviousConsumerLeaseAndCannotSpendOldRefreshAgain() {
+        val fixture = Fixture(); fixture.connect()
+        val playback = fixture.session(); val catalog = fixture.session()
+        val playbackLease = playback.validate(force = true).lease!!
+        val catalogLease = catalog.validate().lease!!
+        val renewed = catalog.onUnauthorized(catalogLease).lease!!
+        assertFalse(playback.isCurrent(playbackLease)); assertFalse(catalog.isCurrent(catalogLease))
+        assertTrue(catalog.isCurrent(renewed)); assertEquals(1, fixture.requests.refreshes.get())
+        assertNull(playback.onUnauthorized(playbackLease).lease)
+        assertEquals(1, fixture.requests.refreshes.get())
+        catalog.invalidate()
+        assertFalse(catalog.isLocallyCurrent(renewed)); assertFalse(playback.isLocallyCurrent(playbackLease))
+        assertEquals(TwitchCatalogSessionState.MISSING, catalog.forget().summary.state)
+        assertEquals(TwitchCatalogSessionState.MISSING, playback.validate().summary.state)
     }
 
     @Test fun localLeaseGatePerformsNoStoreOwnerOrTransportMaintenance() {
@@ -174,6 +223,73 @@ class TwitchCatalogSessionTest {
         assertEquals(TwitchCatalogSessionState.SUPERSEDED, session.onUnauthorized(first).summary.state)
         assertEquals(2, fixture.requests.refreshes.get())
         assertTrue(session.isCurrent(second.lease)) // Late 401 cannot discard the new lease.
+    }
+
+    @Test fun omittedRefreshLifetimeRotatesOnlyAfterPositiveValidationAndStoresFiniteRemainingDuration() {
+        val fixture = Fixture(); val previous = fixture.connect(1000); val session = fixture.session()
+        fixture.clock.advance(1000)
+        fixture.requests.refresh = {
+            fixture.clock.advance(1000)
+            DeviceAuthResponse(200, token().fields - "expires_in")
+        }
+        fixture.requests.validate = { access ->
+            assertEquals("rotated-access", access); fixture.clock.advance(2000); validation(seconds = 120)
+        }
+        val result = session.validate()
+        assertEquals(TwitchCatalogSessionState.CONNECTED, result.summary.state)
+        assertEquals(1, fixture.requests.refreshes.get()); assertEquals(1, fixture.requests.validations.get())
+        val saved = fixture.store.read()!!
+        assertNotEquals(previous.generation, saved.generation)
+        assertEquals(118_000L, saved.credentials!!.expiresInMs)
+        assertEquals(fixture.clock.wall + 118_000L, saved.expiresAtMs)
+        assertEquals(fixture.clock.mono + 118_000L, result.lease!!.deadlineMs)
+        assertFalse(fixture.store.isStoredCurrent(previous)); assertTrue(session.isCurrent(result.lease))
+    }
+
+    @Test fun omittedRefreshBudgetRejectsBeforeValidationOrAfterLateValidationAndCannotRetryConsumedPair() {
+        listOf(true, false).forEach { delayRefresh ->
+            val fixture = Fixture(); fixture.connect(1000); val session = fixture.session()
+            fixture.clock.advance(1000)
+            fixture.requests.refresh = {
+                if (delayRefresh) fixture.clock.advance(TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                DeviceAuthResponse(200, token().fields - "expires_in")
+            }
+            fixture.requests.validate = {
+                if (!delayRefresh) fixture.clock.advance(TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                validation()
+            }
+            val result = session.validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, result.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, result.summary.failure); assertNull(result.lease)
+            assertEquals(if (delayRefresh) 0 else 1, fixture.requests.validations.get())
+            assertEquals(1, fixture.requests.refreshes.get())
+            assertEquals(TwitchCatalogGrantState.REFRESHING, fixture.store.read()!!.state)
+            assertNull(fixture.store.read()!!.credentials)
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
+    }
+
+    @Test fun omittedRefreshCannotStoreZeroValidationOrMissingRefreshOrMalformedTokenLifetime() {
+        val cases = listOf(
+            DeviceAuthResponse(200, token().fields - "expires_in") to validation(seconds = 0),
+            DeviceAuthResponse(200, (token().fields - "expires_in") + ("refresh_token" to null)) to validation(),
+            DeviceAuthResponse(200, token().fields + ("expires_in" to null)) to validation(),
+            DeviceAuthResponse(200, token().fields + ("expires_in" to 0)) to validation(),
+        )
+        cases.forEachIndexed { index, (tokenResponse, validationResponse) ->
+            val fixture = Fixture(); fixture.connect(1000); val session = fixture.session()
+            fixture.clock.advance(1000)
+            fixture.requests.refresh = { tokenResponse }; fixture.requests.validate = { validationResponse }
+            val result = session.validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, result.summary.state); assertNull(result.lease)
+            assertEquals(if (index == 0) 1 else 0, fixture.requests.validations.get())
+            assertEquals(1, fixture.requests.refreshes.get())
+            assertEquals(TwitchCatalogGrantState.REFRESHING, fixture.store.read()!!.state)
+            assertNull(fixture.store.read()!!.credentials)
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
     }
 
     @Test fun temporaryValidationFailureSuspendsLeaseWithoutDeletingOrClaimingRevocation() {

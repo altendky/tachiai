@@ -118,7 +118,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     diagnostics = diagnostics,
                     notice = if (parts.first.service == PrototypeService.ABEMA)
                         "Browse prototype samples or paste a public ABEMA link to save its exact item. Imported availability is unknown. Catalogs and account lists are not connected; playback supports only the existing samples."
-                    else "Connect Catalog account in Providers for Following, channel search and published replays. Live channels is a live listing; search and exact lookup also find offline channels. Without available catalog access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback for discovered items is not verified.").also { it.load() }
+                    else "Connect Twitch account in Providers for Following, channel search, published replays and playback. Live channels is a live listing; search and exact lookup also find offline channels. Without available account access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback availability is checked when opening the viewer.").also { it.load() }
                 reading = false
                 val handoff = pendingPreview
                 if (handoff != null) {

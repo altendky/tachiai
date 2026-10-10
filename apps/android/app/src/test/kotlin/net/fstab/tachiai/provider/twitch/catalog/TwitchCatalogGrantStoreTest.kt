@@ -13,7 +13,7 @@ import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -56,7 +56,7 @@ class TwitchCatalogGrantStoreTest {
     @Test fun exactInstanceClientScopeVersionAndCompleteCodecAreRequiredWithoutImplicitOverwrite() {
         val memory = Memory(); val id = UUID.randomUUID().toString(); val grantStore = store(memory, id)
         val ready = connect(grantStore); val original = memory.bytes!!.copyOf()
-        fun marker(version: Int = 1, instance: String = id, client: String = TACHIAI_TWITCH_CLIENT_ID,
+        fun marker(version: Int = 1, instance: String = id, client: String = SMART_TV_TWITCH_CLIENT_ID,
             scope: String = TWITCH_CATALOG_SCOPE, generation: String = ready.generation,
             state: String = "CLEARED") = ByteArrayOutputStream().also { buffer ->
             DataOutputStream(buffer).use { out ->
@@ -85,6 +85,40 @@ class TwitchCatalogGrantStoreTest {
         assertEquals(credentials.accessToken, grantStore.read()!!.credentials!!.accessToken)
         assertFalse(String(memory.bytes!!, Charsets.ISO_8859_1).contains("fixturelogin"))
         assertThrows(IllegalArgumentException::class.java) { TwitchCatalogCredentials("a".repeat(2049), "r", 1000L) }
+    }
+
+    @Test fun differentValidClientRequiresExplicitReconnectBeforeAnyCredentialsAreReadOrRecordIsChanged() {
+        val memory = Memory(); val id = UUID.randomUUID().toString(); val grantStore = store(memory, id)
+        // Only the binding header is present: the different client's token
+        // schema is never read or accepted as this connection's credentials.
+        val previous = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(1); out.writeUTF(id); out.writeUTF("FixturePriorClient123456789")
+            }
+        }.toByteArray()
+        memory.bytes = previous.copyOf()
+        val error = assertThrows(TwitchCatalogStoreException::class.java) { grantStore.read() }
+        assertEquals(TwitchCatalogStoreFailure.CLIENT_MISMATCH, error.failure)
+        assertEquals(0, memory.writes); assertArrayEquals(previous, memory.bytes)
+        val connected = connect(grantStore)
+        assertEquals(TwitchCatalogGrantState.READY, grantStore.read()!!.state)
+        assertEquals(connected.generation, grantStore.read()!!.generation)
+        assertTrue(String(memory.bytes!!, Charsets.ISO_8859_1).contains(SMART_TV_TWITCH_CLIENT_ID))
+        assertFalse(String(memory.bytes!!, Charsets.ISO_8859_1).contains("FixturePriorClient123456789"))
+    }
+
+    @Test fun explicitForgetCanReplaceDifferentClientEvenWithLastObservedGeneration() {
+        val memory = Memory(); val id = UUID.randomUUID().toString(); val grantStore = store(memory, id)
+        val old = connect(grantStore)
+        memory.bytes = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(1); out.writeUTF(id); out.writeUTF("FixturePriorClient123456789")
+            }
+        }.toByteArray()
+        val revision = grantStore.invalidate()
+        assertTrue(grantStore.forget(revision, old.generation))
+        assertEquals(TwitchCatalogGrantState.CLEARED, grantStore.read()!!.state)
+        assertFalse(grantStore.isRevisionCurrent(old.revision))
     }
 
     @Test fun rejectedIdentityAndGenerationCannotReplaceAnotherInstanceOrAccount() {

@@ -8,7 +8,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TwitchDeviceAccessHandoffTest {
-    private class Transport(val client: String = TACHIAI_TWITCH_CLIENT_ID, val user: String = "fixture-user") : TwitchDeviceTransport {
+    private class Transport(val client: String = SMART_TV_TWITCH_CLIENT_ID, val user: String = "fixture-user") : TwitchDeviceTransport {
         var validated = false
         var closed = false
         var onValidate: () -> Unit = {}
@@ -25,12 +25,12 @@ class TwitchDeviceAccessHandoffTest {
         override fun close() { closed = true }
     }
 
-    @Test fun `optional own-client callback follows validation and receives conservative deadline`() = runBlocking {
+    @Test fun `optional exact-profile callback follows validation and receives conservative deadline`() = runBlocking {
         val transport = Transport()
         var now = 1000L
         var calls = 0
-        val result = authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, transport, {}, {},
-            clockMs = { now }, waitMs = { now += it }, onOwnClientValidated = { token, deadline ->
+        val result = authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, transport, {}, {},
+            clockMs = { now }, waitMs = { now += it }, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = { token, deadline ->
                 assertTrue(transport.validated)
                 assertEquals("fixture-token", token)
                 assertEquals(52000L, deadline)
@@ -44,30 +44,30 @@ class TwitchDeviceAccessHandoffTest {
     @Test fun `other clients and failed validation never hand off a token`() = runBlocking {
         val callback: suspend (String, Long) -> Unit = { _, _ -> throw AssertionError("unvalidated handoff") }
         val other = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice("anotherpublicclient", other, {}, {}, onOwnClientValidated = callback))
+        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice("anotherpublicclient", other, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = callback))
         assertTrue(other.closed)
         val mismatch = Transport(client = "anotherpublicclient")
-        assertEquals(DeviceAuthPhase.CLIENT_MISMATCH, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, mismatch, {}, {},
-            waitMs = {}, onOwnClientValidated = callback))
+        assertEquals(DeviceAuthPhase.CLIENT_MISMATCH, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, mismatch, {}, {},
+            waitMs = {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = callback))
         val noUser = Transport(user = "")
-        assertEquals(DeviceAuthPhase.INVALID_RESPONSE, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, noUser, {}, {},
-            waitMs = {}, onOwnClientValidated = callback))
+        assertEquals(DeviceAuthPhase.INVALID_RESPONSE, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, noUser, {}, {},
+            waitMs = {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = callback))
     }
 
     @Test fun `expired validated token never reaches access check`() = runBlocking {
         var now = 0L
         val transport = Transport().apply { onValidate = { now = 100000L } }
-        assertEquals(DeviceAuthPhase.EXPIRED, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, transport, {}, {},
+        assertEquals(DeviceAuthPhase.EXPIRED, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, transport, {}, {},
             clockMs = { now }, waitMs = { now += it },
-            onOwnClientValidated = { _, _ -> throw AssertionError("expired handoff") }))
+            providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = { _, _ -> throw AssertionError("expired handoff") }))
         assertTrue(transport.closed)
     }
 
     @Test fun `cancellation in access check propagates and closes OAuth transport`() {
         val transport = Transport()
         assertThrows(CancellationException::class.java) {
-            runBlocking { authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, transport, {}, {}, waitMs = {},
-                onOwnClientValidated = { _, _ -> throw CancellationException() }) }
+            runBlocking { authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, transport, {}, {}, waitMs = {},
+                providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = { _, _ -> throw CancellationException() }) }
         }
         assertTrue(transport.closed)
     }
@@ -81,8 +81,8 @@ class TwitchDeviceAccessHandoffTest {
             validated.complete(Unit)
         } }
         val worker = async {
-            authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, transport, {}, {}, waitMs = {},
-                foreground = foreground, onOwnClientValidated = { _, _ -> handedOff = true })
+            authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID, transport, {}, {}, waitMs = {},
+                foreground = foreground, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, onProviderClientValidated = { _, _ -> handedOff = true })
         }
         validated.await()
         assertFalse(handedOff)

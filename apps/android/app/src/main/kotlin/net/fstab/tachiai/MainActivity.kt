@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
                     return@DebugLaunchTheme
                 }
                 if (BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_TWITCH_DEVICE_AUTH, false)) {
-                    TwitchDeviceAuthProbeScreen(Modifier.safeDrawingPadding())
+                    TwitchDeviceAuthProbeScreen(Modifier.safeDrawingPadding(), inspectSmartTvLifetime = true)
                     return@DebugLaunchTheme
                 }
                 if (BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_TWITCH_SIGN_IN, false)) {

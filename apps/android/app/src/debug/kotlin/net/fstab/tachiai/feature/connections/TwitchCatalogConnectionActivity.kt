@@ -77,8 +77,8 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
             catch (error: Exception) {
                 diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, error)
                 initial = initial.copy(operation = null, canForget = clearingRequired,
-                    status = if (clearingRequired) "Catalog account could not be cleared. Access and return remain blocked. Retry Forget locally."
-                        else "Catalog connection could not be opened. Check the saved instance and route, then retry opening.")
+                    status = if (clearingRequired) "Twitch account could not be cleared. Access and return remain blocked. Retry Forget locally."
+                        else "Twitch connection could not be opened. Check the saved instance and route, then retry opening.")
             } finally {
                 binding?.let { discarded -> withContext(NonCancellable + Dispatchers.IO) {
                     runCatching { discarded.close() }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, it) }
@@ -102,10 +102,10 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
         TwitchCatalogConnectionWrites.track(id, write); write.start()
         scope.launch {
             if (write.await()) {
-                initial = initial.copy(operation = null, canForget = false, status = "Catalog account forgotten on this device.")
+                initial = initial.copy(operation = null, canForget = false, status = "Twitch account forgotten on this device.")
                 loadConnection()
             } else initial = initial.copy(operation = null, canForget = true,
-                status = "Catalog account could not be cleared. Access and return remain blocked. Retry Forget locally.")
+                status = "Twitch account could not be cleared. Access and return remain blocked. Retry Forget locally.")
         }
     }
     override fun onResume() { super.onResume(); resumed = true; controller?.setForeground(true) }

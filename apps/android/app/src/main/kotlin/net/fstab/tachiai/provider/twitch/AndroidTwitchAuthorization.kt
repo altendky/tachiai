@@ -18,7 +18,7 @@ internal object AndroidTwitchAuthorization {
                 profile = TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
         }
     }
-    @Synchronized fun get(context: Context, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI): TwitchSavedAuthorization =
+    @Synchronized fun get(context: Context, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV): TwitchSavedAuthorization =
         instances.getOrPut(profile) {
             TwitchSavedAuthorization(AndroidPrivateSecretStore(context.applicationContext, profile.storageSlot), profile = profile)
         }

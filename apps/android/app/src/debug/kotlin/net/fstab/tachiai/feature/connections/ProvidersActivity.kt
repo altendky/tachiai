@@ -32,7 +32,7 @@ class ProvidersActivity : ComponentActivity() {
             if (value == null) Text(message ?: "Reading provider setup…")
             else ProviderInstancesScreen(value, profiles, busy, message,
                 { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
-                onCreate = ::create, twitchLogin = { TwitchProviderLogin(it) },
+                onCreate = ::create,
                 onManageStreams = { startActivity(Intent(this, ManageStreamsActivity::class.java)
                     .putExtra(ManageStreamsActivity.INSTANCE_ID, it)) },
                 onCatalogConnection = { startActivity(Intent(this, TwitchCatalogConnectionActivity::class.java)

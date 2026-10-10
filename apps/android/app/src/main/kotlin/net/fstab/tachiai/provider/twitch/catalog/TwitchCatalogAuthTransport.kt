@@ -43,11 +43,11 @@ internal class TwitchCatalogAuthTransport(
     private var pauseRevision = 0L
 
     override fun device() = exchange(TwitchCatalogAuthEndpoint.DEVICE,
-        mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE))
+        mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE))
 
     override fun poll(deviceCode: String): DeviceAuthResponse {
         require(validCatalogRefreshToken(deviceCode))
-        return exchange(TwitchCatalogAuthEndpoint.POLL, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID,
+        return exchange(TwitchCatalogAuthEndpoint.POLL, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID,
             "scopes" to TWITCH_CATALOG_SCOPE, "device_code" to deviceCode,
             "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"))
     }
@@ -59,7 +59,7 @@ internal class TwitchCatalogAuthTransport(
 
     override fun refresh(refreshToken: String): DeviceAuthResponse {
         require(validCatalogRefreshToken(refreshToken))
-        return exchange(TwitchCatalogAuthEndpoint.REFRESH, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID,
+        return exchange(TwitchCatalogAuthEndpoint.REFRESH, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID,
             "grant_type" to "refresh_token", "refresh_token" to refreshToken))
     }
 

@@ -91,6 +91,11 @@ internal class TwitchCatalogSession(
         return TwitchCatalogSessionResult(TwitchCatalogSessionSummary(state, failure, expiresAtMs).also { lastSummary = it }, value)
     }
 
+    private fun storeFailure(error: TwitchCatalogStoreException): TwitchCatalogSessionResult =
+        if (error.failure == TwitchCatalogStoreFailure.CLIENT_MISMATCH)
+            result(TwitchCatalogSessionState.RECONNECT_REQUIRED, TwitchCatalogAuthFailure.CLIENT_MISMATCH)
+        else result(TwitchCatalogSessionState.STORAGE_FAILURE)
+
     fun readSummary(): TwitchCatalogSessionSummary = synchronized(operationLock) {
         if (closed) return@synchronized TwitchCatalogSessionSummary(TwitchCatalogSessionState.SUPERSEDED)
         if (!foreground) return@synchronized TwitchCatalogSessionSummary(TwitchCatalogSessionState.PAUSED)
@@ -102,8 +107,8 @@ internal class TwitchCatalogSession(
             val grant = store.read()
             observedGeneration = grant?.generation
             summary(grant)
-        } catch (_: TwitchCatalogStoreException) {
-            TwitchCatalogSessionSummary(TwitchCatalogSessionState.STORAGE_FAILURE)
+        } catch (error: TwitchCatalogStoreException) {
+            storeFailure(error).summary
         }
     }
 
@@ -124,7 +129,7 @@ internal class TwitchCatalogSession(
                 lastSummary = TwitchCatalogSessionSummary(TwitchCatalogSessionState.RECONNECT_REQUIRED)
             }
         } catch (error: TwitchCatalogStoreException) {
-            lastSummary = TwitchCatalogSessionSummary(TwitchCatalogSessionState.STORAGE_FAILURE)
+            storeFailure(error)
             throw error
         }
     }
@@ -148,8 +153,8 @@ internal class TwitchCatalogSession(
                 val validatedAt = approved.validatedAtMs ?: return@synchronized result(TwitchCatalogSessionState.UNVERIFIED)
                 connected(grant, local, minOf(approved.deadlineMs,
                     Math.addExact(validatedAt, TWITCH_CATALOG_VALIDATION_INTERVAL_MS)))
-            } catch (_: TwitchCatalogStoreException) {
-                result(TwitchCatalogSessionState.STORAGE_FAILURE)
+            } catch (error: TwitchCatalogStoreException) {
+                storeFailure(error)
             }
         }
 
@@ -160,8 +165,8 @@ internal class TwitchCatalogSession(
                 clearRevision = null; clearGeneration = null; observedGeneration = null
                 result(TwitchCatalogSessionState.MISSING)
             }
-        } catch (_: TwitchCatalogStoreException) {
-            result(TwitchCatalogSessionState.STORAGE_FAILURE)
+        } catch (error: TwitchCatalogStoreException) {
+            storeFailure(error)
         }
     }
 
@@ -233,8 +238,8 @@ internal class TwitchCatalogSession(
         } catch (_: IOException) {
             if (local != localRevision.get() || !foreground || closed) stopped()
             else result(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
-        } catch (_: TwitchCatalogStoreException) {
-            result(TwitchCatalogSessionState.STORAGE_FAILURE)
+        } catch (error: TwitchCatalogStoreException) {
+            storeFailure(error)
         } catch (error: java.util.concurrent.CancellationException) {
             lease = null
             throw error
@@ -248,11 +253,11 @@ internal class TwitchCatalogSession(
         grant: TwitchCatalogStoredGrant?): TwitchCatalogSessionResult {
         if (grant == null || !allowed(local, grant.revision)) return stopped()
         try { if (!store.isStoredCurrent(grant)) return stopped() }
-        catch (_: TwitchCatalogStoreException) { return result(TwitchCatalogSessionState.STORAGE_FAILURE) }
+        catch (error: TwitchCatalogStoreException) { return storeFailure(error) }
         if (failure in setOf(TwitchCatalogAuthFailure.CLIENT_MISMATCH, TwitchCatalogAuthFailure.USER_MISMATCH,
                 TwitchCatalogAuthFailure.SCOPE_MISMATCH, TwitchCatalogAuthFailure.REJECTED, TwitchCatalogAuthFailure.EXPIRED)) {
             try { if (grant.state == TwitchCatalogGrantState.READY) store.requireReconnect(grant) }
-            catch (_: TwitchCatalogStoreException) { return result(TwitchCatalogSessionState.STORAGE_FAILURE) }
+            catch (error: TwitchCatalogStoreException) { return storeFailure(error) }
             return result(TwitchCatalogSessionState.RECONNECT_REQUIRED, failure)
         }
         return result(TwitchCatalogSessionState.TEMPORARY_FAILURE, failure)
@@ -271,23 +276,28 @@ internal class TwitchCatalogSession(
             val replacement = store.refresh(grant, { allowed(local, grant.revision) }) { old ->
                 withTransport(local, grant.revision) { transport ->
                     val started = monotonicMs()
-                    val credentials = parseTwitchCatalogToken(transport.refresh(old.refreshToken))
+                    val token = parseTwitchCatalogToken(transport.refresh(old.refreshToken))
                     check(allowed(local, grant.revision))
+                    val tokenDeadline = token.expiresInMs?.let { Math.addExact(started, it) }
+                    val acceptanceDeadline = tokenDeadline ?: Math.addExact(started, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
                     val validating = monotonicMs()
-                    val validation = parseTwitchCatalogValidation(transport.validate(credentials.accessToken), grant.userId)
+                    if (validating >= acceptanceDeadline) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val validation = parseTwitchCatalogValidation(transport.validate(token.accessToken), grant.userId)
                     check(allowed(local, grant.revision))
-                    val deadline = minOf(Math.addExact(started, credentials.expiresInMs),
-                        Math.addExact(validating, validation.expiresInMs))
+                    if (monotonicMs() >= acceptanceDeadline) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val validatedDeadline = Math.addExact(validating, validation.expiresInMs)
+                    val deadline = tokenDeadline?.let { minOf(it, validatedDeadline) } ?: validatedDeadline
                     val remaining = deadline - monotonicMs()
                     if (remaining <= 0) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val credentials = token.validatedCredentials(validation)
                     validationDeadline = minOf(deadline, Math.addExact(validating, TWITCH_CATALOG_VALIDATION_INTERVAL_MS))
                     TwitchCatalogReplacement(credentials, validation,
                         minOf(remaining, credentials.expiresInMs, validation.expiresInMs))
                 }
             } ?: return stopped()
             return connected(replacement, local, validationDeadline)
-        } catch (_: TwitchCatalogStoreException) {
-            return result(TwitchCatalogSessionState.STORAGE_FAILURE)
+        } catch (error: TwitchCatalogStoreException) {
+            return storeFailure(error)
         } catch (error: java.util.concurrent.CancellationException) {
             lease = null
             throw error

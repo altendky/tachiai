@@ -232,22 +232,22 @@ The debug configured-video flow retains a validated public Twitch VIDEO identity
 in the existing encrypted local list, within the intersection of catalog identity
 rules and the unchanged native replay input bound. Its viewer snapshot keeps the
 item and provider-instance UUIDs; restart recovery still stores only local UUIDs.
-Preparation uses that instance's exact route and LOCAL playback grant. Catalog
-authorization cannot authorize native playback. Signed sources remain session-local,
+Preparation uses that instance's exact route and unified Smart TV connection.
+Signed sources remain session-local,
 and diagnostics use fixed source categories rather than arbitrary video IDs.
 No access endpoint, private protocol, media-origin or DRM boundary changes.
 
 Configured Twitch broadcaster IDs remain encrypted saved public identities;
 current logins exist only in provider-owned preparation handles. Exact catalog
 ID/live lookup and a post-native lookup by login use the selected instance's
-separate catalog grant and closed-purpose route. They never substitute that grant
-for LOCAL playback authorization. Native and metadata ownership must match their
+shared Smart TV grant and closed-purpose route. Native and metadata ownership must match their
 frozen instance/route choices; no fallback is admitted. Worker checks may reread
 protected stores, while queued publication checks only local lease identity,
 revision, expiry and lifecycle state. Cross-process durable changes are observed
 at subsequent worker/lifecycle checks; no immediate observer is claimed.
-The catalog grant gates preparation rather than ongoing native playback after
-publication. Retry deadlines are transient and instance-bound, without saved
+Source acceptance is bounded to 30 seconds and the grant deadline; ongoing native
+playback retains the grant lease, worker ownership checks and foreground budget.
+Retry deadlines are transient and instance-bound, without saved
 aliases, provider bodies, grants or new diagnostic identity fields. These checks
 do not make separate provider lookups atomic or broaden native media permissions.
 
@@ -282,6 +282,13 @@ policy exception, not a permanent-provider-session guarantee.
 
 ### Explicit saved own-client authorization
 
+This section records the historical experiment. On 2026-10-10 the user retired
+Tachiai's registration from active code and requested one Smart TV connection.
+Own-client diagnostic actions were removed. Opening the new connection binding
+deletes the retired encrypted file, its AtomicFile remnants and its local key
+without reading credentials or revoking provider authorization. Historical
+Smart TV zero-scope comparison slots remain separate from the current flow.
+
 The user requested a separate reusable-token case. Only TWITCH AUTHORIZE SAVE
 retains a freshly validated own-client access token; original OAuth-only and
 fresh access cases retain their discard behavior. The saved slot is bounded,
@@ -305,6 +312,30 @@ not revoke the provider grant or clear any browser session. Scratch bytes are
 cleared where practical, but Java strings/app compromise/debuggability preclude
 a secure-memory-erasure claim. Installation and tests must never inspect or
 export the credential file, key or decrypted token.
+
+### Unified Smart TV provider connection
+
+On 2026-10-10 the user authorized one connection per Twitch instance using the
+Smart TV client identity for discovery and existing debug native playback.
+The only requested scope is `user:read:follows`. One protected record owns the
+validated user, access/refresh pair, exact client and scope, lifetime and generation.
+Playback consumes a lease directly; it does not copy tokens into a second slot.
+Connect, reconnect, validation and Forget apply to both uses. Local Forget retains
+configured streams, routes, browser login and other instances.
+
+Retired-client records require explicit reconnect. Scoped grants require positive
+validation lifetime and a refresh pair; the historical zero-scope lifetime
+exceptions are not inherited. An omitted token expiry stays worker-local and
+requires positive official validation within 30 seconds of the token request
+starting before finite credentials can be saved. Present null/zero/malformed
+token expiry and missing/zero validation expiry remain rejected.
+This changes credential ownership, not private
+playback endpoints, media-origin permissions, DRM behavior or background policy.
+A bounded consent check observed the exact requested scope and refresh presence,
+with omitted token expiry and rejection before validation. Validated account
+access and native playback remain unverified; the
+[authorization record](twitch-catalog-authorization.md#verification-limits) states
+the observed device conditions and limits.
 
 ### Opt-in private-access error classification
 

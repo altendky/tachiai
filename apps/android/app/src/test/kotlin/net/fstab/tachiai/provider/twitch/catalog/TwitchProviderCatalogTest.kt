@@ -11,7 +11,7 @@ import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.provider.catalog.*
 import net.fstab.tachiai.provider.twitch.DeviceAuthResponse
 import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -73,7 +73,7 @@ class TwitchProviderCatalogTest {
             override fun poll(deviceCode: String): DeviceAuthResponse = error("No polling in catalog fixtures")
             override fun validate(accessToken: String): DeviceAuthResponse {
                 authValidations.incrementAndGet()
-                return DeviceAuthResponse(200, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "user_id" to authUser,
+                return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to authUser,
                     "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 7200))
             }
             override fun refresh(refreshToken: String): DeviceAuthResponse {

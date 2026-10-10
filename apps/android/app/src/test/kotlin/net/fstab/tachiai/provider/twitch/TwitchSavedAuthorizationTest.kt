@@ -32,7 +32,7 @@ class TwitchSavedAuthorizationTest {
     private class Transport : TwitchDeviceTransport {
         var validations = 0
         var closed = false
-        var response = DeviceAuthResponse(200, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID,
+        var response = DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID,
             "user_id" to "fixture-user", "expires_in" to 60, "scopes" to null))
         var error: IOException? = null
         var onValidate: () -> Unit = {}
@@ -167,7 +167,7 @@ class TwitchSavedAuthorizationTest {
         assertTrue(expired.closed)
     }
 
-    @Test fun `each saved use validates own client and does not consume another grant`() = runBlocking {
+    @Test fun `each saved use validates Smart TV client and does not consume another grant`() = runBlocking {
         save()
         repeat(2) {
             val validation = Transport()

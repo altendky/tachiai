@@ -2,8 +2,8 @@
 
 ## Implemented boundary
 
-The debug Twitch Manage streams adapter uses the owning instance's separate
-[catalog authorization](twitch-catalog-authorization.md) through Twitch's supported
+The debug Twitch Manage streams adapter uses the owning instance's shared
+[Smart TV connection](twitch-catalog-authorization.md) through Twitch's supported
 Helix API. Following, channel search, exact user lookup, live status and published
 channel videos share the provider-neutral catalog interface and management screen.
 Adding, removing or reordering changes Tachiai's local configured list only.
@@ -15,7 +15,8 @@ lookup supplements search for accounts that are absent from those results. A
 published video URL selects that exact replay, highlight or uploaded video.
 
 The implementation and synthetic fixtures do not establish real-provider
-acceptance. Scoped consent, actual Helix responses, provider refresh/revocation
+acceptance. Scoped Smart TV consent, actual Helix responses, native playback
+acceptance and provider refresh/revocation
 and imported-route behavior still require supported account/device observations.
 No account or provider requests were used to implement this slice. Anonymous
 native browsing still needs its access architecture; no client secret or app-token
@@ -38,12 +39,15 @@ entitlement are separate from saved identity.
 
 Newly discovered playback remains **not verified** against a real provider.
 The debug viewer can now prepare [configured exact videos](configured-catalog.md#configured-twitch-video-playback)
-within its unchanged native replay boundary, using the owning instance's separate
-LOCAL playback grant and route. [Configured broadcaster playback](configured-catalog.md#configured-twitch-broadcaster-playback)
+within its unchanged native replay operations, using a freshly validated lease
+from the owning instance's shared connection and saved route.
+[Configured broadcaster playback](configured-catalog.md#configured-twitch-broadcaster-playback)
 uses guarded transient current-login mapping and checks that login's ownership
-again before publication. It requires both the owning instance's catalog connection
-and its separate LOCAL playback grant. Adding an item does not expand native
-permissions or select a sample under the new label.
+again before publication. Catalog and native preparation bind the same validated
+user and durable grant generation. This shared scoped-grant use is newly selected
+by the user; real native acceptance remains unverified. Adding an item does not
+select a sample under the new label. Earlier token-only LOCAL grants are not
+copied into the shared connection or selected as an automatic fallback.
 
 **History** is also listed, with access explicitly **not verified** regardless of
 Following/account connection. Selecting it cannot retrieve history or trigger a
@@ -90,7 +94,7 @@ Actual schedule responses and account/route acceptance remain unobserved.
 ## Account, routing and pagination
 
 Each adapter is bound to one stable provider instance, its saved route, maintained
-catalog grant and active foreground owner. Validation precedes access. Dispatch
+shared grant and active foreground owner. Validation precedes access. Dispatch
 and result publication check ownership and the durable grant generation. Pause,
 Forget, reconnect or a route change rejects stale work. Local configured entries
 remain readable when provider access is unavailable.
@@ -144,5 +148,9 @@ persistence through the same interface used by ABEMA.
 
 Android UI and decoder checks use synthetic isolated fixtures. Emulator results
 do not establish actual account acceptance, physical-device playback, DRM or TV
-behavior. The separate account connection, anonymous discovery and selected-source
-playback limits must remain visible until their own evidence is obtained.
+behavior. A bounded consent check observed exact scope, refresh presence and
+omitted token expiry, followed by pre-validation rejection; see the
+[authorization evidence](twitch-catalog-authorization.md#verification-limits).
+Validated account access, anonymous discovery and selected-source playback remain
+unobserved. Historical zero-scope playback observations do not establish the
+shared scoped connection's provider acceptance.

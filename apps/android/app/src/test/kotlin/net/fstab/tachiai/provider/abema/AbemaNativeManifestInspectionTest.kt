@@ -159,6 +159,6 @@ class AbemaNativeManifestInspectionTest {
             NativeAccessCase.ABEMA_ANONYMOUS_HLS, NativeAccessCase.ABEMA_HLS_VARIANT).forEach {
             assertEquals(AccessProbeEndpoint.ABEMA_CHANNELS, initialAccessEndpoint(it))
         }
-        assertEquals(AccessProbeEndpoint.TWITCH_ACCESS, initialAccessEndpoint(NativeAccessCase.TWITCH_LIVE_ANONYMOUS))
+        assertEquals(AccessProbeEndpoint.TWITCH_ACCESS, initialAccessEndpoint(NativeAccessCase.TWITCH_SMART_TV_LIVE))
     }
 }

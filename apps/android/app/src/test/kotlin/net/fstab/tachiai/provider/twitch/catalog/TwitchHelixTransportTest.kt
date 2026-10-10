@@ -40,7 +40,7 @@ class TwitchHelixTransportTest {
     }
     private fun transport(open: (URL) -> HttpsURLConnection) = TwitchHelixHttpTransport(open = open, decode = { mapOf("data" to emptyList<Any>()) })
 
-    @Test fun AllOperationsUseFixedGetPathsOwnClientAndEncodedPublicQueryOnly() {
+    @Test fun AllOperationsUseFixedGetPathsSmartTvClientAndEncodedPublicQueryOnly() {
         val opened = mutableListOf<Connection>()
         val http = transport { Connection(it).also(opened::add) }
         val cursor = "opaque/&+=?"
@@ -61,7 +61,7 @@ class TwitchHelixTransportTest {
         opened.forEach {
             assertTrue(validTwitchHelixUrl(it.url)); assertEquals("GET", it.requestMethod)
             assertEquals("api.twitch.tv", it.url.host); assertEquals("https", it.url.protocol)
-            assertEquals(TACHIAI_TWITCH_CLIENT_ID, it.getRequestProperty("Client-Id"))
+            assertEquals(SMART_TV_TWITCH_CLIENT_ID, it.getRequestProperty("Client-Id"))
             assertEquals("Bearer fixture-access", it.getRequestProperty("Authorization"))
             assertNull(it.getRequestProperty("Cookie")); assertFalse(it.doOutput); assertFalse(it.instanceFollowRedirects)
             assertFalse(it.useCaches); assertEquals(10_000, it.connectTimeout); assertEquals(15_000, it.readTimeout)

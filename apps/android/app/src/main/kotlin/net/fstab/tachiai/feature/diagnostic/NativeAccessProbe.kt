@@ -35,10 +35,9 @@ import net.fstab.tachiai.provider.abema.probeAbemaNativeAccess
 import net.fstab.tachiai.provider.abema.probeAbemaNativeHlsAccess
 import net.fstab.tachiai.provider.abema.abemaDashFormatClassification
 import net.fstab.tachiai.provider.twitch.TwitchAccessCase
-import net.fstab.tachiai.provider.twitch.probeTwitchNativeAccess
 import net.fstab.tachiai.provider.twitch.TwitchAuthorizationProfile
 
-internal enum class NativeAccessCase { ABEMA_ANONYMOUS, TWITCH_LIVE_ANONYMOUS, TWITCH_REPLAY_ANONYMOUS, TWITCH_LIVE_OAUTH, TWITCH_REPLAY_OAUTH, TWITCH_AUTHORIZE_SAVE, TWITCH_LIVE_SAVED, TWITCH_REPLAY_SAVED, TWITCH_LIVE_ERRORS, TWITCH_REPLAY_ERRORS, TWITCH_LIVE_BLANK_CLIENT, TWITCH_REPLAY_BLANK_CLIENT, TWITCH_PROVIDER_AUTHORIZE_SAVE, TWITCH_PROVIDER_LIVE, TWITCH_PROVIDER_REPLAY, TWITCH_SMART_TV_AUTHORIZE_SAVE, TWITCH_SMART_TV_LIVE, TWITCH_SMART_TV_REPLAY, TWITCH_SMART_TV_LIFETIME_INSPECTION, TWITCH_SMART_TV_LOCAL_SAVE, TWITCH_SMART_TV_LOCAL_LIVE, TWITCH_SMART_TV_LOCAL_REPLAY, TWITCH_NATIVE_LIVE, TWITCH_NATIVE_REPLAY, TWITCH_NATIVE_REPLAY_OBSERVED_CDN, TWITCH_NATIVE_LIVE_TIMING, TWITCH_NATIVE_REPLAY_TIMING, TWITCH_NATIVE_REPLAY_PAIR, TWITCH_SMART_TV_LOCAL_EXTEND, ABEMA_DASH_FORMAT, ABEMA_ANONYMOUS_HLS, ABEMA_HLS_VARIANT }
+internal enum class NativeAccessCase { ABEMA_ANONYMOUS, TWITCH_PROVIDER_AUTHORIZE_SAVE, TWITCH_PROVIDER_LIVE, TWITCH_PROVIDER_REPLAY, TWITCH_SMART_TV_AUTHORIZE_SAVE, TWITCH_SMART_TV_LIVE, TWITCH_SMART_TV_REPLAY, TWITCH_SMART_TV_LIFETIME_INSPECTION, TWITCH_SMART_TV_LOCAL_SAVE, TWITCH_SMART_TV_LOCAL_LIVE, TWITCH_SMART_TV_LOCAL_REPLAY, TWITCH_NATIVE_LIVE, TWITCH_NATIVE_REPLAY, TWITCH_NATIVE_REPLAY_OBSERVED_CDN, TWITCH_NATIVE_LIVE_TIMING, TWITCH_NATIVE_REPLAY_TIMING, TWITCH_NATIVE_REPLAY_PAIR, TWITCH_SMART_TV_LOCAL_EXTEND, ABEMA_DASH_FORMAT, ABEMA_ANONYMOUS_HLS, ABEMA_HLS_VARIANT }
 internal fun initialAccessEndpoint(case: NativeAccessCase): AccessProbeEndpoint = when (case) {
     NativeAccessCase.ABEMA_ANONYMOUS, NativeAccessCase.ABEMA_DASH_FORMAT,
     NativeAccessCase.ABEMA_ANONYMOUS_HLS, NativeAccessCase.ABEMA_HLS_VARIANT -> AccessProbeEndpoint.ABEMA_CHANNELS
@@ -54,7 +53,7 @@ internal fun nativeAuthorizationProfile(case: NativeAccessCase): TwitchAuthoriza
     NativeAccessCase.TWITCH_NATIVE_REPLAY, NativeAccessCase.TWITCH_NATIVE_REPLAY_OBSERVED_CDN,
     NativeAccessCase.TWITCH_NATIVE_LIVE_TIMING, NativeAccessCase.TWITCH_NATIVE_REPLAY_TIMING,
     NativeAccessCase.TWITCH_NATIVE_REPLAY_PAIR, NativeAccessCase.TWITCH_SMART_TV_LOCAL_EXTEND -> TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL
-    else -> TwitchAuthorizationProfile.TACHIAI
+    else -> TwitchAuthorizationProfile.PROVIDER_SMART_TV
 }
 internal fun accessProbeSummary(result: AccessProbeResult) =
     "${result.endpoint.name} / ${result.outcome.name} / HTTP ${result.http}"
@@ -100,39 +99,22 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
         }
         return
     }
-    if (selected in setOf(NativeAccessCase.TWITCH_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_LIVE_SAVED, NativeAccessCase.TWITCH_REPLAY_SAVED,
-        NativeAccessCase.TWITCH_LIVE_ERRORS, NativeAccessCase.TWITCH_REPLAY_ERRORS,
-        NativeAccessCase.TWITCH_LIVE_BLANK_CLIENT, NativeAccessCase.TWITCH_REPLAY_BLANK_CLIENT,
-        NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_PROVIDER_LIVE, NativeAccessCase.TWITCH_PROVIDER_REPLAY,
+    if (selected in setOf(NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_PROVIDER_LIVE, NativeAccessCase.TWITCH_PROVIDER_REPLAY,
         NativeAccessCase.TWITCH_SMART_TV_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_SMART_TV_LIVE, NativeAccessCase.TWITCH_SMART_TV_REPLAY,
         NativeAccessCase.TWITCH_SMART_TV_LIFETIME_INSPECTION, NativeAccessCase.TWITCH_SMART_TV_LOCAL_SAVE,
         NativeAccessCase.TWITCH_SMART_TV_LOCAL_LIVE, NativeAccessCase.TWITCH_SMART_TV_LOCAL_REPLAY)) {
         val profile = nativeAuthorizationProfile(checkNotNull(selected))
-        val providerIdentity = profile != TwitchAuthorizationProfile.TACHIAI
         Column(modifier) {
             Button(onClick = { selected = null }) { Text("Back to access cases") }
             if (selected == NativeAccessCase.TWITCH_SMART_TV_LIFETIME_INSPECTION)
                 TwitchDeviceAuthProbeScreen(profile = profile, inspectSmartTvLifetime = true)
-            else if (selected in setOf(NativeAccessCase.TWITCH_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE,
+            else if (selected in setOf(NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE,
                 NativeAccessCase.TWITCH_SMART_TV_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_SMART_TV_LOCAL_SAVE))
                 TwitchDeviceAuthProbeScreen(retainValidatedToken = true, profile = profile)
-            else SavedTwitchAccessProbeScreen(if (selected in setOf(NativeAccessCase.TWITCH_LIVE_SAVED, NativeAccessCase.TWITCH_LIVE_ERRORS,
-                NativeAccessCase.TWITCH_LIVE_BLANK_CLIENT, NativeAccessCase.TWITCH_PROVIDER_LIVE, NativeAccessCase.TWITCH_SMART_TV_LIVE,
+            else SavedTwitchAccessProbeScreen(if (selected in setOf(NativeAccessCase.TWITCH_PROVIDER_LIVE, NativeAccessCase.TWITCH_SMART_TV_LIVE,
                 NativeAccessCase.TWITCH_SMART_TV_LOCAL_LIVE))
                 TwitchAccessCase.LIVE else TwitchAccessCase.REPLAY,
-                inspectErrors = providerIdentity || selected in setOf(NativeAccessCase.TWITCH_LIVE_ERRORS, NativeAccessCase.TWITCH_REPLAY_ERRORS,
-                    NativeAccessCase.TWITCH_LIVE_BLANK_CLIENT, NativeAccessCase.TWITCH_REPLAY_BLANK_CLIENT),
-                blankClientHeader = providerIdentity || selected in setOf(NativeAccessCase.TWITCH_LIVE_BLANK_CLIENT, NativeAccessCase.TWITCH_REPLAY_BLANK_CLIENT),
-                profile = profile)
-        }
-        return
-    }
-    if (selected == NativeAccessCase.TWITCH_LIVE_OAUTH || selected == NativeAccessCase.TWITCH_REPLAY_OAUTH) {
-        Column(modifier) {
-            Button(onClick = { selected = null }) { Text("Back to access cases") }
-            TwitchDeviceAuthProbeScreen(accessCase = if (selected == NativeAccessCase.TWITCH_LIVE_OAUTH)
-                TwitchAccessCase.LIVE else TwitchAccessCase.REPLAY,
-                accessResource = if (selected == NativeAccessCase.TWITCH_LIVE_OAUTH) "bobross" else DEFAULT_ALIGNMENT_VIDEO)
+                inspectErrors = true, blankClientHeader = true, profile = profile)
         }
         return
     }
@@ -188,11 +170,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
             Button(enabled = worker == null, onClick = {
                 selected = case
                 result = null
-                if (case in setOf(NativeAccessCase.TWITCH_LIVE_OAUTH, NativeAccessCase.TWITCH_REPLAY_OAUTH,
-                    NativeAccessCase.TWITCH_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_LIVE_SAVED, NativeAccessCase.TWITCH_REPLAY_SAVED,
-                    NativeAccessCase.TWITCH_LIVE_ERRORS, NativeAccessCase.TWITCH_REPLAY_ERRORS,
-                    NativeAccessCase.TWITCH_LIVE_BLANK_CLIENT, NativeAccessCase.TWITCH_REPLAY_BLANK_CLIENT,
-                    NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_PROVIDER_LIVE,
+                if (case in setOf(NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE, NativeAccessCase.TWITCH_PROVIDER_LIVE,
                     NativeAccessCase.TWITCH_PROVIDER_REPLAY, NativeAccessCase.TWITCH_SMART_TV_AUTHORIZE_SAVE,
                     NativeAccessCase.TWITCH_SMART_TV_LIVE, NativeAccessCase.TWITCH_SMART_TV_REPLAY,
                     NativeAccessCase.TWITCH_SMART_TV_LIFETIME_INSPECTION, NativeAccessCase.TWITCH_SMART_TV_LOCAL_SAVE,
@@ -214,8 +192,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
                                     NativeAccessCase.ABEMA_DASH_FORMAT -> probeAbemaNativeAccess(request, ::abemaDashFormatClassification)
                                     NativeAccessCase.ABEMA_ANONYMOUS_HLS -> probeAbemaNativeHlsAccess(request)
                                     NativeAccessCase.ABEMA_HLS_VARIANT -> probeAbemaNativeHlsAccess(request, inspectVariant = true)
-                                    NativeAccessCase.TWITCH_LIVE_ANONYMOUS -> probeTwitchNativeAccess(request, TwitchAccessCase.LIVE, "bobross")
-                                    else -> probeTwitchNativeAccess(request, TwitchAccessCase.REPLAY, DEFAULT_ALIGNMENT_VIDEO)
+                                    else -> error("Twitch cases use their explicit provider authorization screen")
                                 }
                             } catch (error: CancellationException) { throw error }
                             catch (_: Exception) { AccessProbeResult(initialAccessEndpoint(case), AccessProbeOutcome.NETWORK_FAILED) }

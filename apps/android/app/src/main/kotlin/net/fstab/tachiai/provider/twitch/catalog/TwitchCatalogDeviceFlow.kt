@@ -44,6 +44,7 @@ internal suspend fun requestTwitchCatalogAuthorization(
     waitMs: suspend (Long) -> Unit = catalogPollWait,
     onPhase: suspend (DeviceAuthPhase) -> Unit = {},
     onActivation: suspend (DeviceActivation) -> Unit = {},
+    onResponseShape: suspend (TwitchCatalogAuthResponseShape) -> Unit = {},
 ): TwitchCatalogAuthorizationResult {
     var lastPhase: DeviceAuthPhase? = null
     suspend fun publish(phase: DeviceAuthPhase) {
@@ -92,25 +93,33 @@ internal suspend fun requestTwitchCatalogAuthorization(
             currentCoroutineContext().ensureActive()
             if (clockMs() >= challengeDeadline) return failed(DeviceAuthPhase.EXPIRED)
             if (response.status == 200) {
-                val credentials = parseTwitchCatalogToken(response)
-                val tokenDeadline = Math.addExact(pollStarted, credentials.expiresInMs)
+                onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.TOKEN, response.fields))
+                val token = parseTwitchCatalogToken(response)
+                val tokenDeadline = token.expiresInMs?.let { Math.addExact(pollStarted, it) }
+                val acceptanceDeadline = tokenDeadline ?: Math.addExact(pollStarted, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
                 // A successful poll consumes its device code. Background validation
                 // retries use only the worker-local access token, never that code.
                 while (true) {
-                    if (!ready(tokenDeadline, DeviceAuthPhase.VALIDATING)) return failed(DeviceAuthPhase.EXPIRED)
+                    if (!ready(acceptanceDeadline, DeviceAuthPhase.VALIDATING)) return failed(DeviceAuthPhase.EXPIRED)
                     val validationRevision = foreground.pauseRevision
                     val validationStarted = clockMs()
-                    val validated = try { transport.validate(credentials.accessToken) }
+                    if (validationStarted >= acceptanceDeadline) return failed(DeviceAuthPhase.EXPIRED)
+                    val validated = try { transport.validate(token.accessToken) }
                     catch (error: IOException) {
                         currentCoroutineContext().ensureActive()
                         if (!interrupted(validationRevision, error)) throw error
                         continue
                     }
                     currentCoroutineContext().ensureActive()
+                    if (validated.status == 200)
+                        onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.VALIDATE, validated.fields))
                     val validation = parseTwitchCatalogValidation(validated)
-                    val deadline = minOf(tokenDeadline, Math.addExact(validationStarted, validation.expiresInMs))
+                    if (clockMs() >= acceptanceDeadline) return failed(DeviceAuthPhase.EXPIRED)
+                    val validationDeadline = Math.addExact(validationStarted, validation.expiresInMs)
+                    val deadline = tokenDeadline?.let { minOf(it, validationDeadline) } ?: validationDeadline
                     if (clockMs() >= deadline) return failed(DeviceAuthPhase.EXPIRED)
                     if (!foreground.isForeground || foreground.pauseRevision != validationRevision) continue
+                    val credentials = token.validatedCredentials(validation)
                     publish(DeviceAuthPhase.SUCCEEDED)
                     return TwitchCatalogAuthorizationResult.Approved(credentials, validation, deadline, validationStarted)
                 }

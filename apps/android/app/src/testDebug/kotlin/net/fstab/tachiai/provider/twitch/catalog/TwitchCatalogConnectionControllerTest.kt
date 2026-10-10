@@ -31,6 +31,10 @@ class TwitchCatalogConnectionControllerTest {
         var clock = 1_000L
         val store = TwitchCatalogGrantStore(storage, id, wallMs = { 1_000_000L + clock })
         val polls = AtomicInteger()
+        var pollStatus = 200
+        var pollOverrides: Map<String, Any?> = emptyMap()
+        var validationOverrides: Map<String, Any?> = emptyMap()
+        var validationNetworkFailure = false
         var closed = false
         var ownerFailure = false
         override fun owner(): TwitchCatalogConnectionOwner {
@@ -47,22 +51,24 @@ class TwitchCatalogConnectionControllerTest {
             }
             override fun poll(deviceCode: String): DeviceAuthResponse {
                 check(canRequest()); polls.incrementAndGet()
-                return DeviceAuthResponse(200, mapOf("access_token" to "fixture-access", "refresh_token" to "fixture-refresh",
-                    "token_type" to "bearer", "scope" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600))
+                return DeviceAuthResponse(pollStatus, mapOf("access_token" to "fixture-access", "refresh_token" to "fixture-refresh",
+                    "token_type" to "bearer", "scope" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600) + pollOverrides)
             }
             override fun validate(accessToken: String): DeviceAuthResponse {
                 check(canRequest())
-                return DeviceAuthResponse(200, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
-                    "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600))
+                if (validationNetworkFailure) throw java.io.IOException("fixture-private-response")
+                return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
+                    "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600) + validationOverrides)
             }
             override fun refresh(refreshToken: String): DeviceAuthResponse = error("No refresh in this fixture")
             override fun close() = Unit
         }
         override fun close() { closed = true }
         fun controller(scope: CoroutineScope, io: CoroutineDispatcher = Dispatchers.Unconfined,
-            wait: suspend (Long) -> Unit = { clock += it }, diagnostics: FailureReporter = FailureReporter.NONE) =
+            wait: suspend (Long) -> Unit = { clock += it }, diagnostics: FailureReporter = FailureReporter.NONE,
+            debugLog: (String) -> Unit = {}) =
             TwitchCatalogConnectionController(this, selected, session(), scope, io, { clock }, wait,
-                initiallyForeground = true, diagnostics = diagnostics)
+                initiallyForeground = true, diagnostics = diagnostics, debugLog = debugLog)
     }
     private suspend fun idle(controller: TwitchCatalogConnectionController) = withTimeout(5_000) {
         controller.state.first { !it.busy && it.ready }
@@ -90,6 +96,67 @@ class TwitchCatalogConnectionControllerTest {
         assertEquals(0, fixture.polls.get()); assertNotNull(controller.state.value.activation)
         controller.setForeground(true)
         assertTrue(idle(controller).hasSavedGrant); assertEquals(1, fixture.polls.get())
+        controller.close()
+    }
+
+    @Test fun failedGrantKeepsFixedReasonAndLogsOnlyAllowlistedShapesAndFailure() = runBlocking {
+        val cases = listOf(
+            Triple(mapOf<String, Any?>("scope" to emptyList<String>()), DeviceAuthPhase.SCOPE_MISMATCH,
+                "Twitch did not grant exactly the required Following permission. Reconnect this account."),
+            Triple(mapOf<String, Any?>("expires_in" to 0), DeviceAuthPhase.EXPIRED,
+                "Twitch authorization expired. Reconnect this account."),
+            Triple(mapOf<String, Any?>("refresh_token" to null), DeviceAuthPhase.INVALID_RESPONSE,
+                "Twitch returned an authorization response Tachiai could not validate. Reconnect to try again."),
+        )
+        cases.forEach { (overrides, phase, message) ->
+            val fixture = Fixture(); fixture.pollOverrides = overrides
+            val logs = mutableListOf<String>(); val controller = fixture.controller(this, debugLog = { logs.add(it) })
+            idle(controller); controller.connect(); val state = idle(controller)
+            assertEquals(phase, state.phase); assertEquals(message, state.message)
+            assertNull(state.activation); assertEquals(TwitchCatalogGrantState.RECONNECT, fixture.store.read()!!.state)
+            assertTrue(logs.any { it.startsWith("endpoint=TOKEN lifetime=") })
+            assertTrue(logs.any { it.startsWith("phase=${phase.name} failure=") })
+            listOf("fixture-access", "fixture-refresh", "fixture-user", "FIXTURE123", "fixture-device").forEach { value ->
+                assertFalse(logs.toString().contains(value)); assertFalse(state.toString().contains(value))
+            }
+            assertFalse(logs.toString().contains(fixture.id)); assertFalse(logs.toString().contains("Fixture route"))
+            controller.close()
+        }
+    }
+
+    @Test fun declinedConsentWithoutAuthFailureStillDisplaysFixedPhaseReason() = runBlocking {
+        val fixture = Fixture(); fixture.pollStatus = 400
+        fixture.pollOverrides = mapOf("error" to "access_denied", "message" to "fixture-private-response")
+        val logs = mutableListOf<String>(); val controller = fixture.controller(this, debugLog = { logs.add(it) })
+        idle(controller); controller.connect(); val state = idle(controller)
+        assertEquals(DeviceAuthPhase.DENIED, state.phase)
+        assertEquals("Twitch authorization was declined. Connect again when ready.", state.message)
+        assertTrue(logs.contains("phase=DENIED failure=NONE"))
+        assertFalse(logs.toString().contains("fixture-private-response"))
+        assertFalse(state.toString().contains("fixture-private-response"))
+        controller.close()
+    }
+
+    @Test fun validationMismatchAndNetworkFailureExplainStatusWithoutLeakingResponseAndClearAfterRecovery() = runBlocking {
+        val fixture = Fixture(); val logs = mutableListOf<String>()
+        val controller = fixture.controller(this, debugLog = { logs.add(it) })
+        idle(controller); controller.connect(); idle(controller)
+        fixture.validationNetworkFailure = true; controller.revalidate()
+        val temporary = idle(controller)
+        assertEquals("Twitch account unavailable temporarily. Check the saved route and retry.", temporary.status)
+        assertEquals("Twitch authorization could not be checked. Check the saved route and retry.", temporary.message)
+        assertTrue(logs.contains("state=TEMPORARY_FAILURE failure=NETWORK"))
+        assertFalse(logs.toString().contains("fixture-private-response"))
+        assertFalse(temporary.toString().contains("fixture-private-response"))
+        fixture.validationNetworkFailure = false; controller.revalidate()
+        assertNull(idle(controller).message)
+        fixture.validationOverrides = mapOf("client_id" to "fixture-private-client")
+        controller.revalidate(); val mismatch = idle(controller)
+        assertEquals("Twitch account needs reconnection.", mismatch.status)
+        assertEquals("Twitch authorization belongs to a different application. Reconnect this account.", mismatch.message)
+        assertTrue(logs.contains("state=RECONNECT_REQUIRED failure=CLIENT_MISMATCH"))
+        assertFalse(logs.toString().contains("fixture-private-client"))
+        assertFalse(mismatch.toString().contains("fixture-private-client"))
         controller.close()
     }
 

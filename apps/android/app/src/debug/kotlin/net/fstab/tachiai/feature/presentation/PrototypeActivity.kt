@@ -89,7 +89,7 @@ import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchLiveIdentityResolver
 import net.fstab.tachiai.provider.twitch.catalog.TwitchBroadcasterRetryGate
-import net.fstab.tachiai.provider.twitch.AndroidTwitchAuthorization
+import net.fstab.tachiai.provider.twitch.CatalogTwitchPreparation
 import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
@@ -461,18 +461,21 @@ open class PrototypeActivity : ComponentActivity() {
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId
                         val route = checkNotNull(routes[instanceId])
-                        val authorization = AndroidTwitchAuthorization.forProviderInstance(this, instanceId)
+                        val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
+                        val routeChoice = checkNotNull(routeChoices[instanceId])
+                        val preparation = {
+                            CatalogTwitchPreparation(this, instanceId, profile, routeChoice, feedActive,
+                                openConnection = route::open)
+                        }
                         if (supportedConfiguredTwitchBroadcaster(source.resource)) {
-                            val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
-                            val routeChoice = checkNotNull(routeChoices[instanceId])
                             configuredTwitchBroadcasterSession(this, source.resource, feedActive, events,
                                 liveIdentityResolverFactory = {
                                     androidTwitchLiveIdentityResolver(this, instanceId, profile, feedActive,
                                         twitchBroadcasterRetryGate, expectedRoute = routeChoice)
-                                }, openConnection = route::open, authorization = authorization,
-                                diagnostics = feedDiagnostics(index))
+                                }, openConnection = route::open,
+                                diagnostics = feedDiagnostics(index), preparationFactory = preparation)
                         } else PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
-                            openConnection = route::open, authorization = authorization,
+                            openConnection = route::open, preparationFactory = preparation,
                             diagnostics = feedDiagnostics(index),
                             initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L)
                     }

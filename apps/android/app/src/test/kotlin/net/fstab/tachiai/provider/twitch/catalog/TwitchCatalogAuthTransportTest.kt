@@ -40,7 +40,7 @@ class TwitchCatalogAuthTransportTest {
         }
     }
 
-    @Test fun DevicePollValidationAndRefreshUseOnlyOwnClientExactScopeAndEncodedCredentials() {
+    @Test fun DevicePollValidationAndRefreshUseOnlySmartTvClientExactScopeAndEncodedCredentials() {
         val requests = mutableListOf<Connection>()
         val transport = TwitchCatalogAuthTransport(open = { Connection(it).also(requests::add) }, decode = { emptyMap() })
         transport.device()
@@ -48,10 +48,10 @@ class TwitchCatalogAuthTransportTest {
         transport.validate("fixture-access")
         transport.refresh("fixture-refresh%&/+=")
         assertEquals(listOf("/oauth2/device", "/oauth2/token", "/oauth2/validate", "/oauth2/token"), requests.map { it.url.path })
-        assertEquals(mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE), requests[0].form())
-        assertEquals(mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE,
+        assertEquals(mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE), requests[0].form())
+        assertEquals(mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "scopes" to TWITCH_CATALOG_SCOPE,
             "device_code" to "fixture-device%&/+", "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"), requests[1].form())
-        assertEquals(mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "grant_type" to "refresh_token",
+        assertEquals(mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "grant_type" to "refresh_token",
             "refresh_token" to "fixture-refresh%&/+="), requests[3].form())
         assertEquals("GET", requests[2].requestMethod)
         assertEquals("OAuth fixture-access", requests[2].getRequestProperty("Authorization"))

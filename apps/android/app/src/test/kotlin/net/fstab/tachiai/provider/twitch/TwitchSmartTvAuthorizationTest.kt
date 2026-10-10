@@ -48,12 +48,11 @@ class TwitchSmartTvAuthorizationTest {
         override fun close() { closed = true }
     }
 
-    @Test fun `Smart TV adds a third fixed identity without renaming the original slots`() {
+    @Test fun `remaining provider identities preserve their original storage slots`() {
         assertEquals(SMART_TV_TWITCH_CLIENT_ID, TwitchAuthorizationProfile.PROVIDER_SMART_TV.clientId)
-        assertEquals(3, TwitchAuthorizationProfile.entries.map { it.clientId }.toSet().size)
+        assertEquals(2, TwitchAuthorizationProfile.entries.map { it.clientId }.toSet().size)
         assertEquals(TwitchAuthorizationProfile.entries.size, TwitchAuthorizationProfile.entries.map { it.storageSlot }.toSet().size)
         assertEquals(TwitchAuthorizationProfile.entries.size, TwitchAuthorizationProfile.entries.map { it.storageSlot.bindingName }.toSet().size)
-        assertEquals("twitch-own-authorization", TwitchAuthorizationProfile.TACHIAI.storageSlot.bindingName)
         assertEquals("twitch-provider-playback-authorization", TwitchAuthorizationProfile.PROVIDER_PLAYBACK.storageSlot.bindingName)
     }
 
@@ -85,7 +84,7 @@ class TwitchSmartTvAuthorizationTest {
         assertTrue(transport.closed)
     }
 
-    @Test fun `crossed default explicit and own identities reject callbacks before IO`() = runBlocking {
+    @Test fun `crossed default and explicit identities reject callbacks before IO`() = runBlocking {
         val forbidden: suspend (String, Long) -> Unit = { _, _ -> fail("cross-identity callback") }
         val defaultWebWithTv = GrantTransport()
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
@@ -98,19 +97,11 @@ class TwitchSmartTvAuthorizationTest {
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(PROVIDER_TWITCH_CLIENT_ID,
             explicitTvWithWeb, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
             onProviderClientValidated = forbidden))
-        val ownAsProvider = GrantTransport(TACHIAI_TWITCH_CLIENT_ID)
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID,
-            ownAsProvider, {}, {}, providerProfile = TwitchAuthorizationProfile.TACHIAI,
+        val unrelatedClient = GrantTransport("anotherpublicclient")
+        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice("anotherpublicclient",
+            unrelatedClient, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
             onProviderClientValidated = forbidden))
-        val ownCallbackWithTv = GrantTransport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
-            ownCallbackWithTv, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
-            onOwnClientValidated = forbidden))
-        val simultaneous = GrantTransport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
-            simultaneous, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
-            onOwnClientValidated = forbidden, onProviderClientValidated = forbidden))
-        listOf(defaultWebWithTv, explicitWebWithTv, explicitTvWithWeb, ownAsProvider, ownCallbackWithTv, simultaneous).forEach {
+        listOf(defaultWebWithTv, explicitWebWithTv, explicitTvWithWeb, unrelatedClient).forEach {
             assertEquals(0, it.devices)
             assertEquals(0, it.polls)
             assertEquals(0, it.validations)
@@ -121,7 +112,7 @@ class TwitchSmartTvAuthorizationTest {
     @Test fun `Smart TV identity mismatch and unexpected permissions cannot hand off`() = runBlocking {
         val base = GrantTransport().validationFields
         val responses = listOf(
-            (base + ("client_id" to TACHIAI_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
+            (base + ("client_id" to "anotherpublicclient")) to DeviceAuthPhase.CLIENT_MISMATCH,
             (base + ("client_id" to PROVIDER_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
             (base + ("scopes" to listOf("chat:read"))) to DeviceAuthPhase.SCOPE_MISMATCH,
             (base - "scopes") to DeviceAuthPhase.INVALID_RESPONSE,
@@ -183,7 +174,7 @@ class TwitchSmartTvAuthorizationTest {
         val cache = TwitchSavedAuthorization(MemoryStore(), { 1000000L }, { 1000L },
             TwitchAuthorizationProfile.PROVIDER_SMART_TV)
         cache.saveValidated("invented-tv-session", 101000L, cache.revision())
-        listOf(TACHIAI_TWITCH_CLIENT_ID, PROVIDER_TWITCH_CLIENT_ID).forEach { wrongClient ->
+        listOf("anotherpublicclient", PROVIDER_TWITCH_CLIENT_ID).forEach { wrongClient ->
             val transport = GrantTransport().apply { validationFields = validationFields + ("client_id" to wrongClient) }
             assertEquals(SavedTwitchUseOutcome.VALIDATION_REJECTED,
                 useSavedTwitchAuthorization(cache, transport, onUse = { _, _, _ -> fail("older profile authorized TV use") }).outcome)

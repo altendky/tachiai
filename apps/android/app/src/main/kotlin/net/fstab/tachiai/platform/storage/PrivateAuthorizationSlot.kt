@@ -3,7 +3,6 @@ package net.fstab.tachiai.platform.storage
 // Fixed slots preserve original file/key/AAD identities. Additional Twitch
 // instance bindings accept only canonical, non-reserved UUIDs below.
 internal enum class PrivateAuthorizationSlot(val bindingName: String) {
-    TWITCH_OWN("twitch-own-authorization"),
     TWITCH_PROVIDER_PLAYBACK("twitch-provider-playback-authorization"),
     TWITCH_PROVIDER_SMART_TV("twitch-provider-smart-tv-authorization"),
     TWITCH_PROVIDER_SMART_TV_LOCAL("twitch-provider-smart-tv-local-authorization"),
@@ -28,7 +27,7 @@ internal fun configuredProviderInstanceBindingName(id: String): String {
     return "configured-provider-instance-$id"
 }
 
-// Catalog grants belong to Tachiai's own OAuth client, including the default
+// Catalog grants have their own scoped credential binding, including the default
 // instance. They never alias the historical playback authorization slots.
 internal fun twitchCatalogInstanceBindingName(id: String): String {
     require(net.fstab.tachiai.presentation.validProviderInstanceId(id))

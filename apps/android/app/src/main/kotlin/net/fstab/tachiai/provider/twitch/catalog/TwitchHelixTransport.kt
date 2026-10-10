@@ -153,7 +153,7 @@ internal class TwitchHelixHttpTransport(
             http.instanceFollowRedirects = false; http.useCaches = false
             http.connectTimeout = 10_000; http.readTimeout = 15_000; http.requestMethod = "GET"
             http.setRequestProperty("Accept", "application/json")
-            http.setRequestProperty("Client-Id", TACHIAI_TWITCH_CLIENT_ID)
+            http.setRequestProperty("Client-Id", SMART_TV_TWITCH_CLIENT_ID)
             http.setRequestProperty("Authorization", "Bearer $accessToken")
             stage = DeviceRequestStage.STATUS
             checkActive(); val status = http.responseCode; checkActive()

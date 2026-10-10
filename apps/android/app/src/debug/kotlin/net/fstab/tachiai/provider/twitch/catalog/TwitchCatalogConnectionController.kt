@@ -1,5 +1,6 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import android.util.Log
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
@@ -29,7 +30,7 @@ internal enum class TwitchCatalogConnectionOperation { READ, CONNECT, VALIDATE, 
 internal data class TwitchCatalogConnectionState(
     val name: String? = null, val routeTitle: String? = null,
     val ready: Boolean = false, val hasSavedGrant: Boolean = false, val canForget: Boolean = false,
-    val status: String = "Reading catalog account…", val operation: TwitchCatalogConnectionOperation? = null,
+    val status: String = "Reading Twitch account…", val operation: TwitchCatalogConnectionOperation? = null,
     val phase: DeviceAuthPhase? = null, val activation: DeviceActivation? = null, val message: String? = null,
 ) { val busy get() = operation != null }
 
@@ -70,6 +71,7 @@ internal class TwitchCatalogConnectionController(
     private val waitMs: suspend (Long) -> Unit = { delay(it) },
     initiallyForeground: Boolean = false,
     private val diagnostics: FailureReporter = FailureReporter.NONE,
+    private val debugLog: (String) -> Unit = { Log.d("TachiaiTwitchAuth", it) },
 ) : AutoCloseable {
     private val lock = Any()
     private val mutable = MutableStateFlow(TwitchCatalogConnectionState(owner.name, owner.routeTitle))
@@ -93,19 +95,21 @@ internal class TwitchCatalogConnectionController(
     private fun current(token: Long) = !closed && revision.get() == token
     private fun summary(value: TwitchCatalogSessionSummary, token: Long? = null) {
         if (token != null && !current(token)) return
+        debugLog("state=${value.state.name} failure=${value.failure?.name ?: "NONE"}")
         if (value.state == TwitchCatalogSessionState.STORAGE_FAILURE) diagnostics.report(FailureStage.CATALOG_AUTH_STORAGE)
         val saved = value.state != TwitchCatalogSessionState.MISSING
         publish { it.copy(ready = owner.routeUsable && foreground.isForeground && value.state != TwitchCatalogSessionState.STORAGE_FAILURE &&
                 !TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             hasSavedGrant = saved, canForget = saved || TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             status = if (!owner.routeUsable) "Saved route unavailable. Catalog access is blocked; local Forget remains available." else when (value.state) {
-                TwitchCatalogSessionState.MISSING -> "No saved catalog account."
-                TwitchCatalogSessionState.CONNECTED -> "Catalog account validated for this foreground session."
-                TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogSessionState.PAUSED -> "Saved catalog account needs validation."
-                TwitchCatalogSessionState.TEMPORARY_FAILURE -> "Catalog account unavailable temporarily. Check the saved route and retry."
-                TwitchCatalogSessionState.STORAGE_FAILURE -> "Catalog account storage failed. Access remains blocked; retry Forget or reopen."
-                else -> "Catalog account needs reconnection."
-            }) }
+                TwitchCatalogSessionState.MISSING -> "No saved Twitch account."
+                TwitchCatalogSessionState.CONNECTED -> "Twitch account validated for this foreground session."
+                TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogSessionState.PAUSED -> "Saved Twitch account needs validation."
+                TwitchCatalogSessionState.TEMPORARY_FAILURE -> "Twitch account unavailable temporarily. Check the saved route and retry."
+                TwitchCatalogSessionState.STORAGE_FAILURE -> "Twitch account storage failed. Access remains blocked; retry Forget or reopen."
+                else -> "Twitch account needs reconnection."
+            }, message = if (value.state in setOf(TwitchCatalogSessionState.RECONNECT_REQUIRED,
+                TwitchCatalogSessionState.TEMPORARY_FAILURE)) value.failure?.let(::catalogFailureMessage) else null) }
     }
     fun setForeground(value: Boolean) {
         if (closed) return
@@ -132,7 +136,7 @@ internal class TwitchCatalogConnectionController(
                 foreground.setForeground(true); session.setForeground(true)
                 if (TwitchCatalogConnectionWrites.isFailed(owner.instanceId)) {
                     publish { it.copy(canForget = true, ready = false,
-                        status = "Catalog account could not be cleared. Access remains blocked. Retry Forget.") }
+                        status = "Twitch account could not be cleared. Access remains blocked. Retry Forget.") }
                 } else if (!owner.routeUsable) {
                     val saved = withContext(io) { session.readSummary() }
                     summary(saved)
@@ -155,7 +159,10 @@ internal class TwitchCatalogConnectionController(
         active.set(request)
         val result = try { requestTwitchCatalogAuthorization(request, foreground, clockMs, waitMs,
             onPhase = { phase -> if (current(token)) publish { it.copy(phase = phase) } },
-            onActivation = { activation -> if (current(token)) publish { it.copy(activation = activation) } }) }
+            onActivation = { activation -> if (current(token)) publish { it.copy(activation = activation) } },
+            onResponseShape = { shape ->
+                debugLog("endpoint=${shape.endpoint.name} lifetime=${shape.lifetime.name} scopes=${shape.scopes.name} refresh=${shape.refresh.name}")
+            }) }
         finally { active.compareAndSet(request, null) }
         if (result is TwitchCatalogAuthorizationResult.Approved) {
             check(current(token) && foreground.isForeground && matchesOwner())
@@ -170,7 +177,14 @@ internal class TwitchCatalogConnectionController(
                 throw error
             }
             summary(accepted.summary, token)
-        } else diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST)
+        } else if (result is TwitchCatalogAuthorizationResult.Failed) {
+            diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST)
+            if (current(token)) {
+                debugLog("phase=${result.phase.name} failure=${result.failure?.name ?: "NONE"}")
+                publish { it.copy(phase = result.phase,
+                    message = result.failure?.let(::catalogFailureMessage) ?: catalogFailedPhaseMessage(result.phase)) }
+            }
+        }
     }
     fun revalidate() = start(TwitchCatalogConnectionOperation.VALIDATE) { token ->
         val result = session.validate(force = true)
@@ -215,7 +229,7 @@ internal class TwitchCatalogConnectionController(
                 TwitchCatalogConnectionWrites.markFailure(owner.instanceId, true)
             }
             finally { publish { it.copy(operation = null, ready = owner.routeUsable && !failed && foreground.isForeground,
-                canForget = failed, message = if (failed) "Catalog account could not be cleared. Access remains blocked. Retry Forget." else "Catalog account forgotten on this device.") } }
+                canForget = failed, message = if (failed) "Twitch account could not be cleared. Access remains blocked. Retry Forget." else "Twitch account forgotten on this device.") } }
         }
         TwitchCatalogConnectionWrites.track(owner.instanceId, write); write.start()
     }
@@ -239,4 +253,22 @@ internal class TwitchCatalogConnectionController(
             runCatching { binding.close() }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, it) }
         }
     }
+}
+
+private fun catalogFailureMessage(failure: TwitchCatalogAuthFailure): String = when (failure) {
+    TwitchCatalogAuthFailure.INVALID_RESPONSE -> "Twitch returned an authorization response Tachiai could not validate. Reconnect to try again."
+    TwitchCatalogAuthFailure.REJECTED -> "Twitch rejected the authorization request. Reconnect to try again."
+    TwitchCatalogAuthFailure.CLIENT_MISMATCH -> "Twitch authorization belongs to a different application. Reconnect this account."
+    TwitchCatalogAuthFailure.USER_MISMATCH -> "Twitch authorization belongs to a different account. Reconnect this account."
+    TwitchCatalogAuthFailure.SCOPE_MISMATCH -> "Twitch did not grant exactly the required Following permission. Reconnect this account."
+    TwitchCatalogAuthFailure.EXPIRED -> "Twitch authorization expired. Reconnect this account."
+    TwitchCatalogAuthFailure.NETWORK -> "Twitch authorization could not be checked. Check the saved route and retry."
+}
+
+private fun catalogFailedPhaseMessage(phase: DeviceAuthPhase): String = when (phase) {
+    DeviceAuthPhase.DENIED -> "Twitch authorization was declined. Connect again when ready."
+    DeviceAuthPhase.EXPIRED -> "Twitch activation expired. Connect again for a new code."
+    DeviceAuthPhase.INVALID_CODE -> "Twitch activation code was rejected. Connect again for a new code."
+    DeviceAuthPhase.CANCELLED -> "Twitch connection cancelled."
+    else -> "Twitch authorization could not be accepted. Reconnect to try again."
 }

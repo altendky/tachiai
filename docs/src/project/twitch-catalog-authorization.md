@@ -27,6 +27,18 @@ Connect requests an activation code on a worker using the saved route. Consent
 opens a provider-controlled page in an installed external browser. That browser
 uses its own network and login, independently of Tachiai's selected route.
 
+While activation is pending, a locally generated QR code opens that same
+provider-returned activation URL on another device. A matching public code in the
+URL is preserved; a bare URL opens the activation page for manual code entry.
+The readable code is selectable, and the existing external-browser buttons remain
+available. The scanning device uses its own browser, network and login.
+An unavailable browser leaves the same pending challenge available for another
+browser or QR scan. Cancellation, expiry, validation and loss of ownership remove
+the activation instructions. Recomposition and rotation do not request another code.
+
+The debug-only encoder uses ZXing Core 3.5.4. Its upstream Apache license and
+notice are included in the debug APK's `assets/licenses/zxing/` directory.
+
 Polling pauses while Tachiai is in the background and resumes with the original
 code deadline. Tokens remain worker-local until their exact Smart TV client, scope,
 user and lifetime have been validated. A changed instance, saved route, imported
@@ -120,3 +132,20 @@ engine and region were not recorded; the user used their existing browser login.
 This was an authorization experiment, with no content playback. The bounded
 compatibility fix is [#135](https://github.com/altendky/tachiai/issues/135);
 validated provider acceptance remains [#99](https://github.com/altendky/tachiai/issues/99).
+
+A second user-approved check at 12:03:34 reached official validation: the parser
+passed Smart TV client, well-formed user and exact scope checks, then rejected
+literal integer-zero validation expiry as EXPIRED. The shared grant was not saved.
+The device, route and account conditions were the same as above. A separate scoped
+approved local-retention follow-up is tracked in [#137](https://github.com/altendky/tachiai/issues/137);
+the current connection still requires positive validated expiry.
+
+Three selected synthetic UI checks passed on persistent `tachiai-dev` on
+2026-10-10 (Android 16/API 36, x86-64): rendered-pixel decoding and challenge
+replacement/removal, encoder failure fallback, and a short wide viewport with
+twice-normal font size. The last check decoded the QR and verified full visibility
+of the code and browser/cancel controls after scrolling. Only a test host,
+in-memory fixture state and callbacks were used; saved app data and device
+settings were retained. No provider request or account state was involved.
+These checks do not establish physical camera scanning, real provider prefill,
+Android TV behavior or successful shared account/native acceptance.

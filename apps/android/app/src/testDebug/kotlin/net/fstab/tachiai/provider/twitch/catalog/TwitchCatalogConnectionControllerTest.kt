@@ -31,10 +31,12 @@ class TwitchCatalogConnectionControllerTest {
         var clock = 1_000L
         val store = TwitchCatalogGrantStore(storage, id, wallMs = { 1_000_000L + clock })
         val polls = AtomicInteger()
+        val devices = AtomicInteger()
         var pollStatus = 200
         var pollOverrides: Map<String, Any?> = emptyMap()
         var validationOverrides: Map<String, Any?> = emptyMap()
         var validationNetworkFailure = false
+        var onValidation: () -> Unit = {}
         var closed = false
         var ownerFailure = false
         override fun owner(): TwitchCatalogConnectionOwner {
@@ -45,7 +47,7 @@ class TwitchCatalogConnectionControllerTest {
             wallMs = { 1_000_000L + clock }, monotonicMs = { clock })
         override fun transport(canRequest: () -> Boolean) = object : TwitchCatalogTransport {
             override fun device(): DeviceAuthResponse {
-                check(canRequest())
+                check(canRequest()); devices.incrementAndGet()
                 return DeviceAuthResponse(200, mapOf("device_code" to "fixture-device", "user_code" to "FIXTURE123",
                     "verification_uri" to "https://www.twitch.tv/activate", "expires_in" to 60, "interval" to 1))
             }
@@ -56,6 +58,7 @@ class TwitchCatalogConnectionControllerTest {
             }
             override fun validate(accessToken: String): DeviceAuthResponse {
                 check(canRequest())
+                onValidation()
                 if (validationNetworkFailure) throw java.io.IOException("fixture-private-response")
                 return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
                     "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600) + validationOverrides)
@@ -96,6 +99,38 @@ class TwitchCatalogConnectionControllerTest {
         assertEquals(0, fixture.polls.get()); assertNotNull(controller.state.value.activation)
         controller.setForeground(true)
         assertTrue(idle(controller).hasSavedGrant); assertEquals(1, fixture.polls.get())
+        controller.close()
+    }
+
+    @Test fun browserFailureKeepsOriginalChallengeAndCancelStillClearsIt() = runBlocking {
+        val fixture = Fixture(); val waiting = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val controller = fixture.controller(this, wait = { waiting.complete(Unit); release.await(); fixture.clock += it })
+        idle(controller); controller.connect(); waiting.await()
+        val activation = controller.state.value.activation
+        assertNotNull(activation)
+        controller.setForeground(false)
+        controller.browserUnavailable()
+        assertSame(activation, controller.state.value.activation)
+        assertEquals(DeviceAuthPhase.BROWSER_UNAVAILABLE, controller.state.value.phase)
+        assertEquals(TwitchCatalogConnectionOperation.CONNECT, controller.state.value.operation)
+        assertEquals(1, fixture.devices.get()); assertEquals(0, fixture.polls.get())
+        controller.setForeground(true)
+        assertSame(activation, controller.state.value.activation)
+        assertEquals(1, fixture.devices.get()); assertEquals(0, fixture.polls.get())
+        controller.cancel()
+        assertNull(controller.state.value.activation); assertNull(controller.state.value.operation)
+        assertEquals(DeviceAuthPhase.CANCELLED, controller.state.value.phase)
+        release.complete(Unit); controller.close()
+    }
+
+    @Test fun consumedChallengeIsRemovedBeforeTokenValidation() = runBlocking {
+        val fixture = Fixture(); val controller = fixture.controller(this)
+        var removedBeforeValidation = false
+        fixture.onValidation = { removedBeforeValidation = controller.state.value.activation == null &&
+            controller.state.value.phase == DeviceAuthPhase.VALIDATING }
+        idle(controller); controller.connect(); idle(controller)
+        assertTrue(removedBeforeValidation); assertNull(controller.state.value.activation)
+        assertEquals(1, fixture.devices.get()); assertEquals(1, fixture.polls.get())
         controller.close()
     }
 

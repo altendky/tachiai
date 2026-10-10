@@ -70,11 +70,10 @@ private fun Map<String, Any?>.seconds(key: String, max: Long): Long {
     return seconds * 1000
 }
 
-internal fun parseDeviceChallenge(response: DeviceAuthResponse): DeviceChallenge {
-    val fields = response.fields
-    val code = fields.boundedString("user_code", 64)
+internal fun parseDeviceActivation(code: String, verificationUri: String): DeviceActivation {
     if (!Regex("[A-Za-z0-9-]{4,64}").matches(code)) throw InvalidDeviceResponse()
-    val uri = try { URI(fields.boundedString("verification_uri", 2048)) }
+    if (verificationUri.isEmpty() || verificationUri.length > 2048) throw InvalidDeviceResponse()
+    val uri = try { URI(verificationUri) }
     catch (_: Exception) { throw InvalidDeviceResponse() }
     if (uri.scheme != "https" || uri.host != "www.twitch.tv" ||
         uri.rawUserInfo != null || uri.port !in setOf(-1, 443) ||
@@ -97,8 +96,15 @@ internal fun parseDeviceChallenge(response: DeviceAuthResponse): DeviceChallenge
     if ((query.containsKey("public") && query["public"] != "true") ||
         (query.containsKey("device-code") && query["device-code"] != code)
     ) throw InvalidDeviceResponse()
+    return DeviceActivation(code, uri)
+}
+
+internal fun parseDeviceChallenge(response: DeviceAuthResponse): DeviceChallenge {
+    val fields = response.fields
+    val activation = parseDeviceActivation(fields.boundedString("user_code", 64),
+        fields.boundedString("verification_uri", 2048))
     return DeviceChallenge(
-        fields.boundedString("device_code", 2048), DeviceActivation(code, uri),
+        fields.boundedString("device_code", 2048), activation,
         fields.seconds("expires_in", 3600),
         if (fields.containsKey("interval")) fields.seconds("interval", 300) else 5000,
     )

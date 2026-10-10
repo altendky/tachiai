@@ -13,7 +13,6 @@ import kotlinx.coroutines.*
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.presentation.*
-import net.fstab.tachiai.provider.twitch.DeviceAuthPhase
 import net.fstab.tachiai.provider.twitch.catalog.*
 import net.fstab.tachiai.platform.diagnostics.*
 
@@ -118,9 +117,9 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, activation.verificationUri.toString().toUri())
                 .addCategory(Intent.CATEGORY_BROWSABLE).setPackage(packageName))
         } catch (_: ActivityNotFoundException) {
-            current.cancel(DeviceAuthPhase.BROWSER_UNAVAILABLE); current.setForeground(resumed)
+            current.browserUnavailable(); current.setForeground(resumed)
         } catch (_: SecurityException) {
-            current.cancel(DeviceAuthPhase.BROWSER_UNAVAILABLE); current.setForeground(resumed)
+            current.browserUnavailable(); current.setForeground(resumed)
         }
     }
     override fun finish() {

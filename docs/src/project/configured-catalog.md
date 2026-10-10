@@ -99,14 +99,36 @@ instance snapshots before preparation. Saved quality defaults are item-owned;
 duplicate feeds share those defaults and retain independent session overrides.
 Restart checkpoints use the same local references and accept old enum choices.
 
-The shipped discovery adapter advertises **Prototype samples**. It browses and
-searches the existing public sample resources, with unknown availability. Following
-and My List are explicitly not verified; direct lookup and child navigation are
-unsupported in that adapter. Shared controller and UI fixtures exercise paging,
+The shipped discovery adapters retain **Prototype samples**. They browse and
+search the existing public sample resources, with unknown availability. Following
+and My List are explicitly not verified. Twitch direct lookup and both providers'
+child navigation remain unsupported. Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections
 cannot silently resolve to the News or replay sample, and known unavailable items
 remain saved while Watch explains why playback is blocked.
+
+### ABEMA public-link import
+
+[Issue #108](https://github.com/altendky/tachiai/issues/108) adds local lookup of
+published HTTPS `abema.tv` links in ABEMA's Manage streams screen. Previewing a
+link adds nothing; explicit Add saves its normalized public resource under the
+selected provider instance. Channel, exact channel/slot, episode and title links
+remain channel, broadcast, video and collection intents respectively. Slot
+identity includes its channel; a title never selects a latest episode.
+
+Lookup makes no provider request. Generated labels have unknown availability and
+no inferred schedule, existence or entitlement. Queries, fragments, credentials,
+encoded paths, unrecognized hosts/paths and oversized input are rejected; only
+bounded public identifiers enter the configured store. Public-link drafts remain
+in memory rather than saved Activity state.
+
+Imported items survive restart and unavailable My List access, using the existing
+local ordering, deduplication and encrypted storage. Exact current sample
+resources retain their existing playback support. Other resources remain saved
+but fail as unsupported before route/session preparation; collections need
+explicit child discovery that is not yet connected. This does not implement
+native All/search, account lists, Android Share handling or dynamic ABEMA playback.
 
 [Twitch integration #99](https://github.com/altendky/tachiai/issues/99) and
 [ABEMA integration #101](https://github.com/altendky/tachiai/issues/101) implement

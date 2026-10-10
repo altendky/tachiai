@@ -101,6 +101,12 @@ availability and unsupported playback remain explicit. Provider-controlled
 browsing and copying a public link offer a candidate discovery handoff; Android
 sharing availability and end-to-end behavior still need validation.
 
+The bounded [local public-link import](configured-catalog.md#abema-public-link-import)
+from [issue #108](https://github.com/altendky/tachiai/issues/108) implements manual
+paste/preview/Add for those public identity shapes. It does not inspect account
+pages, request provider metadata or implement Android Share handling. Unknown
+availability and the exact-sample-only playback boundary remain explicit.
+
 That handoff does not implement native All/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
 proof that Tachiai can retrieve My List or history. No account-page scraping,

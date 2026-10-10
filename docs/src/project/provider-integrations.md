@@ -135,6 +135,15 @@ live seeking and live current-time reporting are not available. Tachiai must
 not present Twitch live offset as measured merely because it timed a pause.
 Replay/VOD embeds provide more useful seeking and position controls.
 
+## Account watch history
+
+The [watch-history access research](provider-history-access.md) distinguishes
+ABEMA's account history UI and Twitch's viewing-data export from unverified
+native retrieval. History is optional discovery through the common catalog
+interface; it does not replace favorites or block initial catalog work.
+Account-owned access, privacy, exact identities and fixture/integration gates
+remain tracked in issue #102.
+
 ## Generic web media
 
 A later generic adapter may support a user-supplied page containing an HTML

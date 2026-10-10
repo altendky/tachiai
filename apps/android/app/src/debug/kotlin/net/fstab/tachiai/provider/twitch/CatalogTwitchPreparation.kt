@@ -43,7 +43,6 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     private val access = AtomicReference<AccessProbeHttp?>()
     @Volatile private var owner: TwitchCatalogConnectionOwner? = null
     @Volatile private var lease: TwitchCatalogLease? = null
-    private var checkedMs = Long.MIN_VALUE
     private val storedLock = Any()
     override var acceptanceDeadlineMs = 0L
         private set
@@ -56,15 +55,14 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
 
     // Worker/Media3 checks retain the catalog grant expiry, not the short source
     // preparation deadline. The native playback budget owns source acceptance.
+    // Always read the durable bound: another consumer can tighten expiry without
+    // rotating the pair generation. UI publication remains memory-only above.
     override fun checkStored(force: Boolean): Boolean = synchronized(storedLock) {
         if (!canContinue()) return false
-        val now = monotonicMs()
-        if (!force && checkedMs != Long.MIN_VALUE && now >= checkedMs && now - checkedMs < 1_000) return true
         val current = runCatching {
             owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } == true &&
                 lease?.let { session.get()?.isCurrent(it) } == true
         }.getOrDefault(false)
-        checkedMs = now
         if (!current) valid.set(false)
         current && canContinue()
     }

@@ -2,10 +2,12 @@ package net.fstab.tachiai.provider.twitch.catalog
 
 import java.io.IOException
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import net.fstab.tachiai.platform.network.*
+import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.twitch.*
 import org.junit.Assert.*
@@ -93,6 +95,41 @@ class TwitchCatalogRouteOwnerTest {
         assertThrows(IOException::class.java) { owned.device() }
         assertEquals(0, providerCalls)
         owned.close()
+    }
+
+    @Test fun localRetentionPassingDuringRoutePreparationBlocksProviderHttpAndRequiresReconnect() {
+        var wall = 1_000_000L; var mono = 10_000L
+        val memory = object : PrivateSecretStore {
+            var bytes: ByteArray? = null
+            override fun read() = bytes?.copyOf()
+            override fun write(plaintext: ByteArray) { bytes = plaintext.copyOf() }
+        }
+        val store = TwitchCatalogGrantStore(memory, UUID.randomUUID().toString(), wallMs = { wall })
+        val credentials = TwitchCatalogCredentials("fixture-access", "fixture-refresh", 1000L)
+        val validation = TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null)
+        assertNotNull(store.commitConnection(store.beginConnection(), TwitchCatalogReplacement(
+            credentials, validation, 1000L, localRetentionUntilMs = wall + 1000L, savedAtMs = wall)))
+        var routes = 0; var closes = 0; var providerTransports = 0
+        val session = TwitchCatalogSession(store, transportFactory = { gate ->
+            OwnedTwitchCatalogTransport(profile(), gate, createRoute = { selected, preparation ->
+                routes++
+                // An imported backend can take long enough to exhaust retention.
+                wall += 1000L; mono += 1000L
+                RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                    override val proxyPort = 12345
+                    override fun close() { closes++ }
+                } }
+            }, createTransport = { _, _ -> providerTransports++; FakeTransport() })
+        }, wallMs = { wall }, monotonicMs = { mono })
+        session.use {
+            val result = it.validate(force = true)
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, result.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, result.summary.failure)
+            assertNull(result.lease)
+            assertEquals(1, routes); assertEquals(1, closes); assertEquals(0, providerTransports)
+            assertNull(it.validate(force = true).lease)
+            assertEquals(1, routes); assertEquals(0, providerTransports)
+        }
     }
 
     @Test fun pauseCancelsPreparationAndRejectsLateRouteWithoutDiscardingTransport() {

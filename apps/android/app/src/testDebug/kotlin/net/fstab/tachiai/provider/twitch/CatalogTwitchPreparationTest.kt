@@ -63,6 +63,7 @@ class CatalogTwitchPreparationTest {
         var mediaCalls = 0
         var scopes = listOf(TWITCH_CATALOG_SCOPE)
         var validateStatus = 200
+        var validationSeconds = 7200
         var beforeResponse: () -> Unit = {}
         var response = "{\"data\":{\"streamPlaybackAccessToken\":{\"signature\":\"abc\",\"value\":\"fixture-value\"}," +
             "\"videoPlaybackAccessToken\":{\"signature\":\"abc\",\"value\":\"fixture-value\"}}}"
@@ -79,7 +80,7 @@ class CatalogTwitchPreparationTest {
             override fun validate(accessToken: String): DeviceAuthResponse {
                 validationCalls++
                 return DeviceAuthResponse(validateStatus, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID,
-                    "user_id" to "fixture-user", "scopes" to scopes, "expires_in" to 7200))
+                    "user_id" to "fixture-user", "scopes" to scopes, "expires_in" to validationSeconds))
             }
             override fun refresh(refreshToken: String): DeviceAuthResponse {
                 refreshCalls++
@@ -102,7 +103,7 @@ class CatalogTwitchPreparationTest {
                         override fun canPublishLocally() = admission && !closed
                         override fun session(): TwitchCatalogSession {
                             sessionOpened++
-                            return TwitchCatalogSession(store, this@Fixture::transport, { wall }, { mono }, {
+                            return TwitchCatalogSession(store, { this@Fixture.transport() }, { wall }, { mono }, {
                                 canPublishLocally() && owner().sameOwnership(route.presentation)
                             }).also { retainedSession = it }
                         }
@@ -139,6 +140,32 @@ class CatalogTwitchPreparationTest {
         assertEquals(1, fixture.refreshCalls); assertEquals(1, fixture.validationCalls)
         assertEquals("OAuth fresh-access", fixture.connections.single().getRequestProperty("Authorization"))
         assertTrue(preparation.checkStored(force = true)); preparation.close()
+    }
+
+    @Test fun secondViewerTightensSameTokenExpiryWithoutInterruptingFirstViewer() {
+        val fixture = Fixture()
+        fixture.validationSeconds = 10
+        val saved = fixture.store.commitConnection(fixture.store.beginConnection(), TwitchCatalogReplacement(
+            TwitchCatalogCredentials("fixture-access", "fixture-refresh", 10_000L),
+            TwitchCatalogValidation("fixture-user", setOf(TWITCH_CATALOG_SCOPE), 10_000L), 10_000L,
+            providerExpiresAtMs = fixture.wall + 10_000L,
+            localRetentionUntilMs = fixture.wall + TWITCH_CATALOG_LOCAL_RETENTION_MS,
+            savedAtMs = fixture.wall))!!
+        val first = fixture.preparation()
+        val second = fixture.preparation()
+        try {
+            fixture.resolve(first)
+            fixture.validationSeconds = 9
+            fixture.resolve(second, replay = true)
+            assertEquals(saved.generation, fixture.store.read()!!.generation)
+            assertTrue(first.checkStored(force = true)); assertTrue(second.checkStored(force = true))
+            fixture.advance(8_999L)
+            assertTrue(first.checkStored(force = true)); assertTrue(second.checkStored(force = true))
+            fixture.advance(1L)
+            assertFalse(first.checkStored(force = true)); assertFalse(second.checkStored(force = true))
+            assertFalse(first.canContinue()); assertFalse(second.canContinue())
+            assertEquals(2, fixture.validationCalls); assertEquals(2, fixture.mediaCalls)
+        } finally { first.close(); second.close() }
     }
 
     @Test fun sourceAcceptanceDeadlineDoesNotBecomeTheMediaGrantExpiry() {
@@ -185,7 +212,7 @@ class CatalogTwitchPreparationTest {
                 "forget" -> fixture.store.forget()
                 "reconnect" -> fixture.connect(token = "replacement-access")
                 "refresh" -> {
-                    val other = TwitchCatalogSession(fixture.store, fixture::transport, { fixture.wall }, { fixture.mono })
+                    val other = TwitchCatalogSession(fixture.store, { fixture.transport() }, { fixture.wall }, { fixture.mono })
                     val value = other.validate().lease!!
                     assertEquals(TwitchCatalogSessionState.CONNECTED, other.onUnauthorized(value).summary.state)
                     other.close()

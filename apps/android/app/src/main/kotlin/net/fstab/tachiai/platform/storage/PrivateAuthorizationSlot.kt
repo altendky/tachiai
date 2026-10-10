@@ -22,3 +22,8 @@ internal fun twitchProviderInstanceBindingName(id: String): String {
     })
     return "twitch-provider-instance-$id-local-authorization"
 }
+
+internal fun configuredProviderInstanceBindingName(id: String): String {
+    require(net.fstab.tachiai.presentation.validProviderInstanceId(id))
+    return "configured-provider-instance-$id"
+}

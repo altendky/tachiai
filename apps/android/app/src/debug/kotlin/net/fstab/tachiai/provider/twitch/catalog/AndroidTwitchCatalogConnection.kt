@@ -41,7 +41,7 @@ internal fun readTwitchCatalogRouteOwner(instanceId: String, readInstances: () -
 }
 
 internal fun androidTwitchCatalogConnectionBinding(context: Context,
-    instanceId: String): TwitchCatalogConnectionBinding {
+    instanceId: String, canUse: () -> Boolean = { true }): TwitchCatalogConnectionBinding {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
     class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?)
@@ -65,7 +65,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         private var closed = false
         private var cleanupFailed = false
         private val transports = mutableSetOf<TwitchCatalogTransport>()
-        private fun currentOwner(): Boolean = captured.presentation.routeUsable && !synchronized(lock) { closed || cleanupFailed } &&
+        private fun currentOwner(): Boolean = canUse() && captured.presentation.routeUsable && !synchronized(lock) { closed || cleanupFailed } &&
             runCatching { val current = readOwner().presentation
                 current.routeUsable && captured.presentation.sameOwnership(current)
             }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
@@ -115,7 +115,7 @@ internal class OwnedTwitchCatalogTransport(
     private val profile: ConnectionProfile?,
     private val canRequest: () -> Boolean,
     private val createRoute: (ConnectionProfile?, RoutePreparation) -> RouteSession = { selected, preparation ->
-        RouteSession.create(selected, preparation)
+        RouteSession.createTwitchCatalog(selected, preparation)
     },
     private val createTransport: ((URL) -> javax.net.ssl.HttpsURLConnection, () -> Boolean) -> TwitchCatalogTransport = { open, gate ->
         TwitchCatalogAuthTransport(open = open, canRequest = gate)

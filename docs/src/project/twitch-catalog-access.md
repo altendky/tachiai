@@ -18,7 +18,9 @@ remain unobserved. The current developer-console configuration was not inspected
 
 The separate [debug catalog authorization prototype](twitch-catalog-authorization.md)
 implements the proposed lifecycle with synthetic fixtures. This does not establish
-actual scoped consent or connect Helix discovery.
+actual scoped consent. The [connected catalog prototype](twitch-connected-catalog.md)
+adds supported Helix discovery through that separate session, with synthetic
+verification and the actual account/route observations still outstanding.
 
 ## Documented metadata and identities
 

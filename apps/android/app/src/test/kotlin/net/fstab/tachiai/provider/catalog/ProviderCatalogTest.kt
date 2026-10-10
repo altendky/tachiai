@@ -8,6 +8,22 @@ class ProviderCatalogTest {
     private val instanceId = "12345678-1234-1234-1234-123456789abc"
     private val otherInstance = "12345678-1234-1234-1234-123456789abd"
 
+    @Test fun browseLabelsAndInitialCollectionsAreBoundedWithoutAssumingAccess() {
+        assertEquals("All", CatalogCapabilities().browseTitle)
+        assertNull(CatalogCapabilities().initialCollectionId)
+        val following = CatalogCollection("following", "Following", CatalogAccess.AUTHORIZATION_REQUIRED)
+        val capabilities = CatalogCapabilities(collections = listOf(following), browseTitle = "Live channels",
+            initialCollectionId = following.id)
+        assertEquals("Live channels", capabilities.browseTitle)
+        assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, capabilities.collections.single().access)
+        listOf("", " Leading", "Trailing ", "x".repeat(65), "Control\n", "Hidden\u200b").forEach { title ->
+            assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(browseTitle = title) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogCapabilities(collections = listOf(following), initialCollectionId = "unknown")
+        }
+    }
+
     // Deliberately different provider identities and collections, consumed only
     // through ProviderCatalog. No real account or provider network is involved.
     private class FixtureCatalog(

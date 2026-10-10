@@ -37,9 +37,13 @@ class StreamManagementControllerTest {
         var failure: CatalogFailure? = null
         var throwBrowse = false
         var throwCapabilities = false
+        var browseTitle = "All"
+        var initialCollectionId: String? = null
         var onBrowse: (CatalogQuery) -> Unit = {}
         var lastQuery: CatalogQuery? = null
         var browses = 0
+        var lookupFailure: CatalogFailure? = null
+        var lastLookupInput: String? = null
         @Volatile var closed = false
         val closedSignal = CompletableDeferred<Unit>()
         private fun entry(id: String, intent: CatalogIntent, title: String, availability: CatalogAvailability) =
@@ -50,7 +54,8 @@ class StreamManagementControllerTest {
             return CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
             lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
             collections = listOf(CatalogCollection(collectionId, collectionTitle, collectionAccess),
-                CatalogCollection("history", "History", CatalogAccess.UNSUPPORTED)))
+                CatalogCollection("history", "History", CatalogAccess.UNSUPPORTED)),
+            browseTitle = browseTitle, initialCollectionId = initialCollectionId)
         }
         override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
             browses++; lastQuery = query; onBrowse(query)
@@ -67,8 +72,12 @@ class StreamManagementControllerTest {
                 else -> CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
         }
-        override fun lookup(input: String): CatalogResult<CatalogEntry> = items.singleOrNull { it.resource.identity == input }
-            ?.let { CatalogResult.Value(it) } ?: CatalogResult.Failure(CatalogFailure.NOT_FOUND)
+        override fun lookup(input: String): CatalogResult<CatalogEntry> {
+            lastLookupInput = input
+            lookupFailure?.let { return CatalogResult.Failure(it) }
+            return items.singleOrNull { it.resource.identity == input }
+                ?.let { CatalogResult.Value(it) } ?: CatalogResult.Failure(CatalogFailure.NOT_FOUND)
+        }
         override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
         override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> = CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
         override fun close() { closed = true; closedSignal.complete(Unit) }
@@ -82,6 +91,80 @@ class StreamManagementControllerTest {
             clockMs = clockMs)
     private suspend fun idle(controller: StreamManagementController) = withTimeout(5_000) {
         controller.state.first { !it.loading && !it.saving }
+    }
+
+    @Test fun initialCollectionIsChosenOnceAndGlobalSearchNeverInheritsCollectionOrParent() = runBlocking {
+        defaultProviderInstances().forEach { instance ->
+            val catalog = Catalog(instance).apply { browseTitle = "Available streams"; initialCollectionId = collectionId }
+            val controller = controller(this, catalog, Memory())
+            controller.load(); var state = idle(controller)
+            assertEquals(catalog.collectionId, state.query.collectionId)
+            assertEquals(catalog.collectionId, catalog.lastQuery!!.collectionId)
+            controller.search("Offline"); state = idle(controller)
+            assertEquals(CatalogQuery(search = "Offline"), state.query)
+            assertEquals(listOf(catalog.offline), state.entries)
+            controller.children(catalog.parent); idle(controller)
+            controller.search("On-demand"); state = idle(controller)
+            assertEquals(CatalogQuery(search = "On-demand"), catalog.lastQuery)
+            assertNull(state.query.parent); assertEquals(listOf(catalog.episode), state.entries)
+            val calls = catalog.browses
+            controller.search("   "); state = idle(controller)
+            assertEquals(CatalogFailure.INVALID_INPUT, state.failure!!.reason)
+            assertEquals(CatalogQuery(search = "On-demand"), state.query)
+            assertEquals(calls, catalog.browses)
+            controller.all(); idle(controller); controller.load(); state = idle(controller)
+            assertEquals(CatalogQuery(), state.query)
+            assertNull(catalog.lastQuery!!.collectionId)
+            controller.close()
+        }
+    }
+
+    @Test fun inaccessibleInitialCollectionKeepsConfiguredItemsAndDoesNotMasqueradeAsEmptySuccess() = runBlocking {
+        val instance = defaultProviderInstances().last()
+        val catalog = Catalog(instance, CatalogAccess.AUTHORIZATION_REQUIRED).apply {
+            browseTitle = "Live channels"; initialCollectionId = collectionId
+        }
+        val memory = Memory()
+        val configured = store(memory, instance).add(catalog.offline) { emptyList() }
+        val controller = controller(this, catalog, memory)
+        controller.load(); var state = idle(controller)
+        assertEquals(configured, state.configured)
+        assertEquals(CatalogQuery(collectionId = "following"), state.query)
+        assertEquals(CatalogFailure.ACCESS_REQUIRED, state.failure!!.reason)
+        assertEquals(0, catalog.browses)
+        controller.all(); state = idle(controller)
+        assertNull(state.failure); assertEquals(configured, state.configured)
+        assertTrue(state.entries.isNotEmpty()); assertEquals(1, catalog.browses)
+        controller.close()
+    }
+
+    @Test fun failedCapabilitiesReadDoesNotConsumeTheInitialSelection() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().first()).apply {
+            initialCollectionId = collectionId; throwCapabilities = true
+        }
+        val controller = controller(this, catalog, Memory())
+        controller.load(); assertEquals(CatalogFailure.TEMPORARY, idle(controller).failure!!.reason)
+        catalog.throwCapabilities = false
+        controller.retry(); val state = idle(controller)
+        assertEquals(catalog.collectionId, state.query.collectionId)
+        assertEquals(catalog.collectionId, catalog.lastQuery!!.collectionId)
+        controller.close()
+    }
+
+    @Test fun lookupRetryKeepsExactInputRatherThanReopeningTheDefaultCollection() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()).apply { initialCollectionId = collectionId }
+        val controller = controller(this, catalog, Memory())
+        controller.load(); idle(controller)
+        val calls = catalog.browses
+        catalog.lookupFailure = CatalogFailure.TEMPORARY
+        controller.lookup(catalog.episode.resource.identity)
+        assertEquals(CatalogFailure.TEMPORARY, idle(controller).failure!!.reason)
+        catalog.lookupFailure = null
+        controller.retry(); val state = idle(controller)
+        assertEquals(catalog.episode.resource.identity, catalog.lastLookupInput)
+        assertEquals(listOf(catalog.episode), state.entries)
+        assertEquals(calls, catalog.browses)
+        controller.close()
     }
 
     @Test fun twoProvidersUseOneControllerForSearchPagesCollectionsChildrenAndExactLookup() = runBlocking {
@@ -257,13 +340,17 @@ class StreamManagementControllerTest {
             controller.add(catalog.offline); withTimeout(5_000) { entered.await() }
             val prior = controller.state.value
             controller.close()
+            val cleared = controller.state.value
+            assertEquals(prior.configured, cleared.configured)
+            assertTrue(cleared.entries.isEmpty()); assertNull(cleared.nextCursor); assertNull(cleared.capabilities)
+            assertEquals(CatalogQuery(), cleared.query); assertTrue(cleared.privacyRevision > prior.privacyRevision)
             assertTrue(StreamManagementWrites.pending(catalog.instance.id).isNotEmpty())
             withTimeout(5_000) { catalog.closedSignal.await() }
             release.countDown(); withTimeout(5_000) { controller.pendingMutation!!.join() }
-            assertEquals(prior, controller.state.value)
+            assertEquals(cleared, controller.state.value)
             assertEquals(catalog.offline, store(memory, catalog.instance).read { emptyList() }.single().entry)
             controller.all(); controller.add(catalog.future)
-            assertEquals(prior, controller.state.value)
+            assertEquals(cleared, controller.state.value)
             assertTrue(catalog.closed)
             assertTrue(StreamManagementWrites.pending(catalog.instance.id).isEmpty())
         } finally { release.countDown(); controller.close() }

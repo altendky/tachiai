@@ -81,7 +81,7 @@ entry model has no viewed-time/progress fields. Add bounded transient fields
 only after the retrieval design proves a need; never fill them from download
 time, publication time, aggregate minutes, array order or guessed timestamps.
 
-## Shared fixture and integration plan
+## Shared consumer fixtures and integration gates
 
 Reuse the instance-bound `ProviderCatalog`, optional collections and storage from
 [issue #96](https://github.com/altendky/tachiai/issues/96), through the common
@@ -89,23 +89,31 @@ management flow in [issue #97](https://github.com/altendky/tachiai/issues/97).
 Use the common picker and identities. Distinguish unsupported, not verified,
 authorization required, reconnect required and missing scope from empty success.
 
-Public synthetic fixtures can demonstrate the consumer independently:
+Public synthetic history adapters now exercise the actual shared controller,
+screen and protected configured-record codec, independently of provider access:
 
-- Populated, empty and paginated history; bounded opaque cursors bound to query,
-  instance and account/session revision.
-- Catch-up, never-live video and collections; explicit child choice and exact
-  identity resolution without latest-episode substitution.
-- Expired/unavailable items, transient failures and access loss, distinct from
-  empty success or a fresh guest account.
-- Explicit Add and instance-local deduplication; browsing alone adds nothing.
-- Logout/account switching during requests: reject stale results/cursors, clear
-  account-derived cache and retain configured items.
+- Populated, empty and paginated collections, including an empty intermediate
+  page and duplicate resource identities across pages.
+- Exact video and collection identities, explicit child choice, and
+  expired/unavailable entries that remain eligible for explicit local Add.
+- Add/deduplication and local removal through the real configured store;
+  browsing alone writes nothing and local removal leaves upstream fixtures intact.
+- Access loss clears discovery rows, continuation, search and lookup drafts;
+  retry revalidates the same requested collection without substituting All.
+  An invalidated continuation also clears old rows before retrying the collection.
+- Closing clears discovery immediately; late responses cannot restore it,
+  while configured items and already accepted local writes remain preserved.
+- A 500-unique-item limit per query retains the first items, stops continuation
+  with an incomplete-results notice, and resets for a new query.
 
-These are remaining fixtures, not delivered tests or real-provider acceptance.
-Integration must verify the intended account, pagination/ordering, normalized
-identities and access loss. Local removal never changes upstream history;
-upstream deletion never removes configured items. History mutation and local
-viewing recording remain outside #102.
+These are shared consumer fixtures, not verified provider history, content-type
+coverage or account acceptance. The fixture entries do not invent viewed time,
+progress or history ordering semantics. Integration still must verify the
+intended account, query/instance/session-bound cursors, pagination/ordering,
+normalized identities and access loss. Upstream deletion never removes
+configured items. History mutation and local viewing recording remain outside
+issue #102. The discovery-cache behavior is tracked in
+[issue #116](https://github.com/altendky/tachiai/issues/116).
 
 ## Privacy, ownership and remaining dependencies
 
@@ -114,8 +122,14 @@ provider instance, its verified account and route. No silent System-route,
 different-account, fresh-guest, Following, broadcaster-archive or local-history
 fallback is acceptable. Missing or revoked access remains explicit.
 
-Keep transient browsing/cache bounded and account-scoped; clear it on logout or
-account change. Logs, diagnostics and recovery checkpoints must exclude history
+The shared manager retains at most 500 unique discovery entries per query.
+Search and lookup drafts stay in memory, outside saved Activity state; access
+loss, close and controller replacement reset them. Provider adapters still must
+detect account/session changes and reject stale responses and continuations so
+the manager can clear account-derived discovery. Detection happens at the next
+request or lifecycle invalidation; this does not establish an idle cross-process
+account-change observer. Logs, diagnostics and recovery
+checkpoints must exclude history
 lists, viewed times, progress, tokens, private URLs and raw responses. Persist
 only required public resource/display metadata for items explicitly added by the
 user, under the existing protected configured-store boundary. A broad provider

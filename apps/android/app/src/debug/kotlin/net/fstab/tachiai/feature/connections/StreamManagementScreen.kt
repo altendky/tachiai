@@ -5,7 +5,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -60,10 +59,10 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
     onRetry: () -> Unit, onBack: () -> Unit) {
-    var search by rememberSaveable(state.instance.id) { mutableStateOf("") }
+    var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
-    var lookup by remember(state.instance.id) { mutableStateOf("") }
+    var lookup by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     val mutable = !state.saving && !state.loading && !state.storageFailed && state.configured != null
     val capabilities = state.capabilities
     val retryAt = state.failure?.retryAtEpochMs
@@ -110,7 +109,9 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         }
         item {
             Text("Find streams", style = MaterialTheme.typography.titleLarge)
-            Button(onClick = onAll, enabled = mutable) { Text("All") }
+            Button(onClick = onAll, enabled = mutable && capabilities != null) { Text(capabilities?.browseTitle ?: "All") }
+            if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
+                Text("${capabilities.browseTitle}: ${catalogAccessExplanation(capabilities.browse)}")
             capabilities?.collections.orEmpty().forEach { collection ->
                 TextButton(onClick = { onCollection(collection.id) }, enabled = mutable) { Text(collection.title) }
                 if (collection.access != CatalogAccess.AVAILABLE) Text("${collection.title}: ${catalogAccessExplanation(collection.access)}")
@@ -118,7 +119,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (capabilities != null && capabilities.search != CatalogAccess.UNSUPPORTED) {
                 OutlinedTextField(search, { search = it.take(160) }, enabled = mutable, singleLine = true,
                     label = { Text("Search streams") })
-                Button(onClick = { onSearch(search) }, enabled = mutable) { Text("Search") }
+                Button(onClick = { onSearch(search) }, enabled = mutable && search.isNotBlank()) { Text("Search") }
             }
             if (capabilities != null && capabilities.lookup != CatalogAccess.UNSUPPORTED) {
                 OutlinedTextField(lookup, { lookup = it.take(2048) }, enabled = mutable, singleLine = true,
@@ -126,9 +127,11 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                 Button(onClick = { onLookup(lookup.trim()) }, enabled = mutable && lookup.isNotBlank()) { Text("Look up") }
             }
             state.query.parent?.let { Text("Items under ${it.identity}") }
+            if (state.resultsTruncated) Text("Showing the first $MAX_DISCOVERY_RESULTS results. More results were withheld; narrow your search or choose another collection.")
             state.failure?.let { failure ->
                 Text(catalogFailureExplanation(failure))
-                if (failure.reason in setOf(CatalogFailure.TEMPORARY, CatalogFailure.RATE_LIMITED))
+                if (failure.reason in setOf(CatalogFailure.TEMPORARY, CatalogFailure.RATE_LIMITED, CatalogFailure.ACCESS_REQUIRED) ||
+                    failure.reason == CatalogFailure.INVALID_INPUT && capabilities == null)
                     Button(onClick = onRetry, enabled = mutable && retryReady) { Text("Retry catalog") }
             }
             if (!state.loading && state.failure == null && state.configured != null && state.entries.isEmpty()) Text("No catalog items found.")

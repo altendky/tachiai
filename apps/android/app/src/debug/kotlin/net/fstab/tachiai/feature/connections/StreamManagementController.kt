@@ -8,6 +8,8 @@ import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 
+internal const val MAX_DISCOVERY_RESULTS = 500
+
 internal data class StreamManagementState(
     val instance: ProviderInstance,
     val configured: List<ConfiguredSource>? = null,
@@ -21,6 +23,8 @@ internal data class StreamManagementState(
     val failure: CatalogResult.Failure? = null,
     val message: String? = null,
     val catalogNotice: String? = null,
+    val privacyRevision: Long = 0,
+    val resultsTruncated: Boolean = false,
 )
 
 // Activity/controller recreation keeps accepted writes visible in this process.
@@ -56,18 +60,21 @@ internal class StreamManagementController(
     notice: String? = null,
     private val clockMs: () -> Long = System::currentTimeMillis,
 ) : AutoCloseable {
+    private companion object { val privacyRevisions = AtomicLong() }
     init {
         require(catalog.instanceId == instance.id && catalog.providerId ==
             ProviderId(instance.service.name.lowercase(java.util.Locale.ROOT)))
     }
     private val stateLock = Any()
-    private val mutableState = MutableStateFlow(StreamManagementState(instance, catalogNotice = notice))
+    private val mutableState = MutableStateFlow(StreamManagementState(instance, catalogNotice = notice,
+        privacyRevision = privacyRevisions.incrementAndGet()))
     val state: StateFlow<StreamManagementState> = mutableState
     private val browseRevision = AtomicLong()
     private val mutationRevision = AtomicLong()
     private val writes = CoroutineScope(SupervisorJob() + io)
     private var browseJob: Job? = null
     private var lastLookup: String? = null
+    private var initialQueryChosen = false
     @Volatile private var closed = false
     @Volatile var pendingMutation: Job? = null
         private set
@@ -80,12 +87,25 @@ internal class StreamManagementController(
     private fun valid(entries: List<CatalogEntry>): List<CatalogEntry> = entries.also {
         check(it.all { entry -> entry.resource.providerId == catalog.providerId })
     }
+    private fun clearDiscovery(failure: CatalogResult.Failure, keepCapabilities: Boolean = false) {
+        lastLookup = null
+        publish { it.copy(entries = emptyList(), nextCursor = null, query = CatalogQuery(collectionId = it.query.collectionId),
+            capabilities = if (keepCapabilities) it.capabilities else null,
+            failure = failure, loading = false, resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }
+    }
+    private fun failed(result: CatalogResult.Failure, keepCapabilities: Boolean = false) {
+        if (result.reason == CatalogFailure.ACCESS_REQUIRED) clearDiscovery(result, keepCapabilities)
+        else publish { it.copy(failure = result) }
+    }
 
     fun load() {
         if (closed || state.value.saving) return
         cancelBrowse()
         val revision = browseRevision.get()
-        publish { it.copy(loading = true, storageFailed = false, capabilities = null, message = null, failure = null) }
+        lastLookup = null
+        publish { it.copy(loading = true, storageFailed = false, capabilities = null, message = null, failure = null,
+            entries = emptyList(), nextCursor = null, query = CatalogQuery(collectionId = it.query.collectionId),
+            resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }
         browseJob = scope.launch {
             var stage = FailureStage.CONFIGURED_SOURCES_READ
             try {
@@ -96,8 +116,12 @@ internal class StreamManagementController(
                 stage = FailureStage.CATALOG_LOAD
                 val capabilities = withContext(io) { catalog.capabilities() }
                 if (!current(revision)) return@launch
-                publish { it.copy(capabilities = capabilities) }
-                browseCurrent(revision, state.value.query.copy(cursor = null), false)
+                val query = if (initialQueryChosen) state.value.query.copy(cursor = null)
+                    else CatalogQuery(collectionId = capabilities.initialCollectionId)
+                initialQueryChosen = true
+                publish { it.copy(capabilities = capabilities, query = query, entries = emptyList(), nextCursor = null,
+                    resultsTruncated = false) }
+                browseCurrent(revision, query, false)
             } catch (_: CancellationException) {
                 // Query cancellation never changes persisted configured entries.
             } catch (error: Exception) {
@@ -135,20 +159,29 @@ internal class StreamManagementController(
             is CatalogResult.Value -> {
                 val entries = valid(result.value.entries)
                 check(result.value.nextCursor == null || result.value.nextCursor != query.cursor)
-                publish { it.copy(entries = (if (append) it.entries + entries else entries).distinctBy { entry -> entry.resource },
-                    nextCursor = result.value.nextCursor, failure = null) }
+                publish {
+                    val unique = (if (append) it.entries + entries else entries).distinctBy { entry -> entry.resource }
+                    val truncated = unique.size > MAX_DISCOVERY_RESULTS ||
+                        unique.size == MAX_DISCOVERY_RESULTS && result.value.nextCursor != null
+                    it.copy(entries = unique.take(MAX_DISCOVERY_RESULTS), resultsTruncated = truncated,
+                        nextCursor = if (truncated) null else result.value.nextCursor, failure = null)
+                }
             }
-            is CatalogResult.Failure -> publish { it.copy(failure = result) }
+            is CatalogResult.Failure -> if (append && result.reason == CatalogFailure.INVALID_INPUT)
+                clearDiscovery(result)
+            else failed(result, keepCapabilities = permission != CatalogAccess.AVAILABLE)
         }
     }
 
     private fun browse(query: CatalogQuery, append: Boolean = false) {
         if (closed || state.value.saving || state.value.configured == null || state.value.storageFailed) return
         lastLookup = null
+        initialQueryChosen = true
         cancelBrowse()
         val revision = browseRevision.get()
         publish { it.copy(query = query.copy(cursor = null), loading = true, failure = null, message = null,
-            entries = if (append) it.entries else emptyList(), nextCursor = if (append) it.nextCursor else null) }
+            entries = if (append) it.entries else emptyList(), nextCursor = if (append) it.nextCursor else null,
+            resultsTruncated = if (append) it.resultsTruncated else false) }
         browseJob = scope.launch {
             try { browseCurrent(revision, query, append) }
             catch (_: CancellationException) { }
@@ -160,7 +193,8 @@ internal class StreamManagementController(
     }
     fun all() = browse(CatalogQuery())
     fun search(text: String) {
-        val query = runCatching { state.value.query.copy(search = text.trim().ifEmpty { null }, cursor = null) }.getOrNull()
+        val trimmed = text.trim()
+        val query = if (trimmed.isEmpty()) null else runCatching { CatalogQuery(search = trimmed) }.getOrNull()
         if (query == null) publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) } else browse(query)
     }
     fun collection(id: String) = browse(CatalogQuery(collectionId = id))
@@ -183,14 +217,15 @@ internal class StreamManagementController(
         }
         cancelBrowse(); val revision = browseRevision.get()
         lastLookup = input
-        publish { it.copy(loading = true, failure = null, entries = emptyList(), nextCursor = null, message = null) }
+        publish { it.copy(loading = true, failure = null, entries = emptyList(), nextCursor = null, message = null,
+            resultsTruncated = false) }
         browseJob = scope.launch {
             try {
                 val permission = state.value.capabilities?.lookup ?: CatalogAccess.NOT_VERIFIED
                 val result = if (permission == CatalogAccess.AVAILABLE) withContext(io) { catalog.lookup(input) } else unavailable(permission)
                 if (current(revision)) when (result) {
                     is CatalogResult.Value -> publish { it.copy(entries = valid(listOf(result.value))) }
-                    is CatalogResult.Failure -> publish { it.copy(failure = result) }
+                    is CatalogResult.Failure -> failed(result, keepCapabilities = permission != CatalogAccess.AVAILABLE)
                 }
             } catch (_: CancellationException) { }
             catch (error: Exception) { if (current(revision)) { diagnostics.report(FailureStage.CATALOG_LOAD, error)
@@ -228,7 +263,14 @@ internal class StreamManagementController(
     fun remove(id: String) = mutate { store.remove(id, legacy) }
     fun move(id: String, delta: Int) = mutate { store.move(id, delta, legacy) }
     override fun close() {
-        synchronized(stateLock) { if (closed) return; closed = true }
+        synchronized(stateLock) {
+            if (closed) return
+            closed = true
+            lastLookup = null
+            mutableState.value = mutableState.value.let { it.copy(entries = emptyList(), nextCursor = null,
+                capabilities = null, query = CatalogQuery(), failure = null, loading = false,
+                resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }
+        }
         cancelBrowse(); mutationRevision.incrementAndGet()
         // Adapter close can cancel blocking requests; keep it off the UI thread.
         CoroutineScope(io).launch { diagnostics.cleanup(FailureStage.CATALOG_CLOSE) { catalog.close() } }

@@ -15,8 +15,9 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.*
-import net.fstab.tachiai.provider.catalog.SampleProviderCatalog
 import net.fstab.tachiai.provider.abema.AbemaLocalImportCatalog
+import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 
 class ManageStreamsActivity : ComponentActivity() {
     companion object { const val INSTANCE_ID = "PROVIDER_INSTANCE_ID" }
@@ -24,7 +25,8 @@ class ManageStreamsActivity : ComponentActivity() {
     private var controller by mutableStateOf<StreamManagementController?>(null)
     private var reading by mutableStateOf(true)
     private var message by mutableStateOf<String?>(null)
-    private var revision = 0L
+    @Volatile private var revision = 0L
+    @Volatile private var resumed = false
     private var readJob: Job? = null
     private var awaitingFinish: Job? = null
     private var savingWhileLeaving by mutableStateOf(false)
@@ -51,7 +53,7 @@ class ManageStreamsActivity : ComponentActivity() {
             }
         } }
     }
-    override fun onResume() { super.onResume(); if (BuildConfig.DEBUG) readOwner() }
+    override fun onResume() { super.onResume(); resumed = true; if (BuildConfig.DEBUG) readOwner() }
 
     private fun readOwner() {
         val id = intent.getStringExtra(INSTANCE_ID)
@@ -65,13 +67,15 @@ class ManageStreamsActivity : ComponentActivity() {
         readJob = scope.launch {
             try {
                 StreamManagementWrites.await(id)
+                TwitchCatalogConnectionWrites.await(id)
                 val loaded = withContext(Dispatchers.IO) {
                     val instances = providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
                     val owner = instances.singleOrNull { it.id == id } ?: error("Stale provider instance")
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
                     val catalog = if (owner.service == PrototypeService.ABEMA) AbemaLocalImportCatalog(owner, setups)
-                        else SampleProviderCatalog(owner, setups)
+                        else androidTwitchProviderCatalog(this@ManageStreamsActivity, owner.id,
+                            canUse = { resumed && revision == current })
                     Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
                         legacyConfiguredSources(owner, setups, qualities)
                 }
@@ -81,7 +85,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     diagnostics = diagnostics,
                     notice = if (parts.first.service == PrototypeService.ABEMA)
                         "Browse prototype samples or paste a public ABEMA link to save its exact item. Imported availability is unknown. Catalogs and account lists are not connected; playback supports only the existing samples."
-                    else "Prototype samples only. Provider catalogs and account lists are not connected yet.").also { it.load() }
+                    else "Connect Catalog account in Providers for Following, channel search and published replays. Live channels is a live listing; search and exact lookup also find offline channels. Adding saves only to Tachiai. Playback for discovered items is not verified.").also { it.load() }
                 reading = false
             } catch (_: CancellationException) { }
             catch (error: Exception) {
@@ -93,10 +97,11 @@ class ManageStreamsActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() {
+    override fun onPause() {
+        resumed = false
         revision++; readJob?.cancel()
         controller?.close()
-        super.onStop()
+        super.onPause()
     }
     override fun finish() {
         val id = intent.getStringExtra(INSTANCE_ID)

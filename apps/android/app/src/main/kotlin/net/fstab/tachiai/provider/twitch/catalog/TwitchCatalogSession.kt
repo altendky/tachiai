@@ -41,6 +41,7 @@ internal class TwitchCatalogSession(
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val canCommit: () -> Boolean = { true },
 ) : AutoCloseable {
+    val instanceId: String get() = store.instanceId
     private val operationLock = Any()
     private val localRevision = AtomicLong()
     private val active = AtomicReference<TwitchCatalogTransport?>()

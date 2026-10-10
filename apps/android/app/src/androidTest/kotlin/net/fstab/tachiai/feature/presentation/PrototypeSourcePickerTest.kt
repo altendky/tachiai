@@ -44,6 +44,22 @@ class PrototypeSourcePickerTest {
         net.fstab.tachiai.presentation.prototypeCatalogResource(source) }
     private fun expected(a: PrototypeSource, b: PrototypeSource) = ConfiguredFeedAssignments(item(a).choice, item(b).choice)
 
+    @Test fun savedOfflineBroadcasterCanRequestFreshAssessmentWithoutChangingItsIdentity() {
+        val twitch = providers.single { it.service == PrototypeService.TWITCH }
+        val channel = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,
+            net.fstab.tachiai.provider.catalog.CatalogEntry(net.fstab.tachiai.provider.catalog.CatalogResource(
+                net.fstab.tachiai.presentation.ProviderId("twitch"), "broadcaster", "789", CatalogIntent.CHANNEL),
+                "Saved channel", availability = CatalogAvailability.OFFLINE))
+        var opened: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(channel),
+                initialAssignments = ConfiguredFeedAssignments(channel.choice, channel.choice), onWatch = { opened = it })
+        } }
+        compose.onNodeWithText("Saved channel").assertExists()
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(ConfiguredFeedAssignments(channel.choice, channel.choice), opened) }
+    }
+
     @Test fun configuredExactVideosEnableWatchAndKeepItemAndOwnerForBothSlots() {
         val twitch = providers.single { it.service == PrototypeService.TWITCH }
         val first = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,

@@ -237,6 +237,20 @@ authorization cannot authorize native playback. Signed sources remain session-lo
 and diagnostics use fixed source categories rather than arbitrary video IDs.
 No access endpoint, private protocol, media-origin or DRM boundary changes.
 
+Configured Twitch broadcaster IDs remain encrypted saved public identities;
+current logins exist only in provider-owned preparation handles. Exact catalog
+ID/live lookup and a post-native lookup by login use the selected instance's
+separate catalog grant and closed-purpose route. They never substitute that grant
+for LOCAL playback authorization. Native and metadata ownership must match their
+frozen instance/route choices; no fallback is admitted. Worker checks may reread
+protected stores, while queued publication checks only local lease identity,
+revision, expiry and lifecycle state. Cross-process durable changes are observed
+at subsequent worker/lifecycle checks; no immediate observer is claimed.
+The catalog grant gates preparation rather than ongoing native playback after
+publication. Retry deadlines are transient and instance-bound, without saved
+aliases, provider bodies, grants or new diagnostic identity fields. These checks
+do not make separate provider lookups atomic or broaden native media permissions.
+
 Additive native timing diagnostics expose normalized numeric media clocks,
 window/default positions, signed out-of-window positions/live offsets and closed
 state/capability markers only. They include no media item, track metadata or URI.

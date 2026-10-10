@@ -65,7 +65,11 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         private var closed = false
         private var cleanupFailed = false
         private val transports = mutableSetOf<TwitchCatalogTransport>()
-        private fun currentOwner(): Boolean = canUse() && captured.presentation.routeUsable && !synchronized(lock) { closed || cleanupFailed } &&
+        // Main-looper publication admission must never reread the registry,
+        // imported profile or encrypted grant. Durable checks remain below.
+        override fun canPublishLocally(): Boolean = canUse() && captured.presentation.routeUsable &&
+            !synchronized(lock) { closed || cleanupFailed }
+        private fun currentOwner(): Boolean = canPublishLocally() &&
             runCatching { val current = readOwner().presentation
                 current.routeUsable && captured.presentation.sameOwnership(current)
             }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)

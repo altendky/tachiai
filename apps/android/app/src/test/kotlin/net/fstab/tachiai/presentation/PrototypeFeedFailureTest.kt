@@ -7,6 +7,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrototypeFeedFailureTest {
+    @Test fun `catalog access failures distinguish discovery from playback authorization`() {
+        val catalog = PrototypeFeedFailure(PrototypeFailureReason.CATALOG_CONNECTION_REQUIRED).message
+        assertTrue(catalog.contains("catalog account"))
+        assertFalse(catalog.contains("saved Twitch login"))
+        assertTrue(PrototypeFeedFailure(PrototypeFailureReason.CATALOG_RATE_LIMITED).message.contains("Try again later"))
+        assertFalse(PrototypeFeedFailure(PrototypeFailureReason.LOGIN_EXPIRED).message.contains("catalog account"))
+    }
+
     @Test fun `initial HTTP failure survives subsequent player and cleanup events`() {
         val latch = PrototypeFeedFailureLatch()
         assertNull(latch.failure)

@@ -48,6 +48,7 @@ import net.fstab.tachiai.presentation.ViewerQualityState
 import net.fstab.tachiai.feature.connections.providerInstanceStore
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.presentation.SourceSetup
+import net.fstab.tachiai.presentation.SourceRouteChoice
 import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.defaultSourceSetups
 import net.fstab.tachiai.presentation.defaultProviderInstances
@@ -62,6 +63,7 @@ import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
 import net.fstab.tachiai.platform.network.RouteSession
+import net.fstab.tachiai.platform.network.ConnectionProfile
 import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.RouteSessionRegistry
@@ -83,6 +85,10 @@ import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
+import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
+import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
+import net.fstab.tachiai.provider.twitch.catalog.androidTwitchLiveIdentityResolver
+import net.fstab.tachiai.provider.twitch.catalog.TwitchBroadcasterRetryGate
 import net.fstab.tachiai.provider.twitch.AndroidTwitchAuthorization
 import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
@@ -151,6 +157,11 @@ open class PrototypeActivity : ComponentActivity() {
     private var lastSample = 0L
     private val authorizationPolling = AtomicBoolean()
     private var routes = emptyMap<String, RouteSession>()
+    private var routeProfiles = emptyMap<String, Result<ConnectionProfile?>>()
+    private var routeChoices = emptyMap<String, SourceRouteChoice>()
+    // Rate hints survive a stopped viewer so another explicit attempt cannot
+    // skip its deadline. This Activity-owned map contains no grants or aliases.
+    private val twitchBroadcasterRetryGate = TwitchBroadcasterRetryGate()
     private var diagnostics = FailureReporter.NONE
     private var playbackAvailable by mutableStateOf(true)
     private var recoveryMessage by mutableStateOf<String?>(null)
@@ -388,6 +399,8 @@ open class PrototypeActivity : ComponentActivity() {
                 routesPending = false
                 recoveryState.notifyChanged()
                 routes = results.mapNotNull { (provider, result) -> result.getOrNull()?.let { provider to it } }.toMap()
+                routeProfiles = plan.profiles.filterKeys { it in routes }
+                routeChoices = choices.filter { it.id in routes }.associate { it.id to checkNotNull(it.setup.route) }
                 results.filterValues { it.isFailure }.keys.forEach { instanceId ->
                     selected.feeds.forEachIndexed { index, feed -> if (feed.instanceId == instanceId)
                         failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED)) }
@@ -445,11 +458,24 @@ open class PrototypeActivity : ComponentActivity() {
                     PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
                         route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index))
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
-                    PrototypeService.TWITCH -> PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
-                        openConnection = checkNotNull(routes[selected.feeds[index].instanceId])::open,
-                        authorization = AndroidTwitchAuthorization.forProviderInstance(this, selected.feeds[index].instanceId),
-                        diagnostics = feedDiagnostics(index),
-                        initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L)
+                    PrototypeService.TWITCH -> {
+                        val instanceId = source.instanceId
+                        val route = checkNotNull(routes[instanceId])
+                        val authorization = AndroidTwitchAuthorization.forProviderInstance(this, instanceId)
+                        if (supportedConfiguredTwitchBroadcaster(source.resource)) {
+                            val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
+                            val routeChoice = checkNotNull(routeChoices[instanceId])
+                            configuredTwitchBroadcasterSession(this, source.resource, feedActive, events,
+                                liveIdentityResolverFactory = {
+                                    androidTwitchLiveIdentityResolver(this, instanceId, profile, feedActive,
+                                        twitchBroadcasterRetryGate, expectedRoute = routeChoice)
+                                }, openConnection = route::open, authorization = authorization,
+                                diagnostics = feedDiagnostics(index))
+                        } else PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
+                            openConnection = route::open, authorization = authorization,
+                            diagnostics = feedDiagnostics(index),
+                            initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L)
+                    }
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 created += index to session
@@ -786,6 +812,8 @@ open class PrototypeActivity : ComponentActivity() {
         cancelRoutePreparation()
         val oldRoutes = routes.values.distinct()
         routes = emptyMap()
+        routeProfiles = emptyMap()
+        routeChoices = emptyMap()
         if (oldRoutes.isEmpty()) return
         routeCleanupPending = true
         recoveryState.notifyChanged()

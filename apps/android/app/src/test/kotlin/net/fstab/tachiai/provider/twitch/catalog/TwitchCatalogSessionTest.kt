@@ -21,7 +21,9 @@ class TwitchCatalogSessionTest {
     private class Memory : PrivateSecretStore {
         var bytes: ByteArray? = null
         var failWrite = false
-        override fun read() = bytes?.copyOf()
+        var denyRead = false
+        var reads = 0
+        override fun read(): ByteArray? { check(!denyRead); reads++; return bytes?.copyOf() }
         override fun write(plaintext: ByteArray) {
             if (failWrite) throw IOException("fixture failure")
             bytes = plaintext.copyOf()
@@ -76,6 +78,39 @@ class TwitchCatalogSessionTest {
         val restarted = fixture.session()
         assertEquals(TwitchCatalogSessionState.UNVERIFIED, restarted.readSummary().state)
         assertNotNull(restarted.validate().lease); assertEquals(3, fixture.requests.validations.get())
+    }
+
+    @Test fun localLeaseGatePerformsNoStoreOwnerOrTransportMaintenance() {
+        val fixture = Fixture(); fixture.connect()
+        var ownerCalls = 0
+        var rejectOwner = false
+        val session = TwitchCatalogSession(fixture.store, fixture.requests::transport,
+            { fixture.clock.wall }, { fixture.clock.mono }, { check(!rejectOwner); ownerCalls++; true })
+        val lease = session.validate().lease!!
+        val reads = fixture.memory.reads; val owners = ownerCalls
+        val validations = fixture.requests.validations.get()
+        fixture.memory.denyRead = true; rejectOwner = true
+        repeat(4) { assertTrue(session.isLocallyCurrent(lease)) }
+        assertEquals(reads, fixture.memory.reads); assertEquals(owners, ownerCalls)
+        assertEquals(validations, fixture.requests.validations.get())
+        fixture.store.invalidate()
+        assertFalse(session.isLocallyCurrent(lease))
+    }
+
+    @Test fun localGateRejectsForeignReplacedPausedClosedAndExpiredLeases() {
+        val fixture = Fixture(); fixture.connect(); val session = fixture.session()
+        val lease = session.validate().lease!!
+        val foreign = fixture.session()
+        assertFalse(foreign.isLocallyCurrent(lease))
+        val replacement = session.validate(force = true).lease!!
+        assertNotSame(lease, replacement); assertFalse(session.isLocallyCurrent(lease))
+        assertTrue(session.isLocallyCurrent(replacement))
+        session.setForeground(false); assertFalse(session.isLocallyCurrent(replacement))
+        session.setForeground(true); val resumed = session.validate().lease!!
+        fixture.clock.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS)
+        assertFalse(session.isLocallyCurrent(resumed))
+        val renewed = session.validate().lease!!
+        session.close(); assertFalse(session.isLocallyCurrent(renewed))
     }
 
     @Test fun backgroundClosesActiveLeaseAndResumeRequiresValidationButPreservesPendingConnect() {

@@ -39,9 +39,11 @@ entitlement are separate from saved identity.
 Newly discovered playback remains **not verified** against a real provider.
 The debug viewer can now prepare [configured exact videos](configured-catalog.md#configured-twitch-video-playback)
 within its unchanged native replay boundary, using the owning instance's separate
-LOCAL playback grant and route. Immutable broadcaster resources remain unsupported
-for native playback. Adding an item does not expand native permissions or select
-a sample under the new label.
+LOCAL playback grant and route. [Configured broadcaster playback](configured-catalog.md#configured-twitch-broadcaster-playback)
+uses guarded transient current-login mapping and checks that login's ownership
+again before publication. It requires both the owning instance's catalog connection
+and its separate LOCAL playback grant. Adding an item does not expand native
+permissions or select a sample under the new label.
 
 ## Known schedule context
 

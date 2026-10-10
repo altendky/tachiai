@@ -128,7 +128,29 @@ local ordering, deduplication and encrypted storage. Exact current sample
 resources retain their existing playback support. Other resources remain saved
 but fail as unsupported before route/session preparation; collections need
 explicit child discovery that is not yet connected. This does not implement
-native All/search, account lists, Android Share handling or dynamic ABEMA playback.
+native All/search, account lists or dynamic ABEMA playback.
+
+### Android public-link sharing
+
+[Issue #118](https://github.com/altendky/tachiai/issues/118) adds a separate debug
+share target, **Add public ABEMA item to Tachiai**, for one bare public link sent
+as plain text. The user explicitly chooses an existing ABEMA provider instance,
+even when there is only one. The application rechecks that exact instance before
+opening a normalized preview in Manage streams. Nothing is saved until Add.
+The connection-file importer keeps its existing separate Share/Open handling.
+
+The boundary rejects attachments, rich text, conflicting clipboard payloads and
+URLs with credentials, queries or fragments. Shares containing a title alongside
+the URL may need manual paste of the bare link instead. Raw incoming text is
+removed from the Activity-held Intent after parsing. The normalized pending entry
+is held only in memory, consumed once after the manager is ready, and discarded
+on backgrounding, recreation, cancellation or read failure. Invalid or stale
+instance choices do not substitute a default or create a provider instance.
+
+This local handoff makes no provider or account request and does not resolve
+availability or playback. Synthetic Android Intent, chooser, lifecycle and
+intercepted handoff fixtures establish the application boundary; they do not
+establish compatibility with ABEMA's own sharing UI or provider playback.
 
 [Twitch integration #99](https://github.com/altendky/tachiai/issues/99) and
 [ABEMA integration #101](https://github.com/altendky/tachiai/issues/101) implement

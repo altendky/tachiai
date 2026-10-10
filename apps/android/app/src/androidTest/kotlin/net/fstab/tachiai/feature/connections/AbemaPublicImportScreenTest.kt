@@ -1,9 +1,12 @@
 package net.fstab.tachiai.feature.connections
 
 import androidx.compose.runtime.*
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.test.espresso.Espresso.closeSoftKeyboard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,6 +25,7 @@ import org.junit.Test
 // stores/accounts are synthetic; no device-private data or provider is contacted.
 class AbemaPublicImportScreenTest {
     @get:Rule val compose = createComposeRule()
+    private lateinit var focusManager: FocusManager
 
     private class Memory : PrivateSecretStore {
         var bytes: ByteArray? = null
@@ -30,7 +34,7 @@ class AbemaPublicImportScreenTest {
         override fun write(plaintext: ByteArray) { bytes = plaintext.copyOf(); writes++ }
     }
 
-    private class Harness : AutoCloseable {
+    private inner class Harness : AutoCloseable {
         val instance = ProviderInstance("12345678-1234-1234-1234-123456789abc", PrototypeService.ABEMA, "Import fixture")
         val memory = Memory()
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -48,6 +52,7 @@ class AbemaPublicImportScreenTest {
         }
 
         @Composable fun Render() {
+            focusManager = LocalFocusManager.current
             val state by controller.state.collectAsState()
             TachiaiPrototypeTheme {
                 if (picker) PrototypeSourcePicker(null, providerInstances = listOf(instance),
@@ -75,7 +80,12 @@ class AbemaPublicImportScreenTest {
     private fun description(value: String) = scrollTo(hasContentDescription(value))
     private fun lookup(url: String) {
         text("Provider URL or channel").performTextReplacement(url)
-        text("Look up").performClick()
+        text("Provider URL or channel").assertTextContains(url)
+        // Settle focus and IME insets before scrolling to the real tap target.
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
+        closeSoftKeyboard()
+        compose.waitForIdle()
+        text("Look up").assertIsEnabled().assertIsDisplayed().performClick()
     }
     private fun ready(harness: Harness) {
         compose.waitUntil { !harness.controller.state.value.loading && !harness.controller.state.value.saving }

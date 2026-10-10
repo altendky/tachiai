@@ -108,7 +108,7 @@ replacement instance.
 | Access mode | Bounded implementation recommendation |
 | --- | --- |
 | Valid catalog session | Native All/search, exact lookup, channel videos and Following |
-| Disconnected | Explicit public channel/video URL or login import; metadata may remain unknown |
+| Disconnected | Local exact public video URL import; metadata remains unknown; channel/logins require connected identity lookup |
 | Provider-controlled browsing | External discovery followed by explicit URL/share import; no automatic result extraction |
 | Native anonymous All/search | Unresolved access architecture; not implemented by this recommendation |
 
@@ -126,15 +126,22 @@ remains a product/access decision for
 [#99](https://github.com/altendky/tachiai/issues/99), not a removed requirement.
 Connected discovery, fixtures and configured storage can proceed independently.
 
+[Issue #120](https://github.com/altendky/tachiai/issues/120) implements the bounded
+exact-video case in the shared manager. It accepts only bare public video links,
+retains an unknown availability and requires explicit Add. Mutable channel URLs
+and logins are not saved as guessed broadcaster identities. Connected failures
+remain failures; a fresh capability assessment and input are required before
+using local import after account access is lost.
+
 ## Shared adapter mapping
 
 Map the Twitch implementation to the shared contract from
 [#96](https://github.com/altendky/tachiai/issues/96):
 
 - Browse/search/refresh and child pages require a validated catalog session.
-  Disconnected lookup may normalize a public URL/login locally and return unknown
-  availability; it does not verify existence. Inputs requiring API verification
-  report access-required. A validated session permits metadata lookup.
+  Disconnected lookup normalizes an exact public video URL locally and returns
+  unknown availability; it does not verify existence. Other inputs are rejected
+  by the local path. A validated session permits metadata lookup.
 - Following is optional, with explicit authorization-required, reconnect-required
   and scope-required states. Do not turn unavailable access into a successful
   empty list. History remains separate follow-up

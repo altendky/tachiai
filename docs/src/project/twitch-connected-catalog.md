@@ -69,6 +69,24 @@ Search and lookup drafts stay in memory and clear on reload, access loss and
 closure. Account changes are detected at the next request or lifecycle boundary;
 there is no immediate idle cross-process account-change observer.
 
+## Local exact-video import
+
+When a successful capability assessment reports catalog lookup unavailable, the
+debug adapter offers a local lookup for a bare HTTPS Twitch video URL. This path
+stores the exact numeric video identity with a fixed unverified label and unknown
+availability; preview performs no provider request and Add remains explicit.
+It requires a current foreground Twitch instance, but does not require a usable
+metadata route or account grant. Unreadable instance/configured storage still
+blocks ownership or persistence. Closing or changing the owner rejects late work.
+
+The local path rejects channel URLs, logins, bare IDs, credentials, queries,
+fragments and other unsupported input. Connected lookup continues to resolve
+metadata and report its original failures. There is no same-request fallback from
+a connected failure to local import. Reloading after access loss clears private
+entries, pagination and drafts before a fresh local lookup. Capability assessment
+may validate an existing grant; this is distinct from the request-free local
+lookup. Imported resources do not broaden playback or network policy.
+
 ## Verification limits
 
 Contract fixtures cover supported metadata/input forms, offline and missing items,

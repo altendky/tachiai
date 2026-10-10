@@ -101,12 +101,36 @@ Restart checkpoints use the same local references and accept old enum choices.
 
 The shipped discovery adapters retain **Prototype samples**. They browse and
 search the existing public sample resources, with unknown availability. Following
-and My List are explicitly not verified. Twitch direct lookup and both providers'
-child navigation remain unsupported. Shared controller and UI fixtures exercise paging,
+and My List are explicitly not verified in those sample adapters. The debug Twitch
+manager now uses the separate [connected catalog](twitch-connected-catalog.md),
+including exact lookup and channel-video children when account access is available.
+Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections
 cannot silently resolve to the News or replay sample, and known unavailable items
 remain saved while Watch explains why playback is blocked.
+
+### Twitch public video-link import
+
+[Issue #120](https://github.com/altendky/tachiai/issues/120) adds local lookup of
+bare HTTPS `twitch.tv/videos/{id}` links when catalog lookup access is unavailable.
+The selected Twitch instance must still be current. Lookup normalizes only that
+exact video identity, makes no provider request and previews a fixed label with
+unknown availability. Add explicitly saves it through the existing configured
+store; deduplication preserves an already configured video's metadata and quality.
+
+Channel URLs, logins and bare numeric IDs still require connected lookup to obtain
+an immutable broadcaster identity. Credentials, queries, fragments, encoded paths,
+clips and unrecognized hosts or paths are rejected. Local import does not verify
+existence, title, schedule, entitlement or playback. Newly imported videos remain
+not verified for native playback.
+
+Connected lookup retains its metadata behavior and failures. An account, route,
+rate-limit or missing-item failure never becomes local success within that request.
+After access loss clears private discovery and drafts, an explicit reload can
+offer local lookup for a fresh input. Metadata capability assessment may validate
+an existing grant; the local lookup itself does not use OAuth, Helix or a route.
+Unavailable metadata routes do not select System as a fallback.
 
 ### ABEMA public-link import
 

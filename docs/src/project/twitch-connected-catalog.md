@@ -36,9 +36,12 @@ missing content nor unfollowing/Forget deletes Tachiai's entries. Future unpubli
 video IDs cannot be inferred from schedules. Catalog availability and playback
 entitlement are separate from saved identity.
 
-Newly discovered playback remains **not verified**. The existing native viewer
-bridges only its exact historical prototype resources. Adding a channel/video does
-not expand native playback exceptions or select a sample under the new label.
+Newly discovered playback remains **not verified** against a real provider.
+The debug viewer can now prepare [configured exact videos](configured-catalog.md#configured-twitch-video-playback)
+within its unchanged native replay boundary, using the owning instance's separate
+LOCAL playback grant and route. Immutable broadcaster resources remain unsupported
+for native playback. Adding an item does not expand native permissions or select
+a sample under the new label.
 
 ## Known schedule context
 

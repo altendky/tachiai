@@ -231,6 +231,12 @@ clearly labeled prototype samples, with provider account collections marked not
 verified. Empty lists, unavailable resources and unresolved removed choices are
 retained explicitly. See [configured sources](configured-catalog.md) for migration,
 saved quality ownership, restart references and real-provider integration limits.
+Configured exact Twitch videos within the existing native ID bound can also open
+the debug replay viewer, starting at zero with that instance's own LOCAL grant
+and route. The exact historical replay keeps its experimental start position.
+This path has provider-free session fixtures; arbitrary-video playback with a
+real provider remains unobserved. Immutable broadcaster resources still need
+their own integration before native playback.
 Imported profiles and provider configuration are preserved. Obsolete four-stream
 settings are not migrated: the picker offers an explicit stream-settings reset
 before playback. Current-format ambiguous defaults/overrides require explicit

@@ -103,9 +103,9 @@ class AbemaLocalImportCatalogTest {
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
             selection("https://abema.tv/video/title/394-72"))
         assertEquals(PrototypeSource.ABEMA_LIVE,
-            (selection("https://abema.tv/channels/abema-news") as ConfiguredPrototypeSelectionResult.Ready).selection.a)
+            (selection("https://abema.tv/channels/abema-news") as ConfiguredPrototypeSelectionResult.Ready).selection.a.historicalSource)
         assertEquals(PrototypeSource.ABEMA_REPLAY,
-            (selection("https://abema.tv/video/episode/394-72_s10_p8529") as ConfiguredPrototypeSelectionResult.Ready).selection.a)
+            (selection("https://abema.tv/video/episode/394-72_s10_p8529") as ConfiguredPrototypeSelectionResult.Ready).selection.a.historicalSource)
         catalog.close()
     }
 

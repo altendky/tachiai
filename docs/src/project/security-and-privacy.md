@@ -228,6 +228,15 @@ the distribution advertised by the accepted replay master, not `*.cloudfront.net
 Public channel/replay inputs are bounded and not persisted/logged. These private
 experiments do not settle identity-sharing/account risk, Turbo or provider terms.
 
+The debug configured-video flow retains a validated public Twitch VIDEO identity
+in the existing encrypted local list, within the intersection of catalog identity
+rules and the unchanged native replay input bound. Its viewer snapshot keeps the
+item and provider-instance UUIDs; restart recovery still stores only local UUIDs.
+Preparation uses that instance's exact route and LOCAL playback grant. Catalog
+authorization cannot authorize native playback. Signed sources remain session-local,
+and diagnostics use fixed source categories rather than arbitrary video IDs.
+No access endpoint, private protocol, media-origin or DRM boundary changes.
+
 Additive native timing diagnostics expose normalized numeric media clocks,
 window/default positions, signed out-of-window positions/live offsets and closed
 state/capability markers only. They include no media item, track metadata or URI.

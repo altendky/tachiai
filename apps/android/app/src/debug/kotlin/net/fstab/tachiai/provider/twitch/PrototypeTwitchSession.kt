@@ -35,7 +35,13 @@ internal class PrototypeTwitchSession(
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
     private val diagnostics: FailureReporter = FailureReporter.NONE,
+    private val initialPositionMs: Long = 0,
 ) : PrototypeFeedSession {
+    init {
+        require(validTwitchPlaybackResource(if (replay) TwitchAccessCase.REPLAY else TwitchAccessCase.LIVE, resource))
+        require(initialPositionMs >= 0 && (replay || initialPositionMs == 0L))
+        require(authorization.profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
+    }
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val closed = AtomicBoolean()
@@ -76,6 +82,10 @@ internal class PrototypeTwitchSession(
                 }
                 handler.post {
                     if (closed.get() || !active() || !budget.active) return@post
+                    if (!preparation.canContinue()) {
+                        fail(PrototypeFeedFailure(PrototypeFailureReason.LOGIN_EXPIRED))
+                        return@post
+                    }
                     try {
                         val created = BoundedNativePlayer(context, budget, preparation.acceptanceDeadlineMs,
                             allowedUri = { allowedTwitchMediaUri(it, observedReplayCdn = replay) },
@@ -101,7 +111,7 @@ internal class PrototypeTwitchSession(
                             })
                         host = created
                         created.start(source.uri, playWhenReady = false)
-                        if (replay) created.player.seekTo(70 * 60 * 1_000L)
+                        if (initialPositionMs > 0) created.player.seekTo(initialPositionMs)
                     } catch (error: Exception) {
                         if (!closed.get() && active()) {
                             diagnostics.report(FailureStage.TWITCH_PLAYER_CREATE, error)

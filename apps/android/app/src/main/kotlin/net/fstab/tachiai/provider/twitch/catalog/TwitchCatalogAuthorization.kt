@@ -7,13 +7,14 @@ internal const val TWITCH_CATALOG_SCOPE = "user:read:follows"
 internal const val TWITCH_CATALOG_TOKEN_LIMIT = 2048
 internal const val TWITCH_CATALOG_LIFETIME_LIMIT_MS = Int.MAX_VALUE * 1000L
 internal const val TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS = 30_000L
+internal const val TWITCH_CATALOG_LOCAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000L
 
 internal enum class TwitchCatalogAuthFailure {
     INVALID_RESPONSE, REJECTED, CLIENT_MISMATCH, USER_MISMATCH, SCOPE_MISMATCH, EXPIRED, NETWORK,
 }
 
 // No response text, cause, tokens or account values enter errors or diagnostics.
-internal class TwitchCatalogAuthException(val failure: TwitchCatalogAuthFailure) : Exception(failure.name)
+internal open class TwitchCatalogAuthException(val failure: TwitchCatalogAuthFailure) : Exception(failure.name)
 
 internal fun validCatalogAccessToken(value: String) =
     value.length in 1..TWITCH_CATALOG_TOKEN_LIMIT && Regex("[A-Za-z0-9._~+/=-]+").matches(value)
@@ -33,23 +34,26 @@ internal class TwitchCatalogCredentials(val accessToken: String, val refreshToke
 }
 
 // An omitted token lifetime is only a worker-local response shape. It cannot
-// enter stored credentials until exact official validation supplies a finite
-// positive lifetime within the separate acceptance budget.
+// enter stored credentials until exact official validation and a finite bound
+// have been supplied within the separate acceptance budget.
 internal class TwitchCatalogTokenGrant(val accessToken: String, val refreshToken: String, val expiresInMs: Long?) {
     init {
         require(validCatalogAccessToken(accessToken) && validCatalogRefreshToken(refreshToken))
         require(expiresInMs == null || expiresInMs in 1..TWITCH_CATALOG_LIFETIME_LIMIT_MS)
     }
-    fun validatedCredentials(validation: TwitchCatalogValidation) =
-        TwitchCatalogCredentials(accessToken, refreshToken, expiresInMs ?: validation.expiresInMs)
+    fun validatedCredentials(validation: TwitchCatalogValidation, localLifetimeMs: Long? = null) =
+        TwitchCatalogCredentials(accessToken, refreshToken,
+            listOfNotNull(expiresInMs, validation.expiresInMs, localLifetimeMs).minOrNull()
+                ?: throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED))
     override fun toString() = "TwitchCatalogTokenGrant(redacted)"
 }
 
-internal class TwitchCatalogValidation(val userId: String, scopes: Set<String>, val expiresInMs: Long, val login: String? = null) {
+internal class TwitchCatalogValidation(val userId: String, scopes: Set<String>, val expiresInMs: Long?, val login: String? = null) {
     val scopes: Set<String> = scopes.toSet()
     init {
         require(validCatalogUserId(userId) && this.scopes == setOf(TWITCH_CATALOG_SCOPE))
-        require(expiresInMs in 1..TWITCH_CATALOG_LIFETIME_LIMIT_MS && (login == null || validCatalogLogin(login)))
+        require((expiresInMs == null || expiresInMs in 1..TWITCH_CATALOG_LIFETIME_LIMIT_MS) &&
+            (login == null || validCatalogLogin(login)))
     }
     override fun toString() = "TwitchCatalogValidation(redacted)"
 }
@@ -66,13 +70,16 @@ private fun accepted(response: DeviceAuthResponse): Map<String, Any?> {
 private fun Map<String, Any?>.string(key: String, max: Int): String =
     (this[key] as? String)?.takeIf { it.length in 1..max } ?: fail()
 
-private fun Map<String, Any?>.lifetime(): Long {
+private fun Map<String, Any?>.lifetime(allowUnspecifiedLifetime: Boolean = false): Long? {
     val seconds = when (val value = this["expires_in"]) {
         is Int -> value.toLong()
         is Long -> value
         else -> fail()
     }
-    if (seconds == 0L) fail(TwitchCatalogAuthFailure.EXPIRED)
+    if (seconds == 0L) {
+        if (allowUnspecifiedLifetime) return null
+        fail(TwitchCatalogAuthFailure.EXPIRED)
+    }
     if (seconds !in 1..Int.MAX_VALUE.toLong()) fail()
     return seconds * 1000
 }
@@ -95,7 +102,8 @@ internal fun parseTwitchCatalogToken(response: DeviceAuthResponse): TwitchCatalo
     return TwitchCatalogTokenGrant(access, refresh, lifetime)
 }
 
-internal fun parseTwitchCatalogValidation(response: DeviceAuthResponse, expectedUserId: String? = null): TwitchCatalogValidation {
+internal fun parseTwitchCatalogValidation(response: DeviceAuthResponse, expectedUserId: String? = null,
+    allowUnspecifiedLifetime: Boolean = false): TwitchCatalogValidation {
     val fields = accepted(response)
     if (fields.string("client_id", 64) != SMART_TV_TWITCH_CLIENT_ID) fail(TwitchCatalogAuthFailure.CLIENT_MISMATCH)
     val user = fields.string("user_id", 128)
@@ -105,5 +113,5 @@ internal fun parseTwitchCatalogValidation(response: DeviceAuthResponse, expected
     val login = fields["login"]?.let { value ->
         (value as? String)?.takeIf(::validCatalogLogin) ?: fail()
     }
-    return TwitchCatalogValidation(user, scopes, fields.lifetime(), login)
+    return TwitchCatalogValidation(user, scopes, fields.lifetime(allowUnspecifiedLifetime), login)
 }

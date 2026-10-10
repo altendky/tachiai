@@ -76,7 +76,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
             }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
         override fun owner() = readOwner().presentation
         override fun session() = TwitchCatalogSession(store,
-            transportFactory = { transport { true } }, canCommit = ::currentOwner)
+            transportFactory = ::transport, canCommit = ::currentOwner)
         override fun transport(canRequest: () -> Boolean): TwitchCatalogTransport {
             check(currentOwner())
             lateinit var owned: OwnedTwitchCatalogTransport

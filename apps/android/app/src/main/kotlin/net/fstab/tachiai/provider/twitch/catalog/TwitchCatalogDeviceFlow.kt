@@ -9,7 +9,8 @@ import net.fstab.tachiai.provider.twitch.*
 
 internal sealed interface TwitchCatalogAuthorizationResult {
     class Approved(val credentials: TwitchCatalogCredentials, val validation: TwitchCatalogValidation,
-        val deadlineMs: Long, val validatedAtMs: Long? = null) : TwitchCatalogAuthorizationResult {
+        val deadlineMs: Long, val validatedAtMs: Long? = null,
+        val localRetentionDeadlineMs: Long? = null, val providerDeadlineMs: Long? = deadlineMs) : TwitchCatalogAuthorizationResult {
         override fun toString() = "TwitchCatalogAuthorizationResult.Approved(redacted)"
     }
     data class Failed(val phase: DeviceAuthPhase, val failure: TwitchCatalogAuthFailure? = null) : TwitchCatalogAuthorizationResult
@@ -96,7 +97,9 @@ internal suspend fun requestTwitchCatalogAuthorization(
                 onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.TOKEN, response.fields))
                 val token = parseTwitchCatalogToken(response)
                 val tokenDeadline = token.expiresInMs?.let { Math.addExact(pollStarted, it) }
-                val acceptanceDeadline = tokenDeadline ?: Math.addExact(pollStarted, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                val localRetentionDeadline = Math.addExact(pollStarted, TWITCH_CATALOG_LOCAL_RETENTION_MS)
+                val acceptanceDeadline = minOf(tokenDeadline ?: Long.MAX_VALUE,
+                    Math.addExact(pollStarted, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS))
                 // A successful poll consumes its device code. Background validation
                 // retries use only the worker-local access token, never that code.
                 while (true) {
@@ -113,15 +116,17 @@ internal suspend fun requestTwitchCatalogAuthorization(
                     currentCoroutineContext().ensureActive()
                     if (validated.status == 200)
                         onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.VALIDATE, validated.fields))
-                    val validation = parseTwitchCatalogValidation(validated)
+                    val validation = parseTwitchCatalogValidation(validated, allowUnspecifiedLifetime = true)
                     if (clockMs() >= acceptanceDeadline) return failed(DeviceAuthPhase.EXPIRED)
-                    val validationDeadline = Math.addExact(validationStarted, validation.expiresInMs)
-                    val deadline = tokenDeadline?.let { minOf(it, validationDeadline) } ?: validationDeadline
+                    val validationDeadline = validation.expiresInMs?.let { Math.addExact(validationStarted, it) }
+                    val providerDeadline = listOfNotNull(tokenDeadline, validationDeadline).minOrNull()
+                    val deadline = minOf(providerDeadline ?: Long.MAX_VALUE, localRetentionDeadline)
                     if (clockMs() >= deadline) return failed(DeviceAuthPhase.EXPIRED)
                     if (!foreground.isForeground || foreground.pauseRevision != validationRevision) continue
-                    val credentials = token.validatedCredentials(validation)
+                    val credentials = token.validatedCredentials(validation, localRetentionDeadline - clockMs())
                     publish(DeviceAuthPhase.SUCCEEDED)
-                    return TwitchCatalogAuthorizationResult.Approved(credentials, validation, deadline, validationStarted)
+                    return TwitchCatalogAuthorizationResult.Approved(credentials, validation, deadline, validationStarted,
+                        localRetentionDeadline, providerDeadline)
                 }
             }
             if (response.status != 400) return failed(DeviceAuthPhase.REJECTED, TwitchCatalogAuthFailure.REJECTED)

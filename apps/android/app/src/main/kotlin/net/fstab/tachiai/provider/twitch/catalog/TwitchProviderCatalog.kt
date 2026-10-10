@@ -102,7 +102,8 @@ internal class TwitchProviderCatalog(
         if (access != CatalogAccess.AVAILABLE) clearContinuations()
         CatalogCapabilities(browse = access, search = access, lookup = access, children = access, refresh = access,
             playback = CatalogAccess.NOT_VERIFIED,
-            collections = listOf(CatalogCollection("following", "Following", access)),
+            collections = listOf(CatalogCollection("following", "Following", access),
+                CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED)),
             browseTitle = "Live channels", initialCollectionId = "following")
     }
 
@@ -236,7 +237,10 @@ internal class TwitchProviderCatalog(
         return CatalogPage(entries.distinctBy { it.resource }, next)
     }
 
-    override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> = operation { context ->
+    // No supported account-history path has been established. Reject it before
+    // catalog validation/refresh or any metadata request, regardless of grant.
+    override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> = if (query.collectionId == "history")
+        CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) else operation { context ->
         val scope = scope(query)
         val cursor = cursor(context, scope, query.cursor)
         when {

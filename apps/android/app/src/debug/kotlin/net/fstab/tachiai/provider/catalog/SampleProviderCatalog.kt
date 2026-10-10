@@ -15,7 +15,8 @@ internal class SampleProviderCatalog(instance: ProviderInstance, setups: Map<Pro
         browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
         collections = listOf(if (providerId == ProviderId("twitch"))
             CatalogCollection("following", "Following", CatalogAccess.NOT_VERIFIED)
-        else CatalogCollection("my_list", "My List", CatalogAccess.NOT_VERIFIED)),
+        else CatalogCollection("my_list", "My List", CatalogAccess.NOT_VERIFIED),
+            CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED)),
     )
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         if (closed) return CatalogResult.Failure(CatalogFailure.TEMPORARY)

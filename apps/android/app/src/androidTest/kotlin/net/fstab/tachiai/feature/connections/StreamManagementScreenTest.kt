@@ -29,7 +29,7 @@ class StreamManagementScreenTest {
     private fun text(value: String) = scrollTo(hasText(value))
     private fun description(value: String) = scrollTo(hasContentDescription(value))
 
-    private class Fixture(service: PrototypeService) {
+    private class Fixture(service: PrototypeService, private val historyAccess: CatalogAccess = CatalogAccess.UNSUPPORTED) {
         private val provider = ProviderId(service.name.lowercase(java.util.Locale.ROOT))
         private val instance = defaultProviderInstances().single { it.service == service }
         val collection = if (service == PrototypeService.TWITCH)
@@ -44,7 +44,7 @@ class StreamManagementScreenTest {
         var state by mutableStateOf(StreamManagementState(instance, configured = emptyList(),
             capabilities = CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
                 lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
-                collections = listOf(collection, CatalogCollection("history", "History", CatalogAccess.UNSUPPORTED))),
+                collections = listOf(collection, CatalogCollection("history", "History", historyAccess))),
             entries = all, nextCursor = "opaque:+page2"))
         @Composable fun Render() {
             TachiaiPrototypeTheme {
@@ -53,7 +53,8 @@ class StreamManagementScreenTest {
                     onAll = { calls.add("all"); state = state.copy(entries = all, query = CatalogQuery(), failure = null, nextCursor = "opaque:+page2") },
                     onCollection = { id -> calls.add("collection:$id"); state = state.copy(query = CatalogQuery(collectionId = id),
                         entries = if (id == collection.id && collection.access == CatalogAccess.AVAILABLE) listOf(offline) else emptyList(),
-                        nextCursor = null, failure = if (id == "history") CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+                        nextCursor = null, failure = if (id == "history") CatalogResult.Failure(
+                            if (historyAccess == CatalogAccess.NOT_VERIFIED) CatalogFailure.NOT_VERIFIED else CatalogFailure.UNSUPPORTED)
                             else if (collection.access == CatalogAccess.AUTHORIZATION_REQUIRED) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else null) },
                     onChildren = { resource -> calls.add("children:${resource.identity}"); state = state.copy(query = CatalogQuery(parent = resource),
                         entries = listOf(episode), nextCursor = null, failure = null) },
@@ -88,6 +89,28 @@ class StreamManagementScreenTest {
         text("Search streams").performTextReplacement("Offline")
         text("Search").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
+    }
+
+    @Test fun connectedFollowingDoesNotImplyVerifiedHistoryOrLoseConfiguredItems() {
+        val fixture = Fixture(PrototypeService.TWITCH, CatalogAccess.NOT_VERIFIED)
+        val saved = ConfiguredSource(UUID.randomUUID().toString(), fixture.state.instance.id, fixture.offline)
+        fixture.state = fixture.state.copy(configured = listOf(saved))
+        compose.setContent { fixture.Render() }
+        text("Following").performClick()
+        text("History: Access to this list has not been verified.").assertExists()
+        text("History").performClick()
+        text("Provider catalog access has not been verified.").assertExists()
+        description("Remove Offline channel").assertIsEnabled()
+        compose.onNodeWithText("No catalog items found.").assertDoesNotExist()
+        compose.onNodeWithText("Provider access is not connected yet.").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(listOf(saved), fixture.state.configured)
+            assertEquals(CatalogFailure.NOT_VERIFIED, fixture.state.failure!!.reason)
+            assertEquals("collection:history", fixture.calls.last())
+        }
+        text("Following").performClick()
+        description("Add Offline channel").assertIsNotEnabled()
+        compose.runOnIdle { assertNull(fixture.state.failure); assertEquals(listOf(saved), fixture.state.configured) }
     }
 
     @Test fun unavailableBrowseLabelExplainsAccessAndPreservesConfiguredItems() {

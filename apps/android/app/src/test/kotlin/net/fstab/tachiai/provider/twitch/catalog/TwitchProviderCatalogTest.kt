@@ -119,6 +119,36 @@ class TwitchProviderCatalogTest {
         assertEquals(0, blocked.authValidations.get()); assertTrue(blocked.calls.isEmpty())
     }
 
+    @Test fun historyIsUnverifiedWithOrWithoutCatalogAccessAndNeverTriggersAuthorizationOrMetadata() {
+        listOf(false, true).forEach { saved ->
+            val fixture = Fixture(saved)
+            listOf(CatalogQuery(collectionId = "history"),
+                CatalogQuery(collectionId = "history", cursor = "unverified-cursor", search = "private query")).forEach {
+                failure(fixture.catalog.browse(it), CatalogFailure.NOT_VERIFIED)
+            }
+            assertEquals(0, fixture.authValidations.get()); assertEquals(0, fixture.refreshes.get())
+            assertTrue(fixture.calls.isEmpty())
+            val capabilities = fixture.catalog.capabilities()
+            assertEquals(listOf("following", "history"), capabilities.collections.map { it.id })
+            assertEquals(CatalogAccess.NOT_VERIFIED, capabilities.collections.single { it.id == "history" }.access)
+            assertEquals(if (saved) CatalogAccess.AVAILABLE else CatalogAccess.AUTHORIZATION_REQUIRED,
+                capabilities.collections.single { it.id == "following" }.access)
+            val validations = fixture.authValidations.get()
+            failure(fixture.catalog.browse(CatalogQuery(collectionId = "history")), CatalogFailure.NOT_VERIFIED)
+            assertEquals(validations, fixture.authValidations.get()); assertEquals(0, fixture.refreshes.get())
+            assertTrue(fixture.calls.isEmpty())
+            if (saved) {
+                assertTrue(value(fixture.catalog.browse(CatalogQuery(collectionId = "following"))).entries.isEmpty())
+                assertEquals(listOf(TwitchHelixOperation.FOLLOWED), fixture.calls.map { it.operation })
+            } else failure(fixture.catalog.browse(CatalogQuery(collectionId = "following")), CatalogFailure.ACCESS_REQUIRED)
+            fixture.catalog.close()
+        }
+        val blocked = Fixture().apply { publish = false }
+        failure(blocked.catalog.browse(CatalogQuery(collectionId = "history")), CatalogFailure.NOT_VERIFIED)
+        assertEquals(0, blocked.authValidations.get()); assertTrue(blocked.calls.isEmpty())
+        blocked.catalog.close()
+    }
+
     @Test fun followingUsesValidatedOwnUserAndKeepsOfflineNeverStreamedChannelsAsCanonicalItems() {
         val fixture = Fixture()
         fixture.execute = { request -> when (request.operation) {
@@ -378,6 +408,7 @@ class TwitchProviderCatalogTest {
         val fixture = Fixture(saved = false)
         val local = TwitchLocalVideoImportCatalog(fixture.catalog)
         assertEquals(CatalogAccess.AVAILABLE, local.capabilities().lookup)
+        assertEquals(CatalogAccess.NOT_VERIFIED, local.capabilities().collections.single { it.id == "history" }.access)
         val entry = value(local.lookup("https://www.twitch.tv/videos/789"))
         assertEquals(vod("789"), entry.resource)
         assertEquals(CatalogAvailability.UNKNOWN, entry.availability)

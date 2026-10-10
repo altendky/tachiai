@@ -21,12 +21,12 @@ internal fun catalogAccessExplanation(access: CatalogAccess): String = when (acc
     CatalogAccess.RECONNECT_REQUIRED -> "Reconnect the catalog account to access this list."
     CatalogAccess.SCOPE_REQUIRED -> "Additional catalog permission is required for this list."
     CatalogAccess.UNSUPPORTED -> "This list is not supported."
-    CatalogAccess.NOT_VERIFIED -> "Provider access is not connected yet."
+    CatalogAccess.NOT_VERIFIED -> "Access to this list has not been verified."
 }
 internal fun catalogFailureExplanation(failure: CatalogResult.Failure): String = when (failure.reason) {
     CatalogFailure.ACCESS_REQUIRED -> "Catalog account access is required. Your configured streams are retained."
     CatalogFailure.UNSUPPORTED -> "This catalog operation is not supported."
-    CatalogFailure.NOT_VERIFIED -> "Provider catalog access is not connected yet."
+    CatalogFailure.NOT_VERIFIED -> "Provider catalog access has not been verified."
     CatalogFailure.NOT_FOUND -> "No matching item was found. Your configured streams are retained."
     CatalogFailure.INVALID_INPUT -> "The input or catalog selection is invalid."
     CatalogFailure.RATE_LIMITED -> "The provider asked us to wait." + (failure.retryAtEpochMs?.let {

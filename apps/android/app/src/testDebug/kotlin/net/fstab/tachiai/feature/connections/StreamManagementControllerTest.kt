@@ -38,6 +38,7 @@ class StreamManagementControllerTest {
         var throwBrowse = false
         var throwCapabilities = false
         var lookupAccess = CatalogAccess.AVAILABLE
+        var historyAccess = CatalogAccess.UNSUPPORTED
         var browseTitle = "All"
         var initialCollectionId: String? = null
         var onBrowse: (CatalogQuery) -> Unit = {}
@@ -55,7 +56,7 @@ class StreamManagementControllerTest {
             return CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
             lookup = lookupAccess, children = CatalogAccess.AVAILABLE,
             collections = listOf(CatalogCollection(collectionId, collectionTitle, collectionAccess),
-                CatalogCollection("history", "History", CatalogAccess.UNSUPPORTED)),
+                CatalogCollection("history", "History", historyAccess)),
             browseTitle = browseTitle, initialCollectionId = initialCollectionId)
         }
         override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
@@ -92,6 +93,33 @@ class StreamManagementControllerTest {
             clockMs = clockMs)
     private suspend fun idle(controller: StreamManagementController) = withTimeout(5_000) {
         controller.state.first { !it.loading && !it.saving }
+    }
+
+    @Test fun unverifiedHistorySkipsBrowseRetainsConfiguredEntriesAndCanReturnToConnectedCollections() = runBlocking {
+        defaultProviderInstances().forEach { instance ->
+            val catalog = Catalog(instance).apply { historyAccess = CatalogAccess.NOT_VERIFIED }
+            val memory = Memory()
+            val saved = store(memory, instance).add(catalog.offline) { emptyList() }
+            val controller = controller(this, catalog, memory)
+            try {
+                controller.load(); val initial = idle(controller)
+                assertTrue(initial.entries.isNotEmpty())
+                val calls = catalog.browses
+                val writes = memory.writes
+                controller.collection("history"); val history = idle(controller)
+                assertEquals(CatalogQuery(collectionId = "history"), history.query)
+                assertEquals(CatalogFailure.NOT_VERIFIED, history.failure!!.reason)
+                assertTrue(history.entries.isEmpty()); assertNull(history.nextCursor)
+                assertEquals(initial.capabilities, history.capabilities)
+                assertEquals(saved, history.configured)
+                assertEquals(calls, catalog.browses); assertEquals(writes, memory.writes)
+                controller.collection(catalog.collectionId); val connected = idle(controller)
+                assertEquals(catalog.collectionId, connected.query.collectionId)
+                assertNull(connected.failure); assertTrue(connected.entries.isNotEmpty())
+                assertEquals(saved, connected.configured); assertEquals(calls + 1, catalog.browses)
+                assertEquals(writes, memory.writes)
+            } finally { controller.close() }
+        }
     }
 
     @Test fun initialCollectionIsChosenOnceAndGlobalSearchNeverInheritsCollectionOrParent() = runBlocking {

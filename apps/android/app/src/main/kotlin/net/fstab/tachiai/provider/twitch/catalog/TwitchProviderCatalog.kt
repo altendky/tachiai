@@ -153,6 +153,8 @@ internal class TwitchProviderCatalog(
             requireCurrent(context)
             when (response.status) {
                 200 -> return response
+                404 -> if (request.operation == TwitchHelixOperation.SCHEDULE) return response
+                    else throw Abort(CatalogFailure.TEMPORARY)
                 401 -> {
                     if (context.budget.refreshed) throw Abort(CatalogFailure.ACCESS_REQUIRED)
                     context.budget.refreshed = true
@@ -291,6 +293,13 @@ internal class TwitchProviderCatalog(
         return videos.items.singleOrNull()
     }
 
+    private fun exactBroadcasterEntry(context: Context, user: TwitchCatalogBroadcaster): CatalogEntry {
+        val availability = if (user.id in liveIds(context, listOf(user.id))) CatalogAvailability.LIVE else CatalogAvailability.OFFLINE
+        val response = execute(context, TwitchHelixRequest.schedule(user.id, wallMs()))
+        val scheduledStart = parseTwitchScheduleStart(response, user.id, wallMs())
+        return broadcasterEntry(user, availability).copy(scheduledStartEpochMs = scheduledStart)
+    }
+
     override fun lookup(input: String): CatalogResult<CatalogEntry> {
         val parsed = try { parseTwitchCatalogPublicInput(input) }
         catch (_: TwitchHelixException) { return CatalogResult.Failure(CatalogFailure.INVALID_INPUT) }
@@ -298,7 +307,7 @@ internal class TwitchProviderCatalog(
             is TwitchCatalogPublicInput.VideoId -> exactVideo(context, parsed.id)?.let(::videoEntry) ?: throw Abort(CatalogFailure.NOT_FOUND)
             else -> {
                 val user = exactUser(context, parsed) ?: throw Abort(CatalogFailure.NOT_FOUND)
-                broadcasterEntry(user, if (user.id in liveIds(context, listOf(user.id))) CatalogAvailability.LIVE else CatalogAvailability.OFFLINE)
+                exactBroadcasterEntry(context, user)
             }
         } }
     }
@@ -313,7 +322,7 @@ internal class TwitchProviderCatalog(
             broadcaster(resource) -> {
                 val user = exactUser(context, TwitchCatalogPublicInput.BroadcasterId(resource.identity))
                 if (user == null) CatalogEntry(resource, "Unavailable Twitch channel ${resource.identity}", CatalogAvailability.UNAVAILABLE)
-                else broadcasterEntry(user, if (user.id in liveIds(context, listOf(user.id))) CatalogAvailability.LIVE else CatalogAvailability.OFFLINE)
+                else exactBroadcasterEntry(context, user)
             }
             video(resource) -> exactVideo(context, resource.identity)?.let(::videoEntry)
                 ?: CatalogEntry(resource, "Unavailable Twitch video ${resource.identity}", CatalogAvailability.UNAVAILABLE)

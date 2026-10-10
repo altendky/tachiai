@@ -40,6 +40,42 @@ Newly discovered playback remains **not verified**. The existing native viewer
 bridges only its exact historical prototype resources. Adding a channel/video does
 not expand native playback exceptions or select a sample under the new label.
 
+## Known schedule context
+
+[Issue #122](https://github.com/altendky/tachiai/issues/122) adds the supported
+[channel schedule GET](https://dev.twitch.tv/docs/api/reference/#get-channel-stream-schedule)
+to connected exact broadcaster lookup and broadcaster refresh. It uses the same
+catalog session and selected metadata route, without another scope. Following,
+search and live-list rows do not make an extra schedule request per channel.
+Exact video lookup and local public-video import are unchanged.
+
+One page, requested with a limit of 20, supplies bounded context. The adapter
+selects the minimum qualifying start in that returned page, strictly after a
+fresh selection-time clock reading. It does not claim a complete calendar or the
+globally earliest occurrence. Segment and vacation intervals must be valid.
+Any non-null cancellation suppresses the occurrence; a cutoff is not compared
+with now to re-enable it. Tachiai also excludes intervals overlapping vacation,
+using half-open overlap, so touching boundaries remain eligible. This is a
+conservative display policy: Twitch's [schedule guide](https://dev.twitch.tv/docs/api/schedule)
+does not say that vacation cancels or removes those segments.
+
+The decoder retains only required public ownership and timing fields, validates
+bounded RFC3339 timestamps, and rejects wrong broadcaster or malformed data.
+Documented nullable cancellation/vacation fields must be present; treating omitted
+fields as invalid is application policy pending real response observations.
+Pagination is validated if present and is not followed. A schedule-specific 404,
+valid empty schedule or page without qualifying context omits the date. Other
+failures remain explicit failures. A 401 refresh restarts user, status and schedule
+metadata together under the new grant; stale or closed work cannot publish.
+
+The shared manager labels the optional date **Scheduled**. Broadcaster identity,
+CHANNEL intent and independently observed LIVE/OFFLINE status remain unchanged;
+a schedule does not supply a video identity or playback entitlement. Preview
+writes nothing. Explicit Add saves the date as a configured metadata snapshot;
+duplicate Add preserves the existing item's metadata and quality. This slice
+does not automatically update saved dates or add a manager refresh action.
+Actual schedule responses and account/route acceptance remain unobserved.
+
 ## Account, routing and pagination
 
 Each adapter is bound to one stable provider instance, its saved route, maintained

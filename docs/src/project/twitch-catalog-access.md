@@ -46,6 +46,12 @@ the user's saved identity. Unpublished occurrences must not acquire guessed
 video IDs. Published videos include content that is not currently live; see
 Twitch's [videos guide](https://dev.twitch.tv/docs/api/videos).
 
+The [connected prototype](twitch-connected-catalog.md#known-schedule-context)
+now adds bounded known schedule context to exact broadcaster lookup and refresh.
+Its date remains optional and independent from saved identity, observed live
+status and playback. This implementation has synthetic verification rather than
+real account/schedule response evidence.
+
 ## Own-client authorization
 
 Twitch's [public-client device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow)

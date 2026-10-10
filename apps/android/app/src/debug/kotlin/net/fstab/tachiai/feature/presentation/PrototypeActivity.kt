@@ -40,6 +40,7 @@ import net.fstab.tachiai.feature.connections.ObsoleteSourceSetupException
 import net.fstab.tachiai.feature.connections.ProvidersActivity
 import net.fstab.tachiai.feature.connections.sourceSetupStore
 import net.fstab.tachiai.feature.connections.streamQualityStore
+import net.fstab.tachiai.feature.connections.configuredSourceStore
 import net.fstab.tachiai.platform.media.NativeQualityKind
 import net.fstab.tachiai.platform.media.NativeQualityPreferences
 import net.fstab.tachiai.platform.media.NativeQualityRequest
@@ -51,9 +52,15 @@ import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.defaultSourceSetups
 import net.fstab.tachiai.presentation.defaultProviderInstances
 import net.fstab.tachiai.presentation.ProviderInstance
-import net.fstab.tachiai.presentation.prototypeFeedAssignments
-import net.fstab.tachiai.presentation.restorePrototypeFeedAssignments
-import net.fstab.tachiai.presentation.encodePrototypeFeedChoice
+import net.fstab.tachiai.presentation.ConfiguredSource
+import net.fstab.tachiai.presentation.ConfiguredFeedChoice
+import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
+import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
+import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
+import net.fstab.tachiai.presentation.legacyConfiguredSources
+import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
+import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
+import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
 import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
@@ -105,17 +112,20 @@ open class PrototypeActivity : ComponentActivity() {
     private val epoch = AtomicLong()
     private var routePreparation: RoutePreparation? = null
     private var selection = PrototypeSelection()
-    private var pickerAssignments = prototypeFeedAssignments(selection)
+    private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
     private var providerInstances by mutableStateOf(defaultProviderInstances())
+    private var configuredSources by mutableStateOf(emptyList<ConfiguredSource>())
+    private var activeConfiguredSources = emptyList<ConfiguredSource>()
     private var activeInstances: List<ProviderInstance> = defaultProviderInstances()
     private var setupReady by mutableStateOf(false)
     private var setupMessage by mutableStateOf<String?>(null)
     private var obsoleteSetup by mutableStateOf(false)
     private var setupRevision = 0L
     private var activeSetups: Map<PrototypeSource, SourceSetup> = defaultSourceSetups()
-    private var qualityDefaults = emptyMap<PrototypeSource, NativeQualityPreferences>()
-    private var qualitySession: ViewerQualityState? = null
+    private var legacyQualityDefaults = emptyMap<PrototypeSource, NativeQualityPreferences>()
+    private var qualityDefaults = emptyMap<ConfiguredFeedChoice, NativeQualityPreferences>()
+    private var qualitySession: ViewerQualityState<ConfiguredFeedChoice>? = null
     private var savingQuality = false
     private var qualityMessage: String? = null
     private var sessions = listOf<PrototypeFeedSession?>(null, null)
@@ -154,15 +164,15 @@ open class PrototypeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pickerAssignments = restorePrototypeFeedAssignments(savedInstanceState != null,
+        pickerAssignments = restoreConfiguredFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
         if (savedInstanceState == null) {
-            when (val checkpoint = PrototypeRecoveryCheckpoint(noBackupFilesDir, useCachedAbema).consume()) {
-                PrototypeRecoveryCheckpoint.Result.Absent -> Unit
-                is PrototypeRecoveryCheckpoint.Result.Restored -> pickerAssignments = checkpoint.assignments
-                PrototypeRecoveryCheckpoint.Result.Invalid -> {
-                    pickerAssignments = net.fstab.tachiai.presentation.PrototypeFeedAssignments(null, null)
+            when (val checkpoint = ConfiguredRecoveryCheckpoint(noBackupFilesDir, useCachedAbema).consume()) {
+                ConfiguredRecoveryCheckpoint.Result.Absent -> Unit
+                is ConfiguredRecoveryCheckpoint.Result.Restored -> pickerAssignments = checkpoint.assignments
+                ConfiguredRecoveryCheckpoint.Result.Invalid -> {
+                    pickerAssignments = ConfiguredFeedAssignments(null, null)
                     recoveryState.fail(PrototypeRecoveryKind.PICKER_RESTORE_FAILED)
                 }
             }
@@ -181,8 +191,8 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putString("prototype.feed.a", encodePrototypeFeedChoice(pickerAssignments.a))
-        outState.putString("prototype.feed.b", encodePrototypeFeedChoice(pickerAssignments.b))
+        outState.putString("prototype.feed.a", encodeConfiguredFeedChoice(pickerAssignments.a))
+        outState.putString("prototype.feed.b", encodeConfiguredFeedChoice(pickerAssignments.b))
         super.onSaveInstanceState(outState)
     }
 
@@ -195,10 +205,9 @@ open class PrototypeActivity : ComponentActivity() {
         root = null; progress = null; returnButton = null
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         styleSystemBars(false)
-        setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(selection, setupMessage ?: message,
+        setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(setupMessage ?: message,
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
-            sourceSetups = sourceSetups, setupReady = setupReady,
-            providerInstances = providerInstances,
+            setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
@@ -266,9 +275,8 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    private fun watch(selected: PrototypeSelection) {
-        selection = selected
-        pickerAssignments = prototypeFeedAssignments(selected)
+    private fun watch(assignments: ConfiguredFeedAssignments) {
+        pickerAssignments = assignments
         updateRecoveryState()
         if (recoveryState.incident != null) {
             diagnostics.blocked(if (routeCleanupFailed) FailureStage.ROUTE_BLOCKED else FailureStage.VIEWER_BLOCKED)
@@ -282,10 +290,14 @@ open class PrototypeActivity : ComponentActivity() {
                 else "The previous route is still stopping. Please retry shortly.")
             return
         }
-        if (selected.feeds.any { it.resolve(providerInstances)?.setup?.route == null }) {
-            showPicker("A provider instance is unavailable or its route needs review. Choose an instance and save its route in Providers; no playback or fallback occurred.")
-            return
+        val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
+        if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
+            showPicker(configuredSelectionMessage(resolved.reason)); return
         }
+        resolved as ConfiguredPrototypeSelectionResult.Ready
+        val selected = resolved.selection
+        selection = selected
+        activeConfiguredSources = resolved.sources
         activeSetups = sourceSetups.toMap()
         activeInstances = providerInstances.toList()
         dispose()
@@ -296,7 +308,7 @@ open class PrototypeActivity : ComponentActivity() {
         }
         diagnostics = diagnostics.newSession()
         val run = epoch.incrementAndGet()
-        qualitySession = ViewerQualityState(selected.sources, qualityDefaults)
+        qualitySession = ViewerQualityState(activeConfiguredSources.map { it.choice }, qualityDefaults)
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
         val sharedBudget = NativePlaybackBudget(300_000, ::active, maximumDurationMs = 300_000)
         budget = sharedBudget
@@ -446,7 +458,7 @@ open class PrototypeActivity : ComponentActivity() {
                         page.visibility = View.INVISIBLE
                         setup.addView(page, LinearLayout.LayoutParams(1, 1))
                     } else {
-                        setup.addView(TextView(this).apply { text = sourceLabel(source, index) })
+                        setup.addView(TextView(this).apply { text = sourceLabel(index) })
                         setup.addView(page, LinearLayout.LayoutParams(-1, 0, 1f))
                     }
                 }
@@ -466,9 +478,9 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun updateProgress() {
-        progress?.text = selection.sources.mapIndexed { index, source ->
+        progress?.text = selection.sources.mapIndexed { index, _ ->
             val state = failures[index]?.message ?: if (prepared[index]) "Ready" else "Preparing"
-            "${sourceLabel(source, index)}: $state"
+            "${sourceLabel(index)}: $state"
         }.joinToString("\n")
     }
 
@@ -547,7 +559,7 @@ open class PrototypeActivity : ComponentActivity() {
             useController = false; keepScreenOn = true
         }
         surfaces = listOf(surface(), surface())
-        val pane = NativePairViewer(this, surfaces[0], surfaces[1], sourceLabel(selection.a, 0), sourceLabel(selection.b, 1),
+        val pane = NativePairViewer(this, surfaces[0], surfaces[1], sourceLabel(0), sourceLabel(1),
             { playback?.pair }, ::playPair, ::pausePair,
             onRelative = { delta -> desiredPlaying = false; invalidatePlay(); playback?.shiftRelative(delta) },
             onCatchUp = { side -> desiredPlaying = false; invalidatePlay(); playback?.catchUp(side) },
@@ -616,22 +628,30 @@ open class PrototypeActivity : ComponentActivity() {
     private fun saveQuality(side: NativeMixedSide, kind: NativeQualityKind, reset: Boolean) {
         val state = qualitySession ?: return
         if (savingQuality || playback?.busy == true) return
-        val source = selection.sources[side.ordinal]
+        val source = activeConfiguredSources[side.ordinal]
+        val instance = checkNotNull(activeInstances.singleOrNull { it.id == source.instanceId })
+        val legacy = legacyConfiguredSources(instance, activeSetups, legacyQualityDefaults)
         val request = if (reset) NativeQualityRequest.auto else state.read(side, kind).effective
         val run = epoch.get()
+        val reporter = diagnostics
         savingQuality = true; qualityMessage = "Saving stream quality…"; viewer?.refresh()
         worker.execute {
-            val result = runCatching { streamQualityStore(this).save(source, kind, request) }
+            val result = runCatching { configuredSourceStore(this, instance).saveQuality(source.id, kind, request) { legacy } }
+                .onFailure { reporter.report(FailureStage.QUALITY_SETTINGS_SAVE, it) }
             handler.post {
                 if (epoch.get() != run || qualitySession !== state || isDestroyed) return@post
                 savingQuality = false
                 result.fold(onSuccess = { values ->
-                    qualityDefaults = values; state.replaceDefaults(values)
+                    qualityDefaults = qualityDefaults.filterKeys { it.instanceId != instance.id } +
+                        values.associate { it.choice to it.quality }
+                    state.replaceDefaults(qualityDefaults)
                     val applied = NativeMixedSide.entries.map(::applyQuality).all { it }
                     qualityMessage = if (reset) "Stream ${kind.name.lowercase()} default reset to Auto. Feed overrides stay in this session."
                         else "Stream ${kind.name.lowercase()} default saved. Feed overrides stay in this session."
                     if (!applied) qualityMessage += "\nQuality request refused; actual playback is shown separately."
-                }, onFailure = { qualityMessage = "Stream quality could not be saved. Saved preferences were not replaced." })
+                }, onFailure = {
+                    qualityMessage = "Stream quality could not be saved. Saved preferences were not replaced."
+                })
                 viewer?.refresh()
             }
         }
@@ -727,7 +747,12 @@ open class PrototypeActivity : ComponentActivity() {
     private fun stopToPicker(message: String) {
         dispose()
         val result = message + if (cleanupFailed) " Playback cleanup reported a failure." else ""
-        if (resumed.get() && !isFinishing) showPicker(result) else resumeMessage = result
+        if (resumed.get() && !isFinishing) {
+            showPicker(result)
+            // The worker serializes accepted quality writes before this read.
+            // A disposed session cannot publish its callback into a new viewer.
+            refreshSetup()
+        } else resumeMessage = result
     }
 
     private fun dispose() {
@@ -821,12 +846,19 @@ open class PrototypeActivity : ComponentActivity() {
         worker.execute {
             val result = runCatching {
                 val streams = sourceSetupStore(this).read()
-                Triple(streams, providerInstanceStore(this).read { legacyProviderSettings(this) }, streamQualityStore(this).read())
+                val instances = providerInstanceStore(this).read { legacyProviderSettings(this) }
+                val qualities = streamQualityStore(this).read()
+                val sources = instances.flatMap { instance ->
+                    configuredSourceStore(this, instance).read { legacyConfiguredSources(instance, streams, qualities) }
+                }
+                PickerSetup(streams, instances, qualities, sources)
             }
             handler.post {
                 if (isDestroyed || isFinishing || !resumed.get() || setupRevision != current || budget != null) return@post
                 result.fold(onSuccess = {
-                    sourceSetups = it.first; providerInstances = it.second; qualityDefaults = it.third; setupReady = true
+                    sourceSetups = it.streams; providerInstances = it.instances; legacyQualityDefaults = it.qualities
+                    configuredSources = it.sources; qualityDefaults = it.sources.associate { source -> source.choice to source.quality }
+                    setupReady = true
                 }, onFailure = {
                     if (it !is ObsoleteSourceSetupException) diagnostics.report(FailureStage.PROVIDER_SETUP_READ, it)
                     if (it is ObsoleteSourceSetupException) {
@@ -874,10 +906,12 @@ open class PrototypeActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun sourceLabel(source: PrototypeSource, index: Int): String {
+    private fun sourceLabel(index: Int): String {
         val instance = checkNotNull(selection.feeds[index].resolve(activeInstances))
-        val setup = checkNotNull(activeSetups[source])
-        val title = if (setup.name == source.title) source.optionTitle else setup.name
+        val title = configuredSourceDisplayTitle(activeConfiguredSources[index])
         return "${if (index == 0) "A" else "B"} · ${instance.name} · $title"
     }
+
+    private data class PickerSetup(val streams: Map<PrototypeSource, SourceSetup>, val instances: List<ProviderInstance>,
+        val qualities: Map<PrototypeSource, NativeQualityPreferences>, val sources: List<ConfiguredSource>)
 }

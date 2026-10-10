@@ -98,6 +98,12 @@ internal class ConfiguredSourceStore(
         ids.map { id -> entries.single { it.id == id } }
     }
 
+    fun move(id: String, delta: Int, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
+        val index = entries.indexOfFirst { it.id == id }
+        check(index >= 0 && delta in setOf(-1, 1) && index + delta in entries.indices)
+        entries.toMutableList().apply { val moved = removeAt(index); add(index + delta, moved) }
+    }
+
     fun refresh(id: String, entry: CatalogEntry, legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
         val existing = entries.single { it.id == id }
         check(existing.entry.resource == entry.resource)

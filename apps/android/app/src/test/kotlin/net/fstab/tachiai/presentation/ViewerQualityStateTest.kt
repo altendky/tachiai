@@ -52,4 +52,48 @@ class ViewerQualityStateTest {
             ViewerQualityState(listOf(source, source), emptyMap()).setOverride(NativeMixedSide.A, NativeQualityKind.VIDEO, audio)
         }
     }
+
+    @Test fun configuredItemsWithSamePublicResourceKeepAccountAndLocalQualityDefaultsIsolated() {
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
+        val original = legacyConfiguredSources(instance, defaultSourceSetups(), emptyMap()).first()
+        val otherInstance = original.copy(id = "12345678-1234-1234-1234-123456789abc",
+            instanceId = "23456789-1234-1234-1234-123456789abc")
+        val otherLocalItem = original.copy(id = "34567890-1234-1234-1234-123456789abc")
+        for (other in listOf(otherInstance, otherLocalItem)) {
+            assertEquals(original.entry.resource, other.entry.resource)
+            val state = ViewerQualityState(listOf(original.choice, other.choice),
+                mapOf(original.choice to NativeQualityPreferences(video = video)))
+            assertEquals(video, state.effective(NativeMixedSide.A).video)
+            assertEquals(NativeQualityPreferences(), state.effective(NativeMixedSide.B))
+            state.replaceDefaults(mapOf(original.choice to NativeQualityPreferences(video = video),
+                other.choice to NativeQualityPreferences(audio = audio)))
+            assertEquals(NativeQualityPreferences(video = video), state.effective(NativeMixedSide.A))
+            assertEquals(NativeQualityPreferences(audio = audio), state.effective(NativeMixedSide.B))
+        }
+    }
+
+    @Test fun duplicateConfiguredItemSharesSavedDefaultsWithIndependentFeedOverrides() {
+        val choice = ConfiguredFeedChoice("12345678-1234-1234-1234-123456789abc", defaultProviderInstanceId(PrototypeService.TWITCH))
+        val state = ViewerQualityState(listOf(choice, choice), mapOf(choice to NativeQualityPreferences(video = video)))
+        state.setOverride(NativeMixedSide.A, NativeQualityKind.AUDIO, NativeQualityRequest.auto)
+        state.replaceDefaults(mapOf(choice to NativeQualityPreferences(video, audio)))
+        assertEquals(video, state.effective(NativeMixedSide.A).video)
+        assertEquals(video, state.effective(NativeMixedSide.B).video)
+        assertEquals(NativeQualityRequest.auto, state.effective(NativeMixedSide.A).audio)
+        assertEquals(audio, state.effective(NativeMixedSide.B).audio)
+        state.clearOverrides()
+        assertEquals(state.effective(NativeMixedSide.A), state.effective(NativeMixedSide.B))
+    }
+
+    @Test fun callerMutatingSourceKeysAndDefaultMapsCannotRetargetAnActiveQualitySession() {
+        val keys = mutableListOf(source, PrototypeSource.TWITCH_LIVE)
+        val defaults = mutableMapOf(source to NativeQualityPreferences(video = video))
+        val state = ViewerQualityState(keys, defaults)
+        keys.reverse(); defaults.clear()
+        assertEquals(video, state.effective(NativeMixedSide.A).video)
+        assertEquals(NativeQualityPreferences(), state.effective(NativeMixedSide.B))
+        val replacement = mutableMapOf(source to NativeQualityPreferences(audio = audio))
+        state.replaceDefaults(replacement); replacement.clear()
+        assertEquals(audio, state.effective(NativeMixedSide.A).audio)
+    }
 }

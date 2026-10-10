@@ -62,6 +62,11 @@ internal fun legacyPrototypeSource(source: ConfiguredSource): PrototypeSource? =
     source.entry.resource == prototypeCatalogResource(it)
 }
 
+internal fun configuredSourceDisplayTitle(source: ConfiguredSource): String {
+    val legacy = legacyPrototypeSource(source)
+    return if (legacy != null && source.entry.title == legacy.title) legacy.optionTitle else source.entry.title
+}
+
 internal fun encodeConfiguredFeedChoice(choice: ConfiguredFeedChoice?): String? =
     choice?.let { "v2|${it.itemId}|${it.instanceId}" }
 

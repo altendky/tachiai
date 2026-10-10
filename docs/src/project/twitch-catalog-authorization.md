@@ -62,6 +62,11 @@ the token response must contain a valid refresh credential. The historical
 zero-scope Smart TV omitted/zero expiry exception remains limited to its original
 experiment. It does not establish scoped grant behavior or permanent validity.
 
+Debug diagnostics report only closed categories for the authorization phase,
+failure, response endpoint, lifetime shape, scope match and refresh presence.
+They never include response values, provider scope names, credentials, account
+identifiers or activation instructions. Rejection details remain fixed UI text.
+
 A differently client-bound record reports reconnection required before its
 credentials are interpreted. Reads perform no network or implicit replacement;
 explicit Connect or Forget can replace it. Native preparation validates afresh

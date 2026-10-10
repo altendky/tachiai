@@ -44,6 +44,7 @@ internal suspend fun requestTwitchCatalogAuthorization(
     waitMs: suspend (Long) -> Unit = catalogPollWait,
     onPhase: suspend (DeviceAuthPhase) -> Unit = {},
     onActivation: suspend (DeviceActivation) -> Unit = {},
+    onResponseShape: suspend (TwitchCatalogAuthResponseShape) -> Unit = {},
 ): TwitchCatalogAuthorizationResult {
     var lastPhase: DeviceAuthPhase? = null
     suspend fun publish(phase: DeviceAuthPhase) {
@@ -92,6 +93,7 @@ internal suspend fun requestTwitchCatalogAuthorization(
             currentCoroutineContext().ensureActive()
             if (clockMs() >= challengeDeadline) return failed(DeviceAuthPhase.EXPIRED)
             if (response.status == 200) {
+                onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.TOKEN, response.fields))
                 val credentials = parseTwitchCatalogToken(response)
                 val tokenDeadline = Math.addExact(pollStarted, credentials.expiresInMs)
                 // A successful poll consumes its device code. Background validation
@@ -107,6 +109,8 @@ internal suspend fun requestTwitchCatalogAuthorization(
                         continue
                     }
                     currentCoroutineContext().ensureActive()
+                    if (validated.status == 200)
+                        onResponseShape(twitchCatalogAuthResponseShape(DeviceAuthEndpoint.VALIDATE, validated.fields))
                     val validation = parseTwitchCatalogValidation(validated)
                     val deadline = minOf(tokenDeadline, Math.addExact(validationStarted, validation.expiresInMs))
                     if (clockMs() >= deadline) return failed(DeviceAuthPhase.EXPIRED)

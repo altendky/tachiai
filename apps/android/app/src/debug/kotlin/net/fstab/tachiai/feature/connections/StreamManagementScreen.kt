@@ -33,6 +33,15 @@ internal fun catalogFailureExplanation(failure: CatalogResult.Failure): String =
         " Retry after ${DateFormat.getDateTimeInstance().format(Date(it))}." } ?: " Try again later.")
     CatalogFailure.TEMPORARY -> "The catalog could not be loaded. Retry; your configured streams are retained."
 }
+private fun metadataRefreshExplanation(access: CatalogAccess?): String? = when (access) {
+    CatalogAccess.AVAILABLE -> null
+    CatalogAccess.AUTHORIZATION_REQUIRED -> "Refresh metadata: Connect a catalog account."
+    CatalogAccess.RECONNECT_REQUIRED -> "Refresh metadata: Reconnect the catalog account."
+    CatalogAccess.SCOPE_REQUIRED -> "Refresh metadata: Additional catalog permission is required."
+    CatalogAccess.UNSUPPORTED -> "Refresh metadata is not supported by this provider."
+    CatalogAccess.NOT_VERIFIED -> "Refresh metadata access is not verified."
+    null -> "Refresh metadata is unavailable until provider access is checked."
+}
 private fun entryDetails(entry: CatalogEntry): String {
     val intent = when (entry.resource.intent) {
         CatalogIntent.CHANNEL -> "Ongoing channel"
@@ -58,7 +67,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onSearch: (String) -> Unit, onAll: () -> Unit, onCollection: (String) -> Unit,
     onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
-    onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers") {
+    onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers",
+    onRefresh: (String) -> Unit = {}) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -88,7 +98,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         }
         item { Text("Configured streams", style = MaterialTheme.typography.titleLarge)
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
-            if (state.configured.orEmpty().size >= MAX_CONFIGURED_SOURCES) Text("Stream limit reached. Remove an item to add another.") }
+            if (state.configured.orEmpty().size >= MAX_CONFIGURED_SOURCES) Text("Stream limit reached. Remove an item to add another.")
+            metadataRefreshExplanation(capabilities?.refresh)?.let { Text(it) } }
         items(state.configured.orEmpty(), key = { "configured:${it.id}" }) { source ->
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(source.entry.title, style = MaterialTheme.typography.titleMedium)
@@ -102,6 +113,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     TextButton(onClick = { onRemove(source.id) }, enabled = mutable,
                         modifier = Modifier.semantics { contentDescription = "Remove ${source.entry.title}" }) { Text("Remove") }
                 }
+                TextButton(onClick = { onRefresh(source.id) }, enabled = mutable && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,
+                    modifier = Modifier.semantics { contentDescription = "Refresh metadata for ${source.entry.title}" }) { Text("Refresh metadata") }
                 if (capabilities?.children == CatalogAccess.AVAILABLE && source.entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL))
                     TextButton(onClick = { onChildren(source.entry.resource) }, enabled = mutable,
                         modifier = Modifier.semantics { contentDescription = "Browse configured ${source.entry.title}" }) { Text("Browse items") }

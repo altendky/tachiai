@@ -72,8 +72,10 @@ The shared manager labels the optional date **Scheduled**. Broadcaster identity,
 CHANNEL intent and independently observed LIVE/OFFLINE status remain unchanged;
 a schedule does not supply a video identity or playback entitlement. Preview
 writes nothing. Explicit Add saves the date as a configured metadata snapshot;
-duplicate Add preserves the existing item's metadata and quality. This slice
-does not automatically update saved dates or add a manager refresh action.
+duplicate Add preserves the existing item's metadata and quality. The separate
+[explicit metadata-refresh action](configured-catalog.md#explicit-metadata-refresh)
+can update an existing configured snapshot using its exact resource, preserving
+local identity, order and quality. Saved dates are not automatically updated.
 Actual schedule responses and account/route acceptance remain unobserved.
 
 ## Account, routing and pagination

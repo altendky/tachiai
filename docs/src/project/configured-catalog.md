@@ -107,11 +107,39 @@ including exact lookup and channel-video children when account access is availab
 Connected exact channel lookup can include bounded [known schedule context](twitch-connected-catalog.md#known-schedule-context),
 with the same optional Scheduled label used by the shared entry UI. This is a
 saved metadata snapshot and does not change channel identity or current availability.
+The explicit metadata-refresh action below can update that snapshot in place.
 Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections
 cannot silently resolve to the News or replay sample, and known unavailable items
 remain saved while Watch explains why playback is blocked.
+
+### Explicit metadata refresh
+
+[Issue #124](https://github.com/altendky/tachiai/issues/124) adds **Refresh metadata**
+for an existing configured item when its provider advertises refresh access.
+It refreshes that item's exact public resource through the instance-bound adapter;
+it does not repeat Add or change provider favorites. Metadata, availability and
+the optional Scheduled date can change, while local UUID, current order, quality
+defaults and feed bindings remain intact. Unavailable items remain configured.
+There is no automatic polling or refresh-all operation.
+
+Unavailable refresh access is explained. Access, network and storage failures
+retain the saved entry. A mismatched resource or an item removed while retrieval
+was pending cannot replace another item or recreate the old one. After temporary,
+rate-limit or save failure, Retry targets the same local UUID and respects a provider
+retry deadline. Access loss clears that target; Retry reloads access, after which
+the user explicitly selects Refresh metadata again. Starting retrieval
+clears transient discovery and drafts; access loss and lifecycle closure discard
+stale retrieval results. An accepted local write uses the existing tracked atomic
+save/finish boundary. These checks do not make account and configured-source stores
+one transaction or add an immediate idle account-change observer.
+
+Connected Twitch can refresh immutable broadcaster and exact video resources,
+including a locally imported video's metadata after account access is available.
+Historical aliases are not silently converted. ABEMA refresh remains unsupported;
+its public-link import does not establish structured metadata or account access.
+Refreshing metadata does not establish playback entitlement or native support.
 
 ### Twitch public video-link import
 

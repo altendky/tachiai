@@ -71,7 +71,8 @@ class ManageStreamsActivity : ComponentActivity() {
                     message = if (savingWhileLeaving) "Saving configured streams before returning…" else state.message), current::search, current::all,
                     current::collection, current::children, current::more, current::lookup,
                     current::add, current::remove, current::move, current::retry, ::finish,
-                    backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers")
+                    backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers",
+                    onRefresh = current::refresh)
             } else Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")

@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -66,27 +68,103 @@ internal fun parseTwitchVideos(response: TwitchHelixResponse) = metadataPage(res
     TwitchCatalogVideo(it.id("id"), it.id("user_id"), it.text("title"))
 }
 
+private val scheduleTimestamp = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})")
+private const val MAX_SCHEDULE_EPOCH_MS = 253402300799999L
+private fun scheduleTime(value: Any?): Long {
+    val text = value as? String ?: invalidMetadata()
+    if (!scheduleTimestamp.matches(text)) invalidMetadata()
+    return try {
+        OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant().toEpochMilli()
+            .takeIf { it in 0..MAX_SCHEDULE_EPOCH_MS } ?: invalidMetadata()
+    } catch (_: Exception) { invalidMetadata() }
+}
+private fun scheduleObject(value: Any?): Map<String, Any?> {
+    val fields = value as? Map<*, *> ?: invalidMetadata()
+    if (fields.keys.any { it !is String }) invalidMetadata()
+    @Suppress("UNCHECKED_CAST")
+    return fields as Map<String, Any?>
+}
+
+// Context from one page only. Cancellation and vacation filtering never
+// changes channel availability or turns a scheduled occurrence into a video.
+internal fun parseTwitchScheduleStart(response: TwitchHelixResponse, broadcasterId: String, nowEpochMs: Long): Long? {
+    if (!validTwitchCatalogId(broadcasterId) || nowEpochMs !in 0..MAX_SCHEDULE_EPOCH_MS) invalidMetadata()
+    if (response.status == 404) return null
+    if (response.status != 200) invalidMetadata()
+    val data = scheduleObject(response.fields["data"])
+    if (data.id("broadcaster_id") != broadcasterId || !data.containsKey("vacation")) invalidMetadata()
+    val vacation = data["vacation"]?.let {
+        val bounds = scheduleObject(it)
+        val start = scheduleTime(bounds["start_time"])
+        val end = scheduleTime(bounds["end_time"])
+        if (end <= start) invalidMetadata()
+        start to end
+    }
+    if (response.fields.containsKey("pagination")) {
+        val page = scheduleObject(response.fields["pagination"])
+        if (page.containsKey("cursor") && (page["cursor"] as? String)?.takeIf(::validTwitchCatalogCursor) == null)
+            invalidMetadata()
+    }
+    val segments = data["segments"] as? List<*> ?: invalidMetadata()
+    if (segments.size > 25) invalidMetadata()
+    var earliest: Long? = null
+    segments.forEach { value ->
+        val segment = scheduleObject(value)
+        val start = scheduleTime(segment["start_time"])
+        val end = scheduleTime(segment["end_time"])
+        if (end <= start || !segment.containsKey("canceled_until")) invalidMetadata()
+        val canceled = segment["canceled_until"]?.let { scheduleTime(it) }
+        val overlapsVacation = vacation != null && start < vacation.second && end > vacation.first
+        if (start > nowEpochMs && canceled == null && !overlapsVacation)
+            earliest = minOf(earliest ?: start, start)
+    }
+    return earliest
+}
+
+private fun projectSchedule(data: JSONObject): Map<String, Any?> {
+    fun text(fields: JSONObject, key: String): String = (fields.opt(key) as? String)
+        ?.takeIf { it.length <= 64 } ?: invalidMetadata()
+    val segments = data.opt("segments") as? JSONArray ?: invalidMetadata()
+    if (segments.length() > 25 || !data.has("vacation")) invalidMetadata()
+    val rows = (0 until segments.length()).map { index ->
+        val row = segments.opt(index) as? JSONObject ?: invalidMetadata()
+        if (!row.has("canceled_until")) invalidMetadata()
+        mapOf("start_time" to text(row, "start_time"), "end_time" to text(row, "end_time"),
+            "canceled_until" to if (row.isNull("canceled_until")) null else text(row, "canceled_until"))
+    }
+    val vacation = if (data.isNull("vacation")) null else {
+        val bounds = data.opt("vacation") as? JSONObject ?: invalidMetadata()
+        mapOf("start_time" to text(bounds, "start_time"), "end_time" to text(bounds, "end_time"))
+    }
+    return mapOf("broadcaster_id" to text(data, "broadcaster_id"), "segments" to rows, "vacation" to vacation)
+}
+
 // Production decoding projects only needed public fields. No error text,
 // account email, returned URLs, thumbnails or arbitrary nested objects escape.
 internal fun twitchHelixResponseFields(body: String): Map<String, Any?> {
     if (body.length > TWITCH_HELIX_RESPONSE_LIMIT || body.toByteArray(Charsets.UTF_8).size > TWITCH_HELIX_RESPONSE_LIMIT) invalidMetadata()
     try {
         val json = JSONObject(body)
-        val data = json.opt("data") as? JSONArray ?: invalidMetadata()
-        if (data.length() > 100) invalidMetadata()
-        val allowed = setOf("id", "login", "display_name", "broadcaster_id", "broadcaster_login", "broadcaster_name",
-            "user_id", "user_login", "user_name", "is_live", "title", "type")
-        val rows = (0 until data.length()).map { index ->
-            val row = data.opt(index) as? JSONObject ?: invalidMetadata()
-            allowed.filter(row::has).associateWith { key -> when (val value = row.opt(key)) {
-                is String -> value.takeIf { it.length <= 2048 } ?: invalidMetadata()
-                is Boolean -> value
-                is Number -> value
-                JSONObject.NULL -> null
-                else -> invalidMetadata()
-            } }
+        val projectedData = when (val data = json.opt("data")) {
+            is JSONObject -> projectSchedule(data)
+            is JSONArray -> {
+                if (data.length() > 100) invalidMetadata()
+                val allowed = setOf("id", "login", "display_name", "broadcaster_id", "broadcaster_login", "broadcaster_name",
+                    "user_id", "user_login", "user_name", "is_live", "title", "type")
+                (0 until data.length()).map { index ->
+                    val row = data.opt(index) as? JSONObject ?: invalidMetadata()
+                    allowed.filter(row::has).associateWith { key -> when (val value = row.opt(key)) {
+                        is String -> value.takeIf { it.length <= 2048 } ?: invalidMetadata()
+                        is Boolean -> value
+                        is Number -> value
+                        JSONObject.NULL -> null
+                        else -> invalidMetadata()
+                    } }
+                }
+            }
+            else -> invalidMetadata()
         }
-        val result = mutableMapOf<String, Any?>("data" to rows)
+        val result = mutableMapOf<String, Any?>("data" to projectedData)
         if (json.has("pagination")) {
             val page = json.opt("pagination") as? JSONObject ?: invalidMetadata()
             result["pagination"] = if (page.has("cursor")) mapOf("cursor" to

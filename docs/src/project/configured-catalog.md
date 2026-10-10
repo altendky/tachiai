@@ -104,6 +104,9 @@ search the existing public sample resources, with unknown availability. Followin
 and My List are explicitly not verified in those sample adapters. The debug Twitch
 manager now uses the separate [connected catalog](twitch-connected-catalog.md),
 including exact lookup and channel-video children when account access is available.
+Connected exact channel lookup can include bounded [known schedule context](twitch-connected-catalog.md#known-schedule-context),
+with the same optional Scheduled label used by the shared entry UI. This is a
+saved metadata snapshot and does not change channel identity or current availability.
 Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections

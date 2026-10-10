@@ -47,15 +47,17 @@ class TwitchHelixTransportTest {
         val requests = listOf(TwitchHelixRequest.following("123", cursor), TwitchHelixRequest.search("sumo & bouts", cursor),
             TwitchHelixRequest.usersById(listOf("123", "456")), TwitchHelixRequest.userByLogin("sumo"),
             TwitchHelixRequest.streams(), TwitchHelixRequest.streams(listOf("123", "456")),
-            TwitchHelixRequest.video("789"), TwitchHelixRequest.videos("123", cursor))
+            TwitchHelixRequest.video("789"), TwitchHelixRequest.videos("123", cursor),
+            TwitchHelixRequest.schedule("123", 1_000_123))
         requests.forEach { http.execute("fixture-access", it) }
         assertEquals(listOf("/helix/channels/followed", "/helix/search/channels", "/helix/users", "/helix/users",
-            "/helix/streams", "/helix/streams", "/helix/videos", "/helix/videos"), opened.map { it.url.path })
+            "/helix/streams", "/helix/streams", "/helix/videos", "/helix/videos", "/helix/schedule"), opened.map { it.url.path })
         assertEquals(listOf("user_id" to "123", "first" to "20", "after" to cursor), opened[0].query())
         assertEquals(listOf("query" to "sumo & bouts", "live_only" to "false", "first" to "20", "after" to cursor), opened[1].query())
         assertEquals(listOf("id" to "123", "id" to "456"), opened[2].query())
         assertEquals(listOf("id" to "789"), opened[6].query())
         assertEquals(listOf("user_id" to "123", "type" to "all", "sort" to "time", "first" to "20", "after" to cursor), opened[7].query())
+        assertEquals(listOf("broadcaster_id" to "123", "start_time" to "1970-01-01T00:16:40.123Z", "first" to "20"), opened[8].query())
         opened.forEach {
             assertTrue(validTwitchHelixUrl(it.url)); assertEquals("GET", it.requestMethod)
             assertEquals("api.twitch.tv", it.url.host); assertEquals("https", it.url.protocol)
@@ -88,6 +90,7 @@ class TwitchHelixTransportTest {
         listOf("", "0", "0123", "a", "1".repeat(33), "123\n").forEach { id ->
             assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.following(id) }
             assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.video(id) }
+            assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.schedule(id, 1_000_123) }
         }
         assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.usersById(emptyList()) }
         assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.streams(List(101) { "123" }) }
@@ -105,6 +108,26 @@ class TwitchHelixTransportTest {
                 assertThrows(TwitchHelixException::class.java) { http.execute(it, TwitchHelixRequest.streams()) }.failure)
         }
         assertFalse(opened)
+    }
+
+    @Test fun ScheduleRouteAllowsOnlyItsBoundedCanonicalTimestampAndSinglePage() {
+        val base = "https://api.twitch.tv/helix/schedule?broadcaster_id=123&start_time=1970-01-01T00%3A16%3A40.123Z&first=20"
+        assertTrue(validTwitchHelixUrl(URL(base)))
+        listOf("$base&after=cursor", "$base&token=private", "$base&broadcaster_id=456", "$base&start_time=private",
+            base.replace("first=20", "first=25"), base.replace("broadcaster_id=123", "user_id=123"),
+            base.replace("broadcaster_id=123", "broadcaster_id=0123"), base.replace("00%3A16%3A40.123Z", "00%3A16%3A40.123000Z"),
+            base.replace("1970-01-01T00%3A16%3A40.123Z", "1970-01-01T01%3A16%3A40.123%2B01%3A00"),
+            base.replace("1970-01-01T00%3A16%3A40.123Z", "1969-12-31T23%3A59%3A59Z"),
+            base.replace("1970-01-01T00%3A16%3A40.123Z", "%2B10000-01-01T00%3A00%3A00Z"),
+            base.replace("1970-01-01T00%3A16%3A40.123Z", "not-a-date"),
+            base.replace("/helix/schedule", "/helix/%73chedule"), "$base#private").forEach {
+            assertFalse("Schedule URL must be reproducible by the fixed operation", validTwitchHelixUrl(URL(it)))
+        }
+        listOf(0L, 253_402_300_799_999L).forEach { assertTrue(validTwitchHelixUrl(TwitchHelixRequest.schedule("123", it).url)) }
+        listOf(-1L, 253_402_300_800_000L, Long.MAX_VALUE).forEach {
+            assertEquals(TwitchHelixFailure.INVALID_INPUT,
+                assertThrows(TwitchHelixException::class.java) { TwitchHelixRequest.schedule("123", it) }.failure)
+        }
     }
 
     @Test fun RedirectAndErrorStatusesAreReturnedWithoutReadingBodiesOrRetrying() {

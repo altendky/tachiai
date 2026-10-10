@@ -50,7 +50,7 @@ private fun entryDetails(entry: CatalogEntry): String {
         CatalogAvailability.UNAVAILABLE -> "Unavailable"
     }
     return "$intent · $availability" + (entry.scheduledStartEpochMs?.let {
-        " · ${DateFormat.getDateTimeInstance().format(Date(it))}" } ?: "")
+        " · Scheduled ${DateFormat.getDateTimeInstance().format(Date(it))}" } ?: "")
 }
 
 @Composable

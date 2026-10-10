@@ -6,11 +6,12 @@ import java.io.InterruptedIOException
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.time.Instant
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.provider.twitch.*
 
 internal enum class TwitchHelixOperation(val path: String) {
-    FOLLOWED("channels/followed"), SEARCH("search/channels"), USERS("users"), STREAMS("streams"), VIDEOS("videos")
+    FOLLOWED("channels/followed"), SEARCH("search/channels"), USERS("users"), STREAMS("streams"), VIDEOS("videos"), SCHEDULE("schedule")
 }
 
 internal class TwitchHelixRequest private constructor(val operation: TwitchHelixOperation, fields: List<Pair<String, String>>) {
@@ -43,6 +44,12 @@ internal class TwitchHelixRequest private constructor(val operation: TwitchHelix
         fun video(id: String) = TwitchHelixRequest(TwitchHelixOperation.VIDEOS, listOf("id" to checkedId(id)))
         fun videos(broadcasterId: String, after: String? = null) = TwitchHelixRequest(TwitchHelixOperation.VIDEOS,
             listOf("user_id" to checkedId(broadcasterId), "type" to "all", "sort" to "time") + page(after))
+        fun schedule(broadcasterId: String, startEpochMs: Long): TwitchHelixRequest {
+            // A fixed UTC RFC3339 timestamp, bounded to four-digit years.
+            checkInput(startEpochMs in 0..253_402_300_799_999L)
+            return TwitchHelixRequest(TwitchHelixOperation.SCHEDULE,
+                listOf("broadcaster_id" to checkedId(broadcasterId), "start_time" to Instant.ofEpochMilli(startEpochMs).toString()) + page(null))
+        }
     }
 }
 
@@ -75,6 +82,10 @@ internal fun validTwitchHelixUrl(url: URL): Boolean = try {
                     if (one("type") != "all" || one("sort") != "time") throw IllegalArgumentException()
                     TwitchHelixRequest.videos(one("user_id"), after())
                 }
+            }
+            "/helix/schedule" -> {
+                keys("broadcaster_id", "start_time", "first"); page()
+                TwitchHelixRequest.schedule(one("broadcaster_id"), Instant.parse(one("start_time")).toEpochMilli())
             }
             else -> throw IllegalArgumentException()
         }

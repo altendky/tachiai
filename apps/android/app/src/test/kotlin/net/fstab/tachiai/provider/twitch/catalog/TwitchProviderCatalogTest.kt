@@ -1,6 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
 import java.util.UUID
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -32,6 +33,13 @@ class TwitchProviderCatalogTest {
         "user_id" to id, "user_login" to "channel$id", "user_name" to "Channel $id", "type" to "live")
     private fun video(id: String, owner: String = "123") = mapOf<String, Any?>("id" to id, "user_id" to owner,
         "title" to "Video $id", "type" to "archive")
+    private fun segment(start: Long, end: Long = start + 60_000L, canceledUntil: String? = null) =
+        mapOf<String, Any?>("start_time" to Instant.ofEpochMilli(start).toString(),
+            "end_time" to Instant.ofEpochMilli(end).toString(), "canceled_until" to canceledUntil)
+    private fun schedule(owner: String = "123", segments: List<Map<String, Any?>> = emptyList(),
+        vacation: Map<String, Any?>? = null) = TwitchHelixResponse(200, mapOf("data" to
+        mapOf("broadcaster_id" to owner, "segments" to segments, "vacation" to vacation),
+        "pagination" to emptyMap<String, Any?>()))
     private fun broadcaster(id: String) = CatalogResource(ProviderId("twitch"), "broadcaster", id, CatalogIntent.CHANNEL)
     private fun vod(id: String) = CatalogResource(ProviderId("twitch"), "video", id, CatalogIntent.VIDEO)
     private fun <T> value(result: CatalogResult<T>): T {
@@ -57,6 +65,7 @@ class TwitchProviderCatalogTest {
         val authValidations = AtomicInteger(); val refreshes = AtomicInteger(); val cancels = AtomicInteger(); val closes = AtomicInteger()
         val calls = mutableListOf<TwitchHelixRequest>(); val tokens = mutableListOf<String>(); val waits = mutableListOf<Long>()
         var publish = true
+        var now = 1_000_000L
         var authUser = "9000"
         var execute: (TwitchHelixRequest) -> TwitchHelixResponse = { page() }
         val session = TwitchCatalogSession(store, { object : TwitchCatalogTransport {
@@ -83,7 +92,7 @@ class TwitchProviderCatalogTest {
             }
             override fun cancelActiveRequest() { cancels.incrementAndGet() }
             override fun close() { closes.incrementAndGet() }
-        } }, { publish }, { 1_000_000L }, { waits.add(it) })
+        } }, { publish }, { now }, { waits.add(it) })
         init { if (saved) seed() }
         fun seed(user: String = "9000") {
             authUser = user
@@ -124,6 +133,7 @@ class TwitchProviderCatalogTest {
         assertEquals(listOf(broadcaster("123"), broadcaster("456")), entries.map { it.resource })
         assertEquals(listOf(CatalogAvailability.LIVE, CatalogAvailability.OFFLINE), entries.map { it.availability })
         assertFalse(entries.any { it.resource.identity == "9123" })
+        assertTrue(entries.all { it.scheduledStartEpochMs == null })
         assertEquals(2, fixture.calls.size)
     }
 
@@ -149,6 +159,7 @@ class TwitchProviderCatalogTest {
         fixture.execute = { request -> when (request.operation) {
             TwitchHelixOperation.USERS -> { assertTrue(request.url.query.contains("login=neverstarted")); page(listOf(user("123", "neverstarted", "Never Started"))) }
             TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.SCHEDULE -> TwitchHelixResponse(404)
             else -> error("Unexpected operation")
         } }
         val first = value(fixture.catalog.lookup("NeverStarted"))
@@ -164,6 +175,7 @@ class TwitchProviderCatalogTest {
             TwitchHelixOperation.USERS -> if (request.url.query.contains("id=123")) page(listOf(user("123", "newlogin", "Renamed")))
                 else page(listOf(user("456", "oldlogin", "New Account")))
             TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.SCHEDULE -> TwitchHelixResponse(404)
             else -> error("Unexpected operation")
         } }
         val renamed = value(fixture.catalog.refresh(broadcaster("123")))
@@ -171,6 +183,207 @@ class TwitchProviderCatalogTest {
         assertEquals(broadcaster("123"), renamed.resource); assertEquals("Renamed", renamed.title)
         assertEquals(broadcaster("456"), recycled.resource)
         assertNotEquals(renamed.resource, recycled.resource)
+    }
+
+    @Test fun exactBroadcasterScheduleAddsOnlyFutureContextWithoutReplacingChannelIdentityOrLiveState() {
+        listOf(false, true).forEach { live ->
+            val fixture = Fixture()
+            fixture.execute = { request -> when (request.operation) {
+                TwitchHelixOperation.USERS -> page(listOf(user("123")))
+                TwitchHelixOperation.STREAMS -> if (live) page(listOf(stream("123"))) else page()
+                TwitchHelixOperation.SCHEDULE -> {
+                    assertTrue(request.url.query.contains("broadcaster_id=123"))
+                    assertTrue(request.url.query.contains("first=20"))
+                    assertFalse(request.url.query.contains("after="))
+                    schedule(segments = listOf(segment(1_120_000L), segment(1_060_000L)))
+                }
+                else -> error("Unexpected operation")
+            } }
+            val lookedUp = value(fixture.catalog.lookup("channel123"))
+            val refreshed = value(fixture.catalog.refresh(broadcaster("123")))
+            listOf(lookedUp, refreshed).forEach {
+                assertEquals(broadcaster("123"), it.resource)
+                assertEquals(if (live) CatalogAvailability.LIVE else CatalogAvailability.OFFLINE, it.availability)
+                assertEquals(1_060_000L, it.scheduledStartEpochMs)
+                assertEquals("Channel 123", it.title)
+            }
+            assertEquals(listOf(TwitchHelixOperation.USERS, TwitchHelixOperation.STREAMS, TwitchHelixOperation.SCHEDULE,
+                TwitchHelixOperation.USERS, TwitchHelixOperation.STREAMS, TwitchHelixOperation.SCHEDULE), fixture.calls.map { it.operation })
+            assertEquals(0, fixture.refreshes.get())
+        }
+    }
+
+    @Test fun scheduleUsesPostResponseTimeAndOmitsAbsentPastCanceledAndVacationContext() {
+        val omitted = listOf(TwitchHelixResponse(404), schedule(),
+            schedule(segments = listOf(segment(999_000L), segment(1_000_000L))),
+            schedule(segments = listOf(segment(1_060_000L, canceledUntil = "1970-01-01T01:00:00Z"))),
+            schedule(segments = listOf(segment(1_060_000L)), vacation = mapOf(
+                "start_time" to "1970-01-01T00:17:00Z", "end_time" to "1970-01-01T00:19:00Z")))
+        omitted.forEach { response ->
+            val fixture = Fixture()
+            fixture.execute = { request -> when (request.operation) {
+                TwitchHelixOperation.USERS -> page(listOf(user("123")))
+                TwitchHelixOperation.STREAMS -> page()
+                TwitchHelixOperation.SCHEDULE -> response
+                else -> error("Unexpected operation")
+            } }
+            val result = value(fixture.catalog.lookup("123"))
+            assertEquals(broadcaster("123"), result.resource)
+            assertEquals(CatalogAvailability.OFFLINE, result.availability)
+            assertNull(result.scheduledStartEpochMs)
+            assertEquals(3, fixture.calls.size)
+        }
+        val delayed = Fixture()
+        delayed.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.USERS -> page(listOf(user("123")))
+            TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.SCHEDULE -> {
+                assertEquals(TwitchHelixRequest.schedule("123", 1_000_000L).url.toExternalForm(), request.url.toExternalForm())
+                delayed.now = 1_060_000L
+                schedule(segments = listOf(segment(1_020_000L), segment(1_120_000L)))
+            }
+            else -> error("Unexpected operation")
+        } }
+        assertEquals(1_120_000L, value(delayed.catalog.lookup("123")).scheduledStartEpochMs)
+    }
+
+    @Test fun malformedOrWrongOwnerScheduleFailsAndOnlyScheduleTreats404AsAbsent() {
+        listOf(schedule(owner = "456", segments = listOf(segment(1_060_000L))),
+            schedule(segments = listOf(segment(1_060_000L) + ("start_time" to "not-a-time"))),
+            TwitchHelixResponse(200, mapOf("data" to emptyList<Any>()))).forEach { response ->
+            val fixture = Fixture()
+            fixture.execute = { request -> when (request.operation) {
+                TwitchHelixOperation.USERS -> page(listOf(user("123")))
+                TwitchHelixOperation.STREAMS -> page()
+                TwitchHelixOperation.SCHEDULE -> response
+                else -> error("Unexpected operation")
+            } }
+            failure(fixture.catalog.lookup("123"), CatalogFailure.TEMPORARY)
+            assertEquals(3, fixture.calls.size)
+        }
+        val missingUsers = Fixture()
+        assertEquals(CatalogAvailability.UNAVAILABLE, value(missingUsers.catalog.refresh(broadcaster("123"))).availability)
+        failure(missingUsers.catalog.lookup("123"), CatalogFailure.NOT_FOUND)
+        assertTrue(missingUsers.calls.all { it.operation == TwitchHelixOperation.USERS })
+        listOf(TwitchHelixOperation.USERS, TwitchHelixOperation.STREAMS, TwitchHelixOperation.VIDEOS).forEach { failed ->
+            val fixture = Fixture()
+            fixture.execute = { request -> if (request.operation == failed) TwitchHelixResponse(404)
+                else page(listOf(user("123"))) }
+            failure(fixture.catalog.lookup(if (failed == TwitchHelixOperation.VIDEOS) "https://www.twitch.tv/videos/789" else "123"),
+                CatalogFailure.TEMPORARY)
+            assertFalse(fixture.calls.any { it.operation == TwitchHelixOperation.SCHEDULE })
+        }
+    }
+
+    @Test fun schedule401RestartsUsersStatusAndScheduleTogetherAndRefreshBudgetRemainsOne() {
+        val fixture = Fixture(); var users = 0; var status = 0; var schedules = 0
+        fixture.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.USERS -> page(listOf(user(if (++users == 1) "123" else "456", "sumochannel")))
+            TwitchHelixOperation.STREAMS -> if (++status == 1) page(listOf(stream("123"))) else page()
+            TwitchHelixOperation.SCHEDULE -> if (++schedules == 1) TwitchHelixResponse(401)
+                else schedule(owner = "456", segments = listOf(segment(1_060_000L)))
+            else -> error("Unexpected operation")
+        } }
+        val result = value(fixture.catalog.lookup("sumochannel"))
+        assertEquals(broadcaster("456"), result.resource)
+        assertEquals(CatalogAvailability.OFFLINE, result.availability)
+        assertEquals(1_060_000L, result.scheduledStartEpochMs)
+        assertEquals(2, users); assertEquals(2, status); assertEquals(2, schedules)
+        assertEquals(1, fixture.refreshes.get())
+        assertEquals(List(3) { "initial-access" } + List(3) { "rotated-access-1" }, fixture.tokens)
+
+        val refused = Fixture()
+        refused.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.USERS -> page(listOf(user("123")))
+            TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.SCHEDULE -> TwitchHelixResponse(401)
+            else -> error("Unexpected operation")
+        } }
+        failure(refused.catalog.refresh(broadcaster("123")), CatalogFailure.ACCESS_REQUIRED)
+        assertEquals(1, refused.refreshes.get()); assertEquals(6, refused.calls.size)
+    }
+
+    @Test fun scheduleRateAndServiceFailuresKeepExistingOperationWideRetryBounds() {
+        fun fixtureWith(response: () -> TwitchHelixResponse) = Fixture().also { fixture ->
+            fixture.execute = { request -> when (request.operation) {
+                TwitchHelixOperation.USERS -> page(listOf(user("123")))
+                TwitchHelixOperation.STREAMS -> page()
+                TwitchHelixOperation.SCHEDULE -> response()
+                else -> error("Unexpected operation")
+            } }
+        }
+        val limited = fixtureWith { TwitchHelixResponse(429, retryAtEpochMs = Long.MAX_VALUE) }
+        val rate = limited.catalog.lookup("123") as CatalogResult.Failure
+        assertEquals(CatalogFailure.RATE_LIMITED, rate.reason); assertEquals(87_400_000L, rate.retryAtEpochMs)
+        assertEquals(3, limited.calls.size); assertTrue(limited.waits.isEmpty())
+        var attempts = 0
+        val recovered = fixtureWith { if (++attempts == 1) TwitchHelixResponse(503) else TwitchHelixResponse(404) }
+        assertNull(value(recovered.catalog.lookup("123")).scheduledStartEpochMs)
+        assertEquals(4, recovered.calls.size); assertEquals(listOf(250L), recovered.waits)
+        val unavailable = fixtureWith { TwitchHelixResponse(503) }
+        failure(unavailable.catalog.lookup("123"), CatalogFailure.TEMPORARY)
+        assertEquals(4, unavailable.calls.size); assertEquals(listOf(250L), unavailable.waits)
+        val spent = Fixture(); var statuses = 0
+        spent.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.USERS -> page(listOf(user("123")))
+            TwitchHelixOperation.STREAMS -> if (++statuses == 1) TwitchHelixResponse(503) else page()
+            TwitchHelixOperation.SCHEDULE -> TwitchHelixResponse(503)
+            else -> error("Unexpected operation")
+        } }
+        failure(spent.catalog.lookup("123"), CatalogFailure.TEMPORARY)
+        assertEquals(4, spent.calls.size); assertEquals(listOf(250L), spent.waits)
+    }
+
+    @Test fun ownerOrGrantChangeDuringScheduleRejectsPublicationWithoutAnotherRequest() {
+        listOf(false, true).forEach { replaceGrant ->
+            val fixture = Fixture(); val original = fixture.memory.bytes!!.copyOf()
+            fixture.execute = { request -> when (request.operation) {
+                TwitchHelixOperation.USERS -> page(listOf(user("123")))
+                TwitchHelixOperation.STREAMS -> page()
+                TwitchHelixOperation.SCHEDULE -> {
+                    if (replaceGrant) fixture.seed(user = "9001") else fixture.publish = false
+                    schedule(segments = listOf(segment(1_060_000L)))
+                }
+                else -> error("Unexpected operation")
+            } }
+            failure(fixture.catalog.lookup("123"), CatalogFailure.ACCESS_REQUIRED)
+            assertEquals(3, fixture.calls.size); assertEquals(0, fixture.refreshes.get())
+            if (replaceGrant) assertEquals("9001", fixture.store.read()!!.userId) else assertArrayEquals(original, fixture.memory.bytes)
+        }
+    }
+
+    @Test fun closeDuringScheduleCancelsTransportAndCannotPublishLateContext() {
+        val fixture = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val workers = Executors.newSingleThreadExecutor()
+        fixture.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.USERS -> page(listOf(user("123")))
+            TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.SCHEDULE -> {
+                entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                schedule(segments = listOf(segment(1_060_000L)))
+            }
+            else -> error("Unexpected operation")
+        } }
+        try {
+            val work = workers.submit<CatalogResult<CatalogEntry>> { fixture.catalog.lookup("123") }
+            assertTrue(entered.await(5, TimeUnit.SECONDS)); fixture.catalog.close()
+            assertEquals(1, fixture.cancels.get())
+            release.countDown()
+            failure(work.get(5, TimeUnit.SECONDS), CatalogFailure.ACCESS_REQUIRED)
+            assertEquals(3, fixture.calls.size); assertEquals(0, fixture.refreshes.get())
+        } finally { release.countDown(); workers.shutdownNow() }
+    }
+
+    @Test fun disconnectedLocalVideoImportDoesNotRequestScheduleAuthorizationOrMetadata() {
+        val fixture = Fixture(saved = false)
+        val local = TwitchLocalVideoImportCatalog(fixture.catalog)
+        assertEquals(CatalogAccess.AVAILABLE, local.capabilities().lookup)
+        val entry = value(local.lookup("https://www.twitch.tv/videos/789"))
+        assertEquals(vod("789"), entry.resource)
+        assertEquals(CatalogAvailability.UNKNOWN, entry.availability)
+        assertNull(entry.scheduledStartEpochMs)
+        assertTrue(fixture.calls.isEmpty()); assertEquals(0, fixture.authValidations.get())
+        local.close()
     }
 
     @Test fun exactPublishedVideoAndChannelChildrenKeepExactVideoIdentityAndParentScopedContinuation() {

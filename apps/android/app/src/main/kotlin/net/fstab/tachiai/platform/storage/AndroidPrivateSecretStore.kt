@@ -22,6 +22,9 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
         fun configuredProviderInstance(context: Context, id: String): AndroidPrivateSecretStore {
             return AndroidPrivateSecretStore(context, configuredProviderInstanceBindingName(id))
         }
+        fun twitchCatalogInstance(context: Context, id: String): AndroidPrivateSecretStore {
+            return AndroidPrivateSecretStore(context, twitchCatalogInstanceBindingName(id))
+        }
     }
     private val file = AtomicFile(File(context.noBackupFilesDir, "$bindingName.enc"))
     private val alias = "tachiai.$bindingName.v1"

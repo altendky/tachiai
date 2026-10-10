@@ -22,4 +22,19 @@ class PrivateAuthorizationSlotTest {
             }
         }
     }
+
+    @Test fun `catalog bindings include default Twitch and cannot decrypt playback or another instance`() {
+        val defaultId = net.fstab.tachiai.presentation.defaultProviderInstanceId(net.fstab.tachiai.presentation.PrototypeService.TWITCH)
+        val otherId = "12345678-1234-1234-1234-123456789abc"
+        val own = twitchCatalogInstanceBindingName(defaultId)
+        val other = twitchCatalogInstanceBindingName(otherId)
+        assertNotEquals(own, other)
+        assertThrows(IllegalArgumentException::class.java) { twitchCatalogInstanceBindingName("not-a-uuid") }
+        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        fun binding(name: String) = "net.fstab.tachiai:$name:v1".toByteArray()
+        val encrypted = encryptPrivateSecret(key, binding(own), "synthetic-pair".toByteArray())
+        (PrivateAuthorizationSlot.entries.map { it.bindingName } + other + twitchProviderInstanceBindingName(otherId)).forEach {
+            assertThrows(AEADBadTagException::class.java) { decryptPrivateSecret(key, binding(it), encrypted) }
+        }
+    }
 }

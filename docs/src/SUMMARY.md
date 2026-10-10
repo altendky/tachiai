@@ -7,6 +7,7 @@
   - [ABEMA catalog and account access](project/abema-catalog-access.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
+  - [Twitch catalog authorization prototype](project/twitch-catalog-authorization.md)
   - [Provider watch-history access](project/provider-history-access.md)
   - [Platform plan](project/platforms.md)
   - [Security and privacy](project/security-and-privacy.md)

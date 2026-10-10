@@ -16,6 +16,10 @@ made no account requests, retrieved no credentials and performed no device
 experiment. Scoped consent, Helix responses, refresh and routed catalog access
 remain unobserved. The current developer-console configuration was not inspected.
 
+The separate [debug catalog authorization prototype](twitch-catalog-authorization.md)
+implements the proposed lifecycle with synthetic fixtures. This does not establish
+actual scoped consent or connect Helix discovery.
+
 ## Documented metadata and identities
 
 | Operation | Authorization | Identity or limit |

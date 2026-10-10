@@ -34,7 +34,9 @@ class ProvidersActivity : ComponentActivity() {
                 { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
                 onCreate = ::create, twitchLogin = { TwitchProviderLogin(it) },
                 onManageStreams = { startActivity(Intent(this, ManageStreamsActivity::class.java)
-                    .putExtra(ManageStreamsActivity.INSTANCE_ID, it)) })
+                    .putExtra(ManageStreamsActivity.INSTANCE_ID, it)) },
+                onCatalogConnection = { startActivity(Intent(this, TwitchCatalogConnectionActivity::class.java)
+                    .putExtra(TwitchCatalogConnectionActivity.INSTANCE_ID, it)) })
         } }
     }
 

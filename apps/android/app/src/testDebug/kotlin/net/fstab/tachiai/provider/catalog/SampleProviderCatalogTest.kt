@@ -13,11 +13,17 @@ class SampleProviderCatalogTest {
                 page.entries.map { it.resource })
             assertTrue(page.entries.all { it.availability == CatalogAvailability.UNKNOWN })
             assertNull(page.nextCursor)
-            val collection = catalog.capabilities().collections.single()
+            val collections = catalog.capabilities().collections
+            assertEquals(listOf(if (instance.service == PrototypeService.TWITCH) "following" else "my_list", "history"),
+                collections.map { it.id })
             assertEquals("All", catalog.capabilities().browseTitle)
             assertNull(catalog.capabilities().initialCollectionId)
-            assertEquals(CatalogAccess.NOT_VERIFIED, collection.access)
-            assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.browse(CatalogQuery(collectionId = collection.id)))
+            collections.forEach { collection ->
+                assertEquals(CatalogAccess.NOT_VERIFIED, collection.access)
+                assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.browse(CatalogQuery(collectionId = collection.id)))
+            }
+            assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED),
+                catalog.browse(CatalogQuery(collectionId = "history", cursor = "unverified-cursor")))
             assertEquals(CatalogAccess.UNSUPPORTED, catalog.capabilities().lookup)
             assertEquals(CatalogAccess.UNSUPPORTED, catalog.capabilities().children)
             assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.resolve(page.entries.first().resource))

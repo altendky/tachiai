@@ -51,6 +51,27 @@ category concerns changes to the user's own videos, not viewing. No export was
 examined. A future import needs format/privacy validation; exports do not
 establish real-time pagination, exact video IDs or resume/completion metadata.
 
+## Shipped capability reporting
+
+[Issue #130](https://github.com/altendky/tachiai/issues/130) makes **History**
+explicit in the shipped sample/ABEMA and connected Twitch adapters. Its access
+is **not verified**, independently of whether Following or a catalog account is
+connected. The current evidence does not justify a definitive provider-wide
+unsupported claim or a promise that connecting an account unlocks retrieval.
+
+Direct Twitch History browsing fails before catalog validation, refresh or
+metadata HTTP; sample/ABEMA browsing also returns not verified. The existing
+shared controller preflight skips unavailable collection browsing, clears the
+discovery surface and retains configured items. Users can return to ordinary
+All/Following/My List discovery with its existing access rules. Generic unverified
+copy now states the uncertainty rather than asking for connection as a remedy.
+
+Production adapter, controller and Compose fixtures cover reporting, request
+suppression, retained configured items and return to ordinary discovery. This is
+implemented capability reporting, not real history retrieval or account acceptance.
+No endpoint, scope, export import, viewed-time/progress field or history mutation
+is added; #102 remains open for its retrieval and privacy requirements.
+
 ## Content identity, timing and availability
 
 History differs from explicit My List/Following and local Tachiai viewing logs.

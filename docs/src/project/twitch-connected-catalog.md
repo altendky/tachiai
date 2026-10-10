@@ -45,6 +45,10 @@ again before publication. It requires both the owning instance's catalog connect
 and its separate LOCAL playback grant. Adding an item does not expand native
 permissions or select a sample under the new label.
 
+**History** is also listed, with access explicitly **not verified** regardless of
+Following/account connection. Selecting it cannot retrieve history or trigger a
+new authorization exchange. See [history access](provider-history-access.md#shipped-capability-reporting).
+
 ## Known schedule context
 
 [Issue #122](https://github.com/altendky/tachiai/issues/122) adds the supported

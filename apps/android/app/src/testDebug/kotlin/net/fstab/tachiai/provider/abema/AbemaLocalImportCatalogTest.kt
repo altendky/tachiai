@@ -31,7 +31,8 @@ class AbemaLocalImportCatalogTest {
         assertEquals(CatalogAccess.AVAILABLE, capabilities.lookup)
         assertEquals(CatalogAccess.UNSUPPORTED, capabilities.children)
         assertEquals(CatalogAccess.UNSUPPORTED, capabilities.playback)
-        assertEquals(CatalogAccess.NOT_VERIFIED, capabilities.collections.single().access)
+        assertEquals(listOf("my_list", "history"), capabilities.collections.map { it.id })
+        assertTrue(capabilities.collections.all { it.access == CatalogAccess.NOT_VERIFIED })
         val samples = (catalog.browse(CatalogQuery()) as CatalogResult.Value).value.entries
         assertEquals("My news", samples.first().title)
         assertEquals(listOf(samples.first()), (catalog.browse(CatalogQuery(search = "news")) as CatalogResult.Value).value.entries)
@@ -41,6 +42,8 @@ class AbemaLocalImportCatalogTest {
         assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.refresh(imported.resource))
         assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.resolve(imported.resource))
         assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED), catalog.browse(CatalogQuery(collectionId = "my_list")))
+        assertEquals(CatalogResult.Failure(CatalogFailure.NOT_VERIFIED),
+            catalog.browse(CatalogQuery(collectionId = "history", cursor = "unverified-cursor")))
         assertEquals(CatalogResult.Failure(CatalogFailure.INVALID_INPUT), catalog.lookup("https://abema.tv/account?token=fixture"))
         catalog.close()
         assertEquals(CatalogResult.Failure(CatalogFailure.TEMPORARY), catalog.lookup("https://abema.tv/channels/sumo"))

@@ -74,6 +74,7 @@ internal class StreamManagementController(
     private val writes = CoroutineScope(SupervisorJob() + io)
     private var browseJob: Job? = null
     private var lastLookup: String? = null
+    private var lastRefreshId: String? = null
     private var initialQueryChosen = false
     @Volatile private var closed = false
     @Volatile var pendingMutation: Job? = null
@@ -89,6 +90,7 @@ internal class StreamManagementController(
     }
     private fun clearDiscovery(failure: CatalogResult.Failure, keepCapabilities: Boolean = false) {
         lastLookup = null
+        lastRefreshId = null
         publish { it.copy(entries = emptyList(), nextCursor = null, query = CatalogQuery(collectionId = it.query.collectionId),
             capabilities = if (keepCapabilities) it.capabilities else null,
             failure = failure, loading = false, resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }
@@ -103,6 +105,7 @@ internal class StreamManagementController(
         cancelBrowse()
         val revision = browseRevision.get()
         lastLookup = null
+        lastRefreshId = null
         publish { it.copy(loading = true, storageFailed = false, capabilities = null, message = null, failure = null,
             entries = emptyList(), nextCursor = null, query = CatalogQuery(collectionId = it.query.collectionId),
             resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }
@@ -176,6 +179,7 @@ internal class StreamManagementController(
     private fun browse(query: CatalogQuery, append: Boolean = false) {
         if (closed || state.value.saving || state.value.configured == null || state.value.storageFailed) return
         lastLookup = null
+        lastRefreshId = null
         initialQueryChosen = true
         cancelBrowse()
         val revision = browseRevision.get()
@@ -193,12 +197,14 @@ internal class StreamManagementController(
     }
     fun all() = browse(CatalogQuery())
     fun search(text: String) {
+        lastRefreshId = null
         val trimmed = text.trim()
         val query = if (trimmed.isEmpty()) null else runCatching { CatalogQuery(search = trimmed) }.getOrNull()
         if (query == null) publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) } else browse(query)
     }
     fun collection(id: String) = browse(CatalogQuery(collectionId = id))
     fun children(resource: CatalogResource) {
+        lastRefreshId = null
         if (resource.providerId != catalog.providerId) { publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }; return }
         browse(CatalogQuery(parent = resource))
     }
@@ -206,12 +212,14 @@ internal class StreamManagementController(
     fun retry() {
         if (closed || state.value.loading || state.value.saving) return
         state.value.failure?.retryAtEpochMs?.let { if (clockMs() < it) return }
-        if (state.value.storageFailed || state.value.configured == null || state.value.capabilities == null) load()
+        if (state.value.storageFailed || state.value.configured == null) load()
+        else lastRefreshId?.let(::refresh) ?: if (state.value.capabilities == null) load()
         else lastLookup?.let(::lookup) ?: browse(state.value.query)
     }
 
     fun lookup(input: String) {
         if (closed || state.value.loading || state.value.saving || state.value.configured == null || state.value.storageFailed) return
+        lastRefreshId = null
         if (input.length !in 1..2048 || input.any { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }) {
             publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }; return
         }
@@ -243,6 +251,7 @@ internal class StreamManagementController(
         if (entry.resource.providerId != catalog.providerId) return false
         cancelBrowse()
         lastLookup = null
+        lastRefreshId = null
         initialQueryChosen = true
         var previewed = false
         publish {
@@ -253,27 +262,83 @@ internal class StreamManagementController(
         return previewed
     }
 
-    private fun mutate(action: () -> List<ConfiguredSource>) {
-        if (closed || state.value.loading || state.value.saving || state.value.configured == null || state.value.storageFailed) return
-        val revision = mutationRevision.incrementAndGet()
-        publish { it.copy(saving = true, message = null) }
-        // Accepted local writes survive Activity pause/destruction. Closing this
-        // controller invalidates UI publication, not the independent write job.
-        val job = writes.launch(start = CoroutineStart.LAZY) {
-            try {
-                val configured = action()
-                if (!closed && mutationRevision.get() == revision) publish { it.copy(configured = configured,
-                    message = "Configured streams saved on this device.") }
-            } catch (error: Exception) {
-                diagnostics.report(FailureStage.CONFIGURED_SOURCES_WRITE, error)
-                if (!closed && mutationRevision.get() == revision)
-                    publish { it.copy(message = "Configured streams could not be saved. Retry; the list was not replaced.") }
-            } finally {
-                if (!closed && mutationRevision.get() == revision) publish { it.copy(saving = false) }
-                if (closed) writes.cancel()
-            }
+    fun refresh(id: String) {
+        val snapshot = state.value
+        if (closed || snapshot.loading || snapshot.saving || snapshot.configured == null || snapshot.storageFailed) return
+        snapshot.failure?.retryAtEpochMs?.let { if (clockMs() < it) return }
+        val source = snapshot.configured.singleOrNull { it.id == id }
+        if (source == null || source.instanceId != instance.id || source.entry.resource.providerId != catalog.providerId) {
+            lastRefreshId = null
+            publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }
+            return
         }
-        pendingMutation = job; StreamManagementWrites.track(instance.id, job); job.start()
+        val permission = snapshot.capabilities?.refresh ?: CatalogAccess.NOT_VERIFIED
+        if (permission != CatalogAccess.AVAILABLE) {
+            lastRefreshId = null
+            failed(unavailable(permission), keepCapabilities = true)
+            return
+        }
+        cancelBrowse(); val revision = browseRevision.get()
+        lastLookup = null
+        lastRefreshId = id
+        publish { it.copy(loading = true, failure = null, message = null, entries = emptyList(), nextCursor = null,
+            query = CatalogQuery(collectionId = it.query.collectionId), resultsTruncated = false,
+            privacyRevision = privacyRevisions.incrementAndGet()) }
+        browseJob = scope.launch {
+            try {
+                val result = withContext(io) { catalog.refresh(source.entry.resource) }
+                if (!current(revision)) return@launch
+                when (result) {
+                    is CatalogResult.Value -> {
+                        check(result.value.resource == source.entry.resource)
+                        // Close/supersession before this boundary discards retrieval.
+                        // An accepted write then owns its independent lifecycle and
+                        // the store rereads the latest UUID/order/quality atomically.
+                        mutate(refreshId = id, expectedBrowseRevision = revision) { store.refresh(id, result.value, legacy) }
+                    }
+                    is CatalogResult.Failure -> failed(result)
+                }
+            } catch (_: CancellationException) { }
+            catch (error: Exception) {
+                if (current(revision)) {
+                    diagnostics.report(FailureStage.CATALOG_LOAD, error)
+                    publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)) }
+                }
+            } finally { if (current(revision)) publish { it.copy(loading = false) } }
+        }
+    }
+
+    private fun mutate(refreshId: String? = null, expectedBrowseRevision: Long? = null, action: () -> List<ConfiguredSource>) {
+        val job = synchronized(stateLock) {
+            if (closed || state.value.saving || state.value.configured == null || state.value.storageFailed ||
+                expectedBrowseRevision == null && state.value.loading ||
+                expectedBrowseRevision != null && !current(expectedBrowseRevision)) return
+            if (refreshId == null) lastRefreshId = null
+            val revision = mutationRevision.incrementAndGet()
+            publish { it.copy(saving = true, loading = if (expectedBrowseRevision != null) false else it.loading, message = null) }
+            // Track acceptance under the close gate, but start disk work only
+            // after releasing it. Accepted writes survive Activity destruction.
+            val accepted = writes.launch(start = CoroutineStart.LAZY) {
+                try {
+                    val configured = action()
+                    if (!closed && mutationRevision.get() == revision) publish {
+                        if (refreshId != null) lastRefreshId = null
+                        it.copy(configured = configured, failure = if (refreshId != null) null else it.failure,
+                            message = "Configured streams saved on this device.") }
+                } catch (error: Exception) {
+                    diagnostics.report(FailureStage.CONFIGURED_SOURCES_WRITE, error)
+                    if (!closed && mutationRevision.get() == revision)
+                        publish { it.copy(failure = if (refreshId != null) CatalogResult.Failure(CatalogFailure.TEMPORARY) else it.failure,
+                            message = "Configured streams could not be saved. Retry; the list was not replaced.") }
+                } finally {
+                    if (!closed && mutationRevision.get() == revision) publish { it.copy(saving = false) }
+                    if (closed) writes.cancel()
+                }
+            }
+            pendingMutation = accepted; StreamManagementWrites.track(instance.id, accepted)
+            accepted
+        }
+        job.start()
     }
     fun add(entry: CatalogEntry) {
         if (entry.resource.providerId != catalog.providerId) { publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }; return }
@@ -286,6 +351,7 @@ internal class StreamManagementController(
             if (closed) return
             closed = true
             lastLookup = null
+            lastRefreshId = null
             mutableState.value = mutableState.value.let { it.copy(entries = emptyList(), nextCursor = null,
                 capabilities = null, query = CatalogQuery(), failure = null, loading = false,
                 resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet()) }

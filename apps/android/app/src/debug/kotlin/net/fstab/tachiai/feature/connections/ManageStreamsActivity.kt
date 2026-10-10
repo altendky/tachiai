@@ -16,6 +16,7 @@ import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.SampleProviderCatalog
+import net.fstab.tachiai.provider.abema.AbemaLocalImportCatalog
 
 class ManageStreamsActivity : ComponentActivity() {
     companion object { const val INSTANCE_ID = "PROVIDER_INSTANCE_ID" }
@@ -69,7 +70,8 @@ class ManageStreamsActivity : ComponentActivity() {
                     val owner = instances.singleOrNull { it.id == id } ?: error("Stale provider instance")
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
-                    val catalog = SampleProviderCatalog(owner, setups)
+                    val catalog = if (owner.service == PrototypeService.ABEMA) AbemaLocalImportCatalog(owner, setups)
+                        else SampleProviderCatalog(owner, setups)
                     Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
                         legacyConfiguredSources(owner, setups, qualities)
                 }
@@ -77,7 +79,9 @@ class ManageStreamsActivity : ComponentActivity() {
                 val (parts, legacy) = loaded
                 controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
                     diagnostics = diagnostics,
-                    notice = "Prototype samples only. Provider catalogs and account lists are not connected yet.").also { it.load() }
+                    notice = if (parts.first.service == PrototypeService.ABEMA)
+                        "Browse prototype samples or paste a public ABEMA link to save its exact item. Imported availability is unknown. Catalogs and account lists are not connected; playback supports only the existing samples."
+                    else "Prototype samples only. Provider catalogs and account lists are not connected yet.").also { it.load() }
                 reading = false
             } catch (_: CancellationException) { }
             catch (error: Exception) {

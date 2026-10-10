@@ -120,7 +120,7 @@ class TwitchCatalogConnectionScreenTest {
         val bareUri = "https://www.twitch.tv/activate"
         compose.runOnIdle { state.value = state.value.copy(operation = TwitchCatalogConnectionOperation.CONNECT,
             activation = DeviceActivation("MANUAL123", URI(bareUri))) }
-        assertEquals(bareUri, decodedRenderedQr())
+        assertEquals("$bareUri?device-code=MANUAL123", decodedRenderedQr())
         compose.onNodeWithText("Your activation code: MANUAL123").performScrollTo().assertExists()
         compose.onNodeWithText("Cancel Twitch action").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Twitch activation QR code").assertDoesNotExist()

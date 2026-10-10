@@ -31,8 +31,21 @@ class TwitchActivationQrCodeTest {
         }
     }
 
-    @Test fun bareProviderUriRemainsBareWithoutSynthesizedCodeParameters() {
+    @Test fun bareProviderUriQrIncludesPublicUserCodeWithoutChangingBrowserUri() {
         val uri = "https://www.twitch.tv/activate"
+        val activation = DeviceActivation("FIXTURE123", URI(uri))
+        assertEquals("$uri?device-code=FIXTURE123", decode(createTwitchActivationQrCode(activation)))
+        assertEquals(uri, activation.verificationUri.toString())
+    }
+
+    @Test fun publicFlagOnlyUriKeepsItsFlagAndAddsPublicUserCode() {
+        val uri = "https://www.twitch.tv/activate?public=true"
+        assertEquals("$uri&device-code=FIXTURE-123",
+            decode(createTwitchActivationQrCode(DeviceActivation("FIXTURE-123", URI(uri)))))
+    }
+
+    @Test fun encodedMatchingParameterNameIsPreservedWithoutAddingDuplicateCode() {
+        val uri = "https://www.twitch.tv/activate?device%2Dcode=FIXTURE%31%32%33&public=true"
         assertEquals(uri, decode(createTwitchActivationQrCode(DeviceActivation("FIXTURE123", URI(uri)))))
     }
 
@@ -43,6 +56,7 @@ class TwitchActivationQrCodeTest {
             "https://www.twitch.tv/login", "https://www.twitch.tv/activate#secret",
             "https://www.twitch.tv/activate?device-code=OTHER", "https://www.twitch.tv/activate?public=false",
             "https://www.twitch.tv/activate?public=true&public=true", "https://www.twitch.tv/activate?token=secret",
+            "https://www.twitch.tv/activate?device-code=FIXTURE123&device%2Dcode=FIXTURE123",
         )
         invalid.forEach { uri ->
             assertThrows(InvalidDeviceResponse::class.java) {

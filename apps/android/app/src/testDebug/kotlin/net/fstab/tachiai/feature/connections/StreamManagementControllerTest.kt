@@ -37,6 +37,7 @@ class StreamManagementControllerTest {
         var failure: CatalogFailure? = null
         var throwBrowse = false
         var throwCapabilities = false
+        var lookupAccess = CatalogAccess.AVAILABLE
         var browseTitle = "All"
         var initialCollectionId: String? = null
         var onBrowse: (CatalogQuery) -> Unit = {}
@@ -52,7 +53,7 @@ class StreamManagementControllerTest {
         override fun capabilities(): CatalogCapabilities {
             if (throwCapabilities) throw IllegalStateException("sensitive-account-state")
             return CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
-            lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
+            lookup = lookupAccess, children = CatalogAccess.AVAILABLE,
             collections = listOf(CatalogCollection(collectionId, collectionTitle, collectionAccess),
                 CatalogCollection("history", "History", CatalogAccess.UNSUPPORTED)),
             browseTitle = browseTitle, initialCollectionId = initialCollectionId)
@@ -408,5 +409,66 @@ class StreamManagementControllerTest {
         now = 30_000; controller.retry(); val state = idle(controller)
         assertEquals(requests + 1, catalog.browses); assertNull(state.failure)
         controller.close()
+    }
+
+    @Test fun normalizedPublicPreviewClearsQueryAndPaginationWithoutLookupOrSavingUntilExplicitAdd() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().first())
+        val memory = Memory()
+        val controller = controller(this, catalog, memory)
+        val entry = CatalogEntry(CatalogResource(catalog.providerId, "episode", "never-started", CatalogIntent.VIDEO),
+            "Unstarted public episode", CatalogAvailability.UNKNOWN)
+        assertFalse(controller.preview(entry))
+        controller.load(); idle(controller)
+        assertNotNull(controller.state.value.nextCursor)
+        controller.children(catalog.parent); idle(controller)
+        assertNotNull(controller.state.value.query.parent)
+        val calls = catalog.browses
+        assertTrue(controller.preview(entry))
+        val preview = controller.state.value
+        assertEquals(listOf(entry), preview.entries)
+        assertEquals(CatalogQuery(), preview.query)
+        assertNull(preview.nextCursor)
+        assertEquals(calls, catalog.browses)
+        assertNull(catalog.lastLookupInput)
+        assertEquals(0, memory.writes)
+        assertNull(memory.bytes)
+        assertTrue(preview.configured!!.isEmpty())
+        controller.add(entry); val saved = idle(controller).configured!!
+        assertEquals(entry, saved.single().entry)
+        assertEquals(1, memory.writes)
+        controller.add(entry); idle(controller)
+        assertEquals(saved, store(memory, catalog.instance).read { error("No legacy fallback") })
+        controller.close()
+        assertFalse(controller.preview(entry))
+    }
+
+    @Test fun previewCannotBypassSuspendedLoadUnreadableStoreMissingCapabilitiesOrWrongProvider() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().first())
+        val memory = Memory()
+        val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
+        memory.beforeRead = { entered.complete(Unit); check(release.await(5, TimeUnit.SECONDS)) }
+        val controller = controller(this, catalog, memory, Dispatchers.Default)
+        try {
+            controller.load(); withTimeout(5_000) { entered.await() }
+            assertFalse(controller.preview(catalog.future))
+            assertEquals(0, memory.writes)
+            release.countDown(); idle(controller)
+            val foreign = catalog.future.copy(resource = catalog.future.resource.copy(providerId = ProviderId("twitch")))
+            val before = controller.state.value
+            assertFalse(controller.preview(foreign))
+            assertEquals(before, controller.state.value)
+            memory.failRead = true
+            controller.load(); idle(controller)
+            assertTrue(controller.state.value.storageFailed)
+            assertFalse(controller.preview(catalog.future))
+            memory.failRead = false; catalog.throwCapabilities = true
+            controller.load(); idle(controller)
+            assertNull(controller.state.value.capabilities)
+            assertFalse(controller.preview(catalog.future))
+            catalog.throwCapabilities = false; catalog.lookupAccess = CatalogAccess.AUTHORIZATION_REQUIRED
+            controller.load(); idle(controller)
+            assertFalse(controller.preview(catalog.future))
+            assertEquals(0, memory.writes)
+        } finally { release.countDown(); controller.close() }
     }
 }

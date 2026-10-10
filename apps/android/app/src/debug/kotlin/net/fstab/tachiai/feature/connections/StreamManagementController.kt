@@ -234,6 +234,25 @@ internal class StreamManagementController(
         }
     }
 
+    // Public share entries are already normalized at the share boundary. This
+    // only presents a preview; explicit Add remains the sole persistent action.
+    fun preview(entry: CatalogEntry): Boolean {
+        val currentState = state.value
+        if (closed || currentState.loading || currentState.saving || currentState.configured == null || currentState.storageFailed ||
+            currentState.capabilities?.lookup != CatalogAccess.AVAILABLE) return false
+        if (entry.resource.providerId != catalog.providerId) return false
+        cancelBrowse()
+        lastLookup = null
+        initialQueryChosen = true
+        var previewed = false
+        publish {
+            previewed = true
+            it.copy(query = CatalogQuery(), entries = listOf(entry), nextCursor = null,
+                failure = null, message = null, resultsTruncated = false, privacyRevision = it.privacyRevision + 1)
+        }
+        return previewed
+    }
+
     private fun mutate(action: () -> List<ConfiguredSource>) {
         if (closed || state.value.loading || state.value.saving || state.value.configured == null || state.value.storageFailed) return
         val revision = mutationRevision.incrementAndGet()

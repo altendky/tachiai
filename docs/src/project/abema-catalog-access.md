@@ -99,12 +99,16 @@ title and episode links, reject account and signed-media URLs, and retain the
 normalized public identity in Tachiai's own per-instance list. Unknown
 availability and unsupported playback remain explicit. Provider-controlled
 browsing and copying a public link offer a candidate discovery handoff; Android
-sharing availability and end-to-end behavior still need validation.
+sharing from provider applications and end-to-end provider behavior still need
+validation.
 
 The bounded [local public-link import](configured-catalog.md#abema-public-link-import)
 from [issue #108](https://github.com/altendky/tachiai/issues/108) implements manual
 paste/preview/Add for those public identity shapes. It does not inspect account
-pages, request provider metadata or implement Android Share handling. Unknown
+pages or request provider metadata. The separate
+[Android public-link share handoff](configured-catalog.md#android-public-link-sharing)
+accepts a bare link with explicit instance selection and a one-time preview;
+compatibility with ABEMA's own sharing UI remains unobserved. Unknown
 availability and the exact-sample-only playback boundary remain explicit.
 
 That handoff does not implement native All/search or account-list retrieval.

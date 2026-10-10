@@ -58,7 +58,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onSearch: (String) -> Unit, onAll: () -> Unit, onCollection: (String) -> Unit,
     onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
-    onRetry: () -> Unit, onBack: () -> Unit) {
+    onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers") {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -84,7 +84,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (state.loading) Text("Reading streams…")
             if (state.saving) Text("Saving configured streams…")
             if (state.storageFailed) Button(onClick = onRetry, enabled = !state.loading && !state.saving) { Text("Retry") }
-            TextButton(onClick = onBack) { Text("Back to providers") }
+            TextButton(onClick = onBack) { Text(backLabel) }
         }
         item { Text("Configured streams", style = MaterialTheme.typography.titleLarge)
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")

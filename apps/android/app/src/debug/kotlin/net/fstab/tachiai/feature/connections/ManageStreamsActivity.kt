@@ -1,5 +1,6 @@
 package net.fstab.tachiai.feature.connections
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -11,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
@@ -20,7 +22,10 @@ import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 
 class ManageStreamsActivity : ComponentActivity() {
-    companion object { const val INSTANCE_ID = "PROVIDER_INSTANCE_ID" }
+    companion object {
+        const val INSTANCE_ID = "PROVIDER_INSTANCE_ID"
+        private const val SHARED_OWNER_PROVIDER = "SHARED_OWNER_PROVIDER"
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var controller by mutableStateOf<StreamManagementController?>(null)
     private var reading by mutableStateOf(true)
@@ -31,10 +36,31 @@ class ManageStreamsActivity : ComponentActivity() {
     private var awaitingFinish: Job? = null
     private var savingWhileLeaving by mutableStateOf(false)
     private val diagnostics by lazy { FailureDiagnostics.create(this) }
+    private var selectedInstanceId: String? = null
+    private var pendingPreview: SharedCatalogPreviewHandoff? = null
+    private var sharedOwnerProvider: ProviderId? = null
+    private var rejectedPreview = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) { finish(); return }
+        selectedInstanceId = try { intent.getStringExtra(INSTANCE_ID)?.takeIf(::validProviderInstanceId) }
+            catch (_: Exception) { null }
+        val shared = SharedCatalogPreviewHandoff.isPresent(intent)
+        pendingPreview = SharedCatalogPreviewHandoff.consume(intent, allowPreview = savedInstanceState == null)
+        sharedOwnerProvider = pendingPreview?.providerId
+        if (savedInstanceState?.containsKey(SHARED_OWNER_PROVIDER) == true) {
+            val restored = try { savedInstanceState.getString(SHARED_OWNER_PROVIDER) }
+                catch (_: Exception) { null }
+            if (restored == null || !restored.matches(Regex("[a-z][a-z0-9_-]{0,31}"))) rejectedPreview = true
+            else sharedOwnerProvider = ProviderId(restored)
+        }
+        rejectedPreview = rejectedPreview || shared && pendingPreview == null
+        // Android may retain the Activity Intent through recreation. It must
+        // contain no shared entry, input URL, ClipData or sender extras.
+        intent = Intent(this, ManageStreamsActivity::class.java).also { clean ->
+            selectedInstanceId?.let { clean.putExtra(INSTANCE_ID, it) }
+        }
         enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {
             BackHandler { finish() }
@@ -44,19 +70,23 @@ class ManageStreamsActivity : ComponentActivity() {
                 StreamManagementScreen(state.copy(loading = reading || state.loading, saving = savingWhileLeaving || state.saving,
                     message = if (savingWhileLeaving) "Saving configured streams before returning…" else state.message), current::search, current::all,
                     current::collection, current::children, current::more, current::lookup,
-                    current::add, current::remove, current::move, current::retry, ::finish)
+                    current::add, current::remove, current::move, current::retry, ::finish,
+                    backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers")
             } else Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")
                 if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
-                TextButton(onClick = ::finish) { Text("Back to providers") }
+                TextButton(onClick = ::finish) { Text(if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
             }
         } }
     }
     override fun onResume() { super.onResume(); resumed = true; if (BuildConfig.DEBUG) readOwner() }
 
     private fun readOwner() {
-        val id = intent.getStringExtra(INSTANCE_ID)
+        if (rejectedPreview) {
+            reading = false; message = "Shared preview is unavailable. Share the item again to continue."; return
+        }
+        val id = selectedInstanceId
         if (id == null || !validProviderInstanceId(id)) {
             reading = false; message = "Selected provider instance is unavailable. Return to providers."; return
         }
@@ -71,6 +101,8 @@ class ManageStreamsActivity : ComponentActivity() {
                 val loaded = withContext(Dispatchers.IO) {
                     val instances = providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
                     val owner = instances.singleOrNull { it.id == id } ?: error("Stale provider instance")
+                    check(sharedOwnerProvider == null || sharedOwnerProvider ==
+                        ProviderId(owner.service.name.lowercase(java.util.Locale.ROOT)))
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
                     val catalog = if (owner.service == PrototypeService.ABEMA) AbemaLocalImportCatalog(owner, setups)
@@ -87,8 +119,28 @@ class ManageStreamsActivity : ComponentActivity() {
                         "Browse prototype samples or paste a public ABEMA link to save its exact item. Imported availability is unknown. Catalogs and account lists are not connected; playback supports only the existing samples."
                     else "Connect Catalog account in Providers for Following, channel search and published replays. Live channels is a live listing; search and exact lookup also find offline channels. Adding saves only to Tachiai. Playback for discovered items is not verified.").also { it.load() }
                 reading = false
+                val handoff = pendingPreview
+                if (handoff != null) {
+                    val target = checkNotNull(controller)
+                    val ready = target.state.first { !it.loading && !it.saving }
+                    if (!resumed || isDestroyed || revision != current || controller !== target) {
+                        handoff.discard(); return@launch
+                    }
+                    val previewOwner = withContext(Dispatchers.IO) {
+                        providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
+                            .singleOrNull { it.id == id }
+                    }
+                    if (!resumed || isDestroyed || revision != current || controller !== target) {
+                        handoff.discard(); return@launch
+                    }
+                    val entry = if (previewOwner == null) { handoff.discard(); null } else handoff.take(previewOwner)
+                    pendingPreview = null
+                    if (ready.configured == null || ready.storageFailed || entry == null || !target.preview(entry))
+                        message = "Shared preview could not be opened. Nothing was added. Share the item again to continue."
+                }
             } catch (_: CancellationException) { }
             catch (error: Exception) {
+                pendingPreview?.discard(); pendingPreview = null
                 diagnostics.report(FailureStage.CONFIGURED_SOURCES_READ, error)
                 if (!isDestroyed && revision == current) {
                     reading = false
@@ -99,12 +151,13 @@ class ManageStreamsActivity : ComponentActivity() {
     }
     override fun onPause() {
         resumed = false
+        pendingPreview?.discard(); pendingPreview = null
         revision++; readJob?.cancel()
         controller?.close()
         super.onPause()
     }
     override fun finish() {
-        val id = intent.getStringExtra(INSTANCE_ID)
+        val id = selectedInstanceId
         if (id == null || StreamManagementWrites.pending(id).isEmpty()) { super.finish(); return }
         if (awaitingFinish?.isActive == true) return
         savingWhileLeaving = true
@@ -115,5 +168,9 @@ class ManageStreamsActivity : ComponentActivity() {
         awaitingFinish = wait; wait.start()
     }
     private fun finishAfterWrites() { super.finish() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        sharedOwnerProvider?.let { outState.putString(SHARED_OWNER_PROVIDER, it.value) }
+        super.onSaveInstanceState(outState)
+    }
     override fun onDestroy() { revision++; controller?.close(); scope.cancel(); super.onDestroy() }
 }

@@ -325,10 +325,17 @@ configured streams, routes, browser login and other instances.
 
 Retired-client records require explicit reconnect. Scoped grants require positive
 validation lifetime and a refresh pair; the historical zero-scope lifetime
-exceptions are not inherited. This changes credential ownership, not private
+exceptions are not inherited. An omitted token expiry stays worker-local and
+requires positive official validation within 30 seconds of the token request
+starting before finite credentials can be saved. Present null/zero/malformed
+token expiry and missing/zero validation expiry remain rejected.
+This changes credential ownership, not private
 playback endpoints, media-origin permissions, DRM behavior or background policy.
-Acceptance of this scope and native playback by the real Smart TV client remains
-unverified until explicit account consent and bounded device checks succeed.
+A bounded consent check observed the exact requested scope and refresh presence,
+with omitted token expiry and rejection before validation. Validated account
+access and native playback remain unverified; the
+[authorization record](twitch-catalog-authorization.md#verification-limits) states
+the observed device conditions and limits.
 
 ### Opt-in private-access error classification
 

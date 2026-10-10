@@ -13,10 +13,10 @@ Real account/route evidence, anonymous native browsing and selected-resource
 playback remain in [#99](https://github.com/altendky/tachiai/issues/99).
 
 Implementation and synthetic fixture evidence are distinct from provider
-acceptance. Scoped Smart TV consent, refresh, native playback acceptance,
-provider revocation and routed authorization
-have not been observed with an actual account. No provider requests or account
-experiments were performed to implement this slice. The access research and
+acceptance. A bounded account experiment observed the requested scope and refresh
+credential in a token response, with omitted expiry; validated account access,
+refresh, native playback acceptance, provider revocation and imported-route
+authorization remain unobserved. The access research and
 official protocol references are in [Twitch catalog access](twitch-catalog-access.md).
 
 ## Consent and routes
@@ -57,10 +57,15 @@ schedules hourly validation. Temporary network failures suspend access without
 claiming provider revocation. An invalid client, user or scope requires explicit
 reconnection.
 
-Scoped token and validation responses must have positive integral lifetimes, and
-the token response must contain a valid refresh credential. The historical
-zero-scope Smart TV omitted/zero expiry exception remains limited to its original
-experiment. It does not establish scoped grant behavior or permanent validity.
+Present token lifetimes must be positive integral values, and the token response
+must contain a valid refresh credential. An omitted token lifetime remains
+worker-local and permits only official validation within 30 seconds of the token
+request starting. Exact client, user and scope checks and a positive integral
+validation lifetime are mandatory before finite credentials can be saved.
+The acceptance budget is separate from saved token validity. Null, zero,
+malformed or oversized lifetimes remain rejected; missing or zero validation
+expiry is also rejected. The historical zero-scope Smart TV zero-expiry
+exception remains limited to its original experiment.
 
 Debug diagnostics report only closed categories for the authorization phase,
 failure, response endpoint, lifetime shape, scope match and refresh presence.
@@ -103,8 +108,15 @@ successful or durable clear.
 JVM fixtures cover protocol parsing, encoded refresh forms, response bounds,
 foreground/deadline races, stored generations, interrupted refresh and clear,
 route ownership, cleanup, and local credential isolation. Android fixtures cover
-the instance-bound entry and sanitized connection UI. They do not establish that
-the selected Smart TV registration accepts scoped consent, returns the required
-lifetime/refresh shapes, retrieves account collections or admits native playback.
-Provider observations and discovery integration
-remain tracked by the parent issue.
+the instance-bound entry, JSON decoding and sanitized connection UI. They do not
+establish validated account acceptance, account collections or native playback.
+
+On 2026-10-10, the user completed Smart TV consent and returned to Tachiai on
+persistent `tachiai-dev` (Android 16/API 36, x86_64), with the instance's saved
+System network route. Enum-only diagnostics reported TOKEN lifetime OMITTED,
+scopes EXACT and refresh PRESENT. The prior positive-token-expiry policy rejected
+this response before `/validate`, so no grant was saved. The external browser
+engine and region were not recorded; the user used their existing browser login.
+This was an authorization experiment, with no content playback. The bounded
+compatibility fix is [#135](https://github.com/altendky/tachiai/issues/135);
+validated provider acceptance remains [#99](https://github.com/altendky/tachiai/issues/99).

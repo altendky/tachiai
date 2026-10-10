@@ -225,6 +225,73 @@ class TwitchCatalogSessionTest {
         assertTrue(session.isCurrent(second.lease)) // Late 401 cannot discard the new lease.
     }
 
+    @Test fun omittedRefreshLifetimeRotatesOnlyAfterPositiveValidationAndStoresFiniteRemainingDuration() {
+        val fixture = Fixture(); val previous = fixture.connect(1000); val session = fixture.session()
+        fixture.clock.advance(1000)
+        fixture.requests.refresh = {
+            fixture.clock.advance(1000)
+            DeviceAuthResponse(200, token().fields - "expires_in")
+        }
+        fixture.requests.validate = { access ->
+            assertEquals("rotated-access", access); fixture.clock.advance(2000); validation(seconds = 120)
+        }
+        val result = session.validate()
+        assertEquals(TwitchCatalogSessionState.CONNECTED, result.summary.state)
+        assertEquals(1, fixture.requests.refreshes.get()); assertEquals(1, fixture.requests.validations.get())
+        val saved = fixture.store.read()!!
+        assertNotEquals(previous.generation, saved.generation)
+        assertEquals(118_000L, saved.credentials!!.expiresInMs)
+        assertEquals(fixture.clock.wall + 118_000L, saved.expiresAtMs)
+        assertEquals(fixture.clock.mono + 118_000L, result.lease!!.deadlineMs)
+        assertFalse(fixture.store.isStoredCurrent(previous)); assertTrue(session.isCurrent(result.lease))
+    }
+
+    @Test fun omittedRefreshBudgetRejectsBeforeValidationOrAfterLateValidationAndCannotRetryConsumedPair() {
+        listOf(true, false).forEach { delayRefresh ->
+            val fixture = Fixture(); fixture.connect(1000); val session = fixture.session()
+            fixture.clock.advance(1000)
+            fixture.requests.refresh = {
+                if (delayRefresh) fixture.clock.advance(TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                DeviceAuthResponse(200, token().fields - "expires_in")
+            }
+            fixture.requests.validate = {
+                if (!delayRefresh) fixture.clock.advance(TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                validation()
+            }
+            val result = session.validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, result.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, result.summary.failure); assertNull(result.lease)
+            assertEquals(if (delayRefresh) 0 else 1, fixture.requests.validations.get())
+            assertEquals(1, fixture.requests.refreshes.get())
+            assertEquals(TwitchCatalogGrantState.REFRESHING, fixture.store.read()!!.state)
+            assertNull(fixture.store.read()!!.credentials)
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
+    }
+
+    @Test fun omittedRefreshCannotStoreZeroValidationOrMissingRefreshOrMalformedTokenLifetime() {
+        val cases = listOf(
+            DeviceAuthResponse(200, token().fields - "expires_in") to validation(seconds = 0),
+            DeviceAuthResponse(200, (token().fields - "expires_in") + ("refresh_token" to null)) to validation(),
+            DeviceAuthResponse(200, token().fields + ("expires_in" to null)) to validation(),
+            DeviceAuthResponse(200, token().fields + ("expires_in" to 0)) to validation(),
+        )
+        cases.forEachIndexed { index, (tokenResponse, validationResponse) ->
+            val fixture = Fixture(); fixture.connect(1000); val session = fixture.session()
+            fixture.clock.advance(1000)
+            fixture.requests.refresh = { tokenResponse }; fixture.requests.validate = { validationResponse }
+            val result = session.validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, result.summary.state); assertNull(result.lease)
+            assertEquals(if (index == 0) 1 else 0, fixture.requests.validations.get())
+            assertEquals(1, fixture.requests.refreshes.get())
+            assertEquals(TwitchCatalogGrantState.REFRESHING, fixture.store.read()!!.state)
+            assertNull(fixture.store.read()!!.credentials)
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
+    }
+
     @Test fun temporaryValidationFailureSuspendsLeaseWithoutDeletingOrClaimingRevocation() {
         val fixture = Fixture(); fixture.connect(); val session = fixture.session(); val old = session.validate().lease!!
         val original = fixture.memory.bytes!!.copyOf()

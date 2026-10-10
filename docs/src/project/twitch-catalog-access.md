@@ -15,10 +15,13 @@ playback operations remain described in [security and privacy](security-and-priv
 The shipped Tachiai-specific registration has been retired. Its earlier zero-scope
 device-flow evidence remains historical in the
 [timing capability matrix](timing-capability-matrix.md#own-client-device-authorization-probe--2026-10-05);
-it does not verify the new scoped Smart TV connection. This investigation made no
-account requests, retrieved no credentials and performed no device experiment.
-Scoped Smart TV consent, Helix responses, refresh, native playback acceptance and
-routed account access remain unobserved.
+it does not verify the new scoped Smart TV connection. The original metadata
+investigation made no account requests. A subsequent bounded `tachiai-dev`
+authorization check observed the requested scope, a refresh credential and omitted
+token expiry, then rejection before validation. See the
+[recorded conditions](twitch-catalog-authorization.md#verification-limits).
+Validated account access, Helix responses, refresh, native playback acceptance and
+imported-route account access remain unobserved.
 
 The [debug connection prototype](twitch-catalog-authorization.md) owns the shared
 grant lifecycle. The [connected catalog prototype](twitch-connected-catalog.md)
@@ -70,9 +73,13 @@ codes in diagnostics. Following permission does not establish native entitlement
 subscription/ad behavior or provider approval of the selected client identity.
 
 The shared policy requires exactly `user:read:follows`, a bounded access/refresh
-pair and positive integral grant and validation lifetimes. The historical
-zero-scope Smart TV playback experiment's omitted/zero lifetime convention is
-not applied to this scoped connection. Its earlier token-only grants are not
+pair and positive integral validation lifetime. Present token lifetimes must
+also be positive; an omitted token lifetime permits only worker-local official
+validation within 30 seconds of the token request starting. Validation must
+supply finite expiry before storage. Twitch's device-flow examples include token
+expiry; the observed omission is a compatibility difference, not documented
+permanent validity. The historical zero-scope playback experiment's zero-lifetime
+convention is not applied to this connection. Its earlier token-only grants are not
 copied into the shared store. The same client identifier does not make distinct
 old grants or accounts interchangeable. If real scoped responses do not satisfy
 the policy, report that mismatch; do not assume permanent tokens or silently

@@ -6,6 +6,7 @@ import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 internal const val TWITCH_CATALOG_SCOPE = "user:read:follows"
 internal const val TWITCH_CATALOG_TOKEN_LIMIT = 2048
 internal const val TWITCH_CATALOG_LIFETIME_LIMIT_MS = Int.MAX_VALUE * 1000L
+internal const val TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS = 30_000L
 
 internal enum class TwitchCatalogAuthFailure {
     INVALID_RESPONSE, REJECTED, CLIENT_MISMATCH, USER_MISMATCH, SCOPE_MISMATCH, EXPIRED, NETWORK,
@@ -29,6 +30,19 @@ internal class TwitchCatalogCredentials(val accessToken: String, val refreshToke
         require(expiresInMs in 1..TWITCH_CATALOG_LIFETIME_LIMIT_MS)
     }
     override fun toString() = "TwitchCatalogCredentials(redacted)"
+}
+
+// An omitted token lifetime is only a worker-local response shape. It cannot
+// enter stored credentials until exact official validation supplies a finite
+// positive lifetime within the separate acceptance budget.
+internal class TwitchCatalogTokenGrant(val accessToken: String, val refreshToken: String, val expiresInMs: Long?) {
+    init {
+        require(validCatalogAccessToken(accessToken) && validCatalogRefreshToken(refreshToken))
+        require(expiresInMs == null || expiresInMs in 1..TWITCH_CATALOG_LIFETIME_LIMIT_MS)
+    }
+    fun validatedCredentials(validation: TwitchCatalogValidation) =
+        TwitchCatalogCredentials(accessToken, refreshToken, expiresInMs ?: validation.expiresInMs)
+    override fun toString() = "TwitchCatalogTokenGrant(redacted)"
 }
 
 internal class TwitchCatalogValidation(val userId: String, scopes: Set<String>, val expiresInMs: Long, val login: String? = null) {
@@ -70,14 +84,15 @@ private fun Map<String, Any?>.scopes(key: String): Set<String> {
     return setOf(TWITCH_CATALOG_SCOPE)
 }
 
-internal fun parseTwitchCatalogToken(response: DeviceAuthResponse): TwitchCatalogCredentials {
+internal fun parseTwitchCatalogToken(response: DeviceAuthResponse): TwitchCatalogTokenGrant {
     val fields = accepted(response)
     if (!(fields["token_type"] as? String).equals("bearer", ignoreCase = true)) fail()
     fields.scopes("scope")
     val access = fields.string("access_token", TWITCH_CATALOG_TOKEN_LIMIT)
     val refresh = fields.string("refresh_token", TWITCH_CATALOG_TOKEN_LIMIT)
     if (!validCatalogAccessToken(access) || !validCatalogRefreshToken(refresh)) fail()
-    return TwitchCatalogCredentials(access, refresh, fields.lifetime())
+    val lifetime = if (fields.containsKey("expires_in")) fields.lifetime() else null
+    return TwitchCatalogTokenGrant(access, refresh, lifetime)
 }
 
 internal fun parseTwitchCatalogValidation(response: DeviceAuthResponse, expectedUserId: String? = null): TwitchCatalogValidation {

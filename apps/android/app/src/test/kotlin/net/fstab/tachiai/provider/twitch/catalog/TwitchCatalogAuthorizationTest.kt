@@ -31,8 +31,9 @@ class TwitchCatalogAuthorizationTest {
         assertEquals(setOf(TWITCH_CATALOG_SCOPE), validated.scopes)
         assertEquals("123456", validated.userId)
         assertEquals("fixture_user", validated.login)
-        val result = TwitchCatalogAuthorizationResult.Approved(grant, validated, 5000)
-        listOf(grant, validated, result).forEach {
+        val credentials = grant.validatedCredentials(validated)
+        val result = TwitchCatalogAuthorizationResult.Approved(credentials, validated, 5000)
+        listOf(grant, credentials, validated, result).forEach {
             assertTrue(it.toString().contains("redacted"))
             assertFalse(it.toString().contains("fixture"))
             assertFalse(it.toString().contains("123456"))
@@ -85,6 +86,21 @@ class TwitchCatalogAuthorizationTest {
         failure(TwitchCatalogAuthFailure.EXPIRED) { parseTwitchCatalogValidation(catalogValidationResponse(mapOf("expires_in" to 0L))) }
         assertEquals(TWITCH_CATALOG_LIFETIME_LIMIT_MS,
             parseTwitchCatalogToken(catalogTokenResponse(mapOf("expires_in" to Int.MAX_VALUE.toLong()))).expiresInMs)
+    }
+
+    @Test fun omittedTokenLifetimeIsWorkerOnlyAndRequiresFinitePositiveValidationForStoredCredentials() {
+        val grant = parseTwitchCatalogToken(DeviceAuthResponse(200, catalogTokenResponse().fields - "expires_in"))
+        assertNull(grant.expiresInMs)
+        val validation = parseTwitchCatalogValidation(catalogValidationResponse())
+        val credentials = grant.validatedCredentials(validation)
+        assertEquals(100_000L, credentials.expiresInMs)
+        assertEquals(grant.accessToken, credentials.accessToken); assertEquals(grant.refreshToken, credentials.refreshToken)
+        assertFalse(grant.toString().contains("fixture"))
+        failure(TwitchCatalogAuthFailure.INVALID_RESPONSE) {
+            parseTwitchCatalogValidation(DeviceAuthResponse(200, catalogValidationResponse().fields - "expires_in"))
+        }
+        assertThrows(IllegalArgumentException::class.java) { TwitchCatalogCredentials("access", "refresh", 0) }
+        assertThrows(IllegalArgumentException::class.java) { TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), 0) }
     }
 
     @Test fun TokenPairsRejectMissingOversizedAndControlValuesButRefreshEncodingCharactersRemainValid() {

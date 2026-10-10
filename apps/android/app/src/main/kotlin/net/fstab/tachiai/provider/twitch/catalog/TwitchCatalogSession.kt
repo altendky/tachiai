@@ -276,15 +276,20 @@ internal class TwitchCatalogSession(
             val replacement = store.refresh(grant, { allowed(local, grant.revision) }) { old ->
                 withTransport(local, grant.revision) { transport ->
                     val started = monotonicMs()
-                    val credentials = parseTwitchCatalogToken(transport.refresh(old.refreshToken))
+                    val token = parseTwitchCatalogToken(transport.refresh(old.refreshToken))
                     check(allowed(local, grant.revision))
+                    val tokenDeadline = token.expiresInMs?.let { Math.addExact(started, it) }
+                    val acceptanceDeadline = tokenDeadline ?: Math.addExact(started, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
                     val validating = monotonicMs()
-                    val validation = parseTwitchCatalogValidation(transport.validate(credentials.accessToken), grant.userId)
+                    if (validating >= acceptanceDeadline) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val validation = parseTwitchCatalogValidation(transport.validate(token.accessToken), grant.userId)
                     check(allowed(local, grant.revision))
-                    val deadline = minOf(Math.addExact(started, credentials.expiresInMs),
-                        Math.addExact(validating, validation.expiresInMs))
+                    if (monotonicMs() >= acceptanceDeadline) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val validatedDeadline = Math.addExact(validating, validation.expiresInMs)
+                    val deadline = tokenDeadline?.let { minOf(it, validatedDeadline) } ?: validatedDeadline
                     val remaining = deadline - monotonicMs()
                     if (remaining <= 0) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+                    val credentials = token.validatedCredentials(validation)
                     validationDeadline = minOf(deadline, Math.addExact(validating, TWITCH_CATALOG_VALIDATION_INTERVAL_MS))
                     TwitchCatalogReplacement(credentials, validation,
                         minOf(remaining, credentials.expiresInMs, validation.expiresInMs))

@@ -148,7 +148,9 @@ persistence through the same interface used by ABEMA.
 
 Android UI and decoder checks use synthetic isolated fixtures. Emulator results
 do not establish actual account acceptance, physical-device playback, DRM or TV
-behavior. Scoped Smart TV consent and lifetime/refresh shapes, anonymous discovery
-and selected-source playback limits must remain visible until their own evidence
-is obtained. Historical zero-scope playback observations do not establish the
+behavior. A bounded consent check observed exact scope, refresh presence and
+omitted token expiry, followed by pre-validation rejection; see the
+[authorization evidence](twitch-catalog-authorization.md#verification-limits).
+Validated account access, anonymous discovery and selected-source playback remain
+unobserved. Historical zero-scope playback observations do not establish the
 shared scoped connection's provider acceptance.

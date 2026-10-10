@@ -149,7 +149,9 @@ persistence through the same interface used by ABEMA.
 Android UI and decoder checks use synthetic isolated fixtures. Emulator results
 do not establish actual account acceptance, physical-device playback, DRM or TV
 behavior. A bounded consent check observed exact scope, refresh presence and
-omitted token expiry, followed by pre-validation rejection; see the
+omitted token expiry, followed by pre-validation rejection. A later check reached
+official validation, passed identity/scope checks and returned zero expiry,
+then was rejected by the former positive-expiry policy. See the
 [authorization evidence](twitch-catalog-authorization.md#verification-limits).
 Validated account access, anonymous discovery and selected-source playback remain
 unobserved. Historical zero-scope playback observations do not establish the

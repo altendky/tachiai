@@ -41,16 +41,34 @@ internal class TwitchCatalogStoredGrant internal constructor(
     val savedAtMs: Long? = null,
     val expiresAtMs: Long? = null,
     val credentials: TwitchCatalogCredentials? = null,
+    val providerExpiresAtMs: Long? = expiresAtMs,
+    val localRetentionUntilMs: Long? = null,
 ) {
     override fun toString() = "TwitchCatalogStoredGrant($state, redacted)"
+}
+
+// Worker-only ownership of a marker written by this operation. It contains no
+// credentials/account values and never adopts an arbitrary replacement read.
+internal class TwitchCatalogAbandonedGrantException(val marker: TwitchCatalogStoredGrant) :
+    TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED) {
+    init { require(marker.state == TwitchCatalogGrantState.RECONNECT && marker.credentials == null && marker.userId == null) }
 }
 
 internal class TwitchCatalogReplacement(
     val credentials: TwitchCatalogCredentials,
     val validation: TwitchCatalogValidation,
     val remainingMs: Long,
+    val providerExpiresAtMs: Long? = null,
+    val localRetentionUntilMs: Long? = null,
+    val savedAtMs: Long? = null,
 ) {
-    init { require(remainingMs in 1..minOf(credentials.expiresInMs, validation.expiresInMs)) }
+    init {
+        require(remainingMs in 1..minOf(credentials.expiresInMs, validation.expiresInMs ?: Long.MAX_VALUE))
+        require(validation.expiresInMs != null || localRetentionUntilMs != null)
+        require(savedAtMs == null || savedAtMs >= 0)
+        require(providerExpiresAtMs == null || providerExpiresAtMs >= 0)
+        require(localRetentionUntilMs == null || localRetentionUntilMs >= 0)
+    }
     override fun toString() = "TwitchCatalogReplacement(redacted)"
 }
 
@@ -122,7 +140,7 @@ internal class TwitchCatalogGrantStore(
         try {
             check(bytes.size in 1..PRIVATE_SECRET_LIMIT)
             return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-                check(input.readInt() == 1)
+                val version = input.readInt().also { check(it in 1..2) }
                 check(input.readUTF() == instanceId)
                 val client = input.readUTF().also { check(validTwitchClientId(it)) }
                 // A differently bound grant needs explicit reconnection. Never
@@ -135,11 +153,15 @@ internal class TwitchCatalogGrantStore(
                 val grant = if (state == TwitchCatalogGrantState.READY) {
                     val user = input.readUTF().also { check(validCatalogUserId(it)) }
                     val saved = input.readLong()
-                    val expires = input.readLong()
+                    val provider = if (version == 1 || input.readBoolean()) input.readLong() else null
+                    val local = if (version == 2 && input.readBoolean()) input.readLong() else null
+                    val expires = listOfNotNull(provider, local).minOrNull() ?: error("missing bound")
                     check(saved >= 0 && expires > saved)
+                    check(provider == null || provider > saved)
+                    check(local == null || local > saved && local - saved <= TWITCH_CATALOG_LOCAL_RETENTION_MS)
                     val duration = Math.subtractExact(expires, saved)
                     val credentials = TwitchCatalogCredentials(input.readUTF(), input.readUTF(), duration)
-                    TwitchCatalogStoredGrant(generation, state, revision(), user, saved, expires, credentials)
+                    TwitchCatalogStoredGrant(generation, state, revision(), user, saved, expires, credentials, provider, local)
                 } else TwitchCatalogStoredGrant(generation, state, revision())
                 check(input.read() == -1)
                 grant
@@ -155,7 +177,7 @@ internal class TwitchCatalogGrantStore(
         val bytes = try {
             ByteArrayOutputStream().also { buffer ->
                 DataOutputStream(buffer).use { output ->
-                    output.writeInt(1)
+                    output.writeInt(2)
                     output.writeUTF(instanceId)
                     output.writeUTF(SMART_TV_TWITCH_CLIENT_ID)
                     output.writeUTF(TWITCH_CATALOG_SCOPE)
@@ -165,7 +187,10 @@ internal class TwitchCatalogGrantStore(
                         val credentials = checkNotNull(grant.credentials)
                         output.writeUTF(checkNotNull(grant.userId))
                         output.writeLong(checkNotNull(grant.savedAtMs))
-                        output.writeLong(checkNotNull(grant.expiresAtMs))
+                        output.writeBoolean(grant.providerExpiresAtMs != null)
+                        grant.providerExpiresAtMs?.let(output::writeLong)
+                        output.writeBoolean(grant.localRetentionUntilMs != null)
+                        grant.localRetentionUntilMs?.let(output::writeLong)
                         output.writeUTF(credentials.accessToken)
                         output.writeUTF(credentials.refreshToken)
                     }
@@ -243,6 +268,9 @@ internal class TwitchCatalogGrantStore(
             !isRevisionCurrent(attempt.revision) || !canCommit()) return@locked null
         val ready = ready(attempt.generation, attempt.revision, replacement)
         writeUnlocked(ready)
+        if (wallMs() < checkNotNull(ready.savedAtMs) || wallMs() >= checkNotNull(ready.expiresAtMs)) {
+            expiredAfterWrite(ready, attempt.revision)
+        }
         if (!isRevisionCurrent(attempt.revision) || !canCommit()) {
             abandonUnlocked(ready, attempt.revision)
             return@locked null
@@ -251,37 +279,103 @@ internal class TwitchCatalogGrantStore(
     }
 
     private fun ready(generation: String, revision: Long, replacement: TwitchCatalogReplacement): TwitchCatalogStoredGrant {
-        val saved = wallMs()
+        val now = wallMs()
+        val saved = replacement.savedAtMs ?: now
         check(saved >= 0)
-        val expires = Math.addExact(saved, replacement.remainingMs)
+        val local = replacement.localRetentionUntilMs
+        val provider = replacement.providerExpiresAtMs ?: if (local == null) Math.addExact(saved, replacement.remainingMs) else null
+        val expires = listOfNotNull(provider, local).minOrNull() ?: error("missing bound")
+        if (now < saved || now >= expires) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+        check(local == null || local > saved && local - saved <= TWITCH_CATALOG_LOCAL_RETENTION_MS)
         return TwitchCatalogStoredGrant(generation, TwitchCatalogGrantState.READY, revision,
             replacement.validation.userId, saved, expires,
             TwitchCatalogCredentials(replacement.credentials.accessToken, replacement.credentials.refreshToken,
-                replacement.remainingMs))
+                Math.subtractExact(expires, saved)), provider, local)
     }
 
-    private fun abandonUnlocked(grant: TwitchCatalogStoredGrant, revision: Long) {
+    private fun abandonUnlocked(grant: TwitchCatalogStoredGrant, revision: Long): TwitchCatalogStoredGrant? {
         try {
-            writeUnlocked(TwitchCatalogStoredGrant(grant.generation, TwitchCatalogGrantState.RECONNECT, revision))
+            val current = readUnlocked()
+            if (current?.generation != grant.generation || current.state != TwitchCatalogGrantState.READY) return null
+            val marker = TwitchCatalogStoredGrant(grant.generation, TwitchCatalogGrantState.RECONNECT, revision)
+            writeUnlocked(marker)
+            return marker
         } catch (error: TwitchCatalogStoreException) {
             invalidate()
             throw error
         }
     }
 
-    fun requireReconnect(grant: TwitchCatalogStoredGrant) = locked {
-        val previous = readUnlocked() ?: return@locked
-        if (previous.generation != grant.generation || !isRevisionCurrent(grant.revision)) return@locked
+    private fun expiredAfterWrite(grant: TwitchCatalogStoredGrant, revision: Long): Nothing {
+        val marker = abandonUnlocked(grant, revision)
+        if (marker != null) throw TwitchCatalogAbandonedGrantException(marker)
+        throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+    }
+
+    fun requireReconnect(grant: TwitchCatalogStoredGrant): TwitchCatalogStoredGrant? = locked {
+        val previous = readUnlocked() ?: return@locked null
+        if (previous.generation != grant.generation || !isRevisionCurrent(grant.revision)) return@locked null
         invalidate()
         val revision = revision()
-        writeUnlocked(TwitchCatalogStoredGrant(UUID.randomUUID().toString(), TwitchCatalogGrantState.RECONNECT, revision))
+        val marker = TwitchCatalogStoredGrant(UUID.randomUUID().toString(), TwitchCatalogGrantState.RECONNECT, revision)
+        writeUnlocked(marker)
         allowRevision(revision)
+        marker
     }
 
     fun isStoredCurrent(grant: TwitchCatalogStoredGrant): Boolean = locked {
         if (!isRevisionCurrent(grant.revision)) return@locked false
         val current = readUnlocked()
-        current?.state == TwitchCatalogGrantState.READY && current.generation == grant.generation
+        val now = wallMs()
+        pairCurrentUnlocked(grant, current, now) && now < checkNotNull(current?.expiresAtMs)
+    }
+
+    // Refresh may use the current pair after its provider bound has expired,
+    // but never a rotated pair, a rolled-back clock or an expired local cap.
+    fun isStoredPairCurrent(grant: TwitchCatalogStoredGrant): Boolean = locked {
+        pairCurrentUnlocked(grant, readUnlocked())
+    }
+
+    private fun pairCurrentUnlocked(grant: TwitchCatalogStoredGrant, current: TwitchCatalogStoredGrant?, now: Long = wallMs()): Boolean =
+        isRevisionCurrent(grant.revision) && current?.state == TwitchCatalogGrantState.READY &&
+            current.generation == grant.generation && now >= checkNotNull(current.savedAtMs) &&
+            (current.localRetentionUntilMs == null || now < current.localRetentionUntilMs)
+
+    fun localRetentionCurrent(grant: TwitchCatalogStoredGrant): Boolean {
+        val cap = grant.localRetentionUntilMs ?: return true
+        val now = wallMs()
+        return now >= checkNotNull(grant.savedAtMs) && now < cap
+    }
+
+    // Same-token validation may only reduce a durable provider bound. Keep the
+    // pair generation so concurrent consumers remain valid until the tightened
+    // deadline, which every worker admission rereads from durable storage.
+    fun tightenProviderExpiry(grant: TwitchCatalogStoredGrant, expiresAtMs: Long,
+        canCommit: () -> Boolean = { true }): TwitchCatalogStoredGrant? = locked {
+        val current = readUnlocked() ?: return@locked null
+        if (current.state != TwitchCatalogGrantState.READY || current.generation != grant.generation ||
+            !isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
+        if (!localRetentionCurrent(current)) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+        check(current.localRetentionUntilMs != null)
+        val provider = minOf(current.providerExpiresAtMs ?: Long.MAX_VALUE, expiresAtMs)
+        if (wallMs() >= provider) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
+        if (provider == current.providerExpiresAtMs) return@locked current
+        val saved = checkNotNull(current.savedAtMs)
+        val expires = minOf(provider, current.localRetentionUntilMs)
+        val credentials = checkNotNull(current.credentials)
+        val tightened = TwitchCatalogStoredGrant(current.generation, current.state, current.revision,
+            current.userId, saved, expires,
+            TwitchCatalogCredentials(credentials.accessToken, credentials.refreshToken, expires - saved),
+            provider, current.localRetentionUntilMs)
+        writeUnlocked(tightened)
+        if (!localRetentionCurrent(tightened) || wallMs() >= expires) {
+            expiredAfterWrite(tightened, grant.revision)
+        }
+        if (!isRevisionCurrent(grant.revision) || !canCommit() || !localRetentionCurrent(tightened)) {
+            abandonUnlocked(tightened, grant.revision)
+            return@locked null
+        }
+        tightened
     }
 
     // The callback runs only once, after the old pair has been durably removed.
@@ -294,14 +388,20 @@ internal class TwitchCatalogGrantStore(
         val current = readUnlocked() ?: return@locked null
         if (current.generation != grant.generation || current.state != TwitchCatalogGrantState.READY ||
             !isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
+        if (!localRetentionCurrent(current)) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
         val credentials = checkNotNull(current.credentials)
         writeUnlocked(TwitchCatalogStoredGrant(current.generation, TwitchCatalogGrantState.REFRESHING, grant.revision))
         if (!isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
         val replacement = exchange(credentials)
         check(replacement.validation.userId == current.userId)
+        check(replacement.localRetentionUntilMs == current.localRetentionUntilMs)
+        if (current.localRetentionUntilMs != null) check(replacement.savedAtMs == current.savedAtMs)
         if (!isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
         val ready = ready(UUID.randomUUID().toString(), grant.revision, replacement)
         writeUnlocked(ready)
+        if (wallMs() < checkNotNull(ready.savedAtMs) || wallMs() >= checkNotNull(ready.expiresAtMs)) {
+            expiredAfterWrite(ready, grant.revision)
+        }
         if (!isRevisionCurrent(grant.revision) || !canCommit()) {
             abandonUnlocked(ready, grant.revision)
             return@locked null

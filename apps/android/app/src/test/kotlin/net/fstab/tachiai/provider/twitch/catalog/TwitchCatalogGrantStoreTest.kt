@@ -64,7 +64,7 @@ class TwitchCatalogGrantStoreTest {
             }
         }.toByteArray()
         val malformed = listOf(byteArrayOf(), byteArrayOf(1), original + 0.toByte(), ByteArray(PRIVATE_SECRET_LIMIT + 1),
-            marker(version = 2), marker(instance = UUID.randomUUID().toString()), marker(client = "unrelated-client"),
+            marker(version = 3), marker(instance = UUID.randomUUID().toString()), marker(client = "unrelated-client"),
             marker(scope = ""), marker(generation = "../slot"), marker(state = "UNKNOWN"), marker(state = "READY"))
         malformed.forEach { bytes ->
             memory.bytes = bytes.copyOf(); val writes = memory.writes
@@ -85,6 +85,120 @@ class TwitchCatalogGrantStoreTest {
         assertEquals(credentials.accessToken, grantStore.read()!!.credentials!!.accessToken)
         assertFalse(String(memory.bytes!!, Charsets.ISO_8859_1).contains("fixturelogin"))
         assertThrows(IllegalArgumentException::class.java) { TwitchCatalogCredentials("a".repeat(2049), "r", 1000L) }
+    }
+
+    @Test fun versionOnePositiveRecordRemainsProviderBoundAndReadOnly() {
+        val memory = Memory(); val id = UUID.randomUUID().toString(); val generation = UUID.randomUUID().toString()
+        val original = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(1)
+                listOf(id, SMART_TV_TWITCH_CLIENT_ID, TWITCH_CATALOG_SCOPE, generation, "READY", "123").forEach(out::writeUTF)
+                out.writeLong(1_000_000L); out.writeLong(1_100_000L)
+                out.writeUTF("legacy-access"); out.writeUTF("legacy-refresh")
+            }
+        }.toByteArray()
+        memory.bytes = original.copyOf()
+        val grant = store(memory, id).read()!!
+        assertEquals(1_100_000L, grant.providerExpiresAtMs); assertEquals(grant.providerExpiresAtMs, grant.expiresAtMs)
+        assertNull(grant.localRetentionUntilMs); assertEquals(100_000L, grant.credentials!!.expiresInMs)
+        assertEquals(0, memory.writes); assertArrayEquals(original, memory.bytes)
+    }
+
+    @Test fun localAndProviderBoundsRoundTripSeparatelyAndTighteningPreservesPairWithoutExtendingCap() {
+        val memory = Memory(); val grantStore = store(memory)
+        val cap = 1_000_000L + TWITCH_CATALOG_LOCAL_RETENTION_MS
+        val old = connect(grantStore, TwitchCatalogReplacement(
+            TwitchCatalogCredentials("fixture-access", "fixture-refresh", TWITCH_CATALOG_LOCAL_RETENTION_MS),
+            TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), TWITCH_CATALOG_LOCAL_RETENTION_MS,
+            localRetentionUntilMs = cap, savedAtMs = 1_000_000L))
+        assertNull(grantStore.read()!!.providerExpiresAtMs)
+        assertEquals(cap, grantStore.read()!!.localRetentionUntilMs)
+        val tightened = grantStore.tightenProviderExpiry(old, 1_060_000L)!!
+        assertEquals(old.generation, tightened.generation); assertTrue(grantStore.isStoredCurrent(old))
+        assertEquals(1_000_000L, tightened.savedAtMs); assertEquals(cap, tightened.localRetentionUntilMs)
+        assertEquals(1_060_000L, tightened.providerExpiresAtMs); assertEquals(1_060_000L, tightened.expiresAtMs)
+        val writes = memory.writes
+        assertEquals(tightened.generation, grantStore.tightenProviderExpiry(tightened, 1_120_000L)!!.generation)
+        assertEquals(writes, memory.writes)
+    }
+
+    @Test fun absoluteBoundsCannotBeExtendedByDelayedCommitOrRefreshAndExpiredCapStopsExchange() {
+        val memory = Memory(); var wall = 1_000_000L
+        val grantStore = TwitchCatalogGrantStore(memory, UUID.randomUUID().toString(), wallMs = { wall })
+        val replacement = TwitchCatalogReplacement(TwitchCatalogCredentials("fixture-access", "fixture-refresh", 1000),
+            TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 1000,
+            localRetentionUntilMs = wall + 1000, savedAtMs = wall)
+        val attempt = grantStore.beginConnection(); wall += 500
+        val old = grantStore.commitConnection(attempt, replacement)!!
+        assertEquals(1_001_000L, old.expiresAtMs); assertEquals(1_000_000L, old.savedAtMs)
+        val next = grantStore.refresh(old) {
+            wall += 100
+            TwitchCatalogReplacement(TwitchCatalogCredentials("new-access", "new-refresh", 400),
+                TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 400,
+                localRetentionUntilMs = old.localRetentionUntilMs, savedAtMs = old.savedAtMs)
+        }!!
+        assertEquals(old.localRetentionUntilMs, next.localRetentionUntilMs); assertEquals(old.savedAtMs, next.savedAtMs)
+        wall = 1_001_000L
+        val writes = memory.writes
+        val error = assertThrows(TwitchCatalogAuthException::class.java) {
+            grantStore.refresh(next) { error("Expired cap must not consume or exchange the pair") }
+        }
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, error.failure); assertEquals(writes, memory.writes)
+        assertFalse(grantStore.isStoredCurrent(next))
+        val newAttempt = grantStore.beginConnection()
+        assertThrows(TwitchCatalogAuthException::class.java) { grantStore.commitConnection(newAttempt, replacement) }
+        assertEquals(TwitchCatalogGrantState.RECONNECT, grantStore.read()!!.state)
+    }
+
+    @Test fun versionTwoRejectsMissingNonpositiveOrOverlongBoundsWithoutImplicitWrite() {
+        val memory = Memory(); val id = UUID.randomUUID().toString(); val grantStore = store(memory, id)
+        fun encoded(provider: Long?, local: Long?) = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(2)
+                listOf(id, SMART_TV_TWITCH_CLIENT_ID, TWITCH_CATALOG_SCOPE,
+                    UUID.randomUUID().toString(), "READY", "123").forEach(out::writeUTF)
+                out.writeLong(1_000_000L)
+                out.writeBoolean(provider != null); provider?.let(out::writeLong)
+                out.writeBoolean(local != null); local?.let(out::writeLong)
+                out.writeUTF("fixture-access"); out.writeUTF("fixture-refresh")
+            }
+        }.toByteArray()
+        listOf(encoded(null, null), encoded(0L, null), encoded(-1L, 1_100_000L),
+            encoded(null, 1_000_000L), encoded(null, 1_000_001L + TWITCH_CATALOG_LOCAL_RETENTION_MS)).forEach { original ->
+            memory.bytes = original.copyOf()
+            val failure = assertThrows(TwitchCatalogStoreException::class.java) { grantStore.read() }
+            assertEquals(TwitchCatalogStoreFailure.INVALID_RECORD, failure.failure)
+            assertArrayEquals(original, memory.bytes); assertEquals(0, memory.writes)
+        }
+    }
+
+    @Test fun postWriteRefreshExpiryCarriesOnlyItsAtomicallyWrittenSecretlessMarker() {
+        val memory = Memory(); var wall = 1_000_000L
+        val delayed = object : PrivateSecretStore {
+            override fun read() = memory.read()
+            override fun write(plaintext: ByteArray) {
+                memory.write(plaintext)
+                if (String(plaintext, Charsets.ISO_8859_1).contains("new-access")) wall += 1000
+            }
+        }
+        val grantStore = TwitchCatalogGrantStore(delayed, UUID.randomUUID().toString(), wallMs = { wall })
+        val original = connect(grantStore, TwitchCatalogReplacement(TwitchCatalogCredentials("fixture-access", "fixture-refresh", 1000),
+            TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 1000,
+            localRetentionUntilMs = wall + 1000, savedAtMs = wall))
+        val error = assertThrows(TwitchCatalogAbandonedGrantException::class.java) {
+            grantStore.refresh(original) {
+                TwitchCatalogReplacement(TwitchCatalogCredentials("new-access", "new-refresh", 1000),
+                    TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 1000,
+                    localRetentionUntilMs = original.localRetentionUntilMs, savedAtMs = original.savedAtMs)
+            }
+        }
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, error.failure)
+        assertNotEquals(original.generation, error.marker.generation)
+        assertEquals(grantStore.read()!!.generation, error.marker.generation)
+        assertEquals(TwitchCatalogGrantState.RECONNECT, error.marker.state)
+        assertNull(error.marker.credentials); assertNull(error.marker.userId)
+        assertNull(error.cause); assertFalse(error.toString().contains("new-access"))
+        assertFalse(error.toString().contains(error.marker.generation))
     }
 
     @Test fun differentValidClientRequiresExplicitReconnectBeforeAnyCredentialsAreReadOrRecordIsChanged() {

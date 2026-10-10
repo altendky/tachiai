@@ -111,11 +111,11 @@ class TwitchCatalogDeviceFlowTest {
         }
     }
 
-    @Test fun omittedInitialTokenIsStoredOnlyAfterPositiveValidationAndRejectedValidationLeavesReconnectMarker() = runBlocking {
+    @Test fun omittedInitialTokenIsStoredOnlyAfterValidValidationAndMalformedValidationLeavesReconnectMarker() = runBlocking {
         listOf(true, false).forEach { positiveValidation ->
             val fixture = Fixture()
             fixture.replies.clear(); fixture.replies += DeviceAuthResponse(200, catalogTokenResponse().fields - "expires_in")
-            if (!positiveValidation) fixture.validation = catalogValidationResponse(mapOf("expires_in" to 0))
+            if (!positiveValidation) fixture.validation = catalogValidationResponse(mapOf("expires_in" to null))
             var bytes: ByteArray? = null; var writes = 0
             val storage = object : PrivateSecretStore {
                 override fun read() = bytes?.copyOf()
@@ -133,7 +133,7 @@ class TwitchCatalogDeviceFlowTest {
                 assertEquals(100_000L, store.read()!!.credentials!!.expiresInMs)
                 assertEquals(2, writes)
             } else {
-                assertFailed(result, DeviceAuthPhase.EXPIRED, TwitchCatalogAuthFailure.EXPIRED)
+                assertFailed(result, DeviceAuthPhase.INVALID_RESPONSE, TwitchCatalogAuthFailure.INVALID_RESPONSE)
                 assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, session.validate().summary.state)
                 assertEquals(TwitchCatalogGrantState.RECONNECT, store.read()!!.state)
                 assertNull(store.read()!!.credentials); assertEquals(1, writes)
@@ -171,17 +171,52 @@ class TwitchCatalogDeviceFlowTest {
         assertEquals(1, fixture.polls); assertEquals(0, fixture.validations); assertTrue(fixture.closed)
     }
 
-    @Test fun omittedTokenLifetimeNeverTreatsZeroOrMissingOfficialValidationLifetimeAsPermanent() = runBlocking {
-        listOf(catalogValidationResponse(mapOf("expires_in" to 0)),
+    @Test fun omittedTokenLifetimeRejectsNullOrMissingOfficialValidationLifetime() = runBlocking {
+        listOf(catalogValidationResponse(mapOf("expires_in" to null)),
             DeviceAuthResponse(200, catalogValidationResponse().fields - "expires_in")).forEach { validation ->
             val fixture = Fixture(); fixture.validation = validation
             fixture.replies.clear(); fixture.replies += DeviceAuthResponse(200, catalogTokenResponse().fields - "expires_in")
-            val expected = if (validation.fields["expires_in"] == 0) DeviceAuthPhase.EXPIRED else DeviceAuthPhase.INVALID_RESPONSE
+            val expected = DeviceAuthPhase.INVALID_RESPONSE
             val result = fixture.run()
             assertTrue(result is TwitchCatalogAuthorizationResult.Failed)
             assertEquals(expected, (result as TwitchCatalogAuthorizationResult.Failed).phase)
             assertEquals(1, fixture.polls); assertEquals(1, fixture.validations); assertTrue(fixture.closed)
         }
+    }
+
+    @Test fun omittedTokenAndLiteralZeroValidationUseFiniteOriginalPollRetentionAndNoProviderExpiry() = runBlocking {
+        val fixture = Fixture()
+        fixture.replies.clear(); fixture.replies += DeviceAuthResponse(200, catalogTokenResponse().fields - "expires_in")
+        fixture.validation = catalogValidationResponse(mapOf("expires_in" to 0))
+        fixture.onPoll = { fixture.now += 1000 }; fixture.onValidation = { fixture.now += 2000 }
+        val approved = fixture.run() as TwitchCatalogAuthorizationResult.Approved
+        assertNull(approved.validation.expiresInMs); assertNull(approved.providerDeadlineMs)
+        assertEquals(6000L + TWITCH_CATALOG_LOCAL_RETENTION_MS, approved.localRetentionDeadlineMs)
+        assertEquals(approved.localRetentionDeadlineMs, approved.deadlineMs)
+        assertEquals(TWITCH_CATALOG_LOCAL_RETENTION_MS - 3000, approved.credentials.expiresInMs)
+        assertEquals(1, fixture.polls); assertEquals(1, fixture.validations)
+    }
+
+    @Test fun knownTokenBoundsZeroValidationAndPositiveValidationBoundsLongTokensWithinOriginalCap() = runBlocking {
+        val known = Fixture().apply { validation = catalogValidationResponse(mapOf("expires_in" to 0)) }
+        val approved = known.run() as TwitchCatalogAuthorizationResult.Approved
+        assertEquals(126_000L, approved.providerDeadlineMs)
+        assertEquals(approved.providerDeadlineMs, approved.deadlineMs)
+        val long = Fixture()
+        long.replies.clear(); long.replies += catalogTokenResponse(mapOf("expires_in" to Int.MAX_VALUE))
+        long.validation = catalogValidationResponse(mapOf("expires_in" to Int.MAX_VALUE))
+        val capped = long.run() as TwitchCatalogAuthorizationResult.Approved
+        assertEquals(6000L + TWITCH_CATALOG_LOCAL_RETENTION_MS, capped.deadlineMs)
+        assertTrue(capped.providerDeadlineMs!! > capped.deadlineMs)
+    }
+
+    @Test fun knownTokenAlsoCannotAcceptZeroValidationAfterThirtySecondBudget() = runBlocking {
+        val fixture = Fixture().apply {
+            validation = catalogValidationResponse(mapOf("expires_in" to 0))
+            onValidation = { now += TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS }
+        }
+        assertFailed(fixture.run(), DeviceAuthPhase.EXPIRED)
+        assertEquals(1, fixture.polls); assertEquals(1, fixture.validations)
     }
 
     @Test fun BackgroundWaitKeepsOriginalChallengeDeadlineAndDoesNotSendPolls() = runBlocking {

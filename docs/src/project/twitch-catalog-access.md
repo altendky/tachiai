@@ -73,13 +73,16 @@ codes in diagnostics. Following permission does not establish native entitlement
 subscription/ad behavior or provider approval of the selected client identity.
 
 The shared policy requires exactly `user:read:follows`, a bounded access/refresh
-pair and positive integral validation lifetime. Present token lifetimes must
-also be positive; an omitted token lifetime permits only worker-local official
-validation within 30 seconds of the token request starting. Validation must
-supply finite expiry before storage. Twitch's device-flow examples include token
-expiry; the observed omission is a compatibility difference, not documented
-permanent validity. The historical zero-scope playback experiment's zero-lifetime
-convention is not applied to this connection. Its earlier token-only grants are not
+pair. Present token lifetimes must be positive; an omitted lifetime permits only
+worker-local official validation within 30 seconds of the token request starting.
+The separately approved [scoped retention policy](twitch-catalog-authorization.md#maintained-grants)
+accepts literal integer-zero validation expiry as unknown provider expiry, with
+an original local deadline of at most seven days. Known positive expiry also
+bounds access; validation and refresh cannot renew the local deadline.
+Existing provider-only records retain their strict positive-expiry policy.
+Twitch's device-flow examples include token expiry; the observed omission and
+zero validation are compatibility differences, not documented permanent validity.
+The historical experiment alone did not authorize this extension. Earlier token-only grants are not
 copied into the shared store. The same client identifier does not make distinct
 old grants or accounts interchangeable. If real scoped responses do not satisfy
 the policy, report that mismatch; do not assume permanent tokens or silently

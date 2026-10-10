@@ -115,6 +115,34 @@ class TwitchCatalogAuthorizationTest {
         assertEquals(2048, grant.refreshToken.length)
     }
 
+    @Test fun literalZeroValidationRequiresExplicitPolicyAndNeverCreatesUnboundedCredentials() {
+        val response = catalogValidationResponse(mapOf("expires_in" to 0L))
+        failure(TwitchCatalogAuthFailure.EXPIRED) { parseTwitchCatalogValidation(response) }
+        val validation = parseTwitchCatalogValidation(response, allowUnspecifiedLifetime = true)
+        assertNull(validation.expiresInMs)
+        val token = parseTwitchCatalogToken(DeviceAuthResponse(200, catalogTokenResponse().fields - "expires_in"))
+        failure(TwitchCatalogAuthFailure.EXPIRED) { token.validatedCredentials(validation) }
+        assertEquals(TWITCH_CATALOG_LOCAL_RETENTION_MS,
+            token.validatedCredentials(validation, TWITCH_CATALOG_LOCAL_RETENTION_MS).expiresInMs)
+        listOf(null, -1, 0.0, "0", Int.MAX_VALUE.toLong() + 1).forEach { lifetime ->
+            failure(TwitchCatalogAuthFailure.INVALID_RESPONSE) {
+                parseTwitchCatalogValidation(catalogValidationResponse(mapOf("expires_in" to lifetime)),
+                    allowUnspecifiedLifetime = true)
+            }
+        }
+        failure(TwitchCatalogAuthFailure.INVALID_RESPONSE) {
+            parseTwitchCatalogValidation(DeviceAuthResponse(200, response.fields - "expires_in"), allowUnspecifiedLifetime = true)
+        }
+        failure(TwitchCatalogAuthFailure.CLIENT_MISMATCH) {
+            parseTwitchCatalogValidation(catalogValidationResponse(mapOf("expires_in" to 0, "client_id" to "other_client")),
+                allowUnspecifiedLifetime = true)
+        }
+        failure(TwitchCatalogAuthFailure.SCOPE_MISMATCH) {
+            parseTwitchCatalogValidation(catalogValidationResponse(mapOf("expires_in" to 0, "scopes" to emptyList<String>())),
+                allowUnspecifiedLifetime = true)
+        }
+    }
+
     @Test fun HttpRejectionsDoNotInterpretBodiesAsValidGrants() {
         for (status in listOf(302, 400, 401, 429, 503)) {
             failure(TwitchCatalogAuthFailure.REJECTED) { parseTwitchCatalogToken(DeviceAuthResponse(status, catalogTokenResponse().fields)) }

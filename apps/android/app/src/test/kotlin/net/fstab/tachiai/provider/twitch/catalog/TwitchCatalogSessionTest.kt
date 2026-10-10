@@ -26,11 +26,14 @@ class TwitchCatalogSessionTest {
         var denyRead = false
         var reads = 0
         var writes = 0
-        override fun read(): ByteArray? { check(!denyRead); reads++; return bytes?.copyOf() }
+        var onRead: () -> Unit = {}
+        var onWrite: () -> Unit = {}
+        override fun read(): ByteArray? { check(!denyRead); reads++; onRead(); return bytes?.copyOf() }
         override fun write(plaintext: ByteArray) {
             if (failWrite) throw IOException("fixture failure")
             bytes = plaintext.copyOf()
             writes++
+            onWrite()
         }
     }
     private fun validation(user: String = "123", client: String = SMART_TV_TWITCH_CLIENT_ID,
@@ -60,10 +63,16 @@ class TwitchCatalogSessionTest {
         val store = TwitchCatalogGrantStore(memory, instance, wallMs = { clock.wall })
         val requests = Requests()
         var ownerMatches = true
-        fun session() = TwitchCatalogSession(store, requests::transport, { clock.wall }, { clock.mono }, { ownerMatches })
+        fun session() = TwitchCatalogSession(store, { requests.transport() }, { clock.wall }, { clock.mono }, { ownerMatches })
         fun connect(lifetime: Long = 7_200_000L): TwitchCatalogStoredGrant = store.commitConnection(store.beginConnection(),
             TwitchCatalogReplacement(TwitchCatalogCredentials("initial-access", "initial-refresh", lifetime),
                 TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), lifetime), lifetime))!!
+        fun connectLocal(capMs: Long = TWITCH_CATALOG_LOCAL_RETENTION_MS, providerMs: Long? = null): TwitchCatalogStoredGrant =
+            store.commitConnection(store.beginConnection(), TwitchCatalogReplacement(
+                TwitchCatalogCredentials("initial-access", "initial-refresh", minOf(capMs, providerMs ?: Long.MAX_VALUE)),
+                TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), providerMs), minOf(capMs, providerMs ?: Long.MAX_VALUE),
+                providerExpiresAtMs = providerMs?.let { clock.wall + it },
+                localRetentionUntilMs = clock.wall + capMs, savedAtMs = clock.wall))!!
         init { requests.validate = { validation() }; requests.refresh = { token() } }
     }
 
@@ -133,7 +142,7 @@ class TwitchCatalogSessionTest {
         val fixture = Fixture(); fixture.connect()
         var ownerCalls = 0
         var rejectOwner = false
-        val session = TwitchCatalogSession(fixture.store, fixture.requests::transport,
+        val session = TwitchCatalogSession(fixture.store, { fixture.requests.transport() },
             { fixture.clock.wall }, { fixture.clock.mono }, { check(!rejectOwner); ownerCalls++; true })
         val lease = session.validate().lease!!
         val reads = fixture.memory.reads; val owners = ownerCalls
@@ -443,5 +452,410 @@ class TwitchCatalogSessionTest {
             assertTrue(second.isCurrent(renewed.lease!!))
             assertEquals(TwitchCatalogGrantState.READY, fixture.store.read()!!.state)
         } finally { release.countDown(); workers.shutdownNow() }
+    }
+
+    @Test fun unknownProviderExpiryRequiresFreshHourlyAndResumeValidationWithoutWritingOrExtendingRetention() {
+        val fixture = Fixture(); val original = fixture.connectLocal()
+        fixture.requests.validate = { validation(seconds = 0) }
+        val bytes = fixture.memory.bytes!!.copyOf(); val writes = fixture.memory.writes
+        val session = fixture.session(); val first = session.validate().lease!!
+        assertEquals(fixture.clock.mono + TWITCH_CATALOG_VALIDATION_INTERVAL_MS, first.deadlineMs)
+        fixture.clock.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS)
+        assertFalse(session.isCurrent(first)); assertNotNull(session.validate().lease)
+        session.setForeground(false); session.setForeground(true); assertNotNull(session.validate().lease)
+        assertNotNull(session.validate(force = true).lease)
+        assertEquals(4, fixture.requests.validations.get()); assertEquals(0, fixture.requests.refreshes.get())
+        assertEquals(writes, fixture.memory.writes); assertArrayEquals(bytes, fixture.memory.bytes)
+        val current = fixture.store.read()!!
+        assertEquals(original.savedAtMs, current.savedAtMs); assertEquals(original.localRetentionUntilMs, current.localRetentionUntilMs)
+        assertNull(current.providerExpiresAtMs)
+    }
+
+    @Test fun positiveValidationDurablyTightensUnknownTokenAndBothConsumersObeyLatestBoundWithoutPairInvalidation() {
+        val fixture = Fixture(); val original = fixture.connectLocal()
+        fixture.requests.validate = { validation(seconds = 0) }
+        val playback = fixture.session(); val playbackLease = playback.validate().lease!!
+        val catalog = fixture.session()
+        fixture.clock.advance(1000); fixture.requests.validate = { validation(seconds = 60) }
+        val tightened = catalog.validate(force = true).lease!!
+        val grant = fixture.store.read()!!
+        assertEquals(original.generation, grant.generation)
+        assertEquals(original.savedAtMs, grant.savedAtMs); assertEquals(original.localRetentionUntilMs, grant.localRetentionUntilMs)
+        assertEquals(fixture.clock.wall + 60_000, grant.providerExpiresAtMs)
+        assertTrue(playback.isCurrent(playbackLease)); assertTrue(catalog.isCurrent(tightened))
+        assertEquals(0, fixture.requests.refreshes.get())
+        fixture.requests.validate = { validation(seconds = 120) }
+        catalog.validate(force = true)
+        assertEquals(grant.providerExpiresAtMs, fixture.store.read()!!.providerExpiresAtMs)
+        assertEquals(grant.generation, fixture.store.read()!!.generation)
+        val writes = fixture.memory.writes
+        fixture.requests.validate = { validation(seconds = 0) }; catalog.validate(force = true)
+        assertEquals(writes, fixture.memory.writes)
+        assertEquals(grant.providerExpiresAtMs, fixture.store.read()!!.providerExpiresAtMs)
+        fixture.clock.advance(60_000)
+        assertFalse(playback.isCurrent(playbackLease)); assertFalse(catalog.isCurrent(tightened))
+        assertTrue(fixture.store.isStoredPairCurrent(original))
+        val rotated = playback.onUnauthorized(playbackLease).lease!!
+        assertEquals(1, fixture.requests.refreshes.get()); assertNotEquals(grant.generation, rotated.grant.generation)
+        assertNull(catalog.onUnauthorized(tightened).lease); assertEquals(1, fixture.requests.refreshes.get())
+    }
+
+    @Test fun refreshMayReplaceProviderBoundButNeverOriginalRetentionOrClockAnchor() {
+        val fixture = Fixture(); val original = fixture.connectLocal(providerMs = 1000)
+        fixture.clock.advance(1000)
+        fixture.requests.refresh = { DeviceAuthResponse(200, token().fields - "expires_in") }
+        fixture.requests.validate = { validation(seconds = 0) }
+        val session = fixture.session(); val unknown = session.validate().lease!!
+        var grant = fixture.store.read()!!
+        assertNull(grant.providerExpiresAtMs); assertNotEquals(original.generation, grant.generation)
+        assertEquals(original.localRetentionUntilMs, grant.localRetentionUntilMs); assertEquals(original.savedAtMs, grant.savedAtMs)
+        fixture.clock.advance(1000)
+        fixture.requests.refresh = { token("next-access", "next-refresh") }
+        fixture.requests.validate = { validation(seconds = 60) }
+        val rotated = session.onUnauthorized(unknown).lease!!
+        grant = fixture.store.read()!!
+        assertEquals(fixture.clock.wall + 60_000, grant.providerExpiresAtMs)
+        assertEquals(original.localRetentionUntilMs, grant.localRetentionUntilMs); assertEquals(original.savedAtMs, grant.savedAtMs)
+        assertEquals("next-access", rotated.accessToken)
+        session.invalidate(); assertFalse(session.isCurrent(rotated)); session.forget()
+        assertEquals(TwitchCatalogGrantState.CLEARED, fixture.store.read()!!.state)
+    }
+
+    @Test fun expiredRetentionBlocksStartupCachedLeaseFreshValidationAndStaleUnauthorizedWithoutAnyHttp() {
+        listOf(false, true).forEach { cached ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+            fixture.requests.validate = { validation(seconds = 0) }
+            val session = fixture.session(); val value = if (cached) session.validate().lease else null
+            val requests = fixture.requests.validations.get()
+            fixture.clock.advance(1000)
+            if (value != null) {
+                assertFalse(session.isCurrent(value)); assertFalse(session.isLocallyCurrent(value))
+                val stale = session.onUnauthorized(value)
+                assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, stale.summary.state)
+                assertEquals(TwitchCatalogAuthFailure.EXPIRED, stale.summary.failure)
+            } else {
+                val expired = session.validate(force = true)
+                assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+                assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure)
+            }
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(requests, fixture.requests.validations.get()); assertEquals(0, fixture.requests.refreshes.get())
+        }
+    }
+
+    @Test fun delayedValidationAndNetworkGateFailureAtRetentionDeadlineReportExpiredAndPreventFurtherRequests() {
+        listOf(false, true).forEach { networkFailure ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+            fixture.requests.validate = {
+                fixture.clock.advance(1000)
+                if (networkFailure) throw IOException("fixture route gate")
+                validation(seconds = 0)
+            }
+            val session = fixture.session(); val expired = session.validate()
+            assertNull(expired.lease); assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure)
+            assertNull(session.validate().lease)
+            assertEquals(1, fixture.requests.validations.get()); assertEquals(0, fixture.requests.refreshes.get())
+        }
+    }
+
+    @Test fun suppliedRequestGateClosesAfterPreparationConsumesCapAndNoProviderRequestIsMade() {
+        val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+        var gate: (() -> Boolean)? = null
+        val session = TwitchCatalogSession(fixture.store, { canRequest ->
+            gate = canRequest
+            assertTrue(canRequest())
+            fixture.clock.advance(1000)
+            assertFalse(canRequest())
+            fixture.requests.transport()
+        }, { fixture.clock.wall }, { fixture.clock.mono })
+        val expired = session.validate()
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure)
+        assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+        assertEquals(0, fixture.requests.validations.get()); assertEquals(1, fixture.requests.closes.get())
+        assertFalse(gate!!())
+    }
+
+    @Test fun refreshCrossingCapOrThirtySecondBudgetLeavesConsumedMarkerAndNeverRetriesOldPair() {
+        listOf(true, false).forEach { capExpires ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = if (capExpires) 1000 else TWITCH_CATALOG_LOCAL_RETENTION_MS)
+            fixture.requests.validate = { validation(seconds = 0) }
+            val session = fixture.session(); val old = session.validate().lease!!
+            fixture.requests.refresh = {
+                fixture.clock.advance(if (capExpires) 1000 else TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
+                DeviceAuthResponse(200, token().fields - "expires_in")
+            }
+            val expired = session.onUnauthorized(old)
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure)
+            assertEquals(1, fixture.requests.refreshes.get()); assertEquals(1, fixture.requests.validations.get())
+            assertNull(fixture.store.read()!!.credentials)
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
+    }
+
+    @Test fun originalCapRejectsWallClockRollbackAndOverridesStickyNetworkFailure() {
+        val rollback = Fixture(); rollback.connectLocal(); rollback.clock.wall--
+        val denied = rollback.session().validate()
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, denied.summary.failure)
+        assertEquals(0, rollback.requests.validations.get())
+        val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+        fixture.requests.validate = { DeviceAuthResponse(500, emptyMap()) }
+        val session = fixture.session()
+        assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, session.validate().summary.state)
+        fixture.clock.advance(1000)
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, session.readSummary().failure)
+        assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, session.readSummary().state)
+        assertNull(session.validate().lease); assertEquals(1, fixture.requests.validations.get())
+    }
+
+    @Test fun initialAcceptanceAbsoluteBoundsSurviveWriteDelayAndExpiredWriteCannotPublishGrant() {
+        listOf(500L, 1000L).forEach { delay ->
+            val fixture = Fixture(); val session = fixture.session(); val attempt = session.beginConnection()
+            val saved = fixture.clock.wall; val started = fixture.clock.mono
+            val approved = TwitchCatalogAuthorizationResult.Approved(TwitchCatalogCredentials("connected-access", "connected-refresh", 1000),
+                TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), started + 1000, started,
+                localRetentionDeadlineMs = started + 1000, providerDeadlineMs = null)
+            fixture.memory.onWrite = { fixture.memory.onWrite = {}; fixture.clock.advance(delay) }
+            val accepted = session.accept(approved, attempt)
+            if (delay == 500L) {
+                assertEquals(TwitchCatalogSessionState.CONNECTED, accepted.summary.state)
+                assertEquals(saved + 1000, fixture.store.read()!!.localRetentionUntilMs)
+                assertEquals(started + 1000, accepted.lease!!.deadlineMs)
+            } else {
+                assertEquals(TwitchCatalogAuthFailure.EXPIRED, accepted.summary.failure); assertNull(accepted.lease)
+                assertEquals(TwitchCatalogGrantState.RECONNECT, fixture.store.read()!!.state)
+                assertNull(fixture.store.read()!!.credentials)
+            }
+        }
+    }
+
+    @Test fun staleUnauthorizedWaitingForStoreLockCannotRefreshAfterCapExpires() {
+        val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+        fixture.requests.validate = { validation(seconds = 0) }
+        val checkedOwner = CountDownLatch(1); var waitingUnauthorized = false
+        val session = TwitchCatalogSession(fixture.store, { fixture.requests.transport() },
+            { fixture.clock.wall }, { fixture.clock.mono }, {
+                if (waitingUnauthorized) checkedOwner.countDown()
+                true
+            })
+        val old = session.validate().lease!!
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val workers = Executors.newFixedThreadPool(2)
+        fixture.memory.onRead = {
+            fixture.memory.onRead = {}; entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        }
+        try {
+            val reader = workers.submit<TwitchCatalogStoredGrant?> { fixture.store.read() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            waitingUnauthorized = true
+            val unauthorized = workers.submit<TwitchCatalogSessionResult> { session.onUnauthorized(old) }
+            assertTrue(checkedOwner.await(5, TimeUnit.SECONDS))
+            fixture.clock.advance(1000); release.countDown(); reader.get(5, TimeUnit.SECONDS)
+            val denied = unauthorized.get(5, TimeUnit.SECONDS)
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, denied.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, denied.summary.failure)
+            assertEquals(0, fixture.requests.refreshes.get()); assertEquals(1, fixture.requests.validations.get())
+        } finally { release.countDown(); workers.shutdownNow() }
+    }
+
+    @Test fun versionOnePositiveGrantDoesNotGainZeroValidationEntitlementOrLocalRetention() {
+        val fixture = Fixture(); val generation = UUID.randomUUID().toString()
+        fixture.memory.bytes = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use { out ->
+                out.writeInt(1)
+                listOf(fixture.instance, SMART_TV_TWITCH_CLIENT_ID, TWITCH_CATALOG_SCOPE,
+                    generation, "READY", "123").forEach(out::writeUTF)
+                out.writeLong(fixture.clock.wall); out.writeLong(fixture.clock.wall + 7_200_000)
+                out.writeUTF("initial-access"); out.writeUTF("initial-refresh")
+            }
+        }.toByteArray()
+        val bytes = fixture.memory.bytes!!.copyOf(); val session = fixture.session()
+        fixture.requests.validate = { validation() }
+        assertNotNull(session.validate().lease)
+        assertEquals(0, fixture.memory.writes); assertArrayEquals(bytes, fixture.memory.bytes)
+        assertNull(fixture.store.read()!!.localRetentionUntilMs)
+        fixture.requests.validate = { validation(seconds = 0) }
+        val rejected = session.validate(force = true)
+        assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, rejected.summary.state)
+        assertEquals(TwitchCatalogAuthFailure.EXPIRED, rejected.summary.failure)
+        assertNull(rejected.lease); assertEquals(0, fixture.requests.refreshes.get())
+        assertEquals(TwitchCatalogGrantState.RECONNECT, fixture.store.read()!!.state)
+    }
+
+    @Test fun failedExpiryTombstoneDuringLateValidationOrConsumedRefreshReturnsStorageFailureAndNoFurtherHttp() {
+        listOf(false, true).forEach { refreshing ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+            fixture.requests.validate = { validation(seconds = 0) }
+            val session = fixture.session()
+            val result = if (refreshing) {
+                val old = session.validate().lease!!
+                fixture.requests.refresh = {
+                    fixture.clock.advance(1000); fixture.memory.failWrite = true
+                    throw IOException("fixture lost refresh response")
+                }
+                session.onUnauthorized(old)
+            } else {
+                fixture.requests.validate = {
+                    fixture.clock.advance(1000); fixture.memory.failWrite = true
+                    throw IOException("fixture route gate expired")
+                }
+                session.validate()
+            }
+            assertEquals(TwitchCatalogSessionState.STORAGE_FAILURE, result.summary.state)
+            assertNull(result.lease)
+            val validations = fixture.requests.validations.get(); val refreshes = fixture.requests.refreshes.get()
+            assertNull(session.validate().lease); assertNull(fixture.session().validate().lease)
+            assertEquals(validations, fixture.requests.validations.get()); assertEquals(refreshes, fixture.requests.refreshes.get())
+        }
+    }
+
+    private fun assertPairedPositiveValidationTightening(providerMs: Long?) {
+        val fixture = Fixture(); val original = fixture.connectLocal(providerMs = providerMs)
+        fixture.requests.validate = { validation(seconds = 120) }
+        val first = fixture.session(); val second = fixture.session()
+        val firstLease = first.validate(force = true).lease!!
+        fixture.clock.advance(10)
+        fixture.requests.validate = { validation(seconds = 119) }
+        val secondLease = second.validate(force = true).lease!!
+        val tightened = fixture.store.read()!!
+        assertEquals(original.generation, tightened.generation)
+        assertEquals(firstLease.grant.generation, secondLease.grant.generation)
+        assertEquals(fixture.clock.wall + 119_000, tightened.providerExpiresAtMs)
+        assertTrue(first.isCurrent(firstLease)); assertTrue(second.isCurrent(secondLease))
+        fixture.requests.validate = { validation(seconds = 0) }
+        val writes = fixture.memory.writes; val restarted = fixture.session()
+        val restartLease = restarted.validate().lease!!
+        assertEquals(tightened.providerExpiresAtMs, fixture.store.read()!!.providerExpiresAtMs)
+        assertEquals(tightened.expiresAtMs, restartLease.grant.expiresAtMs)
+        assertEquals(writes, fixture.memory.writes)
+        fixture.clock.advance(118_999)
+        assertTrue(first.isCurrent(firstLease)); assertTrue(second.isCurrent(secondLease))
+        fixture.clock.advance(1)
+        assertFalse(first.isCurrent(firstLease)); assertFalse(second.isCurrent(secondLease))
+        assertFalse(restarted.isCurrent(restartLease))
+        // The original pair can refresh after the provider bound, while its
+        // unchanged local cap still admits it. Rotation then rejects old pairs.
+        assertTrue(fixture.store.isStoredPairCurrent(firstLease.grant))
+        val rotated = first.onUnauthorized(firstLease).lease!!
+        assertNotEquals(tightened.generation, rotated.grant.generation)
+        assertFalse(fixture.store.isStoredPairCurrent(secondLease.grant))
+        assertNull(second.onUnauthorized(secondLease).lease)
+        assertEquals(1, fixture.requests.refreshes.get()); assertTrue(first.isCurrent(rotated))
+    }
+
+    @Test fun twoPositiveConsumersOfInitiallyUnknownPairSurviveRoundingTighteningUntilDurableBound() =
+        assertPairedPositiveValidationTightening(null)
+
+    @Test fun twoPositiveConsumersOfKnownPairSurviveRoundingTighteningUntilDurableBound() =
+        assertPairedPositiveValidationTightening(120_000)
+
+    @Test fun ownTighteningWriteCrossingProviderOrLocalDeadlineReportsExpiredAndPreservesExternalNewPair() {
+        listOf(false, true).forEach { localExpires ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = if (localExpires) 1000 else TWITCH_CATALOG_LOCAL_RETENTION_MS)
+            fixture.requests.validate = { validation(seconds = 1) }
+            fixture.memory.onWrite = { fixture.memory.onWrite = {}; fixture.clock.advance(1000) }
+            val expired = fixture.session().validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure); assertNull(expired.lease)
+            assertEquals(TwitchCatalogGrantState.RECONNECT, fixture.store.read()!!.state)
+            assertNull(fixture.store.read()!!.credentials)
+        }
+        // Replace the pair while the expired tightening operation is unwinding.
+        val fixture = Fixture(); fixture.connectLocal(); fixture.requests.validate = { validation(seconds = 1) }
+        var replaced = false
+        fixture.memory.onWrite = {
+            if (!replaced) {
+                replaced = true; fixture.memory.onWrite = {}
+                fixture.clock.advance(1000)
+                fixture.connectLocal()
+            }
+        }
+        val result = fixture.session().validate()
+        assertNull(result.lease)
+        assertEquals(TwitchCatalogGrantState.READY, fixture.store.read()!!.state)
+        assertEquals(fixture.clock.wall + TWITCH_CATALOG_LOCAL_RETENTION_MS, fixture.store.read()!!.localRetentionUntilMs)
+        assertNotNull(fixture.store.read()!!.credentials)
+    }
+
+    @Test fun sessionCanForgetItsOwnExpiryReconnectMarkerButCannotForgetExternalReplacement() {
+        listOf(false, true).forEach { externalReplacement ->
+            val fixture = Fixture(); fixture.connectLocal(capMs = 1000)
+            fixture.requests.validate = { validation(seconds = 0) }
+            val session = fixture.session(); assertNotNull(session.validate().lease)
+            fixture.clock.advance(1000)
+            val expired = session.validate()
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure)
+            val marker = fixture.store.read()!!
+            assertEquals(TwitchCatalogGrantState.RECONNECT, marker.state)
+            val newer = if (externalReplacement) fixture.connectLocal() else null
+            val bytes = fixture.memory.bytes!!.copyOf()
+            session.invalidate()
+            val forgotten = session.forget()
+            if (newer == null) {
+                assertEquals(TwitchCatalogSessionState.MISSING, forgotten.summary.state)
+                assertEquals(TwitchCatalogGrantState.CLEARED, fixture.store.read()!!.state)
+            } else {
+                assertEquals(TwitchCatalogSessionState.SUPERSEDED, forgotten.summary.state)
+                assertArrayEquals(bytes, fixture.memory.bytes)
+                assertEquals(newer.generation, fixture.store.read()!!.generation)
+                assertEquals(TwitchCatalogGrantState.READY, fixture.store.read()!!.state)
+            }
+        }
+    }
+
+    @Test fun ownedRollbackAndIdentityRejectionMarkersRemainForgettable() {
+        listOf(false, true).forEach { rollback ->
+            val fixture = Fixture(); fixture.connect(); val session = fixture.session()
+            if (rollback) fixture.clock.wall--
+            else fixture.requests.validate = { validation(user = "different-user") }
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, session.validate().summary.state)
+            session.invalidate()
+            assertEquals(TwitchCatalogSessionState.MISSING, session.forget().summary.state)
+            assertEquals(TwitchCatalogGrantState.CLEARED, fixture.store.read()!!.state)
+        }
+    }
+
+    @Test fun postWriteExpiredRefreshCanForgetItsOwnedRotationMarkerWithoutAdoptingExternalReplacement() {
+        listOf(false, true).forEach { externalReplacement ->
+            val fixture = Fixture(); val original = fixture.connectLocal(capMs = 1000)
+            fixture.requests.validate = { validation(seconds = 0) }
+            val session = fixture.session(); val old = session.validate().lease!!
+            var newer: TwitchCatalogStoredGrant? = null
+            fixture.memory.onWrite = {
+                if (String(fixture.memory.bytes!!, Charsets.ISO_8859_1).contains("rotated-access")) {
+                    fixture.clock.advance(1000)
+                    fixture.memory.onWrite = if (externalReplacement) {
+                        {
+                            fixture.memory.onWrite = {}
+                            newer = fixture.connectLocal()
+                        }
+                    } else ({})
+                }
+            }
+            val expired = session.onUnauthorized(old)
+            assertEquals(TwitchCatalogSessionState.RECONNECT_REQUIRED, expired.summary.state)
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, expired.summary.failure); assertNull(expired.lease)
+            val current = fixture.store.read()!!
+            assertNotEquals(original.generation, current.generation)
+            val bytes = fixture.memory.bytes!!.copyOf()
+            session.invalidate()
+            val forgotten = session.forget()
+            if (externalReplacement) {
+                assertNotNull(newer)
+                assertEquals(TwitchCatalogSessionState.SUPERSEDED, forgotten.summary.state)
+                assertEquals(newer!!.generation, fixture.store.read()!!.generation)
+                assertEquals(TwitchCatalogGrantState.READY, fixture.store.read()!!.state)
+                assertArrayEquals(bytes, fixture.memory.bytes)
+            } else {
+                assertEquals(TwitchCatalogGrantState.RECONNECT, current.state)
+                assertNull(current.credentials)
+                assertEquals(TwitchCatalogSessionState.MISSING, forgotten.summary.state)
+                assertEquals(TwitchCatalogGrantState.CLEARED, fixture.store.read()!!.state)
+            }
+            assertEquals(1, fixture.requests.refreshes.get())
+        }
     }
 }

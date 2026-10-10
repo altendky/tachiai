@@ -323,16 +323,25 @@ Playback consumes a lease directly; it does not copy tokens into a second slot.
 Connect, reconnect, validation and Forget apply to both uses. Local Forget retains
 configured streams, routes, browser login and other instances.
 
-Retired-client records require explicit reconnect. Scoped grants require positive
-validation lifetime and a refresh pair; the historical zero-scope lifetime
-exceptions are not inherited. An omitted token expiry stays worker-local and
-requires positive official validation within 30 seconds of the token request
-starting before finite credentials can be saved. Present null/zero/malformed
-token expiry and missing/zero validation expiry remain rejected.
+Retired-client records require explicit reconnect. The user separately approved
+scoped local retention in #137: at most seven days from initial token-poll start,
+with known provider expiry separately bounding access. Exact client/user/scope
+and refresh-pair checks remain required. Only literal integer-zero official
+validation expiry means unknown provider lifetime under this policy; missing or
+malformed expiry does not. Present null/zero/malformed token expiry remains
+rejected. Initial and refresh validation for locally retained grants must finish
+within 30 seconds. Version-1 provider-only records remain strict and are not
+implicitly extended. Validation and refresh preserve the original local deadline;
+expired retention blocks HTTP even after delayed route preparation. Positive
+validation can tighten a durable provider bound without changing pair generation;
+worker checks enforce that latest bound for all existing leases.
+Wall-clock persistence is not a tamper-proof elapsed-time guarantee.
 This changes credential ownership, not private
 playback endpoints, media-origin permissions, DRM behavior or background policy.
 A bounded consent check observed the exact requested scope and refresh presence,
-with omitted token expiry and rejection before validation. Validated account
+with omitted token expiry and rejection before validation. A subsequent check
+passed official client/user/scope validation but returned integer-zero expiry,
+then was rejected by the former positive-expiry policy. Validated account
 access and native playback remain unverified; the
 [authorization record](twitch-catalog-authorization.md#verification-limits) states
 the observed device conditions and limits.

@@ -57,27 +57,46 @@ Unconfirmed cleanup blocks reuse of that transport and its owning binding.
 
 Each stable instance UUID, including the default Twitch instance, has its own
 encrypted no-backup shared record. It binds the Smart TV client, scope, validated
-user, access/refresh pair, returned lifetime and durable generation. Configured
+user, access/refresh pair, provider expiry when known, local retention and durable
+generation. Configured
 sources, provider favorites and other instances are unaffected. Historical
 token-only playback grants are not migrated or used as a fallback.
 Credentials are absent from intents, UI state, recovery data, logs and exports.
 
 A process-created or resumed session begins unverified. Account access requires
-current-route validation and expires at the shorter of token validity and one
-hour after validation. Backgrounding invalidates leases. Active foreground use
+current-route validation and expires at the earliest provider/local deadline or
+one hour after validation. Backgrounding invalidates leases. Active foreground use
 schedules hourly validation. Temporary network failures suspend access without
 claiming provider revocation. An invalid client, user or scope requires explicit
 reconnection.
 
-Present token lifetimes must be positive integral values, and the token response
-must contain a valid refresh credential. An omitted token lifetime remains
-worker-local and permits only official validation within 30 seconds of the token
-request starting. Exact client, user and scope checks and a positive integral
-validation lifetime are mandatory before finite credentials can be saved.
-The acceptance budget is separate from saved token validity. Null, zero,
-malformed or oversized lifetimes remain rejected; missing or zero validation
-expiry is also rejected. The historical zero-scope Smart TV zero-expiry
-exception remains limited to its original experiment.
+On 2026-10-10 the user approved bounded local retention for the scoped connection
+in [#137](https://github.com/altendky/tachiai/issues/137). New connections retain an
+original deadline of at most seven days from token-poll start. Known positive
+provider expiry also bounds access. Literal integer-zero official validation
+expiry means unknown provider expiry under this explicit local policy; it does
+not mean permanent validity. Version-2 storage keeps the original local deadline
+separate from provider expiry. Existing version-1 provider-only records retain
+their positive-expiry policy and receive no implicit extension or rewrite.
+
+Present token lifetimes must be positive integral values, and a valid refresh
+credential is mandatory. An omitted token lifetime remains worker-local until
+exact official client, user and scope validation completes within 30 seconds of
+the token request starting. New locally retained grants also use that bounded
+acceptance window when the token reports positive expiry. Present null/zero or
+malformed token expiry and missing/null/negative/malformed validation expiry
+remain rejected. Only literal integer zero receives the approved unknown-expiry
+interpretation.
+
+Validation never renews local retention. A positive validation response can
+tighten the same token's durable provider bound while preserving its pair
+generation. Worker checks enforce the latest durable bound for existing leases;
+a zero response does not rewrite storage. Refresh preserves the original local
+deadline even when the replacement token reports positive expiry. Expired local
+retention requires reconnection before any provider request, including refresh
+or a stale unauthorized callback. Gates also run after route preparation.
+Wall-clock persistence rejects rollback before the saved anchor, but is not a
+tamper-proof measure of elapsed time across restarts.
 
 Debug diagnostics report only closed categories for the authorization phase,
 failure, response endpoint, lifetime shape, scope match and refresh presence.
@@ -90,7 +109,8 @@ explicit Connect or Forget can replace it. Native preparation validates afresh
 and checks the owning instance, user and durable generation. Catalog success
 does not itself establish native playback entitlement.
 
-Expiry or a current-generation 401 permits one serialized refresh. Before HTTP,
+Provider expiry or a current-generation 401 permits one serialized refresh within
+any remaining local retention. Before HTTP,
 the old pair is replaced by a durable refresh-in-progress marker under the
 instance's process and file lock. The replacement token must validate the expected
 user, client and scope before atomic pair rotation. A lost response, process death,
@@ -136,9 +156,10 @@ validated provider acceptance remains [#99](https://github.com/altendky/tachiai/
 A second user-approved check at 12:03:34 reached official validation: the parser
 passed Smart TV client, well-formed user and exact scope checks, then rejected
 literal integer-zero validation expiry as EXPIRED. The shared grant was not saved.
-The device, route and account conditions were the same as above. A separate scoped
-approved local-retention follow-up is tracked in [#137](https://github.com/altendky/tachiai/issues/137);
-the current connection still requires positive validated expiry.
+The device, route and account conditions were the same as above. The scoped
+local-retention follow-up is tracked in [#137](https://github.com/altendky/tachiai/issues/137).
+The user subsequently approved its finite local policy; this earlier rejection
+does not establish account, playback or refresh acceptance after the change.
 
 Three selected synthetic UI checks passed on persistent `tachiai-dev` on
 2026-10-10 (Android 16/API 36, x86-64): rendered-pixel decoding and challenge

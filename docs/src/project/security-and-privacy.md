@@ -350,7 +350,9 @@ The pending shared connection can display a locally encoded activation QR.
 Only an allowlisted Twitch activation URI and matching public user code enter
 that image. A missing `device-code` query parameter is added using the validated
 public user code; existing matching parameters and client-mode flags are
-preserved. Private device codes and grant credentials do not enter the QR.
+preserved. Browser activation buttons use the same validated destination,
+including the public user code. Private device codes and grant credentials do
+not enter either handoff.
 QR generation makes no request, uses no external service and adds no persistent
 state or diagnostic
 payload. The image and readable code disappear when validation consumes the

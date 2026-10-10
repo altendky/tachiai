@@ -1,14 +1,11 @@
 package net.fstab.tachiai.feature.connections
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
-import androidx.core.net.toUri
 import kotlinx.coroutines.*
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
@@ -113,12 +110,7 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
         val current = controller ?: return
         val activation = current.state.value.activation ?: return
         current.setForeground(false)
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, activation.verificationUri.toString().toUri())
-                .addCategory(Intent.CATEGORY_BROWSABLE).setPackage(packageName))
-        } catch (_: ActivityNotFoundException) {
-            current.browserUnavailable(); current.setForeground(resumed)
-        } catch (_: SecurityException) {
+        if (!openTwitchActivationBrowser(activation, packageName, ::startActivity)) {
             current.browserUnavailable(); current.setForeground(resumed)
         }
     }

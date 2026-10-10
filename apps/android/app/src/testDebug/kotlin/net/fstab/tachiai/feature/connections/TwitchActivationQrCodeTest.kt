@@ -31,7 +31,7 @@ class TwitchActivationQrCodeTest {
         }
     }
 
-    @Test fun bareProviderUriQrIncludesPublicUserCodeWithoutChangingBrowserUri() {
+    @Test fun bareProviderUriQrIncludesPublicUserCodeWithoutMutatingProviderResponse() {
         val uri = "https://www.twitch.tv/activate"
         val activation = DeviceActivation("FIXTURE123", URI(uri))
         assertEquals("$uri?device-code=FIXTURE123", decode(createTwitchActivationQrCode(activation)))

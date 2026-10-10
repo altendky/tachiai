@@ -4,6 +4,7 @@
   - [Requirements](project/requirements.md)
   - [Architecture](project/architecture.md)
   - [Provider integrations](project/provider-integrations.md)
+  - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
   - [Platform plan](project/platforms.md)
   - [Security and privacy](project/security-and-privacy.md)

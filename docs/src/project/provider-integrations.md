@@ -69,6 +69,11 @@ Twitch is the first commentary provider. Prefer Twitch's supported embed or
 ordinary top-level web player rather than deriving its private HLS playback
 URL.
 
+[Twitch catalog access](twitch-catalog-access.md) separately documents supported
+metadata/Following authorization, provider-instance ownership and the unresolved
+signed-out native browsing design. Catalog authorization does not establish
+playback eligibility. The browser observations below retain their original scope.
+
 The first resource is the `midnightsumo` channel. Public viewing should work
 without Twitch OAuth. If the product later includes chat, following, or
 subscription features, Twitch's full interactive embed provides its own login

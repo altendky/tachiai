@@ -224,6 +224,13 @@ together; duplicate streams remain independent playback sessions. Simultaneous
 ABEMA instances must use the same canonical route because their WebView proxy
 override is shared; incompatible routes block the run before any route starts.
 The earlier per-stream setup buttons are no longer in this flow.
+Each saved provider instance now exposes **Manage streams**. Its Tachiai-owned
+ordered list supplies the main picker; adding or removing items leaves upstream
+account favorites unchanged. The common discovery UI is currently backed by
+clearly labeled prototype samples, with provider account collections marked not
+verified. Empty lists, unavailable resources and unresolved removed choices are
+retained explicitly. See [configured sources](configured-catalog.md) for migration,
+saved quality ownership, restart references and real-provider integration limits.
 Imported profiles and provider configuration are preserved. Obsolete four-stream
 settings are not migrated: the picker offers an explicit stream-settings reset
 before playback. Current-format ambiguous defaults/overrides require explicit

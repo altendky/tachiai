@@ -14,9 +14,9 @@ class PrototypeProviderInstancePickerTest {
     private val extra = ProviderInstance("12345678-1234-1234-1234-123456789abc", PrototypeService.TWITCH, "Twitch 2")
     @Test fun sameStreamUnderDifferentInstancesRestoresBothBindingsAndCanOpenDuplicateFeeds() {
         val restoration = StateRestorationTester(compose)
-        var opened: PrototypeSelection? = null
+        var opened: ConfiguredFeedAssignments? = null
         restoration.setContent { TachiaiPrototypeTheme {
-            PrototypeSourcePicker(PrototypeSelection(), null, providerInstances = defaultProviderInstances() + extra,
+            PrototypeSourcePicker(null, providerInstances = defaultProviderInstances() + extra,
                 onWatch = { opened = it })
         } }
         val stream = PrototypeSource.TWITCH_LIVE
@@ -27,16 +27,22 @@ class PrototypeProviderInstancePickerTest {
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().assertIsOn()
         compose.onNodeWithText("Watch").performClick()
         compose.runOnIdle {
-            assertEquals(PrototypeSelection(stream, stream, extra.id, defaultProviderInstanceId(PrototypeService.TWITCH)), opened)
+            assertEquals(ConfiguredFeedAssignments(
+                ConfiguredFeedChoice(configuredLegacyId(extra.id, stream), extra.id),
+                ConfiguredFeedChoice(configuredLegacyId(defaultProviderInstanceId(PrototypeService.TWITCH), stream),
+                    defaultProviderInstanceId(PrototypeService.TWITCH))), opened)
         }
     }
     @Test fun staleOrWrongTypeInstanceDisablesViewerUntilExplicitReassignment() {
         val instances = mutableStateOf(defaultProviderInstances() + extra)
         val stream = PrototypeSource.TWITCH_LIVE
-        var opened: PrototypeSelection? = null
+        var opened: ConfiguredFeedAssignments? = null
         compose.setContent { TachiaiPrototypeTheme {
-            PrototypeSourcePicker(PrototypeSelection(stream, stream, extra.id, defaultProviderInstanceId(PrototypeService.ABEMA)),
-                null, providerInstances = instances.value, onWatch = { opened = it })
+            PrototypeSourcePicker(null, providerInstances = instances.value,
+                initialAssignments = ConfiguredFeedAssignments(
+                    ConfiguredFeedChoice(configuredLegacyId(extra.id, stream), extra.id),
+                    ConfiguredFeedChoice(configuredLegacyId(defaultProviderInstanceId(PrototypeService.TWITCH), stream),
+                        defaultProviderInstanceId(PrototypeService.ABEMA))), onWatch = { opened = it })
         } }
         compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().performClick()
@@ -45,6 +51,10 @@ class PrototypeProviderInstancePickerTest {
         compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed A").performScrollTo().assertIsOff().performClick()
         compose.onNodeWithText("Watch").assertIsEnabled().performClick()
-        compose.runOnIdle { assertEquals(PrototypeSelection(stream, stream), opened) }
+        compose.runOnIdle {
+            val id = defaultProviderInstanceId(PrototypeService.TWITCH)
+            val choice = ConfiguredFeedChoice(configuredLegacyId(id, stream), id)
+            assertEquals(ConfiguredFeedAssignments(choice, choice), opened)
+        }
     }
 }

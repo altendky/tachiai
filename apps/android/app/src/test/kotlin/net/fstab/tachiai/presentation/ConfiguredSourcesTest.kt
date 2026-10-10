@@ -15,6 +15,16 @@ class ConfiguredSourcesTest {
     private fun sources(instance: ProviderInstance = defaultProviderInstances().first { it.service == PrototypeService.TWITCH }) =
         legacyConfiguredSources(instance, defaultSourceSetups(), emptyMap())
 
+    @Test fun compactDefaultTitlesPreserveCustomLabelsAndUnknownResourceTitles() {
+        val item = sources().single { legacyPrototypeSource(it) == source }
+        assertEquals(source.optionTitle, configuredSourceDisplayTitle(item))
+        assertEquals(source.optionTitle, configuredSourceDisplayTitle(item.copy(id = arbitraryItem)))
+        val custom = item.copy(entry = item.entry.copy(title = "Twitch · My chosen channel"))
+        assertEquals(custom.entry.title, configuredSourceDisplayTitle(custom))
+        val unknown = item.copy(entry = item.entry.copy(resource = item.entry.resource.copy(identity = "another-channel")))
+        assertEquals(source.title, configuredSourceDisplayTitle(unknown))
+    }
+
     @Test fun legacyProjectionIsDeterministicAndSeparatesAccountsWhileRetainingNamesAndQuality() {
         val first = defaultProviderInstances().first { it.service == PrototypeService.TWITCH }
         val second = ProviderInstance(secondInstance, PrototypeService.TWITCH, "Second account")

@@ -33,43 +33,46 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import net.fstab.tachiai.presentation.PrototypeSelection
 import net.fstab.tachiai.presentation.PrototypeService
-import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.PrototypeSlot
-import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.defaultSourceSetups
-import net.fstab.tachiai.presentation.ProviderSetup
-import net.fstab.tachiai.presentation.legacyProviderSetups
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.presentation.defaultProviderInstances
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
-import net.fstab.tachiai.presentation.PrototypeFeedChoice
-import net.fstab.tachiai.presentation.PrototypeFeedAssignments
-import net.fstab.tachiai.presentation.encodePrototypeFeedChoice
-import net.fstab.tachiai.presentation.decodePrototypeFeedChoice
-import net.fstab.tachiai.presentation.prototypeFeedAssignments
+import net.fstab.tachiai.presentation.ConfiguredFeedChoice
+import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
+import net.fstab.tachiai.presentation.ConfiguredSource
+import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
+import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionFailure
+import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
+import net.fstab.tachiai.presentation.decodeConfiguredFeedChoice
+import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
+import net.fstab.tachiai.presentation.legacyConfiguredSources
+import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
+import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
+import net.fstab.tachiai.provider.catalog.CatalogAvailability
+import net.fstab.tachiai.provider.catalog.CatalogIntent
 
 @Composable
-internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?, onConnections: (() -> Unit)? = null,
-    sourceSetups: Map<PrototypeSource, SourceSetup> = defaultSourceSetups(), setupReady: Boolean = true,
-    providerSetups: Map<PrototypeService, ProviderSetup> = legacyProviderSetups(sourceSetups),
-    providerInstances: List<ProviderInstance> = defaultProviderInstances(providerSetups),
-    initialAssignments: PrototypeFeedAssignments = prototypeFeedAssignments(initial),
-    onAssignmentsChanged: (PrototypeFeedAssignments) -> Unit = {},
+internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)? = null,
+    providerInstances: List<ProviderInstance> = defaultProviderInstances(),
+    configuredSources: List<ConfiguredSource> = providerInstances.flatMap {
+        legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }, setupReady: Boolean = true,
+    initialAssignments: ConfiguredFeedAssignments = restoreConfiguredFeedAssignments(false, null, null),
+    onAssignmentsChanged: (ConfiguredFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
     playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
-    onWatch: (PrototypeSelection) -> Unit) {
-    var a by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.a)) }
-    var b by rememberSaveable { mutableStateOf<String?>(encodePrototypeFeedChoice(initialAssignments.b)) }
-    val assignments = PrototypeFeedAssignments(decodePrototypeFeedChoice(a), decodePrototypeFeedChoice(b))
-    val selection = assignments.selectionOrNull(providerInstances)
-    fun assign(slot: PrototypeSlot, choice: PrototypeFeedChoice, checked: Boolean) {
+    onWatch: (ConfiguredFeedAssignments) -> Unit) {
+    var a by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
+    var b by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
+    val assignments = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
+    val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
+    fun assign(slot: PrototypeSlot, choice: ConfiguredFeedChoice, checked: Boolean) {
         // Consecutive A/B callbacks can precede recomposition; read current saved
         // state rather than replacing the other slot from a rendered snapshot.
-        val next = PrototypeFeedAssignments(decodePrototypeFeedChoice(a), decodePrototypeFeedChoice(b)).assign(slot, choice, checked)
-        a = encodePrototypeFeedChoice(next.a); b = encodePrototypeFeedChoice(next.b)
+        val next = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b)).assign(slot, choice, checked)
+        a = encodeConfiguredFeedChoice(next.a); b = encodeConfiguredFeedChoice(next.b)
         onAssignmentsChanged(next)
     }
     // Recovery instructions must not consume the entire assignment viewport on
@@ -86,7 +89,8 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { selection?.let(onWatch) }, enabled = selection != null && setupReady && playbackAvailable,
+                Button(onClick = { onWatch(ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))) },
+                    enabled = resolved is ConfiguredPrototypeSelectionResult.Ready && setupReady && playbackAvailable,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Watch") }
                 Text("Tachiai", Modifier.weight(1f, fill = false), style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End, maxLines = 1)
@@ -103,6 +107,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             providerInstances.forEach { instance ->
                 val service = instance.service
+                val items = configuredSources.filter { it.instanceId == instance.id }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(instance.name, Modifier.weight(1f).semantics { heading() },
@@ -111,7 +116,7 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                             style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         for (slot in PrototypeSlot.entries) {
                             val selectedChoice = if (slot == PrototypeSlot.A) assignments.a else assignments.b
-                            val selected = selectedChoice?.instanceId == instance.id && selectedChoice.source.service == service
+                            val selected = selectedChoice?.instanceId == instance.id && selectedChoice.resolve(items) != null
                             Box(Modifier.size(48.dp).clearAndSetSemantics {
                                 contentDescription = if (selected) "${instance.name}: a stream is selected for feed ${slot.name}"
                                     else "${instance.name}: no stream selected for feed ${slot.name}"
@@ -123,21 +128,27 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                             }
                         }
                     }
-                    PrototypeSource.entries.filter { it.service == service }.forEach { source ->
-                        val setup = checkNotNull(sourceSetups[source])
-                        val feedChoice = PrototypeFeedChoice(source, instance.id)
+                    if (items.isEmpty()) Text("No configured streams. Add items in Providers → Manage streams.",
+                        Modifier.padding(start = 24.dp), style = MaterialTheme.typography.bodySmall)
+                    items.forEach { source ->
+                        val feedChoice = source.choice
                         Row(Modifier.fillMaxWidth().padding(start = 24.dp)
                             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                             .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (setup.name == source.title) source.optionTitle else setup.name,
-                                Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            Column(Modifier.weight(1f)) {
+                                Text(configuredSourceDisplayTitle(source), style = MaterialTheme.typography.titleMedium)
+                                if (source.entry.resource.intent == CatalogIntent.COLLECTION)
+                                    Text("Collection · choose a stream in Manage streams", style = MaterialTheme.typography.bodySmall)
+                                else if (source.entry.availability != CatalogAvailability.UNKNOWN)
+                                    Text(source.entry.availability.name.lowercase().replace('_', ' '), style = MaterialTheme.typography.bodySmall)
+                            }
                             for (slot in PrototypeSlot.entries) {
                                 Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice,
                                     onCheckedChange = { assign(slot, feedChoice, it) },
                                     modifier = Modifier.size(48.dp).semantics {
                                         contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
-                                            "Assign ${source.title} to feed ${slot.name}"
-                                        else "Assign ${source.title} using ${instance.name} to feed ${slot.name}"
+                                            "Assign ${source.entry.title} to feed ${slot.name}"
+                                        else "Assign ${source.entry.title} using ${instance.name} to feed ${slot.name}"
                                     })
                             }
                         }
@@ -145,7 +156,18 @@ internal fun PrototypeSourcePicker(initial: PrototypeSelection, message: String?
                 }
             }
         }
-        if (selection == null) Text("Choose an available provider instance and stream for each feed before opening the viewer.")
+        if (resolved is ConfiguredPrototypeSelectionResult.Failure) Text(configuredSelectionMessage(resolved.reason))
         if (!setupReady) Text("Provider setup must be read successfully before playback.")
     }
+}
+
+internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFailure): String = when (reason) {
+    ConfiguredPrototypeSelectionFailure.MISSING_CHOICE -> "Choose a configured stream for each feed before opening the viewer."
+    ConfiguredPrototypeSelectionFailure.STALE_ITEM -> "A selected item was removed. Choose another configured stream."
+    ConfiguredPrototypeSelectionFailure.STALE_INSTANCE -> "A selected provider instance was removed. Choose another instance."
+    ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH -> "A selected item does not belong to its provider. Review it in Manage streams."
+    ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED -> "Save the selected provider's route in Providers before playback."
+    ConfiguredPrototypeSelectionFailure.UNAVAILABLE -> "A selected item is not available now. It stays configured for later."
+    ConfiguredPrototypeSelectionFailure.COLLECTION -> "A collection is selected. Choose a playable item in Manage streams."
+    ConfiguredPrototypeSelectionFailure.UNSUPPORTED -> "Playback for a selected item is not supported yet. It stays configured."
 }

@@ -89,10 +89,24 @@ as a restoration failure.
 
 The foundation in [issue #96](https://github.com/altendky/tachiai/issues/96)
 provides models, contract, store, codecs, migration and the exact legacy bridge.
-The existing picker and viewer still use the fixed source enum until
-[issue #97](https://github.com/altendky/tachiai/issues/97) activates configured
-lists and references in the common management/selection flow. The foundation
-does not execute provider catalog requests or change current authorization.
+[Issue #97](https://github.com/altendky/tachiai/issues/97) activates configured
+lists and local item/instance references in the common management/selection flow.
+Providers → Manage streams opens the selected instance's saved list and a shared
+discovery surface. Add, remove and reorder affect only that local list. Explicitly
+empty lists stay empty, and removed selections stay unresolved until the user
+chooses another item. The picker reloads on return; Watch freezes exact item and
+instance snapshots before preparation. Saved quality defaults are item-owned;
+duplicate feeds share those defaults and retain independent session overrides.
+Restart checkpoints use the same local references and accept old enum choices.
+
+The shipped discovery adapter advertises **Prototype samples**. It browses and
+searches the existing public sample resources, with unknown availability. Following
+and My List are explicitly not verified; direct lookup and child navigation are
+unsupported in that adapter. Shared controller and UI fixtures exercise paging,
+account access states and explicit collection children. These fixtures do not
+establish either provider's real API support. Arbitrary resources and collections
+cannot silently resolve to the News or replay sample, and known unavailable items
+remain saved while Watch explains why playback is blocked.
 
 [Twitch integration #99](https://github.com/altendky/tachiai/issues/99) and
 [ABEMA integration #101](https://github.com/altendky/tachiai/issues/101) implement
@@ -102,3 +116,21 @@ Their access investigations establish supported capability boundaries.
 follow-up. ABEMA account-backed collection access also requires
 [account connection #103](https://github.com/altendky/tachiai/issues/103) and a
 verified collection-access path; guest discovery and fixtures remain independent.
+
+## Local UI verification — 2026-10-09
+
+The shared flow passed 32 provider-free instrumentation tests on a separate
+disposable Android 16/API 36 x86-64 emulator. Tests cover both fixture providers,
+collections, paging, local ordering, access/error states, restoration, unavailable
+items, removed choices and keyboard/D-pad activation. Initial harness failures
+were corrected by scrolling the lazy list before querying off-screen nodes and
+explicitly entering keyboard input mode; the behavioral assertions were retained.
+
+On the persistent `tachiai-dev` API 36 x86-64 emulator with software graphics,
+touch opened Providers → Manage streams and keyboard/D-pad input moved focus
+between its controls. Installation used the shared debug signer and an update;
+saved route labels remained visible, and no configured list, route or provider
+grant was reset or edited. The picker retained its compact header and inline
+routes. This checks local UI behavior only. No provider account access, catalog
+network request or playback/DRM experiment was performed, and no region or
+physical-device behavior is established by these observations.

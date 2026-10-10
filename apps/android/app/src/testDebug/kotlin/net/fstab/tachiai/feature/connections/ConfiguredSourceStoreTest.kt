@@ -88,6 +88,27 @@ class ConfiguredSourceStoreTest {
         assertNull(secondMemory.bytes)
     }
 
+    @Test fun incrementalMoveUsesLatestLockedOrderAndPreservesAnotherWritersAddedItem() {
+        val memory = Memory(); val first = store(memory); val second = store(memory)
+        val initial = first.add(entry("first"), { emptyList() }).single()
+        val next = first.add(entry("second"), { emptyList() }).last()
+        val staleView = first.read { emptyList() }
+        val added = second.add(entry("third"), { emptyList() }).last()
+        second.reorder(listOf(added.id, initial.id, next.id), { emptyList() })
+        val moved = first.move(next.id, -1, { emptyList() })
+        assertEquals(listOf(initial.id, next.id), staleView.map { it.id })
+        assertEquals(listOf(added.id, next.id, initial.id), moved.map { it.id })
+        assertEquals(moved, second.read { emptyList() })
+        val bytes = memory.bytes!!.copyOf(); val writes = memory.writes
+        listOf<() -> Unit>(
+            { first.move(added.id, -1, { emptyList() }) },
+            { first.move(initial.id, 1, { emptyList() }) },
+            { first.move(next.id, 2, { emptyList() }) },
+            { first.move(UUID.randomUUID().toString(), -1, { emptyList() }) },
+        ).forEach { action -> assertThrows(Exception::class.java) { action() } }
+        assertArrayEquals(bytes, memory.bytes); assertEquals(writes, memory.writes)
+    }
+
     @Test fun staleIdsChangedResourcesAndInvalidPermutationsNeverWrite() {
         val memory = Memory(); val configured = store(memory)
         val items = configured.add(entry(), { emptyList() }); val old = items.single()

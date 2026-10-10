@@ -17,11 +17,12 @@ internal data class ViewerQualityReadback(
 
 // The Activity owns this object for one watch session. Duplicate source keys
 // share saved defaults, but their nullable per-kind overrides remain independent.
-internal class ViewerQualityState(
-    private val sources: List<PrototypeSource>,
-    defaults: Map<PrototypeSource, NativeQualityPreferences>,
+internal class ViewerQualityState<Key>(
+    sources: List<Key>,
+    defaults: Map<Key, NativeQualityPreferences>,
 ) {
     init { require(sources.size == 2) }
+    private val sources = sources.toList()
     private var defaults = defaults.toMap()
     private val overrides = mutableMapOf<Pair<NativeMixedSide, NativeQualityKind>, NativeQualityRequest>()
     fun read(side: NativeMixedSide, kind: NativeQualityKind) = ViewerQualityReadback(
@@ -32,6 +33,6 @@ internal class ViewerQualityState(
         request?.track?.let { require(it.kind == kind) }
         if (request == null) overrides.remove(side to kind) else overrides[side to kind] = request
     }
-    fun replaceDefaults(values: Map<PrototypeSource, NativeQualityPreferences>) { defaults = values.toMap() }
+    fun replaceDefaults(values: Map<Key, NativeQualityPreferences>) { defaults = values.toMap() }
     fun clearOverrides() { overrides.clear() }
 }

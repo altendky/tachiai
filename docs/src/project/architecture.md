@@ -42,6 +42,13 @@ capability set. It does not reach into ABEMA or Twitch page structure.
 
 ## Provider adapter
 
+The [configured-catalog foundation](configured-catalog.md) adds a separate,
+instance-bound discovery contract and persistent public resource identities.
+Catalog/account capabilities feed the shared management UI; provider-specific
+identifiers and response parsing stay in adapters. This boundary complements the
+browser adapter and native session/control interfaces. It does not imply that
+provider catalog authorization grants native playback access.
+
 A provider adapter translates a small generic command and observation surface
 into native-source or provider-page behavior. Likely capabilities include:
 

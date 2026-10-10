@@ -6,8 +6,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PrivateAuthorizationSlotTest {
-    @Test fun `original binding is unchanged and provider slot has a different identity`() {
-        assertEquals("twitch-own-authorization", PrivateAuthorizationSlot.TWITCH_OWN.bindingName)
+    @Test fun `remaining provider bindings have distinct identities`() {
         assertEquals(PrivateAuthorizationSlot.entries.size, PrivateAuthorizationSlot.entries.map { it.bindingName }.toSet().size)
         PrivateAuthorizationSlot.entries.forEach { assertTrue(Regex("[a-z-]+").matches(it.bindingName)) }
     }

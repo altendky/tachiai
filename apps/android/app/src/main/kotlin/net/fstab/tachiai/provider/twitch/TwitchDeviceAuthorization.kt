@@ -8,9 +8,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
-// Public identifier, not a secret. Registered for Tachiai's device-flow probe.
-internal const val TACHIAI_TWITCH_CLIENT_ID = "djsrsrw27br55f5z4yvbttmyndpwjz" // gitleaks:allow -- Public client ID, not an access token.
-
 internal enum class DeviceAuthPhase {
     READY, INVALID_CLIENT_ID, REQUESTING, WAITING, PAUSED, VALIDATING, SUCCEEDED,
     CANCELLED, EXPIRED, DENIED, INVALID_CODE, REJECTED, NETWORK_ERROR,
@@ -184,7 +181,7 @@ internal fun validatedDeviceToken(
 }
 
 // Zero scopes is intentional and experimental. The default validates app OAuth
-// only. An explicit own-client access case may inspect authorization fields;
+// only. Explicit provider-profile cases may retain a validated grant;
 // neither path authenticates a website/embed or starts media playback.
 internal suspend fun authorizeTwitchDevice(
     clientId: String,
@@ -197,11 +194,8 @@ internal suspend fun authorizeTwitchDevice(
     onResponseIssue: (DeviceResponseIssue) -> Unit = {},
     onGrantScope: (DeviceGrantScope) -> Unit = {},
     onValidationScopes: (DeviceValidationScopes) -> Unit = {},
-    // Optional separate debug access case; the default validation-only probe
-    // never hands its token onward. Exact own-client only, worker-local use.
-    onOwnClientValidated: (suspend (String, Long) -> Unit)? = null,
-    // Explicit separate provider-identity experiment. Never relax the own-client
-    // callback or hand arbitrary client registrations onward.
+    // Explicit separate provider-identity experiment. Never hand arbitrary
+    // client registrations onward.
     onProviderClientValidated: (suspend (String, Long) -> Unit)? = null,
     providerProfile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK,
     // Separate non-persistent inspection only, never a saved/access callback.
@@ -228,17 +222,14 @@ internal suspend fun authorizeTwitchDevice(
         if (!validTwitchClientId(clientId)) return DeviceAuthPhase.INVALID_CLIENT_ID
         if (inspectSmartTvLifetime && (clientId != SMART_TV_TWITCH_CLIENT_ID ||
             providerProfile != TwitchAuthorizationProfile.PROVIDER_SMART_TV ||
-            onOwnClientValidated != null || onProviderClientValidated != null)) return DeviceAuthPhase.INVALID_CLIENT_ID
+            onProviderClientValidated != null)) return DeviceAuthPhase.INVALID_CLIENT_ID
         if (retainSmartTvLocally && (inspectSmartTvLifetime || clientId != SMART_TV_TWITCH_CLIENT_ID ||
             providerProfile != TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL ||
-            onOwnClientValidated != null || onProviderClientValidated == null)) return DeviceAuthPhase.INVALID_CLIENT_ID
+            onProviderClientValidated == null)) return DeviceAuthPhase.INVALID_CLIENT_ID
         // The new local slot cannot silently use strict-provider defaults.
         if (providerProfile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL && !retainSmartTvLocally)
             return DeviceAuthPhase.INVALID_CLIENT_ID
-        if (onOwnClientValidated != null && clientId != TACHIAI_TWITCH_CLIENT_ID) return DeviceAuthPhase.INVALID_CLIENT_ID
-        if (onProviderClientValidated != null && (providerProfile == TwitchAuthorizationProfile.TACHIAI ||
-            clientId != providerProfile.clientId)) return DeviceAuthPhase.INVALID_CLIENT_ID
-        if (onOwnClientValidated != null && onProviderClientValidated != null) return DeviceAuthPhase.INVALID_CLIENT_ID
+        if (onProviderClientValidated != null && clientId != providerProfile.clientId) return DeviceAuthPhase.INVALID_CLIENT_ID
         if (!ready(Long.MAX_VALUE, DeviceAuthPhase.REQUESTING)) return DeviceAuthPhase.EXPIRED
         val requestedAt = clockMs()
         val response = transport.device(clientId)
@@ -298,7 +289,7 @@ internal suspend fun authorizeTwitchDevice(
                     onLifetimeShape(DeviceAuthEndpoint.VALIDATE, deviceLifetimeShape(validation.fields))
                     val result = validatedDeviceToken(validation, clientId, onValidationScopes, allowZeroLifetime = flexibleLifetime)
                     if (flexibleLifetime && clockMs() >= validationDeadline) return DeviceAuthPhase.EXPIRED
-                    val onValidated = onOwnClientValidated ?: onProviderClientValidated
+                    val onValidated = onProviderClientValidated
                     if (result == DeviceAuthPhase.SUCCEEDED && onValidated != null) {
                         val validatedLifetime = if (retainSmartTvLocally && deviceLifetimeShape(validation.fields) == DeviceLifetimeShape.ZERO)
                             SMART_TV_LOCAL_RETENTION_MS else validation.fields.seconds("expires_in", Int.MAX_VALUE.toLong())

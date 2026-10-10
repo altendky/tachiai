@@ -304,7 +304,7 @@ class TwitchDeviceAuthorizationTest {
         assertEquals(DeviceAuthPhase.NETWORK_ERROR, run(FakeTransport().also { it.networkError = true }))
         assertEquals(DeviceAuthPhase.REJECTED, run(FakeTransport(initial = DeviceAuthResponse(400, emptyMap()))))
         assertFalse(validTwitchClientId("https://example.test"))
-        assertTrue(validTwitchClientId(TACHIAI_TWITCH_CLIENT_ID))
+        assertTrue(validTwitchClientId(SMART_TV_TWITCH_CLIENT_ID))
     }
 
     @Test fun `cancellation never publishes success and closes transport`() {

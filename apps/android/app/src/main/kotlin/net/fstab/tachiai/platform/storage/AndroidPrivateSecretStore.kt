@@ -14,8 +14,23 @@ import javax.crypto.SecretKey
 // No export/backup, SharedPreferences, plaintext fallback, password or browser
 // session access. All key/file I/O is invoked from the worker, never Compose.
 internal class AndroidPrivateSecretStore private constructor(context: Context, bindingName: String) : PrivateSecretStore {
-    constructor(context: Context, slot: PrivateAuthorizationSlot = PrivateAuthorizationSlot.TWITCH_OWN) : this(context, slot.bindingName)
+    constructor(context: Context, slot: PrivateAuthorizationSlot) : this(context, slot.bindingName)
     companion object {
+        // Worker-only retirement of the removed app registration. Do not read,
+        // decrypt or convert its grant, or touch any provider/Smart TV binding.
+        fun removeRetiredTwitchRegistration(context: Context) {
+            val bindingName = "twitch-own-authorization"
+            val base = File(context.noBackupFilesDir, "$bindingName.enc")
+            AtomicFile(base).delete()
+            val siblings = listOf(base, File(base.path + ".bak"), File(base.path + ".new"))
+            siblings.forEach { if (it.exists()) check(it.delete()) }
+            check(siblings.none { it.exists() })
+            val alias = "tachiai.$bindingName.v1"
+            val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (keys.containsAlias(alias)) keys.deleteEntry(alias)
+            check(!keys.containsAlias(alias))
+        }
+
         fun twitchProviderInstance(context: Context, id: String): AndroidPrivateSecretStore {
             return AndroidPrivateSecretStore(context, twitchProviderInstanceBindingName(id))
         }

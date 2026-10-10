@@ -218,8 +218,9 @@ playback-stopped message, separate A/B route summaries and experimental-playback
 footer. Assignment checkboxes retain their accessible feed labels.
 Provider type is separate from a configured instance: multiple named ABEMA or
 Twitch instances may each choose their own route, and Twitch instances have
-separate saved LOCAL logins. The default Twitch instance retains the original
-grant without copying it. The picker assigns each feed a stream and instance
+one saved Smart TV connection per instance for discovery and playback. Existing
+retired-client records require explicit reconnect rather than token migration.
+The picker assigns each feed a stream and instance
 together; duplicate streams remain independent playback sessions. Simultaneous
 ABEMA instances must use the same canonical route because their WebView proxy
 override is shared; incompatible routes block the run before any route starts.
@@ -232,11 +233,11 @@ verified. Empty lists, unavailable resources and unresolved removed choices are
 retained explicitly. See [configured sources](configured-catalog.md) for migration,
 saved quality ownership, restart references and real-provider integration limits.
 Configured exact Twitch videos within the existing native ID bound can also open
-the debug replay viewer, starting at zero with that instance's own LOCAL grant
+the debug replay viewer, starting at zero with that instance's Smart TV connection
 and route. The exact historical replay keeps its experimental start position.
 This path has provider-free session fixtures; arbitrary-video playback with a
 real provider remains unobserved. Configured immutable Twitch broadcasters now
-use worker-only current-login/live assessment, the separate LOCAL grant, and a
+use worker-only current-login/live assessment, the shared Smart TV connection, and a
 post-preparation ownership confirmation. Saved offline channels can be reassessed;
 catalog connection failures remain distinct from playback-login failures. This
 path also has provider-free fixtures; real connected-channel playback is unobserved.

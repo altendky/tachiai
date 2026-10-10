@@ -29,7 +29,7 @@ internal enum class TwitchCatalogConnectionOperation { READ, CONNECT, VALIDATE, 
 internal data class TwitchCatalogConnectionState(
     val name: String? = null, val routeTitle: String? = null,
     val ready: Boolean = false, val hasSavedGrant: Boolean = false, val canForget: Boolean = false,
-    val status: String = "Reading catalog account…", val operation: TwitchCatalogConnectionOperation? = null,
+    val status: String = "Reading Twitch account…", val operation: TwitchCatalogConnectionOperation? = null,
     val phase: DeviceAuthPhase? = null, val activation: DeviceActivation? = null, val message: String? = null,
 ) { val busy get() = operation != null }
 
@@ -99,12 +99,12 @@ internal class TwitchCatalogConnectionController(
                 !TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             hasSavedGrant = saved, canForget = saved || TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             status = if (!owner.routeUsable) "Saved route unavailable. Catalog access is blocked; local Forget remains available." else when (value.state) {
-                TwitchCatalogSessionState.MISSING -> "No saved catalog account."
-                TwitchCatalogSessionState.CONNECTED -> "Catalog account validated for this foreground session."
-                TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogSessionState.PAUSED -> "Saved catalog account needs validation."
-                TwitchCatalogSessionState.TEMPORARY_FAILURE -> "Catalog account unavailable temporarily. Check the saved route and retry."
-                TwitchCatalogSessionState.STORAGE_FAILURE -> "Catalog account storage failed. Access remains blocked; retry Forget or reopen."
-                else -> "Catalog account needs reconnection."
+                TwitchCatalogSessionState.MISSING -> "No saved Twitch account."
+                TwitchCatalogSessionState.CONNECTED -> "Twitch account validated for this foreground session."
+                TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogSessionState.PAUSED -> "Saved Twitch account needs validation."
+                TwitchCatalogSessionState.TEMPORARY_FAILURE -> "Twitch account unavailable temporarily. Check the saved route and retry."
+                TwitchCatalogSessionState.STORAGE_FAILURE -> "Twitch account storage failed. Access remains blocked; retry Forget or reopen."
+                else -> "Twitch account needs reconnection."
             }) }
     }
     fun setForeground(value: Boolean) {
@@ -132,7 +132,7 @@ internal class TwitchCatalogConnectionController(
                 foreground.setForeground(true); session.setForeground(true)
                 if (TwitchCatalogConnectionWrites.isFailed(owner.instanceId)) {
                     publish { it.copy(canForget = true, ready = false,
-                        status = "Catalog account could not be cleared. Access remains blocked. Retry Forget.") }
+                        status = "Twitch account could not be cleared. Access remains blocked. Retry Forget.") }
                 } else if (!owner.routeUsable) {
                     val saved = withContext(io) { session.readSummary() }
                     summary(saved)
@@ -215,7 +215,7 @@ internal class TwitchCatalogConnectionController(
                 TwitchCatalogConnectionWrites.markFailure(owner.instanceId, true)
             }
             finally { publish { it.copy(operation = null, ready = owner.routeUsable && !failed && foreground.isForeground,
-                canForget = failed, message = if (failed) "Catalog account could not be cleared. Access remains blocked. Retry Forget." else "Catalog account forgotten on this device.") } }
+                canForget = failed, message = if (failed) "Twitch account could not be cleared. Access remains blocked. Retry Forget." else "Twitch account forgotten on this device.") } }
         }
         TwitchCatalogConnectionWrites.track(owner.instanceId, write); write.start()
     }

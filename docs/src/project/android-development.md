@@ -12,7 +12,11 @@ revocation and application retention policies still apply.
 The persistent `tachiai-dev` emulator is the default for routine project
 deployment, UI inspection, debugging and playback experiments. Agents preserve
 its authorization, routes and app data and use the explicitly verified emulator
-target. Tests that reset state belong on a separate clean test device.
+target. Do not run a second emulator alongside it. Tests that reset state must
+not run on this persistent device; use JVM tests, compile instrumentation fixtures,
+and make non-destructive device checks. A later clean-device test run needs a
+separately agreed schedule that preserves this device's data and avoids concurrent
+emulator memory usage.
 
 An explicit request to install/deploy to the phone or debug something on the
 phone overrides that default for the requested task. Verify the physical device
@@ -147,8 +151,9 @@ replace it.
 
 The lifecycle helpers do not execute instrumentation tests. Such tests can
 modify settings, authorize fake fixtures or clear test state; Gradle connected
-test tasks can also select attached physical devices. Use a separate clean test
-device when adding automated device-test execution. CI continues compiling,
+test tasks can also select attached physical devices. A clean test-device run
+must be scheduled without a concurrent emulator and without resetting this
+persistent device. CI continues compiling,
 but not executing, instrumentation tests. Provider-free helper safety tests run
 in the repository hooks/CI without starting an emulator.
 

@@ -5,22 +5,26 @@
 Issue [#98](https://github.com/altendky/tachiai/issues/98) investigates supported
 metadata and account-collection access for the configurable source list.
 The official documentation was reviewed on 2026-10-09.
-Implement an own-client catalog session using Twitch's documented public-client
-device flow. Keep it separate from the bounded playback experiments described
-in [security and privacy](security-and-privacy.md).
+On 2026-10-10 the user selected Twitch's Smart TV client identity for both catalog
+and native playback, with one scoped connection per provider instance. The debug
+implementation uses the documented device-flow mechanics and Helix endpoints,
+but use of this provider-owned registration is an explicitly selected experiment,
+not an own-client integration or a claim of Twitch approval. The bounded native
+playback operations remain described in [security and privacy](security-and-privacy.md).
 
-Tachiai already has an own PUBLIC application registration and zero-scope
-device-flow evidence in the [timing capability matrix](timing-capability-matrix.md#own-client-device-authorization-probe--2026-10-05).
-That evidence does not verify scoped catalog authorization. This investigation
-made no account requests, retrieved no credentials and performed no device
-experiment. Scoped consent, Helix responses, refresh and routed catalog access
-remain unobserved. The current developer-console configuration was not inspected.
+The shipped Tachiai-specific registration has been retired. Its earlier zero-scope
+device-flow evidence remains historical in the
+[timing capability matrix](timing-capability-matrix.md#own-client-device-authorization-probe--2026-10-05);
+it does not verify the new scoped Smart TV connection. This investigation made no
+account requests, retrieved no credentials and performed no device experiment.
+Scoped Smart TV consent, Helix responses, refresh, native playback acceptance and
+routed account access remain unobserved.
 
-The separate [debug catalog authorization prototype](twitch-catalog-authorization.md)
-implements the proposed lifecycle with synthetic fixtures. This does not establish
-actual scoped consent. The [connected catalog prototype](twitch-connected-catalog.md)
-adds supported Helix discovery through that separate session, with synthetic
-verification and the actual account/route observations still outstanding.
+The [debug connection prototype](twitch-catalog-authorization.md) owns the shared
+grant lifecycle. The [connected catalog prototype](twitch-connected-catalog.md)
+uses that connection for supported Helix discovery, while native preparation
+obtains a separately bounded validated lease from the same credential owner.
+Synthetic verification does not establish actual provider acceptance.
 
 ## Documented metadata and identities
 
@@ -52,32 +56,33 @@ Its date remains optional and independent from saved identity, observed live
 status and playback. This implementation has synthetic verification rather than
 real account/schedule response evidence.
 
-## Own-client authorization
+## Selected Smart TV authorization
 
 Twitch's [public-client device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow)
 supports scoped user tokens and refresh without a client secret. Public clients
 cannot use client credentials to obtain app tokens. Request `user:read:follows`
-for a catalog connection offering Following; request no email or write
+for the shared connection offering Following; request no email or write
 permission. Public metadata needs no additional catalog scope.
 
 Keep activation provider-controlled in the external browser. Present explicit
-catalog consent and cancellation. Do not capture the approval page or expose
-codes in diagnostics. Login and Following access do not authorize native
-playback experiments or prove subscription/ad behavior.
+Following consent and cancellation. Do not capture the approval page or expose
+codes in diagnostics. Following permission does not establish native entitlement,
+subscription/ad behavior or provider approval of the selected client identity.
 
-The existing device transport explicitly requests empty scopes, its parsers
-reject nonempty grants, and its normalization omits refresh credentials. Add a
-separate catalog authorization policy/session rather than weakening these
-experimental validators. Reuse only protocol mechanics whose security contract
-is unchanged. Own-client and provider/Smart TV playback grants remain distinct.
-They may represent different users: a catalog account name must not relabel a
-playback grant as the same account without verified identity evidence.
+The shared policy requires exactly `user:read:follows`, a bounded access/refresh
+pair and positive integral grant and validation lifetimes. The historical
+zero-scope Smart TV playback experiment's omitted/zero lifetime convention is
+not applied to this scoped connection. Its earlier token-only grants are not
+copied into the shared store. The same client identifier does not make distinct
+old grants or accounts interchangeable. If real scoped responses do not satisfy
+the policy, report that mismatch; do not assume permanent tokens or silently
+broaden the accepted shapes.
 
 ## Session ownership, persistence and routing
 
-The proposed catalog session belongs to one provider-instance UUID and binds
-the exact own client, validated user, authorized scope set and session revision.
-Use a separate encrypted no-backup credential record, atomic replacement and
+The shared connection belongs to one provider-instance UUID and binds
+the exact Smart TV client, validated user, authorized scope set and session revision.
+Use an encrypted no-backup credential record, atomic replacement and
 revision guards following existing storage conventions. No plaintext fallback,
 export or migration from a playback slot. Access/refresh credentials stay out
 of configured sources, recovery state, UI saved state and logs.
@@ -85,8 +90,16 @@ of configured sources, recovery state, UI saved state and logs.
 Twitch requires [validation](https://dev.twitch.tv/docs/authentication/validate-tokens/)
 at startup and hourly while maintaining an OAuth session. Verify client, user,
 scope and lifetime before exposing account access. Revoked/invalid authorization
-ends that session; reconnect is explicit. A private playback error is not proof
-that the independent catalog grant is invalid.
+ends that session; reconnect is explicit. A private playback error alone is not
+proof that the shared OAuth grant is invalid. Native source preparation requires
+fresh validation and checks the same instance, user and durable grant generation;
+successful catalog access alone does not establish playable content.
+
+A record bound to a different valid client requires explicit reconnection before
+its scope or credentials are interpreted. Reading it performs no request or
+implicit rewrite. Reconnect replaces the old record under the selected identity;
+Forget can also clear it. Malformed records and actual storage failures remain
+distinct failures.
 
 Serialize refresh per session and atomically replace the credential pair. The
 [refresh documentation](https://dev.twitch.tv/docs/authentication/refresh-tokens/)
@@ -101,8 +114,9 @@ thirty days after generation. Record this wording difference rather than
 assuming permanent validity or a guaranteed reset date. Implementation must
 handle rejection with explicit reauthorization.
 
-Local Forget deletes only the catalog session; provider-side revocation is a
-separate action. Configured items remain. Route OAuth and Helix requests through
+Local Forget clears only this instance's shared connection and invalidates its
+catalog and native preparation leases; provider-side revocation is a separate
+action. Configured items remain. Route OAuth and Helix requests through
 the instance's selected route with normal TLS and no System fallback. Scope
 destinations to official OAuth device/token/validation and required Helix
 operations, without broadening private playback/media policy. Closing an adapter
@@ -120,8 +134,9 @@ replacement instance.
 
 An app-token service could support anonymous native browsing, but introduces
 deployment, registration and operational ownership. No service was selected or
-deployed. Do not embed a client secret in the APK or borrow a playback client's
-identity. Twitch's [registration guidance](https://dev.twitch.tv/docs/authentication/register-app/)
+deployed. The selected Smart TV user grant does not create anonymous app-token
+access. Do not embed a client secret in the APK. Twitch's
+[registration guidance](https://dev.twitch.tv/docs/authentication/register-app/)
 treats client IDs as public, forbids sharing them between applications and
 requires secrets to remain confidential.
 
@@ -183,5 +198,6 @@ Following and exact lookup, parent-scoped videos, refresh rotation, process
 restart, revocation/Forget races and selected-route confinement on the target
 Android/TV environments. Record device, account state, route and outcome without
 sensitive evidence. Fixture success proves contract behavior, not provider
-access. Completion of #98 documents the supported connected design and the
-signed-out decision; it does not complete those experiments or #99.
+access. Completion of #98 documents the Helix design and signed-out decision;
+the subsequently selected Smart TV identity and shared native use remain an
+experiment and do not complete those observations or #99.

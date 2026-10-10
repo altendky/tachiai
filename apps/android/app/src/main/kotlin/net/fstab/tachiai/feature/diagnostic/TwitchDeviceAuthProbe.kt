@@ -45,12 +45,6 @@ import net.fstab.tachiai.provider.twitch.DeviceAuthorizationForeground
 import net.fstab.tachiai.provider.twitch.TwitchDeviceHttpTransport
 import net.fstab.tachiai.provider.twitch.authorizeTwitchDevice
 import net.fstab.tachiai.provider.twitch.validTwitchClientId
-import net.fstab.tachiai.platform.net.AccessProbeHttp
-import net.fstab.tachiai.platform.net.AccessProbeResult
-import net.fstab.tachiai.platform.net.AccessProbeEndpoint
-import net.fstab.tachiai.platform.net.AccessProbeOutcome
-import net.fstab.tachiai.provider.twitch.TwitchAccessCase
-import net.fstab.tachiai.provider.twitch.probeTwitchNativeAccess
 import net.fstab.tachiai.provider.twitch.SavedAuthorizationState
 import net.fstab.tachiai.provider.twitch.AndroidTwitchAuthorization
 import net.fstab.tachiai.provider.twitch.TwitchAuthorizationProfile
@@ -74,12 +68,12 @@ internal fun copyDeviceActivationCode(activation: DeviceActivation?, copySensiti
 }
 
 internal fun deviceAuthStatus(phase: DeviceAuthPhase): String = when (phase) {
-    DeviceAuthPhase.READY -> "Enter Tachiai's own public Twitch client ID."
+    DeviceAuthPhase.READY -> "Ready for the selected provider identity."
     DeviceAuthPhase.INVALID_CLIENT_ID -> "Client ID must be 10–64 alphanumeric characters."
     DeviceAuthPhase.REQUESTING -> "Requesting device authorization."
     DeviceAuthPhase.WAITING -> "Waiting for your approval on Twitch's external activation page."
     DeviceAuthPhase.PAUSED -> "Polling paused while Tachiai is away. Return here after approval; challenge expiry still runs."
-    DeviceAuthPhase.VALIDATING -> "Validating the returned token for Tachiai."
+    DeviceAuthPhase.VALIDATING -> "Validating the returned token for the selected provider identity."
     DeviceAuthPhase.SUCCEEDED -> "App OAuth validated. Token discarded; web-player login and Turbo playback remain unverified."
     DeviceAuthPhase.CANCELLED -> "Attempt cancelled; a new attempt needs a new code."
     DeviceAuthPhase.EXPIRED -> "Device authorization expired. Start a new attempt."
@@ -96,27 +90,23 @@ internal fun deviceAuthStatus(phase: DeviceAuthPhase): String = when (phase) {
 @Composable
 internal fun TwitchDeviceAuthProbeScreen(
     modifier: Modifier = Modifier,
-    accessCase: TwitchAccessCase? = null,
-    accessResource: String = "bobross",
     retainValidatedToken: Boolean = false,
-    profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI,
+    profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
     inspectSmartTvLifetime: Boolean = false,
 ) {
     if (!BuildConfig.DEBUG) return
     require(!inspectSmartTvLifetime || (profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV &&
-        !retainValidatedToken && accessCase == null))
+        !retainValidatedToken))
     val localRetention = profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL
-    require(!localRetention || (retainValidatedToken && accessCase == null && !inspectSmartTvLifetime))
-    require(profile == TwitchAuthorizationProfile.TACHIAI || ((retainValidatedToken || inspectSmartTvLifetime) && accessCase == null))
-    val providerIdentity = profile != TwitchAuthorizationProfile.TACHIAI
-    val logProfile = if (providerIdentity) "profile=${profile.name} " else ""
+    require(!localRetention || (retainValidatedToken && !inspectSmartTvLifetime))
+    val logProfile = "profile=${profile.name} "
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val foreground = remember(lifecycleOwner) {
         DeviceAuthorizationForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
     }
-    var clientId by remember(profile) { mutableStateOf(profile.clientId) }
+    val clientId = profile.clientId
     var phase by remember { mutableStateOf(DeviceAuthPhase.READY) }
     var activation by remember { mutableStateOf<DeviceActivation?>(null) }
     var codeCopied by remember { mutableStateOf<Boolean?>(null) }
@@ -128,8 +118,6 @@ internal fun TwitchDeviceAuthProbeScreen(
     var validationScopes by remember { mutableStateOf<DeviceValidationScopes?>(null) }
     var grantLifetime by remember { mutableStateOf<DeviceLifetimeShape?>(null) }
     var validationLifetime by remember { mutableStateOf<DeviceLifetimeShape?>(null) }
-    var accessResult by remember { mutableStateOf<AccessProbeResult?>(null) }
-    var accessTransport by remember { mutableStateOf<AccessProbeHttp?>(null) }
     val savedAuthorization = remember(context, profile) { AndroidTwitchAuthorization.get(context, profile) }
     var saveState by remember { mutableStateOf<SavedAuthorizationState?>(null) }
     var rejection by remember { mutableStateOf<DeviceRejection?>(null) }
@@ -142,7 +130,6 @@ internal fun TwitchDeviceAuthProbeScreen(
     fun cancel(next: DeviceAuthPhase) {
         worker?.cancel()
         transport?.close() // Coroutine cancellation alone cannot stop blocking I/O.
-        accessTransport?.close()
         worker = null
         transport = null
         report(next)
@@ -151,7 +138,6 @@ internal fun TwitchDeviceAuthProbeScreen(
         onDispose {
             worker?.cancel()
             transport?.close()
-            accessTransport?.close()
         }
     }
     DisposableEffect(lifecycleOwner) {
@@ -166,24 +152,16 @@ internal fun TwitchDeviceAuthProbeScreen(
     Column(modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
         Text(if (inspectSmartTvLifetime) "Smart TV lifetime inspection · token discarded"
             else if (localRetention) "Smart TV local retention · authorize and save for up to seven days"
-            else if (providerIdentity) "Authorize and save · ${profile.name} identity"
-            else if (retainValidatedToken) "Authorize and save Tachiai's Twitch token"
-            else if (accessCase == null) "Twitch device authorization · debug experiment"
-            else "Twitch $accessCase · fresh OAuth access check")
+            else if (retainValidatedToken) "Authorize and save · ${profile.name} identity"
+            else "Provider device authorization · ${profile.name} validation only")
         Text(if (inspectSmartTvLifetime)
             "Separate unsupported Smart TV identity experiment. Requests zero permissions. Verify the application's identity privately and decline unexpected permissions. Omitted or zero grant expiry may proceed to exact official validation within a 30-second local budget. Integer-zero validation expiry is experimental, NOT permanent validity. No token save, access request, playlist or playback."
             else if (localRetention)
             "Separate unsupported Smart TV experiment with its own encrypted slot. Verify the application's identity privately and decline unexpected permissions. Zero permissions; omitted/zero grant expiry and zero validation expiry are experimental. Save for at most SEVEN DAYS locally, shorter for known expiry. This is NOT Twitch's expiry or permanent validity. Revalidate before every explicit live/replay access check; no automatic refresh, playlist or media. Earlier strict examples remain unchanged."
-            else if (providerIdentity)
-            "Separate unsupported ${profile.name} identity experiment, not Tachiai's registered application. Requests zero permissions using this fixed observed provider client identifier. Verify the provider's application identity privately and cancel unexpected permissions. Saves only to its separate encrypted slot; no cookies, secret, refresh, playlist or media. Identity selection does not establish permission, platform support or Turbo playback."
-            else if (retainValidatedToken)
-            "New saved-token case: validates your own-client, zero-scope token, then saves it encrypted on this phone for explicit reuse. No passwords, browser cookies or refresh token. Existing fresh tests still discard tokens. Saved uses validate again; Forget is local, not provider revocation."
-            else if (accessCase == null)
-            "Use Tachiai's registered PUBLIC client only. No client secret. No requested permissions; empty-array/null scope handling is experimental. Rotation or process restart cancels the attempt. Tokens are used only for validation, not saved or passed to playback."
-            else "Separate own-client case: after validation, use the transient token for one private playback-access request, then discard it. No playlist or video fetched. No borrowed client, browser cookies or persistence. Empty-array/null scopes remain experimental. Rotation cancels.")
-        OutlinedTextField(value = clientId, onValueChange = { clientId = it.take(64) },
-            label = { Text("Public Twitch client ID") }, singleLine = true,
-            enabled = worker == null && accessCase == null && !retainValidatedToken && !providerIdentity)
+            else
+            "Separate unsupported ${profile.name} identity experiment. Requests zero permissions using this fixed observed provider client identifier. Verify the provider's application identity privately and cancel unexpected permissions. Retention, when selected, uses only its separate encrypted slot; no cookies, secret, refresh, playlist or media. Identity selection does not establish permission, platform support or Turbo playback.")
+        OutlinedTextField(value = clientId, onValueChange = {},
+            label = { Text("Public Twitch client ID") }, singleLine = true, enabled = false)
         Row {
             Button(enabled = worker == null, onClick = {
                 val selectedId = clientId.trim()
@@ -198,7 +176,6 @@ internal fun TwitchDeviceAuthProbeScreen(
                 validationScopes = null
                 grantLifetime = null
                 validationLifetime = null
-                accessResult = null
                 saveState = null
                 rejection = null
                 val saveRevision = savedAuthorization.revision()
@@ -223,35 +200,14 @@ internal fun TwitchDeviceAuthProbeScreen(
                 worker = scope.launch {
                     try {
                         val result = withContext(Dispatchers.IO) {
-                            val onValidated: (suspend (String, Long) -> Unit)? = if (accessCase == null && !retainValidatedToken) null else { token, deadline ->
-                                    withContext(Dispatchers.Main) { activation = null }
-                                    if (retainValidatedToken) {
-                                        val saved = savedAuthorization.saveValidated(token, deadline, saveRevision)
-                                        withContext(Dispatchers.Main) {
-                                            saveState = saved
-                                            Log.d(DEVICE_AUTH_LOG_TAG, "${logProfile}attempt=$attemptId storage=${saved.name}")
-                                        }
-                                    }
-                                    if (accessCase != null) {
-                                        val access = AccessProbeHttp(canRequest = {
-                                            foreground.isForeground && System.nanoTime() / 1_000_000 < deadline
-                                        })
-                                        withContext(Dispatchers.Main) { accessTransport = access }
-                                        val checked = try {
-                                            probeTwitchNativeAccess(access, accessCase, accessResource, token)
-                                        } catch (error: CancellationException) {
-                                            throw error
-                                        } catch (_: Exception) {
-                                            AccessProbeResult(AccessProbeEndpoint.TWITCH_ACCESS, AccessProbeOutcome.NETWORK_FAILED)
-                                        } finally { access.close() }
-                                        withContext(Dispatchers.Main) {
-                                            accessTransport = null
-                                            accessResult = checked
-                                            logAccessProbeResult(if (accessCase == TwitchAccessCase.LIVE)
-                                                NativeAccessCase.TWITCH_LIVE_OAUTH else NativeAccessCase.TWITCH_REPLAY_OAUTH, checked)
-                                        }
-                                    }
+                            val onValidated: (suspend (String, Long) -> Unit)? = if (!retainValidatedToken) null else { token, deadline ->
+                                withContext(Dispatchers.Main) { activation = null }
+                                val saved = savedAuthorization.saveValidated(token, deadline, saveRevision)
+                                withContext(Dispatchers.Main) {
+                                    saveState = saved
+                                    Log.d(DEVICE_AUTH_LOG_TAG, "${logProfile}attempt=$attemptId storage=${saved.name}")
                                 }
+                            }
                             authorizeTwitchDevice(selectedId, attempt,
                                 onPhase = { withContext(Dispatchers.Main) { report(it) } },
                                 onActivation = { prompt ->
@@ -265,8 +221,7 @@ internal fun TwitchDeviceAuthProbeScreen(
                                 }, onValidationScopes = { shape ->
                                     observedScopes = shape
                                     Log.d(DEVICE_AUTH_LOG_TAG, "${logProfile}attempt=$attemptId validationScopes=${shape.name}")
-                                }, onOwnClientValidated = if (providerIdentity) null else onValidated,
-                                onProviderClientValidated = if (providerIdentity) onValidated else null,
+                                }, onProviderClientValidated = onValidated,
                                 providerProfile = profile, inspectSmartTvLifetime = inspectSmartTvLifetime,
                                 retainSmartTvLocally = localRetention,
                                 onLifetimeShape = { endpoint, shape ->
@@ -315,8 +270,7 @@ internal fun TwitchDeviceAuthProbeScreen(
             }) { Text("Copy code") }
             codeCopied?.let { Text(if (it) "Code copied. Paste it on Twitch's activation page."
                 else "Could not copy code. You can still enter it manually.") }
-            Text(if (providerIdentity) "This is the provider's application identity, NOT Tachiai. Inspect it privately; cancel if the identity or requested permissions are unexpected. Do not send the code or account details."
-                else "Approve only if the browser identifies your Tachiai application.")
+            Text("This is the provider's application identity. Inspect it privately; cancel if the identity or requested permissions are unexpected. Do not send the code or account details.")
             Text("Open activation in a full browser, not Twitch's app. Choose an installed browser below.")
             Text("After approval, return to Tachiai. Background polling waits; the code's original expiry is unchanged.")
             DeviceActivationBrowser.entries.forEach { browser ->
@@ -338,7 +292,7 @@ internal fun TwitchDeviceAuthProbeScreen(
                 }) { Text(if (browser == DeviceActivationBrowser.BRAVE) "Open in Brave" else "Open in Chrome") }
             }
         }
-        Text(if (providerIdentity && phase in setOf(DeviceAuthPhase.READY, DeviceAuthPhase.VALIDATING))
+        Text(if (phase in setOf(DeviceAuthPhase.READY, DeviceAuthPhase.VALIDATING))
             "${phase.name}: separate provider-client experiment; exact provider identity validation required."
             else if (inspectSmartTvLifetime && phase == DeviceAuthPhase.SUCCEEDED)
             "Official validation accepted the selected identity and scopes. Token discarded. Zero expiry is not a promise of permanent validity. No save, access or playback."
@@ -346,10 +300,7 @@ internal fun TwitchDeviceAuthProbeScreen(
             "Official validation passed. Local retention is at most seven days; storage outcome below. No access or playback tested."
             else if (retainValidatedToken && phase == DeviceAuthPhase.SUCCEEDED)
             "App OAuth validated. Storage outcome below; no playback tested."
-            else if (accessCase != null && phase == DeviceAuthPhase.SUCCEEDED)
-            "App OAuth validated and token discarded. Separate access result below; no native playback tested."
             else deviceAuthStatus(phase))
-        accessResult?.let { Text(accessProbeSummary(it)) }
         saveState?.let { Text("Saved authorization: ${it.name}") }
         failureDetails?.let { Text("Native failure: ${deviceFailureSummary(it)}") }
         responseIssue?.let { Text("Native response check: ${it.name}") }

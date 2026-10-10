@@ -118,10 +118,10 @@ class TwitchLifetimeInspectionTest {
         listOf(missing, zero, validationZero).forEach { assertTrue(it.closed) }
     }
 
-    @Test fun `inspection refuses wrong clients profiles or any callback before IO`() = runBlocking {
+    @Test fun `inspection refuses wrong clients profiles or a callback before IO`() = runBlocking {
         val forbidden: suspend (String, Long) -> Unit = { _, _ -> fail("inspection handed out a session") }
         val wrongClient = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID,
+        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice("anotherpublicclient",
             wrongClient, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV, inspectSmartTvLifetime = true))
         val webClient = Transport()
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(PROVIDER_TWITCH_CLIENT_ID,
@@ -129,22 +129,11 @@ class TwitchLifetimeInspectionTest {
         val defaultProfile = Transport()
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
             defaultProfile, {}, {}, inspectSmartTvLifetime = true))
-        val ownProfile = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
-            ownProfile, {}, {}, providerProfile = TwitchAuthorizationProfile.TACHIAI, inspectSmartTvLifetime = true))
-        val ownCallback = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
-            ownCallback, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
-            inspectSmartTvLifetime = true, onOwnClientValidated = forbidden))
         val providerCallback = Transport()
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
             providerCallback, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
             inspectSmartTvLifetime = true, onProviderClientValidated = forbidden))
-        val bothCallbacks = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
-            bothCallbacks, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
-            inspectSmartTvLifetime = true, onOwnClientValidated = forbidden, onProviderClientValidated = forbidden))
-        listOf(wrongClient, webClient, defaultProfile, ownProfile, ownCallback, providerCallback, bothCallbacks).forEach {
+        listOf(wrongClient, webClient, defaultProfile, providerCallback).forEach {
             assertEquals(0, it.devices)
             assertEquals(0, it.polls)
             assertEquals(0, it.validations)
@@ -180,7 +169,7 @@ class TwitchLifetimeInspectionTest {
     @Test fun `inspection retains exact identity user scope and grant-schema checks`() = runBlocking {
         val base = Transport().validation
         val cases = listOf(
-            (base + ("client_id" to TACHIAI_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
+            (base + ("client_id" to "anotherpublicclient")) to DeviceAuthPhase.CLIENT_MISMATCH,
             (base + ("client_id" to PROVIDER_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
             (base + ("user_id" to "")) to DeviceAuthPhase.INVALID_RESPONSE,
             (base + ("scopes" to listOf("chat:read"))) to DeviceAuthPhase.SCOPE_MISMATCH,

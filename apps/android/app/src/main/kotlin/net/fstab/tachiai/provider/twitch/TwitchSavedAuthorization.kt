@@ -20,7 +20,7 @@ internal class SavedAuthorizationRead(val state: SavedAuthorizationState, val le
     override fun toString() = "SavedAuthorizationRead(${state.name}, redacted)"
 }
 
-internal fun encodeSavedTwitchToken(record: SavedTwitchToken, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI): ByteArray {
+internal fun encodeSavedTwitchToken(record: SavedTwitchToken, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV): ByteArray {
     require(Regex("[A-Za-z0-9._~+/=-]{1,4096}").matches(record.token))
     require(record.savedAtMs > 0 && record.expiresAtMs > record.savedAtMs)
     val bytes = ByteArrayOutputStream()
@@ -37,7 +37,7 @@ internal fun encodeSavedTwitchToken(record: SavedTwitchToken, profile: TwitchAut
     return bytes.toByteArray()
 }
 
-internal fun decodeSavedTwitchToken(bytes: ByteArray, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI): SavedTwitchToken = DataInputStream(ByteArrayInputStream(bytes)).use {
+internal fun decodeSavedTwitchToken(bytes: ByteArray, profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV): SavedTwitchToken = DataInputStream(ByteArrayInputStream(bytes)).use {
     val localRetention = profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL
     require(it.readInt() == if (localRetention) 2 else 1)
     if (localRetention) require(it.readUTF() == profile.name)
@@ -55,7 +55,7 @@ internal class TwitchSavedAuthorization(
     private val storage: PrivateSecretStore,
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
-    val profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI,
+    val profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
 ) {
     private val lock = Any()
     private val leaseOwner = Any()

@@ -1,7 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
 import net.fstab.tachiai.provider.twitch.DeviceAuthResponse
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 
 internal const val TWITCH_CATALOG_SCOPE = "user:read:follows"
 internal const val TWITCH_CATALOG_TOKEN_LIMIT = 2048
@@ -82,7 +82,7 @@ internal fun parseTwitchCatalogToken(response: DeviceAuthResponse): TwitchCatalo
 
 internal fun parseTwitchCatalogValidation(response: DeviceAuthResponse, expectedUserId: String? = null): TwitchCatalogValidation {
     val fields = accepted(response)
-    if (fields.string("client_id", 64) != TACHIAI_TWITCH_CLIENT_ID) fail(TwitchCatalogAuthFailure.CLIENT_MISMATCH)
+    if (fields.string("client_id", 64) != SMART_TV_TWITCH_CLIENT_ID) fail(TwitchCatalogAuthFailure.CLIENT_MISMATCH)
     val user = fields.string("user_id", 128)
     if (!validCatalogUserId(user)) fail()
     if (expectedUserId != null && user != expectedUserId) fail(TwitchCatalogAuthFailure.USER_MISMATCH)

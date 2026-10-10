@@ -43,6 +43,7 @@ internal fun readTwitchCatalogRouteOwner(instanceId: String, readInstances: () -
 internal fun androidTwitchCatalogConnectionBinding(context: Context,
     instanceId: String, canUse: () -> Boolean = { true }): TwitchCatalogConnectionBinding {
     val application = context.applicationContext
+    AndroidPrivateSecretStore.removeRetiredTwitchRegistration(application)
     val diagnostics = FailureDiagnostics.create(application)
     class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?)
     fun readOwner(): Snapshot {

@@ -62,12 +62,12 @@ internal fun classifyTwitchErrorFields(status: Int, fields: Map<String, Any?>): 
 
 internal fun probeTwitchAccessErrors(
     http: AccessProbeHttp, kind: TwitchAccessCase, resource: String, token: String,
-    blankClientHeader: Boolean = false,
-    profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.TACHIAI,
+    blankClientHeader: Boolean = true,
+    profile: TwitchAuthorizationProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
 ): TwitchAccessErrorResult = http.exchange(
     AccessProbeEndpoint.TWITCH_ACCESS, URI("https://gql.twitch.tv/gql"),
     twitchAccessProbeBody(kind, resource), token, profile.clientId.also {
-        require(profile == TwitchAuthorizationProfile.TACHIAI || blankClientHeader)
+        require(blankClientHeader)
     },
     inspectTwitchErrors = true,
     blankTwitchClientHeader = blankClientHeader,

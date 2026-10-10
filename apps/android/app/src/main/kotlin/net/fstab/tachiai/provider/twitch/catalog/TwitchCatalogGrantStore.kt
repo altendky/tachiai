@@ -17,10 +17,11 @@ import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
 import net.fstab.tachiai.presentation.validProviderInstanceId
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.validTwitchClientId
 
 internal enum class TwitchCatalogGrantState { READY, REFRESHING, RECONNECT, CLEARED }
-internal enum class TwitchCatalogStoreFailure { STORAGE, INVALID_RECORD }
+internal enum class TwitchCatalogStoreFailure { STORAGE, INVALID_RECORD, CLIENT_MISMATCH }
 internal class TwitchCatalogStoreException(val failure: TwitchCatalogStoreFailure) : Exception(failure.name)
 
 internal class TwitchCatalogConnectionAttempt internal constructor(
@@ -123,7 +124,11 @@ internal class TwitchCatalogGrantStore(
             return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
                 check(input.readInt() == 1)
                 check(input.readUTF() == instanceId)
-                check(input.readUTF() == TACHIAI_TWITCH_CLIENT_ID)
+                val client = input.readUTF().also { check(validTwitchClientId(it)) }
+                // A differently bound grant needs explicit reconnection. Never
+                // interpret its credentials or implicitly rewrite its record.
+                if (client != SMART_TV_TWITCH_CLIENT_ID)
+                    throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.CLIENT_MISMATCH)
                 check(input.readUTF() == TWITCH_CATALOG_SCOPE)
                 val generation = input.readUTF().also { check(validProviderInstanceId(it)) }
                 val state = TwitchCatalogGrantState.valueOf(input.readUTF())
@@ -139,6 +144,8 @@ internal class TwitchCatalogGrantStore(
                 check(input.read() == -1)
                 grant
             }
+        } catch (error: TwitchCatalogStoreException) {
+            throw error
         } catch (_: Exception) {
             throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.INVALID_RECORD)
         } finally { bytes.fill(0) }
@@ -150,7 +157,7 @@ internal class TwitchCatalogGrantStore(
                 DataOutputStream(buffer).use { output ->
                     output.writeInt(1)
                     output.writeUTF(instanceId)
-                    output.writeUTF(TACHIAI_TWITCH_CLIENT_ID)
+                    output.writeUTF(SMART_TV_TWITCH_CLIENT_ID)
                     output.writeUTF(TWITCH_CATALOG_SCOPE)
                     output.writeUTF(grant.generation)
                     output.writeUTF(grant.state.name)
@@ -198,7 +205,8 @@ internal class TwitchCatalogGrantStore(
             if (!retryPending && expectedGeneration != null) {
                 val current = try { readUnlocked(ignorePendingClear = true) }
                 catch (error: TwitchCatalogStoreException) {
-                    if (error.failure == TwitchCatalogStoreFailure.INVALID_RECORD) null else throw error
+                    if (error.failure in setOf(TwitchCatalogStoreFailure.INVALID_RECORD,
+                            TwitchCatalogStoreFailure.CLIENT_MISMATCH)) null else throw error
                 }
                 if (current != null && current.generation != expectedGeneration &&
                     current.state != TwitchCatalogGrantState.CLEARED) return@locked false

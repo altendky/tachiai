@@ -1,7 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
 import net.fstab.tachiai.provider.twitch.DeviceAuthResponse
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -11,7 +11,7 @@ internal fun catalogTokenResponse(overrides: Map<String, Any?> = emptyMap()) = D
 ) + overrides)
 
 internal fun catalogValidationResponse(overrides: Map<String, Any?> = emptyMap()) = DeviceAuthResponse(200, mapOf(
-    "client_id" to TACHIAI_TWITCH_CLIENT_ID, "user_id" to "123456", "login" to "fixture_user",
+    "client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "123456", "login" to "fixture_user",
     "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 100,
 ) + overrides)
 
@@ -23,7 +23,7 @@ class TwitchCatalogAuthorizationTest {
         assertNull(error.cause)
     }
 
-    @Test fun exactOwnClientGrantBindsAccountAndRefreshCredentialsWithoutExposingThem() {
+    @Test fun exactSmartTvGrantBindsAccountAndRefreshCredentialsWithoutExposingThem() {
         val grant = parseTwitchCatalogToken(catalogTokenResponse())
         val validated = parseTwitchCatalogValidation(catalogValidationResponse(), "123456")
         assertEquals("fixture-refresh%&/+", grant.refreshToken)

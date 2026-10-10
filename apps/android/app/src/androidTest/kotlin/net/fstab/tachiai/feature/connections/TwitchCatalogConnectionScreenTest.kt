@@ -21,9 +21,12 @@ class TwitchCatalogConnectionScreenTest {
             TwitchCatalogConnectionScreen(state.value, { connections++ }, { validations++ }, { forgotten++ },
                 { cancellations++ }, { browser = it }, {})
         } }
-        compose.onNodeWithText("Connect catalog account").performScrollTo().performClick()
-        compose.onNodeWithText("Validate catalog account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Forget catalog account on this device").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Connect Twitch").performScrollTo().performClick()
+        compose.onAllNodesWithText("Connect Twitch").assertCountEquals(1)
+        compose.onNodeWithText("Following, stream discovery and playback", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("Other provider instances keep their own accounts", substring = true).assertExists()
+        compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("external consent browser uses its own network", substring = true).performScrollTo().assertExists()
         compose.runOnIdle {
             assertEquals(1, connections)
@@ -31,18 +34,18 @@ class TwitchCatalogConnectionScreenTest {
                 operation = TwitchCatalogConnectionOperation.CONNECT, phase = DeviceAuthPhase.PAUSED,
                 activation = DeviceActivation("FIXTURE123", URI("https://www.twitch.tv/activate")))
         }
-        compose.onNodeWithText("Reconnect catalog account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Reconnect Twitch").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Your activation code: FIXTURE123").performScrollTo().assertExists()
-        compose.onNodeWithText("Open catalog activation in Chrome").performScrollTo().performClick()
-        compose.onNodeWithText("Cancel catalog action").performScrollTo().performClick()
-        compose.onNodeWithText("Forget catalog account on this device").performScrollTo().performClick()
+        compose.onNodeWithText("Open Twitch activation in Chrome").performScrollTo().performClick()
+        compose.onNodeWithText("Cancel Twitch action").performScrollTo().performClick()
+        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals("com.android.chrome", browser); assertEquals(1, cancellations); assertEquals(1, forgotten)
             assertEquals(0, validations)
             state.value = state.value.copy(operation = null, activation = null)
         }
         compose.onNodeWithText("Your activation code: FIXTURE123").assertDoesNotExist()
-        compose.onNodeWithText("Validate catalog account").performScrollTo().performClick()
+        compose.onNodeWithText("Validate Twitch account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, validations) }
     }
 
@@ -53,9 +56,9 @@ class TwitchCatalogConnectionScreenTest {
                 status = "Catalog account could not be cleared. Access remains blocked. Retry Forget."),
                 { fail("Connect remains blocked") }, { fail("Validate remains blocked") }, { forgotten++ }, {}, {}, {})
         } }
-        compose.onNodeWithText("Connect catalog account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Validate catalog account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Forget catalog account on this device").performScrollTo().performClick()
+        compose.onNodeWithText("Connect Twitch").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, forgotten) }
     }
 }

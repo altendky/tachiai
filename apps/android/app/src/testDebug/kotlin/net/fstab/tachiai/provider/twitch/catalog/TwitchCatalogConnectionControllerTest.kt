@@ -52,7 +52,7 @@ class TwitchCatalogConnectionControllerTest {
             }
             override fun validate(accessToken: String): DeviceAuthResponse {
                 check(canRequest())
-                return DeviceAuthResponse(200, mapOf("client_id" to TACHIAI_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
+                return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
                     "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600))
             }
             override fun refresh(refreshToken: String): DeviceAuthResponse = error("No refresh in this fixture")

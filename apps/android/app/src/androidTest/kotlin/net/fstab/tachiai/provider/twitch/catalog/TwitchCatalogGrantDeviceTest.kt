@@ -8,7 +8,7 @@ import net.fstab.tachiai.platform.storage.AndroidPrivateSecretStore
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.twitchCatalogInstanceBindingName
 import net.fstab.tachiai.provider.twitch.DeviceAuthResponse
-import net.fstab.tachiai.provider.twitch.TACHIAI_TWITCH_CLIENT_ID
+import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -31,7 +31,7 @@ class TwitchCatalogGrantDeviceTest {
             .put("token_type", "bearer").put("scope", JSONArray().put(TWITCH_CATALOG_SCOPE)).put("expires_in", 3600))
         val credentials = parseTwitchCatalogToken(token)
         assertEquals("fixture-access", credentials.accessToken)
-        val validation = parseTwitchCatalogValidation(response(JSONObject().put("client_id", TACHIAI_TWITCH_CLIENT_ID)
+        val validation = parseTwitchCatalogValidation(response(JSONObject().put("client_id", SMART_TV_TWITCH_CLIENT_ID)
             .put("user_id", "fixture-user").put("scopes", JSONArray().put(TWITCH_CATALOG_SCOPE)).put("expires_in", 3600)))
         assertEquals("fixture-user", validation.userId)
         assertEquals(setOf(TWITCH_CATALOG_SCOPE), validation.scopes)

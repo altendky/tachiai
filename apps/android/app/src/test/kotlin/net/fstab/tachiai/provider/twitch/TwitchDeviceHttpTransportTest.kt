@@ -62,8 +62,8 @@ class TwitchDeviceHttpTransportTest {
             open = { Connection(it).also(connections::add) }, decode = { emptyMap() },
             onHttpStatus = { endpoint, status -> events += "${endpoint.name}:$status" },
         )
-        transport.device(TACHIAI_TWITCH_CLIENT_ID)
-        transport.poll(TACHIAI_TWITCH_CLIENT_ID, "device+secret&value")
+        transport.device(SMART_TV_TWITCH_CLIENT_ID)
+        transport.poll(SMART_TV_TWITCH_CLIENT_ID, "device+secret&value")
         transport.validate("access-secret")
         assertEquals(listOf("/oauth2/device", "/oauth2/token", "/oauth2/validate"), connections.map { it.url.path })
         connections.forEach {
@@ -91,7 +91,7 @@ class TwitchDeviceHttpTransportTest {
                 body = ByteArray(DEVICE_RESPONSE_LIMIT + 1), length = length)
             var decoded = false
             val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { decoded = true; emptyMap() })
-            assertThrows(InvalidDeviceResponse::class.java) { transport.device(TACHIAI_TWITCH_CLIENT_ID) }
+            assertThrows(InvalidDeviceResponse::class.java) { transport.device(SMART_TV_TWITCH_CLIENT_ID) }
             assertFalse(decoded)
             assertTrue(connection.disconnected)
         }
@@ -101,7 +101,7 @@ class TwitchDeviceHttpTransportTest {
         val connection = Connection(URL("https://id.twitch.tv/oauth2/device"), status = 302)
         var decoded = false
         val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { decoded = true; emptyMap() })
-        assertEquals(302, transport.device(TACHIAI_TWITCH_CLIENT_ID).status)
+        assertEquals(302, transport.device(SMART_TV_TWITCH_CLIENT_ID).status)
         assertFalse(decoded)
         assertTrue(connection.disconnected)
     }
@@ -113,7 +113,7 @@ class TwitchDeviceHttpTransportTest {
             decode = { assertEquals("pending", it); mapOf("message" to "authorization_pending") },
             onHttpStatus = { endpoint, status -> events += "${endpoint.name}:$status" },
         )
-        repeat(3) { assertEquals("authorization_pending", transport.poll(TACHIAI_TWITCH_CLIENT_ID, "code").fields["message"]) }
+        repeat(3) { assertEquals("authorization_pending", transport.poll(SMART_TV_TWITCH_CLIENT_ID, "code").fields["message"]) }
         assertEquals(listOf("TOKEN:400"), events)
     }
 
@@ -122,7 +122,7 @@ class TwitchDeviceHttpTransportTest {
         val transport = TwitchDeviceHttpTransport(open = { opened = true; Connection(it) }, decode = { emptyMap() })
         transport.close()
         transport.close()
-        assertThrows(IllegalStateException::class.java) { transport.device(TACHIAI_TWITCH_CLIENT_ID) }
+        assertThrows(IllegalStateException::class.java) { transport.device(SMART_TV_TWITCH_CLIENT_ID) }
         assertFalse(opened)
     }
 
@@ -160,7 +160,7 @@ class TwitchDeviceHttpTransportTest {
             onFailure = failures::add)
         val executor = Executors.newSingleThreadExecutor()
         try {
-            val result = executor.submit<DeviceAuthResponse> { transport.device(TACHIAI_TWITCH_CLIENT_ID) }
+            val result = executor.submit<DeviceAuthResponse> { transport.device(SMART_TV_TWITCH_CLIENT_ID) }
             assertTrue(arrived.await(5, TimeUnit.SECONDS))
             transport.close()
             val failure = assertThrows(ExecutionException::class.java) { result.get(5, TimeUnit.SECONDS) }
@@ -178,7 +178,7 @@ class TwitchDeviceHttpTransportTest {
         val connection = Connection(URL("https://id.twitch.tv/oauth2/device"))
         lateinit var transport: TwitchDeviceHttpTransport
         transport = TwitchDeviceHttpTransport(open = { transport.close(); connection }, decode = { emptyMap() })
-        assertThrows(InterruptedIOException::class.java) { transport.device(TACHIAI_TWITCH_CLIENT_ID) }
+        assertThrows(InterruptedIOException::class.java) { transport.device(SMART_TV_TWITCH_CLIENT_ID) }
         assertTrue(connection.disconnected)
     }
 
@@ -189,7 +189,7 @@ class TwitchDeviceHttpTransportTest {
         val failures = mutableListOf<DeviceHttpFailure>()
         val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { decoded = true; emptyMap() },
             clockMs = { now }, onFailure = failures::add)
-        assertThrows(InterruptedIOException::class.java) { transport.device(TACHIAI_TWITCH_CLIENT_ID) }
+        assertThrows(InterruptedIOException::class.java) { transport.device(SMART_TV_TWITCH_CLIENT_ID) }
         assertFalse(decoded)
         assertTrue(connection.disconnected)
         assertEquals(listOf(DeviceHttpFailure(DeviceAuthEndpoint.DEVICE, DeviceRequestStage.STATUS,
@@ -213,7 +213,7 @@ class TwitchDeviceHttpTransportTest {
         val failures = mutableListOf<DeviceHttpFailure>()
         val transport = TwitchDeviceHttpTransport(open = { throw error }, clockMs = { 1000 },
             onFailure = failures::add)
-        assertSame(error, assertThrows(UnknownHostException::class.java) { transport.device(TACHIAI_TWITCH_CLIENT_ID) })
+        assertSame(error, assertThrows(UnknownHostException::class.java) { transport.device(SMART_TV_TWITCH_CLIENT_ID) })
         assertEquals(listOf(DeviceHttpFailure(DeviceAuthEndpoint.DEVICE, DeviceRequestStage.OPEN,
             DeviceNetworkFailure.DNS, 0)), failures)
         assertFalse(failures.toString().contains("private diagnostic text"))
@@ -231,7 +231,7 @@ class TwitchDeviceHttpTransportTest {
             val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { emptyMap() },
                 clockMs = { now }, onFailure = failures::add)
             assertSame(error, assertThrows(SocketTimeoutException::class.java) {
-                transport.poll(TACHIAI_TWITCH_CLIENT_ID, "fixture-code")
+                transport.poll(SMART_TV_TWITCH_CLIENT_ID, "fixture-code")
             })
             assertEquals(listOf(DeviceHttpFailure(DeviceAuthEndpoint.TOKEN, stage,
                 DeviceNetworkFailure.TIMEOUT, if (stage == DeviceRequestStage.WRITE) 0 else 200)), failures)
@@ -248,7 +248,7 @@ class TwitchDeviceHttpTransportTest {
             val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { emptyMap() },
                 clockMs = { 0 }, onFailure = failures::add, canRequest = { false })
             assertThrows(DeviceRequestPaused::class.java) {
-                if (validate) transport.validate("fixture-token") else transport.poll(TACHIAI_TWITCH_CLIENT_ID, "fixture-code")
+                if (validate) transport.validate("fixture-token") else transport.poll(SMART_TV_TWITCH_CLIENT_ID, "fixture-code")
             }
             assertEquals(0, statuses)
             assertEquals(0, connection.written.size())
@@ -263,7 +263,7 @@ class TwitchDeviceHttpTransportTest {
         val connection = Connection(URL("https://id.twitch.tv/oauth2/token"), onResponse = { foreground = false })
         val transport = TwitchDeviceHttpTransport(open = { connection }, decode = { mapOf("fixture" to true) },
             canRequest = { foreground })
-        assertEquals(true, transport.poll(TACHIAI_TWITCH_CLIENT_ID, "fixture-code").fields["fixture"])
+        assertEquals(true, transport.poll(SMART_TV_TWITCH_CLIENT_ID, "fixture-code").fields["fixture"])
         assertTrue(connection.written.size() > 0)
         assertTrue(connection.disconnected)
     }

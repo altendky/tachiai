@@ -37,9 +37,11 @@ internal fun configuredTwitchBroadcasterSession(context: Context, resource: Cata
     liveIdentityResolverFactory: () -> TwitchLiveIdentityResolver,
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
-    diagnostics: FailureReporter = FailureReporter.NONE): PrototypeTwitchSession =
+    diagnostics: FailureReporter = FailureReporter.NONE,
+    preparationFactory: (() -> TwitchPlaybackPreparation)? = null): PrototypeTwitchSession =
     PrototypeTwitchSession(context, false, resource.identity, active, onEvent, openConnection,
-        authorization, diagnostics, broadcasterResource = resource, liveIdentityResolverFactory = liveIdentityResolverFactory)
+        authorization, diagnostics, broadcasterResource = resource, liveIdentityResolverFactory = liveIdentityResolverFactory,
+        preparationFactory = preparationFactory)
 
 @UnstableApi
 internal class PrototypeTwitchSession(
@@ -54,6 +56,7 @@ internal class PrototypeTwitchSession(
     private val initialPositionMs: Long = 0,
     private val broadcasterResource: CatalogResource? = null,
     private val liveIdentityResolverFactory: (() -> TwitchLiveIdentityResolver)? = null,
+    preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
 ) : PrototypeFeedSession {
     init {
         if (broadcasterResource == null) {
@@ -76,7 +79,8 @@ internal class PrototypeTwitchSession(
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     override var cleanupFailed: Boolean = false
         private set
-    private val preparation = NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection, authorization)
+    private val preparation = preparationFactory?.invoke()
+        ?: NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection, authorization)
     private var host: BoundedNativePlayer? = null
     override val providerView: View? = null
     override val member: NativePairMember? get() = host

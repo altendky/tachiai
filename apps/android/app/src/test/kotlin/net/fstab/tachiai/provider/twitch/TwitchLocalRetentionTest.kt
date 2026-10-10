@@ -65,12 +65,12 @@ class TwitchLocalRetentionTest {
         SMART_TV_TWITCH_CLIENT_ID, transport, {}, {}, clockMs = { clock.monotonic }, waitMs = { clock.advance(it) },
         providerProfile = local, retainSmartTvLocally = true, onProviderClientValidated = callback)
 
-    @Test fun `local identity shares only the public client ID and adds an isolated fourth slot`() {
+    @Test fun `local identity shares only the public client ID and keeps an isolated slot`() {
         assertEquals(SMART_TV_TWITCH_CLIENT_ID, local.clientId)
         assertEquals(TwitchAuthorizationProfile.PROVIDER_SMART_TV.clientId, local.clientId)
-        assertEquals(4, TwitchAuthorizationProfile.entries.size)
-        assertEquals(3, TwitchAuthorizationProfile.entries.map { it.clientId }.toSet().size)
-        assertEquals(4, TwitchAuthorizationProfile.entries.map { it.storageSlot.bindingName }.toSet().size)
+        assertEquals(3, TwitchAuthorizationProfile.entries.size)
+        assertEquals(2, TwitchAuthorizationProfile.entries.map { it.clientId }.toSet().size)
+        assertEquals(3, TwitchAuthorizationProfile.entries.map { it.storageSlot.bindingName }.toSet().size)
         assertNotEquals(TwitchAuthorizationProfile.PROVIDER_SMART_TV.storageSlot, local.storageSlot)
         assertEquals(604_800_000L, SMART_TV_LOCAL_RETENTION_MS)
     }
@@ -115,12 +115,12 @@ class TwitchLocalRetentionTest {
     @Test fun `local retention requires explicit mode exact profile and only provider callback before IO`() = runBlocking {
         val forbidden: suspend (String, Long) -> Unit = { _, _ -> fail("invalid local handoff") }
         suspend fun rejected(client: String = SMART_TV_TWITCH_CLIENT_ID, profile: TwitchAuthorizationProfile = local,
-            retain: Boolean = true, inspect: Boolean = false, own: (suspend (String, Long) -> Unit)? = null,
+            retain: Boolean = true, inspect: Boolean = false,
             provider: (suspend (String, Long) -> Unit)? = forbidden) {
             val transport = Transport()
             assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(client, transport, {}, {},
                 providerProfile = profile, retainSmartTvLocally = retain, inspectSmartTvLifetime = inspect,
-                onOwnClientValidated = own, onProviderClientValidated = provider))
+                onProviderClientValidated = provider))
             assertEquals(0, transport.devices)
             assertEquals(0, transport.polls)
             assertEquals(0, transport.validations)
@@ -129,13 +129,10 @@ class TwitchLocalRetentionTest {
         rejected(retain = false)
         rejected(profile = TwitchAuthorizationProfile.PROVIDER_SMART_TV)
         rejected(profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
-        rejected(profile = TwitchAuthorizationProfile.TACHIAI)
-        rejected(client = TACHIAI_TWITCH_CLIENT_ID)
+        rejected(client = "anotherpublicclient")
         rejected(client = PROVIDER_TWITCH_CLIENT_ID)
         rejected(inspect = true)
         rejected(provider = null)
-        rejected(own = forbidden)
-        rejected(own = forbidden, provider = null)
     }
 
     @Test fun `strict TV behavior still rejects unknown grant lifetime and zero validation`() = runBlocking {
@@ -157,7 +154,7 @@ class TwitchLocalRetentionTest {
         val base = Transport().response.fields
         val responses = listOf(
             DeviceAuthResponse(401, emptyMap()) to DeviceAuthPhase.REJECTED,
-            DeviceAuthResponse(200, base + ("client_id" to TACHIAI_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
+            DeviceAuthResponse(200, base + ("client_id" to "anotherpublicclient")) to DeviceAuthPhase.CLIENT_MISMATCH,
             DeviceAuthResponse(200, base + ("user_id" to "")) to DeviceAuthPhase.INVALID_RESPONSE,
             DeviceAuthResponse(200, base + ("scopes" to listOf("chat:read"))) to DeviceAuthPhase.SCOPE_MISMATCH,
             DeviceAuthResponse(200, base - "scopes") to DeviceAuthPhase.INVALID_RESPONSE,
@@ -408,7 +405,7 @@ class TwitchLocalRetentionTest {
         val original = storage.bytes!!.copyOf()
         val base = Transport().response
         for (response in listOf(DeviceAuthResponse(401, emptyMap()),
-            DeviceAuthResponse(200, base.fields + ("client_id" to TACHIAI_TWITCH_CLIENT_ID)),
+            DeviceAuthResponse(200, base.fields + ("client_id" to "anotherpublicclient")),
             DeviceAuthResponse(200, base.fields + ("user_id" to "")),
             DeviceAuthResponse(200, base.fields + ("scopes" to listOf("chat:read"))),
             DeviceAuthResponse(200, base.fields - "expires_in"),

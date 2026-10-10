@@ -25,12 +25,14 @@ class ProvidersScreenTest {
                 {}, { _, _, _ -> saved = true }, {}, onCatalogConnection = { connected = it })
         } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
-        compose.onNodeWithText("Catalog account").assertDoesNotExist()
+        compose.onNodeWithText("Twitch account").assertDoesNotExist()
         compose.onNodeWithText("Back to providers").performScrollTo().performClick()
         compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
         compose.onNodeWithContentDescription("Twitch route: Proton Japan").performScrollTo().performClick()
-        compose.onNodeWithText("Catalog account").performScrollTo().performClick()
+        compose.onNodeWithText("Connect Twitch").assertDoesNotExist()
+        compose.onAllNodesWithText("Twitch account").assertCountEquals(1)
+        compose.onNodeWithText("Twitch account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
     }
     @Test fun manageStreamsUsesStableSelectedInstanceWithoutSavingItsDraft() {

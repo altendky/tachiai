@@ -148,7 +148,7 @@ class PrototypeTwitchSessionDeviceTest {
 
     @Test fun invalidResourcePositionAndWrongAuthorizationProfileFailBeforePreparationCanOpenAnyRoute() {
         val local = authorization()
-        val other = authorization(profile = TwitchAuthorizationProfile.TACHIAI)
+        val other = authorization(profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
         instrumentation.runOnMainSync {
             fun create(replay: Boolean, resource: String, position: Long, cache: TwitchSavedAuthorization = local) =
                 PrototypeTwitchSession(instrumentation.targetContext, replay, resource, { true }, {},

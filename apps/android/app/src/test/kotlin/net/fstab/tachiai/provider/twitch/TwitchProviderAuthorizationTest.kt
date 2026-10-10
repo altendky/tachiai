@@ -57,10 +57,10 @@ class TwitchProviderAuthorizationTest {
     }
 
     @Test fun `profiles bind separate identities and storage slots`() {
-        assertEquals(TACHIAI_TWITCH_CLIENT_ID, TwitchAuthorizationProfile.TACHIAI.clientId)
+        assertEquals(SMART_TV_TWITCH_CLIENT_ID, TwitchAuthorizationProfile.PROVIDER_SMART_TV.clientId)
         assertEquals(PROVIDER_TWITCH_CLIENT_ID, TwitchAuthorizationProfile.PROVIDER_PLAYBACK.clientId)
-        assertNotEquals(TwitchAuthorizationProfile.TACHIAI.clientId, TwitchAuthorizationProfile.PROVIDER_PLAYBACK.clientId)
-        assertNotEquals(TwitchAuthorizationProfile.TACHIAI.storageSlot, TwitchAuthorizationProfile.PROVIDER_PLAYBACK.storageSlot)
+        assertNotEquals(TwitchAuthorizationProfile.PROVIDER_SMART_TV.clientId, TwitchAuthorizationProfile.PROVIDER_PLAYBACK.clientId)
+        assertNotEquals(TwitchAuthorizationProfile.PROVIDER_SMART_TV.storageSlot, TwitchAuthorizationProfile.PROVIDER_PLAYBACK.storageSlot)
     }
 
     @Test fun `provider callback follows exact validation with a conservative deadline`() = runBlocking {
@@ -81,21 +81,19 @@ class TwitchProviderAuthorizationTest {
         assertTrue(transport.closed)
     }
 
-    @Test fun `crossed identities and simultaneous callbacks are rejected before network IO`() = runBlocking {
+    @Test fun `crossed provider identities are rejected before network IO`() = runBlocking {
         val forbidden: suspend (String, Long) -> Unit = { _, _ -> fail("crossed authorization callback") }
-        val ownUsingProviderCallback = Transport(TACHIAI_TWITCH_CLIENT_ID)
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID,
-            ownUsingProviderCallback, {}, {}, onProviderClientValidated = forbidden))
-        val providerUsingOwnCallback = Transport()
+        val smartTvUsingWebProfile = Transport(SMART_TV_TWITCH_CLIENT_ID)
+        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(SMART_TV_TWITCH_CLIENT_ID,
+            smartTvUsingWebProfile, {}, {}, onProviderClientValidated = forbidden))
+        val webUsingSmartTvProfile = Transport()
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(PROVIDER_TWITCH_CLIENT_ID,
-            providerUsingOwnCallback, {}, {}, onOwnClientValidated = forbidden))
-        val bothCallbacks = Transport()
-        assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice(PROVIDER_TWITCH_CLIENT_ID,
-            bothCallbacks, {}, {}, onOwnClientValidated = forbidden, onProviderClientValidated = forbidden))
+            webUsingSmartTvProfile, {}, {}, providerProfile = TwitchAuthorizationProfile.PROVIDER_SMART_TV,
+            onProviderClientValidated = forbidden))
         val unrelatedClient = Transport("differentpublicclient")
         assertEquals(DeviceAuthPhase.INVALID_CLIENT_ID, authorizeTwitchDevice("differentpublicclient",
             unrelatedClient, {}, {}, onProviderClientValidated = forbidden))
-        listOf(ownUsingProviderCallback, providerUsingOwnCallback, bothCallbacks, unrelatedClient).forEach {
+        listOf(smartTvUsingWebProfile, webUsingSmartTvProfile, unrelatedClient).forEach {
             assertEquals(0, it.deviceCalls)
             assertEquals(0, it.pollCalls)
             assertEquals(0, it.validationCalls)
@@ -103,20 +101,11 @@ class TwitchProviderAuthorizationTest {
         }
     }
 
-    @Test fun `own callback still succeeds only for the original own identity`() = runBlocking {
-        val transport = Transport(TACHIAI_TWITCH_CLIENT_ID)
-        var callbacks = 0
-        val phase = authorizeTwitchDevice(TACHIAI_TWITCH_CLIENT_ID, transport, {}, {}, waitMs = {},
-            onOwnClientValidated = { _, _ -> callbacks++ })
-        assertEquals(DeviceAuthPhase.SUCCEEDED, phase)
-        assertEquals(1, callbacks)
-        assertTrue(transport.closed)
-    }
 
     @Test fun `provider mismatched identity user and permissions never reach callback`() = runBlocking {
         val base = Transport().validation.fields
         val cases = listOf(
-            DeviceAuthResponse(200, base + ("client_id" to TACHIAI_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
+            DeviceAuthResponse(200, base + ("client_id" to SMART_TV_TWITCH_CLIENT_ID)) to DeviceAuthPhase.CLIENT_MISMATCH,
             DeviceAuthResponse(200, base + ("user_id" to "")) to DeviceAuthPhase.INVALID_RESPONSE,
             DeviceAuthResponse(200, base + ("scopes" to listOf("chat:read"))) to DeviceAuthPhase.SCOPE_MISMATCH,
             DeviceAuthResponse(200, base - "scopes") to DeviceAuthPhase.INVALID_RESPONSE,
@@ -173,75 +162,75 @@ class TwitchProviderAuthorizationTest {
         assertTrue(transport.closed)
     }
 
-    @Test fun `saved record codecs reject the opposite profile without changing own defaults`() {
+    @Test fun `saved record codecs reject the opposite profile with Smart TV defaults`() {
         val record = SavedTwitchToken("synthetic-provider-session", 1000000L, 1100000L)
-        val ownBytes = encodeSavedTwitchToken(record)
+        val tvBytes = encodeSavedTwitchToken(record)
         val providerBytes = encodeSavedTwitchToken(record, TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
-        assertEquals(record.token, decodeSavedTwitchToken(ownBytes).token)
+        assertEquals(record.token, decodeSavedTwitchToken(tvBytes).token)
         assertEquals(record.token, decodeSavedTwitchToken(providerBytes, TwitchAuthorizationProfile.PROVIDER_PLAYBACK).token)
         assertThrows(IllegalArgumentException::class.java) { decodeSavedTwitchToken(providerBytes) }
         assertThrows(IllegalArgumentException::class.java) {
-            decodeSavedTwitchToken(ownBytes, TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
+            decodeSavedTwitchToken(tvBytes, TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
         }
-        assertFalse(providerBytes.contentEquals(ownBytes))
+        assertFalse(providerBytes.contentEquals(tvBytes))
     }
 
     @Test fun `repository leases reject both opposite profiles and other same-profile instances`() = runBlocking {
-        val ownStorage = Storage()
+        val tvStorage = Storage()
         val providerStorage = Storage()
-        val own = TwitchSavedAuthorization(ownStorage, { 1000000L }, { 1000L })
+        val tv = TwitchSavedAuthorization(tvStorage, { 1000000L }, { 1000L })
         val provider = TwitchSavedAuthorization(providerStorage, { 1000000L }, { 1000L },
             profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
-        assertEquals(SavedAuthorizationState.SAVED, own.saveValidated("synthetic-own-session", 101000L, own.revision()))
+        assertEquals(SavedAuthorizationState.SAVED, tv.saveValidated("synthetic-tv-session", 101000L, tv.revision()))
         assertEquals(SavedAuthorizationState.SAVED, provider.saveValidated("synthetic-provider-session", 101000L, provider.revision()))
-        assertEquals(own.revision(), provider.revision())
-        val ownLease = own.read().lease!!
+        assertEquals(tv.revision(), provider.revision())
+        val tvLease = tv.read().lease!!
         val providerLease = provider.read().lease!!
-        assertTrue(own.isCurrent(ownLease))
+        assertTrue(tv.isCurrent(tvLease))
         assertTrue(provider.isCurrent(providerLease))
-        assertFalse(own.isCurrent(providerLease))
-        assertFalse(provider.isCurrent(ownLease))
+        assertFalse(tv.isCurrent(providerLease))
+        assertFalse(provider.isCurrent(tvLease))
         val recreated = TwitchSavedAuthorization(providerStorage, { 1000000L }, { 1000L },
             profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
         assertEquals(SavedAuthorizationState.SAVED, recreated.saveValidated("synthetic-provider-session", 101000L, recreated.revision()))
         assertEquals(provider.revision(), recreated.revision())
         assertFalse(recreated.isCurrent(providerLease))
         assertFalse(provider.isCurrent(recreated.read().lease!!))
-        val crossedStore = TwitchSavedAuthorization(ownStorage, { 1000000L }, { 1000L },
+        val crossedStore = TwitchSavedAuthorization(tvStorage, { 1000000L }, { 1000L },
             profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
         assertEquals(SavedAuthorizationState.UNREADABLE, crossedStore.read().state)
     }
 
-    @Test fun `Forget and stale saves are isolated between own and provider repositories`() = runBlocking {
-        val own = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L })
+    @Test fun `Forget and stale saves are isolated between TV and provider repositories`() = runBlocking {
+        val tv = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L })
         val provider = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L },
             profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
-        own.saveValidated("synthetic-own-session", 101000L, own.revision())
+        tv.saveValidated("synthetic-tv-session", 101000L, tv.revision())
         provider.saveValidated("synthetic-provider-session", 101000L, provider.revision())
-        val ownAttempt = own.revision()
+        val tvAttempt = tv.revision()
         val providerLease = provider.read().lease!!
-        own.forget()
-        assertEquals(SavedAuthorizationState.MISSING, own.read().state)
+        tv.forget()
+        assertEquals(SavedAuthorizationState.MISSING, tv.read().state)
         assertEquals(SavedAuthorizationState.AVAILABLE, provider.read().state)
         assertTrue(provider.isCurrent(providerLease))
         assertEquals(SavedAuthorizationState.SUPERSEDED,
-            own.saveValidated("synthetic-own-session", 101000L, ownAttempt))
-        own.saveValidated("synthetic-own-session", 101000L, own.revision())
-        val ownLease = own.read().lease!!
+            tv.saveValidated("synthetic-tv-session", 101000L, tvAttempt))
+        tv.saveValidated("synthetic-tv-session", 101000L, tv.revision())
+        val tvLease = tv.read().lease!!
         val providerAttempt = provider.revision()
         provider.forget()
         assertEquals(SavedAuthorizationState.MISSING, provider.read().state)
-        assertEquals(SavedAuthorizationState.AVAILABLE, own.read().state)
-        assertTrue(own.isCurrent(ownLease))
+        assertEquals(SavedAuthorizationState.AVAILABLE, tv.read().state)
+        assertTrue(tv.isCurrent(tvLease))
         assertEquals(SavedAuthorizationState.SUPERSEDED,
             provider.saveValidated("synthetic-provider-session", 101000L, providerAttempt))
     }
 
     @Test fun `cached provider use validates its own binding and preserves both slots on rejection`() = runBlocking {
-        val own = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L })
+        val tv = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L })
         val provider = TwitchSavedAuthorization(Storage(), { 1000000L }, { 1000L },
             profile = TwitchAuthorizationProfile.PROVIDER_PLAYBACK)
-        own.saveValidated("synthetic-own-session", 101000L, own.revision())
+        tv.saveValidated("synthetic-tv-session", 101000L, tv.revision())
         provider.saveValidated("synthetic-provider-session", 101000L, provider.revision())
         val accepted = Transport()
         var uses = 0
@@ -249,7 +238,7 @@ class TwitchProviderAuthorizationTest {
             assertEquals("synthetic-provider-session", token)
             assertEquals(51000L, deadline)
             assertTrue(provider.isCurrent(lease))
-            assertFalse(own.isCurrent(lease))
+            assertFalse(tv.isCurrent(lease))
             uses++
         })
         assertEquals(SavedTwitchUseOutcome.USED, success.outcome)
@@ -259,12 +248,12 @@ class TwitchProviderAuthorizationTest {
         assertEquals(1, accepted.validationCalls)
         assertTrue(accepted.closed)
         val wrongClient = Transport().apply {
-            validation = DeviceAuthResponse(200, validation.fields + ("client_id" to TACHIAI_TWITCH_CLIENT_ID))
+            validation = DeviceAuthResponse(200, validation.fields + ("client_id" to SMART_TV_TWITCH_CLIENT_ID))
         }
         assertEquals(SavedTwitchUseOutcome.VALIDATION_REJECTED,
-            useSavedTwitchAuthorization(provider, wrongClient, onUse = { _, _, _ -> fail("own-client validation accepted for provider slot") }).outcome)
+            useSavedTwitchAuthorization(provider, wrongClient, onUse = { _, _, _ -> fail("Smart TV validation accepted for provider slot") }).outcome)
         assertTrue(wrongClient.closed)
-        assertEquals(SavedAuthorizationState.AVAILABLE, own.read().state)
+        assertEquals(SavedAuthorizationState.AVAILABLE, tv.read().state)
         assertEquals(SavedAuthorizationState.AVAILABLE, provider.read().state)
     }
 }

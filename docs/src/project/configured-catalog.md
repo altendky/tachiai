@@ -180,8 +180,8 @@ before route/session preparation. Collections and other unsupported identities
 do not select a sample. Known unavailable video items
 stay configured and retain their existing playback block.
 
-Preparation uses the selected instance's exact route and separate existing LOCAL
-playback grant. Catalog credentials never substitute for that grant, and missing
+Preparation uses the selected instance's exact route and unified Smart TV
+connection, shared with discovery. Missing
 routes or grants never fall back to another instance. New videos start at zero;
 the exact historical replay retains its 70-minute experimental start position.
 This adds no endpoints, protocol, scope, media origin, DRM behavior or background
@@ -204,17 +204,19 @@ their block. Offline or deleted channels fail visibly before native preparation.
 On the worker, the owning instance's connected catalog grant resolves the exact
 ID to its current login and verifies live status. That login must satisfy the
 unchanged native live resolver's narrower grammar. The selected native route and
-its independent LOCAL playback grant then prepare the source. A second lookup by
+its unified Smart TV connection then prepare the source. A second lookup by
 login must still match the original broadcaster ID before player publication.
 These separate provider operations are not atomic; they reject observed rename
 or reuse changes rather than claiming an atomic provider identity guarantee.
 
-Metadata and native playback keep separate grant and route ownership. Missing or
+Metadata and native playback share one grant owner and retain purpose-specific
+route checks. Missing or
 changed ownership never falls back to another instance or System networking.
 The worker performs durable ownership checks; queued publication uses only local
 lease identity, revision, expiry and lifecycle admission, without protected-store
-IO on the main thread. Catalog access is preparation authority, not continuing
-playback entitlement after publication. The existing LOCAL checks continue.
+IO on the main thread. Source acceptance is bounded to 30 seconds and the grant
+deadline. Continuing playback retains the grant lease and existing foreground
+budget; durable ownership checks reject Forget, replacement or expiry.
 
 Identity phases share bounded catalog repair/retry limits. Rate-limited attempts
 retain a transient per-instance retry deadline for the Activity; explicit retry
@@ -224,7 +226,7 @@ retain independent hosts, UUID recovery and saved quality ownership. This adds n
 native endpoints, scopes, origins, DRM behavior or background playback.
 
 Provider-free core, binding and native-session fixtures exercise these boundaries.
-Actual connected-account playback, renamed channels, imported-route acceptance
+Actual scoped Smart TV connected-account playback, renamed channels, imported-route acceptance
 and provider login reuse remain unobserved.
 
 ### ABEMA public-link import

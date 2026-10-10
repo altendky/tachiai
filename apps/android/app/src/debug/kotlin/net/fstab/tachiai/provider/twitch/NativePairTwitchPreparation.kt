@@ -14,7 +14,7 @@ import net.fstab.tachiai.platform.net.AccessProbeHttp
 internal class NativePairTwitchPreparation(context: Context, private val active: () -> Boolean,
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val cache: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
-) : AutoCloseable {
+) : TwitchPlaybackPreparation {
     init { require(cache.profile == TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL) }
     private val valid = AtomicBoolean(true)
     private val validator = AtomicReference<TwitchDeviceHttpTransport?>()
@@ -22,17 +22,17 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
     @Volatile private var lease: SavedAuthorizationLease? = null
     private var checkedMs = Long.MIN_VALUE
     private val storedLock = Any()
-    var acceptanceDeadlineMs = 0L
+    override var acceptanceDeadlineMs = 0L
         private set
 
     // Cheap state only: budget/timing callbacks may run on the main looper.
-    fun canContinue(): Boolean = valid.get() && active() && lease?.let {
+    override fun canContinue(): Boolean = valid.get() && active() && lease?.let {
         cache.isCurrent(it) && cache.remainingLocalMs(it) > 0
     } == true
 
     // Worker/Media3 loader only. Bound repeated disk/decryption checks to once
     // per second; preparation checks and the five-second worker poll use force.
-    fun checkStored(force: Boolean = false): Boolean = synchronized(storedLock) {
+    override fun checkStored(force: Boolean): Boolean = synchronized(storedLock) {
         if (!canContinue()) return false
         val now = System.nanoTime() / 1_000_000
         if (!force && checkedMs != Long.MIN_VALUE && now >= checkedMs && now - checkedMs < 1_000) return true
@@ -46,7 +46,7 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
         resolve(replay, if (replay) "2080217716" else "relaxbeats", onStatus)
 
     // Explicit public resource identity; the historical overload above is unchanged.
-    fun resolve(replay: Boolean, resource: String, onStatus: (String, Int) -> Unit): TwitchPlaybackSource {
+    override fun resolve(replay: Boolean, resource: String, onStatus: (String, Int) -> Unit): TwitchPlaybackSource {
         check(valid.get() && active())
         val stored = cache.read()
         onStatus("STORAGE_${stored.state.name}", 0)

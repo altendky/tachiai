@@ -374,6 +374,46 @@ saved-route observations must preserve existing authorization/configuration.
 Series browsing does not imply global video search, timetable/slot resolution
 or an automatically playable permanent sumo collection.
 
+### Exact configured broadcast metadata
+
+Issue [#178](https://github.com/altendky/tachiai/issues/178) adds metadata
+refresh for an already configured exact ABEMA broadcast slot. The existing
+public-link parser retains both the channel and slot IDs; refresh must return
+that same resource. It does not select the channel's current program, another
+day/division, a replay or a recurring group.
+
+The coherent [9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),
+[8974 slot caller](https://abema.tv/assets/compat/0df864b4d17ad744.8974.bundle.js)
+and [3194 slot model](https://abema.tv/assets/compat/4fa634e6d16c9c17.3194.bundle.js)
+establish a bearer GET on the reviewed modern API at the exact media-slot
+path, with `include=payperview`. The response's `slot.id`, `slot.channelId`
+and `slot.title` supply the identity and display projection. Optional division
+comes from a provider context that this slice has not established; it is
+omitted rather than guessed. These are static first-party leads, not actual
+guest acceptance or documented third-party support.
+
+The bounded operation uses a fresh guest and one immutable exact-slot
+request. Same-UID private IPC carries a closed slot request/result schema
+through the existing metadata service; old episode messages retain their
+contract. Native admission checks the exact canonical GET and optional
+authorization preflight, including the fixed query. CSP constrains the
+selected endpoint path, while unrelated account, media and licensing
+requests remain refused.
+
+Strict whole-response validation requires the selected slot and its exact
+parent channel, a bounded safe provider title and unambiguous JSON. It
+projects UNKNOWN availability and no schedule, progress or entitlement.
+Worker owner/deadline checks and confirmed runtime/proxy/backend cleanup
+precede publication. Failed refresh preserves configured UUIDs, identities,
+order and quality; existing public-link import remains usable for non-live
+or unavailable items. Exact-slot playback remains NOT_VERIFIED.
+
+Actual guest compatibility, response limits and optional division behavior
+remain separate runtime gates. Network-blocked and explicitly opted-in
+saved-route checks must preserve protected records and restore ordinary
+test targeting. No account Connect, timetable/search, recurrence or provider
+history operation is part of this metadata slice.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata

@@ -88,6 +88,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE ->
                 RouteSession.createAbemaGuestEpisode(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.FETCH_SERIES -> RouteSession.createAbemaGuestSeries(saved.profile, prepared.preparing)
+            AbemaGuestBootstrapOperation.FETCH_SLOT -> RouteSession.createAbemaGuestSlot(saved.profile, prepared.preparing)
         }
         prepared.own(route)
         check(canRequest())
@@ -110,7 +111,10 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             .replace("__RESOURCE_ARGUMENT__", if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
                 ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                 ", " + checkNotNull(request.seriesRequest).let { JSONObject().put("seriesId", it.seriesId).put("offset", it.offset)
-                    .put("version", it.version ?: JSONObject.NULL).toString() } else "").toByteArray(Charsets.UTF_8)
+                    .put("version", it.version ?: JSONObject.NULL).toString() }
+                else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
+                    ", " + checkNotNull(request.slotRequest).let { JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
+                else "").toByteArray(Charsets.UTF_8)
         check(canRequest())
         return files
     }
@@ -129,7 +133,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         private val canRequest: () -> Boolean, private val current: (AbemaGuestRuntimeView) -> Boolean,
         private val failed: (AbemaGuestRuntimeView, String) -> Unit, private val diagnostics: FailureReporter) : AbemaGuestRuntimeView {
         private val view = WebView(context)
-        private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest)
+        private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest, request.slotRequest)
         private var documentStarted = false
         private var cleanupFailed = false
         override val cleanupConfirmed get() = !cleanupFailed
@@ -158,11 +162,12 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                     if (!allowed) { failed(this@OwnedGuestView, "RESOURCE_REFUSED"); return refused() }
                     if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE ||
                         uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN || AbemaGuestBootstrapPolicy.isProfile(uri) ||
-                        AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) || uri.toString() == request.seriesRequest?.url()) return null
+                        AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) || uri.toString() == request.seriesRequest?.url() ||
+                        uri.toString() == request.slotRequest?.url()) return null
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                         200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(request.operation,
-                            request.policyEpisodeId, request.seriesRequest), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
+                            request.policyEpisodeId, request.seriesRequest, request.slotRequest), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     if (!current(this@OwnedGuestView)) return
@@ -192,7 +197,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.status() || null", callback)
         }
         override fun metadata(callback: (String?) -> Unit) {
-            check(request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE, AbemaGuestBootstrapOperation.FETCH_SERIES))
+            check(request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE, AbemaGuestBootstrapOperation.FETCH_SERIES,
+                AbemaGuestBootstrapOperation.FETCH_SLOT))
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback)
         }
         override fun accountLink(callback: (String?) -> Unit) {

@@ -44,6 +44,8 @@ class AbemaGuestRuntimeCoordinatorTest {
         var metadataTitle = "Exact episode"
         var seriesParent = "series-A"
         var seriesProjection: String? = null
+        var slotRequest = AbemaSlotRequest("channel-A", "slot-A")
+        var slotProjection: String? = null
         var statusState: String? = null
         var statusFailure = "NONE"
         var statusOverride: JSONObject? = null
@@ -68,6 +70,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                     AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> "ACCOUNT_LINK_READY"
                     AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION -> "ACCOUNT_VALIDATION_READY"
                     AbemaGuestBootstrapOperation.FETCH_SERIES -> "EXACT_SERIES_PAGE"
+                    AbemaGuestBootstrapOperation.FETCH_SLOT -> "EXACT_SLOT_METADATA"
                     else -> "EXACT_EPISODE_METADATA"
                 }
                 val value = statusOverride ?: JSONObject().put("state", state).put("failure", statusFailure).apply {
@@ -78,7 +81,10 @@ class AbemaGuestRuntimeCoordinatorTest {
             }
             override fun metadata(callback: (String?) -> Unit) {
                 events += "projection"
-                callback(JSONObject.quote(if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
+                callback(JSONObject.quote(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
+                    slotProjection ?: JSONObject().put("id", slotRequest.slotId).put("channelId", slotRequest.channelId)
+                        .put("title", "Future slot").toString()
+                    else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                     seriesProjection ?: "{\"seriesId\":\"$seriesParent\",\"version\":\"v1\",\"programs\":[{\"id\":\"episode-A\",\"title\":\"Future episode\"}]}"
                     else JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
             }
@@ -133,7 +139,8 @@ class AbemaGuestRuntimeCoordinatorTest {
         fun request(selectedNonce: String = nonce) = AbemaGuestRuntimeRequest(id, operation,
             if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null,
             selectedNonce, proof, main.now + 45_000,
-            seriesRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest(seriesParent) else null) { foreground }
+            seriesRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest(seriesParent) else null,
+            slotRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest else null) { foreground }
         fun start(selectedNonce: String = nonce) = runtime.start(request(selectedNonce), completed = results::add)
         fun pump() {
             repeat(100) {
@@ -146,6 +153,43 @@ class AbemaGuestRuntimeCoordinatorTest {
         }
     }
 
+    @Test fun slotProjectionBindsTwoExactParentsAndPublishesOnlyAfterConfirmedCleanup() {
+        for (slot in listOf(AbemaSlotRequest("channel-A", "slot-A"), AbemaSlotRequest("channel-B", "slot-B"))) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SLOT).apply { slotRequest = slot; holdClear = true }
+            assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+            assertTrue(f.events.indexOf("destroy") < f.events.indexOf("clear-dispatched"))
+            f.clearCallback!!.invoke(); f.pump()
+            assertEquals("EXACT_SLOT_METADATA", f.results.single().category)
+            assertEquals(slot.resource, f.results.single().entry!!.resource)
+            assertNull(f.results.single().seriesPage); assertNull(f.results.single().accountChallenge); assertNull(f.results.single().accountValidation)
+            assertTrue(f.events.contains("close-backend"))
+        }
+    }
+    @Test fun slotWrongParentLateOwnerDeadlineAndCleanupFailuresNeverExportMetadata() {
+        for (projection in listOf("{\"id\":\"slot-A\",\"channelId\":\"other\",\"title\":\"Title\"}",
+            "{\"id\":\"slot-A\",\"title\":\"Title\"}", "{\"id\":\"slot-A\",\"channelId\":\"channel-A\",\"title\":\"Title\",\"source\":\"private\"}")) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SLOT).apply { slotProjection = projection }
+            assertTrue(f.start()); f.pump(); assertEquals("GUEST_SLOT_RESPONSE", f.results.single().category); assertNull(f.results.single().entry)
+        }
+        for (mode in 0..2) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SLOT).apply { holdClear = true }
+            assertTrue(f.start()); f.pump()
+            when (mode) { 0 -> f.foreground = false; 1 -> f.matching = false; else -> f.main.now += 45_000 }
+            f.clearCallback!!.invoke(); f.pump(); assertNull(f.results.single().entry)
+        }
+        val failed = Fixture(AbemaGuestBootstrapOperation.FETCH_SLOT).apply { destroy = { false } }
+        assertTrue(failed.start()); failed.pump(); assertEquals("CLEANUP_FAILED", failed.results.single().category)
+        assertNull(failed.results.single().entry); assertTrue(failed.runtime.unavailable)
+        assertFalse(failed.events.contains("clear-dispatched")); assertFalse(failed.events.contains("close-backend"))
+        for (operation in listOf(AbemaGuestBootstrapOperation.FETCH_SLOT, AbemaGuestBootstrapOperation.FETCH_EPISODE)) {
+            val f = Fixture(operation).apply { statusState = "REFUSED"; statusFailure = "SLOT_HTTP_404" }
+            assertTrue(f.start()); f.pump()
+            assertEquals(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) "GUEST_SLOT_HTTP_404" else "STATUS_REFUSED", f.results.single().category)
+            assertNull(f.results.single().entry)
+        }
+        val crossMode = Fixture(AbemaGuestBootstrapOperation.FETCH_SLOT).apply { statusState = "REFUSED"; statusFailure = "EPISODE_HTTP_404" }
+        assertTrue(crossMode.start()); crossMode.pump(); assertEquals("STATUS_REFUSED", crossMode.results.single().category)
+    }
     @Test fun seriesProjectionPublishesOnlyExactParentAfterDestroyClearBackendAndOwnerChecks() {
         for (parent in listOf("series-A", "series-B")) {
             val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SERIES).apply { seriesParent = parent }

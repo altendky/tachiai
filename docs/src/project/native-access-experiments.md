@@ -4174,6 +4174,40 @@ not a new actual two-feed acceptance. These short emulator runs do not establish
 sustained playback, acoustic output, complete advertisements, physical-device
 DRM/decoding or account access.
 
+## Exact configured linear channels — 2026-10-11
+
+Issue [#170](https://github.com/altendky/tachiai/issues/170) carries the configured
+canonical channel into the cached native session. The channel and episode
+resource parameters are mutually exclusive. A missing parameter retains an
+explicit historical comparison; an invalid requested identity never selects News.
+
+The exact pinned unchanged
+[8204 asset](https://abema.tv/assets/compat/1deb672fea92d35e.8204.bundle.js)
+was independently retrieved and verified: 18786 bytes, SHA-256
+`8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d`.
+Module 21470 selects the advertised linear playlist with its existing
+advertisement behavior and `enforcePlainStream=false`. Its initial channel
+license uses the selected channel identity; no newer live-event gateway or
+different asset revision is substituted.
+
+The owned runtime uses one fresh guest and strict UTF-8/duplicate-free JSON
+limited to 512 KiB and 500 channels. Exactly one selected raw ID must have
+explicit `viewingOpened`, usable DASH playback and a supported DRM mode.
+Widevine-only metadata refuses. The selected source must retain the approved
+CDN, exact channel MPD root and one token equal to the fresh media token. Its
+initial license must have matching `ct=channel`, `cid` and token. The app-owned
+canonical binding is checked before native resolution; native code requests
+only that exact MPD, requires protected initial KIDs and retains existing
+declared-media/live-transition and changed-protection refusal boundaries.
+Worker ownership, foreground/epoch/deadline checks, independent feed state and
+confirmed cleanup remain inherited from the delivered episode foundation.
+
+Independent source review found no substantive remaining finding. Real channel
+availability, advertisement equivalence and frame/position acceptance remain
+unverified until the bounded saved-route observation. This adds no renewal,
+account adoption, source fallback, copied provider algorithm, key extraction or
+new media-origin family.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

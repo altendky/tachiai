@@ -46,6 +46,7 @@ import org.junit.Test
 class AbemaConfiguredEpisodePlaybackDeviceTest {
     private enum class ObservationMode(val acceptedOutcome: String) {
         CONFIGURED_EPISODE("EXACT_EPISODE_FRAME_AND_POSITION"),
+        CONFIGURED_CHANNEL("EXACT_CHANNEL_FRAME_AND_POSITION"),
         HISTORICAL_NEWS("HISTORICAL_NEWS_FRAME_AND_POSITION"),
         HISTORICAL_REPLAY("HISTORICAL_REPLAY_FRAME_AND_POSITION"),
     }
@@ -55,7 +56,11 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         it.runOnMainSync { configureAbemaCachedPlaybackProfile(it.targetContext) }
     }
 
-    @Test fun actualOwnedJavascriptBindsTwoSyntheticEpisodeIdsWithNetworkingBlocked() {
+    @Test fun actualOwnedJavascriptBindsTwoSyntheticEpisodeIdsWithNetworkingBlocked() = ownedJavascriptBindings(false)
+
+    @Test fun actualOwnedJavascriptBindsTwoSyntheticChannelIdsWithNetworkingBlocked() = ownedJavascriptBindings(true)
+
+    private fun ownedJavascriptBindings(channel: Boolean) {
         val instrumentation = cachedInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/native-bootstrap.js").bufferedReader().use { it.readText() }
@@ -68,6 +73,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 window.fetch=async(url,options)=>new Response(JSON.stringify(
                   String(url).includes('/login/guest')?{user_id:'FIXTURE_USER',access_token:'FIXTURE_ACCESS'}:
                   String(url).includes('/media/token')?{token:'FIXTURE_MEDIA'}:
+                  String(url).includes('/v1/channels')?{channels:[{id:'$id',viewingOpened:true,status:{drm:false},
+                    playback:{dash:'https://linear-abematv.akamaized.net/channel/$id/manifest.mpd'}}]}:
                   String(url).includes('/video/programs/')?{id:'$id',label:{free:true},playback:{arin:'FIXTURE_ARIN'},
                     freeEndAt:Math.floor(Date.now()/1000)+600,terms:[{onDemandType:3,endAt:Math.floor(Date.now()/1000)+600}]}:{}),{status:200});
             """.trimIndent()
@@ -94,8 +101,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                   async fetchAvailableStreams(){await fetch('https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/FIXTURE_ARIN');
                     return [{streamingTechnology:'dash',drm:'custom',isRawKey:false,manifestChain:[{url:'https://ds-vod-abematv.akamaized.net/program/$id/manifest.mpd',adInsertion:{mode:0}}]}]}
                 }}}}]);
-                window.__LOADABLE_LOADED_CHUNKS__.push([[3],{}]);window.__LOADABLE_LOADED_CHUNKS__.push([[4],{}]);
-                window.__tachiaiStartNativeBootstrap('$nonce',true,'$id');
+                window.__LOADABLE_LOADED_CHUNKS__.push([[3],{
+                  68610(m){m.exports={Y1:{Streaming:'streaming'}}},
+                  21470(m){m.exports={tw:v=>{if(v.enforcePlainStream!==false||v.sourceParam.contentId!=='$id')throw new Error();
+                    return v.sourceParam.playlists.dash+'?t='+v.sourceParam.mediaToken+'&enc=clear&dt=pc_chrome&ut=1'}}},
+                  78307(m){m.exports={rC:{CLEARKEY:'https://license.p-c3-e.abema-tv.com/abematv-dash'}}}
+                }]);window.__LOADABLE_LOADED_CHUNKS__.push([[4],{}]);
+                window.__tachiaiStartNativeBootstrap('$nonce',${!channel},${if (channel) "undefined,'$id'" else "'$id'"});
             """.trimIndent()
             instrumentation.runOnMainSync {
                 view.set(WebView(context).apply {
@@ -120,11 +132,17 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     Thread.sleep(50)
                 }
                 assertTrue("Two-id owned fixture must reach READY", ready)
-                val binding = evaluate("window.__tachiaiNative_$nonce.sourceBinding()")
-                assertNotNull(parseAbemaEpisodeSourceBinding(binding, id))
-                assertNull(parseAbemaEpisodeSourceBinding(binding, "other-episode"))
+                val projection = if (channel) "channelBinding" else "sourceBinding"
+                val binding = evaluate("window.__tachiaiNative_$nonce.$projection()")
+                if (channel) {
+                    assertNotNull(parseAbemaChannelSourceBinding(binding, id))
+                    assertNull(parseAbemaChannelSourceBinding(binding, "other-channel"))
+                } else {
+                    assertNotNull(parseAbemaEpisodeSourceBinding(binding, id))
+                    assertNull(parseAbemaEpisodeSourceBinding(binding, "other-episode"))
+                }
                 evaluate("window.__tachiaiNative_$nonce.stop(); window.__tachiaiNative_$nonce.status()")
-                assertNull(evaluate("window.__tachiaiNative_$nonce.sourceBinding()"))
+                assertNull(evaluate("window.__tachiaiNative_$nonce.$projection()"))
             } finally { instrumentation.runOnMainSync { view.get().stopLoading(); view.get().destroy() } }
         }
     }
@@ -139,6 +157,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
     @Test fun optInHistoricalNewsUsesProductionSessionAndPreservesSavedRecords() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaHistoricalNews") == "true")
         observePlayback(ObservationMode.HISTORICAL_NEWS)
+    }
+
+    @Test fun optInExactConfiguredChannelUsesProductionSessionAndPreservesSavedRecords() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaConfiguredChannel") == "true")
+        val id = InstrumentationRegistry.getArguments().getString("tachiaiAbemaConfiguredChannelId")
+        assertTrue("Explicit different public channel is required", id != null && validAbemaChannelIdentity(id) && id != "abema-news")
+        observePlayback(ObservationMode.CONFIGURED_CHANNEL, checkNotNull(id))
     }
 
     @Test fun optInHistoricalReplayUsesProductionSessionAndPreservesSavedRecords() {
@@ -182,6 +207,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val source = when (mode) {
                 ObservationMode.CONFIGURED_EPISODE -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(CatalogResource(ProviderId("abema"), "episode", checkNotNull(episodeId), CatalogIntent.VIDEO), "Temporary observation"))
+                ObservationMode.CONFIGURED_CHANNEL -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
+                    CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(episodeId), CatalogIntent.CHANNEL), "Temporary observation"))
                 ObservationMode.HISTORICAL_NEWS, ObservationMode.HISTORICAL_REPLAY -> {
                     val historical = if (mode == ObservationMode.HISTORICAL_NEWS) PrototypeSource.ABEMA_LIVE else PrototypeSource.ABEMA_REPLAY
                     legacyConfiguredSources(owner.instance, defaultSourceSetups(), emptyMap()).single { it.entry.resource == prototypeCatalogResource(historical) }
@@ -237,7 +264,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         }
                     }, route = route, onHelperCreated = { helper -> owned.helper(checkNotNull(run), helper, helper::destroy) { !helper.cleanupFailed } },
                     onCleanupChanged = { main.post { owned.feedCleanupChanged(checkNotNull(run)) } }, episodeResource = feed.resource.takeIf { replay },
-                    ownership = if (!replay) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
+                    channelResource = feed.resource.takeIf { !replay && feed.historicalSource == null },
+                    ownership = if (!replay && feed.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
                         { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, FailureReporter.NONE))
                 val created = checkNotNull(session)
                 owned.feed(checkNotNull(run), 0, created, pending = { created.cleanupPending }, knownFailed = { created.cleanupFailed }, confirmed = { created.cleanupConfirmed })

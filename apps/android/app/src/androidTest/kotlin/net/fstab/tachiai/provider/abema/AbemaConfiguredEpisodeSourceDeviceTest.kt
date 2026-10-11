@@ -37,6 +37,48 @@ class AbemaConfiguredEpisodeSourceDeviceTest {
     }
     private fun uri(id: String) = URI("https://ds-vod-abematv.akamaized.net/program/$id/manifest.mpd?t=synthetic")
 
+    private fun channelUri(id: String) = URI("https://linear-abematv.akamaized.net/channel/$id/manifest.mpd?t=synthetic&enc=clear&dt=pc_chrome&ut=1")
+
+    @Test fun exactChannelNativeConsumerRetainsBothIdsAndProtectedInitializationWithConfirmedTransportCleanup() {
+        for (id in listOf("fixture-one", "fixture-two")) {
+            val selected = channelUri(id)
+            val connection = Connection(selected.toURL(), mpd.toByteArray())
+            val requests = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { it == selected }, { _, _ -> }, { true },
+                openConnection = { assertEquals(selected.toURL(), it); connection })
+            try {
+                val resolved = resolveAbemaChannelNativeSource(selected, requests, id)
+                assertEquals(id, resolved.channelId); assertEquals(selected, resolved.uri); assertEquals(listOf(kid), resolved.kids)
+                assertTrue(connection.closed)
+                val transitions = AbemaManifestTransitionPolicy(resolved.kids)
+                assertTrue(transitions.accepts(mpd))
+                assertTrue(transitions.accepts("<MPD xmlns='urn:mpeg:dash:schema:mpd:2011'><Period/></MPD>"))
+                assertTrue(transitions.accepts(mpd))
+                assertFalse(transitions.accepts(mpd.replace(kid.toString(), "00000000-0000-0000-0000-000000000002")))
+            } finally { requests.close() }
+        }
+    }
+
+    @Test fun exactChannelNativeConsumerRejectsOtherRootBeforeIoAndCancelledInvalidOrClearInitialization() {
+        val id = "fixture-one"; val selected = channelUri(id)
+        var opened = 0; var active = true
+        val requests = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { true }, { _, _ -> }, { active },
+            openConnection = { opened++; Connection(it, mpd.toByteArray()) { active = false } })
+        try {
+            assertThrows(IOException::class.java) { resolveAbemaChannelNativeSource(channelUri("other"), requests, id) }
+            assertEquals(0, opened)
+            assertThrows(IOException::class.java) { resolveAbemaChannelNativeSource(selected, requests, id) }
+            assertEquals(1, opened)
+        } finally { requests.close() }
+        for (body in listOf(byteArrayOf(0xc3.toByte(), 0x28), "<MPD xmlns='urn:mpeg:dash:schema:mpd:2011'><Period/></MPD>".toByteArray())) {
+            val connection = Connection(selected.toURL(), body)
+            val owned = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { true }, { _, _ -> }, { true }, openConnection = { connection })
+            try {
+                assertThrows(IOException::class.java) { resolveAbemaChannelNativeSource(selected, owned, id) }
+                assertTrue(connection.closed)
+            } finally { owned.close() }
+        }
+    }
+
     @Test fun actualManifestResolverRetainsEachExpectedEpisodeAndExactUriAndClosesItsTransport() {
         for (id in listOf("394-72_s10_p8510", "fixture-series_p2")) {
             val source = uri(id); val connection = Connection(source.toURL(), mpd.toByteArray())

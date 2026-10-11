@@ -282,6 +282,30 @@ cause remains unverified. All runs confirmed cleanup and unchanged protected
 records. This is bounded guest playback evidence, not account, sustained-playback
 or physical-device acceptance.
 
+### Exact configured linear-channel playback
+
+Issue [#170](https://github.com/altendky/tachiai/issues/170) adds canonical
+`channel`/`CHANNEL` resources to the same configured-selection contract. The
+cached session receives the immutable requested channel, with its instance,
+route, configured UUID, quality and recovery identity retained. The historical
+full-page comparison refuses new channel selections rather than substituting News.
+
+A fresh owning guest retrieves one bounded, duplicate-free channel snapshot.
+Admission requires exactly one matching raw ID, explicit `viewingOpened`, usable
+advertised playback and a supported DRM mode. Saved UNKNOWN availability only
+permits this verification. Missing or ambiguous metadata and Widevine-only
+channels refuse; no alternate selection is tried. The unchanged pinned linear
+selector retains its advertisement behavior. Selected source, exact channel MPD
+root, fresh media token and initial channel license must agree. Native declared
+media, protected initialization, bounded live transitions, ownership and cleanup
+remain enforced independently for each feed.
+
+This slice implements linear-channel intent. It does not resolve a scheduled
+slot to a different current broadcast, automatically choose a series episode,
+connect an account or retrieve My List/history. Static review and fixtures do not
+establish actual playback; bounded device evidence is recorded separately in
+[native experiments](native-access-experiments.md#exact-configured-linear-channels--2026-10-11).
+
 ## Remaining gates and issue status
 
 The research establishes public identity distinctions, retention semantics,

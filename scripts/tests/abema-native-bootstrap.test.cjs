@@ -24,6 +24,8 @@ const freeProgram = (id = '394-72_s10_p8529') => ({
 const liveChannel = () => ({ id: 'abema-news', viewingOpened: true,
   playback: { dash: 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd' },
   status: { drm: true } });
+const configuredLinearChannel = id => ({ id, viewingOpened: true,
+  playback: { dash: `https://linear-abematv.akamaized.net/channel/${id}/manifest.mpd` }, status: { drm: false } });
 const replayStream = (overrides = {}) => ({ streamingTechnology: 'FIXTURE_DASH',
   drm: { systemId: 'FIXTURE_CUSTOM' }, rawKey: false,
   manifestChain: [{ url: 'https://linear-abematv.akamaized.net/synthetic-replay/manifest.mpd',
@@ -54,7 +56,10 @@ function fixture(options = {}) {
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
-      else if (uri.pathname === '/v1/channels') body = options.channels || { channels: [liveChannel()] };
+      else if (uri.pathname === '/v1/channels') {
+        if (options.deferChannels) await deferred;
+        body = options.channels || { channels: [liveChannel()] };
+      }
       else if (uri.pathname.startsWith('/v1/video/programs/')) {
         if (options.deferProgram) await deferred;
         body = options.program || freeProgram(uri.pathname.split('/').at(-1));
@@ -182,9 +187,12 @@ function fixture(options = {}) {
     21470(module, exports, require) { require.d(exports, { tw: () => config => {
       observed.legacy.push(config);
       if (fake.selectedURL !== undefined) return fake.selectedURL;
-      const url = new URL(config.sourceParam.playlists.dash);
+      const url = new URL(fake.selectYospace ? config.sourceParam.playlists.yospace.dash : config.sourceParam.playlists.dash);
       url.searchParams.set('t', config.sourceParam.mediaToken);
       if (config.sourceParam.isDrm) url.searchParams.set('enc', 'wv');
+      if (fake.configuredLinear) {
+        url.searchParams.set('enc', 'clear'); url.searchParams.set('dt', 'pc_chrome'); url.searchParams.set('ut', '1');
+      }
       return url.href;
     } }); },
     78307(module, exports, require) { require.d(exports, {}, { rC: {
@@ -196,6 +204,7 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate,
     start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -211,6 +220,90 @@ async function waitFor(value, expected) {
   }
   assert.equal(value.status(), expected);
 }
+
+test('configured linear IDs retain advertised selection and exact independent source and initial license identity', async () => {
+  for (const id of ['fixture-one', 'fixture-two', 'abema-news']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel('other'), configuredLinearChannel(id)] } });
+    value.startChannel(id); await waitFor(value, 'READY');
+    assert.equal(value.requests.length, 3);
+    assert.equal(value.requests[0].request.credentials, 'omit');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].channelBinding()`));
+    assert.equal(binding.channelId, id);
+    assert.equal(new URL(binding.uri).pathname, `/channel/${id}/manifest.mpd`);
+    assert.equal(new URL(binding.uri).searchParams.get('t'), 'TEST_MEDIA');
+    assert.equal(value.evaluate('observed.legacy[0].sourceParam.contentId'), id);
+    assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(value.evaluate('observed.sources.length'), 0);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const license = value.requests.at(-1).uri;
+    assert.equal(license.searchParams.get('ct'), 'channel'); assert.equal(license.searchParams.get('cid'), id);
+    assert.equal(license.searchParams.get('t'), 'TEST_MEDIA'); assert.equal(value.evaluate('observed.operation.length'), 1);
+    assert.ok(value.take()); assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null);
+  }
+});
+
+test('configured linear snapshot refuses missing duplicated wrong unavailable malformed and oversized records', async () => {
+  const id = 'fixture-one'; const base = configuredLinearChannel(id);
+  for (const channels of [[], [configuredLinearChannel('other')], [base, base],
+    [{ ...base, viewingOpened: false }], [{ ...base, viewingOpened: 'true' }],
+    [{ ...base, status: { drm: true } }], [{ ...base, status: { drm: 'false' } }],
+    [{ ...base, playback: [] }], [{ ...base, playback: { dash: base.playback.dash.replace(id, 'other') } }],
+    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: 'https://unapproved.invalid/ad.mpd' } } }],
+    Array.from({ length: 501 }, (_, index) => configuredLinearChannel('fixture-' + index))]) {
+    const value = fixture({ configuredLinear: true, channels: { channels } }); value.startChannel(id);
+    await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+  for (const text of [`{"channels":[{"id":"${id}","id":"${id}"}]}`, JSON.stringify({ channels: [base], padding: 'x'.repeat(512 * 1024) })]) {
+    const value = fixture({ configuredLinear: true, responseTexts: { '/v1/channels': text } });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('configured linear source refuses wrong root token duplicates unsupported DRM and unsafe URLs without another candidate', async () => {
+  const id = 'fixture-one'; const uri = configuredLinearChannel(id).playback.dash;
+  for (const selectedURL of [uri + '?t=WRONG&enc=clear&dt=pc_chrome&ut=1',
+    uri + '?t=TEST_MEDIA&t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1',
+    uri + '?t=TEST_MEDIA&enc=wv&dt=pc_chrome&ut=1', uri + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1&session=unknown',
+    uri.replace(id, 'other') + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1',
+    uri.replace('/channel/', '/channel/%2e%2e/') + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] }, selectedURL });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+    assert.equal(value.evaluate('observed.legacy.length'), 1); assert.equal(value.evaluate('observed.sources.length'), 0);
+  }
+  for (const licenseURL of ['https://license.p-c3-e.abema-tv.com/abematv-dash?cid=other', 'https://unapproved.invalid/abematv-dash']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] }, licenseURL });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+  }
+});
+
+test('configured linear keeps advertised yospace selection and cancellation refuses delayed snapshot publication', async () => {
+  const id = 'fixture-one'; const channel = configuredLinearChannel(id);
+  channel.playback.yospace = { dash: channel.playback.dash.replace('manifest', 'ad-session') };
+  const value = fixture({ configuredLinear: true, selectYospace: true, channels: { channels: [channel] } });
+  value.startChannel(id); await waitFor(value, 'READY');
+  assert.equal(new URL(JSON.parse(value.evaluate(`window['${name}'].channelBinding()`)).uri).pathname, `/channel/${id}/ad-session.mpd`);
+  assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+  const delayed = fixture({ configuredLinear: true, channels: { channels: [channel] }, deferChannels: true });
+  delayed.startChannel(id); await waitFor(delayed, 'WAITING_SOURCE'); delayed.stop(); delayed.release();
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(delayed.status(), 'FAILED');
+  assert.equal(delayed.evaluate(`window['${name}'].channelBinding()`), null); assert.equal(delayed.evaluate('observed.legacy.length'), 0);
+  for (const bad of ['', 'x'.repeat(65), '../other', 'fixture/one']) {
+    const invalid = fixture(); invalid.startChannel(bad); assert.equal(invalid.requests.length, 0);
+  }
+});
+
+test('duplicate configured linear feeds own independent helper exchange and cancellation state', async () => {
+  const id = 'fixture-one';
+  const options = { configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] } };
+  const first = fixture(options); const second = fixture(options);
+  first.startChannel(id); second.startChannel(id);
+  await waitFor(first, 'READY'); await waitFor(second, 'READY');
+  first.stop(); assert.equal(first.evaluate(`window['${name}'].channelBinding()`), null);
+  assert.equal(second.status(), 'READY'); assert.equal(second.begin(challenge), 'WORKING'); await waitFor(second, 'RESPONSE');
+  assert.equal(first.evaluate('observed.operation.length'), 0); assert.equal(second.evaluate('observed.operation.length'), 1);
+  assert.equal(second.begin(challenge), 'REFUSED'); assert.ok(second.take());
+  assert.equal(first.requests.length, 3); assert.equal(second.requests.length, 4);
+});
 
 test('live bootstrap skips app entries and supports getter/plain exports across four chunks', async () => {
   const value = fixture(); value.start(); await waitFor(value, 'READY');

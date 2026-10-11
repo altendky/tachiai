@@ -219,6 +219,51 @@ class ConfiguredPrototypeSelectionTest {
         ConfiguredSource(UUID.randomUUID().toString(), owner.id,
             CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id, CatalogIntent.VIDEO), "Saved episode"))
 
+    private fun abemaChannel(id: String, owner: ProviderInstance = instances.single { it.service == PrototypeService.ABEMA }) =
+        ConfiguredSource(UUID.randomUUID().toString(), owner.id,
+            CatalogEntry(CatalogResource(ProviderId("abema"), "channel", id, CatalogIntent.CHANNEL), "Saved channel"))
+
+    @Test fun exactAbemaChannelsPreserveBothResourcesInstanceRecoveryAndIndependentDuplicateQuality() {
+        val abema = instances.single { it.service == PrototypeService.ABEMA }
+        val otherOwner = ProviderInstance(second.id, PrototypeService.ABEMA, "ABEMA 2")
+        val first = abemaChannel("fixture-one"); val other = abemaChannel("fixture-two", otherOwner)
+        val result = resolve(first, other, instances + otherOwner) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
+        assertEquals(listOf(abema, otherOwner), result.selection.feeds.map { it.resolve(instances + otherOwner) })
+        result.selection.feeds.forEach {
+            assertNull(it.historicalSource); assertEquals(PrototypePlaybackKind.LIVE, it.kind)
+            assertEquals("ABEMA_CONFIGURED_CHANNEL", it.diagnosticName)
+        }
+        val choices = restoreConfiguredFeedAssignments(true, encodeConfiguredFeedChoice(first.choice), encodeConfiguredFeedChoice(other.choice))
+        assertEquals(result.selection, (resolveConfiguredPrototypeSelection(choices, listOf(first, other), instances + otherOwner)
+            as ConfiguredPrototypeSelectionResult.Ready).selection)
+        val duplicate = (resolve(first) as ConfiguredPrototypeSelectionResult.Ready).selection
+        assertEquals(listOf(first.choice, first.choice), duplicate.feeds.map { it.choice })
+        val quality = ViewerQualityState(duplicate.feeds.map { it.choice }, emptyMap())
+        val baseline = quality.effective(NativeMixedSide.A)
+        val request = NativeQualityRequest(NativeQualityTrack(NativeQualityKind.VIDEO, NativeQualityCodec.AVC, 2_000_000, 1280, 720))
+        quality.setOverride(NativeMixedSide.B, NativeQualityKind.VIDEO, request)
+        assertEquals(baseline, quality.effective(NativeMixedSide.A)); assertEquals(request, quality.effective(NativeMixedSide.B).video)
+        assertEquals(listOf(first.entry.resource, first.entry.resource), duplicate.feeds.map { it.resource })
+    }
+
+    @Test fun channelSyntaxUnavailableStateAndHistoricalComparisonNeverAcquireNewsFallback() {
+        val exact = abemaChannel("fixture-one")
+        for (entry in listOf(exact.entry.copy(resource = exact.entry.resource.copy(identity = "x".repeat(65))),
+            exact.entry.copy(resource = exact.entry.resource.copy(identity = "other/channel")),
+            exact.entry.copy(resource = exact.entry.resource.copy(intent = CatalogIntent.BROADCAST)),
+            exact.entry.copy(resource = exact.entry.resource.copy(kind = "slot"))))
+            failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolve(exact.copy(entry = entry)))
+        for (availability in listOf(CatalogAvailability.UPCOMING, CatalogAvailability.OFFLINE, CatalogAvailability.EXPIRED, CatalogAvailability.UNAVAILABLE))
+            failed(ConfiguredPrototypeSelectionFailure.UNAVAILABLE, resolve(exact.copy(entry = exact.entry.copy(availability = availability))))
+        failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
+            ConfiguredFeedAssignments(exact.choice, exact.choice), listOf(exact), instances, allowConfiguredAbemaChannels = false))
+        val news = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap())
+            .single { it.entry.resource == prototypeCatalogResource(PrototypeSource.ABEMA_LIVE) }
+        assertEquals(PrototypeSource.ABEMA_LIVE, (resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(news.choice, news.choice),
+            listOf(news), instances, allowConfiguredAbemaChannels = false) as ConfiguredPrototypeSelectionResult.Ready).selection.a.historicalSource)
+    }
+
     @Test fun exactAbemaEpisodesPreserveTwoIdsDuplicateSlotsAndIndependentInstanceOwnership() {
         val abema = instances.single { it.service == PrototypeService.ABEMA }
         val otherOwner = ProviderInstance(second.id, PrototypeService.ABEMA, "ABEMA 2")

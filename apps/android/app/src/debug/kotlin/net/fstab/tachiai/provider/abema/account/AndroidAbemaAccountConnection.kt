@@ -180,7 +180,7 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         }
     }
     override fun profile(id: String, bearer: String) = request { it.profile(id, bearer) }
-    override fun token(challenge: AbemaAccountChallenge, expectedId: String) = request { it.token(challenge, expectedId) }
+    override fun token(challenge: AbemaAccountChallenge) = request { it.token(challenge) }
     override fun cancelActiveRequest() {
         val owned = synchronized(lock) { revision++; preparing to active }
         owned.first?.cancel(); owned.second?.cancelActiveRequest()

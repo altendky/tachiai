@@ -18,7 +18,7 @@ internal sealed interface AbemaAccountProfileResult {
 }
 internal interface AbemaAccountTransport : AutoCloseable {
     fun profile(id: String, bearer: String): AbemaAccountProfileResult
-    fun token(challenge: AbemaAccountChallenge, expectedId: String): AbemaAccountTokenResult
+    fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult
     fun cancelActiveRequest()
 }
 
@@ -190,11 +190,11 @@ internal class AbemaAccountHttpTransport(
             else -> AbemaAccountProfileResult.Inconclusive
         }
     }
-    override fun token(challenge: AbemaAccountChallenge, expectedId: String): AbemaAccountTokenResult {
+    override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult {
         if (!validAbemaTokenBody(challenge.tokenBody, challenge.clientId, challenge.deviceCode)) accountRefused()
         val result = request(URL("https://abema.tv/api/auth/oauth/device/token"), challenge.guestBearer,
             challenge.tokenBody, challenge.deadlineElapsedMs)
-        return parseAbemaAccountToken(result.status, result.body, expectedId, challenge.guestId, wallMs())
+        return parseAbemaAccountToken(result.status, result.body, challenge.guestId, wallMs())
     }
     override fun cancelActiveRequest() {
         val pending = synchronized(lock) { revision++; active }

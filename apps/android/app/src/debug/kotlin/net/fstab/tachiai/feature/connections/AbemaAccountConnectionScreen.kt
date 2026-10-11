@@ -2,41 +2,27 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.provider.abema.account.*
 
 @Composable
-internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, onConnect: (String) -> Unit,
+internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, onConnect: () -> Unit,
     onApprove: () -> Unit, onContinue: () -> Unit, onValidate: () -> Unit, onCheck: () -> Unit,
     onForget: () -> Unit, onCancel: () -> Unit, onBack: () -> Unit, ready: Boolean = true) {
-    // This identity input is intentionally memory-only, scoped to this protected
-    // account screen. No saved state, generic state flow or diagnostics sees it.
-    var identity by remember { mutableStateOf("") }
-    val intendedId = normalizedIntendedAbemaAccountId(identity)
-    val invalidIdentity = identity.isNotEmpty() && intendedId == null
     val reading = state.progress == AbemaAccountProgress.READING
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("ABEMA account", style = MaterialTheme.typography.headlineSmall)
-        Text("Use your existing ABEMA account ID from the ABEMA app. Approval happens in ABEMA’s browser or app. Tachiai checks that the returned account matches this ID. It never asks for your password.")
-        OutlinedTextField(identity, { identity = it }, label = { Text("Expected ABEMA account ID") },
-            modifier = Modifier.fillMaxWidth().testTag("abema-account-identity"), enabled = ready && !reading && !state.busy,
-            singleLine = true, isError = invalidIdentity,
-            supportingText = { if (invalidIdentity) Text("Use 1–256 letters, numbers, underscores or hyphens. Outer whitespace is ignored.") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii))
+        Text("Connect your existing account through ABEMA’s browser or app. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.")
         Text(accountStatusMessage(state.status))
         Text(accountProgressMessage(state.progress))
         if (!ready && !reading) Text("ABEMA account setup is unavailable. Return to providers and reopen this account.")
         if (state.busy && state.progress == AbemaAccountProgress.IDLE) Text("Wait for the current ABEMA action to finish.")
-        Button({ if (intendedId != null) { identity = ""; onConnect(intendedId) } },
-            enabled = ready && !reading && !state.busy && intendedId != null) { Text("Connect ABEMA") }
+        Button(onConnect, enabled = ready && !reading && !state.busy) { Text("Connect ABEMA") }
         if (ready && state.canApprove) Button(onApprove) { Text("Open ABEMA approval") }
         if (ready && state.canContinue) Button(onContinue) { Text("Continue after approval") }
         Text("Requests use this provider instance’s saved route. The external browser uses its own network and account. Requests pause while you are away; returning does not extend the original challenge expiry. Account collections and account playback remain separate integrations.")

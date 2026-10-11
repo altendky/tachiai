@@ -33,7 +33,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             BackHandler { finish() }
             val current = controller
             val state = if (current == null) initial else current.state.collectAsState().value
-            AbemaAccountConnectionScreen(state, { current?.connect(it) }, { current?.handoff(::openApproval) },
+            AbemaAccountConnectionScreen(state, { current?.connect() }, { current?.handoff(::openApproval) },
                 { current?.continueApproval() }, { current?.revalidate() }, { current?.checkEnforcement() },
                 { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null)
         } }

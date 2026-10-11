@@ -6,6 +6,30 @@ This is partial research for
 items without making them favorites. No supported native account-history
 retrieval path was established for ABEMA or Twitch; #102 remains open.
 
+## User-approved meaning and access — 2026-10-10
+
+The requested feature shows **provider-owned viewing history inside Tachiai**
+so the user can explicitly add previously watched channels, shows or exact
+videos to the configured list. Tachiai usage tracking, local viewing recording
+and analytics are not authorized by this feature and require a separate product
+discussion. Browsing history does not automatically configure entries or mutate
+provider history.
+
+Direct retrieval of the intended account's history is the primary path to
+investigate. Prefer documented APIs; where none exists, the user now authorizes
+research and implementation through undocumented provider endpoints under the
+[general integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10).
+The initial absence of a documented API is not another permission blocker.
+Account ownership, legitimate access, pagination, metadata semantics and privacy
+still require verification before advertising retrieval.
+
+A manual import from a provider export selected by the user is a possible
+fallback, not an accepted initial UX or an established schema. No export has
+been supplied or examined. It must not become a prerequisite for direct history
+integration, automatically request exports or persist a broad account-data copy.
+The updated [issue #102](https://github.com/altendky/tachiai/issues/102) records
+these distinctions and the independent account-backed dependencies.
+
 ## Research boundary
 
 Official help, API and authorization documentation supplied this evidence.
@@ -158,14 +182,15 @@ export is not a browsing cache and must not be copied into that store.
 
 The ABEMA account-backed portion requires
 [issue #103](https://github.com/altendky/tachiai/issues/103)'s working
-instance-owned connection **and a verified supported history-retrieval path**.
+instance-owned connection **and a verified history-retrieval path**.
 Connection success alone does not establish collection access. Twitch has its
 own access prerequisite; it does not depend on ABEMA account connection. Research
 and generic fixture/UI work remain independent, and history must not block the
 initial public catalog/Following/My List issues.
 
 Before retrieval, verify access, identities, metadata semantics, ownership and
-retention. For Twitch, decide whether a separately reviewed user-selected export
-import can safely identify useful items. Browser launch, public URL import and
+retention. Investigate direct account history first; any user-selected export
+fallback needs its own format/privacy and UX decision. Browser launch, public
+URL import and
 fixtures do not satisfy account-history acceptance. Keep #102 and account-backed
 work open until completed or an evidenced capability limit is explicitly resolved.

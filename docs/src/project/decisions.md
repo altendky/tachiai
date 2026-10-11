@@ -48,6 +48,21 @@
 - Recorded web limitations justified user-approved, bounded debug native
   experiments. Their existence does not settle provider support, release
   architecture or permission to broaden authentication/licensing protocols.
+- On 2026-10-10 the user separately approved general ABEMA and Twitch access,
+  using undocumented endpoints when a needed operation has no documented API.
+  Actual user-configured selections may replace experiments once functional;
+  preserve accounts, routes and saved items. This does not establish provider
+  support or bypass entitlement, security and technical verification. The
+  [current integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10)
+  records the authority and protections.
+- Current native Twitch discovery/playback requires login. Signed-out native
+  access is deferred to non-agent
+  [issue #144](https://github.com/altendky/tachiai/issues/144), independently of
+  the connected integration.
+- Provider history discovery means reading provider-owned viewing history and
+  explicitly adding selected items. Tachiai usage tracking/local viewing logs
+  are not authorized; a provider-export import remains a possible fallback
+  requiring a format/privacy and UX decision.
 - Playback and timing capabilities remain optional and source-dependent.
 - Alignment claims distinguish requested delay from measured media-clock
   synchronization.

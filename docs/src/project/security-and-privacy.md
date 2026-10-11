@@ -26,6 +26,58 @@ display names, never copied keys/credentials. Conflicting earlier stream/feed
 route settings require explicit review; unsupported or failed routes stop before provider
 preparation instead of falling back to the system network.
 
+## General provider integration approval — 2026-10-10
+
+The user approved general ABEMA and Twitch discovery, account/session access and
+playback of actual configured selections. Prefer documented APIs; when a needed
+provider operation has no documented API, research and implementation through
+undocumented endpoints is authorized. This includes account-owned collections
+and provider history. Keep protocol knowledge behind provider adapters and
+record documented support separately from observed undocumented behavior. User
+approval is not a claim of provider support or permission to distribute a
+provider integration.
+
+This approval supersedes the older fixed-content and supported-only permission
+limits in the historical experiments below. Those sections remain evidence of
+implemented behavior and its checks. Expanding an implementation still requires
+verification of resource identity, account/session ownership, entitlement,
+responses and necessary network destinations; approval alone does not make a
+capability implemented. Record precise endpoint-policy changes under the
+[media-origin scope](media-origin-approvals.md#general-integration-scope--2026-10-10).
+
+Keep provider-controlled authentication, protected local grants, selected-route
+ownership and safe diagnostics. Do not collect passwords, inject scripts into
+login pages, transfer cookies between devices, bypass TLS, expose secrets,
+extract keys, copy helper algorithms, reuse licensing responses or capture/
+re-encode protected media. Verified provider entitlement and access restrictions
+remain mandatory. Renewal/session behavior must be understood and verified
+rather than guessed from the initial experiments.
+
+For current Twitch integration, require a connected account and retain the
+user-selected Smart TV identity for the shared discovery/playback grant.
+Signed-out native access is deferred to non-agent
+[issue #144](https://github.com/altendky/tachiai/issues/144), independently of
+[issue #99](https://github.com/altendky/tachiai/issues/99). This does not retire
+the existing explicit local public-link import feature.
+
+Experimental fixed channels/content may be replaced after real user-configured
+selections work. Preserve configured items, route assignments, usable account
+authorization and quality preferences during that transition. No fixed sample
+or another program may substitute for a saved selected resource.
+
+History means displaying the intended account's **provider-owned viewing
+history**, with explicit Add to Tachiai's configured list. It does not authorize
+Tachiai usage recording, a local viewing log or analytics. A user-selected
+provider-export import remains a possible fallback needing format/privacy
+verification and a product decision; it is not a prerequisite for direct
+history access. See [issue #102](https://github.com/altendky/tachiai/issues/102).
+
+The current scope is also recorded in the bodies of
+[issue #100](https://github.com/altendky/tachiai/issues/100),
+[issue #101](https://github.com/altendky/tachiai/issues/101) and
+[issue #103](https://github.com/altendky/tachiai/issues/103). Their technical and
+account-backed verification dependencies remain in force.
+
 ## Authentication boundary
 
 - Provider credentials are entered only into provider-controlled pages.

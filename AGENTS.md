@@ -39,14 +39,20 @@ physical-device DRM, decoding, audio or performance behavior.
 Prefer provider-supported playback. Historical web comparisons keep the
 provider's original media element, DRM session, advertisements and login flow
 intact; focus mode must not capture, record or re-encode protected video.
-The user-approved debug native experiments are narrow exceptions documented in
+Historical user-approved debug native experiments are documented in
 [native-access evidence](docs/src/project/native-access-experiments.md) and
-[security boundaries](docs/src/project/security-and-privacy.md), not permission
-to expand private APIs, authentication or DRM handling. The cached ABEMA path
+[security boundaries](docs/src/project/security-and-privacy.md). On 2026-10-10
+the user separately approved general ABEMA and Twitch access, including
+undocumented endpoints where a needed operation has no documented API, and
+replacement of experiments after actual configured selections work. Follow the
+[current integration scope](docs/src/project/security-and-privacy.md#general-provider-integration-approval--2026-10-10)
+and updated issue bodies; absence of API documentation or the old fixed-sample
+permission limits must not become another approval gate. The cached ABEMA path
 uses verified runtime-only public bundles, fresh guest/source setup and one
 opaque initial exchange with a fresh native CDM; it does not load the full
 provider page. Do not copy helper algorithms, extract keys, reuse responses or
-add renewal without a separately reviewed scope.
+add unverified renewal. General access still requires verified source/session
+binding and provider entitlement; it does not authorize these shortcuts.
 
 Provider-specific DOM, source, authentication and licensing knowledge belongs
 behind narrow adapters. Generic presentation, layout, audio mixing and alignment
@@ -56,8 +62,8 @@ Review the explicit [media-origin approvals](docs/src/project/media-origin-appro
 before broadening cached prototype network policy; a review journal never
 grants access.
 
-Never collect provider passwords. Use provider-controlled login pages or the
-explicitly documented device-authorization cases and protected local grant
+Never collect provider passwords. Use provider-controlled login pages or
+verified account-linking/device-authorization flows and protected local grant
 storage. Do not inject scripts on login pages,
 expose native JavaScript bridges to provider content, transfer session cookies
 between devices, bypass TLS errors, or log URLs that may contain tokens.

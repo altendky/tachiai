@@ -64,6 +64,30 @@ class AbemaGuestDeviceAuthorizationPolicyTest {
         }
     }
 
+    @Test fun accountValidationAdmitsOnlyOneGuestAndMatchingProfileWithoutLinkingOrMetadataExpansion() {
+        val validation = AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION
+        val admission = AbemaGuestRequestAdmission(validation)
+        val token = URI(AbemaGuestBootstrapPolicy.DEVICE_TOKEN)
+        assertFalse(admission.admit(profile, false, "GET"))
+        assertTrue(admission.admit(guest, false, "POST"))
+        assertFalse(admission.admit(guest, false, "POST"))
+        assertTrue(admission.admit(profile, false, "OPTIONS", preflight))
+        assertFalse(admission.admit(profile, false, "OPTIONS", preflight))
+        assertFalse(admission.admit(URI("${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/OTHER"), false, "GET"))
+        assertTrue(admission.admit(profile, false, "GET"))
+        assertFalse(admission.admit(profile, false, "GET"))
+        for (destination in listOf(challenge, token, URI(AbemaGuestBootstrapPolicy.EPISODE)))
+            for (method in listOf("GET", "POST", "OPTIONS"))
+                assertFalse(AbemaGuestBootstrapPolicy.allows(destination, false, method, validation))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(profile, true, "GET", validation))
+        val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(validation)
+        assertTrue(csp.contains(AbemaGuestBootstrapPolicy.GUEST))
+        assertTrue(csp.contains(AbemaGuestBootstrapPolicy.PROFILE_ORIGIN))
+        assertFalse(csp.contains(AbemaGuestBootstrapPolicy.CHALLENGE))
+        assertFalse(csp.contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
+        assertFalse(csp.contains("/v1/video/"))
+    }
+
     @Test fun admissionRequiresGuestThenOneMatchingProfileGETThenOneChallengePOST() {
         for (withPreflight in listOf(false, true)) {
             val admission = AbemaGuestRequestAdmission(operation)

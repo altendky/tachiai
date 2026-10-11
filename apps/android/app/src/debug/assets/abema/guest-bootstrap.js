@@ -16,6 +16,7 @@
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
   let accountLink;
+  let accountValidation;
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const stop = (category = 'NONE') => {
     stopped = true;
@@ -25,6 +26,7 @@
     episode = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
+    accountValidation = undefined;
     for (const controller of controllers) controller.abort();
     controllers.clear();
   };
@@ -370,7 +372,7 @@
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         resourceId !== undefined)) {
       stop('RUNTIME'); return;
@@ -383,15 +385,21 @@
         stringify(episode) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
+      ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
+        if (stopped || state !== 'ACCOUNT_VALIDATION_READY' || failure !== 'NONE') return null;
+        try { alive(); return stringify(accountValidation); }
+        catch { stop(failure === 'NONE' ? 'RUNTIME' : failure); return null; }
+      } } : {}),
     }) });
     (async () => {
       try {
         state = 'MODULES';
         const observeToken = operation === 'OBSERVE_DEVICE_TOKEN';
         const prepareAccount = operation === 'PREPARE_ACCOUNT_LINK';
+        const prepareValidation = operation === 'PREPARE_ACCOUNT_VALIDATION';
         const deviceAuthorization = operation === 'VERIFY_DEVICE_AUTHORIZATION' || observeToken || prepareAccount;
-        if (deviceAuthorization) {
-          budgetFailure = observeToken ? 'TOKEN_TIMEOUT' : 'CHALLENGE_TIMEOUT';
+        if (deviceAuthorization || prepareValidation) {
+          budgetFailure = prepareValidation ? 'PROFILE_TIMEOUT' : observeToken ? 'TOKEN_TIMEOUT' : 'CHALLENGE_TIMEOUT';
           challengeStarted = performance.now(); alive();
         }
         const load = loadModules();
@@ -436,7 +444,7 @@
         if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
         guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
         failure = 'NONE';
-        if (operation === 'VERIFY_PROFILE' || deviceAuthorization) {
+        if (operation === 'VERIFY_PROFILE' || deviceAuthorization || prepareValidation) {
           state = 'PROFILE';
           const profileId = await boundedReply(apiOrigin + '/v1/users/' + guest.userId,
             { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
@@ -495,6 +503,9 @@
             } else {
               guest = undefined; failure = 'NONE'; state = 'CHALLENGE_VALIDATED_AND_DISCARDED';
             }
+          } else if (prepareValidation) {
+            accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
+            guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';

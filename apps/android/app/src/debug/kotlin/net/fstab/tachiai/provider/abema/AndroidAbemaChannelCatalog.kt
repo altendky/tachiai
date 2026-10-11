@@ -13,7 +13,8 @@ import net.fstab.tachiai.feature.connections.*
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.presentation.*
-import net.fstab.tachiai.provider.catalog.ProviderCatalog
+import net.fstab.tachiai.provider.catalog.*
+import net.fstab.tachiai.provider.abema.account.*
 
 internal class AbemaCatalogRouteOwner(val instance: ProviderInstance, val profile: ConnectionProfile?) {
     private val choice = checkNotNull(instance.setup.route)
@@ -59,17 +60,51 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
         runCatching { instances().any { it.id == instanceId && it.service == PrototypeService.ABEMA } }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
-    val catalog = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
+    val publicCatalog = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
         OwnedAbemaChannelTransport(captured?.profile, canRequest = { gate() && current() },
             onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics)
     }, canPublish = ::current, episodeTransportFactory = if (captured == null) null else { gate ->
         AndroidAbemaEpisodeMetadataClient(application, instanceId, captured.proof(),
             canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
     })
+    // Account proof is worker-owned and cannot start Connect or mutate storage.
+    // Its cleanup gate is separate so an unverified collection does not disable
+    // independently usable public discovery or local configured-item management.
+    val accountPoisoned = AbemaAccountWorkers.poisoned(instanceId)
+    fun accountCurrent() = !accountPoisoned.get() && current()
+    fun accountActive() = !accountPoisoned.get() && canRemainActive()
+    val account = captured?.let { owner ->
+        AbemaCollectionAccountBinding(
+            store = AbemaAccountGrantStore(instanceId, AndroidAbemaAccountStorage(application, instanceId)),
+            instanceId = instanceId,
+            ownerProof = owner.proof(),
+            sameOwner = ::accountCurrent,
+            canRemainActive = ::accountActive,
+            prepareValidationFactory = { gate, foreground ->
+                AndroidAbemaAccountBootstrapClient(application, instanceId, owner.proof(),
+                    canRequest = { gate() && accountCurrent() }, canRemainActive = foreground)
+            },
+            profileTransportFactory = { gate ->
+                OwnedAbemaAccountTransport(owner.profile, { gate() && accountCurrent() }, { accountPoisoned.set(true) })
+            },
+            collectionTransportFactory = { bearer, gate ->
+                OwnedAbemaMyListTransport(owner.profile, bearer, { gate() && accountCurrent() },
+                    onCleanupFailure = { accountPoisoned.set(true) }, diagnostics = diagnostics)
+            },
+            elapsedMs = android.os.SystemClock::elapsedRealtime,
+            wallMs = System::currentTimeMillis,
+            onCleanupFailure = { accountPoisoned.set(true) },
+        )
+    }
+    val access = account ?: object : AbemaCollectionAccountAccess {
+        override fun access() = CatalogAccess.NOT_VERIFIED
+        override fun lease(): AbemaCollectionLease? = null
+    }
+    val catalog = AbemaAccountCollectionsCatalog(publicCatalog, access, canUse = ::canRemainActive)
     val owned = object : ProviderCatalog by catalog {
         override fun close() {
             if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return
-            catalog.close()
+            try { catalog.close() } finally { account?.close() }
         }
         override fun toString() = "AndroidAbemaChannelCatalog(redacted)"
     }

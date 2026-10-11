@@ -8,10 +8,13 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 internal object AbemaAccountBootstrapIpc {
     const val START = 1; const val CANCEL = 2; const val PULSE = 3; const val RESULT = 4
     const val OPERATION_MS = 45_000L; const val CLEANUP_MS = 20_000L; const val PULSE_MS = 200L
-    class Start(val nonce: String, val instanceId: String, val proof: String, val deadline: Long) {
+    enum class Mode { LINK, VALIDATION }
+    class Start(val nonce: String, val instanceId: String, val proof: String, val deadline: Long,
+        val mode: Mode = Mode.LINK) {
         override fun toString() = "AbemaAccountBootstrapStart(redacted)"
     }
-    class Result(val nonce: String, val challenge: AbemaAccountChallenge?) {
+    class Result(val nonce: String, val challenge: AbemaAccountChallenge?, val validation: AbemaAccountValidationContext? = null) {
+        init { require(challenge == null || validation == null) }
         override fun toString() = "AbemaAccountBootstrapResult(redacted)"
     }
     fun fields(bundle: Bundle): Map<String, Any>? = runCatching {
@@ -34,29 +37,45 @@ internal object AbemaAccountBootstrapIpc {
     }
     fun start(value: Start) = nonce(value.nonce).apply {
         putString("instance", value.instanceId); putString("proof", value.proof); putLong("deadline", value.deadline)
+        if (value.mode == Mode.VALIDATION) putString("operation", "VALIDATION")
     }
     fun readStart(fields: Map<String, Any>, now: Long): Start? {
-        if (fields.keys != setOf("nonce", "instance", "proof", "deadline")) return null
+        val mode = when {
+            fields.keys == setOf("nonce", "instance", "proof", "deadline") -> Mode.LINK
+            fields.keys == setOf("nonce", "instance", "proof", "deadline", "operation") && fields["operation"] == "VALIDATION" -> Mode.VALIDATION
+            else -> return null
+        }
         val nonce = fields["nonce"] as? String ?: return null
         val instance = fields["instance"] as? String ?: return null
         val proof = fields["proof"] as? String ?: return null
         val deadline = fields["deadline"] as? Long ?: return null
         if (!nonce.matches(Regex("[a-f0-9]{32}")) || !validProviderInstanceId(instance) ||
             !proof.matches(Regex("[a-f0-9]{64}")) || now < 0 || deadline <= now || deadline - now > OPERATION_MS) return null
-        return Start(nonce, instance, proof, deadline)
+        return Start(nonce, instance, proof, deadline, mode)
     }
     fun result(value: Result) = nonce(value.nonce).apply {
-        putString("outcome", if (value.challenge == null) "REFUSED" else "READY")
+        putString("outcome", if (value.validation != null) "VALIDATION_READY" else if (value.challenge == null) "REFUSED" else "READY")
         value.challenge?.let {
             putString("guestId", it.guestId); putString("guestBearer", it.guestBearer); putString("clientId", it.clientId)
             putString("deviceCode", it.deviceCode); putString("tokenBody", it.tokenBody)
             putString("verificationUri", it.verificationUri); putLong("deadline", it.deadlineElapsedMs)
         }
+        value.validation?.let {
+            putString("guestId", it.guestId); putString("guestBearer", it.guestBearer); putLong("deadline", it.deadlineElapsedMs)
+        }
     }
-    fun readResult(fields: Map<String, Any>, now: Long): Result? = runCatching {
+    fun readResult(fields: Map<String, Any>, now: Long, request: Start? = null): Result? = runCatching {
         val nonce = fields["nonce"] as? String ?: return null
         if (!nonce.matches(Regex("[a-f0-9]{32}"))) return null
+        if (request != null && nonce != request.nonce) return null
         if (fields["outcome"] == "REFUSED" && fields.keys == setOf("nonce", "outcome")) return Result(nonce, null)
+        if (request?.mode == Mode.VALIDATION) {
+            if (fields["outcome"] != "VALIDATION_READY" || fields.keys != setOf("nonce", "outcome", "guestId", "guestBearer", "deadline") ||
+                fields["deadline"] != request.deadline || now < 0 || request.deadline <= now || request.deadline - now > OPERATION_MS) return null
+            val id = fields["guestId"] as? String ?: return null
+            val bearer = fields["guestBearer"] as? String ?: return null
+            return Result(nonce, null, AbemaAccountValidationContext(id, bearer, request.deadline))
+        }
         if (fields["outcome"] != "READY" || fields.keys != setOf("nonce", "outcome", "guestId", "guestBearer", "clientId",
                 "deviceCode", "tokenBody", "verificationUri", "deadline")) return null
         val deadline = fields["deadline"] as? Long ?: return null

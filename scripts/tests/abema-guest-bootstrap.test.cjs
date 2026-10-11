@@ -190,6 +190,67 @@ function challengeReply() {
     verification_uri_complete: 'https://abema.tv/account/transfer?code=PRIVATE_USER_CODE', expires_in: 300 };
 }
 
+test('account validation creates only one fresh guest and matching profile with a separate private two-field context', async () => {
+  const f = fixture({ operation: 'PREPARE_ACCOUNT_VALIDATION', challengeEndpoint: 'https://unsafe.invalid/',
+    tokenEndpoint: 'https://unsafe.invalid/' }); f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'ACCOUNT_VALIDATION_READY', failure: 'NONE' });
+  assert.deepEqual(f.requests.map(r => r.url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER']);
+  assert.deepEqual(f.requests.map(r => r.request.method), ['POST', 'GET']);
+  assert.ok(f.requests.every(r => r.request.credentials === 'omit' && r.request.redirect === 'error' && r.request.cache === 'no-store'));
+  assert.equal(f.requests[1].request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+  assert.deepEqual(Array.from(f.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop', 'accountValidation']);
+  assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].accountValidation()`)), { guestId: 'FIXTURE_USER', guestBearer: 'FIXTURE_ACCESS' });
+  assert.deepEqual(Array.from(f.context.challengeSerialized), []); assert.deepEqual(Array.from(f.context.tokenSerialized), []);
+  assert.ok(!Array.from(f.context.loaded).includes(2953));
+  assert.doesNotMatch(JSON.stringify(f.state()), /FIXTURE|PRIVATE|https/);
+  f.stop(); assert.equal(f.call(`window['${apiName}'].accountValidation()`), null);
+  const second = fixture({ operation: 'PREPARE_ACCOUNT_VALIDATION' }); second.start(); await settle();
+  assert.notEqual(f.device, second.device); assert.equal(second.requests.length, 2);
+});
+
+test('private validation context is absent from old operations and unavailable until the matching profile completes', async () => {
+  for (const operation of ['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN',
+    'PREPARE_ACCOUNT_LINK', 'VERIFY_EPISODE', 'FETCH_EPISODE']) {
+    const f = fixture({ operation, ...(operation === 'FETCH_EPISODE' ? { resourceId: 'arbitrary-id' } : {}) });
+    f.start(); await settle(); assert.equal(f.call(`window['${apiName}'].accountValidation`), undefined);
+  }
+  const f = fixture({ operation: 'PREPARE_ACCOUNT_VALIDATION', delayedProfile: true }); f.start(); await settle();
+  assert.equal(f.state().state, 'PROFILE'); assert.equal(f.call(`window['${apiName}'].accountValidation()`), null);
+  assert.equal(f.call(`window['${apiName}'].accountLink`), undefined); assert.equal(f.call(`window['${apiName}'].metadata`), undefined);
+  f.stop(); f.release(); await settle(); assert.equal(f.call(`window['${apiName}'].accountValidation()`), null);
+  assert.deepEqual(f.state(), { state: 'STOPPED', failure: 'NONE' }); assert.equal(f.requests.length, 2);
+});
+
+test('validation refuses mismatched malformed or failed guest profile without challenge token or private context', async () => {
+  for (const option of [{ profile: { profile: { userId: 'OTHER' } } }, { profileStatus: 401 },
+    { profileText: '{"profile":{"userId":"FIXTURE_USER","userId":"OTHER"}}' },
+    { profileBytes: new Uint8Array([0xff]) }, { profileNetworkFailure: true }, { profileRedirected: true },
+    { guest: { user_id: 'invalid/id', access_token: 'PRIVATE_BEARER' } }]) {
+    const f = fixture({ operation: 'PREPARE_ACCOUNT_VALIDATION', ...option }); f.start(); await settle();
+    assert.equal(f.state().state, 'REFUSED'); assert.equal(f.call(`window['${apiName}'].accountValidation()`), null);
+    assert.ok(f.requests.length <= 2); assert.ok(!f.requests.some(r => r.url.includes('/oauth/') || r.url.includes('/accessToken')));
+    assert.doesNotMatch(JSON.stringify(f.state()), /OTHER|FIXTURE|PRIVATE|https/);
+  }
+});
+
+test('validation original elapsed budget applies during module work profile response and private projection', async () => {
+  let release; const delayedHelper = new Promise(resolve => { release = resolve; });
+  const beforeGuest = { operation: 'PREPARE_ACCOUNT_VALIDATION', delayedHelper, elapsedMs: 0 };
+  const early = fixture(beforeGuest); early.start(); await settle(); beforeGuest.elapsedMs = 45000; release(); await settle();
+  assert.equal(early.requests.length, 0); assert.deepEqual(early.state(), { state: 'REFUSED', failure: 'PROFILE_TIMEOUT' });
+  const lateProfile = { operation: 'PREPARE_ACCOUNT_VALIDATION', delayedProfileRead: true, elapsedMs: 0 };
+  const response = fixture(lateProfile); response.start(); await settle(); lateProfile.elapsedMs = 45000; response.release(); await settle();
+  assert.deepEqual(response.state(), { state: 'REFUSED', failure: 'PROFILE_TIMEOUT' });
+  assert.equal(response.call(`window['${apiName}'].accountValidation()`), null); assert.equal(response.requests.length, 2);
+  for (const elapsedMs of [45000, -1]) {
+    const options = { operation: 'PREPARE_ACCOUNT_VALIDATION', elapsedMs: 0 };
+    const completed = fixture(options); completed.start(); await settle(); options.elapsedMs = elapsedMs;
+    assert.equal(completed.call(`window['${apiName}'].accountValidation()`), null);
+    assert.deepEqual(completed.state(), { state: 'REFUSED', failure: 'PROFILE_TIMEOUT' });
+  }
+});
+
 test('account preparation exports only its private bound projection after exact guest profile challenge without token polling', async () => {
   const f = fixture({ operation: 'PREPARE_ACCOUNT_LINK' }); f.start(); await settle();
   assert.deepEqual(f.state(), { state: 'ACCOUNT_LINK_READY', failure: 'NONE' });

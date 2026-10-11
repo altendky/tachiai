@@ -92,6 +92,26 @@ and ends the runtime before reporting **Guest prepared**.
 
 ## Optional guest profile binding
 
+### Private challenge-free account validation
+
+The My List binding uses a separate PREPARE_ACCOUNT_VALIDATION purpose when
+revalidating an existing protected grant. It creates one fresh guest and reads
+only that matching guest's profile through the existing closed profile route.
+It creates no authorization challenge, polls no token and opens no approval
+page. The app-owned JavaScript projects only two bounded private guest fields;
+the original native 45-second deadline remains authoritative.
+
+The mode-specific same-UID account IPC returns the memory-only context only
+after confirmed WebView/proxy/backend cleanup and final worker ownership,
+foreground and deadline checks. Old account-link and public metadata wire
+formats remain separate. Main callbacks use cheap lifecycle checks; protected
+owner reads run on workers or WebView background interception. The consumer
+still must independently prove profile bearer enforcement, intended-account
+identity and collection compatibility; this preparation establishes none of
+those by itself.
+
+### Guest-only profile observation
+
 Static inspection of the pinned unchanged
 [first-party 5206 asset](https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js)
 (SHA-256 `d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81`)

@@ -144,3 +144,26 @@ evidence or accessing a provider.
 blocked networking and an in-memory reporter in the explicitly targeted cached
 process. It does not replace the journal or saved stores. Default instrumentation
 skips before WebView access unless that process guard is satisfied.
+
+On 2026-10-11, the integrated change passed 2,030 JVM tests in 243 reports,
+56 direct owned-JavaScript cases, 10 collector cases, lint, release isolation,
+instrumentation compilation and app/test assembly. Both APK certificates matched
+the shared debug identity. Two networking-blocked diagnostic fixtures passed on
+persistent tachiai-dev in 0.558 seconds, using in-memory reporting rather than
+replacing its journal. They established timer/pre-HTTP categories, first-evidence
+preservation, no hostile error-property inspection and refusal of late revival.
+
+One explicitly selected historical News regression on the same build rendered a
+native frame and advanced position in 17.042 seconds. The AVD was Android 16/API
+36, Google APIs x86-64, WebView 133.0.6943.137; it used the existing ABEMA instance's
+saved route with a fresh anonymous guest and native CDM. Region was not remeasured
+and audio was muted. Cleanup and captured owner were confirmed, and protected
+encrypted records remained byte-for-byte equal to the pre-install baseline.
+The temporary cached-process test override was removed; ordinary instrumentation
+was rebuilt, certificate/packaged targeting verified, reinstalled with data
+preserved and the launcher restored. Final app SHA-256 is
+`8456afcd40835cbbd9feb9533b7074342d59de46afecbcbdcd881b5d1257299d`;
+ordinary test APK SHA-256 is
+`d8d9e10fb6818e75f36277ec0252d82968a12fb08460fd49d9a3791f8427f284`.
+This establishes bounded diagnostic fixtures and a success regression, not the
+cause of the earlier transient failure or sustained/physical-device behavior.

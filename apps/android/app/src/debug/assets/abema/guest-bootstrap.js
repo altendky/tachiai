@@ -708,7 +708,8 @@
                   !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.id) || ids.has(item.id) ||
                   !item.series || Array.isArray(item.series) || item.series.id !== seriesRequest.seriesId ||
                   seriesRequest.seasonId !== undefined && (!item.season || Array.isArray(item.season) ||
-                    item.season.id !== seriesRequest.seasonId || item.season.seriesId !== seriesRequest.seriesId) ||
+                    item.season.id !== seriesRequest.seasonId ||
+                    Object.hasOwn(item.season, 'seriesId') && item.season.seriesId !== seriesRequest.seriesId) ||
                   !item.episode || Array.isArray(item.episode) || typeof item.episode.title !== 'string' ||
                   item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
                   /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();

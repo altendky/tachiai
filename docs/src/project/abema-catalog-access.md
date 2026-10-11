@@ -43,7 +43,7 @@ subsequent approval above provides the current integration authority. See the
 
 | Feature | Official ABEMA behavior | Tachiai implementation boundary |
 | --- | --- | --- |
-| Public discovery | Search, genres and timetable on provider pages | Channels browsing and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. [Provider-wide Search and exact Season children](abema-search.md) are implemented with actual acceptance pending. Genres and complete provider coverage are not implemented. |
+| Public discovery | Search, genres and timetable on provider pages | Channels browsing and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. [Provider-wide Search and exact Season children](abema-search.md) have bounded real metadata acceptance: two Search observations and one exact Season page passed. Genres and complete provider coverage are not implemented. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
 | My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |

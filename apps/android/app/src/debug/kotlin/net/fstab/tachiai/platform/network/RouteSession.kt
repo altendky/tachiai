@@ -17,6 +17,8 @@ import okhttp3.OkHttpClient
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 
+private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, ABEMA_CATALOG }
+
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
 // It never installs Android VpnService or changes the device's active VPN.
@@ -26,15 +28,19 @@ internal class RouteSession private constructor(
     val proxyPassword: String,
     val proxyRealm: String,
     private val diagnostics: FailureReporter,
-    private val twitchCatalog: Boolean = false,
+    private val purpose: RoutePurpose = RoutePurpose.PLAYBACK,
 ) : AutoCloseable {
     val isSystem get() = backend == null
     val proxyPort: Int = backend?.proxyPort ?: 0
     private val closed = AtomicBoolean()
     private val connections = Collections.newSetFromMap(ConcurrentHashMap<RoutedHttpsConnection, Boolean>())
-    private val client: OkHttpClient? = if (backend == null) null else OkHttpClient.Builder()
-        .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
-        .proxyAuthenticator(routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
+    // Anonymous ABEMA metadata uses a private, credential-free client even on
+    // System. Java's process-global authenticators/cookie handlers cannot attach
+    // account state to that request; existing playback/Twitch openers are retained.
+    private val client: OkHttpClient? = if (backend == null && purpose != RoutePurpose.ABEMA_CATALOG) null else OkHttpClient.Builder()
+        .proxy(if (backend == null) Proxy.NO_PROXY else Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
+        .proxyAuthenticator(if (backend == null) Authenticator.NONE else
+            routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
         .authenticator(Authenticator.NONE)
         .cookieJar(CookieJar.NO_COOKIES)
         .connectionPool(ConnectionPool())
@@ -44,8 +50,12 @@ internal class RouteSession private constructor(
     fun open(url: URL): HttpsURLConnection {
         if (closed.get()) throw IOException("Route is closed")
         require(url.protocol == "https" && url.userInfo == null && url.ref == null && url.port in listOf(-1, 443))
-        if (twitchCatalog) require(url.host in setOf("id.twitch.tv", "api.twitch.tv"))
-        if (isSystem) return url.openConnection() as HttpsURLConnection
+        when (purpose) {
+            RoutePurpose.TWITCH_CATALOG -> require(url.host in setOf("id.twitch.tv", "api.twitch.tv"))
+            RoutePurpose.ABEMA_CATALOG -> require(url.host == "api.abema.io")
+            RoutePurpose.PLAYBACK -> Unit
+        }
+        if (isSystem && purpose != RoutePurpose.ABEMA_CATALOG) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
@@ -88,7 +98,7 @@ internal class RouteSession private constructor(
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
                 selected.protocol.createBackend(selected, security, preparation)
             },
-        ): RouteSession = createOwned(profile, preparation, createBackend, twitchCatalog = false)
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.PLAYBACK)
 
         // Closed metadata/OAuth purpose. Both System and imported routes enforce
         // these hosts; playback's historical policy is unchanged.
@@ -97,23 +107,34 @@ internal class RouteSession private constructor(
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
                 selected.protocol.createBackend(selected, security, preparation)
             },
-        ): RouteSession = createOwned(profile, preparation, createBackend, twitchCatalog = true)
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.TWITCH_CATALOG)
+
+        fun createAbemaCatalog(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_CATALOG)
 
         private fun createOwned(profile: ConnectionProfile?, preparation: RoutePreparation,
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend,
-            twitchCatalog: Boolean,
+            purpose: RoutePurpose,
         ): RouteSession {
             preparation.checkActive()
-            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics, twitchCatalog)
+            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics, purpose)
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
             return try {
                 backend = createBackend(profile, RouteProxySecurity(username, password, realm,
-                    if (twitchCatalog) "id.twitch.tv,api.twitch.tv" else ALLOWED_HOSTS))
+                    when (purpose) {
+                        RoutePurpose.TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
+                        RoutePurpose.ABEMA_CATALOG -> "api.abema.io"
+                        RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
+                    }))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
-                RouteSession(backend, username, password, realm, preparation.diagnostics, twitchCatalog)
+                RouteSession(backend, username, password, realm, preparation.diagnostics, purpose)
             } catch (error: Exception) {
                 if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.ROUTE_CREATE, error)
                 runCatching { backend?.close() }.onFailure { cleanupError ->

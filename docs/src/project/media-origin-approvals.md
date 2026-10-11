@@ -24,6 +24,20 @@ not an access grant or proof of provider ownership/entitlement.
 The dated decisions below describe the historical cached prototype. They do
 not establish a complete endpoint inventory for the approved general integration.
 
+### Public ABEMA channel metadata
+
+The Channels adapter uses anonymous GET to
+[the channel endpoint](https://api.abema.io/v1/channels) under the general
+integration approval, with no query, account credentials, redirects
+or playback request. Its separate catalog route purpose admits only api.abema.io
+on normal verified HTTPS; the provider transport enforces the exact URL/method.
+This does not expand Twitch's metadata/OAuth purpose or the cached playback
+policy. Both System and imported routes own a cookie-free client with origin
+authentication disabled, and imported credentials stay at the local CONNECT
+listener. Channel IDs/names are metadata, never proof of live state or entitlement.
+See [the bounded catalog implementation](abema-catalog-access.md#public-channels-adapter)
+for snapshot limits, instance/route ownership and evidence boundaries.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

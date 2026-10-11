@@ -23,6 +23,69 @@ class AbemaLocalImportCatalogTest {
         controller.state.first { !it.loading && !it.saving }
     }
 
+    @Test fun realChannelsDelegateMetadataAndFailuresWhileNonChannelLinksStayRequestFree() {
+        var requests = 0
+        var status = 200
+        var available = true
+        var current = true
+        val real = CatalogEntry(CatalogResource(ProviderId("abema"), "channel", "fixture-channel", CatalogIntent.CHANNEL), "Real channel")
+        val metadata = AbemaChannelCatalog(owner.id, { _ -> object : AbemaChannelTransport {
+            override fun fetch(): AbemaChannelResponse { requests++; return AbemaChannelResponse(status, if (status == 200) listOf(real) else emptyList()) }
+            override fun close() = Unit
+        } }, canPublish = { available })
+        val catalog = AbemaLocalImportCatalog(owner, setups, metadata, canImport = { current })
+        assertEquals("Channels", catalog.capabilities().browseTitle)
+        assertEquals(listOf(real), (catalog.browse(CatalogQuery()) as CatalogResult.Value).value.entries)
+        assertEquals(real, entry(catalog, "fixture-channel"))
+        assertEquals(2, requests)
+        listOf("https://abema.tv/account?token=fixture", "https://example.invalid/channels/sumo", "https://abema.tv/channels/sumo?token=fixture").forEach {
+            assertEquals(CatalogResult.Failure(CatalogFailure.INVALID_INPUT), catalog.lookup(it))
+        }
+        assertEquals(2, requests)
+        listOf("https://abema.tv/channels/sumo/slots/A63wR6irBEskZM", "https://abema.tv/video/title/394-72",
+            "https://abema.tv/video/episode/394-72_s10_p845").forEach { entry(catalog, it) }
+        assertEquals(2, requests)
+        status = 500
+        assertEquals(CatalogResult.Failure(CatalogFailure.TEMPORARY), catalog.lookup("https://abema.tv/channels/sumo"))
+        assertEquals(3, requests)
+        available = false
+        assertEquals(CatalogAvailability.UNKNOWN, entry(catalog, "https://abema.tv/channels/sumo").availability)
+        assertEquals(3, requests) // Known route rejection before dispatch allows only local public links.
+        assertEquals(CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED), catalog.lookup("sumo"))
+        current = false
+        assertEquals(CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED), catalog.lookup("https://abema.tv/video/title/394-72"))
+        catalog.close()
+    }
+
+    @Test fun realChannelAddAndMissingRefreshRetainExplicitConfigurationAcrossReopen() = runBlocking {
+        val memory = Memory()
+        val store = ConfiguredSourceStore(memory, owner.id, ProviderId("abema"))
+        val real = CatalogEntry(CatalogResource(ProviderId("abema"), "channel", "fixture-channel", CatalogIntent.CHANNEL), "Real channel")
+        var entries = listOf(real)
+        fun controller(): StreamManagementController {
+            val metadata = AbemaChannelCatalog(owner.id, { _ -> object : AbemaChannelTransport {
+                override fun fetch() = AbemaChannelResponse(200, entries)
+                override fun close() = Unit
+            } })
+            return StreamManagementController(owner, AbemaLocalImportCatalog(owner, setups, metadata), store,
+                { emptyList() }, this, Dispatchers.Unconfined)
+        }
+        val first = controller()
+        first.load(); var state = idle(first)
+        assertTrue(state.configured!!.isEmpty())
+        assertEquals(listOf(real), state.entries)
+        first.add(real); val retained = idle(first).configured
+        first.add(real); assertEquals(retained, idle(first).configured)
+        entries = emptyList()
+        first.refresh(checkNotNull(retained).single().id); state = idle(first)
+        assertEquals(retained, state.configured)
+        assertEquals("Real channel", state.configured!!.single().entry.title)
+        first.close()
+        val reopened = controller(); reopened.load()
+        assertEquals(retained, idle(reopened).configured)
+        reopened.close()
+    }
+
     @Test fun localLookupPreservesSampleNamesAndReportsUnverifiedProviderAccess() {
         val custom = setups + (PrototypeSource.ABEMA_LIVE to SourceSetup(name = "My news"))
         val catalog = AbemaLocalImportCatalog(owner, custom)

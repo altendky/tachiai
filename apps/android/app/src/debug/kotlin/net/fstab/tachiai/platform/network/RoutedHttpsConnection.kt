@@ -212,7 +212,7 @@ internal class RoutedHttpsConnection(
         }.also { responseStream = it }
     }
 
-    override fun usingProxy() = true
+    override fun usingProxy() = client.proxy?.type() == java.net.Proxy.Type.HTTP
     override fun getResponseCode() = response().code
     override fun getResponseMessage() = response().message
     override fun getContentLengthLong() = response().body.contentLength()

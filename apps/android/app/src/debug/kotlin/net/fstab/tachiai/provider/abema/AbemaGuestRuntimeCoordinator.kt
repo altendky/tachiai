@@ -22,6 +22,7 @@ internal class AbemaGuestRuntimeRequest(
     val expectedOwnerProof: String? = null,
     val deadlineElapsedMs: Long,
     val seriesRequest: AbemaSeriesPageRequest? = null,
+    val slotRequest: AbemaSlotRequest? = null,
     val canRemainActive: () -> Boolean,
 ) {
     init {
@@ -32,6 +33,7 @@ internal class AbemaGuestRuntimeRequest(
             episodeId != null && AbemaGuestBootstrapPolicy.validEpisodeId(episodeId) && expectedOwnerProof != null else episodeId == null)
         require(deadlineElapsedMs >= 0)
         require(if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) seriesRequest != null && expectedOwnerProof != null else seriesRequest == null)
+        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest != null && expectedOwnerProof != null else slotRequest == null)
         require(operation !in setOf(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
             AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
     }
@@ -213,6 +215,16 @@ internal class AbemaGuestRuntimeCoordinator(
             val state = value?.opt("state") as? String
             val failure = value?.opt("failure") as? String
             when {
+                state == "EXACT_SLOT_METADATA" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT ->
+                    view.metadata { metadata ->
+                        if (!runtimeCurrent(active) || active.view !== view) return@metadata
+                        val value = json(metadata, 4096)?.takeIf { it.length() == 3 }
+                        val slot = checkNotNull(active.request.slotRequest)
+                        val title = value?.opt("title") as? String
+                        if (value?.opt("id") != slot.slotId || value?.opt("channelId") != slot.channelId ||
+                            title == null || !safeEpisodeTitle(title)) stop(active, "GUEST_SLOT_RESPONSE")
+                        else { active.entry = CatalogEntry(slot.resource, title); verifyThen(active) { stop(active, "EXACT_SLOT_METADATA") } }
+                    }
                 state == "EXACT_SERIES_PAGE" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
@@ -269,8 +281,12 @@ internal class AbemaGuestRuntimeCoordinator(
                 state == "REFUSED" && failure in FAILURES && (failure?.startsWith("CHALLENGE_") != true ||
                     active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
                         AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)) && (failure?.startsWith("TOKEN_") != true ||
-                    active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) -> stop(active, "GUEST_$failure")
+                    active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) &&
+                    (failure?.startsWith("SLOT_") != true || active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT) &&
+                    (active.request.operation != AbemaGuestBootstrapOperation.FETCH_SLOT ||
+                        failure?.startsWith("EPISODE_") != true && failure?.startsWith("SERIES_") != true && failure?.startsWith("PROFILE_") != true) -> stop(active, "GUEST_$failure")
                 raw == null || raw == "null" || ((state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE", "SERIES") ||
+                    state == "SLOT" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT ||
                     state == "CHALLENGE" && active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
                         AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK) ||
                     state == "TOKEN" && active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) && failure == "NONE") ->
@@ -356,7 +372,7 @@ internal class AbemaGuestRuntimeCoordinator(
             val admitted = safe && runCatching(active.request.canRemainActive).getOrDefault(false) &&
                 clockMs() < active.request.deadlineElapsedMs
             val outcome = if (!safe) "CLEANUP_FAILED" else if (!admitted) "CANCELLED" else category
-            val entry = active.entry.takeIf { outcome == "EXACT_EPISODE_METADATA" }
+            val entry = active.entry.takeIf { outcome in setOf("EXACT_EPISODE_METADATA", "EXACT_SLOT_METADATA") }
             val seriesPage = active.seriesPage.takeIf { outcome == "EXACT_SERIES_PAGE" }
             active.seriesPage = null
             val challenge = active.accountChallenge?.takeIf { outcome == "ACCOUNT_LINK_READY" && clockMs() < it.deadlineElapsedMs }
@@ -373,6 +389,9 @@ internal class AbemaGuestRuntimeCoordinator(
 
     companion object {
         private val FAILURES = setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT", "PROFILE_HTTP", "PROFILE_RESPONSE",
+            "SLOT_RESPONSE", "SLOT_TIMEOUT", "SLOT_TRANSPORT", "SLOT_REDIRECT",
+            "SLOT_HTTP_401", "SLOT_HTTP_403", "SLOT_HTTP_404", "SLOT_HTTP_410", "SLOT_HTTP_429",
+            "SLOT_HTTP_3XX", "SLOT_HTTP_4XX", "SLOT_HTTP_5XX", "SLOT_HTTP_OTHER",
             "SERIES_RESPONSE", "SERIES_TIMEOUT", "SERIES_TRANSPORT", "SERIES_REDIRECT",
             "SERIES_HTTP_401", "SERIES_HTTP_403", "SERIES_HTTP_404", "SERIES_HTTP_410", "SERIES_HTTP_429",
             "SERIES_HTTP_3XX", "SERIES_HTTP_4XX", "SERIES_HTTP_5XX", "SERIES_HTTP_OTHER",

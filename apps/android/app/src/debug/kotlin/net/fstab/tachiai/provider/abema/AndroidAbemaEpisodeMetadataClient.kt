@@ -40,19 +40,33 @@ internal class AbemaEpisodeClientOperation(
     }
     fun cancel() = synchronized(lock) { cancelled = true; result = null; completed.countDown() }
     fun result(): AbemaEpisodeMetadataIpc.Result? = synchronized(lock) { result.takeIf { current() } }
+    fun workerResult(canRequest: () -> Boolean, clientCurrent: () -> Boolean): AbemaEpisodeMetadataIpc.Result? {
+        val value = result() ?: return null
+        if (!clientCurrent() || !runCatching(canRequest).getOrDefault(false) || !clientCurrent()) return null
+        return result()?.takeIf { it === value }
+    }
     override fun toString() = "AbemaEpisodeClientOperation(redacted)"
 }
 
 // Worker-side synchronous facade over a same-UID isolated-process service.
 // Protected owner checks run only at fetch admission/final publication. Main
 // Binder/heartbeat callbacks use the separate cheap foreground/revision gate.
-internal class AndroidAbemaEpisodeMetadataClient(
+internal class AndroidAbemaEpisodeMetadataClient private constructor(
     context: Context,
     private val instanceId: String,
     private val expectedOwnerProof: String,
     private val canRequest: () -> Boolean,
     private val canRemainActive: () -> Boolean,
+    private val slotMode: Boolean,
 ) : AbemaEpisodeTransport {
+    constructor(context: Context, instanceId: String, expectedOwnerProof: String,
+        canRequest: () -> Boolean, canRemainActive: () -> Boolean) :
+        this(context, instanceId, expectedOwnerProof, canRequest, canRemainActive, false)
+    companion object {
+        fun forSlot(context: Context, instanceId: String, expectedOwnerProof: String,
+            canRequest: () -> Boolean, canRemainActive: () -> Boolean) =
+            AndroidAbemaEpisodeMetadataClient(context, instanceId, expectedOwnerProof, canRequest, canRemainActive, true)
+    }
     init {
         require(validProviderInstanceId(instanceId))
         require(expectedOwnerProof.matches(Regex("[a-f0-9]{64}")))
@@ -64,17 +78,23 @@ internal class AndroidAbemaEpisodeMetadataClient(
     private var active: AbemaEpisodeClientOperation? = null
     private var connection: Connection? = null // Main thread only.
 
-    private inner class Connection(val operation: AbemaEpisodeClientOperation) : ServiceConnection {
+    private inner class Connection(val operation: AbemaEpisodeClientOperation,
+        val slotRequest: AbemaSlotMetadataIpc.Start?) : ServiceConnection {
         var bound = false
         var remote: Messenger? = null
         var remoteBinder: IBinder? = null
         val death = IBinder.DeathRecipient { operation.cancel(); main.post { release(this) } }
         val reply = Messenger(object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(message: Message) {
-                if (message.sendingUid != Process.myUid() || message.what != AbemaEpisodeMetadataIpc.RESULT ||
+                if (message.sendingUid != Process.myUid() || message.what !=
+                    (if (slotRequest == null) AbemaEpisodeMetadataIpc.RESULT else AbemaSlotMetadataIpc.RESULT) ||
                     connection !== this@Connection || !isCurrent(operation)) return
-                val fields = AbemaEpisodeMetadataIpc.fields(message.data) ?: return
-                val value = AbemaEpisodeMetadataIpc.decodeResult(fields) ?: return
+                val fields = runCatching { if (slotRequest == null) AbemaEpisodeMetadataIpc.fields(message.data)
+                    else AbemaSlotMetadataIpc.fields(message.data) }.getOrNull() ?: return
+                val value = if (slotRequest == null) AbemaEpisodeMetadataIpc.decodeResult(fields) ?: return
+                    else AbemaSlotMetadataIpc.decodeResult(fields, slotRequest.slot)?.let {
+                        AbemaEpisodeMetadataIpc.Result(it.nonce, it.outcome, it.slotId, it.title)
+                    } ?: return
                 operation.accept(value)
             }
         })
@@ -93,9 +113,14 @@ internal class AndroidAbemaEpisodeMetadataClient(
         override fun onNullBinding(name: ComponentName) { operation.cancel(); release(this) }
         fun send(what: Int) {
             remote?.send(Message.obtain().apply {
-                this.what = what; replyTo = reply
-                data = if (what == AbemaEpisodeMetadataIpc.START) AbemaEpisodeMetadataIpc.start(operation.request)
-                    else AbemaEpisodeMetadataIpc.nonce(operation.request.nonce)
+                this.what = if (slotRequest == null) what else when (what) {
+                    AbemaEpisodeMetadataIpc.START -> AbemaSlotMetadataIpc.START
+                    AbemaEpisodeMetadataIpc.CANCEL -> AbemaSlotMetadataIpc.CANCEL
+                    else -> AbemaSlotMetadataIpc.PULSE
+                }; replyTo = reply
+                data = if (what == AbemaEpisodeMetadataIpc.START) {
+                    if (slotRequest == null) AbemaEpisodeMetadataIpc.start(operation.request) else AbemaSlotMetadataIpc.start(slotRequest)
+                } else AbemaEpisodeMetadataIpc.nonce(operation.request.nonce)
             })
         }
         fun pulse() {
@@ -113,11 +138,14 @@ internal class AndroidAbemaEpisodeMetadataClient(
     override fun fetch(resource: CatalogResource): CatalogResult<CatalogEntry> {
         if (Looper.myLooper() == Looper.getMainLooper()) return CatalogResult.Failure(CatalogFailure.TEMPORARY)
         if (Build.VERSION.SDK_INT < 28) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
-        if (resource.providerId.value != "abema" || resource.kind != "episode" || resource.intent != CatalogIntent.VIDEO ||
+        val slot = if (slotMode) AbemaSlotRequest.from(resource) else null
+        if (slotMode) { if (slot == null) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) }
+        else if (resource.providerId.value != "abema" || resource.kind != "episode" || resource.intent != CatalogIntent.VIDEO ||
             !AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
         if (closed.get() || !runCatching(canRequest).getOrDefault(false)) return CatalogResult.Failure(CatalogFailure.TEMPORARY)
         val request = AbemaEpisodeMetadataIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
-            resource.identity, expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaEpisodeMetadataIpc.OPERATION_MS)
+            slot?.slotId ?: resource.identity, expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaEpisodeMetadataIpc.OPERATION_MS)
+        val slotRequest = slot?.let { AbemaSlotMetadataIpc.Start(request.nonce, instanceId, it, expectedOwnerProof, request.deadline) }
         val operation = AbemaEpisodeClientOperation(request, SystemClock::elapsedRealtime) {
             !closed.get() && canRemainActive()
         }
@@ -125,7 +153,7 @@ internal class AndroidAbemaEpisodeMetadataClient(
             return CatalogResult.Failure(CatalogFailure.TEMPORARY)
         main.post {
             if (!isCurrent(operation)) { operation.cancel(); return@post }
-            val binding = Connection(operation)
+            val binding = Connection(operation, slotRequest)
             connection = binding
             try {
                 binding.bound = application.bindService(Intent(application, AbemaEpisodeMetadataService::class.java),
@@ -140,9 +168,8 @@ internal class AndroidAbemaEpisodeMetadataClient(
                     operation.cancel(); break
                 }
             }
-            val result = operation.result()
-            if (result == null || !isCurrent(operation) || !runCatching(canRequest).getOrDefault(false))
-                return CatalogResult.Failure(CatalogFailure.TEMPORARY)
+            val result = operation.workerResult(canRequest) { isCurrent(operation) }
+                ?: return CatalogResult.Failure(CatalogFailure.TEMPORARY)
             return when (result.outcome) {
                 "OK" -> CatalogResult.Value(CatalogEntry(resource, checkNotNull(result.title)))
                 "NOT_FOUND" -> CatalogResult.Failure(CatalogFailure.NOT_FOUND)

@@ -25,15 +25,10 @@ internal class OwnedAbemaMyListTransport(
     private val createBackend: (ConnectionProfile, RouteProxySecurity, RoutePreparation) -> RouteBackend = { selected, security, preparation ->
         selected.protocol.createBackend(selected, security, preparation)
     },
-    private val createTransport: ((URL) -> HttpsURLConnection, () -> String?, () -> Boolean) -> AbemaCollectionTransport = { open, token, gate ->
-        AbemaMyListHttpTransport(open, token, gate, SystemClock::elapsedRealtime,
-            onFailure = { category ->
-                try { diagnostics.report(if (category == AbemaCollectionFailure.CLEANUP_FAILED)
-                    FailureStage.CATALOG_CLOSE else FailureStage.CATALOG_LOAD) } catch (_: Throwable) { }
-            })
-    },
+    private val createTransport: (((URL) -> HttpsURLConnection, () -> String?, () -> Boolean) -> AbemaCollectionTransport)? = null,
     private val closeRoute: (RouteSession) -> Unit = RouteSession::close,
     private val cleanupWaitMs: Long = 1000,
+    override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
 ) : AbemaCollectionTransport {
     init { require(cleanupWaitMs in 1..5000) }
     // Route.close awaits its backend receipt. A distinct bounded pool avoids
@@ -124,7 +119,12 @@ internal class OwnedAbemaMyListTransport(
     }
 
     override fun fetchMyList(next: String?): AbemaMyListResponse {
-        val expected = try { abemaMyListRequestUri(next).toURL().toExternalForm() }
+        if (kind != AbemaCollectionKind.MY_LIST) fail(AbemaCollectionFailure.POLICY_REFUSED)
+        return fetch(next)
+    }
+
+    override fun fetch(next: String?): AbemaMyListResponse {
+        val expected = try { abemaCollectionRequestUri(kind, next).toURL().toExternalForm() }
         catch (_: Throwable) { fail(AbemaCollectionFailure.POLICY_REFUSED) }
         val run = synchronized(lock) {
             if (poisoned) fail(AbemaCollectionFailure.CLEANUP_FAILED)
@@ -152,18 +152,26 @@ internal class OwnedAbemaMyListTransport(
             run.route = route
             run.routeClose = RouteCloseReceipt(route, closeRoute, cleanupWaitMs)
             requireCurrent(run)
-            val transport = createTransport({ url ->
+            val open: (URL) -> HttpsURLConnection = { url ->
                 requireCurrent(run)
                 if (url.toExternalForm() != run.expectedUrl) fail(AbemaCollectionFailure.POLICY_REFUSED)
                 route.open(url)
-            }, bearer, { current(run) })
+            }
+            val transport = createTransport?.invoke(open, bearer, { current(run) }) ?: AbemaMyListHttpTransport(
+                open, bearer, { current(run) }, SystemClock::elapsedRealtime, kind = kind,
+                onFailure = { category ->
+                    try { diagnostics.report(if (category == AbemaCollectionFailure.CLEANUP_FAILED)
+                        FailureStage.CATALOG_CLOSE else FailureStage.CATALOG_LOAD) } catch (_: Throwable) { }
+                })
             // Capture even if cancellation raced construction. No request may
             // run before both its owner and confirmed-close receipt exist.
             run.transport = transport
             run.transportClose = AbemaAccountCleanupReceipt(transport, AbemaCollectionTransport::close, cleanupWaitMs)
             requireCurrent(run)
-            val result = transport.fetchMyList(next)
+            if (transport.kind != kind) fail(AbemaCollectionFailure.POLICY_REFUSED)
+            val result = transport.fetch(next)
             requireCurrent(run)
+            if (result.kind != kind || result.page?.kind?.let { it != kind } == true) fail(AbemaCollectionFailure.INVALID_RESPONSE)
             returning = true
             return result
         } catch (error: Throwable) {

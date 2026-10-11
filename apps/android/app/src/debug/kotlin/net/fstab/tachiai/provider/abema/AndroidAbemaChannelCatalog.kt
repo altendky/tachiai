@@ -72,6 +72,9 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     }, canPublish = ::current, episodeTransportFactory = if (captured == null) null else { gate ->
         AndroidAbemaEpisodeMetadataClient(application, instanceId, captured.proof(),
             canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
+    }, slotTransportFactory = if (captured == null) null else { gate ->
+        AndroidAbemaSlotMetadataClient(application, instanceId, captured.proof(),
+            canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
     })
     val publicCatalog = AbemaSeriesChildrenCatalog(channels,
         transportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
@@ -84,7 +87,7 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     val accountPoisoned = AbemaAccountWorkers.poisoned(instanceId)
     fun accountCurrent() = !accountPoisoned.get() && current()
     fun accountActive() = !accountPoisoned.get() && canRemainActive()
-    val account = captured?.let { owner ->
+    fun accountBinding(kind: AbemaCollectionKind) = captured?.let { owner ->
         AbemaCollectionAccountBinding(
             store = AbemaAccountGrantStore(instanceId, AndroidAbemaAccountStorage(application, instanceId)),
             instanceId = instanceId,
@@ -100,22 +103,28 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
             },
             collectionTransportFactory = { bearer, gate ->
                 OwnedAbemaMyListTransport(owner.profile, bearer, { gate() && accountCurrent() },
-                    onCleanupFailure = { accountPoisoned.set(true) }, diagnostics = diagnostics)
+                    onCleanupFailure = { accountPoisoned.set(true) }, diagnostics = diagnostics, kind = kind)
             },
             elapsedMs = android.os.SystemClock::elapsedRealtime,
             wallMs = System::currentTimeMillis,
             onCleanupFailure = { accountPoisoned.set(true) },
+            kind = kind,
         )
     }
-    val access = account ?: object : AbemaCollectionAccountAccess {
+    val account = accountBinding(AbemaCollectionKind.MY_LIST)
+    val history = accountBinding(AbemaCollectionKind.HISTORY)
+    fun access(binding: AbemaCollectionAccountBinding?, selected: AbemaCollectionKind): AbemaCollectionAccountAccess =
+        binding ?: object : AbemaCollectionAccountAccess {
+        override val kind = selected
         override fun access() = CatalogAccess.NOT_VERIFIED
         override fun lease(): AbemaCollectionLease? = null
     }
-    val catalog = AbemaAccountCollectionsCatalog(publicCatalog, access, canUse = ::canRemainActive)
+    val catalog = AbemaAccountCollectionsCatalog(publicCatalog, access(account, AbemaCollectionKind.MY_LIST),
+        canUse = ::canRemainActive, history = access(history, AbemaCollectionKind.HISTORY))
     val owned = object : ProviderCatalog by catalog {
         override fun close() {
             if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return
-            try { catalog.close() } finally { account?.close() }
+            try { catalog.close() } finally { try { account?.close() } finally { history?.close() } }
         }
         override fun toString() = "AndroidAbemaChannelCatalog(redacted)"
     }

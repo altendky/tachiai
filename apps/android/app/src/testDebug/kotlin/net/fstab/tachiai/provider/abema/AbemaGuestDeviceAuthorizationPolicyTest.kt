@@ -21,8 +21,9 @@ class AbemaGuestDeviceAuthorizationPolicyTest {
             AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK) }) {
             val id = if (other == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null
             val series = if (other == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest("fixture-series") else null
-            assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, false, "POST", other, id, series))
-            assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(other, id, series).contains(AbemaGuestBootstrapPolicy.CHALLENGE))
+            val slot = if (other == AbemaGuestBootstrapOperation.FETCH_SLOT) AbemaSlotRequest("fixture-channel", "fixture-slot") else null
+            assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, false, "POST", other, id, series, slot))
+            assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(other, id, series, slot).contains(AbemaGuestBootstrapPolicy.CHALLENGE))
         }
         for (method in listOf("GET", "OPTIONS"))
             assertTrue(AbemaGuestBootstrapPolicy.allows(profile, false, method, operation))

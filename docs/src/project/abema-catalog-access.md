@@ -118,8 +118,9 @@ catalog interface. It sends one anonymous GET to
 instance's explicit saved route. Search filters channel names/IDs locally; pages
 of 20 use a bounded in-memory snapshot and opaque, single-use continuations
 owned by the instance, captured route and query. A new query, lookup, refresh,
-access loss or close discards the previous continuation. My List and History
-remain explicitly not verified.
+access loss or close discards the previous continuation. Channels success does
+not establish My List or History access; separate outer account bindings must
+prove each collection endpoint independently.
 
 The transport accepts at most 512 KiB and 500 unique channels, requires bounded
 valid JSON/UTF-8 and retains only normalized ID/name. It discards playback URLs,
@@ -235,6 +236,13 @@ internal provider identity comes from the approved token response rather than
 the user's email sign-in identifier. Provider documentation describes
 [email account sharing and mobile-app QR approval](https://help.abema.tv/hc/ja/articles/28570588900377);
 it does not establish that the device-approval URL itself offers email login.
+The coherent public account-method selector independently offers provider-owned
+email sign-in followed by an emailed code, alongside separate app-account
+sharing. The public
+[device-switch chunk](https://abema.tv/assets/compat/914d635da0a8f46f.7663.bundle.js)
+uses legacy CLIENT_SWITCH device-code operations, distinct from modern OAuth.
+Their codes and fields are not interchangeable. Static login options do not
+establish approval of Tachiai's challenge; entry remains on provider pages.
 The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
@@ -313,13 +321,29 @@ My List, history, entitlement or account-backed playback. Those capabilities
 need separate endpoint and intended-account evidence; #103 remains open until
 its real account criteria are met.
 
+On 2026-10-11, the corrected routed browser still displayed the known regional
+refusal without invoking its region adapter. After Return/Cancel and confirmed
+cleanup, one separate cookie-free fixed CDN region GET returned HTTP200 through
+the captured saved route in 1.428 seconds. A separately opted-in fixed public
+approval-page GET, without activation query, cookies, redirects or retries and
+using the public default WebView identity, returned HTTP200 and 31,585 bytes of
+regional Sorry HTML without initial client-region assignment, in 2.019 seconds.
+That public response is server-side refusal and may differ from private
+activation HTML. Endpoint acceptance does not establish a Japanese exit address
+or account approval. Device geolocation remains disabled; no invented
+coordinates or region flags are supplied. Persistent tachiai-dev, Android
+16/API 36, WebView 133.0.6943.137 and unchanged encrypted records bound these
+observations.
+
 ### Account-backed My List adapter
 
 The debug catalog composes a read-only My List adapter around public Channels
 and inside local public-link import. Existing configured choices remain
 Tachiai-owned: browsing never automatically adds an item, mutates ABEMA's list
-or deletes a configured choice when the provider omits it. History remains a
-separate, unverified capability under #102.
+or deletes a configured choice when the provider omits it. The separate
+[History adapter](provider-history-access.md#abema-read-only-history-adapter--2026-10-11)
+uses its own collection binding and endpoint proof under #102; real
+intended-account acceptance remains unverified for both collections.
 
 Account validation runs on workers and uses the core session directly. Missing
 or corrupt protected authorization starts no provider request. A valid saved
@@ -395,12 +419,62 @@ requested offset and owner revision; subsequent results must match the pinned
 version. Missing, unsupported or changed versions refuse visibly rather than
 claim that a list is exhausted. Response offset is not interpreted.
 
-This is a conservative implementation and static-evidence boundary. Actual
-fresh-guest compatibility, raw version shape and versioned-request behavior
-remain separate acceptance gates. Network-blocked fixtures and opt-in
-saved-route observations must preserve existing authorization/configuration.
+Two explicit read-only saved-route checks on 2026-10-11 used exact sumo series
+`394-72`: one first-page check passed in 20.648 seconds and one separately
+requested two-page check passed in 28.841 seconds. Each page contained 20 valid
+distinct episodes; the second request used the first page's accepted nonempty
+string version, matched it and had no overlap with the first page. This proves
+bounded fresh-guest compatibility and versioned-request acceptance for that
+series, not snapshot guarantees for every provider update. The device was
+persistent tachiai-dev, Android 16/API 36, WebView 133.0.6943.137, with captured
+saved route, unmeasured exit country and no existing-account grant. No item was
+added or played, and protected records stayed unchanged. Thirteen network-blocked
+Android fixtures, including the two-series/versioned-page projection and private
+IPC guards, subsequently passed in 2.43 seconds. Provider-free JS/JVM coverage
+preceded the actual requests; the Android fixtures ran afterwards. Temporary
+guest-process instrumentation targeting was restored to the ordinary manifest.
 Series browsing does not imply global video search, timetable/slot resolution
 or an automatically playable permanent sumo collection.
+
+### Exact configured broadcast metadata
+
+Issue [#178](https://github.com/altendky/tachiai/issues/178) adds metadata
+refresh for an already configured exact ABEMA broadcast slot. The existing
+public-link parser retains both the channel and slot IDs; refresh must return
+that same resource. It does not select the channel's current program, another
+day/division, a replay or a recurring group.
+
+The coherent [9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),
+[8974 slot caller](https://abema.tv/assets/compat/0df864b4d17ad744.8974.bundle.js)
+and [3194 slot model](https://abema.tv/assets/compat/4fa634e6d16c9c17.3194.bundle.js)
+establish a bearer GET on the reviewed modern API at the exact media-slot
+path, with `include=payperview`. The response's `slot.id`, `slot.channelId`
+and `slot.title` supply the identity and display projection. Optional division
+comes from a provider context that this slice has not established; it is
+omitted rather than guessed. These are static first-party leads, not actual
+guest acceptance or documented third-party support.
+
+The bounded operation uses a fresh guest and one immutable exact-slot
+request. Same-UID private IPC carries a closed slot request/result schema
+through the existing metadata service; old episode messages retain their
+contract. Native admission checks the exact canonical GET and optional
+authorization preflight, including the fixed query. CSP constrains the
+selected endpoint path, while unrelated account, media and licensing
+requests remain refused.
+
+Strict whole-response validation requires the selected slot and its exact
+parent channel, a bounded safe provider title and unambiguous JSON. It
+projects UNKNOWN availability and no schedule, progress or entitlement.
+Worker owner/deadline checks and confirmed runtime/proxy/backend cleanup
+precede publication. Failed refresh preserves configured UUIDs, identities,
+order and quality; existing public-link import remains usable for non-live
+or unavailable items. Exact-slot playback remains NOT_VERIFIED.
+
+Actual guest compatibility, response limits and optional division behavior
+remain separate runtime gates. Network-blocked and explicitly opted-in
+saved-route checks must preserve protected records and restore ordinary
+test targeting. No account Connect, timetable/search, recurrence or provider
+history operation is part of this metadata slice.
 
 ### Exact configured episodes
 

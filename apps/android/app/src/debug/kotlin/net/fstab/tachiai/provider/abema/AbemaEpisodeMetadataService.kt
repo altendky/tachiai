@@ -11,23 +11,38 @@ import net.fstab.tachiai.BuildConfig
 // prepare a route or make a request. No Activity/window/account is launched.
 class AbemaEpisodeMetadataService : Service() {
     private var runtime: AbemaGuestRuntimeCoordinator? = null
-    private class Active(val start: AbemaEpisodeMetadataIpc.Start, val reply: Messenger,
+    private class Request(val episode: AbemaEpisodeMetadataIpc.Start? = null, val slot: AbemaSlotMetadataIpc.Start? = null) {
+        init { require((episode == null) != (slot == null)) }
+        val nonce get() = episode?.nonce ?: checkNotNull(slot).nonce
+        val instanceId get() = episode?.instanceId ?: checkNotNull(slot).instanceId
+        val proof get() = episode?.ownerProof ?: checkNotNull(slot).ownerProof
+        val deadline get() = episode?.deadline ?: checkNotNull(slot).deadline
+    }
+    private class Active(val start: Request, val reply: Messenger,
         val lease: AbemaEpisodeRequestLease, val death: IBinder.DeathRecipient)
     private var active: Active? = null
     private val handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
             if (message.sendingUid != Process.myUid()) return
-            val fields = runCatching { AbemaEpisodeMetadataIpc.fields(message.data) }.getOrNull() ?: return
+            val slotMessage = message.what in setOf(AbemaSlotMetadataIpc.START, AbemaSlotMetadataIpc.CANCEL, AbemaSlotMetadataIpc.PULSE)
+            val fields = runCatching { if (slotMessage) AbemaSlotMetadataIpc.fields(message.data)
+                else AbemaEpisodeMetadataIpc.fields(message.data) }.getOrNull() ?: return
             when (message.what) {
                 AbemaEpisodeMetadataIpc.START -> {
                     val request = AbemaEpisodeMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
                     val reply = message.replyTo ?: return
-                    start(request, reply)
+                    start(Request(episode = request), reply)
                 }
-                AbemaEpisodeMetadataIpc.CANCEL, AbemaEpisodeMetadataIpc.PULSE -> {
+                AbemaSlotMetadataIpc.START -> {
+                    val request = AbemaSlotMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
+                    start(Request(slot = request), message.replyTo ?: return)
+                }
+                AbemaEpisodeMetadataIpc.CANCEL, AbemaEpisodeMetadataIpc.PULSE,
+                AbemaSlotMetadataIpc.CANCEL, AbemaSlotMetadataIpc.PULSE -> {
                     val nonce = AbemaEpisodeMetadataIpc.decodeNonce(fields) ?: return
-                    val current = active?.takeIf { it.start.nonce == nonce && it.reply.binder == message.replyTo?.binder } ?: return
-                    if (message.what == AbemaEpisodeMetadataIpc.CANCEL) {
+                    val current = active?.takeIf { it.start.nonce == nonce && (it.start.slot != null) == slotMessage &&
+                        it.reply.binder == message.replyTo?.binder } ?: return
+                    if (message.what in setOf(AbemaEpisodeMetadataIpc.CANCEL, AbemaSlotMetadataIpc.CANCEL)) {
                         current.lease.cancel(nonce); runtime?.cancel(nonce)
                     } else if (!current.lease.pulse(nonce)) runtime?.cancel(nonce)
                 }
@@ -40,9 +55,9 @@ class AbemaEpisodeMetadataService : Service() {
         if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
-    private fun start(request: AbemaEpisodeMetadataIpc.Start, reply: Messenger) {
+    private fun start(request: Request, reply: Messenger) {
         val coordinator = runtime ?: return
-        if (active != null || coordinator.unavailable) { send(reply, AbemaEpisodeMetadataIpc.Result(request.nonce, "TEMPORARY")); return }
+        if (active != null || coordinator.unavailable) { send(reply, request, "TEMPORARY"); return }
         val lease = AbemaEpisodeRequestLease(request.nonce, request.deadline, SystemClock::elapsedRealtime)
         val death = IBinder.DeathRecipient {
             lease.cancel(request.nonce)
@@ -51,28 +66,42 @@ class AbemaEpisodeMetadataService : Service() {
         try { reply.binder.linkToDeath(death, 0) } catch (_: Exception) { return }
         val owner = Active(request, reply, lease, death)
         active = owner
-        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            request.episodeId, request.nonce, request.ownerProof, request.deadline, canRemainActive = lease::current)) completed@{ result ->
+        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId,
+            if (request.slot == null) AbemaGuestBootstrapOperation.FETCH_EPISODE else AbemaGuestBootstrapOperation.FETCH_SLOT,
+            request.episode?.episodeId, request.nonce, request.proof, request.deadline,
+            slotRequest = request.slot?.slot, canRemainActive = lease::current)) completed@{ result ->
             if (active !== owner) return@completed
             active = null
             runCatching { reply.binder.unlinkToDeath(death, 0) }
             val entry = result.entry
             val outcome = when (result.category) {
-                "EXACT_EPISODE_METADATA" -> if (entry != null) "OK" else "TEMPORARY"
-                "GUEST_EPISODE_HTTP_404", "GUEST_EPISODE_HTTP_410" -> "NOT_FOUND"
-                "GUEST_EPISODE_HTTP_429" -> "RATE_LIMITED"
+                "EXACT_EPISODE_METADATA" -> if (request.episode != null && entry != null) "OK" else "TEMPORARY"
+                "EXACT_SLOT_METADATA" -> if (request.slot != null && entry?.resource == request.slot.slot.resource) "OK" else "TEMPORARY"
+                "GUEST_EPISODE_HTTP_404", "GUEST_EPISODE_HTTP_410" -> if (request.episode != null) "NOT_FOUND" else "TEMPORARY"
+                "GUEST_EPISODE_HTTP_429" -> if (request.episode != null) "RATE_LIMITED" else "TEMPORARY"
+                "GUEST_SLOT_HTTP_404", "GUEST_SLOT_HTTP_410" -> if (request.slot != null) "NOT_FOUND" else "TEMPORARY"
+                "GUEST_SLOT_HTTP_429" -> if (request.slot != null) "RATE_LIMITED" else "TEMPORARY"
                 else -> "TEMPORARY"
             }
-            send(reply, AbemaEpisodeMetadataIpc.Result(request.nonce, outcome,
-                entry?.resource?.identity.takeIf { outcome == "OK" }, entry?.title.takeIf { outcome == "OK" }))
+            send(reply, request, outcome, entry?.title.takeIf { outcome == "OK" })
         }
         if (!accepted) {
             active = null; lease.cancel(request.nonce); runCatching { reply.binder.unlinkToDeath(death, 0) }
-            send(reply, AbemaEpisodeMetadataIpc.Result(request.nonce, "TEMPORARY"))
+            send(reply, request, "TEMPORARY")
         }
     }
-    private fun send(reply: Messenger, result: AbemaEpisodeMetadataIpc.Result) {
-        try { reply.send(Message.obtain().apply { what = AbemaEpisodeMetadataIpc.RESULT; data = AbemaEpisodeMetadataIpc.result(result) }) }
+    private fun send(reply: Messenger, request: Request, outcome: String, title: String? = null) {
+        try { reply.send(Message.obtain().apply {
+            if (request.slot == null) {
+                what = AbemaEpisodeMetadataIpc.RESULT
+                data = AbemaEpisodeMetadataIpc.result(AbemaEpisodeMetadataIpc.Result(request.nonce, outcome,
+                    request.episode?.episodeId.takeIf { outcome == "OK" }, title))
+            } else {
+                what = AbemaSlotMetadataIpc.RESULT
+                data = AbemaSlotMetadataIpc.result(AbemaSlotMetadataIpc.Result(request.nonce, outcome,
+                    request.slot.slot.channelId.takeIf { outcome == "OK" }, request.slot.slot.slotId.takeIf { outcome == "OK" }, title))
+            }
+        }) }
         catch (_: Exception) { /* Closed category only; never log IPC payload. */ }
     }
     private fun cancel() {

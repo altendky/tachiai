@@ -12,7 +12,7 @@ internal fun parseAbemaMyListResponse(body: String): AbemaMyListPage {
     if (body.length > ABEMA_MY_LIST_RESPONSE_LIMIT || body.toByteArray(Charsets.UTF_8).size > ABEMA_MY_LIST_RESPONSE_LIMIT)
         throw AbemaCollectionException(AbemaCollectionFailure.RESPONSE_LIMIT)
     try {
-        MyListJsonPreflight(body).check()
+        checkAbemaCollectionJson(body)
         val root = JSONObject(body)
         val references = root.opt("mylist") as? JSONArray ?: invalidMyList()
         if (references.length() > ABEMA_MY_LIST_PAGE_LIMIT) limitedMyList()
@@ -107,6 +107,8 @@ private fun limitedMyList(): Nothing = throw AbemaCollectionException(AbemaColle
 
 // The platform JSON decoder is preceded by strict syntax/duplicate-key and
 // Unicode validation, including ignored fields. Bound work before its recursion.
+internal fun checkAbemaCollectionJson(body: String) = MyListJsonPreflight(body).check()
+
 private class MyListJsonPreflight(private val text: String) {
     private var offset = 0
     private var values = 0

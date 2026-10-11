@@ -8,13 +8,18 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 import net.fstab.tachiai.provider.catalog.*
 
 // The public adapter remains authoritative for all ordinary discovery/playback.
-// My List is an account-owned, read-only projection with explicit local Add.
+// Account collections are read-only projections with explicit local Add.
 internal class AbemaAccountCollectionsCatalog(
     private val delegate: ProviderCatalog,
     private val account: AbemaCollectionAccountAccess,
     private val canUse: () -> Boolean = { true },
     private val wallMs: () -> Long = System::currentTimeMillis,
+    private val history: AbemaCollectionAccountAccess? = null,
 ) : ProviderCatalog {
+    // Preserve the original constructor's trailing wall-clock lambda.
+    constructor(delegate: ProviderCatalog, account: AbemaCollectionAccountAccess,
+        canUse: () -> Boolean = { true }, wallMs: () -> Long) :
+        this(delegate, account, canUse, wallMs, null)
     override val providerId: ProviderId = delegate.providerId
     override val instanceId: String = delegate.instanceId
     init { require(providerId == ProviderId("abema") && validProviderInstanceId(instanceId)) }
@@ -23,23 +28,31 @@ internal class AbemaAccountCollectionsCatalog(
     private val revision = AtomicLong()
     private val active = AtomicReference<AbemaCollectionTransport?>()
     @Volatile private var closed = false
-    private class Continuation(val context: String, val revision: Long, val providerNext: String)
+    private class Continuation(val kind: AbemaCollectionKind, val context: String, val revision: Long, val providerNext: String)
     private var continuation: Pair<String, Continuation>? = null
     private var observedContext: String? = null
+    private var observedKind: AbemaCollectionKind? = null
     private class Abort(val failure: CatalogFailure, val retryAt: Long? = null) : Exception(failure.name, null, false, false)
 
     private fun localCurrent(local: Long) = !closed && revision.get() == local && !CollectionRetention.poisoned(instanceId)
     private fun usable(): Boolean = !closed && try { canUse() } catch (_: Throwable) { false }
-    private fun clear() = synchronized(state) { continuation = null; observedContext = null }
-    private fun access(): CatalogAccess {
-        if (!usable() || CollectionRetention.poisoned(instanceId)) return CatalogAccess.NOT_VERIFIED
-        return try { account.access() } catch (_: Throwable) { CatalogAccess.NOT_VERIFIED }
+    private fun clear(kind: AbemaCollectionKind? = null) = synchronized(state) {
+        if (kind == null || observedKind == kind) { continuation = null; observedContext = null; observedKind = null }
     }
-    private fun lease(): AbemaCollectionLease {
-        if (access() != CatalogAccess.AVAILABLE) { clear(); throw Abort(CatalogFailure.ACCESS_REQUIRED) }
-        val value = try { account.lease() } catch (_: Throwable) { null }
-        if (value == null || value.instanceId != instanceId || !value.current()) {
-            clear(); throw Abort(CatalogFailure.ACCESS_REQUIRED)
+    private fun account(kind: AbemaCollectionKind) = when (kind) {
+        AbemaCollectionKind.MY_LIST -> account
+        AbemaCollectionKind.HISTORY -> history
+    }
+    private fun access(kind: AbemaCollectionKind): CatalogAccess {
+        if (!usable() || CollectionRetention.poisoned(instanceId)) return CatalogAccess.NOT_VERIFIED
+        return try { account(kind)?.takeIf { it.kind == kind }?.access() ?: CatalogAccess.NOT_VERIFIED }
+        catch (_: Throwable) { CatalogAccess.NOT_VERIFIED }
+    }
+    private fun lease(kind: AbemaCollectionKind): AbemaCollectionLease {
+        if (access(kind) != CatalogAccess.AVAILABLE) { clear(kind); throw Abort(CatalogFailure.ACCESS_REQUIRED) }
+        val value = try { account(kind)?.lease() } catch (_: Throwable) { null }
+        if (value == null || value.kind != kind || value.instanceId != instanceId || !value.current()) {
+            clear(kind); throw Abort(CatalogFailure.ACCESS_REQUIRED)
         }
         return value
     }
@@ -50,37 +63,47 @@ internal class AbemaAccountCollectionsCatalog(
 
     override fun capabilities(): CatalogCapabilities {
         val public = delegate.capabilities()
-        var selected = access()
-        if (selected == CatalogAccess.AVAILABLE) {
-            try {
-                val lease = lease()
-                synchronized(state) {
-                    if (observedContext != null && observedContext != lease.contextKey) continuation = null
-                    observedContext = lease.contextKey
-                }
-            } catch (_: Throwable) { selected = CatalogAccess.NOT_VERIFIED; clear() }
-        } else clear()
+        val selected = AbemaCollectionKind.values().associateWith { kind ->
+            var access = access(kind)
+            if (access == CatalogAccess.AVAILABLE) {
+                try {
+                    val lease = lease(kind)
+                    synchronized(state) {
+                        if (observedKind == kind) {
+                            if (observedContext != lease.contextKey) continuation = null
+                            observedContext = lease.contextKey
+                        }
+                    }
+                } catch (_: Throwable) { access = CatalogAccess.NOT_VERIFIED; clear(kind) }
+            } else clear(kind)
+            access
+        }
         val collections = public.collections.filter { it.id != "my_list" && it.id != "history" } +
-            listOf(CatalogCollection("my_list", "My List", selected), CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED))
+            AbemaCollectionKind.values().map { CatalogCollection(it.collectionId, it.title, selected.getValue(it)) }
         return public.copy(collections = collections)
     }
 
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
-        if (query.collectionId == "history") { clear(); return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) }
-        if (query.collectionId != "my_list") { clear(); return delegate.browse(query) }
+        val kind = AbemaCollectionKind.values().singleOrNull { it.collectionId == query.collectionId }
+        if (kind == null) { clear(); return delegate.browse(query) }
+        if (kind == AbemaCollectionKind.HISTORY && history == null) { clear(); return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) }
         return synchronized(operations) {
             val local = revision.get()
             var capturedLease: AbemaCollectionLease? = null
             try {
                 if (query.search != null || query.parent != null) { clear(); throw Abort(CatalogFailure.UNSUPPORTED) }
-                val lease = lease().also { capturedLease = it }
+                val lease = lease(kind).also { capturedLease = it }
                 requireCurrent(local, lease)
                 val providerNext = synchronized(state) {
                     if (query.cursor == null) {
-                        continuation = null; observedContext = lease.contextKey; null
+                        continuation = null; observedContext = lease.contextKey; observedKind = kind; null
                     } else {
                         val saved = continuation
                         continuation = null // Every continuation is single-use, including failed attempts.
+                        if (saved != null && (saved.second.kind != kind || observedKind != kind)) {
+                            observedContext = null; observedKind = null
+                            throw Abort(CatalogFailure.INVALID_INPUT)
+                        }
                         if (observedContext != lease.contextKey)
                             throw Abort(CatalogFailure.ACCESS_REQUIRED)
                         if (saved == null) throw Abort(CatalogFailure.INVALID_INPUT)
@@ -92,10 +115,11 @@ internal class AbemaAccountCollectionsCatalog(
                 }
                 val response = request(local, lease, providerNext)
                 requireCurrent(local, lease)
+                if (response.kind != kind) throw Abort(CatalogFailure.TEMPORARY)
                 when (response.status) {
                     200 -> {
                         val page = response.page ?: throw Abort(CatalogFailure.TEMPORARY)
-                        if (page.entries.any { !validEntry(it) } || page.entries.map { it.resource }.distinct().size != page.entries.size)
+                        if (page.kind != kind || page.entries.any { !validEntry(it, kind) } || page.entries.map { it.resource }.distinct().size != page.entries.size)
                             throw Abort(CatalogFailure.TEMPORARY)
                         val next = page.providerNext?.let { UUID.randomUUID().toString() }
                         synchronized(state) {
@@ -103,7 +127,8 @@ internal class AbemaAccountCollectionsCatalog(
                             // publication lock, never underneath close's lock.
                             if (!localCurrent(local)) throw Abort(CatalogFailure.ACCESS_REQUIRED)
                             observedContext = lease.contextKey
-                            continuation = next?.let { it to Continuation(lease.contextKey, local, page.providerNext!!) }
+                            observedKind = kind
+                            continuation = next?.let { it to Continuation(kind, lease.contextKey, local, page.providerNext!!) }
                         }
                         requireCurrent(local, lease)
                         CatalogResult.Value(CatalogPage(page.entries, next))
@@ -134,7 +159,8 @@ internal class AbemaAccountCollectionsCatalog(
             transport = lease.createTransport { current(local, lease) }
             check(active.compareAndSet(null, transport))
             requireCurrent(local, lease)
-            return transport.fetchMyList(next)
+            if (transport.kind != lease.kind) throw Abort(CatalogFailure.TEMPORARY)
+            return transport.fetch(next)
         } finally {
             if (transport != null) {
                 try {
@@ -152,14 +178,14 @@ internal class AbemaAccountCollectionsCatalog(
         }
     }
 
-    private fun validEntry(entry: CatalogEntry): Boolean {
+    private fun validEntry(entry: CatalogEntry, kind: AbemaCollectionKind): Boolean {
         val resource = entry.resource
         if (resource.providerId != providerId || entry.availability != CatalogAvailability.UNKNOWN ||
             entry.scheduledStartEpochMs != null || !safeMyListTitle(entry.title) || entry.title != entry.title.trim()) return false
         val id = Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
         return when (resource.kind) {
             "episode" -> resource.intent == CatalogIntent.VIDEO && resource.identity.matches(id)
-            "series", "slot_group" -> resource.intent == CatalogIntent.COLLECTION && resource.identity.matches(id)
+            "series", "slot_group" -> kind == AbemaCollectionKind.MY_LIST && resource.intent == CatalogIntent.COLLECTION && resource.identity.matches(id)
             "live_event" -> resource.intent == CatalogIntent.BROADCAST && resource.identity.matches(id)
             "slot" -> resource.intent == CatalogIntent.BROADCAST && resource.identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))
             else -> false

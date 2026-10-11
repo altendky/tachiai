@@ -23,6 +23,7 @@ internal class AbemaMyListHttpTransport(
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val onFailure: (AbemaCollectionFailure) -> Unit = {},
     private val cleanupWaitMs: Long = 5_000,
+    override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
 ) : AbemaCollectionTransport {
     init { require(cleanupWaitMs in 1..5_000) }
 
@@ -79,6 +80,11 @@ internal class AbemaMyListHttpTransport(
     private var active: Handle? = null
 
     override fun fetchMyList(next: String?): AbemaMyListResponse {
+        if (kind != AbemaCollectionKind.MY_LIST) fail(AbemaCollectionFailure.POLICY_REFUSED)
+        return fetch(next)
+    }
+
+    override fun fetch(next: String?): AbemaMyListResponse {
         var reserved = false
         var handle: Handle? = null
         var returning = false
@@ -95,7 +101,7 @@ internal class AbemaMyListHttpTransport(
             MyListHttpRetention.retain(this)
             fun check() = checkActive(local, began, handle)
             check()
-            val url = try { abemaMyListRequestUri(next).toURL() } catch (_: Throwable) { fail(AbemaCollectionFailure.POLICY_REFUSED) }
+            val url = try { abemaCollectionRequestUri(kind, next).toURL() } catch (_: Throwable) { fail(AbemaCollectionFailure.POLICY_REFUSED) }
             val token = bearer()
             check()
             if (token == null || token.length !in 1..6144 || token.any { it.code !in 33..126 })
@@ -121,7 +127,7 @@ internal class AbemaMyListHttpTransport(
             if (status != 200) {
                 val retry = if (status == 429) retryDeadline(connection.getHeaderField("Retry-After")) else null
                 check(); returning = true
-                return AbemaMyListResponse(status, retryAtEpochMs = retry)
+                return AbemaMyListResponse(status, retryAtEpochMs = retry, kind = kind)
             }
             if (!myListJsonContentType(connection.contentType)) fail(AbemaCollectionFailure.INVALID_RESPONSE)
             val length = connection.contentLengthLong
@@ -138,9 +144,12 @@ internal class AbemaMyListHttpTransport(
                 Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
             } catch (_: Throwable) { fail(AbemaCollectionFailure.INVALID_RESPONSE) }
-            val page = parseAbemaMyListResponse(text)
+            val page = when (kind) {
+                AbemaCollectionKind.MY_LIST -> parseAbemaMyListResponse(text)
+                AbemaCollectionKind.HISTORY -> parseAbemaHistoryResponse(text)
+            }
             check(); returning = true
-            return AbemaMyListResponse(200, page)
+            return AbemaMyListResponse(200, page, kind = kind)
         } catch (error: Throwable) {
             val safe = if (error is AbemaCollectionException) error else AbemaCollectionException(AbemaCollectionFailure.NETWORK_FAILED)
             report(safe.category); throw safe

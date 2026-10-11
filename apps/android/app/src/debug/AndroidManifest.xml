@@ -63,6 +63,10 @@
             android:exported="true"
             android:process=":abema_cached_helper" />
         <activity
+            android:name=".feature.diagnostic.AbemaGuestBootstrapActivity"
+            android:exported="true"
+            android:process=":abema_guest_bootstrap" />
+        <activity
             android:name=".feature.presentation.PrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false"

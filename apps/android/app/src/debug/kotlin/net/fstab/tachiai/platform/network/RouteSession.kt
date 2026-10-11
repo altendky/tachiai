@@ -17,7 +17,7 @@ import okhttp3.OkHttpClient
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 
-private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, ABEMA_CATALOG }
+private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, ABEMA_CATALOG, ABEMA_GUEST }
 
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
@@ -37,7 +37,7 @@ internal class RouteSession private constructor(
     // Anonymous ABEMA metadata uses a private, credential-free client even on
     // System. Java's process-global authenticators/cookie handlers cannot attach
     // account state to that request; existing playback/Twitch openers are retained.
-    private val client: OkHttpClient? = if (backend == null && purpose != RoutePurpose.ABEMA_CATALOG) null else OkHttpClient.Builder()
+    private val client: OkHttpClient? = if (backend == null && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST)) null else OkHttpClient.Builder()
         .proxy(if (backend == null) Proxy.NO_PROXY else Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
         .proxyAuthenticator(if (backend == null) Authenticator.NONE else
             routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
@@ -53,9 +53,10 @@ internal class RouteSession private constructor(
         when (purpose) {
             RoutePurpose.TWITCH_CATALOG -> require(url.host in setOf("id.twitch.tv", "api.twitch.tv"))
             RoutePurpose.ABEMA_CATALOG -> require(url.host == "api.abema.io")
+            RoutePurpose.ABEMA_GUEST -> require(url.host == "abema.tv")
             RoutePurpose.PLAYBACK -> Unit
         }
-        if (isSystem && purpose != RoutePurpose.ABEMA_CATALOG) return url.openConnection() as HttpsURLConnection
+        if (isSystem && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST)) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
@@ -116,6 +117,15 @@ internal class RouteSession private constructor(
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_CATALOG)
 
+        // Public-code download and isolated guest purpose only. The runtime's
+        // exact URI policy separately refuses navigation and other auth APIs.
+        fun createAbemaGuest(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST)
+
         private fun createOwned(profile: ConnectionProfile?, preparation: RoutePreparation,
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend,
             purpose: RoutePurpose,
@@ -130,6 +140,7 @@ internal class RouteSession private constructor(
                     when (purpose) {
                         RoutePurpose.TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
                         RoutePurpose.ABEMA_CATALOG -> "api.abema.io"
+                        RoutePurpose.ABEMA_GUEST -> "abema.tv"
                         RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
                     }))
                 preparation.checkActive()

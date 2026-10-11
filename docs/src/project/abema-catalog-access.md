@@ -1,5 +1,9 @@
 # ABEMA catalog and account access
 
+The [guest-only preparation experiment](abema-guest-bootstrap.md) isolates the
+fresh-session prerequisite for account linking. It does not verify an existing
+account, profile/client identity or account-backed collection access.
+
 This is the bounded documentation research for
 [issue #100](https://github.com/altendky/tachiai/issues/100), reviewed on
 2026-10-09. Published ABEMA features and public content identities provide a

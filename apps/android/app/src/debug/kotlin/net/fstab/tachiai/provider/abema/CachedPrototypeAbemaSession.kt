@@ -65,6 +65,7 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.diagnostics.nativeObserver
 
@@ -122,6 +123,7 @@ internal class CachedPrototypeAbemaSession(
     private var lastEvent: PrototypeFeedEvent? = null
     private var lastHelperState: String? = null
     private var lastMetadata: String? = null
+    private val helperEvidence = AbemaCachedHelperEvidence()
     private val firstFailure = PrototypeFeedFailureLatch()
     private var helperFailure: PrototypeFeedFailure? = null
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
@@ -338,13 +340,17 @@ internal class CachedPrototypeAbemaSession(
             handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 100); return
         }
         view.evaluateJavascript("window['$name']?.status() || 'UNAVAILABLE'") { raw ->
-            if (!current(run)) return@evaluateJavascript
+            if (!current(run) || SystemClock.elapsedRealtime() >= readinessDeadline || !allows(view.url)) return@evaluateJavascript
             val state = quoted(raw, 100)?.takeIf { it in setOf("WAITING_SESSION", "WAITING_SOURCE", "READY",
                 "WORKING", "RESPONSE", "FAILED", "STOPPED", "UNAVAILABLE") } ?: "FAILED"
             if (lastHelperState != state) { lastHelperState = state; record("helper=$state") }
-            pollMetadata(run) {
+            pollMetadata(run, readinessDeadline) { metadata ->
+                if (helperEvidence.firstFailure != AbemaCachedHelperFailure.NONE) {
+                    fail(helperFailure ?: PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)); return@pollMetadata
+                }
                 when (state) {
-                    "READY" -> if (!preparingNative) { preparingNative = true; prepareNative(run) }
+                    "READY" -> if (!helperEvidence.permitsPreparation(state, metadata)) fail()
+                        else if (!preparingNative) { preparingNative = true; prepareNative(run) }
                     "WAITING_SESSION", "WAITING_SOURCE", "UNAVAILABLE" -> {
                         emit(PrototypeFeedEvent.WAITING_PROVIDER)
                         handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 100)
@@ -355,37 +361,36 @@ internal class CachedPrototypeAbemaSession(
         }
     }
 
-    private fun pollMetadata(run: Long, onRead: () -> Unit) {
-        if (!current(run) || !allows(view.url)) return
+    private fun pollMetadata(run: Long, readDeadline: Long, onRead: (AbemaCachedHelperMetadata?) -> Unit) {
+        if (!current(run) || SystemClock.elapsedRealtime() >= readDeadline || !allows(view.url)) return
         view.evaluateJavascript("window['$name']?.metadata() || null") { raw ->
-            if (!current(run) || !allows(view.url)) return@evaluateJavascript
-            if (raw == "null") { onRead(); return@evaluateJavascript }
-            val value = quoted(raw, 512)?.let { runCatching { JSONObject(it) }.getOrNull() }
-            val phase = value?.opt("phase") as? String
-            val modules = value?.opt("modules") as? Int
-            val lastModule = value?.opt("lastModule") as? Int
-            val http = value?.opt("http") as? Int
-            if (value?.length() != 4 || phase !in setOf("MODULES", "GUEST", "MEDIA_TOKEN", "DEVICE",
-                "CONTENT", "REPLAY_FREE", "REPLAY_WINDOW", "REPLAY_RESTRICTIONS", "REPLAY_TERMS",
-                "REPLAY_RENTAL", "REPLAY_PRECEDENCE", "REPLAY_DEVICE", "REPLAY_TRIAL",
-                "REPLAY_PARTNER", "REPLAY_EXTERNAL_CONTENT", "REPLAY_EXTERNAL_PROVIDER", "REPLAY_AUTHORITIES",
-                "SOURCE_SESSION_REQUIRED", "SOURCE_MODE_UNSUPPORTED",
-                "SOURCE", "CONFIG", "LICENSE", "READY", "FAILED") ||
-                modules == null || modules !in 0..4096 || lastModule == null || lastModule !in 0..1_000_000 ||
-                http == null || (http != 0 && http !in 100..599)) {
+            if (!current(run) || SystemClock.elapsedRealtime() >= readDeadline || !allows(view.url)) return@evaluateJavascript
+            if (raw == "null") { onRead(null); return@evaluateJavascript }
+            val value = parseAbemaCachedHelperMetadataCallback(raw)
+            if (value == null) {
                 record("metadata=REFUSED"); fail(); return@evaluateJavascript
             }
-            val diagnostic = "phase=$phase modules=$modules lastModule=$lastModule http=$http"
+            val first = helperEvidence.observe(value)
+            if (first) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE,
+                value.failure.diagnosticCategory())
+            val phase = value.phase
+            val http = value.http
+            val diagnostic = value.closedSummary()
             if (lastMetadata != diagnostic) { lastMetadata = diagnostic; record(diagnostic) }
-            helperFailure = when {
+            if (first || helperEvidence.firstFailure == AbemaCachedHelperFailure.NONE) helperFailure = when {
+                value.failure == AbemaCachedHelperFailure.TIMER_EXPIRED -> PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT)
+                value.failure == AbemaCachedHelperFailure.OWNED_CANCELLED -> PrototypeFeedFailure(PrototypeFailureReason.STOPPED)
+                value.failure == AbemaCachedHelperFailure.FETCH_REJECTED_BEFORE_HTTP -> PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED)
+                value.failure == AbemaCachedHelperFailure.HTTP_REFUSED -> PrototypeFeedFailure(if (http == 404) PrototypeFailureReason.MEDIA_NOT_FOUND
+                    else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
                 http >= 400 -> PrototypeFeedFailure(if (http == 404) PrototypeFailureReason.MEDIA_NOT_FOUND
                     else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
-                phase == "SOURCE_SESSION_REQUIRED" || phase == "SOURCE_MODE_UNSUPPORTED" || phase?.startsWith("REPLAY_") == true ->
+                phase == "SOURCE_SESSION_REQUIRED" || phase == "SOURCE_MODE_UNSUPPORTED" || phase.startsWith("REPLAY_") ->
                     PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA)
                 phase == "LICENSE" -> PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED)
                 else -> null
             }
-            onRead()
+            onRead(value)
         }
     }
 
@@ -556,9 +561,9 @@ internal class CachedPrototypeAbemaSession(
         check(pending.compareAndSet(null, completion))
         val encoded = Base64.encodeToString(challenge, Base64.NO_WRAP)
         handler.post {
-            if (!current(run) || !allows(view.url)) completion.complete(null)
+            if (!current(run) || SystemClock.elapsedRealtime() >= exchangeDeadline || !allows(view.url)) completion.complete(null)
             else view.evaluateJavascript("window['$name']?.begin('$encoded') || 'REFUSED'") { raw ->
-                if (!current(run) || !allows(view.url) || quoted(raw, 100) != "WORKING") completion.complete(null)
+                if (!current(run) || SystemClock.elapsedRealtime() >= exchangeDeadline || !allows(view.url) || quoted(raw, 100) != "WORKING") completion.complete(null)
                 else pollResponse(completion, run, exchangeDeadline)
             }
         }
@@ -590,7 +595,13 @@ internal class CachedPrototypeAbemaSession(
                         !completion.complete(response)) response?.fill(0)
                     if (!current(run) || SystemClock.elapsedRealtime() >= exchangeDeadline) completion.complete(null)
                 }
-                else -> completion.complete(null)
+                // Collect the same bounded closed evidence before handing a
+                // terminal helper failure back to the CDM/cleanup path. Never
+                // read after close or extend the original exchange deadline.
+                else -> pollMetadata(run, exchangeDeadline) {
+                    remember(helperFailure ?: PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED))
+                    completion.complete(null)
+                }
             }
         }
     }
@@ -650,7 +661,16 @@ internal class CachedPrototypeAbemaSession(
         finish(if (failure?.reason == PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED)
             PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED else PrototypeFeedEvent.FAILED)
     }
-    override fun close() = finish(PrototypeFeedEvent.STOPPED)
+    override fun close() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { close() }; return }
+        // This owner explicitly cancels an outstanding helper operation. Do
+        // not read after close, delay cleanup, or classify ordinary successful
+        // playback/take cleanup as cancellation.
+        if (!closed.get() && documentStarted && (!preparingNative || pending.get()?.isDone == false) &&
+            helperEvidence.remember(AbemaCachedHelperFailure.OWNED_CANCELLED))
+            diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, FailureCategory.ABEMA_CACHED_OWNED_CANCELLED)
+        finish(PrototypeFeedEvent.STOPPED)
+    }
 
     private fun finishTransportCleanup() {
         if (!closed.get() || worker.pending || !transportFinalizing.compareAndSet(false, true)) return

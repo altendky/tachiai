@@ -84,12 +84,24 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(stderr.getvalue(), "")
 
     def test_unknown_provider_category_is_rejected_without_echoing_input(self):
-        for category in ("ABEMA_CHANNEL_UNKNOWN", "TWITCH_CATALOG_NETWORK_private_secret"):
+        for category in ("ABEMA_CHANNEL_UNKNOWN", "TWITCH_CATALOG_NETWORK_private_secret", "ABEMA_CACHED_private_secret"):
             data = self.journal([self.row(**{"9": category})])
             stdout, stderr = io.BytesIO(), io.StringIO()
             self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 1)
             self.assertEqual(stdout.getvalue(), b"")
             self.assertEqual(stderr.getvalue(), "JOURNAL_INVALID\n")
+
+    def test_cached_helper_categories_use_the_same_strict_v1_journal_with_old_records(self):
+        expected = {"ABEMA_CACHED_TIMER_EXPIRED", "ABEMA_CACHED_OWNED_CANCELLED", "ABEMA_CACHED_FETCH_REJECTED_BEFORE_HTTP",
+                    "ABEMA_CACHED_HTTP_REFUSED", "ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED", "ABEMA_CACHED_UNKNOWN"}
+        self.assertEqual({value for value in module.vocabulary()["FailureCategory"] if value.startswith("ABEMA_CACHED_")}, expected)
+        for category in expected:
+            data = self.journal([self.row(), self.row(**{"1": "3" * 32, "4": "CACHED_ABEMA_SOURCE_PREPARE",
+                                                        "6": "SECONDARY", "9": category, "11": ""})])
+            stdout, stderr = io.BytesIO(), io.StringIO()
+            self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 0)
+            self.assertEqual(stdout.getvalue(), data)
+            self.assertEqual(stderr.getvalue(), "")
 
     def test_secret_fields_fail_without_any_output(self):
         secret = "https://secret.example/private?token=password"

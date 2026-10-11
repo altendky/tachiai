@@ -46,6 +46,33 @@ is left intact for investigation and is not silently overwritten. Recording
 failure produces only the fixed `JOURNAL_UNAVAILABLE` marker and never replaces
 the original error or skips the remaining cleanup.
 
+## Cached ABEMA helper evidence
+
+Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first
+proved app-owned helper failure as a typed category: timer expiry, owned
+cancellation, fetch rejection before HTTP, returned HTTP refusal, bounded
+response-validation refusal or unknown failure. The existing journal schema
+and retention are unchanged. These categories are reported directly; no
+throwable message is manufactured. A pre-HTTP rejection does not identify a
+DNS, proxy or TLS cause.
+
+The helper resets numeric HTTP status at each request and latches the first
+failure before abort or teardown. Later cleanup cannot replace that evidence;
+an ignored AbortSignal cannot revive an expired run. Strict native admission
+accepts only canonical old four-field and new five-field projections, closed
+phase/category vocabulary and coherent numeric bounds. Status and metadata
+callbacks retain the original owner, epoch and deadline checks. A stale READY
+cannot erase a validated failure or start native preparation. Terminal license
+failure reads the same bounded metadata before completion, never after close
+or by extending the exchange deadline.
+
+Cancellation of pending helper work can retain a typed diagnostic outcome;
+ordinary successful take/playback cleanup is excluded. This does not turn a
+normal Stop into a recovery dialog. No exception properties, provider values,
+URLs, identity or license bytes enter these projections. Missing callbacks or
+renderer death may still prevent collection, and new diagnostics cannot
+recover the cause of an earlier discarded error.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,
@@ -112,3 +139,8 @@ ProviderFailureCategoryDeviceTest instead uses synthetic errors and an in-memory
 reporter only, with no journal or application-store access. It can verify the
 typed category capture and codec on persistent tachiai-dev without replacing its
 evidence or accessing a provider.
+
+`AbemaCachedHelperDiagnosticsDeviceTest` likewise uses synthetic responses,
+blocked networking and an in-memory reporter in the explicitly targeted cached
+process. It does not replace the journal or saved stores. Default instrumentation
+skips before WebView access unless that process guard is satisfied.

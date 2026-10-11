@@ -83,6 +83,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             AbemaGuestBootstrapOperation.VERIFY_PROFILE -> RouteSession.createAbemaGuestProfile(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> RouteSession.createAbemaGuestDeviceAuthorization(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> RouteSession.createAbemaGuestDeviceTokenObservation(saved.profile, prepared.preparing)
+            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> RouteSession.createAbemaAccountBootstrap(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE ->
                 RouteSession.createAbemaGuestEpisode(saved.profile, prepared.preparing)
         }
@@ -189,6 +190,11 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         override fun metadata(callback: (String?) -> Unit) {
             check(request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback)
+        }
+        override fun accountLink(callback: (String?) -> Unit) {
+            check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)
+            if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
+            view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.accountLink() || null", callback)
         }
         override fun destroy(): Boolean {
             var failed = false

@@ -46,6 +46,33 @@ is left intact for investigation and is not silently overwritten. Recording
 failure produces only the fixed `JOURNAL_UNAVAILABLE` marker and never replaces
 the original error or skips the remaining cleanup.
 
+## Cached ABEMA helper evidence
+
+Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first
+proved app-owned helper failure as a typed category: timer expiry, owned
+cancellation, fetch rejection before HTTP, returned HTTP refusal, bounded
+response-validation refusal or unknown failure. The existing journal schema
+and retention are unchanged. These categories are reported directly; no
+throwable message is manufactured. A pre-HTTP rejection does not identify a
+DNS, proxy or TLS cause.
+
+The helper resets numeric HTTP status at each request and latches the first
+failure before abort or teardown. Later cleanup cannot replace that evidence;
+an ignored AbortSignal cannot revive an expired run. Strict native admission
+accepts only canonical old four-field and new five-field projections, closed
+phase/category vocabulary and coherent numeric bounds. Status and metadata
+callbacks retain the original owner, epoch and deadline checks. A stale READY
+cannot erase a validated failure or start native preparation. Terminal license
+failure reads the same bounded metadata before completion, never after close
+or by extending the exchange deadline.
+
+Cancellation of pending helper work can retain a typed diagnostic outcome;
+ordinary successful take/playback cleanup is excluded. This does not turn a
+normal Stop into a recovery dialog. No exception properties, provider values,
+URLs, identity or license bytes enter these projections. Missing callbacks or
+renderer death may still prevent collection, and new diagnostics cannot
+recover the cause of an earlier discarded error.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,
@@ -112,3 +139,31 @@ ProviderFailureCategoryDeviceTest instead uses synthetic errors and an in-memory
 reporter only, with no journal or application-store access. It can verify the
 typed category capture and codec on persistent tachiai-dev without replacing its
 evidence or accessing a provider.
+
+`AbemaCachedHelperDiagnosticsDeviceTest` likewise uses synthetic responses,
+blocked networking and an in-memory reporter in the explicitly targeted cached
+process. It does not replace the journal or saved stores. Default instrumentation
+skips before WebView access unless that process guard is satisfied.
+
+On 2026-10-11, the integrated change passed 2,030 JVM tests in 243 reports,
+56 direct owned-JavaScript cases, 10 collector cases, lint, release isolation,
+instrumentation compilation and app/test assembly. Both APK certificates matched
+the shared debug identity. Two networking-blocked diagnostic fixtures passed on
+persistent tachiai-dev in 0.558 seconds, using in-memory reporting rather than
+replacing its journal. They established timer/pre-HTTP categories, first-evidence
+preservation, no hostile error-property inspection and refusal of late revival.
+
+One explicitly selected historical News regression on the same build rendered a
+native frame and advanced position in 17.042 seconds. The AVD was Android 16/API
+36, Google APIs x86-64, WebView 133.0.6943.137; it used the existing ABEMA instance's
+saved route with a fresh anonymous guest and native CDM. Region was not remeasured
+and audio was muted. Cleanup and captured owner were confirmed, and protected
+encrypted records remained byte-for-byte equal to the pre-install baseline.
+The temporary cached-process test override was removed; ordinary instrumentation
+was rebuilt, certificate/packaged targeting verified, reinstalled with data
+preserved and the launcher restored. Final app SHA-256 is
+`8456afcd40835cbbd9feb9533b7074342d59de46afecbcbdcd881b5d1257299d`;
+ordinary test APK SHA-256 is
+`d8d9e10fb6818e75f36277ec0252d82968a12fb08460fd49d9a3791f8427f284`.
+This establishes bounded diagnostic fixtures and a success regression, not the
+cause of the earlier transient failure or sustained/physical-device behavior.

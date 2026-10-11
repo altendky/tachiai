@@ -15,6 +15,7 @@
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
+  let accountLink;
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const stop = (category = 'NONE') => {
     stopped = true;
@@ -23,6 +24,7 @@
     guest = undefined;
     episode = undefined;
     tokenObservation = undefined;
+    accountLink = undefined;
     for (const controller of controllers) controller.abort();
     controllers.clear();
   };
@@ -155,7 +157,8 @@
     // The observation operation alone retains these two fields in its private
     // stack until one request completes. No URI, user code or code crosses JS.
     // This local lifetime ceiling never extends the original attempt budget.
-    if (retainDeviceCode) return Object.freeze({ deviceCode: reply.device_code, expiresIn: reply.expires_in });
+    if (retainDeviceCode) return Object.freeze({ deviceCode: reply.device_code, expiresIn: reply.expires_in,
+      verificationUri: reply.verification_uri_complete });
   }
   // Static recovery vocabulary is only an allowlist for observation. It does
   // not establish device-token pending/terminal semantics, including HTTP 400.
@@ -367,7 +370,7 @@
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         resourceId !== undefined)) {
       stop('RUNTIME'); return;
@@ -378,12 +381,15 @@
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
         stringify(episode) : null } : {}),
+      ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
+        stringify(accountLink) : null } : {}),
     }) });
     (async () => {
       try {
         state = 'MODULES';
         const observeToken = operation === 'OBSERVE_DEVICE_TOKEN';
-        const deviceAuthorization = operation === 'VERIFY_DEVICE_AUTHORIZATION' || observeToken;
+        const prepareAccount = operation === 'PREPARE_ACCOUNT_LINK';
+        const deviceAuthorization = operation === 'VERIFY_DEVICE_AUTHORIZATION' || observeToken || prepareAccount;
         if (deviceAuthorization) {
           budgetFailure = observeToken ? 'TOKEN_TIMEOUT' : 'CHALLENGE_TIMEOUT';
           challengeStarted = performance.now(); alive();
@@ -455,10 +461,11 @@
             const challengeRequestedAt = performance.now();
             const challenge = await boundedReply(challengeEndpoint, { method: 'POST',
               headers: { accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer ' + guest.accessToken },
-              body: challengeBody }, text => parseChallengeText(text, observeToken), 'CHALLENGE_');
+              body: challengeBody }, text => parseChallengeText(text, observeToken || prepareAccount), 'CHALLENGE_');
             alive();
-            if (observeToken) {
-              state = 'TOKEN'; failure = 'TOKEN_POLICY';
+            if (observeToken || prepareAccount) {
+              if (observeToken) state = 'TOKEN';
+              failure = observeToken ? 'TOKEN_POLICY' : 'CHALLENGE_POLICY';
               const tokenPayload = load(2953).dK.toJSON({ deviceCode: challenge.deviceCode, clientId: guest.clientId,
                 deviceType: load(50052).bq.DEVICE_TYPE_WEB, grantType: 'urn:ietf:params:oauth:grant-type:device_code' });
               const fields = ['client_id', 'device_code', 'grant_type', 'device_type'];
@@ -472,12 +479,19 @@
                 !validBody(parseBoundedJsonText(tokenBody, true))) throw new Error();
               alive(); failure = 'NONE';
               const challengeDeadline = challengeRequestedAt + challenge.expiresIn * 1000;
-              tokenObservation = await tokenReply(tokenEndpoint, { method: 'POST',
+              if (prepareAccount) {
+                if (performance.now() >= challengeDeadline) { failure = 'CHALLENGE_TIMEOUT'; throw new Error(); }
+                accountLink = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken, clientId: guest.clientId,
+                  deviceCode: challenge.deviceCode, tokenBody, verificationUri: challenge.verificationUri, expiresIn: challenge.expiresIn });
+                guest = undefined; failure = 'NONE'; state = 'ACCOUNT_LINK_READY';
+              } else {
+                tokenObservation = await tokenReply(tokenEndpoint, { method: 'POST',
                 headers: { accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer ' + guest.accessToken },
                 body: tokenBody }, challengeDeadline);
               if (performance.now() >= challengeDeadline) { failure = 'TOKEN_CHALLENGE_EXPIRED'; throw new Error(); }
               alive(); guest = undefined;
               failure = 'NONE'; state = 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED';
+              }
             } else {
               guest = undefined; failure = 'NONE'; state = 'CHALLENGE_VALIDATED_AND_DISCARDED';
             }

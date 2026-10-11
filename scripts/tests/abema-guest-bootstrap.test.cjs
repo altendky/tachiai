@@ -190,6 +190,59 @@ function challengeReply() {
     verification_uri_complete: 'https://abema.tv/account/transfer?code=PRIVATE_USER_CODE', expires_in: 300 };
 }
 
+test('account preparation exports only its private bound projection after exact guest profile challenge without token polling', async () => {
+  const f = fixture({ operation: 'PREPARE_ACCOUNT_LINK' }); f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'ACCOUNT_LINK_READY', failure: 'NONE' });
+  assert.deepEqual(f.requests.map(r => r.url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER', 'https://abema.tv/api/auth/oauth/device/authorization']);
+  assert.deepEqual(Array.from(f.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop', 'accountLink']);
+  const privateLink = JSON.parse(f.call(`window['${apiName}'].accountLink()`));
+  assert.deepEqual(Object.keys(privateLink).sort(), ['clientId', 'deviceCode', 'expiresIn', 'guestBearer', 'guestId', 'tokenBody', 'verificationUri'].sort());
+  assert.equal(privateLink.clientId, privateLink.guestId); assert.equal(privateLink.guestBearer, 'FIXTURE_ACCESS');
+  assert.deepEqual(JSON.parse(privateLink.tokenBody), { client_id: 'FIXTURE_USER', device_code: 'PRIVATE_DEVICE_CODE',
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_type: 3 });
+  assert.equal(privateLink.verificationUri, challengeReply().verification_uri_complete);
+  assert.doesNotMatch(JSON.stringify(f.state()), /FIXTURE|PRIVATE|https/);
+  f.stop(); assert.equal(f.call(`window['${apiName}'].accountLink()`), null);
+});
+
+test('account private projection is absent from every previous operation and unavailable before readiness', async () => {
+  for (const operation of ['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'FETCH_EPISODE']) {
+    const f = fixture({ operation, ...(operation === 'FETCH_EPISODE' ? { resourceId: 'arbitrary-id' } : {}) });
+    f.start(); await settle(); assert.equal(f.call(`window['${apiName}'].accountLink`), undefined);
+  }
+  const f = fixture({ operation: 'PREPARE_ACCOUNT_LINK', delayedChallenge: true }); f.start(); await settle();
+  assert.equal(f.call(`window['${apiName}'].accountLink()`), null); f.stop(); f.release(); await settle();
+  assert.equal(f.call(`window['${apiName}'].accountLink()`), null); assert.equal(f.requests.length, 3);
+});
+
+test('account preparation rejects mismatched profile or DTO wire and never invokes token recovery or polling', async () => {
+  for (const option of [{ profile: { profile: { userId: 'OTHER' } } }, { wrongChallengeWire: true },
+    { wrongTokenWire: true }, { inheritedTokenModel: true }, { wrongTokenField: 'device_type', wrongTokenValue: '3' }]) {
+    const f = fixture({ operation: 'PREPARE_ACCOUNT_LINK', ...option }); f.start(); await settle();
+    assert.equal(f.state().state, 'REFUSED'); assert.equal(f.call(`window['${apiName}'].accountLink()`), null);
+    assert.ok(!f.requests.some(r => r.url.includes('/device/token') || r.url.includes('accessToken')));
+    assert.doesNotMatch(JSON.stringify(f.state()), /OTHER|FIXTURE|PRIVATE|https/);
+  }
+});
+
+test('account challenge retains strict destination and response bounds and original elapsed request budget', async () => {
+  for (const option of [{ challenge: { ...challengeReply(), verification_uri_complete: 'https://evil.invalid/' } },
+    { challengeText: JSON.stringify(challengeReply()) + '{}' }, { challengeBytes: new Uint8Array([0xff]) },
+    { challengeCompletionMs: 45000 }, { challenge: { ...challengeReply(), expires_in: 0 } }]) {
+    const f = fixture({ operation: 'PREPARE_ACCOUNT_LINK', ...option }); f.start(); await settle();
+    assert.equal(f.state().state, 'REFUSED'); assert.equal(f.call(`window['${apiName}'].accountLink()`), null);
+  }
+});
+
+test('account challenge expiration before projection refuses and stop during response read never publishes private data', async () => {
+  const expired = fixture({ operation: 'PREPARE_ACCOUNT_LINK', challenge: { ...challengeReply(), expires_in: 1 }, challengeCompletionMs: 1001 });
+  expired.start(); await settle(); assert.equal(expired.state().state, 'REFUSED');
+  const late = fixture({ operation: 'PREPARE_ACCOUNT_LINK', delayedChallengeRead: true }); late.start(); await settle();
+  late.stop(); late.release(); await settle(); assert.equal(late.call(`window['${apiName}'].accountLink()`), null);
+  assert.equal(late.requests.length, 3);
+});
+
 test('only unchanged guest dependency factories run; one fresh cookie-free exact POST and status-only native boundary', async () => {
   const first = fixture(); first.start(); await settle();
   assert.deepEqual(first.state(), { state: 'PREPARED', failure: 'NONE' });

@@ -55,8 +55,8 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,
                 { name, route -> onSave(instance.id, name, route) }, { editing = null }, { twitchLogin(instance.id) })
             onManageStreams?.let { manage -> Button(onClick = { manage(instance.id) }, enabled = !busy) { Text("Manage streams") } }
-            if (instance.service == PrototypeService.TWITCH) onCatalogConnection?.let { connect ->
-                Button(onClick = { connect(instance.id) }, enabled = !busy) { Text("Twitch account") }
+            if (instance.service in setOf(PrototypeService.TWITCH, PrototypeService.ABEMA)) onCatalogConnection?.let { connect ->
+                Button(onClick = { connect(instance.id) }, enabled = !busy) { Text("${instance.service.title} account") }
             }
         }
     }

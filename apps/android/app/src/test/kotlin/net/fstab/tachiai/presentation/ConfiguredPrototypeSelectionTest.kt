@@ -238,9 +238,10 @@ class ConfiguredPrototypeSelectionTest {
             as ConfiguredPrototypeSelectionResult.Ready
         assertEquals(result.selection, restored.selection)
         val quality = ViewerQualityState(result.selection.feeds.map { it.choice }, emptyMap())
+        val firstQuality = quality.effective(NativeMixedSide.A)
         val request = NativeQualityRequest(NativeQualityTrack(NativeQualityKind.VIDEO, NativeQualityCodec.AVC, 2_000_000, 1280, 720))
         quality.setOverride(NativeMixedSide.B, NativeQualityKind.VIDEO, request)
-        assertNull(quality.effective(NativeMixedSide.A).video)
+        assertEquals(firstQuality, quality.effective(NativeMixedSide.A))
         assertEquals(request, quality.effective(NativeMixedSide.B).video)
         assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
     }

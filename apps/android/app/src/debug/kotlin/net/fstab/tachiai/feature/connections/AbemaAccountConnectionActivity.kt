@@ -1,7 +1,6 @@
 package net.fstab.tachiai.feature.connections
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
@@ -24,6 +24,9 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
     private var initial by mutableStateOf(AbemaAccountConnectionState())
     private var resumed = false
     private var revision = 0L
+    private val approval = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) controller?.cancelAction()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) { finish(); return }
@@ -33,9 +36,9 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             BackHandler { finish() }
             val current = controller
             val state = if (current == null) initial else current.state.collectAsState().value
-            AbemaAccountConnectionScreen(state, { current?.connect(it) }, { current?.handoff(::openApproval) },
+            AbemaAccountConnectionScreen(state, { current?.connect() }, { current?.handoffBrowser(::openApproval) },
                 { current?.continueApproval() }, { current?.revalidate() }, { current?.checkEnforcement() },
-                { current?.forget() }, { current?.cancelAction() }, ::finish)
+                { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null)
         } }
         val id = intent.getStringExtra(INSTANCE_ID)
         if (id == null || !validProviderInstanceId(id)) { initial = initial.copy(status = AbemaAccountStatus.NOT_VERIFIED, progress = AbemaAccountProgress.IDLE); return }
@@ -52,10 +55,14 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             }
         }
     }
-    private fun openApproval(url: String): Boolean {
-        if (!validAbemaVerificationUri(url)) return false
+    private fun openApproval(request: AbemaApprovalBrowserRequest): Boolean {
+        if (!request.current(android.os.SystemClock.elapsedRealtime())) return false
         return try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+            approval.launch(Intent(this, AbemaApprovalBrowserActivity::class.java)
+                .putExtra(AbemaApprovalBrowserActivity.INSTANCE_ID, request.instanceId)
+                .putExtra(AbemaApprovalBrowserActivity.OWNER_PROOF, request.ownerProof)
+                .putExtra(AbemaApprovalBrowserActivity.VERIFICATION_URI, request.verificationUri)
+                .putExtra(AbemaApprovalBrowserActivity.DEADLINE, request.deadlineElapsedMs))
             true
         } catch (_: Exception) { false }
     }

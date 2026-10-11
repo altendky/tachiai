@@ -73,10 +73,9 @@ internal fun decodeAbemaAccountChallenge(text: String, beganElapsedMs: Long, now
 
 // Only the observed flat HTTP400 pending response admits another request.
 // Message text is type-checked, discarded and never interpreted or reported.
-internal fun parseAbemaAccountToken(status: Int, body: String?, expectedId: String,
-    guestId: String, nowMs: Long): AbemaAccountTokenResult {
+internal fun parseAbemaAccountToken(status: Int, body: String?, guestId: String, nowMs: Long): AbemaAccountTokenResult {
     try {
-        if (!accountId(expectedId) || expectedId == guestId) accountRefused()
+        if (!accountId(guestId)) accountRefused()
         if (status == 400) {
             val value = AbemaAccountJson.objectValue(body ?: accountRefused(), 65536)
             if (value.keys == setOf("code", "message") && value["message"] is String &&
@@ -88,7 +87,7 @@ internal fun parseAbemaAccountToken(status: Int, body: String?, expectedId: Stri
         if (value.keys != setOf("access_token", "token_type", "refresh_token", "user_id")) accountRefused()
         val token = value["access_token"] as? String ?: accountRefused()
         val id = value["user_id"] as? String ?: accountRefused()
-        if (!accountToken(token) || id != expectedId || id == guestId ||
+        if (!accountToken(token) || !accountId(id) || id == guestId ||
             (value["token_type"] as? String)?.equals("Bearer", true) != true ||
             value["refresh_token"] !is String || (value["refresh_token"] as String).length > 8192) accountRefused()
         val grant = decodedAbemaGrant(token, id, nowMs)

@@ -69,6 +69,61 @@ unexpected success body is never opened or adopted. See
 Actual response acceptance is recorded separately and cannot qualify unobserved
 terminal states or establish a connected account.
 
+### Routed ABEMA account approval — 2026-10-11
+
+The owner requested an in-app browser using the configured provider route after
+the external Chrome approval page displayed Sorry. That report does not establish
+a regional or routing cause. The approval-only route admits exact HTTPS hosts
+`abema.tv`, `auth.abema.tv` and `api.p-c3-e.abema-tv.com`; top-level navigation
+is restricted to the first two. Retained first-party account bundle5206,
+SHA-256 d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81,
+uses same-origin `/api/auth/…` login/session/device requests and declares the
+auth and modern API origins. No media, license, image, advertising, analytics,
+lookalike, non-HTTPS or arbitrary redirect destination is added.
+
+The owner's subsequent in-app screenshot shows ABEMA's regional-refusal page.
+Retained cookie-free public HTML (SHA-256
+8e77b27dab161384ea4cd9a3a3d2c174d440ac22af3ab09af76ec4c397eba7a6)
+establishes a separate provider-supplied region check at
+`https://ds-glb-linear-abematv.akamaized.net/region`, without a query.
+The matching9298 bundle (SHA-256
+34207e8d8ff54721927e7dc93edcdfa20c2af99e50c66c8ad5defe5e8e0f03e5)
+module32735 checks this resource when client-region status is
+set; HTTP403 produces region denial, while failed requests fall back to the
+initial eligibility value. The previous three-host policy returned synthetic403
+for this resource, which can itself cause that page. Under the existing general
+integration approval, a narrow native adapter owns this exact HTTPS GET resource
+through the captured saved route. It refuses redirects, reads no response body
+or cookies, and returns the real status plus the provider's safe CORS header to
+the page. Initial browser resource admission permits this path without queries
+or fragments and refuses CDN navigation/media requests. The shared CONNECT
+listener necessarily includes the CDN hostname: Android does not re-intercept
+an account-origin resource redirected to a different path on that same host.
+No such redirect was observed, but the browser boundary cannot claim universal
+CDN path enforcement. Its region adapter does enforce its exact request. Actual
+provider200/403 remains decisive; the browser never rewrites the region result.
+The screenshot does not establish the saved route's actual exit country or
+whether the provider will accept that exit after this correction.
+
+The approval browser uses its own process and persistent WebView profile,
+provider-controlled pages, normal TLS and the instance's captured route proof
+and original challenge deadline. Device geolocation is disabled and location
+prompts are refused; no fabricated coordinates or eligibility flags are injected.
+ABEMA's network observation must use the configured route exit. The browser
+loads only after proxy application, rejects
+other destinations without a direct-network fallback, and has no native bridge
+or injected scripts. Its own browser login is separate from protected native
+grants and is never exported. Returning after confirmed cleanup allows the
+existing explicit Continue action; it does not establish approval, token lifetime,
+account identity, collection access or browser-email compatibility.
+This browser currently requires an imported connection, whose CONNECT bridge
+enforces the four reviewed hosts even after redirects. System-network approval is
+refused before page loading because Android's
+[request interception](https://developer.android.com/reference/android/webkit/WebViewClient#shouldInterceptRequest(android.webkit.WebView,%20android.webkit.WebResourceRequest))
+does not recheck subsequent resource redirects. A host-restricted direct CONNECT
+bridge remains needed for that browser mode; native System account requests and
+other route purposes retain their existing behavior.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

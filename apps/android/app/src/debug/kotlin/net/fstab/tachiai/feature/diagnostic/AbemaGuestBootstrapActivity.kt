@@ -171,6 +171,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         val run = admission.begin(foreground.get()) ?: return
         val active = Attempt(run, diagnostics)
         attempt = active
+        Log.d("TachiaiAbemaGuest", "routeMode=${selected.setup.route?.mode?.name ?: "UNSET"}")
         controls(); outcome("PREPARING")
         handler.postDelayed({ if (attempt === active) stop("TIMEOUT") }, 45_000)
         worker.execute {

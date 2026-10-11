@@ -37,7 +37,9 @@ only admitted response fields are `user_id`, `access_token` and optional
 change must fail for review.
 
 Device ID, application secret and guest ID/bearer stay in the JavaScript closure.
-Native code polls only fixed status/failure categories. No JavaScript interface
+Native code polls only fixed status/failure categories. The debug diagnostic tag
+reports the selected route-mode enum and closed outcome, without provider names,
+route IDs/configuration or guest fields. No JavaScript interface
 is installed. Cookies, DOM storage, browser cache, file/content access, popups,
 permissions, forms, frames and media are disabled. Existing browser cookies are
 never inspected, copied, deleted or reused. String references are released on
@@ -91,10 +93,28 @@ configured items and saved route records before/after through existing safe
 readers; never print secret contents. Do not reset, clear app data, clear browser
 profiles or run resetting/default-profile instrumentation on the persistent AVD.
 
-No real provider/device observation is claimed by this implementation document.
-The pinned first-party guest request uses included credentials; this experiment
-deliberately omits them. Cookie-free acceptance is unverified. Rejection remains
-a technical failure and does not enable a cookie-bearing fallback. Even success
-would verify only fresh guest preparation under the recorded conditions. Account
-profile/client agreement, intended-account approval, grant lifetime, revocation
-and durable renewal remain unresolved before #103 can report Connected.
+On 2026-10-11, the combined implementation passed 1,891 JVM tests, Android lint,
+instrumentation compilation, release isolation and shared-debug-certificate APK
+verification. All 11 provider-free JS fixtures and scoped pre-commit/documentation
+checks passed. Both isolated guest-process Android fixtures passed on persistent
+`tachiai-dev` in 0.402 seconds. The temporary instrumentation process override was
+restored before the final build; the ordinary test APK was reinstalled without
+running default-profile or resetting fixtures.
+
+One explicitly started real guest preparation then reported **PREPARED** through
+the unchanged **SAVED_CONNECTION** route. Device context: persistent `tachiai-dev`,
+Android 16/API 36 Google APIs x86-64, Google WebView 133.0.6943.137, region unknown,
+existing provider account not used. The exact guest POST accepted the bounded
+strict response with cookies disabled and credentials omitted. The owned runtime
+was destroyed and route cleanup confirmed before publication. Saved encrypted
+provider/source/configured-item/route/grant records were byte-for-byte unchanged
+across installation, isolated fixtures and this observation; comparison exported
+only an aggregate hash, with no names or private values.
+
+This establishes cookie-free fresh guest acceptance only under those conditions.
+The pinned first-party request normally uses included credentials; rejection in
+another context remains a technical failure and enables no cookie-bearing
+fallback. Account profile/client agreement, intended-account approval, grant
+lifetime, revocation and durable renewal remain unresolved before #103 can report
+Connected. No account profile/challenge/collection, media or licensing request was
+made by this guest flow.

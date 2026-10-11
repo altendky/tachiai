@@ -20,7 +20,7 @@ internal data class AbemaAccountConnectionState(val status: AbemaAccountStatus =
     val progress: AbemaAccountProgress = AbemaAccountProgress.READING, val busy: Boolean = false,
     val canApprove: Boolean = false, val canContinue: Boolean = false)
 
-// StateFlow contains finite public categories only. Expected identity, browser
+// StateFlow contains finite public categories only. Approved identity, browser
 // destination and grants remain private and are never restored after death.
 internal class AbemaAccountConnectionController(
     private val binding: AbemaAccountConnectionBinding,
@@ -39,7 +39,7 @@ internal class AbemaAccountConnectionController(
     private val transport = AtomicReference<AbemaAccountTransport?>()
     private val bootstrap = AtomicReference<AbemaAccountBootstrap?>()
     private class Link(val challenge: AbemaAccountChallenge, val owner: AbemaCatalogRouteOwner,
-        val expectedId: String, val storeRevision: Long) {
+        val storeRevision: Long) {
         var handedOff = false; var polls = 0; var pollingBegan: Long? = null; var nextPollAt = 0L
         override fun toString() = "AbemaAccountConnectionLink(redacted)"
     }
@@ -126,24 +126,24 @@ internal class AbemaAccountConnectionController(
         val proven = enforcement(run, owner, challenge)
         post { if (current(run)) { busy = false; publish(if (proven) AbemaAccountProgress.ENFORCEMENT_PROVEN else AbemaAccountProgress.ENFORCEMENT_NOT_PROVEN) } }
     }
-    fun connect(expectedId: String) {
-        if (!accountId(expectedId)) return // Local UI guard; never validate/read a prior lease on main.
+    fun connect() {
         run(AbemaAccountProgress.PREPARING) { run ->
             val owner = binding.owner(); val storeRevision = binding.store.revision()
             val challenge = prepare(run, owner)
-            if (expectedId == challenge.guestId || !enforcement(run, owner, challenge))
+            if (!enforcement(run, owner, challenge))
                 throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
             if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             post { if (current(run)) {
                 capturedOwner = owner
-                link = Link(challenge, owner, expectedId, storeRevision)
+                link = Link(challenge, owner, storeRevision)
                 busy = false; publish(AbemaAccountProgress.APPROVAL_READY)
             } }
         }
     }
     // URI crosses only this explicit protected Activity callback. Foreground
     // loss retains the challenge but cancels all active requests and leases.
-    fun handoff(launch: (String) -> Boolean) {
+    fun handoff(launch: (String) -> Boolean) = handoffBrowser { launch(it.verificationUri) }
+    fun handoffBrowser(launch: (AbemaApprovalBrowserRequest) -> Boolean) {
         val prepared = synchronized(lock) { link?.takeIf { !busy && foreground && !closed && !it.handedOff && elapsedMs() < it.challenge.deadlineElapsedMs } } ?: return
         run(AbemaAccountProgress.CHECKING) { run ->
             if (elapsedMs() >= prepared.challenge.deadlineElapsedMs) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
@@ -162,7 +162,9 @@ internal class AbemaAccountConnectionController(
                     return@post
                 }
                 if (!current(run) || link !== prepared) return@post
-                if (!launch(prepared.challenge.verificationUri)) { prepared.handedOff = false; publish(AbemaAccountProgress.APPROVAL_READY) }
+                val request = AbemaApprovalBrowserRequest(prepared.owner.instance.id, prepared.owner.proof(),
+                    prepared.challenge.verificationUri, prepared.challenge.deadlineElapsedMs)
+                if (!launch(request)) { prepared.handedOff = false; publish(AbemaAccountProgress.APPROVAL_READY) }
             } }
         }
     }
@@ -176,7 +178,7 @@ internal class AbemaAccountConnectionController(
             if (link !== prepared || now < began || now >= deadline || prepared.polls >= 60)
                 throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
             prepared.polls++
-            when (val result = request(run, prepared.owner, deadline) { it.token(prepared.challenge, prepared.expectedId) }) {
+            when (val result = request(run, prepared.owner, deadline) { it.token(prepared.challenge) }) {
                 AbemaAccountTokenResult.Pending -> {
                     prepared.nextPollAt = elapsedMs() + 5000
                     post { if (current(run) && link === prepared) {
@@ -195,8 +197,9 @@ internal class AbemaAccountConnectionController(
                     } }
                 }
                 is AbemaAccountTokenResult.Granted -> {
+                    if (result.grant.userId == prepared.challenge.guestId) throw AbemaAccountException(AbemaAccountFailure.REFUSED)
                     val profile = request(run, prepared.owner, deadline) { it.profile(result.grant.userId, result.grant.bearer) }
-                    if (profile !is AbemaAccountProfileResult.Identity || profile.id != prepared.expectedId || profile.id == prepared.challenge.guestId)
+                    if (profile !is AbemaAccountProfileResult.Identity || profile.id != result.grant.userId || profile.id == prepared.challenge.guestId)
                         throw AbemaAccountException(AbemaAccountFailure.REFUSED)
                     // Fresh evidence before durable acceptance; no stale pre-
                     // browser proof is promoted to account introspection.

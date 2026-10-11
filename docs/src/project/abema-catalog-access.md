@@ -228,25 +228,53 @@ entitlement, collection access or playback merely from login success.
 ### Existing-account connection implementation
 
 The debug Providers screen now offers an instance-owned ABEMA account screen.
-The owner enters the intended ABEMA account ID only in that protected screen;
-the value stays in memory and is cleared across recreation. This is an identity
-check for the provider-controlled approval, not a password prompt. The app
+Connect is enabled once the controller is ready and idle, without entering an
+account ID, email or password and without a confirmation checkbox. ABEMA handles
+sign-in, account selection and approval through its own browser or app. The
+internal provider identity comes from the approved token response rather than
+the user's email sign-in identifier. Provider documentation describes
+[email account sharing and mobile-app QR approval](https://help.abema.tv/hc/ja/articles/28570588900377);
+it does not establish that the device-approval URL itself offers email login.
+The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
-runtime and route cleanup. The external browser handles provider login and
-approval using its own account and network state, without page injection or
-cookie transfer.
+runtime and route cleanup. Approval opens in a separate in-app ABEMA browser
+process/profile through this instance's saved route. It uses provider-controlled
+pages, normal TLS, and its own persistent ABEMA browser login; Chrome cookies
+are not read or transferred. The browser has no native JavaScript bridge,
+injected scripts, file/content access, downloads or external navigation fallback.
+It admits the reviewed ABEMA account origins and a provider region-check origin.
+A narrow native adapter owns the exact GET without following redirects; initial
+browser admission refuses CDN media/navigation. The shared CONNECT host policy
+cannot restrict every same-CDN path reached through an account-resource redirect,
+which Android does not re-intercept; no such redirect was observed. The previous
+resource policy blocked that check with HTTP403, which the first-party page
+interprets as region denial; the owner's in-app screenshot reports that refusal.
+The correction lets ABEMA perform its own check without rewriting eligibility.
+Device geolocation is disabled and location prompts are refused; the network
+location is the configured route exit. The returned native account grant remains
+separate and per-instance.
+This browser currently requires a saved connection: its authenticated CONNECT
+bridge enforces destinations even across Chromium redirects. System-network
+browser approval needs an equivalent direct bridge; WebView interception alone
+does not check every redirected resource. Existing System-network native account
+requests are unchanged. A missing saved route is explained before page loading.
 
 Before offering approval, the app must prove that the native profile operation
 accepts the matching fresh guest bearer and refuses a deliberately invalid
 bearer. A successful public profile lookup alone is insufficient. Polling pauses
 while the app is away and retains the original challenge expiry; foreground
-polling additionally has a five-minute limit. Only the observed flat
+polling additionally has a five-minute limit. Returning from the browser is
+not proof of approval: Continue still verifies the token and account profile.
+Browser return requires confirmed view, proxy and route cleanup; failure cancels
+the native handoff. Original owner proof and expiry also gate browser loading
+and resources. Only the observed flat
 AUTHORIZATION_PENDING response permits bounded continued polling. Unknown
 responses or uncertain cleanup stop the attempt.
 
-A returned grant must have a matching provider user ID, JWT subject, fresh
-authenticated profile and the owner's explicit intended ID. JWT decoding alone
+A returned grant must have exact agreement among its provider user ID, JWT
+subject and fresh authenticated profile, and must differ from the fresh guest.
+The account explicitly approved on ABEMA is the selected account. JWT decoding alone
 is not cryptographic validation. A positive finite future expiry is required;
 the Twitch-specific seven-day unknown-expiry policy does not apply. Native
 cookie-independent renewal is unverified and therefore requires reconnection

@@ -8,10 +8,11 @@ import java.util.concurrent.Executor
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 
-// This override belongs only to the cached-player process. Both anonymous
-// ABEMA helpers use the same provider route; native Twitch sockets do not use it.
+// Each override belongs to one isolated ABEMA process. Anonymous helpers share
+// their provider route; the approval browser has a separate process/profile.
 // Callers destroy/cancel all helper views before clear, and await its callback
-// before a subsequent run. Never use this for historical/login WebViews.
+// before a subsequent run. Never install it in the ordinary historical/browser
+// process or share an approval override with guest or playback WebViews.
 internal class AbemaWebViewRoute(
     private val backend: AbemaWebViewProxyBackend = AndroidAbemaWebViewProxyBackend,
     private val assertThread: () -> Unit = {

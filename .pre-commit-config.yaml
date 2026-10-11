@@ -39,6 +39,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: native-source-download-tests
+        name: Pinned native source download retry tests
+        entry: uv run scripts/tests/native-source-downloads.test.py
+        language: system
+        files: '^apps/android/openconnect-fixture/(fetch-sources\.sh|sources\.tsv)$|^scripts/tests/native-source-downloads\.test\.py$'
+        pass_filenames: false
+
       - id: failure-diagnostics-tests
         name: Safe failure diagnostic collector tests
         entry: uv run scripts/tests/failure-diagnostics.test.py

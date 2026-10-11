@@ -4095,6 +4095,57 @@ added APPROVED selected-manifest/declared-media patterns for
 observations. No additional origin approval was required. The run was stopped
 after this short regression check, returning the phone to the source picker.
 
+## Exact configured episodes — 2026-10-11
+
+Issue [#164](https://github.com/altendky/tachiai/issues/164) carries the common
+resolver's exact ABEMA episode into the cached native runtime. The provider-owned
+predicate accepts only canonical episode/VIDEO identity; generic presentation
+does not interpret provider URLs or entitlement. A frozen instance/route owner is
+reread on workers around preparation, native requests and the initial exchange.
+Main-thread publication uses the epoch/foreground/budget and sticky owner state.
+The delivered process-owned cleanup receipts remain in force. Each duplicate
+feed owns an independent fresh guest, helper, media token and CDM.
+
+The pinned unchanged
+[5206 asset](https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js)
+supplies the coherent API configuration, program DTO, filter/comparator, source
+gateway, media URL and DRM configuration. Selected mode requests only the exact
+modern `/v1/video/programs/{episodeId}` after fresh guest setup. Strict bounded
+UTF-8/duplicate-free JSON rejects mismatched raw/converted IDs and ARIN, malformed
+eligibility and unsupported trial/restriction/source modes. ARIN is opaque: its
+raw/DTO equality and exact gateway request are checked, without inventing an
+identifier grammar or deriving a program ID from it.
+
+Separately retained current first-party consumers establish that `freeEndAt`
+and advertising-term `endAt` are compared with epoch seconds. Module 15684 in
+[9118](https://abema.tv/assets/compat/450251252b4eb096.9118.bundle.js)
+tests free advertising terms; 17351 in
+[9361](https://abema.tv/assets/compat/de87d72968864070.9361.bundle.js)
+passes the provider's seconds clock, and 92443 in
+[7666](https://abema.tv/assets/compat/f95a0098c0f808ce.7666.bundle.js)
+uses the same term-expiry comparison. These consumers are static evidence and
+are not loaded into or mixed with the pinned runtime. No corresponding standalone
+program-end or broadcast-date entitlement clock was established. The selected
+path therefore requires explicit free labels and valid nonempty advertising
+terms/free windows covering the session; this duration coverage is a conservative
+local restriction, not complete entitlement equivalence. Historical-only checks
+remain bounded comparisons.
+
+The source URL must retain the exact episode identity, approved CDN and one
+query token equal to the fresh media token. Native code checks the app-owned
+two-field source binding before and after resolving its exact MPD and declared
+media. Pinned modules 73418/3136/93427 construct initial license parameters
+`ct=program`, `cid=programId` and `t=mediaToken`; selected mode requires that
+agreement before the unchanged opaque exchange. Existing protected initialization,
+KID agreement and one-initial-exchange limits remain. No helper algorithm is
+copied, key extracted, response reused, renewal added or new CDN family admitted.
+An opaque/unbound source or unsupported mode refuses without a fixed fallback.
+
+Local fixtures and bounded persistent-device observations are recorded when
+completed. Static identity, eligibility and policy wiring does not by itself
+prove native frames, sustained playback, full advertisements or physical-device
+DRM/decoder behavior. Existing-account access remains separate.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

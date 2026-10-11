@@ -5,6 +5,8 @@ import androidx.media3.common.util.UnstableApi
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.util.UUID
 import net.fstab.tachiai.platform.media.BoundedMediaRequests
 
@@ -27,20 +29,24 @@ internal fun abemaReplayCdnUriPolicy(uri: URI, scope: AbemaReplayCdnScope = Abem
     else -> AbemaReplayUriPolicy.ALLOWED
 }
 
-internal fun abemaReplaySelectedSourcePolicy(uri: URI, scope: AbemaReplayCdnScope = AbemaReplayCdnScope.HISTORICAL_EXACT): AbemaReplayUriPolicy {
+internal fun abemaReplaySelectedSourcePolicy(uri: URI, scope: AbemaReplayCdnScope = AbemaReplayCdnScope.HISTORICAL_EXACT,
+    episodeId: String = "394-72_s10_p8529"): AbemaReplayUriPolicy {
+    if (!validAbemaEpisodeIdentity(episodeId)) return AbemaReplayUriPolicy.SOURCE_ROUTE
     val common = abemaReplayCdnUriPolicy(uri, scope)
     return if (common == AbemaReplayUriPolicy.ALLOWED && (!uri.rawPath.endsWith(".mpd") ||
-        !Regex("(^|/)394-72_s10_p8529([/.]|$)").containsMatchIn(uri.rawPath))) AbemaReplayUriPolicy.SOURCE_ROUTE else common
+        !Regex("(^|/)${Regex.escape(episodeId)}([/.]|$)").containsMatchIn(uri.rawPath))) AbemaReplayUriPolicy.SOURCE_ROUTE else common
 }
 
-internal class AbemaReplayNativeSource(override val uri: URI, override val kids: List<UUID>) : AbemaNativeDashSource {
+internal class AbemaReplayNativeSource(override val uri: URI, override val kids: List<UUID>,
+    val episodeId: String = "394-72_s10_p8529") : AbemaNativeDashSource {
     override fun toString() = "AbemaReplayNativeSource(redacted)"
 }
 
 @UnstableApi
 internal fun resolveAbemaReplayNativeSource(uri: URI, requests: BoundedMediaRequests,
-    scope: AbemaReplayCdnScope = AbemaReplayCdnScope.HISTORICAL_EXACT): AbemaReplayNativeSource {
-    if (abemaReplaySelectedSourcePolicy(uri, scope) != AbemaReplayUriPolicy.ALLOWED) throw IOException("Replay source refused")
+    scope: AbemaReplayCdnScope = AbemaReplayCdnScope.HISTORICAL_EXACT,
+    episodeId: String = "394-72_s10_p8529"): AbemaReplayNativeSource {
+    if (abemaReplaySelectedSourcePolicy(uri, scope, episodeId) != AbemaReplayUriPolicy.ALLOWED) throw IOException("Replay source refused")
     val source = requests.create(C.DATA_TYPE_MANIFEST)
     try {
         source.openUri(uri)
@@ -52,9 +58,13 @@ internal fun resolveAbemaReplayNativeSource(uri: URI, requests: BoundedMediaRequ
             if (bytes.size() + count > 256 * 1024) throw IOException("Replay manifest refused")
             bytes.write(buffer, 0, count)
         }
-        val initialization = parseAbemaRequestInitialization(bytes.toString("UTF-8"))
+        val raw = bytes.toByteArray()
+        val text = try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString() }
+        finally { raw.fill(0) }
+        val initialization = parseAbemaRequestInitialization(text)
             ?: throw IOException("Replay initialization refused")
-        return AbemaReplayNativeSource(uri, initialization.kids)
+        return AbemaReplayNativeSource(uri, initialization.kids, episodeId)
     } catch (_: Exception) { throw IOException("Replay source unavailable") }
     finally { source.close() }
 }

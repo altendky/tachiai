@@ -1,0 +1,12 @@
+package net.fstab.tachiai.provider.abema
+
+import net.fstab.tachiai.provider.catalog.CatalogIntent
+import net.fstab.tachiai.provider.catalog.CatalogResource
+
+// Syntax/identity only. Actual fresh provider eligibility and source checks are
+// mandatory inside the playback adapter, even for a locally AVAILABLE item.
+internal fun supportedConfiguredAbemaEpisode(resource: CatalogResource): Boolean =
+    resource.providerId.value == "abema" && resource.kind == "episode" && resource.intent == CatalogIntent.VIDEO &&
+        validAbemaEpisodeIdentity(resource.identity)
+
+internal fun validAbemaEpisodeIdentity(id: String): Boolean = id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))

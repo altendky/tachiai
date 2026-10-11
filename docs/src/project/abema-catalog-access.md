@@ -185,7 +185,8 @@ pages or request provider metadata. The separate
 [Android public-link share handoff](configured-catalog.md#android-public-link-sharing)
 accepts a bare link with explicit instance selection and a one-time preview;
 compatibility with ABEMA's own sharing UI remains unobserved. Unknown
-availability and the exact-sample-only playback boundary remain explicit.
+availability remains UNKNOWN; configured episodes have a separate fresh runtime
+eligibility check, while other unsupported resource types refuse playback.
 
 That handoff alone does not implement native Channels/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
@@ -203,10 +204,11 @@ Preserve configured choices when account access, metadata or upstream favorites
 disappear.
 
 [Issue #101](https://github.com/altendky/tachiai/issues/101) must carry the actual
-selected resource through preparation and playback. The current cached sample
-path takes a live/replay distinction and fixes its identities; catalog labels
-alone cannot implement resource selection. Unsupported imported resources must
-not resolve to News or the fixed replay.
+selected resource through preparation and playback. Its focused episode child
+[#164](https://github.com/altendky/tachiai/issues/164) carries an exact resource
+through the cached path described below. Catalog labels alone cannot implement
+resource selection. Unsupported imported resources must not resolve to News or
+the fixed replay.
 
 [Issue #103](https://github.com/altendky/tachiai/issues/103) can develop common
 connection-state/controller fixtures and the verified account integration,
@@ -242,6 +244,36 @@ service/catalog check on persistent `tachiai-dev` accepted exact September episo
 metadata through the saved route on 2026-10-11, with encrypted records unchanged.
 The linked observation records device/engine/account conditions and verification
 limits; it does not establish general availability or entitlement.
+
+### Exact configured-episode playback
+
+Issue [#164](https://github.com/altendky/tachiai/issues/164) adds provider-owned
+admission for canonical ABEMA `episode`/`VIDEO` resources with bounded public IDs.
+The common resolver preserves configured UUID, instance, route, recovery and
+quality identity, and passes the immutable resource into the cached session.
+The historical full-page comparison explicitly refuses newly supported episodes.
+Only an explicit historical constructor may omit the requested resource and use
+its retained fixed comparison; an invalid explicit selection cannot fall back.
+
+Each selected feed creates its own fresh guest, helper, media token and native
+CDM. Its owned policy admits only the exact modern episode metadata URL, validates
+bounded duplicate-free raw metadata and unchanged converted DTO identity/ARIN,
+and uses unchanged provider filtering, gateway, URL and DRM configuration modules.
+The selected source, MPD, declared media and initial license remain bound to that
+episode and fresh token. Route/profile ownership is captured and reread on
+workers; foreground, epoch, deadline and confirmed cleanup guard publication.
+
+A saved UNKNOWN snapshot may initiate verification but never proves playability.
+The selected path requires explicit free metadata and valid nonempty advertising
+terms covering the bounded session, alongside existing trial, restriction and
+source/DRM-mode refusals. Current first-party consumers establish epoch-second
+term/free-window comparisons; standalone program end dates and broadcast dates
+are not guessed entitlement clocks. Unavailable, future, premium or unsupported
+items remain configured while playback returns a safe refusal. This guest slice
+does not add My List, history, account adoption or renewal. Channels, exact slots,
+series and broader discovery remain [#101](https://github.com/altendky/tachiai/issues/101).
+See [the native boundary](native-access-experiments.md#exact-configured-episodes--2026-10-11)
+for static evidence and eventual bounded device observations.
 
 ## Remaining gates and issue status
 

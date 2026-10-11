@@ -83,7 +83,9 @@ import net.fstab.tachiai.presentation.PrototypePlaybackKind
 import net.fstab.tachiai.presentation.ConfiguredPlaybackSelection
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
+import net.fstab.tachiai.provider.abema.androidAbemaEpisodePlaybackOwnership
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
+import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -206,7 +208,8 @@ open class PrototypeActivity : ComponentActivity() {
         }
         initializeDiagnostics()
         if (!profileConfigured) {
-            WebView.setDataDirectorySuffix(if (useCachedAbema) "prototype-cached-player" else "prototype-player")
+            if (useCachedAbema) configureAbemaCachedPlaybackProfile(this)
+            else WebView.setDataDirectorySuffix("prototype-player")
             profileConfigured = true
         }
         WebView.setWebContentsDebuggingEnabled(false)
@@ -318,7 +321,8 @@ open class PrototypeActivity : ComponentActivity() {
                 else "The previous route is still stopping. Please retry shortly.")
             return
         }
-        val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
+        val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
+            allowConfiguredAbemaEpisodes = useCachedAbema)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -519,7 +523,11 @@ open class PrototypeActivity : ComponentActivity() {
                         route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index),
                         onHelperCreated = { helper -> cachedCleanup.helper(checkNotNull(ownedRun), helper,
                             helper::destroy) { !helper.cleanupFailed } },
-                        onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
+                        onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
+                        episodeResource = source.resource.takeIf { replay },
+                        ownership = if (!replay) null else androidAbemaEpisodePlaybackOwnership(this,
+                            checkNotNull(source.resolve(activeInstances)),
+                            checkNotNull(routeProfiles[source.instanceId]).getOrThrow(), feedActive, feedDiagnostics(index)))
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId

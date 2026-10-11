@@ -14,8 +14,8 @@ const syntheticKey = 'BBBBBBBBBBBBBBBBBBBBBB';
 const challenge = Buffer.from(JSON.stringify({ kids: [kid], type: 'temporary' })).toString('base64');
 const fixtureNow = 1800000000000;
 const futureSeconds = fixtureNow / 1000 + 600;
-const freeProgram = () => ({
-  id: '394-72_s10_p8529', playback: { arin: 'TEST_ARIN' },
+const freeProgram = (id = '394-72_s10_p8529') => ({
+  id, playback: { arin: 'TEST_ARIN' },
   label: { free: true }, mediaStatus: { drm: true, downloadOnlyDrm: false },
   freeEndAt: futureSeconds, endAt: futureSeconds,
   partnerContentViewingAuthorities: [],
@@ -55,12 +55,15 @@ function fixture(options = {}) {
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
       else if (uri.pathname === '/v1/channels') body = options.channels || { channels: [liveChannel()] };
-      else if (uri.pathname.startsWith('/v1/video/programs/')) body = options.program || freeProgram();
+      else if (uri.pathname.startsWith('/v1/video/programs/')) {
+        if (options.deferProgram) await deferred;
+        body = options.program || freeProgram(uri.pathname.split('/').at(-1));
+      }
       else if (uri.pathname.startsWith('/v1/playbackResources/')) body = { synthetic: true };
       else if (uri.pathname === '/abematv-dash') body = { syntheticEnvelope: true };
       else throw new Error('UNEXPECTED_FIXTURE_REQUEST');
       const status = options.statuses?.[uri.pathname] || options.httpStatus || 200;
-      const text = options.responseTexts?.[uri.pathname] ?? JSON.stringify(body);
+      const text = options.responseBytes?.[uri.pathname] ?? options.responseTexts?.[uri.pathname] ?? JSON.stringify(body);
       return new Response(text, { status });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
@@ -84,13 +87,14 @@ function fixture(options = {}) {
     }; },
     50052(module, exports, require) { require.d(exports, {}, { bq: { DEVICE_TYPE_WEB: 'DEVICE_TYPE_WEB' } }); },
     24968(module, exports, require) { require.d(exports, {}, { T: { LOGIN_GUEST: '/api/auth/login/guest' } }); },
+    74284(module) { module.exports = { kt: { api: fake.apiOrigin || 'https://api.p-c3-e.abema-tv.com' } }; },
     60506(module) { module.exports = { N: { browser: { name: 'Chrome', version: '1' }, os: { name: 'Android', version: '1' } } }; },
     87328(module) { module.exports = { xl: () => false }; },
     44602() { throw new Error('UNRELATED_MANAGER_MUST_NOT_RUN'); },
     91966(module, exports, require) { require.d(exports, { sD: () => () => ({
       stringVariation(name, fallback) { observed.flags.push({ name, fallback }); return fallback; }
     }) }); },
-    91060(module) { module.exports = { OW: { fromJSON: value => value } }; },
+    91060(module) { module.exports = { OW: { fromJSON: value => fake.convertedProgram || value } }; },
     18278(module) { module.exports = { WebStreamFilter: class {
       constructor(clientInfo, source, flags) {
         if (flags.getValue('SYNTHETIC_PROVIDER_FLAG', 'preserved-default') !== 'preserved-default') throw new Error();
@@ -121,12 +125,16 @@ function fixture(options = {}) {
       return [['preserved', 'yes']];
     } }; },
     65364(module) { module.exports = { createMediaURL: config => {
-      observed.media.push(config); return config.playbackURL;
+      observed.media.push(config);
+      if (fake.mediaURL !== undefined) return fake.mediaURL;
+      const url = new URL(config.playbackURL);
+      url.searchParams.append('t', config.query.t);
+      return url.href;
     } }; },
     73418(module) { module.exports = { createConfiguration: (...args) => {
       observed.configurations.push(args);
       return { keySystemId: Object.hasOwn(fake, 'keySystemId') ? fake.keySystemId : 'FIXTURE_CUSTOM_KEY_SYSTEM',
-        licenseUrl: fake.licenseURL || 'https://license.p-c3-e.abema-tv.com/abematv-dash?t=TEST_MEDIA' };
+        licenseUrl: fake.licenseURL || 'https://license.p-c3-e.abema-tv.com/abematv-dash?t=TEST_MEDIA&ct=program&cid=' + args[4].source.programId };
     } }; },
     68863() { throw new Error('AD_ADAPTER_MUST_NOT_BE_A_PLAYBACK_PREREQUISITE'); },
     74766() { throw new Error('AD_DRIVER_MUST_NOT_BE_A_PLAYBACK_PREREQUISITE'); },
@@ -141,11 +149,11 @@ function fixture(options = {}) {
       }
       async fetchAvailableStreams(useCase) {
         observed.sources.push({ content: this.content, useCase });
-        const id = this.content.source.channelId || this.content.source.arin;
+        const id = fake.gatewayArin || this.content.source.channelId || this.content.source.arin;
         await (await fetch(this.domains.playbackResources + '/v1/playbackResources/' + id)).json();
         const rawStreams = fake.rawStreams || (fake.streams || [{ streamingTechnology: 'dash', drm: 'custom', isRawKey: false,
           licenseTemplateURL: 'TEST_TEMPLATE', manifestChain: [{
-            url: 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd',
+            url: 'https://ds-vod-abematv.akamaized.net/program/' + this.content.source.programId + '/manifest.mpd',
             adInsertion: { mode: fake.adMode ?? 0 }
           }] }]).map(normalized => ({
             streamingTechnology: normalized.streamingTechnology === 'dash' ? 'FIXTURE_DASH' : 'FIXTURE_HLS',
@@ -187,7 +195,7 @@ function fixture(options = {}) {
   const evaluate = expression => vm.runInContext(expression, context, { timeout: 1000 });
   return {
     requests, events, release, context, evaluate,
-    start: (replay = false) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -690,4 +698,117 @@ test('owned HTML loads control before support/application chunks and native init
   assert.ok(order.every(value => value >= 0));
   assert.ok(order.every((value, index) => index === 0 || value > order[index - 1]));
   assert.ok(!html.includes('https://abema.tv/video/'));
+});
+
+test('two configured episodes bind modern raw metadata, gateway, source and license through the actual orchestrator', async () => {
+  for (const id of ['394-72_s10_p8510', 'fixture-series_p2']) {
+    const value = fixture(); value.start(true, id); await waitFor(value, 'READY');
+    assert.equal(value.requests[0].request.credentials, 'omit');
+    assert.equal(value.requests[2].uri.href, 'https://api.p-c3-e.abema-tv.com/v1/video/programs/' + id);
+    assert.equal(value.requests[3].uri.pathname, '/v1/playbackResources/TEST_ARIN');
+    assert.equal(value.evaluate('observed.sources[0].content.source.programId'), id);
+    const binding = JSON.parse(value.evaluate(`window['${name}'].sourceBinding()`));
+    assert.equal(binding.episodeId, id);
+    assert.equal(new URL(binding.uri).pathname, '/program/' + id + '/manifest.mpd');
+    assert.deepEqual(new URL(binding.uri).searchParams.getAll('t'), ['TEST_MEDIA']);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const request = value.requests.at(-1);
+    assert.equal(request.uri.searchParams.get('ct'), 'program');
+    assert.equal(request.uri.searchParams.get('cid'), id);
+    assert.equal(request.uri.searchParams.get('t'), 'TEST_MEDIA');
+    assert.equal(value.evaluate('observed.operation.length'), 1);
+    assert.ok(value.take()); assert.equal(value.take(), null);
+  }
+});
+
+test('configured identity is validated before guest and coherent origin cannot fall back to the historical API', async () => {
+  for (const id of ['', '.', '../episode', 'a'.repeat(129), 'episode?x=1', 'épisode']) {
+    const value = fixture(); value.start(true, id);
+    assert.equal(value.requests.length, 0); assert.equal(value.status(), undefined);
+  }
+  const value = fixture({ apiOrigin: 'https://api.abema.io' });
+  value.start(true, '394-72_s10_p8510'); await waitFor(value, 'FAILED');
+  assert.equal(value.requests.length, 0);
+});
+
+test('configured raw and converted identity/ARIN must agree before unchanged gateway invocation', async () => {
+  const id = '394-72_s10_p8510';
+  for (const options of [
+    { program: freeProgram() }, { convertedProgram: freeProgram() },
+    { convertedProgram: { ...freeProgram(id), playback: { arin: 'OTHER_ARIN' } } },
+    ...['', 'x'.repeat(257), 'fixture/arin', '.', '..', 1].map(arin => ({ program: { ...freeProgram(id), playback: { arin } } })),
+  ]) {
+    const value = fixture(options); value.start(true, id); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.sources.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+  const wrongGateway = fixture({ gatewayArin: 'OTHER_ARIN' }); wrongGateway.start(true, id);
+  await waitFor(wrongGateway, 'FAILED'); assert.equal(wrongGateway.requests.length, 3);
+});
+
+test('configured free eligibility refuses absent, empty, malformed or unsupported terms independently of saved metadata', async () => {
+  const id = '394-72_s10_p8510';
+  for (const change of [
+    { terms: undefined }, { terms: [] }, { terms: [{}] },
+    { terms: [{ onDemandType: 3, endAt: futureSeconds, unknown: true }] },
+    { terms: [{ onDemandType: '3', endAt: futureSeconds }] },
+    { terms: [{ onDemandType: 1, endAt: futureSeconds }] },
+    { terms: [{ onDemandType: 3, endAt: fixtureNow / 1000 + 299 }] },
+    { terms: [{ onDemandType: 3, endAt: futureSeconds * 1000 }] },
+    { label: { free: 'true' } }, { label: {} }, { freeEndAt: undefined },
+  ]) {
+    const value = fixture({ program: { ...freeProgram(id), ...change } });
+    value.start(true, id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+  }
+  // Standalone endAt/broadcastAt have no verified admission clock semantics.
+  const value = fixture({ program: { ...freeProgram(id), endAt: undefined, broadcastAt: 1 } });
+  value.start(true, id); await waitFor(value, 'READY');
+});
+
+test('selected source and license each require exact episode and single current media token', async () => {
+  const id = '394-72_s10_p8510';
+  const base = 'https://ds-vod-abematv.akamaized.net/program/' + id + '/manifest.mpd';
+  for (const options of [
+    ...[base, base + '?t=WRONG', base + '?t=TEST_MEDIA&t=TEST_MEDIA',
+      base.replace(id, id + '-other') + '?t=TEST_MEDIA',
+      base.replace(id, '394-72_s10_p8529') + '?t=TEST_MEDIA'].map(mediaURL => ({ mediaURL })),
+    { rawStreams: [replayStream({ manifestChain: [{ url: base + '?t=OLD', adInsertion: { mode: 0 } }] })] },
+    ...['?t=TEST_MEDIA', '?t=WRONG&ct=program&cid=' + id,
+      '?t=TEST_MEDIA&ct=channel&cid=' + id, '?t=TEST_MEDIA&ct=program&cid=394-72_s10_p8529',
+      '?t=TEST_MEDIA&ct=program&cid=' + id + '&t=TEST_MEDIA'].map(query =>
+      ({ licenseURL: 'https://license.p-c3-e.abema-tv.com/abematv-dash' + query })),
+  ]) {
+    const value = fixture(options); value.start(true, id); await waitFor(value, 'FAILED');
+    assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.requests.some(request => request.uri.pathname === '/abematv-dash'), false);
+  }
+});
+
+test('configured metadata refuses whole-response duplicate, UTF8, size, depth and trailing corruption', async () => {
+  const id = '394-72_s10_p8510', endpoint = '/v1/video/programs/' + id;
+  const valid = JSON.stringify(freeProgram(id));
+  for (const text of [valid + ' trailing', valid.replace('"id":', '"id":"' + id + '","i\\u0064":'),
+    valid.slice(0, -1) + ',"ignored":' + '['.repeat(17) + '0' + ']'.repeat(17) + '}',
+    valid.slice(0, -1) + ',"ignored":"' + 'x'.repeat(512 * 1024) + '"}',
+    valid.slice(0, -1) + ',"ignored":"\\ud800"}']) {
+    const value = fixture({ responseTexts: { [endpoint]: text } });
+    value.start(true, id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+  }
+  const invalidUtf8 = fixture({ responseBytes: { [endpoint]: new Uint8Array([0xc3, 0x28]) } });
+  invalidUtf8.start(true, id); await waitFor(invalidUtf8, 'FAILED'); assert.equal(invalidUtf8.requests.length, 3);
+});
+
+test('configured stop rejects delayed metadata and duplicate feeds use independent guest/helper/exchange state', async () => {
+  const id = '394-72_s10_p8510';
+  const delayed = fixture({ deferProgram: true }); delayed.start(true, id);
+  for (let at = 0; at < 100 && delayed.requests.length < 3; at++) await new Promise(resolve => setImmediate(resolve));
+  delayed.stop(); delayed.release(); await waitFor(delayed, 'STOPPED');
+  for (let at = 0; at < 5; at++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(delayed.requests.length, 3); assert.equal(delayed.evaluate('observed.sources.length'), 0);
+  const first = fixture(), second = fixture(); first.start(true, id); second.start(true, id);
+  await Promise.all([waitFor(first, 'READY'), waitFor(second, 'READY')]);
+  first.stop(); assert.equal(second.status(), 'READY');
+  assert.equal(second.begin(challenge), 'WORKING'); await waitFor(second, 'RESPONSE');
+  assert.equal(first.evaluate('observed.operation.length'), 0);
+  assert.equal(second.evaluate('observed.operation.length'), 1);
 });

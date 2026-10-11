@@ -214,4 +214,57 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(request, quality.effective(NativeMixedSide.B).video)
         assertEquals(listOf(exact, other), result.sources)
     }
+
+    private fun episode(id: String, owner: ProviderInstance = instances.single { it.service == PrototypeService.ABEMA }) =
+        ConfiguredSource(UUID.randomUUID().toString(), owner.id,
+            CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id, CatalogIntent.VIDEO), "Saved episode"))
+
+    @Test fun exactAbemaEpisodesPreserveTwoIdsDuplicateSlotsAndIndependentInstanceOwnership() {
+        val abema = instances.single { it.service == PrototypeService.ABEMA }
+        val otherOwner = ProviderInstance(second.id, PrototypeService.ABEMA, "ABEMA 2")
+        val first = episode("394-72_s10_p8510")
+        val other = episode("fixture-series_p2", otherOwner)
+        val result = resolve(first, other, instances + otherOwner) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
+        assertEquals(listOf(abema, otherOwner), result.selection.feeds.map { it.resolve(instances + otherOwner) })
+        result.selection.feeds.forEach {
+            assertNull(it.historicalSource); assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
+            assertEquals("ABEMA_CONFIGURED_EPISODE", it.diagnosticName)
+        }
+        val duplicate = resolve(first) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(listOf(first.choice, first.choice), duplicate.selection.feeds.map { it.choice })
+        val recovered = restoreConfiguredFeedAssignments(true, encodeConfiguredFeedChoice(first.choice), encodeConfiguredFeedChoice(other.choice))
+        val restored = resolveConfiguredPrototypeSelection(recovered, listOf(first, other), instances + otherOwner)
+            as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(result.selection, restored.selection)
+        val quality = ViewerQualityState(result.selection.feeds.map { it.choice }, emptyMap())
+        val request = NativeQualityRequest(NativeQualityTrack(NativeQualityKind.VIDEO, NativeQualityCodec.AVC, 2_000_000, 1280, 720))
+        quality.setOverride(NativeMixedSide.B, NativeQualityKind.VIDEO, request)
+        assertNull(quality.effective(NativeMixedSide.A).video)
+        assertEquals(request, quality.effective(NativeMixedSide.B).video)
+        assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
+    }
+
+    @Test fun historicalComparisonRefusesNewEpisodeWithoutChangingExplicitHistoricalSamples() {
+        val exact = episode("394-72_s10_p8510")
+        failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
+            ConfiguredFeedAssignments(exact.choice, exact.choice), listOf(exact), instances, allowConfiguredAbemaEpisodes = false))
+        val historical = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap()).last()
+        val restored = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(historical.choice, historical.choice),
+            listOf(historical), instances, allowConfiguredAbemaEpisodes = false) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(PrototypeSource.ABEMA_REPLAY, restored.selection.a.historicalSource)
+    }
+
+    @Test fun malformedAbemaEpisodeAndWrongResourceNeverReachHistoricalFallback() {
+        val exact = episode("394-72_s10_p8510")
+        for (resource in listOf(exact.entry.resource.copy(kind = "slot"), exact.entry.resource.copy(kind = "annualseries"),
+            exact.entry.resource.copy(intent = CatalogIntent.CHANNEL), exact.entry.resource.copy(identity = "x".repeat(129)),
+            exact.entry.resource.copy(identity = "first/../episode"))) {
+            failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolve(exact.copy(entry = exact.entry.copy(resource = resource))))
+        }
+        for (availability in listOf(CatalogAvailability.UPCOMING, CatalogAvailability.OFFLINE, CatalogAvailability.EXPIRED, CatalogAvailability.UNAVAILABLE))
+            failed(ConfiguredPrototypeSelectionFailure.UNAVAILABLE, resolve(exact.copy(entry = exact.entry.copy(availability = availability))))
+        failed(ConfiguredPrototypeSelectionFailure.STALE_ITEM,
+            resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(exact.choice, exact.choice), emptyList(), instances))
+    }
 }

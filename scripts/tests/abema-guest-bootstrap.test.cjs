@@ -18,6 +18,7 @@ function fixture(options = {}) {
   const delayed = new Promise(resolve => { release = resolve; });
   const device = `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`;
   const context = vm.createContext({ URL, Response, TextEncoder, TextDecoder, AbortController,
+    performance: { now: () => options.elapsedMs ?? 0 },
     location: { origin: options.origin || 'https://abema.tv' },
     crypto: { randomUUID: () => device },
     setTimeout: callback => { timers.set(++timer, callback); return timer; },
@@ -25,6 +26,26 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url === 'https://abema.tv/api/auth/oauth/device/authorization') {
+        if (options.delayedChallenge) await delayed;
+        if (options.challengeNetworkFailure) throw new Error('PRIVATE_CHALLENGE_ERROR');
+        if (options.challengeRedirected) return { status: 200, get body() { options.refusedBodyRead = true; throw new Error(); }, redirected: true };
+        if (options.challengeMissingBody) return { status: 200, body: null };
+        if (Object.hasOwn(options, 'challengeStatus') && options.challengeStatus !== 200) return {
+          status: options.challengeStatus,
+          get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        const bytes = options.challengeBytes || options.challengeText || JSON.stringify(options.challenge || challengeReply());
+        if (options.delayedChallengeRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: new TextEncoder().encode(bytes) }; },
+            cancel: async () => {},
+          }) } };
+        }
+        return new Response(bytes, { status: 200 });
+      }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/programs/')) {
         if (options.delayedEpisode) await delayed;
         if (options.episodeNetworkFailure) throw new Error('PRIVATE_EPISODE_ERROR');
@@ -74,7 +95,7 @@ function fixture(options = {}) {
       return new Response(bytes, { status: options.status || 200 });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = [];', context);
+  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = []; challengeSerialized = [];', context);
   vm.runInContext(source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     2833(module, exports, require) { loaded.push(2833); require(32746); module.exports = {
@@ -90,12 +111,24 @@ function fixture(options = {}) {
       V8: { fromJSON: value => ({ userId: value.user_id, accessToken: fake.wrongModel ? 'OTHER' : value.access_token }) }
     }; },
     50052(module) { loaded.push(50052); module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
-    24968(module) { loaded.push(24968); module.exports = { T: { LOGIN_GUEST: fake.endpoint || '/api/auth/login/guest' } }; },
+    24968(module) { loaded.push(24968); module.exports = { T: { LOGIN_GUEST: fake.endpoint || '/api/auth/login/guest',
+      OAUTH_DEVICE_AUTHORIZATION: fake.challengeEndpoint || '/api/auth/oauth/device/authorization' } }; },
+    2953(module) { loaded.push(2953); module.exports = { pG: { toJSON: value => {
+      challengeSerialized.push(value);
+      if (fake.inheritedChallengeModel) return Object.assign(Object.create({ client_id: value.clientId }), { extra: true });
+      if (fake.wrongChallengeWire) return Object.defineProperty({ client_id: value.clientId }, 'toJSON', {
+        value: () => ({ client_id: 'OTHER' }),
+      });
+      return fake.challengeModelExtra ? { client_id: value.clientId, extra: true } :
+        { client_id: fake.wrongChallengeModel ? 'OTHER' : value.clientId };
+    } } }; },
     74284(module) { loaded.push(74284); module.exports = { FH: { apiOrigin: fake.apiOrigin || 'https://api.p-c3-e.abema-tv.com' } }; },
     14405() { throw new Error('LICENSE_HELPER_MUST_NOT_LOAD'); },
     27594() { throw new Error('LICENSE_UTILITY_MUST_NOT_LOAD'); },
     17046() { throw new Error('SOURCE_MUST_NOT_LOAD'); },
-    99999() { throw new Error('APP_ENTRY_MUST_NOT_LOAD'); }
+    99999() { throw new Error('APP_ENTRY_MUST_NOT_LOAD'); },
+    92546() { throw new Error('REQUEST_DRIVER_MUST_NOT_LOAD'); },
+    9355() { throw new Error('RECOVERY_DRIVER_MUST_NOT_LOAD'); }
   }, () => { throw new Error('APPLICATION_CALLBACK_MUST_NOT_RUN'); }]);
   window.__LOADABLE_LOADED_CHUNKS__.push([[2], {
     32746() { loaded.push(32746); }
@@ -115,6 +148,11 @@ function fixture(options = {}) {
   };
 }
 async function settle() { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); }
+function challengeReply() {
+  return { device_code: 'PRIVATE_DEVICE_CODE', user_code: 'PRIVATE_USER_CODE',
+    verification_uri: 'https://abema.tv/account/transfer',
+    verification_uri_complete: 'https://abema.tv/account/transfer?code=PRIVATE_USER_CODE', expires_in: 300 };
+}
 
 test('only unchanged guest dependency factories run; one fresh cookie-free exact POST and status-only native boundary', async () => {
   const first = fixture(); first.start(); await settle();
@@ -496,4 +534,157 @@ test('catalog projection stays unavailable before completion and after cancellat
     assert.equal(value.state().state, timeout ? 'REFUSED' : 'STOPPED');
     assert.equal(value.timers.size, 0);
   }
+});
+
+test('challenge binds the matched server profile through the unchanged pure DTO and discards all private fields', async () => {
+  const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION' }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'CHALLENGE_VALIDATED_AND_DISCARDED', failure: 'NONE' });
+  assert.deepEqual(value.requests.map(({ url }) => url), [
+    'https://abema.tv/api/auth/login/guest', 'https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER',
+    'https://abema.tv/api/auth/oauth/device/authorization',
+  ]);
+  const { request } = value.requests[2];
+  assert.equal(request.method, 'POST'); assert.deepEqual(JSON.parse(request.body), { client_id: 'FIXTURE_USER' });
+  assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), {
+    accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer FIXTURE_ACCESS',
+  });
+  assert.ok(value.requests.every(({ request }) => request.credentials === 'omit' && request.cache === 'no-store' && request.redirect === 'error'));
+  assert.deepEqual(JSON.parse(JSON.stringify(value.context.challengeSerialized)), [{ clientId: 'FIXTURE_USER' }]);
+  assert.ok(value.context.loaded.includes(2953));
+  assert.deepEqual(Array.from(value.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop']);
+  assert.equal(value.call(`window['${apiName}'].metadata?.() || null`), null);
+  assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_|client|code|https:|expires/);
+  assert.equal(value.timers.size, 0);
+  value.stop(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+  assert.equal(value.requests.length, 3);
+});
+
+test('challenge requires matching profile and exact endpoint and DTO before dispatch, without fallback or recovery', async () => {
+  for (const options of [{ profile: { profile: { userId: 'OTHER' } } }, { profileStatus: 401 },
+    { wrongChallengeModel: true }, { challengeModelExtra: true }, { inheritedChallengeModel: true }, { wrongChallengeWire: true }]) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', ...options }); value.start(); await settle();
+    assert.equal(value.state().state, 'REFUSED'); assert.equal(value.requests.length, 2);
+  }
+  for (const challengeEndpoint of ['/api/auth/oauth/device/token', '/api/auth/oauth/device/authorization?extra=1',
+    'https://other.invalid/api/auth/oauth/device/authorization', 'https://abema.tv:443/api/auth/oauth/device/authorization',
+    '/api/auth/oauth/device/%61uthorization']) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challengeEndpoint }); value.start(); await settle();
+    // URL serialization can normalize an explicit default port in a pinned
+    // module; the final exact endpoint is still the only dispatched URI.
+    if (challengeEndpoint.includes(':443')) assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
+    else { assert.equal(value.state().failure, 'CHALLENGE_POLICY'); assert.equal(value.requests.length, 0); }
+  }
+  const override = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', resourceId: 'fixture-episode' });
+  override.start(); await settle(); assert.equal(override.call(`window['${apiName}']`), undefined); assert.equal(override.requests.length, 0);
+});
+
+test('challenge accepts only a flat exact five-field bounded DTO with strict types and no duplicate or trailing JSON', async () => {
+  const valid = challengeReply();
+  const cases = ['{}', '[]', JSON.stringify([valid]), JSON.stringify({ ...valid, extra: 'PRIVATE_EXTRA' }),
+    JSON.stringify(valid) + 'true', JSON.stringify(valid).replace('"device_code":', '"device_code":"OTHER","device_code":'),
+    JSON.stringify(valid).replace('"device_code":', '"device_code":"OTHER","\\u0064evice_code":'),
+    JSON.stringify(valid).replace('300', '1e999'),
+  ];
+  for (const key of Object.keys(valid)) {
+    const missing = { ...valid }; delete missing[key]; cases.push(JSON.stringify(missing));
+    for (const bad of [null, {}, [], true]) cases.push(JSON.stringify({ ...valid, [key]: bad }));
+  }
+  for (const key of ['device_code', 'user_code']) for (const bad of ['', ' x', 'x ', 'x\n', 'x\u007f', 'あ', 12,
+    'x'.repeat(key === 'device_code' ? 2049 : 65)]) cases.push(JSON.stringify({ ...valid, [key]: bad }));
+  for (const expires_in of [0, -1, 1.5, 3601, '300', null]) cases.push(JSON.stringify({ ...valid, expires_in }));
+  for (const challengeText of cases) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challengeText }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'CHALLENGE_RESPONSE' });
+    assert.equal(value.requests.length, 3);
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|OTHER|https:|device_code|user_code/);
+  }
+  for (const expires_in of [1, 3600]) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challenge: {
+      ...valid, expires_in, device_code: 'x'.repeat(2048), user_code: 'y'.repeat(64),
+    } }); value.start(); await settle(); assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
+  }
+});
+
+test('challenge destination restrictions refuse unsafe and noncanonical URLs without ever navigating or exporting them', async () => {
+  const valid = challengeReply();
+  const invalid = ['http://abema.tv/account', 'https://other.invalid/account', 'https://abema.tv.evil.invalid/account',
+    'https://other.abema.tv/account', 'https://ABEMA.TV/account', 'https://abema.tv:443/account',
+    'https://abema.tv:444/account', 'https://fixture@abema.tv/account', 'https://@abema.tv/account',
+    'https://abema.tv/account#', 'https://abema.tv/account#fragment', 'https://abema.tv', '/account',
+    'javascript:alert(1)', 'file:///account', 'https://abema.tv/./account', 'https://abema.tv/x/../account',
+    'https://abema.tv/%2e/account', 'https://abema.tv/account?code=%', 'https://abema.tv/account?code=%GG',
+    'https://abema.tv/account?code=%FF', 'https://abema.tv/account?code=%00', 'https://abema.tv/account?code=%0A',
+    'https://abema.tv/account?code=%7F', 'https://abema.tv/account?code=%C2%85', 'https://abema.tv/account?code=%E2%80%AE',
+    'https://abema.tv/account?code=%5C', 'https://abema.tv/\\account', 'https://abema.tv/account\n',
+    'https://abema.tv/account?code=あ', 'https://abema.tv/account?code= x',
+    'https://abema.tv/' + 'x'.repeat(2049 - 'https://abema.tv/'.length),
+  ];
+  for (const key of ['verification_uri', 'verification_uri_complete']) for (const uri of invalid) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challenge: { ...valid, [key]: uri } });
+    value.start(); await settle(); assert.equal(value.state().failure, 'CHALLENGE_RESPONSE'); assert.equal(value.requests.length, 3);
+  }
+  for (const uri of ['https://abema.tv/', 'https://abema.tv/account?code=%E3%81%82',
+    'https://abema.tv/' + 'x'.repeat(2048 - 'https://abema.tv/'.length)]) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challenge: {
+      ...valid, verification_uri: uri, verification_uri_complete: uri,
+    } }); value.start(); await settle(); assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
+  }
+});
+
+test('challenge response uses its own 64KiB strict UTF-8 bound and does not retain private malformed data', async () => {
+  for (const challengeBytes of ['x'.repeat(65537), Uint8Array.from([123, 34, 0xff, 34, 125])]) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challengeBytes }); value.start(); await settle();
+    assert.equal(value.state().failure, 'CHALLENGE_RESPONSE'); assert.equal(value.requests.length, 3);
+  }
+  const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', challengeText: JSON.stringify(challengeReply()).padEnd(65536, ' ') });
+  value.start(); await settle(); assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
+});
+
+test('challenge HTTP categories and malformed status refuse without reading bodies, retrying, or recovering a token', async () => {
+  for (const [challengeStatus, expected] of [[100, 'HTTP_OTHER'], [199, 'HTTP_OTHER'], [201, 'HTTP_OTHER'], [204, 'HTTP_OTHER'],
+    [301, 'HTTP_3XX'], [399, 'HTTP_3XX'], [400, 'HTTP_4XX'], [401, 'HTTP_401'], [403, 'HTTP_403'], [404, 'HTTP_404'],
+    [410, 'HTTP_410'], [429, 'HTTP_429'], [499, 'HTTP_4XX'], [500, 'HTTP_5XX'], [599, 'HTTP_5XX'],
+    [99, 'RESPONSE'], [600, 'RESPONSE'], [null, 'RESPONSE'], [undefined, 'RESPONSE'], ['401', 'RESPONSE'], [200.5, 'RESPONSE']]) {
+    const options = { operation: 'VERIFY_DEVICE_AUTHORIZATION', challengeStatus };
+    const value = fixture(options); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'CHALLENGE_' + expected });
+    assert.equal(options.refusedBodyRead, undefined); assert.equal(value.requests.length, 3);
+  }
+  for (const [options, failure] of [[{ challengeNetworkFailure: true }, 'TRANSPORT'],
+    [{ challengeRedirected: true }, 'REDIRECT'], [{ challengeMissingBody: true }, 'RESPONSE']]) {
+    const input = { operation: 'VERIFY_DEVICE_AUTHORIZATION', ...options };
+    const value = fixture(input); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'CHALLENGE_' + failure });
+    assert.equal(input.refusedBodyRead, undefined); assert.equal(value.requests.length, 3);
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_|Bearer/);
+  }
+});
+
+test('challenge headers/body cancellation, timeout and repeated start abort pending work and suppress every late reply', async () => {
+  for (const delay of ['delayedChallenge', 'delayedChallengeRead']) for (const action of ['stop', 'timeout', 'again']) {
+    const value = fixture({ operation: 'VERIFY_DEVICE_AUTHORIZATION', [delay]: true }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'CHALLENGE', failure: 'NONE' });
+    if (action === 'stop') value.stop();
+    else if (action === 'timeout') for (const callback of value.timers.values()) callback();
+    else value.start();
+    assert.equal(value.requests[2].request.signal.aborted, true);
+    value.release(); await settle();
+    assert.deepEqual(value.state(), action === 'stop' ? { state: 'STOPPED', failure: 'NONE' } :
+      { state: 'REFUSED', failure: action === 'timeout' ? 'CHALLENGE_TIMEOUT' : 'RUNTIME' });
+    assert.equal(value.requests.length, 3); assert.equal(value.timers.size, 0);
+    assert.equal(value.call(`window['${apiName}'].metadata?.() || null`), null);
+  }
+});
+
+test('challenge original elapsed budget cannot restart across guest, profile and challenge phases', async () => {
+  for (const [delay, count] of [['delayed', 1], ['delayedProfile', 2], ['delayedChallenge', 3], ['delayedChallengeRead', 3]]) {
+    const options = { operation: 'VERIFY_DEVICE_AUTHORIZATION', elapsedMs: 0, [delay]: true };
+    const value = fixture(options); value.start(); await settle();
+    options.elapsedMs = 45000; value.release(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'CHALLENGE_TIMEOUT' });
+    assert.equal(value.requests.length, count); assert.equal(value.timers.size, 0);
+  }
+  const options = { operation: 'VERIFY_DEVICE_AUTHORIZATION', elapsedMs: 0, delayedChallenge: true };
+  const value = fixture(options); value.start(); await settle(); options.elapsedMs = 44999; value.release(); await settle();
+  assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
 });

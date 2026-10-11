@@ -27,7 +27,7 @@ class AbemaGuestRuntimeCoordinatorTest {
             pending.remove(task); task.action(); return true
         }
     }
-    private inner class Fixture {
+    private inner class Fixture(private val operation: AbemaGuestBootstrapOperation = AbemaGuestBootstrapOperation.FETCH_EPISODE) {
         val main = Main(); val worker = Work(); val cleanup = Work()
         val events = mutableListOf<String>()
         val results = mutableListOf<AbemaGuestRuntimeResult>()
@@ -38,9 +38,12 @@ class AbemaGuestRuntimeCoordinatorTest {
         var holdStatus = false
         var holdClear = false
         var onClear: () -> Unit = {}
+        var onClose: () -> Unit = {}
         var clearCallback: (() -> Unit)? = null
         var reads = 0
         var metadataTitle = "Exact episode"
+        var statusState: String? = null
+        var statusFailure = "NONE"
         val views = mutableListOf<View>()
         inner class View(val request: AbemaGuestRuntimeRequest,
             val currentView: (AbemaGuestRuntimeView) -> Boolean,
@@ -51,7 +54,8 @@ class AbemaGuestRuntimeCoordinatorTest {
                 if (holdStatus) statusCallback = callback
                 else callback(statusValue())
             }
-            fun statusValue() = JSONObject.quote(JSONObject().put("state", "EXACT_EPISODE_METADATA").put("failure", "NONE").toString())
+            fun statusValue() = JSONObject.quote(JSONObject().put("state", statusState ?: if (operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+                "CHALLENGE_VALIDATED_AND_DISCARDED" else "EXACT_EPISODE_METADATA").put("failure", statusFailure).toString())
             override fun metadata(callback: (String?) -> Unit) {
                 events += "projection"
                 callback(JSONObject.quote(JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
@@ -70,7 +74,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                 override fun cancel() { events += "cancel" }
                 override fun cancelTransport() { events += "cancel-download" }
                 override val cleanupConfirmed = true
-                override fun close() { events += "close-backend" }
+                override fun close() { events += "close-backend"; onClose() }
             }
             override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
                 preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
@@ -92,8 +96,9 @@ class AbemaGuestRuntimeCoordinatorTest {
             override fun report(error: Throwable) { events += "safe-failure" }
         }
         val runtime = AbemaGuestRuntimeCoordinator(environment, main, worker, cleanup) { main.now }
-        fun request(selectedNonce: String = nonce) = AbemaGuestRuntimeRequest(id, AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            "fixture-episode", selectedNonce, proof, main.now + 45_000) { foreground }
+        fun request(selectedNonce: String = nonce) = AbemaGuestRuntimeRequest(id, operation,
+            if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null,
+            selectedNonce, proof, main.now + 45_000) { foreground }
         fun start(selectedNonce: String = nonce) = runtime.start(request(selectedNonce), completed = results::add)
         fun pump() {
             repeat(100) {
@@ -205,5 +210,89 @@ class AbemaGuestRuntimeCoordinatorTest {
         assertTrue(f.main.one()); assertEquals(before, f.reads)
         view.statusCallback?.invoke(view.statusValue()); f.pump()
         assertEquals("CANCELLED", f.results.single().category); assertNull(f.results.single().entry)
+    }
+
+    @Test fun challengeFixedOutcomePublishesOnlyAfterFinalOwnerCheckAndConfirmedCleanupWithoutAnyNativeProjection() {
+        val f = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        assertTrue(f.start()); f.pump()
+        assertEquals("CHALLENGE_VALIDATED_AND_DISCARDED", f.results.single().category)
+        assertNull(f.results.single().entry); assertFalse(f.events.contains("projection"))
+        assertTrue(f.events.indexOf("destroy") < f.events.indexOf("clear-dispatched"))
+        assertTrue(f.events.indexOf("clear-confirmed") < f.events.indexOf("close-backend"))
+        assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
+        assertFalse(f.runtime.unavailable)
+        assertEquals("AbemaGuestRuntimeResult(status only)", f.results.single().toString())
+    }
+
+    @Test fun challengeOwnerOrForegroundLossSuppressesCandidateAndLateCallbacks() {
+        val owner = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        owner.onClear = { owner.matching = false }
+        assertTrue(owner.start()); owner.pump()
+        assertEquals("OWNER_CHANGED", owner.results.single().category); assertNull(owner.results.single().entry)
+
+        val f = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        f.holdStatus = true; assertTrue(f.start()); f.pump()
+        val old = f.views.single(); val reads = f.reads
+        f.foreground = false; f.main.now += 101; assertTrue(f.main.one()); assertEquals(reads, f.reads)
+        old.statusCallback?.invoke(old.statusValue()); f.pump()
+        assertEquals("CANCELLED", f.results.single().category); assertNull(f.results.single().entry)
+        f.foreground = true; assertTrue(f.start("2".repeat(32))); f.pump()
+        val after = f.reads
+        old.statusCallback?.invoke(old.statusValue()); old.failed(old, "NAVIGATION_REFUSED"); f.pump()
+        assertEquals(after, f.reads); assertEquals(1, f.results.size); assertTrue(f.runtime.unavailable)
+        f.runtime.cancel("2".repeat(32)); f.pump(); assertEquals(2, f.results.size)
+        assertTrue(f.results.all { it.category == "CANCELLED" && it.entry == null })
+    }
+
+    @Test fun challengeOriginalDeadlineAndClosedFailureCategoriesNeverPublishAConnectionOrPrivateResult() {
+        val f = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        f.holdStatus = true; f.holdClear = true; assertTrue(f.start()); f.pump()
+        f.main.now += 44_500; f.views.single().let { it.statusCallback?.invoke(it.statusValue()) }; f.pump()
+        assertTrue(f.results.isEmpty()); assertTrue(f.events.contains("destroy"))
+        f.main.now += 501; f.clearCallback?.invoke(); f.pump()
+        assertEquals("CANCELLED", f.results.single().category); assertNull(f.results.single().entry)
+
+        for (failure in listOf("CHALLENGE_POLICY", "CHALLENGE_RESPONSE", "CHALLENGE_TIMEOUT", "CHALLENGE_TRANSPORT", "CHALLENGE_REDIRECT",
+            "CHALLENGE_HTTP_401", "CHALLENGE_HTTP_403", "CHALLENGE_HTTP_404", "CHALLENGE_HTTP_410", "CHALLENGE_HTTP_429",
+            "CHALLENGE_HTTP_3XX", "CHALLENGE_HTTP_4XX", "CHALLENGE_HTTP_5XX", "CHALLENGE_HTTP_OTHER")) {
+            val refused = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+            refused.statusState = "REFUSED"; refused.statusFailure = failure
+            assertTrue(refused.start()); refused.pump()
+            assertEquals("GUEST_$failure", refused.results.single().category); assertNull(refused.results.single().entry)
+            assertFalse(refused.events.contains("projection")); assertFalse(refused.runtime.unavailable)
+        }
+        val unexpected = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        unexpected.statusState = "REFUSED"; unexpected.statusFailure = "CHALLENGE_PRIVATE_418"
+        assertTrue(unexpected.start()); unexpected.pump(); assertEquals("STATUS_REFUSED", unexpected.results.single().category)
+        for ((state, failure) in listOf("CHALLENGE" to "NONE", "CHALLENGE_VALIDATED_AND_DISCARDED" to "NONE",
+            "REFUSED" to "CHALLENGE_HTTP_401")) {
+            val old = Fixture(); old.statusState = state; old.statusFailure = failure
+            assertTrue(old.start()); old.pump(); assertEquals("STATUS_REFUSED", old.results.single().category)
+        }
+    }
+
+    @Test fun challengeDestructionAndCleanupFailurePoisonSharedAdmissionAcrossDiagnosticAndEpisodeRequests() {
+        val cases = listOf<() -> Boolean>({ false }, { throw IllegalStateException("fixture") }, { throw AssertionError("fixture") })
+        for (destroy in cases) {
+            val f = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION); f.destroy = destroy
+            assertTrue(f.start()); f.pump()
+            assertEquals("CLEANUP_FAILED", f.results.single().category); assertNull(f.results.single().entry)
+            assertFalse(f.events.contains("clear-dispatched")); assertFalse(f.events.contains("close-backend"))
+            assertTrue(f.runtime.unavailable); assertFalse(f.start("2".repeat(32)))
+            val episode = AbemaGuestRuntimeRequest(id, AbemaGuestBootstrapOperation.FETCH_EPISODE, "fixture-episode",
+                "3".repeat(32), proof, f.main.now + 45_000) { true }
+            assertFalse(f.runtime.start(episode, completed = f.results::add))
+        }
+        val failed = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION)
+        failed.onClose = { throw IllegalStateException("fixture") }
+        assertTrue(failed.start()); failed.pump()
+        assertEquals("CLEANUP_FAILED", failed.results.single().category); assertNull(failed.results.single().entry)
+        assertTrue(failed.runtime.unavailable); assertFalse(failed.start("2".repeat(32)))
+
+        val uncertain = Fixture(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION); uncertain.holdClear = true
+        assertTrue(uncertain.start()); uncertain.pump(); uncertain.main.now += 20_001; uncertain.pump()
+        assertEquals("CLEANUP_FAILED", uncertain.results.single().category); assertTrue(uncertain.runtime.unavailable)
+        assertFalse(uncertain.events.contains("close-backend")); assertFalse(uncertain.start("2".repeat(32)))
+        uncertain.clearCallback?.invoke(); uncertain.pump(); assertEquals(1, uncertain.results.size)
     }
 }

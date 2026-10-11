@@ -81,6 +81,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val route = when (request.operation) {
             AbemaGuestBootstrapOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_PROFILE -> RouteSession.createAbemaGuestProfile(saved.profile, prepared.preparing)
+            AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> RouteSession.createAbemaGuestDeviceAuthorization(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE ->
                 RouteSession.createAbemaGuestEpisode(saved.profile, prepared.preparing)
         }
@@ -149,7 +150,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                         admission.admit(uri, resource.isForMainFrame, resource.method,
                             AbemaGuestBootstrapPolicy.corsHeaders(resource.method) { resource.requestHeaders })
                     if (!allowed) { failed(this@OwnedGuestView, "RESOURCE_REFUSED"); return refused() }
-                    if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || AbemaGuestBootstrapPolicy.isProfile(uri) ||
+                    if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE || AbemaGuestBootstrapPolicy.isProfile(uri) ||
                         AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId)) return null
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",

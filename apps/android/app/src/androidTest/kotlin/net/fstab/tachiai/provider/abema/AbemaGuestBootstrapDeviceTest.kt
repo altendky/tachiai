@@ -19,7 +19,7 @@ import org.junit.Test
 import org.junit.Assume.assumeTrue
 
 // Synthetic owned runtime only; no provider module, network, saved-store
-// mutation, cookie inspection/deletion or account/provider/device challenge.
+// mutation, cookie inspection/deletion or actual provider challenge.
 class AbemaGuestBootstrapDeviceTest {
     private fun guestInstrumentation() = InstrumentationRegistry.getInstrumentation().also { instrumentation ->
         // Default instrumentation must skip before any WebView/CookieManager
@@ -70,6 +70,10 @@ class AbemaGuestBootstrapDeviceTest {
             ownedRuntime("FETCH_EPISODE", "EXACT_EPISODE_METADATA", 2, id)
     }
 
+    @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
+        ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
+    }
+
     private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
@@ -81,6 +85,8 @@ class AbemaGuestBootstrapDeviceTest {
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === 'https://abema.tv/api/auth/oauth/device/authorization')
+                return new Response('{"device_code":"PRIVATE_DEVICE_CODE","user_code":"PRIVATE_USER_CODE","verification_uri":"https://abema.tv/account/transfer","verification_uri_complete":"https://abema.tv/account/transfer?code=PRIVATE_USER_CODE","expires_in":300}', {status:200});
               if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/$requested')
                 return new Response('{"id":"$requested","episode":{"title":"PRIVATE_EPISODE_TITLE"},"source":{"url":"https://private.invalid/MUST_NOT_FETCH"}}', {status:200});
               if (url.startsWith('https://api.p-c3-e.abema-tv.com/'))
@@ -93,9 +99,12 @@ class AbemaGuestBootstrapDeviceTest {
               2833(module, exports, require) { require(32746); module.exports = { B9: () => 42, b2: async () => 'FIXTURE_APPLICATION' }; },
               5304(module) { module.exports = { rM: { toJSON: value => value }, V8: { fromJSON: value => ({userId:value.user_id, accessToken:value.access_token}) } }; },
               50052(module) { module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
-              24968(module) { module.exports = { T: { LOGIN_GUEST: '/api/auth/login/guest' } }; },
+              24968(module) { module.exports = { T: { LOGIN_GUEST: '/api/auth/login/guest', OAUTH_DEVICE_AUTHORIZATION: '/api/auth/oauth/device/authorization' } }; },
+              2953(module) { module.exports = { pG: { toJSON: value => ({client_id:value.clientId}) } }; },
               74284(module) { module.exports = { FH: { apiOrigin: 'https://api.p-c3-e.abema-tv.com' } }; },
-              14405() { throw new Error('LICENSE_HELPER_MUST_NOT_RUN'); }
+              14405() { throw new Error('LICENSE_HELPER_MUST_NOT_RUN'); },
+              92546() { throw new Error('REQUEST_DRIVER_MUST_NOT_RUN'); },
+              9355() { throw new Error('RECOVERY_DRIVER_MUST_NOT_RUN'); }
             }, () => { throw new Error('ENTRY_MUST_NOT_RUN'); }]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[2], {32746(module) { module.exports = {}; }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[3], {21470() { throw new Error('SOURCE_MUST_NOT_RUN'); }}]);
@@ -124,14 +133,14 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "REFUSED")) break
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED", "REFUSED")) break
                 Thread.sleep(50)
             }
             assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
             assertEquals(2, status?.length())
             val publicShape = evaluate("""JSON.stringify({count:requests.length, names:Object.keys(window.__tachiaiGuest_$nonce),
                 omit:requests.every(request=>request.options.credentials==='omit'),
-                profile:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
+                profile:(requests.length===2 || requests.length===3) && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[1].options.method==='GET' &&
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
@@ -139,15 +148,26 @@ class AbemaGuestBootstrapDeviceTest {
                 episode:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/video/programs/$requested' &&
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
-                  requests[1].options.redirect==='error'})""")!!
+                  requests[1].options.redirect==='error',
+                challenge:requests.length===3 && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
+                  requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
+                  requests[2].url==='https://abema.tv/api/auth/oauth/device/authorization' &&
+                  requests[2].options.method==='POST' && requests[2].options.headers.accept==='application/json' &&
+                  requests[2].options.headers['content-type']==='application/json' &&
+                  requests[2].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[2].options.cache==='no-store' && requests[2].options.redirect==='error' &&
+                  Object.keys(JSON.parse(requests[2].options.body)).length===1 &&
+                  JSON.parse(requests[2].options.body).client_id==='FIXTURE_USER'})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
-            assertEquals(operation == "VERIFY_PROFILE", observed.getBoolean("profile"))
+            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION"), observed.getBoolean("profile"))
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
+            assertEquals(operation == "VERIFY_DEVICE_AUTHORIZATION", observed.getBoolean("challenge"))
             assertEquals(if (operation == "FETCH_EPISODE") "[\"status\",\"stop\",\"metadata\"]" else "[\"status\",\"stop\"]",
                 observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
             assertFalse(publicShape.contains("PRIVATE_NAME"))
+            assertFalse(publicShape.contains("PRIVATE_DEVICE_CODE")); assertFalse(publicShape.contains("PRIVATE_USER_CODE"))
             assertFalse(publicShape.contains("PRIVATE_EPISODE_TITLE")); assertFalse(publicShape.contains("394-72"))
             val metadata = evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null")
             if (operation == "FETCH_EPISODE") {

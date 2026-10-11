@@ -199,6 +199,8 @@ internal class AbemaGuestRuntimeCoordinator(
                     verifyThen(active) { stop(active, "PREPARED") }
                 state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
                     verifyThen(active) { stop(active, "GUEST_PROFILE_BOUND") }
+                state == "CHALLENGE_VALIDATED_AND_DISCARDED" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION ->
+                    verifyThen(active) { stop(active, "CHALLENGE_VALIDATED_AND_DISCARDED") }
                 state == "EXACT_EPISODE_METADATA" && failure == "NONE" && active.request.operation in
                     setOf(AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE) -> {
                     if (active.request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) view.metadata { metadata ->
@@ -208,8 +210,10 @@ internal class AbemaGuestRuntimeCoordinator(
                         else { active.entry = entry; verifyThen(active) { stop(active, "EXACT_EPISODE_METADATA") } }
                     } else verifyThen(active) { stop(active, "EXACT_EPISODE_METADATA") }
                 }
-                state == "REFUSED" && failure in FAILURES -> stop(active, "GUEST_$failure")
-                raw == null || raw == "null" || (state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE") && failure == "NONE") ->
+                state == "REFUSED" && failure in FAILURES && (failure?.startsWith("CHALLENGE_") != true ||
+                    active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) -> stop(active, "GUEST_$failure")
+                raw == null || raw == "null" || ((state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE") ||
+                    state == "CHALLENGE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) && failure == "NONE") ->
                     main.delay(active, 100) { poll(active) }
                 else -> stop(active, "STATUS_REFUSED")
             }
@@ -299,7 +303,10 @@ internal class AbemaGuestRuntimeCoordinator(
         private val FAILURES = setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT", "PROFILE_HTTP", "PROFILE_RESPONSE",
             "PROFILE_TIMEOUT", "EPISODE_RESPONSE", "EPISODE_TIMEOUT", "EPISODE_TRANSPORT", "EPISODE_REDIRECT",
             "EPISODE_HTTP_401", "EPISODE_HTTP_403", "EPISODE_HTTP_404", "EPISODE_HTTP_410", "EPISODE_HTTP_429",
-            "EPISODE_HTTP_3XX", "EPISODE_HTTP_4XX", "EPISODE_HTTP_5XX", "EPISODE_HTTP_OTHER")
+            "EPISODE_HTTP_3XX", "EPISODE_HTTP_4XX", "EPISODE_HTTP_5XX", "EPISODE_HTTP_OTHER",
+            "CHALLENGE_POLICY", "CHALLENGE_RESPONSE", "CHALLENGE_TIMEOUT", "CHALLENGE_TRANSPORT", "CHALLENGE_REDIRECT",
+            "CHALLENGE_HTTP_401", "CHALLENGE_HTTP_403", "CHALLENGE_HTTP_404", "CHALLENGE_HTTP_410", "CHALLENGE_HTTP_429",
+            "CHALLENGE_HTTP_3XX", "CHALLENGE_HTTP_4XX", "CHALLENGE_HTTP_5XX", "CHALLENGE_HTTP_OTHER")
         fun safeEpisodeTitle(title: String): Boolean {
             if (title.length !in 1..160 || title != title.trim()) return false
             var at = 0

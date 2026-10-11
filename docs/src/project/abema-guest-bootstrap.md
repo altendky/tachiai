@@ -4,7 +4,7 @@ Issue [#150](https://github.com/altendky/tachiai/issues/150) adds an explicit
 debug observation entry for a fresh ABEMA guest. It is a prerequisite experiment
 for the account work in [#100](https://github.com/altendky/tachiai/issues/100) and
 [#103](https://github.com/altendky/tachiai/issues/103), with no existing-account
-connection, device challenge, renewal or playback implementation. Issue
+connection, renewal or playback implementation. Issue
 [#155](https://github.com/altendky/tachiai/issues/155) adds a separate explicit,
 memory-only guest profile verification action. Its bounded provider observation
 is recorded below; existing-account linking remains separate.
@@ -13,6 +13,9 @@ explicit guest-authenticated check of one fixed episode. Its bounded saved-route
 acceptance is recorded below; configured-item refresh in
 [#153](https://github.com/altendky/tachiai/issues/153) uses a separate common-catalog
 consumer described below. Existing-account access remains separate.
+Issue [#160](https://github.com/altendky/tachiai/issues/160) adds a separate explicit
+memory-only device-authorization challenge check and discards the response.
+Provider-controlled account approval and grant/session handling remain separate.
 
 ## Implemented boundary
 
@@ -27,6 +30,9 @@ an existing account.
 **Verify guest episode metadata** likewise captures an immutable episode
 operation and uses only the fixed public episode `394-72_s10_p8529`. It accepts
 no resource argument or external extras and starts a separate fresh guest.
+The separate **Verify device authorization challenge** action prepares its own
+fresh guest and bound profile, requests one challenge, then discards it. It does
+not show a code, open an approval browser or establish an account connection.
 Provider names and saved route titles are shown; no account identifiers or grant
 values enter the UI. The activity does not alter provider, route or configured
 source records.
@@ -119,6 +125,83 @@ operations. Native diagnostics expose fixed failure categories only, including
 profile HTTP/response/timeout refusal. No provider account grant is persisted,
 Connected status published or account-backed capability enabled. Successful
 teardown discards all transient guest/profile references.
+
+## Optional device-authorization challenge verification
+
+The same retained first-party 5206 asset supplies the device-authorization
+endpoint in module 24968, the unchanged request DTO in module 2953 and the
+profile-derived client identity used by QR controller module 22590. The wire
+request is JSON containing only `client_id`. The provider's shared driver
+attaches the current bearer but also performs retry/recovery and reads refusal
+bodies; this one-shot operation uses Tachiai's bounded fetch and the unchanged
+pure DTO instead of that driver. These are static first-party findings, not an
+official third-party API or proof of cookie-free acceptance.
+
+`VERIFY_DEVICE_AUTHORIZATION` first prepares one fresh guest, then makes the
+profile GET and verifies `profile.userId` agrees with that guest. Only after
+agreement does it serialize the bound client identity and make one
+`POST https://abema.tv/api/auth/oauth/device/authorization`, with the fresh guest
+bearer and JSON Accept/Content-Type headers. Its distinct
+`ABEMA_GUEST_DEVICE_AUTHORIZATION` route purpose admits only the already reviewed
+`abema.tv` and modern profile host. The owned policy and CSP add only the exact
+challenge POST after the guest POST and one profile GET, with at most one
+matching profile preflight. Existing purposes remain unchanged. Cookie, cache,
+redirect, retry and renewal handling remain refused; the token-polling endpoint
+is not admitted.
+
+The challenge response is limited to 64 KiB and strict UTF-8/JSON validation,
+including escaped duplicate keys and unpaired surrogates. It must be a flat
+object with exactly `device_code`, `user_code`, `verification_uri`,
+`verification_uri_complete` and `expires_in`. Codes must be bounded nonempty
+visible ASCII without controls: at most 2,048 characters for the device code
+and 64 for the user code. No guessed provider code format is imposed. Expiry must
+be a positive integer of at most 3,600 seconds. Both URIs must be at most 2,048
+visible ASCII characters and canonical HTTPS `abema.tv` destinations without
+credentials, explicit ports,
+fragments, controls or malformed encodings. Neither URI is fetched, launched or
+exported. The 200-only success status, expiry ceiling and destination restriction
+are conservative local acceptance rules: actual provider status, lifetime and
+destination schema remain runtime checks rather than verified navigation rules.
+
+Each fetch retains its 15-second limit. The original 45-second monotonic
+operation deadline also guards the challenge sequence; challenge expiry never
+extends that deadline. Private response fields and guest/profile references are
+discarded in JavaScript. Only fixed **CHALLENGE_VALIDATED_AND_DISCARDED** can leave
+the runtime, after the native owner reread and confirmed destruction/route
+cleanup. Strings cannot be reliably wiped from the heap. Cancellation, owner or
+foreground loss, expired completion and uncertain cleanup prevent success;
+existing poisoned-process retention applies.
+
+No challenge export API, browser launch, token polling, account adoption,
+protected grant persistence, Connected state, collection/history capability or
+playback/license handling is added. The episode service and its public-metadata
+IPC retain their existing contract. Intended-account approval, verified polling
+errors, account profile agreement and expiry/revocation/renewal remain
+[#103](https://github.com/altendky/tachiai/issues/103).
+
+Verification on 2026-10-11 passed 1,948 JVM tests, 35 direct JavaScript fixtures,
+lint and release isolation. Eight selected Android fixtures passed in the
+isolated guest process with networking blocked, including the actual owned
+challenge JavaScript and existing metadata IPC. The temporary instrumentation
+process override was removed, and the ordinary test APK was rebuilt, verified
+and restored before the real request. Both APKs match the shared debug signing
+identity.
+
+One explicit challenge attempt on persistent `tachiai-dev` (`emulator-5580`),
+Android 16/API 36, Google APIs x86-64 and WebView 133.0.6943.137 completed through
+the selected saved connection in 8.255 seconds. Its fixed outcome was
+**CHALLENGE_VALIDATED_AND_DISCARDED**, published after confirmed cleanup; native
+controls were re-enabled. This establishes one accepted HTTP 200 response
+matching the locally bounded five-field/code/URI/expiry shape. The egress region
+was not independently remeasured. The account state remained a transient fresh
+guest; no existing account was linked, and no media or license request occurred.
+No private code, returned URI or exact provider expiry was exported, recorded or
+navigated. Encrypted saved configuration and grant records remained
+byte-for-byte unchanged; the normal app entry was restored afterward.
+
+This observation does not establish account approval, polling, returned-account
+identity, expiry/revocation/renewal or cross-device behavior. Those remain in
+[#103](https://github.com/altendky/tachiai/issues/103).
 
 ## Optional exact episode verification
 

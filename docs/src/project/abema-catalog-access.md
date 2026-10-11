@@ -186,7 +186,8 @@ pages or request provider metadata. The separate
 accepts a bare link with explicit instance selection and a one-time preview;
 compatibility with ABEMA's own sharing UI remains unobserved. Unknown
 availability remains UNKNOWN; configured episodes have a separate fresh runtime
-eligibility check, while other unsupported resource types refuse playback.
+eligibility check, as do exact configured linear channels. Other unsupported
+resource types refuse playback.
 
 That handoff alone does not implement native Channels/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not

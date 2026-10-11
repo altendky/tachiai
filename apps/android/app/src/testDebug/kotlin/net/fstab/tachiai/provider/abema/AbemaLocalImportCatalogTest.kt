@@ -162,9 +162,17 @@ class AbemaLocalImportCatalogTest {
             return resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(configured.choice, configured.choice),
                 listOf(configured), listOf(routeOwner), allowConfiguredAbemaEpisodes = allowEpisodes)
         }
-        listOf("https://abema.tv/channels/sumo", "https://abema.tv/channels/sumo/slots/A63wR6irBEskZM").forEach {
-            assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED), selection(it))
+        val channelUrl = "https://abema.tv/channels/sumo"
+        val channel = (selection(channelUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
+        channel.feeds.forEach {
+            assertEquals(CatalogResource(ProviderId("abema"), "channel", "sumo", CatalogIntent.CHANNEL), it.resource)
+            assertNull(it.historicalSource)
+            assertEquals(PrototypePlaybackKind.LIVE, it.kind)
         }
+        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
+            selection(channelUrl, allowEpisodes = false))
+        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
+            selection("https://abema.tv/channels/sumo/slots/A63wR6irBEskZM"))
         val episodeUrl = "https://abema.tv/video/episode/394-72_s10_p845"
         val episode = (selection(episodeUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
         episode.feeds.forEach {

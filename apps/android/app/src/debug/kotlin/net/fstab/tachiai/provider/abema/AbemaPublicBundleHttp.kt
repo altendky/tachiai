@@ -1,5 +1,6 @@
 package net.fstab.tachiai.provider.abema
 
+import java.io.InputStream
 import java.io.ByteArrayOutputStream
 import java.net.CookieHandler
 import java.net.URL
@@ -12,7 +13,9 @@ internal class AbemaPublicBundleHttp(
     private val identity: AbemaPublicBundleIdentity = AbemaPublicBundleIdentity(),
     private val open: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
-    private val onFailure: (Exception) -> Unit = {},
+    private val onFailure: (Throwable) -> Unit = {},
+    private val onConnectionOwned: (HttpsURLConnection) -> Unit = {},
+    private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
 ) : AutoCloseable {
     private val lock = Any()
     private var closed = false
@@ -42,6 +45,7 @@ internal class AbemaPublicBundleHttp(
             }
             val request = open(identity.uri.toURL())
             connection = request
+            onConnectionOwned(request)
             synchronized(lock) {
                 checkActive()
                 active = request
@@ -62,7 +66,8 @@ internal class AbemaPublicBundleHttp(
             if (request.contentLengthLong > identity.maximumBytes ||
                 (request.contentLengthLong >= 0 && request.contentLengthLong != identity.expectedBytes.toLong()))
                 throw AbemaBundleException(AbemaBundleFailure.SIZE_REFUSED)
-            val bytes = request.inputStream.use { input ->
+            val input = openInput(request)
+            val bytes = try {
                 val output = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
                 while (true) {
@@ -75,6 +80,10 @@ internal class AbemaPublicBundleHttp(
                     output.write(buffer, 0, count)
                 }
                 output.toByteArray()
+            } finally {
+                try { input.close() } catch (error: Throwable) {
+                    runCatching { onFailure(error) }; throw error
+                }
             }
             checkActive()
             identity.verify(bytes)
@@ -100,7 +109,7 @@ internal class AbemaPublicBundleHttp(
 
     private fun disconnect(connection: HttpsURLConnection?) {
         try { connection?.disconnect() }
-        catch (error: Exception) {
+        catch (error: Throwable) {
             runCatching { onFailure(error) }
             throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
         }

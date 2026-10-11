@@ -26,6 +26,9 @@ internal class BoundedMediaRequests(
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val onManifestRejection: (Int, String) -> Unit = { _, _ -> },
     private val onFailure: NativeFailureObserver = { _, _ -> },
+    private val onConnectionOwned: (HttpsURLConnection) -> Unit = {},
+    private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
+    private val openErrorInput: (HttpsURLConnection) -> InputStream? = { it.errorStream },
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
@@ -84,6 +87,7 @@ internal class BoundedMediaRequests(
                 require(CookieHandler.getDefault() == null)
                 val request = openConnection(uri.toURL())
                 connection = request
+                onConnectionOwned(request)
                 active.add(request)
                 checkActive()
                 request.instanceFollowRedirects = false // All redirects fail closed, before any next hop.
@@ -106,18 +110,24 @@ internal class BoundedMediaRequests(
                     // Only bounded manifest-404 classification. No redirects, raw
                     // body logging, decoder exposure or provider knowledge here.
                     if (type == C.DATA_TYPE_MANIFEST && status == 404 && request.contentLengthLong <= 4096) {
-                        val body = request.errorStream?.use { errorInput ->
-                            val bytes = ByteArrayOutputStream()
-                            val buffer = ByteArray(512)
-                            while (true) {
-                                checkActive()
-                                val count = errorInput.read(buffer)
-                                checkActive()
-                                if (count < 0) break
-                                if (bytes.size() + count > 4096) throw IOException()
-                                bytes.write(buffer, 0, count)
+                        val errorInput = openErrorInput(request)
+                        val body = errorInput?.let {
+                            try {
+                                val bytes = ByteArrayOutputStream()
+                                val buffer = ByteArray(512)
+                                while (true) {
+                                    checkActive()
+                                    val count = errorInput.read(buffer)
+                                    checkActive()
+                                    if (count < 0) break
+                                    if (bytes.size() + count > 4096) throw IOException()
+                                    bytes.write(buffer, 0, count)
+                                }
+                                bytes.toString("UTF-8")
+                            } finally {
+                                try { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { errorInput.close() } }
+                                catch (_: Throwable) { throw IOException("Native media cleanup unconfirmed") }
                             }
-                            bytes.toString("UTF-8")
                         } ?: ""
                         checkActive()
                         onManifestRejection(status, body)
@@ -129,7 +139,7 @@ internal class BoundedMediaRequests(
                     report(NativeMediaEvent.LIMIT_REACHED); throw IOException()
                 }
                 source = uri
-                input = request.inputStream
+                input = openInput(request)
                 readBytes = 0
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
                 // Only real Media3 opens report transfers; openUri remains the
@@ -168,20 +178,29 @@ internal class BoundedMediaRequests(
         }
         override fun close() {
             val request = connection
-            connection = null
-            try { input?.close() } catch (error: Exception) {
-                runCatching { onFailure(NativeFailureStage.MEDIA_DISCONNECT, error) }
-            }
-            input = null
-            try {
-                observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { request?.disconnect() }
-            } finally {
-                if (request != null) active.remove(request)
+            val stream = input
+            var streamClosed = stream == null
+            var disconnected = request == null
+            try { closeNativeResources(
+                { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) {
+                    stream?.close(); streamClosed = true
+                } },
+                { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) {
+                    request?.disconnect(); disconnected = true
+                } },
+                {
+                if (streamClosed) input = null
+                if (disconnected) { connection = null; if (request != null) active.remove(request) }
                 source = null
                 if (transferOpen) {
                     transferOpen = false
                     transferEnded()
                 }
+                },
+            ) } catch (_: Throwable) {
+                // Loader cleanup catches IOException only. Keep the original
+                // privately observed/retained; never let its Error/text escape.
+                throw IOException("Native media cleanup unconfirmed")
             }
         }
     }

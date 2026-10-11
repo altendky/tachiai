@@ -12,6 +12,7 @@
   let stopped = false;
   let guest;
   let episode;
+  let challengeStarted;
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const stop = (category = 'NONE') => {
     stopped = true;
@@ -22,11 +23,19 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
   };
-  const alive = () => { if (stopped) throw new Error(); };
+  const alive = () => {
+    if (stopped) throw new Error();
+    if (challengeStarted !== undefined) {
+      const elapsed = performance.now() - challengeStarted;
+      if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 45000) {
+        failure = 'CHALLENGE_TIMEOUT'; throw new Error();
+      }
+    }
+  };
   window.addEventListener('error', event => { event.preventDefault(); stop('RUNTIME'); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop('RUNTIME'); });
   // Unchanged module factories may not make their own network requests. This
-  // closure alone owns the bounded guest and optional profile/episode requests.
+  // closure alone owns the bounded guest and optional metadata/challenge requests.
   window.fetch = () => { stop('POLICY'); return Promise.reject(new Error()); };
   // The verified guest DTO is a flat string object. Refuse duplicates (including
   // escaped key spellings), nested/unknown fields and trailing data rather than
@@ -119,6 +128,30 @@
       typeof reply.profile.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.profile.userId)) throw new Error();
     return reply.profile.userId;
   }
+  function validChallengeUri(value) {
+    if (typeof value !== 'string' || !/^[\x21-\x7e]{1,2048}$/.test(value) || value.includes('#') || value.includes('\\')) return false;
+    try {
+      const decoded = decodeURIComponent(value);
+      if (/[\p{Cc}\p{Cf}\\]/u.test(decoded)) return false;
+      const uri = new URL(value);
+      // A conservative local restriction, not an established provider path or
+      // navigation schema. Nothing fetches, launches or exports these URIs.
+      return uri.href === value && uri.origin === 'https://abema.tv' && uri.protocol === 'https:' &&
+        uri.hostname === 'abema.tv' && uri.port === '' && uri.username === '' && uri.password === '' && uri.hash === '';
+    } catch { return false; }
+  }
+  function parseChallengeText(text) {
+    const reply = parseBoundedJsonText(text, true);
+    const fields = ['device_code', 'user_code', 'verification_uri', 'verification_uri_complete', 'expires_in'];
+    if (!reply || Array.isArray(reply) || typeof reply !== 'object' || Object.keys(reply).length !== fields.length ||
+      !fields.every(key => Object.hasOwn(reply, key)) ||
+      typeof reply.device_code !== 'string' || !/^[\x21-\x7e]{1,2048}$/.test(reply.device_code) ||
+      typeof reply.user_code !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(reply.user_code) ||
+      !validChallengeUri(reply.verification_uri) || !validChallengeUri(reply.verification_uri_complete) ||
+      !Number.isSafeInteger(reply.expires_in) || reply.expires_in < 1 || reply.expires_in > 3600) throw new Error();
+    // No projection: all five private fields are discarded with this stack.
+    // This local lifetime ceiling never extends the monotonic attempt budget.
+  }
   const diagnosticEpisodeId = '394-72_s10_p8529';
   let episodeId;
   function parseEpisodeText(text) {
@@ -183,15 +216,15 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const episodeRequest = prefix === 'EPISODE_';
-    let refused = episodeRequest ? 'TRANSPORT' : 'HTTP';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_';
+    let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
       const reply = await nativeFetch(url, { ...options, credentials: 'omit', cache: 'no-store',
         redirect: 'error', signal: controller.signal,
       });
       withinDeadline();
-      if (episodeRequest) {
+      if (categorizedRequest) {
         refused = 'RESPONSE';
         const status = reply?.status;
         if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error();
@@ -224,7 +257,7 @@
       try { return project(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
       finally { bytes.fill(0); }
     } catch {
-      if (!stopped) failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
+      if (!stopped && failure !== 'CHALLENGE_TIMEOUT') failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
       throw new Error();
     } finally {
       for (const part of parts) part.fill(0);
@@ -235,7 +268,7 @@
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         resourceId !== undefined)) {
       stop('RUNTIME'); return;
@@ -250,11 +283,21 @@
     (async () => {
       try {
         state = 'MODULES';
+        if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+          challengeStarted = performance.now(); alive();
+        }
         const load = loadModules();
         let apiOrigin;
+        let challengeEndpoint;
         if (operation !== 'GUEST_ONLY') {
           apiOrigin = load(74284).FH?.apiOrigin;
           if (apiOrigin !== 'https://api.p-c3-e.abema-tv.com') { failure = 'POLICY'; throw new Error(); }
+        }
+        if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+          challengeEndpoint = new URL(load(24968).T.OAUTH_DEVICE_AUTHORIZATION, location.origin).href;
+          if (challengeEndpoint !== 'https://abema.tv/api/auth/oauth/device/authorization') {
+            failure = 'CHALLENGE_POLICY'; throw new Error();
+          }
         }
         const deviceId = crypto.randomUUID();
         if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(deviceId)) throw new Error();
@@ -280,7 +323,7 @@
         if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
         guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
         failure = 'NONE';
-        if (operation === 'VERIFY_PROFILE') {
+        if (operation === 'VERIFY_PROFILE' || operation === 'VERIFY_DEVICE_AUTHORIZATION') {
           state = 'PROFILE';
           const profileId = await boundedReply(apiOrigin + '/v1/users/' + guest.userId,
             { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
@@ -290,7 +333,24 @@
           if (profileId !== guest.userId) throw new Error();
           // Same server profile is the future client binding, still a guest.
           guest = Object.freeze({ ...guest, clientId: profileId });
-          failure = 'NONE'; state = 'GUEST_PROFILE_BOUND';
+          failure = 'NONE';
+          if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+            state = 'CHALLENGE'; failure = 'CHALLENGE_POLICY';
+            const payload = load(2953).pG.toJSON({ clientId: guest.clientId });
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+              Object.keys(payload).length !== 1 || !Object.hasOwn(payload, 'client_id') || payload.client_id !== guest.clientId) throw new Error();
+            const challengeBody = stringify(payload);
+            if (typeof challengeBody !== 'string' || new TextEncoder().encode(challengeBody).byteLength > 1024) throw new Error();
+            const wire = parseBoundedJsonText(challengeBody, true);
+            if (!wire || Array.isArray(wire) || typeof wire !== 'object' || Object.keys(wire).length !== 1 ||
+              !Object.hasOwn(wire, 'client_id') || wire.client_id !== guest.clientId) throw new Error();
+            alive(); failure = 'NONE';
+            await boundedReply(challengeEndpoint, { method: 'POST',
+              headers: { accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer ' + guest.accessToken },
+              body: challengeBody }, parseChallengeText, 'CHALLENGE_');
+            alive(); guest = undefined;
+            failure = 'NONE'; state = 'CHALLENGE_VALIDATED_AND_DISCARDED';
+          } else state = 'GUEST_PROFILE_BOUND';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';
           episode = await boundedReply(apiOrigin + '/v1/video/programs/' + episodeId,
@@ -300,7 +360,8 @@
         } else state = 'PREPARED';
         // Identity/grant remain closure-owned until stop discards them. A native
         // policy URI transiently includes the profile ID. No account connection,
-        // challenge, refresh or playback is implied; strings are not wipeable.
+        // durable account access, refresh or playback is implied; immutable
+        // strings are not wipeable. Challenge responses are never projected.
       } catch { if (!stopped) stop(failure === 'NONE' ? 'RUNTIME' : failure); }
     })();
   };

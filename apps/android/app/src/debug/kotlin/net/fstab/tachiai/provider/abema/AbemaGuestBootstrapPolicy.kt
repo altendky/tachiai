@@ -2,12 +2,13 @@ package net.fstab.tachiai.provider.abema
 
 import java.net.URI
 
-internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE }
+internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION }
 
 internal object AbemaGuestBootstrapPolicy {
     const val PROFILE_SUFFIX = "abema-guest-bootstrap"
     const val PAGE = "https://abema.tv/_tachiai/guest/index.html"
     const val GUEST = "https://abema.tv/api/auth/login/guest"
+    const val CHALLENGE = "https://abema.tv/api/auth/oauth/device/authorization"
     const val PROFILE_ORIGIN = "https://api.p-c3-e.abema-tv.com"
     const val EPISODE_ID = "394-72_s10_p8529"
     const val EPISODE = "$PROFILE_ORIGIN/v1/video/programs/$EPISODE_ID"
@@ -34,6 +35,7 @@ internal object AbemaGuestBootstrapPolicy {
             AbemaGuestBootstrapOperation.VERIFY_PROFILE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/;")
             AbemaGuestBootstrapOperation.VERIFY_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $EPISODE;")
             AbemaGuestBootstrapOperation.FETCH_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${episodeUrl(checkNotNull(episodeId))};")
+            AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE;")
         }
     }
 
@@ -55,7 +57,7 @@ internal object AbemaGuestBootstrapPolicy {
         episodeId: String? = null): Boolean {
         if (!validResource(operation, episodeId)) return false
         val selectedEpisodeId = episodeId ?: EPISODE_ID
-        if (operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE && !mainFrame && isProfile(uri))
+        if (operation in setOf(AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) && !mainFrame && isProfile(uri))
             return method in setOf("GET", "OPTIONS")
         if (operation in setOf(AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE) &&
             !mainFrame && isEpisode(uri, selectedEpisodeId))
@@ -65,6 +67,7 @@ internal object AbemaGuestBootstrapPolicy {
             uri.rawPath != uri.path || uri.normalize() != uri) return false
         if (mainFrame) return method == "GET" && uri.toString() == PAGE
         if (uri.toString() == GUEST) return method == "POST"
+        if (uri.toString() == CHALLENGE) return operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION && method == "POST"
         return method == "GET" && uri.toString() == "https://abema.tv${uri.path}" &&
             uri.path in setOf("/_tachiai/guest/control.js", "/_tachiai/guest/support.js",
                 "/_tachiai/guest/utilities.js", "/_tachiai/guest/bundle.js",
@@ -85,6 +88,7 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
     private var guest = false
     private var profile = false
     private var options = false
+    private var challenge = false
     private var profileUri: URI? = null
 
     @Synchronized fun admit(uri: URI, mainFrame: Boolean, method: String, headers: Map<String, String> = emptyMap()): Boolean {
@@ -92,6 +96,9 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
         if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST) {
             if (guest) return false
             guest = true
+        } else if (uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE) {
+            if (!guest || !profile || profileUri == null || challenge) return false
+            challenge = true
         } else if (AbemaGuestBootstrapPolicy.isProfile(uri) || AbemaGuestBootstrapPolicy.isEpisode(uri, episodeId)) {
             if (!guest || (profileUri != null && profileUri != uri)) return false
             if (method == "OPTIONS") {

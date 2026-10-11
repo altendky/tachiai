@@ -47,24 +47,37 @@ internal class BoundedNativePlayer(
     canRequest: () -> Boolean = { true },
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val onFailure: NativeFailureObserver = { _, _ -> },
+    onCleanupOwner: (NativeCleanupReceipt) -> Unit = {},
+    onCleanupUnconfirmed: () -> Unit = {},
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
     private var released = false
+    private val cleanup = NativeCleanupReceipt(onCleanupUnconfirmed).also(onCleanupOwner)
     private val requests = BoundedMediaRequests(budget, allowedUri, onEvent,
         canRequest = { canRequest() && (acceptedPlaylist.get() || System.nanoTime() / 1_000_000 < acceptanceDeadlineMs) },
-        onManifestRejection = onManifestRejection, openConnection = openConnection, onFailure = onFailure)
+        onManifestRejection = onManifestRejection, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
+        openInput = { request -> cleanup.input { request.inputStream } },
+        openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onFailure = { stage, error ->
+            if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
+            onFailure(stage, error)
+        })
+        .also { owned -> cleanup.own(10) { owned.close() } }
     val player: ExoPlayer
-    private val quality = NativePlayerQuality(context)
+    private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40) {
+        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { owned.close() }
+    } }
 
     init {
         // ExoPlayer itself logs cause chains containing signed URIs. Do this before
         // construction and leave it off for this process; no signed failure can leak
         // from a late loader callback after release. Our closed events remain visible.
         Log.setLogLevel(Log.LOG_LEVEL_OFF)
+        try {
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
-            .build()
+            .build().also { owned -> cleanup.ownPlayer(owned, { released }, onFailure) }
         quality.bind(player)
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), handleAudioFocus)
@@ -92,9 +105,15 @@ internal class BoundedNativePlayer(
             override fun onPlayerError(error: PlaybackException) {
                 if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
                 // Never report error.message, cause, MediaItem or signed source.
-                if (!released) { onEvent(NativeMediaEvent.PLAYER_FAILED, error.errorCode); close() }
+                if (!released) { onEvent(NativeMediaEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(onFailure, ::close) }
             }
         })
+        } catch (error: Throwable) {
+            released = true
+            budget.stop()
+            try { cleanup.close() } catch (_: Throwable) { /* The owner retains the failed receipt. */ }
+            throw error
+        }
     }
 
     private val ticker = object : Runnable {
@@ -102,7 +121,7 @@ internal class BoundedNativePlayer(
             if (released) return
             if (!budget.active || (!acceptedPlaylist.get() && System.nanoTime() / 1_000_000 >= acceptanceDeadlineMs)) {
                 onEvent(NativeMediaEvent.LIMIT_REACHED, 0)
-                close()
+                cleanup.stopInternally(onFailure, ::close)
             } else handler.postDelayed(this, 250)
         }
     }
@@ -170,14 +189,11 @@ internal class BoundedNativePlayer(
         Looper.myLooper() == player.applicationLooper && timingActive() && quality.request(player, preferences)
 
     override fun close() {
-        if (released) return
+        if (released) { cleanup.close(); return }
         released = true
+        cleanup.seal()
         handler.removeCallbacks(ticker)
-        closeNativeResources(
-            { requests.close() },
-            { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } },
-            { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } },
-        )
+        cleanup.close()
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

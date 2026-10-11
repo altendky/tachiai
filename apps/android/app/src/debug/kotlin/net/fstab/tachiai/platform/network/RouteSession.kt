@@ -106,6 +106,15 @@ internal class RouteSession private constructor(
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.PLAYBACK)
 
+        // Cached viewer ownership is established before post-create validation
+        // or cancellation rollback can fail. Existing factories are unchanged.
+        fun createRetained(profile: ConnectionProfile?, preparation: RoutePreparation,
+            ownBackend: (RouteBackend) -> RouteBackend,
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.PLAYBACK, ownBackend)
+
         // Closed metadata/OAuth purpose. Both System and imported routes enforce
         // these hosts; playback's historical policy is unchanged.
         fun createTwitchCatalog(profile: ConnectionProfile?,
@@ -175,6 +184,7 @@ internal class RouteSession private constructor(
         private fun createOwned(profile: ConnectionProfile?, preparation: RoutePreparation,
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend,
             purpose: RoutePurpose,
+            ownBackend: (RouteBackend) -> RouteBackend = { it },
         ): RouteSession {
             preparation.checkActive()
             if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics, purpose)
@@ -194,6 +204,7 @@ internal class RouteSession private constructor(
                         RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> "abema.tv,api.p-c3-e.abema-tv.com"
                         RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
                     }))
+                backend = ownBackend(checkNotNull(backend))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
                 RouteSession(backend, username, password, realm, preparation.diagnostics, purpose)

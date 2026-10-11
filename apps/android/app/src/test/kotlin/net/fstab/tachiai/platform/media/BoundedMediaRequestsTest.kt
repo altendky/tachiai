@@ -224,4 +224,48 @@ class BoundedMediaRequestsTest {
         assertFalse(connection.errorRead)
         assertTrue(connection.disconnected)
     }
+
+    @Test fun streamCloseErrorStillDisconnectsAndCannotBeLaunderedByOuterReceipt() {
+        var closes = 0; val error = AssertionError("fixture")
+        val stream = object : ByteArrayInputStream(byteArrayOf(1)) {
+            override fun close() { closes++; if (closes == 1) throw error }
+        }
+        val connection = Connection(uri.toURL(), stream = stream)
+        val receipt = NativeCleanupReceipt()
+        val stages = mutableListOf<NativeFailureStage>()
+        val failures = mutableListOf<Throwable>()
+        val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true }, { _, _ -> },
+            openConnection = { receipt.allocate(20, { connection }) { it.disconnect() } },
+            openInput = { receipt.input { it.inputStream } },
+            onFailure = { stage, failure -> stages.add(stage); failures.add(failure); receipt.failed() })
+        val source = requests.create(C.DATA_TYPE_MANIFEST); source.openUri(uri)
+        val outward = assertThrows(IOException::class.java) { source.close() }
+        assertEquals("Native media cleanup unconfirmed", outward.message)
+        assertNull(outward.cause); assertTrue(outward.suppressed.isEmpty())
+        assertTrue(connection.disconnected); assertEquals(listOf(NativeFailureStage.MEDIA_DISCONNECT), stages)
+        assertSame(error, failures.single())
+        val active = BoundedMediaRequests::class.java.getDeclaredField("active").apply { isAccessible = true }
+        assertTrue((active.get(requests) as Set<*>).isEmpty())
+        assertThrows(IOException::class.java) { source.close() }
+        assertThrows(IOException::class.java) { receipt.close() }
+        assertEquals(1, closes); assertFalse(receipt.confirmed)
+    }
+
+    @Test fun rejectedManifestStreamCloseErrorIsPrivatelyObservedAndCannotEscapeLoader() {
+        val error = AssertionError("Synthetic private close detail")
+        val receipt = NativeCleanupReceipt()
+        val seen = mutableListOf<Throwable>()
+        val connection = Connection(uri.toURL(), status = 404)
+        val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true }, { _, _ -> },
+            openConnection = { receipt.allocate(20, { connection }) { it.disconnect() } },
+            openErrorInput = { receipt.optionalInput { object : ByteArrayInputStream(byteArrayOf()) {
+                override fun close() { throw error }
+            } } }, onFailure = { _, failure -> seen.add(failure); receipt.failed() })
+        val outward = assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MANIFEST).openUri(uri) }
+        assertEquals("Native media request failed", outward.message)
+        assertNull(outward.cause); assertTrue(outward.suppressed.isEmpty())
+        assertSame(error, seen.single()); assertTrue(connection.disconnected)
+        assertThrows(IOException::class.java) { receipt.close() }; assertFalse(receipt.confirmed)
+    }
+
 }

@@ -352,6 +352,55 @@ passed, including actual HLS/DASH player release after injected transport
 failures and diagnostic retention. These observations do not qualify phone
 playback, audio, performance or provider reliability.
 
+## Cached viewer cleanup ownership
+
+The cached viewer uses a process-owned run acquired before route preparation.
+It retains created routes, both feed sessions and helper contexts independently
+of the Activity. Routes are registered before a worker delivers them to the
+Activity; a helper is registered immediately after WebView creation, before
+configuration can fail. Activity recreation or a cancelled preparation callback
+cannot discard the last owning reference.
+
+Disposal invalidates admission before invoking session callbacks. Confirmed
+helper WebView destruction is a separate receipt from general cleanup success.
+Only confirmed destruction permits proxy clearing, and only its matching
+acknowledgment permits backend closure. Preparation must also have finished
+before the routes can close. Each distinct route closes once after both slots
+release it; one successfully closed failed slot can leave a healthy sibling
+playing under the original shared deadline.
+
+Native cleanup receipts own allocations before their factories can run and seal
+new allocation before teardown. Work still allocating resources cannot produce
+confirmed cleanup. Input-stream and connection close failures remain sticky;
+all other cleanup steps are still attempted. A normally returning player release
+also needs the absence of a release-time error. Session confirmation reads the
+actual receipts before releasing route ownership.
+
+Pending completion and known failure are separate states. A known cleanup
+failure stops the group and starts bounded teardown immediately, while resources
+still completing cleanup remain owned. Worker and internal player stop callbacks
+contain cleanup failures so the queued safe recovery response can run.
+
+Unconfirmed destruction, proxy dispatch or acknowledgment, cancellation or
+backend closure retains the run and blocks replacement admission. A timeout or
+late callback cannot manufacture cleanup confirmation. This state survives
+Activity recreation in the same process and preserves the existing explicit
+Ignore/Restart recovery flow; no automatic process termination or route
+fallback is added. The separate guest runtime and ordinary noncached viewer
+retain their own lifecycle contracts.
+
+Implementation and verification are tracked in
+[#161](https://github.com/altendky/tachiai/issues/161). On 2026-10-11, the integrated
+build passed 1,990 JVM checks, 46 bootstrap/helper JavaScript checks, lint, release
+isolation and shared debug certificate verification. Seven selected synthetic
+Android checks passed on `tachiai-dev` (Android 16/API 36, x86-64, WebView
+133.0.6943.137), including real unstarted HLS/DASH player release and injected
+in-memory owner/route/player receipts. These checks used no provider requests,
+real proxy changes, saved-store writes or recovery reset. Encrypted saved records
+were byte-for-byte unchanged, and the normal app entry was restored. Synthetic
+ownership checks do not reproduce a provider-specific cleanup failure or establish
+physical-device playback, audio or performance.
+
 ## Source assignment follow-up
 
 The subsequent provider-tree picker groups the options under ABEMA and Twitch

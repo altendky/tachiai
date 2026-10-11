@@ -783,6 +783,28 @@ still fail when source resolution is not implemented; an ad-mode label alone is
 not treated as evidence of a server-enforced completion receipt.
 The existing shared foreground budget and one-exchange-per-slot limits remain.
 
+The cached viewer's process-owned run retains route preparation, both feed
+sessions, helper contexts and created routes before the Activity can receive or
+discard them. Helper registration precedes WebView configuration. Cleanup
+requires confirmed helper destruction before proxy clearing and matching clear
+acknowledgment before closing a distinct backend once; cancelled preparation
+must finish before releasing its routes. Uncertain destruction, dispatch,
+acknowledgment or backend closure strongly retains the run and blocks replacement
+admission across Activity recreation. Late or repeated callbacks do not establish
+confirmation or release a replacement run. A safely closed failed slot can leave
+its sibling playing under the original deadline; uncertainty stops the group.
+Native receipts seal allocation before teardown and retain resources produced
+by work already in flight. Failed stream/connection closure and a player-release
+timeout remain unconfirmed even if a later close returns normally. Receipt
+confirmation is required before route ownership can be released.
+Cleanup failures are contained at cached-worker and internal player-stop
+boundaries. Media-facing stream close exposes a fixed exception without a raw
+provider cause or message; private receipt failure still blocks confirmation.
+The existing explicit recovery actions remain, with no automatic process kill,
+route fallback or new provider/media/license permission. The ordinary noncached
+viewer and isolated guest runtime retain separate lifecycle contracts. See the
+[cleanup verification boundaries](prototype-ux.md#cached-viewer-cleanup-ownership).
+
 The user subsequently approved the single-label `*-abematv.akamaized.net`
 media-host family for this cached prototype only. Source path/query restrictions
 and exact manifest-declared membership still apply; other network routes and

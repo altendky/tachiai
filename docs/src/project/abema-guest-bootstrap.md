@@ -90,6 +90,29 @@ callbacks cannot cancel a replacement run; callback removal, cleanup admission
 completion and outcome publication occur in one main-thread turn. Successful preparation also discards the guest
 and ends the runtime before reporting **Guest prepared**.
 
+## Exact series-page catalog operation
+
+The shared catalog's explicit series-children operation under
+[#176](https://github.com/altendky/tachiai/issues/176) uses its own immutable
+series/page request in the isolated guest process. It uses fresh guest setup
+and one exact reviewed series-program GET, fixed ascending sequence order,
+20 entries and a bounded requested offset. It creates no device-authorization
+challenge, opens no browser and adopts no existing-account grant.
+
+Same-UID IPC binds the exact provider instance and captured route proof to the
+parent/page, original deadline, foreground heartbeat and cancellation nonce.
+Worker owner checks and confirmed WebView/proxy/backend cleanup precede public
+page publication. Only normalized exact episodes and a bounded opaque version
+leave the runtime; private guest fields and raw provider responses remain
+unexposed. Wrong parents, ambiguous data, unknown version shape and stale
+completion refuse rather than choose a different episode or route.
+
+Source/fixture checks are distinct from actual fresh-guest and versioned-paging
+acceptance. Device checks are separately opt-in and preserve existing records;
+no persistent-device operation interrupts pending provider-controlled account
+approval. The operation remains independent of existing-account My List and
+History access.
+
 ## Optional guest profile binding
 
 ### Private challenge-free account validation

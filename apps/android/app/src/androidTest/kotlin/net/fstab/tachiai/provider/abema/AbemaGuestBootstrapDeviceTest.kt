@@ -70,6 +70,14 @@ class AbemaGuestBootstrapDeviceTest {
             ownedRuntime("FETCH_EPISODE", "EXACT_EPISODE_METADATA", 2, id)
     }
 
+    @Test fun actualOwnedJavaScriptProjectsOnlyTwoRequestedSeriesPagesWithNetworkingBlocked() {
+        for (id in listOf("fixture-series-A", "fixture-series-B"))
+            ownedRuntime("FETCH_SERIES", "EXACT_SERIES_PAGE", 2,
+                seriesRequest = AbemaSeriesPageRequest(id))
+        ownedRuntime("FETCH_SERIES", "EXACT_SERIES_PAGE", 2,
+            seriesRequest = AbemaSeriesPageRequest("fixture-series-A", 20, "v opaque+1"))
+    }
+
     @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
     }
@@ -88,17 +96,29 @@ class AbemaGuestBootstrapDeviceTest {
         ownedRuntime("OBSERVE_DEVICE_TOKEN", AbemaDeviceTokenObservation.STATE, 4, tokenStatus = 200)
     }
 
-    private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null, tokenStatus: Int = 400) {
+    private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null, tokenStatus: Int = 400,
+        seriesRequest: AbemaSeriesPageRequest? = null) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
         val nonce = "1234567890abcdef1234567890abcdef"
         val requested = resourceId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
         check(AbemaGuestBootstrapPolicy.validEpisodeId(requested))
+        val seriesUrl = JSONObject.quote(seriesRequest?.url() ?: "https://fixture.invalid/not-series")
+        val seriesReply = JSONObject.quote(JSONObject().put("version", seriesRequest?.version ?: "v opaque+1")
+            .put("programs", org.json.JSONArray().put(JSONObject().put("id", "fixture-episode-1")
+                .put("series", JSONObject().put("id", seriesRequest?.seriesId ?: "fixture-series"))
+                .put("episode", JSONObject().put("title", "Fixture episode"))
+                .put("source", JSONObject().put("url", "https://private.invalid/MUST_NOT_FETCH"))))
+            .put("offset", 999).toString())
+        val seriesArgument = seriesRequest?.let { request -> ", " + JSONObject().put("seriesId", request.seriesId)
+            .put("offset", request.offset).put("version", request.version ?: JSONObject.NULL).toString() }
+            ?: resourceId?.let { ", " + JSONObject.quote(it) } ?: ""
         val before = """
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === $seriesUrl) return new Response($seriesReply, {status:200});
               if (url === 'https://abema.tv/api/auth/oauth/device/token') {
                 if ($tokenStatus === 200) return {status:200, get body() {
                   window.tokenBodyOpened = true; throw new Error('PRIVATE_SUCCESS_MUST_NOT_OPEN');
@@ -131,7 +151,7 @@ class AbemaGuestBootstrapDeviceTest {
             window.__LOADABLE_LOADED_CHUNKS__.push([[2], {32746(module) { module.exports = {}; }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[3], {21470() { throw new Error('SOURCE_MUST_NOT_RUN'); }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[4], {75284() { throw new Error('DRM_MUST_NOT_RUN'); }}]);
-            window.__tachiaiStartGuestBootstrap('$nonce', '$operation'${resourceId?.let { ", '$it'" } ?: ""});
+            window.__tachiaiStartGuestBootstrap('$nonce', '$operation'$seriesArgument);
         """.trimIndent()
         val browser = AtomicReference<WebView>()
         instrumentation.runOnMainSync {
@@ -155,7 +175,7 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED",
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "EXACT_SERIES_PAGE", "CHALLENGE_VALIDATED_AND_DISCARDED",
                     "ACCOUNT_LINK_READY", "ACCOUNT_VALIDATION_READY", AbemaDeviceTokenObservation.STATE, "REFUSED")) break
                 Thread.sleep(50)
             }
@@ -199,6 +219,10 @@ class AbemaGuestBootstrapDeviceTest {
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
                   requests[1].options.redirect==='error',
+                series:requests.length===2 && requests[1].url===$seriesUrl &&
+                  requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
+                  requests[1].options.redirect==='error',
                 challenge:(requests.length===3 || requests.length===4) && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
                   requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[2].url==='https://abema.tv/api/auth/oauth/device/authorization' &&
@@ -223,10 +247,11 @@ class AbemaGuestBootstrapDeviceTest {
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
             assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK", "PREPARE_ACCOUNT_VALIDATION"), observed.getBoolean("profile"))
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
+            assertEquals(operation == "FETCH_SERIES", observed.getBoolean("series"))
             assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("challenge"))
             assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
             assertEquals(when (operation) {
-                "FETCH_EPISODE" -> "[\"status\",\"stop\",\"metadata\"]"
+                "FETCH_EPISODE", "FETCH_SERIES" -> "[\"status\",\"stop\",\"metadata\"]"
                 "PREPARE_ACCOUNT_LINK" -> "[\"status\",\"stop\",\"accountLink\"]"
                 "PREPARE_ACCOUNT_VALIDATION" -> "[\"status\",\"stop\",\"accountValidation\"]"
                 else -> "[\"status\",\"stop\"]"
@@ -244,6 +269,15 @@ class AbemaGuestBootstrapDeviceTest {
                 assertEquals("PRIVATE_EPISODE_TITLE", projection.getString("title"))
                 assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
                 assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH"))
+            } else if (operation == "FETCH_SERIES") {
+                val page = decodeAbemaSeriesProjection(checkNotNull(metadata), checkNotNull(seriesRequest))
+                assertNotNull(page); assertEquals(seriesRequest.seriesId, page!!.seriesId)
+                assertEquals(1, page.entries.size); assertEquals("fixture-episode-1", page.entries.single().resource.identity)
+                assertEquals(net.fstab.tachiai.provider.catalog.CatalogAvailability.UNKNOWN, page.entries.single().availability)
+                assertNull(page.entries.single().scheduledStartEpochMs)
+                assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
+                assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH"))
+                assertFalse(metadata.contains("offset"))
             } else assertNull(metadata)
             evaluate("window.__tachiaiGuest_$nonce.stop(); window.__tachiaiGuest_$nonce.status()")!!.let {
                 assertEquals("STOPPED", JSONObject(it).getString("state"))

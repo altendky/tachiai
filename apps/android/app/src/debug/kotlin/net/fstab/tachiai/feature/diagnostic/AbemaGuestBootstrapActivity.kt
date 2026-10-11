@@ -34,6 +34,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private lateinit var verifyProfile: Button
     private lateinit var verifyEpisode: Button
     private lateinit var verifyChallenge: Button
+    private lateinit var observeToken: Button
     private var instances: List<ProviderInstance> = emptyList()
     private var nonce: String? = null
 
@@ -60,6 +61,8 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_EPISODE) } }; host.addView(verifyEpisode)
         verifyChallenge = Button(this).apply { text = "Verify device authorization challenge"; isEnabled = false
             setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) } }; host.addView(verifyChallenge)
+        observeToken = Button(this).apply { text = "Observe one device-token response"; isEnabled = false
+            setOnClickListener { begin(AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) } }; host.addView(observeToken)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { cancel() } })
         host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
@@ -87,7 +90,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         if (!::start.isInitialized || !::runtime.isInitialized) return
         start.isEnabled = foreground.get() && instances.isNotEmpty() && !runtime.unavailable
         verifyProfile.isEnabled = start.isEnabled; verifyEpisode.isEnabled = start.isEnabled
-        verifyChallenge.isEnabled = start.isEnabled; choose.isEnabled = start.isEnabled
+        verifyChallenge.isEnabled = start.isEnabled; observeToken.isEnabled = start.isEnabled; choose.isEnabled = start.isEnabled
     }
     private fun outcome(category: String) {
         Log.d("TachiaiAbemaGuest", "outcome=$category")

@@ -41,6 +41,28 @@ internal object AbemaGuestRuntimeProcess {
     }
 }
 
+// One Preparation owns one route. The close claim is distinct from a successful
+// receipt because RouteSession's own seal is not proof that cleanup completed.
+internal class AbemaGuestRouteReceipt(private val closeRoute: (RouteSession) -> Unit = { it.close() }) {
+    val route = AtomicReference<RouteSession?>()
+    private val closed = AtomicBoolean()
+    private val closeClaimed = AtomicBoolean()
+    private val closeConfirmed = AtomicBoolean()
+    val cleanupConfirmed get() = !closed.get() ||
+        route.get() == null && (!closeClaimed.get() || closeConfirmed.get())
+    fun own(owned: RouteSession) {
+        route.set(owned)
+        if (closed.get()) closeOwned(owned)
+    }
+    private fun closeOwned(owned: RouteSession) {
+        if (!closeClaimed.compareAndSet(false, true)) return
+        closeRoute(owned)
+        closeConfirmed.set(true)
+        route.compareAndSet(owned, null)
+    }
+    fun close() { closed.set(true); route.get()?.let(::closeOwned) }
+}
+
 internal class AndroidAbemaGuestEnvironment(private val context: Context) : AbemaGuestRuntimeEnvironment {
     private val diagnostics = FailureDiagnostics.create(context)
     private val webRoute = AbemaWebViewRoute()
@@ -49,19 +71,17 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         override fun toString() = "AbemaGuestRuntimeOwner(redacted)"
     }
     private class Preparation(val preparing: RoutePreparation) : AbemaGuestRuntimePreparation {
-        val route = AtomicReference<RouteSession?>()
+        private val routeReceipt = AbemaGuestRouteReceipt()
+        val route get() = routeReceipt.route
         val download = AtomicReference<AbemaPublicBundleHttp?>()
-        private val closed = AtomicBoolean()
         override fun cancel() { preparing.cancel() }
         override fun cancelTransport() { download.get()?.close() }
-        override val cleanupConfirmed get() = preparing.cleanupConfirmed
-        fun own(route: RouteSession) {
-            this.route.set(route)
-            // A producer finishing after the bounded cleanup owns its late
-            // route. close() can only have been admitted after destroy/clear.
-            if (closed.get()) this.route.getAndSet(null)?.close()
-        }
-        override fun close() { closed.set(true); route.getAndSet(null)?.close() }
+        override val cleanupConfirmed get() = preparing.cleanupConfirmed && routeReceipt.cleanupConfirmed &&
+            download.get()?.cleanupConfirmed != false
+        // Late preparation after the cleanup seal closes its route through the
+        // same receipt. Busy/failed close keeps the actual route retained.
+        fun own(route: RouteSession) = routeReceipt.own(route)
+        override fun close() = routeReceipt.close()
     }
     private fun savedInstances() = providerInstanceStore(context).read { legacyProviderSettings(context) }
     private fun readSavedOwner(id: String) = readAbemaCatalogRouteOwner(id, ::savedInstances,
@@ -89,6 +109,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 RouteSession.createAbemaGuestEpisode(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.FETCH_SERIES -> RouteSession.createAbemaGuestSeries(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.FETCH_SLOT -> RouteSession.createAbemaGuestSlot(saved.profile, prepared.preparing)
+            AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> RouteSession.createAbemaGuestSchedule(saved.profile, prepared.preparing)
         }
         prepared.own(route)
         check(canRequest())
@@ -101,7 +122,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             prepared.download.set(http)
             try { files["/_tachiai/guest/$name.js"] = AbemaPublicBundleCache(File(context.cacheDir, "abema-helper-bundle"),
                 canRequest, identity).prepare(http::fetch).bytes }
-            finally { prepared.download.compareAndSet(http, null); http.close() }
+            finally { http.close(); prepared.download.compareAndSet(http, null) }
         }
         files["/_tachiai/guest/index.html"] = context.assets.open("abema/guest-bootstrap.html").use { it.readBytes() }
         files["/_tachiai/guest/control.js"] = context.assets.open("abema/guest-bootstrap.js").use { it.readBytes() }
@@ -163,7 +184,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                     if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE ||
                         uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN || AbemaGuestBootstrapPolicy.isProfile(uri) ||
                         AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) || uri.toString() == request.seriesRequest?.url() ||
-                        uri.toString() == request.slotRequest?.url()) return null
+                        uri.toString() == request.slotRequest?.url() ||
+                        request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE) return null
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                         200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(request.operation,
@@ -198,7 +220,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         }
         override fun metadata(callback: (String?) -> Unit) {
             check(request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE, AbemaGuestBootstrapOperation.FETCH_SERIES,
-                AbemaGuestBootstrapOperation.FETCH_SLOT))
+                AbemaGuestBootstrapOperation.FETCH_SLOT, AbemaGuestBootstrapOperation.FETCH_SCHEDULE))
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback)
         }
         override fun accountLink(callback: (String?) -> Unit) {

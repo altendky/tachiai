@@ -8,6 +8,10 @@ import java.net.CookieManager
 import java.net.URL
 import java.security.MessageDigest
 import java.security.cert.Certificate
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
 import org.junit.Test
@@ -49,6 +53,11 @@ class AbemaPublicBundleHttpTest {
         assertNull(error.message)
         assertNull(error.cause)
         assertEquals(0, error.stackTrace.size)
+    }
+
+    private fun assertOwned(http: AbemaPublicBundleHttp, connection: HttpsURLConnection) {
+        assertSame(connection, AbemaPublicBundleHttp::class.java.getDeclaredField("active").apply { isAccessible = true }.get(http))
+        assertFalse(http.cleanupConfirmed)
     }
 
     @Test fun `download uses exact GET verified pin and no credential headers`() {
@@ -192,11 +201,14 @@ class AbemaPublicBundleHttpTest {
             onFailure = { receipt.failed(); seen.add(it) })
         assertSame(error, assertThrows(AssertionError::class.java) { http.fetch() })
         assertTrue(connection.disconnected); assertSame(error, seen.single())
-        http.close()
+        assertOwned(http, connection)
+        assertNotNull(AbemaPublicBundleHttp::class.java.getDeclaredField("activeInput").apply { isAccessible = true }.get(http))
+        failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+        assertOwned(http, connection)
         assertThrows(IOException::class.java) { receipt.close() }
         assertFalse(receipt.confirmed); assertEquals(1, streamCloses)
     }
-    @Test fun disconnectErrorAfterActiveRemovalCannotBecomeConfirmedOnLaterSuccess() {
+    @Test fun failedDisconnectRetainsActualHandleAndCannotBecomeConfirmedOnRepeatedClose() {
         var disconnects = 0; val error = AssertionError("fixture")
         val connection = Connection(identity().uri.toURL(), bytes, status = 503,
             disconnectAction = { disconnects++; if (disconnects == 1) throw error })
@@ -207,9 +219,71 @@ class AbemaPublicBundleHttpTest {
             onFailure = { receipt.failed(); seen.add(it) })
         failure(AbemaBundleFailure.NETWORK_FAILED) { http.fetch() }
         assertFalse(connection.bodyRead); assertSame(error, seen.single())
-        http.close()
+        assertOwned(http, connection)
+        failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+        failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+        assertEquals(1, disconnects); assertOwned(http, connection); assertEquals(1, seen.size)
         assertThrows(IOException::class.java) { receipt.close() }
         assertEquals(2, disconnects); assertFalse(receipt.confirmed)
+        assertOwned(http, connection)
+    }
+
+    @Test fun heldBodyCloseRetainsActualHttpAndInputUntilTheBodyReceiptCompletes() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val disconnects = AtomicInteger()
+        val connection = Connection(identity().uri.toURL(), bytes, closeStream = {
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        }, disconnectAction = { disconnects.incrementAndGet() })
+        val http = AbemaPublicBundleHttp(identity = identity(), open = { connection })
+        val result = AtomicReference<Throwable?>()
+        val worker = Thread { try { http.fetch() } catch (error: Throwable) { result.set(error) } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertOwned(http, connection)
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+            assertOwned(http, connection); assertEquals(1, disconnects.get())
+            assertNotNull(AbemaPublicBundleHttp::class.java.getDeclaredField("activeInput").apply { isAccessible = true }.get(http))
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+            assertEquals(1, disconnects.get())
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive)
+            assertEquals(AbemaBundleFailure.CANCELLED, (result.get() as AbemaBundleException).category)
+            http.close(); assertTrue(http.cleanupConfirmed); assertEquals(1, disconnects.get())
+        } finally { release.countDown(); worker.join(5000) }
+    }
+
+    @Test fun heldDisconnectHasOneClaimAndConcurrentCloseCannotReleaseItsActualHttp() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val disconnects = AtomicInteger()
+        val connection = Connection(identity().uri.toURL(), bytes, disconnectAction = {
+            disconnects.incrementAndGet(); entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        })
+        val http = AbemaPublicBundleHttp(identity = identity(), open = { connection })
+        val result = AtomicReference<Throwable?>()
+        val worker = Thread { try { http.fetch() } catch (error: Throwable) { result.set(error) } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertOwned(http, connection)
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+            assertOwned(http, connection); assertEquals(1, disconnects.get())
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive); assertNull(result.get())
+            http.close(); assertTrue(http.cleanupConfirmed); assertEquals(1, disconnects.get())
+        } finally { release.countDown(); worker.join(5000) }
+    }
+
+    @Test fun closeDuringOpenCannotConfirmPendingOwnershipAndLateHttpIsClosedOnce() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val disconnects = AtomicInteger()
+        val connection = Connection(identity().uri.toURL(), bytes, disconnectAction = { disconnects.incrementAndGet() })
+        val http = AbemaPublicBundleHttp(identity = identity(), open = {
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); connection
+        })
+        val result = AtomicReference<Throwable?>()
+        val worker = Thread { try { http.fetch() } catch (error: Throwable) { result.set(error) } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            http.close(); assertFalse(http.cleanupConfirmed); assertEquals(0, disconnects.get())
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive)
+            assertEquals(AbemaBundleFailure.CANCELLED, (result.get() as AbemaBundleException).category)
+            http.close(); assertTrue(http.cleanupConfirmed); assertEquals(1, disconnects.get()); assertFalse(connection.bodyRead)
+        } finally { release.countDown(); worker.join(5000) }
     }
 
 }

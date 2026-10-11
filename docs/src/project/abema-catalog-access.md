@@ -43,7 +43,7 @@ subsequent approval above provides the current integration authority. See the
 
 | Feature | Official ABEMA behavior | Tachiai implementation boundary |
 | --- | --- | --- |
-| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local name/ID search and exact lookup use the bounded public channel endpoint below. Native timetable, video discovery and provider-supported external APIs remain unverified. |
+| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local channel name/ID search and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; its actual guest response remains unverified. Global search, genres and complete provider coverage are not implemented. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
 | My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |
@@ -225,6 +225,74 @@ storage/account isolation and process-wide WebView routing must be established
 before promising multiple independently connected ABEMA instances. Account
 connection must not repurpose fresh-guest native state or imply verified
 entitlement, collection access or playback merely from login success.
+
+### Public Schedule snapshot
+
+The public catalog under [#100](https://github.com/altendky/tachiai/issues/100)
+and [#101](https://github.com/altendky/tachiai/issues/101) offers **Schedule**
+alongside **Channels**, My List and History. Schedule uses a fresh guest rather
+than a saved account grant. Missing or unverified account collections do not
+block this public query. Search still filters the Channels snapshot by channel
+name/ID; Schedule does not claim global provider search or complete All coverage.
+
+The retained coherent
+[9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),
+[5306 timetable consumer](https://abema.tv/assets/compat/859be5dce9804d5d.5306.bundle.js)
+and [3194 slot model](https://abema.tv/assets/compat/4fa634e6d16c9c17.3194.bundle.js)
+establish a bearer GET at the reviewed modern API's `/v1/timetable/dataSet`.
+The raw root directly contains `slots`, `channels` and `availableDates`, without
+a `dataSet` envelope. Slot `id`, `channelId` and `title` establish exact broadcast
+identity and display text. Channel annotations use `id`/`name`; the consumer
+uses `yyyyMMdd` date strings and performs date/channel filtering locally.
+Optional division belongs to a provider context this slice has not established
+and is omitted. These are static first-party semantics, not an actual guest
+response, horizon guarantee or documented external API contract.
+
+The implementation makes one canonical timetable GET after fresh guest setup,
+with no server pagination, retry or renewal. A closed second operation reuses
+the existing private list service, runtime and captured instance/route owner.
+The request supplies no arbitrary URL or resource argument. Same-UID nonce,
+foreground heartbeat, original deadline, worker owner checks and confirmed
+WebView/proxy/backend cleanup guard publication. Provider bearer and raw
+document remain private; only normalized exact broadcast rows cross IPC.
+
+Whole-document parsing refuses duplicate JSON keys, duplicate/conflicting
+channel or slot IDs, malformed dates, invalid identity/title types, invalid
+UTF-8 and local bounds. Valid slot identities remain configurable when a
+channel/date annotation is missing; annotations never substitute a different
+channel or occurrence. Optional groups, timing, playback, regional policy,
+entitlement and progress fields are not projected. Every returned entry retains
+the existing `slot` / `channelId/slotId` BROADCAST resource with UNKNOWN
+availability and no schedule timestamp. The existing exact-slot refresh and
+explicit URL import retain their separate behavior.
+
+The raw admission ceilings are explicitly local: 8 MiB, depth 24, 300,000 JSON
+values and 20,000 items per array. They do not describe provider maxima and need
+an actual-response measurement. Projection retains at most 501 distinct rows
+in provider order, with a 256 KiB normalized IPC ceiling. Local pages contain
+100 rows and single-use snapshot continuations; restart, another query, lookup,
+refresh, access loss or close discards them. The real 501st row causes the shared
+500-result display cap to report truncation, instead of presenting a bounded
+prefix as exhaustive. Browsing never auto-adds or deletes configured choices.
+
+Owned JavaScript fixtures cover canonical dispatch, whole-response refusal,
+non-live retention, missing annotations, prefix/truncation, original deadlines
+and cancellation. Initial verification passed all 75 owned guest JavaScript cases and
+72 targeted JVM cases across Schedule, management-memory, IPC, policy/runtime
+and existing series regressions; instrumentation source compilation and scoped
+pre-commit checks also passed. No APK assembly or device observation is implied.
+A later review adds aggregate-node refusal, network-blocked Android Schedule
+and primitive IPC fixtures, plus a receipt for retained route cleanup; those
+Android additions require the combined verification. A separately opt-in
+`tachiaiReadOnlyAbemaSchedule` device fixture defaults to skipping before any
+protected store/service/UI access. Its one saved-route query checks the captured
+owner and encrypted-record hashes without account validation or persistent
+writes. Up to six local pages reuse the same snapshot/GET; the closed output
+records normalized count, display truncation and one validated public slot
+candidate after cleanup, preferring `sumo` when present in the retained prefix.
+It emits no exact raw byte size or provider date horizon. Actual guest compatibility, raw scalar types, response sizes and the
+available horizon remain unverified; Schedule does not settle those #100/#101
+criteria or exact-slot playback.
 
 ### Existing-account connection implementation
 

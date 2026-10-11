@@ -28,6 +28,32 @@ class AbemaEpisodeMetadataIpcDeviceTest {
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == "${it.targetContext.packageName}:abema_guest_bootstrap")
     }
+    @Test fun scheduleParcelKeepsClosedPrimitiveContractAndSharedListFacadeRefusesMainBeforePrivateReads() {
+        val instrumentation = guestInstrumentation()
+        val request = AbemaScheduleMetadataIpc.Start("a".repeat(32), "12345678-1234-1234-1234-123456789abc", "b".repeat(64), 46000)
+        val parcel = Parcel.obtain()
+        try {
+            parcel.writeBundle(AbemaScheduleMetadataIpc.start(request)); parcel.setDataPosition(0)
+            val restored = checkNotNull(parcel.readBundle(javaClass.classLoader))
+            val fields = checkNotNull(AbemaScheduleMetadataIpc.fields(restored))
+            val decoded = checkNotNull(AbemaScheduleMetadataIpc.decodeStart(fields, 1000))
+            assertEquals(request.nonce, decoded.nonce); assertEquals(request.instanceId, decoded.instanceId)
+            assertEquals(request.ownerProof, decoded.ownerProof); assertEquals(request.deadline, decoded.deadline)
+            assertNull(AbemaSeriesMetadataIpc.decodeStart(fields, 1000)); assertNull(AbemaSlotMetadataIpc.decodeStart(fields, 1000))
+            restored.putParcelable("raw", Bundle()); assertNull(AbemaScheduleMetadataIpc.fields(restored))
+        } finally { parcel.recycle() }
+        val info = instrumentation.targetContext.packageManager.getServiceInfo(
+            ComponentName(instrumentation.targetContext, AbemaSeriesMetadataService::class.java), 0)
+        assertFalse(info.exported); assertEquals("${instrumentation.targetContext.packageName}:abema_guest_bootstrap", info.processName)
+        var reads = 0
+        val client = AndroidAbemaSeriesMetadataClient(instrumentation.targetContext, request.instanceId, request.ownerProof,
+            { reads++; error("No private reads") }, { true })
+        try {
+            val result = AtomicReference<CatalogResult<AbemaScheduleSnapshot>>()
+            instrumentation.runOnMainSync { result.set(client.fetch()) }
+            assertEquals(CatalogFailure.TEMPORARY, (result.get() as CatalogResult.Failure).reason); assertEquals(0, reads)
+        } finally { client.close(); instrumentation.waitForIdleSync() }
+    }
     @Test fun slotParcelContractCannotBecomeAnEpisodeAndTypedFacadeRejectsOtherResourcesBeforePrivateReads() {
         val instrumentation = guestInstrumentation()
         val request = AbemaSlotMetadataIpc.Start("a".repeat(32), "12345678-1234-1234-1234-123456789abc",

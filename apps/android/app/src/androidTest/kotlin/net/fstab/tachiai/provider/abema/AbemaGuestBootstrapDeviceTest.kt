@@ -81,6 +81,9 @@ class AbemaGuestBootstrapDeviceTest {
         for (slot in listOf(AbemaSlotRequest("channel-A", "slot-A"), AbemaSlotRequest("channel-B", "slot-B")))
             ownedRuntime("FETCH_SLOT", "EXACT_SLOT_METADATA", 2, slotRequest = slot)
     }
+    @Test fun actualOwnedJavaScriptProjectsOnlyPublicScheduleIdentitiesWithNetworkingBlocked() {
+        ownedRuntime("FETCH_SCHEDULE", "SCHEDULE_SNAPSHOT", 2)
+    }
 
     @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
@@ -119,6 +122,11 @@ class AbemaGuestBootstrapDeviceTest {
                 .put("episode", JSONObject().put("title", "Fixture episode"))
                 .put("source", JSONObject().put("url", "https://private.invalid/MUST_NOT_FETCH"))))
             .put("offset", 999).toString())
+        val scheduleReply = JSONObject.quote(JSONObject().put("channels", org.json.JSONArray().put(JSONObject().put("id", "sumo").put("name", "Sumo")))
+            .put("availableDates", org.json.JSONArray().put("20261011"))
+            .put("slots", org.json.JSONArray().put(JSONObject().put("id", "slot-A").put("channelId", "sumo")
+                .put("title", "Future slot").put("startAt", 9999999999L)
+                .put("source", "https://private.invalid/MUST_NOT_FETCH"))).toString())
         val seriesArgument = slotRequest?.let { ", " + JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
             ?: seriesRequest?.let { request -> ", " + JSONObject().put("seriesId", request.seriesId)
             .put("offset", request.offset).put("version", request.version ?: JSONObject.NULL).toString() }
@@ -127,6 +135,7 @@ class AbemaGuestBootstrapDeviceTest {
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === '${AbemaGuestBootstrapPolicy.SCHEDULE}') return new Response($scheduleReply, {status:200});
               if (url === $slotUrl) return new Response($slotReply, {status:200});
               if (url === $seriesUrl) return new Response($seriesReply, {status:200});
               if (url === 'https://abema.tv/api/auth/oauth/device/token') {
@@ -185,7 +194,7 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "EXACT_SERIES_PAGE", "EXACT_SLOT_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED",
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "EXACT_SERIES_PAGE", "EXACT_SLOT_METADATA", "SCHEDULE_SNAPSHOT", "CHALLENGE_VALIDATED_AND_DISCARDED",
                     "ACCOUNT_LINK_READY", "ACCOUNT_VALIDATION_READY", AbemaDeviceTokenObservation.STATE, "REFUSED")) break
                 Thread.sleep(50)
             }
@@ -236,6 +245,9 @@ class AbemaGuestBootstrapDeviceTest {
                 slot:requests.length===2 && requests[1].url===$slotUrl && requests[1].options.method==='GET' &&
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' && requests[1].options.mode==='cors' &&
                   requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
+                schedule:requests.length===2 && requests[1].url==='${AbemaGuestBootstrapPolicy.SCHEDULE}' &&
+                  requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
                 challenge:(requests.length===3 || requests.length===4) && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
                   requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[2].url==='https://abema.tv/api/auth/oauth/device/authorization' &&
@@ -262,10 +274,11 @@ class AbemaGuestBootstrapDeviceTest {
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
             assertEquals(operation == "FETCH_SERIES", observed.getBoolean("series"))
             assertEquals(operation == "FETCH_SLOT", observed.getBoolean("slot"))
+            assertEquals(operation == "FETCH_SCHEDULE", observed.getBoolean("schedule"))
             assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("challenge"))
             assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
             assertEquals(when (operation) {
-                "FETCH_EPISODE", "FETCH_SERIES", "FETCH_SLOT" -> "[\"status\",\"stop\",\"metadata\"]"
+                "FETCH_EPISODE", "FETCH_SERIES", "FETCH_SLOT", "FETCH_SCHEDULE" -> "[\"status\",\"stop\",\"metadata\"]"
                 "PREPARE_ACCOUNT_LINK" -> "[\"status\",\"stop\",\"accountLink\"]"
                 "PREPARE_ACCOUNT_VALIDATION" -> "[\"status\",\"stop\",\"accountValidation\"]"
                 else -> "[\"status\",\"stop\"]"
@@ -287,6 +300,14 @@ class AbemaGuestBootstrapDeviceTest {
                 val value = JSONObject(checkNotNull(metadata)); val expectedSlot = checkNotNull(slotRequest)
                 assertEquals(3, value.length()); assertEquals(expectedSlot.slotId, value.getString("id"))
                 assertEquals(expectedSlot.channelId, value.getString("channelId")); assertEquals("Future slot", value.getString("title"))
+                assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
+                assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH")); assertFalse(metadata.contains("startAt"))
+            } else if (operation == "FETCH_SCHEDULE") {
+                val snapshot = decodeAbemaScheduleProjection(checkNotNull(metadata))!!
+                assertEquals(1, snapshot.entries.size); assertFalse(snapshot.truncated)
+                assertEquals(AbemaSlotRequest("sumo", "slot-A").resource, snapshot.entries.single().resource)
+                assertEquals(net.fstab.tachiai.provider.catalog.CatalogAvailability.UNKNOWN, snapshot.entries.single().availability)
+                assertNull(snapshot.entries.single().scheduledStartEpochMs)
                 assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
                 assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH")); assertFalse(metadata.contains("startAt"))
             } else if (operation == "FETCH_SERIES") {

@@ -83,9 +83,10 @@ internal class RouteSession private constructor(
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.ROUTE_DISCONNECT to {
                 connections.forEach { connection ->
-                    if (!diagnostics.cleanupAll(FailureStage.ROUTE_DISCONNECT) { connection.disconnect() }) failed = true
+                    if (diagnostics.cleanupAll(FailureStage.ROUTE_DISCONNECT) { connection.disconnect() })
+                        connections.remove(connection)
+                    else failed = true
                 }
-                connections.clear()
             },
             FailureStage.ROUTE_CANCEL_REQUESTS to { client?.dispatcher?.cancelAll() },
             FailureStage.ROUTE_CONNECTION_POOL to { client?.connectionPool?.evictAll() },
@@ -179,6 +180,15 @@ internal class RouteSession private constructor(
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_SLOT)
 
         fun createAbemaGuestSeries(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_SERIES)
+
+        // The same guest/list host pair; exact timetable URI and one-use GET
+        // admission belong to FETCH_SCHEDULE in the private runtime policy.
+        fun createAbemaGuestSchedule(profile: ConnectionProfile?,
             preparation: RoutePreparation = RoutePreparation(),
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
                 selected.protocol.createBackend(selected, security, preparation)

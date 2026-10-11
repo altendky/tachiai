@@ -54,6 +54,7 @@ class AbemaSlotMetadataDeviceTest {
             { providerInstanceStore(context).read { legacyProviderSettings(context) } },
             { connectionProfileStore(context).selected(it) })
         val before = encryptedRecords(context.noBackupFilesDir); val owner = readOwner()
+        check(owner.profile != null && owner.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION)
         val foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
             action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })

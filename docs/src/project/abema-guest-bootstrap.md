@@ -135,6 +135,49 @@ cannot publish another resource. Source fixtures are distinct from actual
 guest acceptance; separately opted-in device checks must preserve existing
 records and must not interrupt pending provider-controlled approval.
 
+## Public Schedule catalog operation
+
+The public Schedule slice under #100/#101 makes one fresh guest setup and one
+canonical `GET https://api.p-c3-e.abema-tv.com/v1/timetable/dataSet`, independent
+of existing-account connection, My List and History. It reuses the series list
+service/client and the existing isolated process/coordinator through a closed
+FETCH_SCHEDULE mode and distinct typed messages. Caller-supplied URLs, division,
+pagination, account grant and resource arguments are not accepted.
+
+One optional authorization preflight and one exact GET are admitted only after
+the guest request. CSP and native admission refuse other catalog/account/media
+paths. Original nonce, instance/route proof, deadline, foreground heartbeat and
+worker owner checks apply through confirmed WebView/proxy/backend cleanup.
+Only a strictly normalized public snapshot then leaves the runtime; guest
+bearer, raw response and unrelated source fields are discarded.
+
+The reused preparation now retains its actual route until one claimed close
+has a successful receipt; a concurrent or failed close cannot report confirmed
+cleanup, including on System. A late route producer after the cleanup seal uses
+that same receipt. Public bundle HTTP retains its actual connection and body
+through a held or failed close; a single disconnect claim distinguishes pending,
+failed and confirmed cleanup. Failed routed responses remain in their route's
+owned set until disconnect succeeds. Preparation also checks the download's
+receipt before confirming cleanup. These corrections close an existing retention gap
+on the runtime path Schedule reuses; central poisoning and cleanup budgets
+continue to prevent publication or replacement after uncertainty.
+
+Schedule-specific raw limits preserve the older metadata parser bounds. Local
+admission is 8 MiB, depth 24, 300,000 values and 20,000 items per array; these
+are implementation ceilings awaiting real-response measurement. Slots,
+channels and `yyyyMMdd` available-date arrays require strict types, unique IDs
+and unambiguous JSON. At most 501 exact BROADCAST identities/titles are retained,
+with explicit prefix truncation and a 256 KiB normalized IPC ceiling. UNKNOWN
+availability and omitted timestamps avoid treating schedule membership as live
+playback, regional availability or entitlement. See
+[the catalog boundary](abema-catalog-access.md#public-schedule-snapshot).
+
+Fixtures are distinct from actual guest compatibility. The read-only device
+fixture defaults to skipping and requires `tachiaiReadOnlyAbemaSchedule=true`
+on verified tachiai-dev. It bypasses account capability probes, makes one public
+query and verifies owner/protected records unchanged; no build or provider
+observation is implied by its source.
+
 ## Optional guest profile binding
 
 ### Private challenge-free account validation

@@ -2,7 +2,7 @@ package net.fstab.tachiai.provider.abema
 
 import java.net.URI
 
-internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT }
+internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE }
 
 internal object AbemaGuestBootstrapPolicy {
     const val PROFILE_SUFFIX = "abema-guest-bootstrap"
@@ -11,6 +11,7 @@ internal object AbemaGuestBootstrapPolicy {
     const val CHALLENGE = "https://abema.tv/api/auth/oauth/device/authorization"
     const val DEVICE_TOKEN = "https://abema.tv/api/auth/oauth/device/token"
     const val PROFILE_ORIGIN = "https://api.p-c3-e.abema-tv.com"
+    const val SCHEDULE = "$PROFILE_ORIGIN/v1/timetable/dataSet"
     const val EPISODE_ID = "394-72_s10_p8529"
     const val EPISODE = "$PROFILE_ORIGIN/v1/video/programs/$EPISODE_ID"
     const val CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self'; " +
@@ -41,6 +42,7 @@ internal object AbemaGuestBootstrapPolicy {
             AbemaGuestBootstrapOperation.FETCH_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${episodeUrl(checkNotNull(episodeId))};")
             AbemaGuestBootstrapOperation.FETCH_SERIES -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(series).url()};")
             AbemaGuestBootstrapOperation.FETCH_SLOT -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(slot).url()};")
+            AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $SCHEDULE;")
             AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE;")
             AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE $DEVICE_TOKEN;")
         }
@@ -63,6 +65,8 @@ internal object AbemaGuestBootstrapPolicy {
         operation: AbemaGuestBootstrapOperation = AbemaGuestBootstrapOperation.GUEST_ONLY,
         episodeId: String? = null, series: AbemaSeriesPageRequest? = null, slot: AbemaSlotRequest? = null): Boolean {
         if (!validResource(operation, episodeId, series, slot)) return false
+        if (operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && !mainFrame && uri.toString() == SCHEDULE)
+            return method in setOf("GET", "OPTIONS")
         if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT && !mainFrame && uri.toString() == slot?.url())
             return method in setOf("GET", "OPTIONS")
         if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && !mainFrame && uri.toString() == series?.url())
@@ -121,7 +125,8 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
             if (!guest || !profile || profileUri == null || !challenge || token) return false
             token = true
         } else if (AbemaGuestBootstrapPolicy.isProfile(uri) || AbemaGuestBootstrapPolicy.isEpisode(uri, episodeId) ||
-            uri.toString() == series?.url() || uri.toString() == slot?.url()) {
+            uri.toString() == series?.url() || uri.toString() == slot?.url() ||
+            operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE) {
             if (!guest || (profileUri != null && profileUri != uri)) return false
             if (method == "OPTIONS") {
                 fun header(name: String) = headers.entries.singleOrNull { it.key.equals(name, true) }?.value

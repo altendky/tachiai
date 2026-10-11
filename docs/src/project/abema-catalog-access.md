@@ -266,8 +266,21 @@ instance is blocked until process restart. Diagnostics contain only closed
 failure categories, without provider errors, bearer values, account IDs or
 challenge destinations.
 
-This source implementation still needs Android verification and actual
-intended-account acceptance. A connected account would not by itself establish
+Local verification passed 2,128 JVM cases, both owned JavaScript suites,
+Android lint/release isolation, instrumentation compilation and app/test
+assemblies with the shared signing identity. Five memory-only Android UI
+fixtures and one network-blocked private-challenge fixture passed on
+tachiai-dev. Ordinary test targeting was restored and the original encrypted
+record baseline remained unchanged throughout.
+
+One explicit saved-route check on tachiai-dev (Android 16/API 36, WebView
+133.0.6943.137; egress region not remeasured) established matching fresh-guest
+profile acceptance and invalid-bearer rejection in 11.736 seconds. It opened no
+browser, adopted no account grant and performed no token polling or storage
+write. This bounded profile-enforcement evidence does not establish a
+registered account or collection compatibility.
+
+Actual intended-account acceptance remains outstanding. A connected account would not by itself establish
 My List, history, entitlement or account-backed playback. Those capabilities
 need separate endpoint and intended-account evidence; #103 remains open until
 its real account criteria are met.

@@ -104,7 +104,8 @@ internal class TwitchProviderCatalog(
             playback = CatalogAccess.NOT_VERIFIED,
             collections = listOf(CatalogCollection("following", "Following", access),
                 CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED)),
-            browseTitle = "Live channels", initialCollectionId = "following")
+            browseTitle = "Live channels", initialCollectionId = "following",
+            childrenTitle = "Videos", childrenHeadingPrefix = "Videos from")
     }
 
     private fun <T> operation(required: Context? = null, work: (Context) -> T): CatalogResult<T> = synchronized(operationLock) {

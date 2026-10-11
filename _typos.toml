@@ -1,6 +1,6 @@
 [default]
-# Exact public provider client identifier, not prose or a credential.
-extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b']
+# Exact public provider identifiers, not prose or credentials.
+extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b', '\b9FYQvU4hBaZZy1\b']
 
 [files]
 # Upstream notices, copyright names and patch context must remain verbatim.

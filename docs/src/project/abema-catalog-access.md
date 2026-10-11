@@ -535,7 +535,7 @@ or an automatically playable permanent sumo collection.
 
 ### Exact configured broadcast metadata
 
-Issue [#178](https://github.com/altendky/tachiai/issues/178) adds metadata
+Issue [#178](https://github.com/altendky/tachiai/issues/178) delivered metadata
 refresh for an already configured exact ABEMA broadcast slot. The existing
 public-link parser retains both the channel and slot IDs; refresh must return
 that same resource. It does not select the channel's current program, another
@@ -567,11 +567,69 @@ precede publication. Failed refresh preserves configured UUIDs, identities,
 order and quality; existing public-link import remains usable for non-live
 or unavailable items. Exact-slot playback remains NOT_VERIFIED.
 
-Actual guest compatibility, response limits and optional division behavior
-remain separate runtime gates. Network-blocked and explicitly opted-in
-saved-route checks must preserve protected records and restore ordinary
-test targeting. No account Connect, timetable/search, recurrence or provider
-history operation is part of this metadata slice.
+Bounded guest metadata acceptance passed through the saved route; the Schedule
+observation above includes separate exact-candidate refreshes. This does not
+establish complete response limits, optional division behavior or playback.
+Network-blocked and explicitly opted-in saved-route checks preserve protected
+records and restore ordinary test targeting. No account Connect, recurrence or
+provider history operation is part of this metadata slice.
+
+### Exact broadcast source investigation
+
+Agent issue [#193](https://github.com/altendky/tachiai/issues/193) tracks exact
+configured broadcast playback. The common viewer still refuses a slot resource;
+the metadata adapter cannot supply playback authorization, source or license
+state. A slot must never become the channel's current broadcast or another
+episode when its own source is unavailable.
+
+The coherent [8917 consumer](https://abema.tv/assets/compat/bcf9d5e368763476.8917.bundle.js)
+uses `slot.playback` for timeshift and separately uses `slot.chasePlayback` for
+chase playback, with the exact slot ID and DRM marker.
+[7478](https://abema.tv/assets/compat/f8086b0d6124dd82.7478.bundle.js) and
+[8204](https://abema.tv/assets/compat/f6010ef1803f018d.8204.bundle.js) construct
+and select the provider's playlist source. The modern gateway also supports an
+ARIN source, but that downstream arm does not by itself verify a selected slot's
+source construction or entitlement. Runtime bundle compatibility, guest rights,
+advertisement selection and native acceptance remain separate checks.
+
+On 2026-10-11, one explicitly opted-in existing exact-slot GET for the public
+candidate `abema-anime/9FYQvU4hBaZZy1` passed in 10.09 seconds. Device:
+`tachiai-dev`, Android 16/API 36, x86-64, WebView 133.0.6943.137, captured saved
+ABEMA route, unknown exit country, fresh guest and no existing-account access.
+The test-only owned-script decorator projected 23 closed shape categories and
+stripped them before the unchanged production decoder. Publication followed
+exact accepted metadata, current ownership, confirmed cleanup and unchanged
+encrypted-record checks. No source URL, ARIN, timestamp value, authority ID or
+raw response was recorded, and no Add or playback occurred.
+
+That response contained ordinary and chase playlist objects, both DASH strings,
+an ordinary ARIN string, no chase ARIN, and Japan-only linear/timeshift policies.
+Timeshift and chase flags were explicitly true; pause, free-timeshift, DASH and
+DRM flags were absent. The DRM marker was an empty object, PPV was absent,
+start/end/general-timeshift windows were positive safe integers, the free window
+was absent, and chase authority IDs were nonempty. These are observed shapes:
+an omitted free flag is not affirmative guest entitlement, a positive integer
+does not establish a current window, and a returned playlist is not playback
+acceptance. The provider's authorization predicates must be checked separately
+from its display-period helpers before enabling a source.
+
+In the retained consumers, `96291`'s zero/absence fallback classifies navigation
+and telemetry; it is not a demonstrated permission check. Chase admission
+separately requires a current premium/general window or a current free-end
+window and matching subscription feature authority. Premium access checks
+unexpired viewing authority rather than a trial flag. This candidate's absent
+free-end and nonempty chase-authority list do not establish guest eligibility.
+Ordinary timeshift authorization, PPV/ticket behavior and the concrete modern
+slot-source constructor still require direct consumer evidence.
+
+The shared diagnostic harness retains its opt-in-before-private-read gate,
+fixed operation/candidate, original deadline, touch-blocked lifecycle and
+retain-on-uncertain-cleanup behavior. Strict synthetic marker tests and the
+existing Series projection test actually passed with zero skips; 12 owned-script
+synthetic cases and independent review also passed. Full Android verification,
+including 2,390 JVM cases, lint, release isolation, instrumentation compilation
+and shared signing passed. Ordinary instrumentation and Main were restored and
+saved records preserved. This observation does not close #193 or #101.
 
 ### Exact configured episodes
 

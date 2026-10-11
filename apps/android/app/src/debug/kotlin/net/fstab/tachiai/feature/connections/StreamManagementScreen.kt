@@ -1,13 +1,19 @@
 package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
@@ -68,7 +74,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
     onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers",
-    onRefresh: (String) -> Unit = {}) {
+    onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {}) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -84,9 +90,20 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         }
     }
     val retryReady = retryAt == null || retryClock >= retryAt
-    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
+    // Queries, account-derived results and their scroll anchors stay in this
+    // composition only. A privacy reset discards every suspended list state.
+    val listStates = remember(state.instance.id, state.privacyRevision) { mutableMapOf<Long, LazyListState>() }
+    val hadContext = listStates.isNotEmpty()
+    val retained = state.retainedDiscoveryContextIds.toSet() + state.discoveryContextId
+    listStates.keys.retainAll(retained)
+    val freshContext = state.discoveryContextId !in listStates
+    val listState = listStates.getOrPut(state.discoveryContextId) { LazyListState() }
+    LaunchedEffect(listState) {
+        if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size)
+    }
+    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).testTag("Stream discovery list"),
+        state = listState) {
+        item(key = "management-heading") { Column(Modifier.padding(bottom = 12.dp)) {
             Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
             Text("Add items to the list shown on your selection page. Changes stay in Tachiai and do not change provider favorites.")
             state.catalogNotice?.let { Text(it) }
@@ -95,13 +112,14 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (state.saving) Text("Saving configured streams…")
             if (state.storageFailed) Button(onClick = onRetry, enabled = !state.loading && !state.saving) { Text("Retry") }
             TextButton(onClick = onBack) { Text(backLabel) }
-        }
-        item { Text("Configured streams", style = MaterialTheme.typography.titleLarge)
+        } }
+        item(key = "configured-heading") { Column(Modifier.padding(bottom = 12.dp)) {
+            Text("Configured streams", style = MaterialTheme.typography.titleLarge)
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
             if (state.configured.orEmpty().size >= MAX_CONFIGURED_SOURCES) Text("Stream limit reached. Remove an item to add another.")
-            metadataRefreshExplanation(capabilities?.refresh)?.let { Text(it) } }
+            metadataRefreshExplanation(capabilities?.refresh)?.let { Text(it) } } }
         items(state.configured.orEmpty(), key = { "configured:${it.id}" }) { source ->
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(source.entry.title, style = MaterialTheme.typography.titleMedium)
                 Text(entryDetails(source.entry), style = MaterialTheme.typography.bodySmall)
                 val index = state.configured.orEmpty().indexOf(source)
@@ -120,7 +138,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                         modifier = Modifier.semantics { contentDescription = "Browse configured ${source.entry.title}" }) { Text("Browse items") }
             }
         }
-        item {
+        item(key = "discovery-controls") { Column(Modifier.padding(bottom = 12.dp)) {
             Text("Find streams", style = MaterialTheme.typography.titleLarge)
             Button(onClick = onAll, enabled = mutable && capabilities != null) { Text(capabilities?.browseTitle ?: "All") }
             if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
@@ -139,7 +157,15 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     label = { Text("Provider URL or channel") })
                 Button(onClick = { onLookup(lookup.trim()) }, enabled = mutable && lookup.isNotBlank()) { Text("Look up") }
             }
-            state.query.parent?.let { Text("Items under ${it.identity}") }
+        } }
+        item(key = "discovery-context") { Column {
+            val heading = state.childHeading ?: state.query.parent?.let {
+                "${capabilities?.childrenHeadingPrefix ?: "Items under"} ${it.identity}"
+            }
+            heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
+            state.navigationBackLabel?.let { label ->
+                TextButton(onClick = onDiscoveryBack) { Text(label) }
+            }
             if (state.resultsTruncated) Text("Showing the first $MAX_DISCOVERY_RESULTS results. More results were withheld; narrow your search or choose another collection.")
             state.failure?.let { failure ->
                 Text(catalogFailureExplanation(failure))
@@ -148,19 +174,37 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     Button(onClick = onRetry, enabled = mutable && retryReady) { Text("Retry catalog") }
             }
             if (!state.loading && state.failure == null && state.configured != null && state.entries.isEmpty()) Text("No catalog items found.")
-        }
+        } }
         items(state.entries, key = { "catalog:${it.resource.providerId.value}:${it.resource.kind}:${it.resource.identity}:${it.resource.intent}" }) { entry ->
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(entry.title, style = MaterialTheme.typography.titleMedium)
-                Text(entryDetails(entry), style = MaterialTheme.typography.bodySmall)
+            Column(Modifier.testTag("Discovery row ${entry.resource.kind}:${entry.resource.identity}")) {
                 val added = state.configured.orEmpty().any { it.entry.resource == entry.resource }
-                Button(onClick = { onAdd(entry) }, enabled = mutable && !added && state.configured.orEmpty().size < MAX_CONFIGURED_SOURCES,
-                    modifier = Modifier.semantics { contentDescription = "Add ${entry.title}" }) { Text(if (added) "Added" else "Add") }
-                if (entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL) && capabilities?.children == CatalogAccess.AVAILABLE)
-                    TextButton(onClick = { onChildren(entry.resource) }, enabled = mutable,
-                        modifier = Modifier.semantics { contentDescription = "Browse ${entry.title}" }) { Text("Browse items") }
+                val browsable = entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL) &&
+                    capabilities?.children == CatalogAccess.AVAILABLE
+                Row(Modifier.fillMaxWidth().heightIn(min = 72.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val browse = if (browsable) Modifier.clickable(enabled = mutable, role = Role.Button,
+                        onClick = { onChildren(entry.resource) }).semantics { contentDescription = "Browse ${entry.title}" }
+                        else Modifier
+                    Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
+                        Text(entry.title, style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Top) {
+                            Text(entryDetails(entry), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            if (browsable) Text("${capabilities.childrenTitle} ›",
+                                modifier = Modifier.widthIn(max = 100.dp), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    TextButton(onClick = { onAdd(entry) },
+                        enabled = mutable && !added && state.configured.orEmpty().size < MAX_CONFIGURED_SOURCES,
+                        modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Add ${entry.title}" }) {
+                        Text(if (added) "✓ Added" else "Add")
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
-        if (state.nextCursor != null) item { Button(onClick = onMore, enabled = mutable) { Text("More items") } }
+        if (state.nextCursor != null) item(key = "discovery-more") {
+            TextButton(onClick = onMore, enabled = mutable, modifier = Modifier.padding(top = 4.dp)) { Text("More items") }
+        }
     }
 }

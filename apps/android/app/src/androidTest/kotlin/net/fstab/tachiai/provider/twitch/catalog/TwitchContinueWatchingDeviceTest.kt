@@ -18,6 +18,7 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import net.fstab.tachiai.feature.connections.providerInstanceStore
+import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.storage.AndroidPrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT

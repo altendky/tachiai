@@ -15,6 +15,7 @@
   let series;
   let slot;
   let schedule;
+  let search;
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
@@ -30,6 +31,7 @@
     series = undefined;
     slot = undefined;
     schedule = undefined;
+    search = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
     accountValidation = undefined;
@@ -257,7 +259,7 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_' || prefix === 'SCHEDULE_';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_' || prefix === 'SCHEDULE_' || prefix === 'SEARCH_';
     let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
@@ -380,8 +382,10 @@
     value === value.trim() && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
   function validSeriesRequest(value) {
     return value && typeof value === 'object' && !Array.isArray(value) &&
-      Object.keys(value).sort().join(',') === 'offset,seriesId,version' &&
+      ['offset,seriesId,version', 'offset,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
       typeof value.seriesId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seriesId) &&
+      (!Object.hasOwn(value, 'seasonId') || typeof value.seasonId === 'string' &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seasonId) && value.seriesId.length + value.seasonId.length + 1 <= 256) &&
       Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 9980 && value.offset % 20 === 0 &&
       (value.offset === 0 ? value.version === null : validSeriesVersion(value.version));
   }
@@ -389,6 +393,83 @@
     return value && typeof value === 'object' && !Array.isArray(value) &&
       Object.keys(value).sort().join(',') === 'channelId,slotId' &&
       ['channelId', 'slotId'].every(key => typeof value[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value[key]));
+  }
+  const searchModules = ['ppv', 'nowonair', 'package', 'episode', 'timeshift', 'scheduled'];
+  function validSearchRequest(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).sort().join(',') === 'moduleId,offset,query' &&
+      typeof value.query === 'string' && value.query.length >= 1 && value.query.length <= 160 && value.query === value.query.trim() &&
+      !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value.query) && Number.isSafeInteger(value.offset) &&
+      (value.moduleId === null ? value.offset === 0 : searchModules.includes(value.moduleId) &&
+        value.offset >= 0 && value.offset <= 9980 && value.offset % 20 === 0);
+  }
+  function parseSearchText(text, request) {
+    const reply = parseBoundedJsonText(text, true, { depth: 24, nodes: 50000, array: 1000 });
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+    const shortId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
+    const title = (value, maximum) => {
+      if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > maximum || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) throw new Error();
+      return value.trim();
+    };
+    const type = (value, names) => typeof value === 'number' && Number.isInteger(value) ? value : names.indexOf(value);
+    const arms = ['videoEpisode', 'videoSeason', 'videoSeries', 'slot', 'liveEvent'];
+    const types = ['CONTENT_TYPE_UNSPECIFIED', 'CONTENT_TYPE_VIDEO_EPISODE', 'CONTENT_TYPE_VIDEO_SEASON',
+      'CONTENT_TYPE_VIDEO_SERIES', 'CONTENT_TYPE_SLOT', 'CONTENT_TYPE_LIVE_EVENT'];
+    const moduleTypes = ['MODULE_TYPE_UNSPECIFIED', 'MODULE_TYPE_CONTENT', 'MODULE_TYPE_SPOT'];
+    if (!object(reply)) throw new Error();
+    // First-party serializers omit zero counts and empty repeated fields.
+    // Normalize absence only; explicit null/wrong types still refuse, as do
+    // missing identity-bearing containers or a missing count with actual rows.
+    const raw = request.moduleId === null ?
+      (Object.keys(reply).length === 0 ? [] : reply.modules) : [reply.module];
+    if (!Array.isArray(raw) || raw.length > 16 || request.moduleId !== null && !object(reply.module)) throw new Error();
+    const modules = [], moduleIds = new Set(), all = new Map();
+    for (const module of raw) {
+      if (!object(module) || typeof module.id !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(module.id) || moduleIds.has(module.id) ||
+        !object(module.items)) throw new Error();
+      moduleIds.add(module.id);
+      const moduleType = type(module.moduleType, moduleTypes);
+      if (moduleType === 2 && request.moduleId === null) {
+        if (!object(module.items.spot) || module.items.content != null) throw new Error();
+        const results = Object.hasOwn(module.items.spot, 'results') ? module.items.spot.results : [];
+        if (!Array.isArray(results)) throw new Error();
+        continue;
+      }
+      if (moduleType !== 1 || !searchModules.includes(module.id) || request.moduleId !== null && module.id !== request.moduleId ||
+        !object(module.items.content) || module.items.spot != null) throw new Error();
+      const results = Object.hasOwn(module.items.content, 'results') ? module.items.content.results : [];
+      const total = Object.hasOwn(module, 'totalItemCount') ? module.totalItemCount : 0;
+      if (!Array.isArray(results) || !Number.isSafeInteger(total) || total < results.length || total > 1000000 ||
+        results.length > (request.moduleId === null ? 8 : 20)) throw new Error();
+      const entries = [], seen = new Set();
+      for (const result of results) {
+        if (!object(result) || !id(result.contentId) || !object(result.contentData)) throw new Error();
+        const contentType = type(result.contentType, types), arm = arms[contentType - 1];
+        const present = Object.keys(result.contentData).filter(key => result.contentData[key] != null);
+        if (!arm || Object.keys(result.contentData).some(key => !arms.includes(key)) || present.length !== 1 || present[0] !== arm ||
+          !object(result.contentData[arm])) throw new Error();
+        const data = result.contentData[arm];
+        let kind = ['episode', 'season', 'series', 'slot', 'live_event'][contentType - 1], identity = result.contentId;
+        if (kind === 'season') {
+          if (!id(data.seriesId)) throw new Error();
+          identity = data.seriesId + '/' + result.contentId;
+        } else if (kind === 'slot') {
+          if (!shortId(data.channelId) || !shortId(result.contentId)) throw new Error();
+          identity = data.channelId + '/' + result.contentId;
+        }
+        if (identity.length > 256) throw new Error();
+        const label = title(data.title, 160), key = kind + ':' + identity;
+        if (seen.has(key) || all.has(key) && all.get(key) !== label) throw new Error();
+        seen.add(key); all.set(key, label);
+        entries.push(Object.freeze({ kind, id: identity, title: label }));
+      }
+      modules.push(Object.freeze({ id: module.id, title: title(module.displayName, 64), total, entries }));
+    }
+    if (modules.length > 6 || request.moduleId !== null && modules.length !== 1) throw new Error();
+    const projection = Object.freeze({ modules });
+    if (new TextEncoder().encode(stringify(projection)).byteLength > 65536) throw new Error();
+    return projection;
   }
   function parseScheduleText(text) {
     // Explicit local admission bounds. A runtime probe must measure the actual
@@ -427,16 +508,18 @@
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) :
-        operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) : resourceId !== undefined)) {
+        operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) :
+        operation === 'FETCH_SEARCH' ? !validSearchRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
     const slotRequest = operation === 'FETCH_SLOT' ? Object.freeze({ ...resourceId }) : undefined;
+    const searchRequest = operation === 'FETCH_SEARCH' ? Object.freeze({ ...resourceId }) : undefined;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
@@ -447,6 +530,8 @@
         stringify(slot) : null } : {}),
       ...(operation === 'FETCH_SCHEDULE' ? { metadata: () => !stopped && state === 'SCHEDULE_SNAPSHOT' && failure === 'NONE' ?
         stringify(schedule) : null } : {}),
+      ...(operation === 'FETCH_SEARCH' ? { metadata: () => !stopped && state === 'SEARCH_PAGE' && failure === 'NONE' ?
+        stringify(search) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -469,6 +554,7 @@
         if (operation === 'FETCH_SERIES') { budgetFailure = 'SERIES_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         if (operation === 'FETCH_SLOT') { budgetFailure = 'SLOT_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         if (operation === 'FETCH_SCHEDULE') { budgetFailure = 'SCHEDULE_TIMEOUT'; challengeStarted = performance.now(); alive(); }
+        if (operation === 'FETCH_SEARCH') { budgetFailure = 'SEARCH_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
@@ -574,6 +660,16 @@
             accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
             guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'FETCH_SEARCH') {
+          state = 'SEARCH';
+          const url = new URL(apiOrigin + '/v1/search/modules' + (searchRequest.moduleId === null ? '' : '/' + searchRequest.moduleId));
+          url.searchParams.set('query', searchRequest.query); url.searchParams.set('device', 'WEB_MOBILE');
+          if (searchRequest.moduleId === null) url.searchParams.set('itemLimit', '8');
+          else { url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(searchRequest.offset)); }
+          search = await boundedReply(url.href, { method: 'GET', mode: 'cors',
+            headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
+          text => parseSearchText(text, searchRequest), 'SEARCH_', 512 * 1024);
+          alive(); guest = undefined; failure = 'NONE'; state = 'SEARCH_PAGE';
         } else if (operation === 'FETCH_SCHEDULE') {
           state = 'SCHEDULE';
           schedule = await boundedReply(apiOrigin + '/v1/timetable/dataSet', { method: 'GET', mode: 'cors',
@@ -599,6 +695,7 @@
           const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');
           url.searchParams.set('order', 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
           if (seriesRequest.version !== null) url.searchParams.set('seriesVersion', seriesRequest.version);
+          if (seriesRequest.seasonId !== undefined) url.searchParams.set('seasonId', seriesRequest.seasonId);
           series = await boundedReply(url.href, { method: 'GET', mode: 'cors',
             headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } }, text => {
               const reply = parseBoundedJsonText(text, true);
@@ -610,13 +707,16 @@
                 if (!item || Array.isArray(item) || typeof item !== 'object' || typeof item.id !== 'string' ||
                   !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.id) || ids.has(item.id) ||
                   !item.series || Array.isArray(item.series) || item.series.id !== seriesRequest.seriesId ||
+                  seriesRequest.seasonId !== undefined && (!item.season || Array.isArray(item.season) ||
+                    item.season.id !== seriesRequest.seasonId || item.season.seriesId !== seriesRequest.seriesId) ||
                   !item.episode || Array.isArray(item.episode) || typeof item.episode.title !== 'string' ||
                   item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
                   /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();
                 ids.add(item.id);
                 return Object.freeze({ id: item.id, title: item.episode.title.trim() });
               });
-              return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs });
+              return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs,
+                ...(seriesRequest.seasonId !== undefined ? { seasonId: seriesRequest.seasonId } : {}) });
             }, 'SERIES_', 512 * 1024);
           alive(); guest = undefined; failure = 'NONE'; state = 'EXACT_SERIES_PAGE';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {

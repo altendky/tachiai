@@ -28,6 +28,37 @@ class AbemaEpisodeMetadataIpcDeviceTest {
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == "${it.targetContext.packageName}:abema_guest_bootstrap")
     }
+    @Test fun searchAndSeasonPrimitiveParcelsCannotCrossModesAndSearchFacadeRejectsMainBeforePrivateReads() {
+        val instrumentation = guestInstrumentation()
+        val request = AbemaSearchMetadataIpc.Start("a".repeat(32), "12345678-1234-1234-1234-123456789abc",
+            AbemaSearchRequest("Public 雪 + /", "episode", 20), "b".repeat(64), 46000)
+        val parcel = Parcel.obtain()
+        try {
+            parcel.writeBundle(AbemaSearchMetadataIpc.start(request)); parcel.setDataPosition(0)
+            val restored = checkNotNull(parcel.readBundle(javaClass.classLoader))
+            val fields = checkNotNull(AbemaSearchMetadataIpc.fields(restored))
+            val decoded = checkNotNull(AbemaSearchMetadataIpc.decodeStart(fields, 1000))
+            assertEquals(request.search.url(), decoded.search.url()); assertEquals(request.ownerProof, decoded.ownerProof)
+            assertNull(AbemaSeriesMetadataIpc.decodeStart(fields, 1000)); assertNull(AbemaScheduleMetadataIpc.decodeStart(fields, 1000))
+            restored.putParcelable("raw", Bundle()); assertNull(AbemaSearchMetadataIpc.fields(restored))
+            parcel.setDataSize(0); parcel.setDataPosition(0)
+            val season = AbemaSeriesMetadataIpc.Start(request.nonce, request.instanceId,
+                AbemaSeriesPageRequest("series-A", seasonId = "season-A"), request.ownerProof, request.deadline)
+            parcel.writeBundle(AbemaSeriesMetadataIpc.start(season)); parcel.setDataPosition(0)
+            val restoredSeason = checkNotNull(parcel.readBundle(javaClass.classLoader))
+            val seasonFields = checkNotNull(AbemaSeriesMetadataIpc.fields(restoredSeason))
+            assertEquals("season-A", AbemaSeriesMetadataIpc.decodeStart(seasonFields, 1000)?.page?.seasonId)
+            assertNull(AbemaSearchMetadataIpc.decodeStart(seasonFields, 1000))
+        } finally { parcel.recycle() }
+        var reads = 0
+        val client = AndroidAbemaSeriesMetadataClient(instrumentation.targetContext, request.instanceId, request.ownerProof,
+            { reads++; error("No private reads") }, { true })
+        try {
+            val result = AtomicReference<CatalogResult<AbemaSearchReply>>()
+            instrumentation.runOnMainSync { result.set(client.fetch(request.search)) }
+            assertEquals(CatalogFailure.TEMPORARY, (result.get() as CatalogResult.Failure).reason); assertEquals(0, reads)
+        } finally { client.close(); instrumentation.waitForIdleSync() }
+    }
     @Test fun scheduleParcelKeepsClosedPrimitiveContractAndSharedListFacadeRefusesMainBeforePrivateReads() {
         val instrumentation = guestInstrumentation()
         val request = AbemaScheduleMetadataIpc.Start("a".repeat(32), "12345678-1234-1234-1234-123456789abc", "b".repeat(64), 46000)

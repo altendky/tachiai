@@ -17,7 +17,12 @@ class AbemaSeriesMetadataService : Service() {
         override fun handleMessage(message: Message) {
             if (message.sendingUid != Process.myUid()) return
             val schedule = message.what in setOf(AbemaScheduleMetadataIpc.START, AbemaScheduleMetadataIpc.CANCEL, AbemaScheduleMetadataIpc.PULSE)
-            val fields = runCatching { if (schedule) AbemaScheduleMetadataIpc.fields(message.data) else AbemaSeriesMetadataIpc.fields(message.data) }.getOrNull() ?: return
+            val search = message.what in setOf(AbemaSearchMetadataIpc.START, AbemaSearchMetadataIpc.CANCEL, AbemaSearchMetadataIpc.PULSE)
+            val fields = runCatching { when {
+                search -> AbemaSearchMetadataIpc.fields(message.data)
+                schedule -> AbemaScheduleMetadataIpc.fields(message.data)
+                else -> AbemaSeriesMetadataIpc.fields(message.data)
+            } }.getOrNull() ?: return
             when (message.what) {
                 AbemaSeriesMetadataIpc.START -> {
                     val request = AbemaSeriesMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
@@ -27,10 +32,15 @@ class AbemaSeriesMetadataService : Service() {
                     val request = AbemaScheduleMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
                     start(request, message.replyTo ?: return)
                 }
+                AbemaSearchMetadataIpc.START -> {
+                    val request = AbemaSearchMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
+                    start(request, message.replyTo ?: return)
+                }
                 AbemaSeriesMetadataIpc.CANCEL, AbemaSeriesMetadataIpc.PULSE,
-                AbemaScheduleMetadataIpc.CANCEL, AbemaScheduleMetadataIpc.PULSE -> {
+                AbemaScheduleMetadataIpc.CANCEL, AbemaScheduleMetadataIpc.PULSE,
+                AbemaSearchMetadataIpc.CANCEL, AbemaSearchMetadataIpc.PULSE -> {
                     val nonce = AbemaEpisodeMetadataIpc.decodeNonce(fields) ?: return
-                    val cancelCode = if (schedule) AbemaScheduleMetadataIpc.CANCEL else AbemaSeriesMetadataIpc.CANCEL
+                    val cancelCode = when { search -> AbemaSearchMetadataIpc.CANCEL; schedule -> AbemaScheduleMetadataIpc.CANCEL; else -> AbemaSeriesMetadataIpc.CANCEL }
                     val owner = active?.takeIf { it.nonce == nonce && it.cancelCode == cancelCode && it.reply.binder == message.replyTo?.binder } ?: return
                     if (message.what == cancelCode || !owner.lease.pulse(nonce)) {
                         owner.lease.cancel(nonce); runtime?.cancel(nonce)
@@ -76,6 +86,28 @@ class AbemaSeriesMetadataService : Service() {
                 what = AbemaScheduleMetadataIpc.RESULT
                 data = AbemaScheduleMetadataIpc.result(AbemaScheduleMetadataIpc.Result(request.nonce, outcome,
                     result.scheduleSnapshot.takeIf { outcome == "OK" }))
+            }) } catch (_: Exception) { /* Closed failure only. */ }
+        }
+    }
+    private fun start(request: AbemaSearchMetadataIpc.Start, reply: Messenger) {
+        start(request.nonce, request.deadline, reply, AbemaSearchMetadataIpc.CANCEL, { lease ->
+            AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_SEARCH,
+                nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
+                searchRequest = request.search, canRemainActive = lease::current)
+        }) { result ->
+            // Coordinator categories are closed constants after cleanup;
+            // query, titles, identities and provider bodies are never logged.
+            if (result.category != "SEARCH_PAGE") android.util.Log.i("TachiaiAbemaSearchRuntime", result.category)
+            val outcome = when (result.category) {
+                "SEARCH_PAGE" -> if (result.searchReply != null) "OK" else "TEMPORARY"
+                "GUEST_SEARCH_HTTP_404", "GUEST_SEARCH_HTTP_410" -> "NOT_FOUND"
+                "GUEST_SEARCH_HTTP_429" -> "RATE_LIMITED"
+                else -> "TEMPORARY"
+            }
+            try { reply.send(Message.obtain().apply {
+                what = AbemaSearchMetadataIpc.RESULT
+                data = AbemaSearchMetadataIpc.result(AbemaSearchMetadataIpc.Result(request.nonce, outcome,
+                    result.searchReply.takeIf { outcome == "OK" }))
             }) } catch (_: Exception) { /* Closed failure only. */ }
         }
     }

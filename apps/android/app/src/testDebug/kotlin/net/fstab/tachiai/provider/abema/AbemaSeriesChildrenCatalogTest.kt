@@ -53,6 +53,22 @@ class AbemaSeriesChildrenCatalogTest {
         assertEquals("https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=seq&limit=20&offset=20&seriesVersion=v+%2B%26%2F%E9%9B%AA",
             AbemaSeriesPageRequest("series-A", 20, "v +&/雪").url())
     }
+    @Test fun seasonChildrenRetainBothParentsAcrossPagesAndRefuseCrossSeasonCursorOrReply() {
+        val f = Fixture()
+        f.response = { request -> CatalogResult.Value(AbemaSeriesPage(request.seriesId,
+            if (request.offset == 0) List(20, ::entry) else listOf(entry(20)), request.version ?: "v1", request.seasonId)) }
+        val season = abemaSearchResource("season", "series-A/season-A")!!
+        val first = f.value(f.catalog.browse(CatalogQuery(parent = season)))
+        val second = f.value(f.catalog.browse(CatalogQuery(parent = season, cursor = first.nextCursor)))
+        assertNull(second.nextCursor); assertEquals(listOf("season-A", "season-A"), f.requests.map { it.seasonId })
+        assertEquals("https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=seq&limit=20&offset=20&seriesVersion=v1&seasonId=season-A",
+            f.requests.last().url())
+        val next = f.value(f.catalog.browse(CatalogQuery(parent = season))).nextCursor
+        val other = abemaSearchResource("season", "series-A/season-B")!!
+        assertEquals(CatalogFailure.INVALID_INPUT, (f.catalog.browse(CatalogQuery(parent = other, cursor = next)) as CatalogResult.Failure).reason)
+        f.response = { request -> CatalogResult.Value(AbemaSeriesPage(request.seriesId, emptyList(), "v1", "season-B")) }
+        assertEquals(CatalogFailure.INVALID_INPUT, (f.catalog.browse(CatalogQuery(parent = season)) as CatalogResult.Failure).reason)
+    }
     @Test fun strictNormalizedProjectionRefusesDuplicatesWrongTypesUnicodeAndDrift() {
         val request = AbemaSeriesPageRequest("series-A")
         val valid = """{"seriesId":"series-A","version":"v1","programs":[]}"""

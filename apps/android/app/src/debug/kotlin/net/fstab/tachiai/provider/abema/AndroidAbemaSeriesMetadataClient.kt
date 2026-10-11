@@ -35,7 +35,7 @@ internal class AbemaSeriesClientOperation(
     }
     fun accept(value: AbemaSeriesMetadataIpc.Result): Boolean = synchronized(lock) {
         if (!current() || result != null || value.nonce != request.nonce ||
-            value.outcome == "OK" && (value.page == null || value.page.seriesId != request.page.seriesId ||
+            value.outcome == "OK" && (value.page == null || value.page.seriesId != request.page.seriesId || value.page.seasonId != request.page.seasonId ||
                 request.page.version != null && value.page.version != request.page.version)) false
         else { result = value; completed.countDown(); true }
     }
@@ -77,6 +77,34 @@ internal class AbemaScheduleClientOperation(
     override fun toString() = "AbemaScheduleClientOperation(redacted)"
 }
 
+internal class AbemaSearchClientOperation(
+    val request: AbemaSearchMetadataIpc.Start,
+    private val clockMs: () -> Long,
+    private val canRemainActive: () -> Boolean,
+) {
+    private val lock = Any()
+    private var cancelled = false
+    private var result: AbemaSearchMetadataIpc.Result? = null
+    val completed = CountDownLatch(1)
+    fun current(): Boolean = synchronized(lock) {
+        !cancelled && clockMs() < request.deadline && runCatching(canRemainActive).getOrDefault(false)
+    }
+    fun accept(value: AbemaSearchMetadataIpc.Result): Boolean = synchronized(lock) {
+        val expected = request.search; val actual = value.reply?.request
+        if (!current() || result != null || value.nonce != request.nonce || value.outcome == "OK" &&
+            (actual == null || actual.query != expected.query || actual.moduleId != expected.moduleId || actual.offset != expected.offset)) false
+        else { result = value; completed.countDown(); true }
+    }
+    fun cancel() = synchronized(lock) { cancelled = true; result = null; completed.countDown() }
+    fun result(): AbemaSearchMetadataIpc.Result? = synchronized(lock) { result.takeIf { current() } }
+    fun workerResult(canRequest: () -> Boolean, clientCurrent: () -> Boolean): AbemaSearchMetadataIpc.Result? {
+        val value = result() ?: return null
+        if (!clientCurrent() || !runCatching(canRequest).getOrDefault(false) || !clientCurrent()) return null
+        return result()?.takeIf { it === value }
+    }
+    override fun toString() = "AbemaSearchClientOperation(redacted)"
+}
+
 // Worker-side synchronous facade over a same-UID isolated-process service.
 // Protected owner checks run only at fetch admission/final publication. Main
 // Binder/heartbeat callbacks use the separate cheap foreground/revision gate.
@@ -86,7 +114,7 @@ internal class AndroidAbemaSeriesMetadataClient(
     private val expectedOwnerProof: String,
     private val canRequest: () -> Boolean,
     private val canRemainActive: () -> Boolean,
-) : AbemaSeriesTransport, AbemaScheduleTransport {
+) : AbemaSeriesTransport, AbemaScheduleTransport, AbemaSearchTransport {
     init {
         require(validProviderInstanceId(instanceId))
         require(expectedOwnerProof.matches(Regex("[a-f0-9]{64}")))
@@ -95,32 +123,39 @@ internal class AndroidAbemaSeriesMetadataClient(
     private val main = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean()
     private val lock = Any()
-    // Two closed list operations share the existing Binder/foreground lifecycle.
-    private class ListResult(val outcome: String, val page: AbemaSeriesPage? = null, val snapshot: AbemaScheduleSnapshot? = null)
-    private class ListOperation(val series: AbemaSeriesClientOperation? = null, val schedule: AbemaScheduleClientOperation? = null) {
-        init { require((series == null) != (schedule == null)) }
-        val nonce get() = series?.request?.nonce ?: checkNotNull(schedule).request.nonce
-        val deadline get() = series?.request?.deadline ?: checkNotNull(schedule).request.deadline
-        val completed get() = series?.completed ?: checkNotNull(schedule).completed
-        val startCode get() = if (series != null) AbemaSeriesMetadataIpc.START else AbemaScheduleMetadataIpc.START
-        val cancelCode get() = if (series != null) AbemaSeriesMetadataIpc.CANCEL else AbemaScheduleMetadataIpc.CANCEL
-        val pulseCode get() = if (series != null) AbemaSeriesMetadataIpc.PULSE else AbemaScheduleMetadataIpc.PULSE
-        val resultCode get() = if (series != null) AbemaSeriesMetadataIpc.RESULT else AbemaScheduleMetadataIpc.RESULT
-        fun current() = series?.current() ?: checkNotNull(schedule).current()
-        fun cancel() { series?.cancel() ?: checkNotNull(schedule).cancel() }
-        fun start() = series?.let { AbemaSeriesMetadataIpc.start(it.request) } ?: AbemaScheduleMetadataIpc.start(checkNotNull(schedule).request)
+    // Closed list operations share the existing Binder/foreground lifecycle.
+    private class ListResult(val outcome: String, val page: AbemaSeriesPage? = null, val snapshot: AbemaScheduleSnapshot? = null,
+        val searchReply: AbemaSearchReply? = null)
+    private class ListOperation(val series: AbemaSeriesClientOperation? = null, val schedule: AbemaScheduleClientOperation? = null,
+        val search: AbemaSearchClientOperation? = null) {
+        init { require(listOf(series, schedule, search).count { it != null } == 1) }
+        val nonce get() = series?.request?.nonce ?: schedule?.request?.nonce ?: checkNotNull(search).request.nonce
+        val deadline get() = series?.request?.deadline ?: schedule?.request?.deadline ?: checkNotNull(search).request.deadline
+        val completed get() = series?.completed ?: schedule?.completed ?: checkNotNull(search).completed
+        val startCode get() = when { search != null -> AbemaSearchMetadataIpc.START; series != null -> AbemaSeriesMetadataIpc.START; else -> AbemaScheduleMetadataIpc.START }
+        val cancelCode get() = when { search != null -> AbemaSearchMetadataIpc.CANCEL; series != null -> AbemaSeriesMetadataIpc.CANCEL; else -> AbemaScheduleMetadataIpc.CANCEL }
+        val pulseCode get() = when { search != null -> AbemaSearchMetadataIpc.PULSE; series != null -> AbemaSeriesMetadataIpc.PULSE; else -> AbemaScheduleMetadataIpc.PULSE }
+        val resultCode get() = when { search != null -> AbemaSearchMetadataIpc.RESULT; series != null -> AbemaSeriesMetadataIpc.RESULT; else -> AbemaScheduleMetadataIpc.RESULT }
+        fun current() = series?.current() ?: schedule?.current() ?: checkNotNull(search).current()
+        fun cancel() { when { series != null -> series.cancel(); schedule != null -> schedule.cancel(); else -> checkNotNull(search).cancel() } }
+        fun start() = series?.let { AbemaSeriesMetadataIpc.start(it.request) } ?: schedule?.let { AbemaScheduleMetadataIpc.start(it.request) }
+            ?: AbemaSearchMetadataIpc.start(checkNotNull(search).request)
         fun accept(message: Message) {
             if (series != null) {
                 val fields = AbemaSeriesMetadataIpc.fields(message.data) ?: return
                 series.accept(AbemaSeriesMetadataIpc.decodeResult(fields, series.request.page) ?: return)
-            } else {
+            } else if (schedule != null) {
                 val fields = AbemaScheduleMetadataIpc.fields(message.data) ?: return
-                checkNotNull(schedule).accept(AbemaScheduleMetadataIpc.decodeResult(fields) ?: return)
+                schedule.accept(AbemaScheduleMetadataIpc.decodeResult(fields) ?: return)
+            } else {
+                val fields = AbemaSearchMetadataIpc.fields(message.data) ?: return
+                checkNotNull(search).accept(AbemaSearchMetadataIpc.decodeResult(fields, search.request.search) ?: return)
             }
         }
         fun workerResult(canRequest: () -> Boolean, clientCurrent: () -> Boolean): ListResult? =
             series?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, page = it.page) }
                 ?: schedule?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, snapshot = it.snapshot) }
+                ?: search?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, searchReply = it.reply) }
     }
     private var active: ListOperation? = null
     private var connection: Connection? = null // Main thread only.
@@ -184,6 +219,15 @@ internal class AndroidAbemaSeriesMetadataClient(
         return when (val result = fetch(operation)) {
             is CatalogResult.Failure -> result
             is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.snapshot))
+        }
+    }
+    override fun fetch(request: AbemaSearchRequest): CatalogResult<AbemaSearchReply> {
+        val start = AbemaSearchMetadataIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
+            request, expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaSeriesMetadataIpc.OPERATION_MS)
+        val operation = ListOperation(search = AbemaSearchClientOperation(start, SystemClock::elapsedRealtime) { !closed.get() && canRemainActive() })
+        return when (val result = fetch(operation)) {
+            is CatalogResult.Failure -> result
+            is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.searchReply))
         }
     }
     private fun fetch(operation: ListOperation): CatalogResult<ListResult> {

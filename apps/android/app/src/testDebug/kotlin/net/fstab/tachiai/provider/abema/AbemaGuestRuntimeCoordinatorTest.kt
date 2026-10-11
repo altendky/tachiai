@@ -47,6 +47,8 @@ class AbemaGuestRuntimeCoordinatorTest {
         var slotRequest = AbemaSlotRequest("channel-A", "slot-A")
         var slotProjection: String? = null
         var scheduleProjection: String? = null
+        var searchRequest = AbemaSearchRequest("Public query")
+        var searchProjection: String? = null
         var statusState: String? = null
         var statusFailure = "NONE"
         var statusOverride: JSONObject? = null
@@ -73,6 +75,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                     AbemaGuestBootstrapOperation.FETCH_SERIES -> "EXACT_SERIES_PAGE"
                     AbemaGuestBootstrapOperation.FETCH_SLOT -> "EXACT_SLOT_METADATA"
                     AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> "SCHEDULE_SNAPSHOT"
+                    AbemaGuestBootstrapOperation.FETCH_SEARCH -> "SEARCH_PAGE"
                     else -> "EXACT_EPISODE_METADATA"
                 }
                 val value = statusOverride ?: JSONObject().put("state", state).put("failure", statusFailure).apply {
@@ -88,6 +91,8 @@ class AbemaGuestRuntimeCoordinatorTest {
                         .put("title", "Future slot").toString()
                     else if (operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE)
                     scheduleProjection ?: "{\"slots\":[{\"id\":\"slot-A\",\"channelId\":\"channel-A\",\"title\":\"Future slot\"}],\"truncated\":false}"
+                    else if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
+                    searchProjection ?: "{\"modules\":[{\"id\":\"episode\",\"title\":\"Episodes\",\"total\":1,\"entries\":[{\"kind\":\"episode\",\"id\":\"episode-A\",\"title\":\"Future episode\"}]}]}"
                     else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                     seriesProjection ?: "{\"seriesId\":\"$seriesParent\",\"version\":\"v1\",\"programs\":[{\"id\":\"episode-A\",\"title\":\"Future episode\"}]}"
                     else JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
@@ -144,7 +149,8 @@ class AbemaGuestRuntimeCoordinatorTest {
             if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null,
             selectedNonce, proof, main.now + 45_000,
             seriesRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest(seriesParent) else null,
-            slotRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest else null) { foreground }
+            slotRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest else null,
+            searchRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest else null) { foreground }
         fun start(selectedNonce: String = nonce) = runtime.start(request(selectedNonce), completed = results::add)
         fun pump() {
             repeat(100) {
@@ -157,6 +163,45 @@ class AbemaGuestRuntimeCoordinatorTest {
         }
     }
 
+    @Test fun searchPublishesOnlyAfterConfirmedCleanupAndFinalCapturedOwnerCheck() {
+        val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { holdClear = true }
+        assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+        f.clearCallback!!.invoke(); f.pump()
+        val result = f.results.single(); assertEquals("SEARCH_PAGE", result.category)
+        assertEquals("episode-A", result.searchReply!!.modules.single().entries.single().resource.identity)
+        assertNull(result.entry); assertNull(result.seriesPage); assertNull(result.scheduleSnapshot)
+        assertNull(result.accountChallenge); assertNull(result.accountValidation)
+        assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
+    }
+    @Test fun searchMalformedCrossModeOwnerDeadlineAndCleanupFailuresCannotExportRows() {
+        val malformed = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { searchProjection = "{\"modules\":[],\"account\":\"private\"}" }
+        assertTrue(malformed.start()); malformed.pump(); assertEquals("GUEST_SEARCH_RESPONSE", malformed.results.single().category)
+        assertNull(malformed.results.single().searchReply)
+        for (mode in 0..3) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { holdClear = true }
+            assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+            when (mode) { 0 -> f.foreground = false; 1 -> f.matching = false; 2 -> f.main.now += 45000
+                else -> { f.foreground = false; f.runtime.cancel(nonce) } }
+            f.clearCallback!!.invoke(); f.pump(); assertNull(f.results.single().searchReply)
+        }
+        val failed = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { destroy = { false } }
+        assertTrue(failed.start()); failed.pump(); assertEquals("CLEANUP_FAILED", failed.results.single().category)
+        assertNull(failed.results.single().searchReply); assertTrue(failed.runtime.unavailable)
+        for (operation in listOf(AbemaGuestBootstrapOperation.FETCH_SEARCH, AbemaGuestBootstrapOperation.FETCH_SERIES)) {
+            val f = Fixture(operation).apply { statusState = "REFUSED"; statusFailure = "SEARCH_HTTP_403" }
+            assertTrue(f.start()); f.pump()
+            assertEquals(if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) "GUEST_SEARCH_HTTP_403" else "STATUS_REFUSED", f.results.single().category)
+            assertNull(f.results.single().searchReply)
+        }
+        val cross = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { statusState = "REFUSED"; statusFailure = "SERIES_HTTP_404" }
+        assertTrue(cross.start()); cross.pump(); assertEquals("STATUS_REFUSED", cross.results.single().category)
+        val cancelled = Fixture(AbemaGuestBootstrapOperation.FETCH_SEARCH).apply { holdStatus = true }
+        assertTrue(cancelled.start()); cancelled.pump(); val view = cancelled.views.single()
+        cancelled.runtime.cancel(nonce); cancelled.pump()
+        view.statusCallback!!.invoke(view.statusValue()); cancelled.pump()
+        assertEquals("CANCELLED", cancelled.results.single().category); assertNull(cancelled.results.single().searchReply)
+        assertFalse(cancelled.events.contains("projection"))
+    }
     @Test fun schedulePublishesOnlyAfterConfirmedCleanupAndFinalCapturedOwnerCheck() {
         val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { holdClear = true }
         assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())

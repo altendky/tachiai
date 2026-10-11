@@ -25,10 +25,11 @@ class AbemaCollectionAccountBindingTest {
         override fun toString(): String = throw AssertionError("Private error inspected")
     }
     private class Fixture(present: Boolean = true, cleanupWaitMs: Long = 1000,
-        cancellation: Executor? = null) {
-        val id = UUID.randomUUID().toString()
-        val storage = MemoryAbemaAccountStorage()
-        val store = AbemaAccountGrantStore(id, storage)
+        cancellation: Executor? = null, val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
+        shared: Fixture? = null) {
+        val id: String = shared?.id ?: UUID.randomUUID().toString()
+        val storage: MemoryAbemaAccountStorage = shared?.storage ?: MemoryAbemaAccountStorage()
+        val store: AbemaAccountGrantStore = shared?.store ?: AbemaAccountGrantStore(id, storage)
         val elapsed = AtomicLong(1000)
         val wall = AtomicLong(1_000_000)
         val owner = AtomicBoolean(true)
@@ -47,8 +48,9 @@ class AbemaCollectionAccountBindingTest {
         val collectionCalls = Collections.synchronizedList(mutableListOf<Pair<String, String?>>())
         val resources = Collections.synchronizedList(mutableListOf<AutoCloseable>())
         val order = Collections.synchronizedList(mutableListOf<String>())
-        val page = AbemaMyListResponse(200, AbemaMyListPage(listOf(entry()), "fixture-next"))
-        val grant = decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall.get())
+        val page = AbemaMyListResponse(200, AbemaMyListPage(listOf(entry()), "fixture-next", kind), kind = kind)
+        val grant: AbemaAccountGrant = shared?.grant ?: decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall.get())
+        var transportKind = kind
         var ownerHook: () -> Unit = {}
         var bootstrapHook: () -> AbemaAccountValidationContext? = {
             AbemaAccountValidationContext("guest", "guest-bearer", 46_000)
@@ -61,13 +63,13 @@ class AbemaCollectionAccountBindingTest {
         }
         var profileCloseHook: () -> Unit = {}
         var collectionHook: (String, String?) -> AbemaMyListResponse = { bearer, _ ->
-            if (bearer == "tachiai-invalid-bearer") AbemaMyListResponse(401) else page
+            if (bearer == "tachiai-invalid-bearer") AbemaMyListResponse(401, kind = kind) else page
         }
         var collectionCloseHook: () -> Unit = {}
         var collectionCancelHook: () -> Unit = {}
         val binding: AbemaCollectionAccountBinding
         init {
-            if (present) store.replace(grant, wall.get(), store.revision()) { true }
+            if (present && shared == null) store.replace(grant, wall.get(), store.revision()) { true }
             val arguments = cancellation ?: Executors.newFixedThreadPool(2) {
                 Thread(it, "binding-fixture-cancel").apply { isDaemon = true }
             }
@@ -99,7 +101,12 @@ class AbemaCollectionAccountBindingTest {
                 collectionTransportFactory = { bearer, gate ->
                     assertTrue(gate())
                     object : AbemaCollectionTransport {
+                        override val kind = transportKind
                         override fun fetchMyList(next: String?): AbemaMyListResponse {
+                            if (kind != AbemaCollectionKind.MY_LIST) throw AbemaCollectionException(AbemaCollectionFailure.POLICY_REFUSED)
+                            return fetch(next)
+                        }
+                        override fun fetch(next: String?): AbemaMyListResponse {
                             assertTrue(gate()); val token = bearer() ?: throw AssertionError("No private grant at admission")
                             collectionCalls.add(token to next); order.add("list")
                             return collectionHook(token, next)
@@ -108,7 +115,7 @@ class AbemaCollectionAccountBindingTest {
                         override fun close() { collectionCloses.incrementAndGet(); order.add("list-close"); collectionCloseHook() }
                     }.also(resources::add)
                 }, elapsedMs = elapsed::get, wallMs = wall::get, onCleanupFailure = { poison.incrementAndGet() },
-                cancellation = arguments, cleanupWaitMs = cleanupWaitMs)
+                cancellation = arguments, cleanupWaitMs = cleanupWaitMs, kind = kind)
         }
         fun bytes() = storage.bytes?.copyOf()
         fun assertNoNetwork() {
@@ -233,7 +240,7 @@ class AbemaCollectionAccountBindingTest {
     @Test fun contextDigestUsesOnlyRouteProofDurableGenerationAndRevision() {
         val f = Fixture(); assertEquals(CatalogAccess.AVAILABLE, f.binding.access()); val lease = f.binding.lease()!!
         val record = f.store.read()!!
-        val expected = MessageDigest.getInstance("SHA-256").digest("${"a".repeat(64)}:${record.generation}:${f.store.revision()}".toByteArray(Charsets.US_ASCII))
+        val expected = MessageDigest.getInstance("SHA-256").digest("my_list:${"a".repeat(64)}:${record.generation}:${f.store.revision()}".toByteArray(Charsets.US_ASCII))
             .joinToString("") { "%02x".format(it.toInt() and 255) }
         assertEquals(expected, lease.contextKey)
         for (value in listOf(f.binding, lease, lease.createTransport { true })) {
@@ -483,5 +490,139 @@ class AbemaCollectionAccountBindingTest {
             assertEquals(CatalogAccess.NOT_VERIFIED, f.binding.access()); assertNull(f.binding.lease())
             assertEquals(0, f.poison.get()); assertTrue(f.resources.none(::retained)); f.binding.close()
         }
+    }
+
+    @Test fun historyRequiresItsOwnNegativeAndPositiveProofAndHasAKindBoundPrivateSeed() {
+        val f = Fixture(kind = AbemaCollectionKind.HISTORY)
+        val original = f.bytes(); val revision = f.store.revision()
+        assertEquals(CatalogAccess.AVAILABLE, f.binding.access())
+        val lease = f.binding.lease()!!
+        assertEquals(AbemaCollectionKind.HISTORY, lease.kind)
+        assertEquals(listOf("tachiai-invalid-bearer" to null, f.grant.bearer to null), f.collectionCalls)
+        val first = lease.createTransport { true }
+        collectionFailure(AbemaCollectionFailure.POLICY_REFUSED) { first.fetchMyList(null) }
+        assertSame(f.page, first.fetch(null)); first.close()
+        assertEquals(2, f.collectionCalls.size)
+        val second = lease.createTransport { true }; assertSame(f.page, second.fetch(null)); second.close()
+        val third = lease.createTransport { true }; third.fetch("private/history-next"); third.close()
+        assertEquals(listOf(null, null, null, "private/history-next"), f.collectionCalls.map { it.second })
+        assertArrayEquals(original, f.bytes()); assertEquals(revision, f.store.revision())
+        assertEquals(4, f.collectionCloses.get()); f.assertNoConnection(); f.binding.close()
+    }
+
+    @Test fun historyCannotAdoptMyListTransportProofPageOrUnsupportedCollectionKinds() {
+        for (wrong in 0..4) {
+            val f = Fixture(kind = AbemaCollectionKind.HISTORY)
+            if (wrong == 0) f.transportKind = AbemaCollectionKind.MY_LIST
+            else f.collectionHook = { bearer, _ -> when {
+                bearer == "tachiai-invalid-bearer" -> AbemaMyListResponse(401,
+                    kind = if (wrong == 1) AbemaCollectionKind.MY_LIST else AbemaCollectionKind.HISTORY)
+                wrong == 2 -> AbemaMyListResponse(200, AbemaMyListPage(listOf(Fixture.entry())))
+                else -> AbemaMyListResponse(200, AbemaMyListPage(listOf(Fixture.entry(
+                    if (wrong == 3) "series" else "slot_group", "fixture-item", CatalogIntent.COLLECTION)),
+                    kind = AbemaCollectionKind.HISTORY), kind = AbemaCollectionKind.HISTORY)
+            } }
+            assertEquals(CatalogAccess.NOT_VERIFIED, f.binding.access()); assertNull(f.binding.lease())
+            assertEquals(if (wrong == 0) 0 else if (wrong == 1) 1 else 2, f.collectionCalls.size)
+            assertEquals(if (wrong <= 1) 1 else 2, f.collectionCloses.get())
+            assertEquals(0, f.poison.get()); f.binding.close()
+        }
+    }
+
+    @Test fun collectionAvailabilityIsAsymmetricAndHistoryRefusalCannotRevokeMyListOrProtectedGrant() {
+        val denied = Fixture()
+        denied.collectionHook = { bearer, _ -> AbemaMyListResponse(if (bearer == "tachiai-invalid-bearer") 401 else 403) }
+        val history = Fixture(kind = AbemaCollectionKind.HISTORY, shared = denied)
+        val original = denied.bytes(); val revision = denied.store.revision()
+        assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, denied.binding.access())
+        assertEquals(CatalogAccess.AVAILABLE, history.binding.access())
+        val myList = Fixture(shared = denied)
+        assertEquals(CatalogAccess.AVAILABLE, myList.binding.access())
+        val listLease = myList.binding.lease()!!; val historyLease = history.binding.lease()!!
+        assertNotEquals(listLease.contextKey, historyLease.contextKey)
+        historyLease.createTransport { true }.fetch(null)
+        history.collectionHook = { _, _ -> AbemaMyListResponse(403, kind = AbemaCollectionKind.HISTORY) }
+        history.collectionCloseHook = { assertTrue(listLease.current()); assertTrue(historyLease.current()) }
+        assertEquals(403, historyLease.createTransport { true }.fetch("history-next").status)
+        assertFalse(historyLease.current()); assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, history.binding.access())
+        assertTrue(listLease.current()); assertEquals(CatalogAccess.AVAILABLE, myList.binding.access())
+        assertSame(myList.page, listLease.createTransport { true }.fetchMyList(null))
+        assertArrayEquals(original, denied.bytes()); assertEquals(revision, denied.store.revision())
+        assertEquals(0, history.poison.get()); denied.binding.close(); history.binding.close(); myList.binding.close()
+    }
+
+    @Test fun historyOwnerForgetExpiryForegroundAndOriginalDeadlineLossCannotPublishItsProof() {
+        for (loss in 0..4) {
+            val f = Fixture(kind = AbemaCollectionKind.HISTORY); val original = f.bytes()
+            f.collectionHook = { bearer, _ -> if (bearer == "tachiai-invalid-bearer")
+                AbemaMyListResponse(401, kind = f.kind) else {
+                when (loss) {
+                    0 -> f.owner.set(false)
+                    1 -> f.store.invalidateForget()
+                    2 -> f.wall.set(f.grant.expiresAtMs)
+                    3 -> f.foreground.set(false)
+                    4 -> f.elapsed.set(46_000)
+                }; f.page
+            } }
+            assertEquals(CatalogAccess.NOT_VERIFIED, f.binding.access()); assertNull(f.binding.lease())
+            assertEquals(2, f.collectionCloses.get()); assertEquals(0, f.poison.get())
+            assertArrayEquals(original, f.bytes()); f.binding.close()
+        }
+    }
+
+    @Test fun closingHistoryWhileItsPositiveReadIsHeldReturnsPromptlyAndSuppressesTheLateSeed() {
+        val f = Fixture(kind = AbemaCollectionKind.HISTORY)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
+        f.collectionHook = { bearer, _ -> if (bearer == "tachiai-invalid-bearer") AbemaMyListResponse(401, kind = f.kind)
+            else { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); f.page } }
+        f.collectionCancelHook = release::countDown
+        try {
+            val reading = worker.submit<CatalogAccess> { f.binding.access() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS)); ui.submit { f.binding.close() }.get(250, TimeUnit.MILLISECONDS)
+            assertEquals(CatalogAccess.NOT_VERIFIED, reading.get(2, TimeUnit.SECONDS)); assertNull(f.binding.lease())
+            assertEquals(1, f.collectionCancels.get()); assertEquals(2, f.collectionCloses.get())
+            assertTrue(f.resources.none(::retained)); assertEquals(0, f.poison.get())
+        } finally { release.countDown(); f.binding.close(); worker.shutdownNow(); ui.shutdownNow() }
+    }
+
+    @Test fun historyCleanupUncertaintyRetainsTheActualCollectionAndCannotBecomeAvailable() {
+        val f = Fixture(kind = AbemaCollectionKind.HISTORY)
+        f.collectionCloseHook = { throw Hostile() }
+        assertEquals(CatalogAccess.NOT_VERIFIED, f.binding.access()); assertNull(f.binding.lease())
+        assertEquals(1, f.collectionCalls.size); assertEquals(1, f.collectionCloses.get())
+        assertTrue(retained(f.resources.last())); assertEquals(1, f.poison.get())
+        f.binding.close(); f.binding.close(); assertEquals(1, f.collectionCloses.get())
+    }
+
+    @Test fun historyMissingCorruptAndExpiredProtectedRecordsNeverRequestGuestOrCollections() {
+        val missing = Fixture(present = false, kind = AbemaCollectionKind.HISTORY)
+        val corrupt = Fixture(kind = AbemaCollectionKind.HISTORY); corrupt.storage.bytes = byteArrayOf(1, 2, 3)
+        val expired = Fixture(kind = AbemaCollectionKind.HISTORY); expired.wall.set(expired.grant.expiresAtMs)
+        for ((f, access) in listOf(missing to CatalogAccess.AUTHORIZATION_REQUIRED,
+            corrupt to CatalogAccess.NOT_VERIFIED, expired to CatalogAccess.RECONNECT_REQUIRED)) {
+            assertEquals(access, f.binding.access()); assertNull(f.binding.lease()); f.assertNoNetwork(); f.binding.close()
+        }
+    }
+
+    @Test fun historyFinalProtectedOwnerReadCannotHidePauseOrBlockCheapClose() {
+        val f = Fixture(kind = AbemaCollectionKind.HISTORY)
+        assertEquals(CatalogAccess.AVAILABLE, f.binding.access()); val lease = f.binding.lease()!!
+        lease.createTransport { true }.fetch(null)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val armed = AtomicBoolean()
+        val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
+        f.ownerHook = { if (armed.getAndSet(false)) { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) } }
+        f.collectionHook = { _, _ -> armed.set(true); f.page }
+        val request = lease.createTransport { true }
+        try {
+            val reading = worker.submit<Boolean> { try { request.fetch("history-next"); false }
+                catch (error: AbemaCollectionException) { error.category == AbemaCollectionFailure.CANCELLED } }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            f.foreground.set(false); ui.submit { f.binding.close() }.get(250, TimeUnit.MILLISECONDS)
+            assertThrows(TimeoutException::class.java) { reading.get(100, TimeUnit.MILLISECONDS) }
+            release.countDown(); assertTrue(reading.get(2, TimeUnit.SECONDS))
+            assertFalse(lease.current()); assertNull(f.binding.lease()); assertEquals(3, f.collectionCloses.get())
+            assertEquals(0, f.poison.get()); assertTrue(f.resources.none(::retained))
+        } finally { release.countDown(); request.close(); f.binding.close(); worker.shutdownNow(); ui.shutdownNow() }
     }
 }

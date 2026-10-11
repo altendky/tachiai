@@ -9,9 +9,16 @@ import net.fstab.tachiai.provider.catalog.*
 internal const val ABEMA_MY_LIST_PAGE_LIMIT = 20
 internal const val ABEMA_MY_LIST_RESPONSE_LIMIT = 512 * 1024
 
+// Closed read-only endpoints. A collection's proof and private cache never
+// establish access to another collection, even under the same account/route.
+internal enum class AbemaCollectionKind(val collectionId: String, val title: String) {
+    MY_LIST("my_list", "My List"), HISTORY("history", "History")
+}
+
 // This port is worker-only. AVAILABLE means a separately verified account and
 // collection access, never merely that a protected record contains a token.
 internal interface AbemaCollectionAccountAccess {
+    val kind: AbemaCollectionKind get() = AbemaCollectionKind.MY_LIST
     fun access(): CatalogAccess
     fun lease(): AbemaCollectionLease?
 }
@@ -23,8 +30,12 @@ internal class AbemaCollectionLease(
     val instanceId: String,
     internal val contextKey: String,
     private val canRequest: () -> Boolean,
+    val kind: AbemaCollectionKind,
     private val transportFactory: (() -> Boolean) -> AbemaCollectionTransport,
 ) {
+    constructor(instanceId: String, contextKey: String, canRequest: () -> Boolean,
+        transportFactory: (() -> Boolean) -> AbemaCollectionTransport) :
+        this(instanceId, contextKey, canRequest, AbemaCollectionKind.MY_LIST, transportFactory)
     init {
         require(validProviderInstanceId(instanceId))
         require(contextKey.matches(Regex("[0-9a-f]{64}")))
@@ -43,7 +54,8 @@ internal class AbemaCollectionException(val category: AbemaCollectionFailure) :
 
 // Only the necessary public projection survives parsing. Dataset bodies,
 // progress, entitlement fields and provider continuation values are never saved.
-internal class AbemaMyListPage(entries: List<CatalogEntry>, internal val providerNext: String? = null) {
+internal class AbemaMyListPage(entries: List<CatalogEntry>, internal val providerNext: String? = null,
+    val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST) {
     val entries: List<CatalogEntry> = Collections.unmodifiableList(ArrayList(entries))
     init {
         require(entries.size <= ABEMA_MY_LIST_PAGE_LIMIT)
@@ -52,19 +64,25 @@ internal class AbemaMyListPage(entries: List<CatalogEntry>, internal val provide
     override fun toString() = "AbemaMyListPage(redacted)"
 }
 
-internal class AbemaMyListResponse(val status: Int, val page: AbemaMyListPage? = null, val retryAtEpochMs: Long? = null) {
+internal class AbemaMyListResponse(val status: Int, val page: AbemaMyListPage? = null, val retryAtEpochMs: Long? = null,
+    val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST) {
     init {
         require(status in 100..599)
         require((status == 200) == (page != null))
+        require(page == null || page.kind == kind)
         require(retryAtEpochMs == null || status == 429 && retryAtEpochMs >= 0)
     }
     override fun toString() = "AbemaMyListResponse(redacted)"
 }
 
 internal interface AbemaCollectionTransport : AutoCloseable {
-    // Exactly one fixed read-only My List request; never membership mutations,
-    // history, profile, login, refresh or playback. Non-200 bodies stay unread.
+    val kind: AbemaCollectionKind get() = AbemaCollectionKind.MY_LIST
+    // Preserve the original My List port for existing implementations/callers.
+    // Production History transports refuse this legacy method.
     fun fetchMyList(next: String?): AbemaMyListResponse
+    // Exactly one fixed read-only request selected by immutable kind; no
+    // mutations/profile/login/refresh/playback. Non-200 bodies stay unread.
+    fun fetch(next: String?): AbemaMyListResponse = fetchMyList(next)
     fun cancelActiveRequest() = Unit
 }
 
@@ -77,4 +95,15 @@ internal fun abemaMyListRequestUri(next: String? = null): URI {
     require(next == null || validAbemaCollectionContinuation(next))
     val suffix = next?.let { "&next=" + URLEncoder.encode(it, "UTF-8") } ?: ""
     return URI("https://api.p-c3-e.abema-tv.com/v1/mylist?limit=20&order=updated_at_desc&withDataSet=true&include=liveEvent$suffix")
+}
+
+internal fun abemaHistoryRequestUri(next: String? = null): URI {
+    require(next == null || validAbemaCollectionContinuation(next))
+    val suffix = next?.let { "&next=" + URLEncoder.encode(it, "UTF-8") } ?: ""
+    return URI("https://api.p-c3-e.abema-tv.com/v1/video/viewing/histories?limit=20&include=liveEvent$suffix")
+}
+
+internal fun abemaCollectionRequestUri(kind: AbemaCollectionKind, next: String? = null): URI = when (kind) {
+    AbemaCollectionKind.MY_LIST -> abemaMyListRequestUri(next)
+    AbemaCollectionKind.HISTORY -> abemaHistoryRequestUri(next)
 }

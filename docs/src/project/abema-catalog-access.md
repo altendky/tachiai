@@ -118,8 +118,9 @@ catalog interface. It sends one anonymous GET to
 instance's explicit saved route. Search filters channel names/IDs locally; pages
 of 20 use a bounded in-memory snapshot and opaque, single-use continuations
 owned by the instance, captured route and query. A new query, lookup, refresh,
-access loss or close discards the previous continuation. My List and History
-remain explicitly not verified.
+access loss or close discards the previous continuation. Channels success does
+not establish My List or History access; separate outer account bindings must
+prove each collection endpoint independently.
 
 The transport accepts at most 512 KiB and 500 unique channels, requires bounded
 valid JSON/UTF-8 and retains only normalized ID/name. It discards playback URLs,
@@ -290,8 +291,10 @@ its real account criteria are met.
 The debug catalog composes a read-only My List adapter around public Channels
 and inside local public-link import. Existing configured choices remain
 Tachiai-owned: browsing never automatically adds an item, mutates ABEMA's list
-or deletes a configured choice when the provider omits it. History remains a
-separate, unverified capability under #102.
+or deletes a configured choice when the provider omits it. The separate
+[History adapter](provider-history-access.md#abema-read-only-history-adapter--2026-10-11)
+uses its own collection binding and endpoint proof under #102; real
+intended-account acceptance remains unverified for both collections.
 
 Account validation runs on workers and uses the core session directly. Missing
 or corrupt protected authorization starts no provider request. A valid saved

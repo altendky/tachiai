@@ -32,6 +32,7 @@ internal class AbemaCollectionAccountBinding(
     private val onCleanupFailure: () -> Unit,
     private val cancellation: Executor = cancellationWorkers,
     private val cleanupWaitMs: Long = 1000,
+    override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
 ) : AbemaCollectionAccountAccess, AutoCloseable {
     companion object {
         private const val INVALID_BEARER = "tachiai-invalid-bearer"
@@ -225,14 +226,21 @@ internal class AbemaCollectionAccountBinding(
         val accountLease = session.lease() ?: throw Denied()
         fun listGate() = gate() && accountLease.usable() && gate()
         val negative = owned({ collectionTransportFactory({ INVALID_BEARER.takeIf { listGate() } }, ::listGate) },
-            AbemaCollectionTransport::cancelActiveRequest, ::listGate) { it.fetchMyList(null) }
-        if (negative.status !in setOf(401, 403)) throw Denied()
+            AbemaCollectionTransport::cancelActiveRequest, ::listGate) {
+            if (it.kind != kind) throw Denied()
+            it.fetch(null)
+        }
+        if (negative.kind != kind || negative.status !in setOf(401, 403)) throw Denied()
         val positive = owned({ collectionTransportFactory({ record.grant.bearer.takeIf { listGate() } }, ::listGate) },
-            AbemaCollectionTransport::cancelActiveRequest, ::listGate) { it.fetchMyList(null) }
+            AbemaCollectionTransport::cancelActiveRequest, ::listGate) {
+            if (it.kind != kind) throw Denied()
+            it.fetch(null)
+        }
+        if (positive.kind != kind) throw Denied()
         if (positive.status in setOf(401, 403)) throw Denied(CatalogAccess.AUTHORIZATION_REQUIRED)
         if (positive.status != 200 || positive.page?.let(::validPage) != true) throw Denied()
         requireCurrent(::listGate)
-        val key = MessageDigest.getInstance("SHA-256").digest("$ownerProof:${record.generation}:$savedRevision".toByteArray(Charsets.US_ASCII))
+        val key = MessageDigest.getInstance("SHA-256").digest("${kind.collectionId}:$ownerProof:${record.generation}:$savedRevision".toByteArray(Charsets.US_ASCII))
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
         val value = Verified(run, savedRevision, record, accountLease, key)
         synchronized(state) {
@@ -266,20 +274,32 @@ internal class AbemaCollectionAccountBinding(
         if (access() != CatalogAccess.AVAILABLE) return null
         val value = synchronized(state) { verified } ?: return null
         if (!current(value)) { invalidate(value); return null }
-        return AbemaCollectionLease(instanceId, value.contextKey, { current(value) }) { admission ->
+        return AbemaCollectionLease(instanceId, value.contextKey, { current(value) }, kind) { admission ->
             object : AbemaCollectionTransport {
+                override val kind = this@AbemaCollectionAccountBinding.kind
                 private val stopped = AtomicBoolean()
                 private val fetched = AtomicBoolean()
                 private val pending = AtomicReference<Pending?>()
                 private fun gate() = !stopped.get() && current(value) && try { admission() } catch (_: Throwable) { false }
                 override fun fetchMyList(next: String?): AbemaMyListResponse {
+                    if (kind != AbemaCollectionKind.MY_LIST) throw AbemaCollectionException(AbemaCollectionFailure.POLICY_REFUSED)
+                    return fetch(next)
+                }
+                override fun fetch(next: String?): AbemaMyListResponse {
                     if (!fetched.compareAndSet(false, true)) throw AbemaCollectionException(AbemaCollectionFailure.POLICY_REFUSED)
                     try {
                         requireCurrent(::gate)
                         val first = synchronized(state) { if (next == null && verified === value) seed.also { seed = null } else null }
-                        if (first != null) { requireCurrent(::gate); return first }
+                        if (first != null) {
+                            if (first.kind != kind || first.page?.let(::validPage) != true) throw Denied()
+                            requireCurrent(::gate); return first
+                        }
                         val response = owned({ collectionTransportFactory({ value.record.grant.bearer.takeIf { gate() } }, ::gate) },
-                            AbemaCollectionTransport::cancelActiveRequest, ::gate, onPending = pending::set) { it.fetchMyList(next) }
+                            AbemaCollectionTransport::cancelActiveRequest, ::gate, onPending = pending::set) {
+                            if (it.kind != kind) throw Denied()
+                            it.fetch(next)
+                        }
+                        if (response.kind != kind || response.status == 200 && response.page?.let(::validPage) != true) throw Denied()
                         // The owned request has completed confirmed cleanup.
                         // This observed collection refusal does not diagnose
                         // provider account expiry or alter the saved grant.
@@ -294,12 +314,13 @@ internal class AbemaCollectionAccountBinding(
             }
         }
     }
-    private fun validPage(page: AbemaMyListPage): Boolean = page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all {
+    private fun validPage(page: AbemaMyListPage): Boolean = page.kind == kind &&
+        page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all {
         val resource = it.resource
         resource.providerId == ProviderId("abema") && it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null &&
             safeMyListTitle(it.title) && it.title == it.title.trim() && when (resource.kind) {
                 "episode" -> resource.intent == CatalogIntent.VIDEO && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
-                "series", "slot_group" -> resource.intent == CatalogIntent.COLLECTION && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
+                "series", "slot_group" -> kind == AbemaCollectionKind.MY_LIST && resource.intent == CatalogIntent.COLLECTION && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
                 "live_event" -> resource.intent == CatalogIntent.BROADCAST && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
                 "slot" -> resource.intent == CatalogIntent.BROADCAST && resource.identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))
                 else -> false

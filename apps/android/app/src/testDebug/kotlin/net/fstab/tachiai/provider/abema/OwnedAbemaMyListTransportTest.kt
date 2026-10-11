@@ -30,12 +30,13 @@ class OwnedAbemaMyListTransportTest {
     }
     private class Connection(val streamFailed: Boolean = false, val disconnectFailed: Boolean = false,
         val streamClosing: () -> Unit = {}, val disconnecting: () -> Unit = {},
-        val requestUrl: URL = abemaMyListRequestUri().toURL()) : HttpsURLConnection(requestUrl) {
+        val requestUrl: URL = abemaMyListRequestUri().toURL(),
+        val body: String = """{"mylist":[],"dataSet":{}}""") : HttpsURLConnection(requestUrl) {
         val streamCloses = AtomicInteger(); val disconnects = AtomicInteger()
         override fun getResponseCode() = 200
         override fun getContentType() = "application/json"
         override fun getContentLengthLong() = -1L
-        override fun getInputStream(): InputStream = object : ByteArrayInputStream("""{"mylist":[],"dataSet":{}}""".toByteArray()) {
+        override fun getInputStream(): InputStream = object : ByteArrayInputStream(body.toByteArray()) {
             override fun close() { streamCloses.incrementAndGet(); streamClosing(); if (streamFailed) throw Hostile(); super.close() }
         }
         override fun disconnect() { disconnects.incrementAndGet(); disconnecting(); if (disconnectFailed) throw Hostile() }
@@ -353,4 +354,77 @@ class OwnedAbemaMyListTransportTest {
             backends.forEach { assertEquals(1, it.closes.get()) }
         } finally { requests.shutdownNow() }
     }
+
+    @Test fun historyUsesTheSameOwnedRouteCleanupWithItsOwnStrictEndpointAndProjection() {
+        val order = mutableListOf<String>(); val backend = Backend(closing = { order.add("backend") })
+        val next = "history+/=&page=2"
+        val connection = Connection(requestUrl = abemaHistoryRequestUri(next).toURL(), body = historyBody,
+            streamClosing = { order.add("stream") }, disconnecting = { order.add("disconnect") })
+        var bearerReads = 0; var poisons = 0
+        val owned = OwnedAbemaMyListTransport(profile, { bearerReads++; "fixture-private-bearer" }, { true }, { poisons++ },
+            createBackend = { _, security, _ -> assertEquals("api.p-c3-e.abema-tv.com", security.allowedHosts); backend },
+            createTransport = { _, bearer, gate -> AbemaMyListHttpTransport({ target ->
+                assertEquals(abemaHistoryRequestUri(next).toURL(), target); connection
+            }, bearer, gate, clockMs = { 1000 }, kind = AbemaCollectionKind.HISTORY) }, kind = AbemaCollectionKind.HISTORY)
+        failure(AbemaCollectionFailure.POLICY_REFUSED) { owned.fetchMyList(next) }
+        assertEquals(0, bearerReads); assertEquals(0, backend.closes.get())
+        val response = owned.fetch(next)
+        assertEquals(AbemaCollectionKind.HISTORY, response.kind); assertEquals(AbemaCollectionKind.HISTORY, response.page!!.kind)
+        assertEquals("history-episode", response.page!!.entries.single().resource.identity)
+        assertEquals(listOf("stream", "disconnect", "backend"), order)
+        assertEquals(1, bearerReads); assertEquals(0, poisons); owned.close(); owned.close()
+        assertEquals(1, backend.closes.get()); assertEquals(1, connection.disconnects.get())
+    }
+
+    @Test fun historyRejectsMyListInnerFactoryAndResponseBeforeReturningAnyPrivatePage() {
+        for (wrongFactory in listOf(false, true)) {
+            val backend = Backend(); var fetches = 0; var closes = 0; var poison = 0
+            val inner = object : AbemaCollectionTransport {
+                override val kind = if (wrongFactory) AbemaCollectionKind.MY_LIST else AbemaCollectionKind.HISTORY
+                override fun fetchMyList(next: String?) = response()
+                override fun fetch(next: String?): AbemaMyListResponse { fetches++; return response() }
+                override fun close() { closes++ }
+            }
+            val owned = OwnedAbemaMyListTransport(profile, { "fixture" }, { true }, { poison++ },
+                createBackend = { _, _, _ -> backend }, createTransport = { _, _, _ -> inner }, kind = AbemaCollectionKind.HISTORY)
+            failure(if (wrongFactory) AbemaCollectionFailure.POLICY_REFUSED else AbemaCollectionFailure.INVALID_RESPONSE) { owned.fetch(null) }
+            assertEquals(if (wrongFactory) 0 else 1, fetches); assertEquals(1, closes); assertEquals(1, backend.closes.get())
+            assertEquals(0, poison); owned.close(); assertFalse(retained(inner)); assertFalse(retained(backend))
+        }
+    }
+
+    @Test fun historyCannotUseMyListOrMutateTheExactHistoryQueryThroughItsOwnedOpener() {
+        for (wrong in listOf(abemaMyListRequestUri().toURL(),
+            URL("https://api.p-c3-e.abema-tv.com/v1/video/viewing/histories?limit=20&include=liveEvent&statuses=COMPLETE"))) {
+            val backend = Backend(); var tokenReads = 0
+            val owned = OwnedAbemaMyListTransport(profile, { tokenReads++; "fixture" }, { true },
+                createBackend = { _, _, _ -> backend }, createTransport = { open, _, _ ->
+                    object : AbemaCollectionTransport {
+                        override val kind = AbemaCollectionKind.HISTORY
+                        override fun fetchMyList(next: String?) = throw AssertionError("History used legacy port")
+                        override fun fetch(next: String?): AbemaMyListResponse { open(wrong); throw AssertionError("Wrong endpoint admitted") }
+                        override fun close() = Unit
+                    }
+                }, kind = AbemaCollectionKind.HISTORY)
+            failure(AbemaCollectionFailure.POLICY_REFUSED) { owned.fetch(null) }
+            assertEquals(0, tokenReads); assertEquals(1, backend.closes.get()); owned.close()
+        }
+    }
+
+    @Test fun fatalHistoryNativeCleanupKeepsItsExactTransportAndBackendInsteadOfReleasingTheRoute() {
+        val backend = Backend(); val connection = Connection(requestUrl = abemaHistoryRequestUri().toURL(),
+            body = historyBody, disconnectFailed = true)
+        lateinit var http: AbemaMyListHttpTransport; var poisons = 0
+        val owned = OwnedAbemaMyListTransport(profile, { "fixture" }, { true }, { poisons++ },
+            createBackend = { _, _, _ -> backend }, createTransport = { _, bearer, gate ->
+                AbemaMyListHttpTransport({ connection }, bearer, gate, clockMs = { 1000 },
+                    kind = AbemaCollectionKind.HISTORY).also { http = it }
+            }, kind = AbemaCollectionKind.HISTORY)
+        failure(AbemaCollectionFailure.CLEANUP_FAILED) { owned.fetch(null) }
+        assertTrue(retained(http)); assertTrue(retained(backend)); assertEquals(0, backend.closes.get()); assertEquals(1, poisons)
+        repeat(2) { failure(AbemaCollectionFailure.CLEANUP_FAILED) { owned.close() } }
+        assertEquals(1, connection.streamCloses.get()); assertEquals(1, connection.disconnects.get()); assertEquals(0, backend.closes.get())
+    }
+
+    private val historyBody = """{"histories":[{"type":2,"sourceId":"history-episode"}],"dataSet":{"vods":[{"id":"history-episode","title":"History fixture"}]}}"""
 }

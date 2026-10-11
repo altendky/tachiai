@@ -3,8 +3,53 @@
 This is partial research for
 [issue #102](https://github.com/altendky/tachiai/issues/102), reviewed on
 2026-10-09. History can help discover previously viewed channels and on-demand
-items without making them favorites. No supported native account-history
-retrieval path was established for ABEMA or Twitch; #102 remains open.
+items without making them favorites. A bounded undocumented ABEMA read-only
+adapter is now implemented as described below; intended-account retrieval
+remains unverified. No supported native Twitch account-history retrieval path
+was established; #102 remains open.
+
+## ABEMA read-only History adapter — 2026-10-11
+
+The debug ABEMA catalog exposes History through the same collection browsing
+and explicit Add interface as My List. It retrieves provider-owned viewing
+history rather than recording Tachiai usage. Browsing does not mutate provider
+history, automatically configure an item or remove existing configured choices.
+
+Coherent first-party web bundles identify a bearer-authenticated GET on the
+reviewed API origin at `/v1/video/viewing/histories`, with `limit=20`,
+`include=liveEvent` and an optional opaque `next` continuation. Twenty is the
+selected client page bound, not a verified provider maximum. The adapter
+preserves provider order; it does not infer a chronological ordering contract.
+
+Strict projection joins each history reference's type and source ID to its
+matching timeshift, video or live-event dataset entry. Timeshifts retain exact
+channel/slot broadcast identity; videos retain exact episode identity; live
+events retain their own broadcast identity. Duplicate references retain the
+first exact resource. Missing, conflicting or unknown joins refuse the page.
+Only public identities and titles enter the catalog. Availability stays UNKNOWN;
+viewed time, progress, completion, scheduling and entitlement are not inferred.
+Responses, datasets and continuation values have finite local bounds.
+
+History and My List use separate account bindings and separate endpoint proofs.
+History is available only after fresh intended-account validation, an invalid
+bearer refusal and a strictly parsed positive History page with confirmed
+cleanup. Profile or My List success does not establish History access. Collection
+kind is bound into transport admission, response projection, lease context,
+the one-use in-memory first-page seed and continuation handles. A History
+authorization refusal discards its private browsing state without erasing the
+protected grant or revoking an independently valid My List binding. Uncertain
+resource cleanup still blocks account admission for the entire provider instance.
+
+The opt-in `AbemaHistoryDeviceTest` requires `tachiaiReadOnlyAbemaHistory=true`,
+an explicit provider instance, ordinary application-process targeting and the
+verified tachiai-dev AVD. It skips before private access by default. After the
+owner completes account approval, it requests one History browse through the
+production factory, without probing My List or requesting another page. It
+checks encrypted-record and route ownership preservation, foreground/deadline
+gates and exact conservative projection, and logs only closed outcomes and
+counts. A separate protected-record baseline must be established after the
+owner's intentional grant write. No real account or device check has yet run;
+source fixtures cannot establish account access, history coverage or retention.
 
 ## User-approved meaning and access — 2026-10-10
 
@@ -84,7 +129,9 @@ connected. The current evidence does not justify a definitive provider-wide
 unsupported claim or a promise that connecting an account unlocks retrieval.
 
 Direct Twitch History browsing fails before catalog validation, refresh or
-metadata HTTP; sample/ABEMA browsing also returns not verified. The existing
+metadata HTTP; the sample ABEMA adapter also returns not verified. The native
+ABEMA account adapter now has a separate conditional History path described
+above; its access depends on its own endpoint proof. The existing
 shared controller preflight skips unavailable collection browsing, clears the
 discovery surface and retains configured items. Users can return to ordinary
 All/Following/My List discovery with its existing access rules. Generic unverified
@@ -93,8 +140,10 @@ copy now states the uncertainty rather than asking for connection as a remedy.
 Production adapter, controller and Compose fixtures cover reporting, request
 suppression, retained configured items and return to ordinary discovery. This is
 implemented capability reporting, not real history retrieval or account acceptance.
-No endpoint, scope, export import, viewed-time/progress field or history mutation
-is added; #102 remains open for its retrieval and privacy requirements.
+That earlier #130 change added no endpoint, scope, export import,
+viewed-time/progress field or history mutation. The new bounded ABEMA endpoint
+adapter still requires intended-account acceptance; #102 remains open for that
+and the remaining Twitch retrieval and privacy requirements.
 
 ## Content identity, timing and availability
 

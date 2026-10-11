@@ -25,11 +25,13 @@ class AbemaAccountCollectionsCatalogTest {
         override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { resolveCalls++; return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) }
         override fun close() { closes++ }
     }
-    private class Access(val instance: String) : AbemaCollectionAccountAccess {
+    private class Access(val instance: String, override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST) : AbemaCollectionAccountAccess {
         var permission = CatalogAccess.AVAILABLE
         var context = "a".repeat(64)
         var owns = true
         var leaseInstance = instance
+        var leaseKind = kind
+        var transportKind = kind
         var creates = 0
         var closes = 0
         var cancels = 0
@@ -37,15 +39,20 @@ class AbemaAccountCollectionsCatalogTest {
         var cancelFailure = false
         var admission: (() -> Boolean)? = null
         var beforeFetch: () -> Unit = {}
-        var response = AbemaMyListResponse(200, parseAbemaMyListResponse(page("first", "provider-next")))
+        var response = response(kind, "first", "provider-next")
         val requests = mutableListOf<String?>()
         override fun access() = permission
         override fun lease(): AbemaCollectionLease {
             val captured = context
-            return AbemaCollectionLease(leaseInstance, captured, { owns && context == captured }) { gate ->
+            return AbemaCollectionLease(leaseInstance, captured, { owns && context == captured }, leaseKind) { gate ->
                 creates++; admission = gate
                 object : AbemaCollectionTransport {
+                    override val kind = transportKind
                     override fun fetchMyList(next: String?): AbemaMyListResponse {
+                        if (kind != AbemaCollectionKind.MY_LIST) throw AbemaCollectionException(AbemaCollectionFailure.POLICY_REFUSED)
+                        return fetch(next)
+                    }
+                    override fun fetch(next: String?): AbemaMyListResponse {
                         check(gate()); requests.add(next); beforeFetch(); return response
                     }
                     override fun cancelActiveRequest() { cancels++; if (cancelFailure) throw AssertionError("Private fixture text") }
@@ -236,11 +243,123 @@ class AbemaAccountCollectionsCatalogTest {
         }
     }
 
+    @Test fun historyAndMyListExposeIndependentAvailabilityAndHistoryHasNoPublicFallback() {
+        val id = UUID.randomUUID().toString(); val public = Public(id)
+        val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+        val catalog = AbemaAccountCollectionsCatalog(public, list, history = history)
+        list.permission = CatalogAccess.AUTHORIZATION_REQUIRED
+        val initial = catalog.capabilities().collections.associate { it.id to it.access }
+        assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, initial["my_list"])
+        assertEquals(CatalogAccess.AVAILABLE, initial["history"])
+        failure(catalog.browse(CatalogQuery(collectionId = "my_list")), CatalogFailure.ACCESS_REQUIRED)
+        val first = value(catalog.browse(CatalogQuery(collectionId = "history")))
+        assertEquals("first", first.entries.single().resource.identity)
+        assertEquals(CatalogAvailability.UNKNOWN, first.entries.single().availability)
+        assertEquals(listOf<String?>(null), history.requests); assertEquals(1, history.closes)
+        list.permission = CatalogAccess.AVAILABLE
+        history.response = AbemaMyListResponse(403, kind = AbemaCollectionKind.HISTORY)
+        failure(catalog.browse(CatalogQuery(collectionId = "history", cursor = first.nextCursor)), CatalogFailure.ACCESS_REQUIRED)
+        history.permission = CatalogAccess.AUTHORIZATION_REQUIRED
+        assertEquals(CatalogAccess.AVAILABLE, catalog.capabilities().collections.single { it.id == "my_list" }.access)
+        assertEquals("first", value(catalog.browse(CatalogQuery(collectionId = "my_list"))).entries.single().resource.identity)
+        assertEquals(0, public.browseCalls); catalog.close()
+    }
+
+    @Test fun historyProofLeaseTransportAndPageCannotBeSuppliedByMyList() {
+        for (wrong in 0..3) {
+            val id = UUID.randomUUID().toString(); val list = Access(id)
+            val history = Access(id, AbemaCollectionKind.HISTORY)
+            if (wrong == 0) history.leaseKind = AbemaCollectionKind.MY_LIST
+            if (wrong == 1) history.transportKind = AbemaCollectionKind.MY_LIST
+            if (wrong == 2) history.response = response(AbemaCollectionKind.MY_LIST, "private-list")
+            if (wrong == 3) history.response = AbemaMyListResponse(200, AbemaMyListPage(listOf(
+                CatalogEntry(CatalogResource(ProviderId("abema"), "series", "private-series", CatalogIntent.COLLECTION), "Series")),
+                kind = AbemaCollectionKind.HISTORY), kind = AbemaCollectionKind.HISTORY)
+            val public = Public(id); val catalog = AbemaAccountCollectionsCatalog(public, list, history = history)
+            failure(catalog.browse(CatalogQuery(collectionId = "history")),
+                if (wrong == 0) CatalogFailure.ACCESS_REQUIRED else CatalogFailure.TEMPORARY)
+            assertEquals(if (wrong <= 1) 0 else 1, history.requests.size)
+            assertEquals(if (wrong == 0) 0 else 1, history.closes)
+            assertEquals(0, public.browseCalls); catalog.close()
+        }
+        val id = UUID.randomUUID().toString(); val list = Access(id)
+        val wrongProof = AbemaAccountCollectionsCatalog(Public(id), list, history = list)
+        assertEquals(CatalogAccess.NOT_VERIFIED, wrongProof.capabilities().collections.single { it.id == "history" }.access)
+        failure(wrongProof.browse(CatalogQuery(collectionId = "history")), CatalogFailure.ACCESS_REQUIRED)
+        assertEquals(0, list.creates); wrongProof.close()
+    }
+
+    @Test fun continuationCannotCrossCollectionsEvenWithIdenticalOpaqueLeaseContexts() {
+        for (from in AbemaCollectionKind.values()) {
+            val id = UUID.randomUUID().toString(); val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+            assertEquals(list.context, history.context)
+            val catalog = AbemaAccountCollectionsCatalog(Public(id), list, history = history)
+            val first = value(catalog.browse(CatalogQuery(collectionId = from.collectionId)))
+            val to = if (from == AbemaCollectionKind.MY_LIST) AbemaCollectionKind.HISTORY else AbemaCollectionKind.MY_LIST
+            failure(catalog.browse(CatalogQuery(collectionId = to.collectionId, cursor = first.nextCursor)), CatalogFailure.INVALID_INPUT)
+            assertEquals(1, list.requests.size + history.requests.size)
+            failure(catalog.browse(CatalogQuery(collectionId = from.collectionId, cursor = first.nextCursor)), CatalogFailure.ACCESS_REQUIRED)
+            assertEquals(1, list.requests.size + history.requests.size); catalog.close()
+        }
+    }
+
+    @Test fun deniedOrChangedHistoryCapabilityCannotConsumeAnActiveMyListContinuation() {
+        for (wrongLease in listOf(false, true)) {
+            val id = UUID.randomUUID().toString(); val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+            val catalog = AbemaAccountCollectionsCatalog(Public(id), list, history = history)
+            val first = value(catalog.browse(CatalogQuery(collectionId = "my_list")))
+            if (wrongLease) history.leaseKind = AbemaCollectionKind.MY_LIST else history.permission = CatalogAccess.AUTHORIZATION_REQUIRED
+            assertEquals(if (wrongLease) CatalogAccess.NOT_VERIFIED else CatalogAccess.AUTHORIZATION_REQUIRED,
+                catalog.capabilities().collections.single { it.id == "history" }.access)
+            list.response = response(AbemaCollectionKind.MY_LIST, "second")
+            assertEquals("second", value(catalog.browse(CatalogQuery(collectionId = "my_list", cursor = first.nextCursor))).entries.single().resource.identity)
+            assertEquals(listOf(null, "provider-next"), list.requests); assertTrue(history.requests.isEmpty()); catalog.close()
+        }
+    }
+
+    @Test fun thrownHistoryRequestAfterOwnerLossInvalidatesItsPrivateContinuationAndAlwaysCloses() {
+        val id = UUID.randomUUID().toString(); val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+        val catalog = AbemaAccountCollectionsCatalog(Public(id), list, history = history)
+        val first = value(catalog.browse(CatalogQuery(collectionId = "history")))
+        history.beforeFetch = { history.owns = false; throw AbemaCollectionException(AbemaCollectionFailure.CANCELLED) }
+        failure(catalog.browse(CatalogQuery(collectionId = "history", cursor = first.nextCursor)), CatalogFailure.ACCESS_REQUIRED)
+        history.beforeFetch = {}; history.owns = true
+        failure(catalog.browse(CatalogQuery(collectionId = "history", cursor = first.nextCursor)), CatalogFailure.ACCESS_REQUIRED)
+        assertEquals(2, history.closes); assertEquals(2, history.requests.size)
+        assertEquals(CatalogAccess.AVAILABLE, catalog.capabilities().collections.single { it.id == "my_list" }.access); catalog.close()
+    }
+
+    @Test fun uncertainHistoryCleanupPoisonsBothCollectionKindsForThisInstance() {
+        val id = UUID.randomUUID().toString(); val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+        val catalog = AbemaAccountCollectionsCatalog(Public(id), list, history = history)
+        history.closeFailure = true
+        failure(catalog.browse(CatalogQuery(collectionId = "history")), CatalogFailure.ACCESS_REQUIRED)
+        assertTrue(catalog.capabilities().collections.all { it.access == CatalogAccess.NOT_VERIFIED })
+        failure(catalog.browse(CatalogQuery(collectionId = "my_list")), CatalogFailure.ACCESS_REQUIRED)
+        assertEquals(0, list.creates); assertEquals(1, history.closes)
+        val reopened = AbemaAccountCollectionsCatalog(Public(id), list, history = history)
+        failure(reopened.browse(CatalogQuery(collectionId = "history")), CatalogFailure.ACCESS_REQUIRED)
+        assertEquals(1, history.creates); catalog.close(); reopened.close()
+    }
+
+    @Test fun originalMyListPositionalAndTrailingLambdaContractsRemainAvailable() {
+        val id = UUID.randomUUID().toString(); val access = Access(id)
+        val catalog = AbemaAccountCollectionsCatalog(Public(id), access, { true }) { 1000L }
+        val originalLease = AbemaCollectionLease(id, "a".repeat(64), { true }) { access.lease().createTransport(it) }
+        val positionalLease = AbemaCollectionLease(id, "a".repeat(64), { true }, { access.lease().createTransport(it) })
+        assertEquals(AbemaCollectionKind.MY_LIST, originalLease.kind); assertEquals(AbemaCollectionKind.MY_LIST, positionalLease.kind)
+        assertEquals("first", value(catalog.browse(CatalogQuery(collectionId = "my_list"))).entries.single().resource.identity)
+        assertEquals(CatalogAccess.NOT_VERIFIED, catalog.capabilities().collections.single { it.id == "history" }.access); catalog.close()
+    }
+
     private fun value(result: CatalogResult<CatalogPage>) = (result as CatalogResult.Value).value
     private fun failure(result: CatalogResult<*>, reason: CatalogFailure) {
         assertTrue(result is CatalogResult.Failure); assertEquals(reason, (result as CatalogResult.Failure).reason)
     }
     companion object {
+        private fun response(kind: AbemaCollectionKind, id: String, next: String? = null) = if (kind == AbemaCollectionKind.MY_LIST)
+            AbemaMyListResponse(200, parseAbemaMyListResponse(page(id, next))) else AbemaMyListResponse(200,
+                parseAbemaHistoryResponse("""{"histories":[{"type":2,"sourceId":"$id"}],"dataSet":{"vods":[{"id":"$id","title":"Episode $id"}]},"paging":{"next":"${next ?: ""}"}}"""), kind = kind)
         private fun page(id: String, next: String? = null): String = """{"mylist":[{"contentId":"$id","contentType":"CONTENT_TYPE_PROGRAM"}],"dataSet":{"programs":[{"id":"$id","title":"Episode $id"}]},"paging":{"next":"${next ?: ""}"}}"""
     }
 }

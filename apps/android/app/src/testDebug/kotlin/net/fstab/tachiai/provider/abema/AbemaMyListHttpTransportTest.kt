@@ -286,4 +286,90 @@ class AbemaMyListHttpTransportTest {
         assertEquals(1, second.streamCloses.get()); assertEquals(1, second.disconnects.get())
         concurrent.close()
     }
+
+    @Test fun historyUsesItsExactReadOnlyQueryPrivateBearerAndHistoryProjection() {
+        val requested = abemaHistoryRequestUri("next+/=&page=2").toURL()
+        assertEquals("https://api.p-c3-e.abema-tv.com/v1/video/viewing/histories?limit=20&include=liveEvent&next=next%2B%2F%3D%26page%3D2", requested.toExternalForm())
+        val connection = Connection(requested, historyBytes)
+        var opens = 0; var bearerReads = 0
+        val http = AbemaMyListHttpTransport({ target -> opens++; assertEquals(requested, target); connection },
+            { bearerReads++; "fixture-history-bearer" }, kind = AbemaCollectionKind.HISTORY)
+        failure(AbemaCollectionFailure.POLICY_REFUSED) { http.fetchMyList("next+/=&page=2") }
+        assertEquals(0, opens); assertEquals(0, bearerReads)
+        val response = http.fetch("next+/=&page=2")
+        assertEquals(AbemaCollectionKind.HISTORY, response.kind); assertEquals(AbemaCollectionKind.HISTORY, response.page!!.kind)
+        assertEquals("fixture-history", response.page!!.entries.single().resource.identity)
+        assertEquals("GET", connection.requestMethod); assertFalse(connection.doOutput)
+        assertEquals("Bearer fixture-history-bearer", connection.getRequestProperty("Authorization"))
+        listOf("Cookie", "Proxy-Authorization", "Client-ID").forEach { assertNull(connection.getRequestProperty(it)) }
+        assertFalse(connection.instanceFollowRedirects); assertFalse(connection.useCaches)
+        assertEquals(1, opens); assertEquals(1, bearerReads); http.close()
+        assertEquals(1, connection.streamCloses.get()); assertEquals(1, connection.disconnects.get())
+    }
+
+    @Test fun historyRejectsMyListResponseAndEndpointAndKeepsEveryRefusalBodyUnread() {
+        val wrongUrl = Connection(url, historyBytes)
+        failure(AbemaCollectionFailure.POLICY_REFUSED) {
+            AbemaMyListHttpTransport({ wrongUrl }, { "fixture" }, kind = AbemaCollectionKind.HISTORY).fetch(null)
+        }
+        assertEquals(0, wrongUrl.statuses.get()); assertEquals(1, wrongUrl.disconnects.get())
+        val wrongBody = Connection(abemaHistoryRequestUri().toURL(), bytes)
+        failure(AbemaCollectionFailure.INVALID_RESPONSE) {
+            AbemaMyListHttpTransport({ wrongBody }, { "fixture" }, kind = AbemaCollectionKind.HISTORY).fetch(null)
+        }
+        assertEquals(1, wrongBody.streamCloses.get()); assertEquals(1, wrongBody.disconnects.get())
+        for (status in listOf(201, 204, 302, 400, 401, 403, 404, 429, 500)) {
+            val connection = Connection(abemaHistoryRequestUri().toURL(), historyBytes, status = status, mime = null, retry = "60")
+            val result = AbemaMyListHttpTransport({ connection }, { "fixture" }, wallMs = { 1_000 },
+                kind = AbemaCollectionKind.HISTORY).use { it.fetch(null) }
+            assertEquals(status, result.status); assertEquals(AbemaCollectionKind.HISTORY, result.kind); assertNull(result.page)
+            assertEquals(0, connection.streams.get()); assertEquals(0, connection.errors.get())
+            assertEquals(if (status == 429) 61_000L else null, result.retryAtEpochMs)
+            assertEquals(1, connection.disconnects.get())
+        }
+    }
+
+    @Test fun historyLateOwnerDeadlineAndCancellationCannotPublishAfterItsBodyRead() {
+        for (loss in 0..3) {
+            var allowed = true; val clock = AtomicLong(1000); var once = false
+            lateinit var http: AbemaMyListHttpTransport
+            val connection = Connection(abemaHistoryRequestUri().toURL(), historyBytes, beforeRead = {
+                if (!once) { once = true; when (loss) {
+                    0 -> allowed = false
+                    1 -> clock.set(31_000)
+                    2 -> clock.set(999)
+                    3 -> http.cancelActiveRequest()
+                } }
+            })
+            http = AbemaMyListHttpTransport({ connection }, { "fixture" }, { allowed }, clockMs = clock::get,
+                kind = AbemaCollectionKind.HISTORY)
+            failure(if (loss == 1 || loss == 2) AbemaCollectionFailure.TIME_LIMIT_REACHED else AbemaCollectionFailure.CANCELLED) {
+                http.fetch(null)
+            }
+            assertEquals(1, connection.streamCloses.get()); assertEquals(1, connection.disconnects.get()); http.close()
+        }
+    }
+
+    @Test fun historyPreservesStrictUtf8BodyBoundsAndStickyFatalCleanup() {
+        for (malformed in listOf(byteArrayOf(0xc3.toByte(), 0x28), "{\"histories\":[],\"histories\":[]}".toByteArray())) {
+            val connection = Connection(abemaHistoryRequestUri().toURL(), malformed)
+            failure(AbemaCollectionFailure.INVALID_RESPONSE) {
+                AbemaMyListHttpTransport({ connection }, { "fixture" }, kind = AbemaCollectionKind.HISTORY).fetch(null)
+            }
+            assertEquals(1, connection.streamCloses.get()); assertEquals(1, connection.disconnects.get())
+        }
+        val large = Connection(abemaHistoryRequestUri().toURL(), ByteArray(ABEMA_MY_LIST_RESPONSE_LIMIT + 1) { 32 })
+        failure(AbemaCollectionFailure.RESPONSE_LIMIT) {
+            AbemaMyListHttpTransport({ large }, { "fixture" }, kind = AbemaCollectionKind.HISTORY).fetch(null)
+        }
+        assertEquals(1, large.streamCloses.get()); assertEquals(1, large.disconnects.get())
+        val connection = Connection(abemaHistoryRequestUri().toURL(), historyBytes, disconnectAction = { throw Hostile() })
+        val http = AbemaMyListHttpTransport({ connection }, { "fixture" }, kind = AbemaCollectionKind.HISTORY)
+        failure(AbemaCollectionFailure.CLEANUP_FAILED) { http.fetch(null) }
+        failure(AbemaCollectionFailure.CLEANUP_FAILED) { http.close() }
+        failure(AbemaCollectionFailure.CLEANUP_FAILED) { http.fetch(null) }
+        assertEquals(1, connection.streamCloses.get()); assertEquals(1, connection.disconnects.get())
+    }
+
+    private val historyBytes = """{"histories":[{"type":2,"sourceId":"fixture-history"}],"dataSet":{"vods":[{"id":"fixture-history","title":"History fixture"}]}}""".toByteArray()
 }

@@ -31,6 +31,11 @@ class AbemaSearchMetadataDeviceTest {
         assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaSearch") == "true")
         guarded { observe(null) }
     }
+    @Test fun optInOneSeparatePublicSeasonCandidateSearchPreserveProtectedRecords() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaSeasonCandidateSearch") == "true")
+        // A separate fixed public query, not an inferred or fabricated Season ID.
+        guarded { observe(null, "呪術廻戦") }
+    }
     @Test fun optInOneExactSeasonPageUsesOnlyAnExplicitPublicCandidate() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("tachiaiReadOnlyAbemaSeason") == "true")
@@ -55,7 +60,7 @@ class AbemaSearchMetadataDeviceTest {
         assumeTrue("Requires verified tachiai-dev", avd)
         try { action() } catch (_: Throwable) { throw AssertionError("Public Search/Season observation failed closed safety/result checks") }
     }
-    private fun observe(parent: CatalogResource?) {
+    private fun observe(parent: CatalogResource?, publicQuery: String = "相撲") {
         val instrumentation = InstrumentationRegistry.getInstrumentation(); val context = instrumentation.targetContext
         val instanceId = defaultProviderInstanceId(PrototypeService.ABEMA)
         fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
@@ -78,7 +83,7 @@ class AbemaSearchMetadataDeviceTest {
         try {
             check(active.get() && owner.sameOwnership(readOwner()))
             catalog = androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), active::get)
-            val query = if (parent == null) CatalogQuery(search = "相撲") else CatalogQuery(parent = parent)
+            val query = if (parent == null) CatalogQuery(search = publicQuery) else CatalogQuery(parent = parent)
             first = catalog.browse(query)
             val page = (first as? CatalogResult.Value)?.value
             if (parent == null && page?.nextCursor != null) {

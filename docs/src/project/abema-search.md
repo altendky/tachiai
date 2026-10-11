@@ -4,9 +4,10 @@ The debug catalog under [#189](https://github.com/altendky/tachiai/issues/189)
 implements provider-wide public Search behind `ProviderCatalog`, plus explicit
 episodes under an exact Season. It uses the provider instance's saved route and
 a fresh guest. My List, History and Schedule retain independent operations and
-access gates. Actual Search/Season acceptance and provider scalar compatibility
-remain **unverified**; static evidence and synthetic fixtures are separate from
-an observed provider response.
+access gates. Two bounded Search observations on `tachiai-dev` returned valid
+public metadata. Exact Season acceptance remains **unverified** because neither
+result supplied a Season candidate. Static evidence and synthetic fixtures are
+separate from an observed provider response.
 
 Search replaces the channel-only filter in this composed catalog; Channels
 browsing remains available. Search from a selected account collection starts a
@@ -45,8 +46,12 @@ sorting, cursors and alternate endpoints are not inferred.
 `contentId`, `contentType`, `contentData`. 6755/module82860 joins the selected
 union arm. Projection preserves Episode ID; Slot `channelId/contentId`;
 Series ID; Season `videoSeason.seriesId/contentId`; and Live Event ID. Numeric
-and named content/module enum forms are explicitly accepted. Generated defaults
-do not establish wire types: counts must be safe nonnegative JSON integers,
+and named content/module enum forms are explicitly accepted. The serializers
+omit empty repeated fields and zero counts. Absence is normalized only inside
+validated Content/Spot containers; a missing count becomes zero and still must
+cover actual rows. A canonical empty summary object becomes an empty module
+list. Explicit null/wrong types, other roots lacking modules and a missing
+identity-bearing detail module refuse. Counts must be safe nonnegative JSON integers,
 identity/title strings, and exactly one matching content arm populated.
 Navigation Spots are excluded. Unsupported arms, unknown content modules,
 conflicting identities and malformed responses refuse instead of becoming empty.
@@ -101,8 +106,22 @@ fixtures cover continuation replay, changing totals, cleanup poisoning, held
 owner reads, IPC isolation, configured identity/quality, shared500 truncation and
 Search/children/Back. Network-blocked owned WebView fixtures execute
 summary/detail/Season projection and primitive parcel checks without provider
-requests or saved-store reads. Android compilation, JVM execution and
-instrumentation are pending root verification.
+requests or saved-store reads. Full Android verification passed2390 JVM cases
+across288 reports with no failures, errors or skips, lint, release isolation,
+instrumentation compilation, both APK assemblies and the shared signing check.
+Nineteen network-blocked guest/IPC device fixtures executed and passed with zero
+skips; the ordinary instrumentation manifest was restored.
+
+The first actual Search refused; a closed post-cleanup diagnostic located the
+failure at response parsing. The absence-only correction above then passed:
+fixed public `相撲` Search returned31 entries across episodes, series and slots
+from one summary and one detail, with more remaining. A separately opted-in
+`呪術廻戦` Search returned27 entries of those same kinds, also with more
+remaining. Neither returned a Season or Live Event. Both preserved protected
+records and captured ownership and released the local facade. These observations
+establish bounded metadata compatibility, not full provider coverage or playback.
+Device: persistent tachiai-dev, Android16/API36, x86-64, WebView133.0.6943.137,
+saved connection, exit country unestablished, fresh guest, no account validation.
 
 `AbemaSearchMetadataDeviceTest` skips by default before stores, services or UI.
 On verified `tachiai-dev`, `tachiaiReadOnlyAbemaSearch=true` uses fixed public
@@ -112,6 +131,10 @@ playback. Protected-record hashes stay local and must remain unchanged. Final
 owner/cleanup checks precede logging any public Season candidate. Only safe
 outcome/count/kind categories and a public candidate are emitted; More remaining
 is reported honestly.
+
+`tachiaiReadOnlyAbemaSeasonCandidateSearch=true` separately opts into the fixed
+second public query above with the same request and safety limits. Its success
+without a returned candidate is Search evidence only, never Season evidence.
 
 Separate `tachiaiReadOnlyAbemaSeason=true` requires explicit
 `tachiaiAbemaSeriesId` and `tachiaiAbemaSeasonId` from an established public

@@ -613,14 +613,17 @@ does not establish a current window, and a returned playlist is not playback
 acceptance. The provider's authorization predicates must be checked separately
 from its display-period helpers before enabling a source.
 
-In the retained consumers, `96291`'s zero/absence fallback classifies navigation
-and telemetry; it is not a demonstrated permission check. Chase admission
-separately requires a current premium/general window or a current free-end
-window and matching subscription feature authority. Premium access checks
-unexpired viewing authority rather than a trial flag. This candidate's absent
-free-end and nonempty chase-authority list do not establish guest eligibility.
-Ordinary timeshift authorization, PPV/ticket behavior and the concrete modern
-slot-source constructor still require direct consumer evidence.
+The retained ordinary Timeshift container first requires the timeshift flag, an
+open general window, allowed region, no pause and supported DRM; it then admits
+premium access or `96291`'s free predicate. That helper is also used for telemetry.
+An explicit true free flag with absent/zero free-end falls back to the open
+general window; zero general end still fails the container's separate check.
+Chase admission separately requires a current premium/general window or a
+current free-end window and matching subscription feature authority. Premium
+access checks unexpired viewing authority rather than a trial flag. This
+candidate's absent free flag and nonempty chase-authority list do not establish
+guest eligibility. PPV/ticket behavior, runtime compatibility and the concrete
+modern slot-source constructor still require direct consumer evidence.
 
 The shared diagnostic harness retains its opt-in-before-private-read gate,
 fixed operation/candidate, original deadline, touch-blocked lifecycle and

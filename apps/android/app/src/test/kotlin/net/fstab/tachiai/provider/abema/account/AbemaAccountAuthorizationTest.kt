@@ -11,6 +11,17 @@ internal fun fixtureAccountChallenge(deadline: Long = 300000) = AbemaAccountChal
     "https://abema.tv/account/transfer?code=private-code", deadline)
 
 class AbemaAccountAuthorizationTest {
+    @Test fun intendedInputTrimsOnlyOuterWhitespaceAndNeverTruncatesOrChangesProviderIdentities() {
+        for (id in listOf("A", "fixture-account_123", "a".repeat(256))) {
+            assertEquals(id, normalizedIntendedAbemaAccountId(" \t$id\r\n "))
+            assertTrue(accountId(id)); assertFalse(accountId(" $id "))
+        }
+        for (invalid in listOf("", " \t\r\n", "invalid account", "fixture/account", "fixture@example.test",
+            "fixture.account", "fixture\u200e", "ｆｉｘｔｕｒｅ", "a".repeat(257)))
+            assertNull(normalizedIntendedAbemaAccountId(invalid))
+        assertNull(normalizedIntendedAbemaAccountId("  " + "a".repeat(257) + "  "))
+        assertThrows(AbemaAccountException::class.java) { parseAbemaAccountProfile("""{"profile":{"userId":" fixture-account "}}""") }
+    }
     private fun grantBody(token: String = fixtureAccountToken(), id: String = "intended-account", type: String = "Bearer") =
         "{\"access_token\":\"$token\",\"token_type\":\"$type\",\"refresh_token\":\"discarded\",\"user_id\":\"$id\"}"
     @Test fun positiveExpiryResponseAndDecodedIdentityAgreeWithoutSignatureClaim() {

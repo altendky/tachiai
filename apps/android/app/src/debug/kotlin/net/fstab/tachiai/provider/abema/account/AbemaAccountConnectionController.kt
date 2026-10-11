@@ -127,16 +127,16 @@ internal class AbemaAccountConnectionController(
         post { if (current(run)) { busy = false; publish(if (proven) AbemaAccountProgress.ENFORCEMENT_PROVEN else AbemaAccountProgress.ENFORCEMENT_NOT_PROVEN) } }
     }
     fun connect(expectedId: String) {
-        if (!accountId(expectedId)) return // Local UI guard; never validate/read a prior lease on main.
+        val intendedId = normalizedIntendedAbemaAccountId(expectedId) ?: return // Local guard; no prior lease or owner read on main.
         run(AbemaAccountProgress.PREPARING) { run ->
             val owner = binding.owner(); val storeRevision = binding.store.revision()
             val challenge = prepare(run, owner)
-            if (expectedId == challenge.guestId || !enforcement(run, owner, challenge))
+            if (intendedId == challenge.guestId || !enforcement(run, owner, challenge))
                 throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
             if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             post { if (current(run)) {
                 capturedOwner = owner
-                link = Link(challenge, owner, expectedId, storeRevision)
+                link = Link(challenge, owner, intendedId, storeRevision)
                 busy = false; publish(AbemaAccountProgress.APPROVAL_READY)
             } }
         }

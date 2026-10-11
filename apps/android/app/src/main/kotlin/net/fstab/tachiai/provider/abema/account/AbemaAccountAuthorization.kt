@@ -10,6 +10,9 @@ internal enum class AbemaAccountFailure { REFUSED, NOT_VERIFIED, TEMPORARY, EXPI
 internal class AbemaAccountException(val category: AbemaAccountFailure) : Exception(category.name, null, false, false)
 internal fun accountRefused(): Nothing = throw AbemaAccountException(AbemaAccountFailure.REFUSED)
 internal fun accountId(value: String) = value.matches(Regex("[A-Za-z0-9_-]{1,256}"))
+// Only the owner's input is normalized. Provider identities remain exact;
+// internal spaces, unsupported characters and overlong IDs are refused.
+internal fun normalizedIntendedAbemaAccountId(value: String): String? = value.trim().takeIf(::accountId)
 internal fun accountToken(value: String) = value.length in 1..6144 && value.all { it.code in 33..126 }
 
 // Values stay inside the protected account flow. None are generic UI state,

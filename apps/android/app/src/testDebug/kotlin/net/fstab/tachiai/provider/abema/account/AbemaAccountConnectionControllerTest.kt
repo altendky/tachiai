@@ -133,9 +133,30 @@ class AbemaAccountConnectionControllerTest {
         val f = Fixture(); f.handedOff(); f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
         assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
         val reads = f.ownerReads; val previous = f.storage.bytes!!.copyOf()
-        f.controller.connect("invalid account ID")
-        assertEquals(reads, f.ownerReads); assertTrue(f.worker.queued.isEmpty())
-        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status); assertArrayEquals(previous, f.storage.bytes)
+        for (invalid in listOf("invalid account ID", "  ", "a".repeat(257), " fixture/account ")) {
+            f.controller.connect(invalid)
+            assertEquals(reads, f.ownerReads); assertTrue(f.worker.queued.isEmpty())
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status); assertArrayEquals(previous, f.storage.bytes)
+        }
+    }
+    @Test fun normalizedOwnerInputIsTheExactExpectedIdentityThroughoutApprovalAndGrantAcceptance() {
+        val f = Fixture(); f.controller.load(); f.pump()
+        val reads = f.ownerReads
+        f.controller.connect(" \tintended-account\r\n ")
+        assertEquals(reads, f.ownerReads) // No protected read on the caller.
+        assertEquals(AbemaAccountProgress.PREPARING, f.controller.state.value.progress)
+        f.pump(); assertTrue(f.controller.state.value.canApprove)
+        f.controller.handoff { true }; f.pump(); f.results.add(f.granted())
+        f.controller.continueApproval(); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals("intended-account", f.store.read()!!.grant.userId); assertEquals(1, f.tokens)
+        assertFalse(f.controller.state.value.toString().contains("intended-account"))
+    }
+    @Test fun normalizedGuestIdentityStillCannotStartAnExistingAccountApproval() {
+        val f = Fixture(); f.controller.load(); f.pump(); f.controller.connect(" \tguest\n "); f.pump()
+        assertFalse(f.controller.state.value.canApprove); assertFalse(f.controller.state.value.canContinue)
+        assertEquals(AbemaAccountStatus.NOT_VERIFIED, f.controller.state.value.status)
+        assertEquals(1, f.preparations); assertEquals(0, f.tokens); assertNull(f.storage.bytes)
     }
     @Test fun queuedApprovalHandoffChecksExpiryBeforeWorkerAndBeforeMainLaunch() {
         for (beforeWorker in listOf(true, false)) {

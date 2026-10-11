@@ -11,6 +11,36 @@ import net.fstab.tachiai.platform.diagnostics.FailureStage
 import okhttp3.OkHttpClient
 
 class RouteSessionTest {
+    @Test fun abemaMetadataPurposeUsesAnOwnedAnonymousClientAndOnlyItsHost() {
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        for (selected in listOf(null, profile)) {
+            val backend = FakeBackend()
+            val route = RouteSession.createAbemaCatalog(selected) { _, security ->
+                assertEquals("api.abema.io", security.allowedHosts)
+                backend
+            }
+            val connection = route.open(URL("https://api.abema.io/v1/channels"))
+            assertTrue(connection is RoutedHttpsConnection)
+            assertEquals(selected != null, connection.usingProxy())
+            val field = RouteSession::class.java.getDeclaredField("client").apply { isAccessible = true }
+            val client = field.get(route) as OkHttpClient
+            assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar)
+            assertSame(okhttp3.Authenticator.NONE, client.authenticator)
+            if (selected == null) {
+                assertSame(java.net.Proxy.NO_PROXY, client.proxy)
+                assertSame(okhttp3.Authenticator.NONE, client.proxyAuthenticator)
+            }
+            assertFalse(client.followRedirects)
+            assertFalse(client.retryOnConnectionFailure)
+            listOf("abema.tv", "api.p-c3-e.abema-tv.com", "api.twitch.tv", "sub.api.abema.io", "api.abema.io.evil.invalid").forEach {
+                assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://$it/")) }
+            }
+            connection.disconnect(); route.close()
+            assertEquals(if (selected == null) 0 else 1, backend.closes)
+            assertThrows(IOException::class.java) { route.open(URL("https://api.abema.io/v1/channels")) }
+        }
+    }
+
     private class FakeBackend(override val proxyPort: Int = 12345, private val failCleanup: Boolean = false) : RouteBackend {
         var closes = 0
         override fun close() { closes++; if (failCleanup) error("private cleanup detail") }

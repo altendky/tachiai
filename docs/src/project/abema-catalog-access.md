@@ -39,7 +39,7 @@ subsequent approval above provides the current integration authority. See the
 
 | Feature | Official ABEMA behavior | Tachiai implementation boundary |
 | --- | --- | --- |
-| Public discovery | Search, genres and timetable on provider pages | Provider-controlled browsing is a candidate handoff. A supported external paged catalog/search API was not verified. |
+| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local name/ID search and exact lookup use the bounded public channel endpoint below. Native timetable, video discovery and provider-supported external APIs remain unverified. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
 | My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |
@@ -105,6 +105,66 @@ an ID or substitute another day, division, program or fixed sample.
 
 ## Implementation recommendation
 
+### Public Channels adapter
+
+[Issue #146](https://github.com/altendky/tachiai/issues/146) replaces fixed-sample
+discovery in Manage streams with a real ABEMA Channels adapter behind the shared
+catalog interface. It sends one anonymous GET to
+[the public channel endpoint](https://api.abema.io/v1/channels) through that
+instance's explicit saved route. Search filters channel names/IDs locally; pages
+of 20 use a bounded in-memory snapshot and opaque, single-use continuations
+owned by the instance, captured route and query. A new query, lookup, refresh,
+access loss or close discards the previous continuation. My List and History
+remain explicitly not verified.
+
+The transport accepts at most 512 KiB and 500 unique channels, requires bounded
+valid JSON/UTF-8 and retains only normalized ID/name. It discards playback URLs,
+opaque metadata and cookies. Channel membership and fields such as viewingOpened
+do not establish live state, regional availability or entitlement; every entry
+has UNKNOWN availability. The adapter does not resolve new channels to playback.
+The existing exact historical samples retain their implemented paths until the
+general selected-resource work in #101 is verified.
+
+After a successful valid snapshot, a recognized public channel URL absent from
+that snapshot can still be explicitly added with UNKNOWN metadata. A bare ID
+absent from the snapshot returns NOT_FOUND. A missing refresh preserves the
+saved identity/title; a network, parser, route or cleanup failure remains a
+failure. Slot, episode and title links retain request-free local import. When
+metadata is unavailable before dispatch, public links can still be imported
+locally through the current instance; failed requests are never converted into
+local success or sent over System as a fallback. Configured entries remain
+Tachiai-owned and are neither auto-added nor removed by upstream changes.
+
+The closed ABEMA catalog route purpose admits only api.abema.io, with the
+provider transport additionally enforcing the exact endpoint/method and no
+query, redirects, credentials or TLS override. Both System and imported routes
+use an owned client without an origin authenticator or cookie jar; imported
+route credentials remain limited to its local CONNECT listener. The transport
+also refuses an installed global Java cookie handler. Ownership is checked
+before dispatch and publication; cancellation invalidates pending work, and
+uncertain cleanup prevents further metadata admission. Concurrent worker cleanup
+joins the single owned disconnect for at most five seconds, preserving an
+interrupted worker's flag. This cleanup grace does not extend the 30-second
+request admission budget or permit cancelled metadata to publish. Disconnect
+failure, timeout and reentrant unconfirmed cleanup remain failures.
+
+Fresh anonymous host research on 2026-10-10 received 58 channels in 52,706 bytes.
+The host region was not established, no account was used and sumo was absent;
+this is a cached metadata snapshot, not proof of deletion or between-basho
+continuity. Device/saved-route acceptance is recorded separately from this host
+observation and synthetic fixtures. Broader timetable/video/account/selected
+playback work remains in #100/#101/#103; this slice does not close those issues.
+
+On 2026-10-10, a bounded read-only check on the verified persistent tachiai-dev
+AVD (Android 16/API 36, Google APIs x86-64) retrieved 58 normalized channels
+through the default ABEMA instance's existing saved connection. All entries
+remained UNKNOWN and sumo was absent from that snapshot. Region was unverified;
+no account credentials or browser engine were used, and playback was not tested.
+The provider registry and source configuration were equal before/after the
+check. Android JSON validation and an isolated shared-screen fixture also passed
+(three selected tests total). No saved accounts, routes or configured items were
+reset. This establishes this device/route's public metadata retrieval only.
+
 Public resource normalization and local import can proceed without collecting
 account state. An ABEMA adapter can recognize reviewed public channel, slot,
 title and episode links, reject account and signed-media URLs, and retain the
@@ -123,7 +183,7 @@ accepts a bare link with explicit instance selection and a one-time preview;
 compatibility with ABEMA's own sharing UI remains unobserved. Unknown
 availability and the exact-sample-only playback boundary remain explicit.
 
-That handoff does not implement native All/search or account-list retrieval.
+That handoff alone does not implement native Channels/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
 proof that Tachiai can retrieve My List or history. The local handoff does not
 use account-page scraping, script injection, a native bridge or cookie transfer.

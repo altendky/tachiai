@@ -17,7 +17,7 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.*
-import net.fstab.tachiai.provider.abema.AbemaLocalImportCatalog
+import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 
@@ -106,7 +106,9 @@ class ManageStreamsActivity : ComponentActivity() {
                         ProviderId(owner.service.name.lowercase(java.util.Locale.ROOT)))
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
-                    val catalog = if (owner.service == PrototypeService.ABEMA) AbemaLocalImportCatalog(owner, setups)
+                    val catalog = if (owner.service == PrototypeService.ABEMA)
+                        androidAbemaChannelCatalog(this@ManageStreamsActivity, owner.id, setups,
+                            canUse = { resumed && revision == current })
                         else androidTwitchProviderCatalog(this@ManageStreamsActivity, owner.id,
                             canUse = { resumed && revision == current })
                     Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
@@ -117,7 +119,7 @@ class ManageStreamsActivity : ComponentActivity() {
                 controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
                     diagnostics = diagnostics,
                     notice = if (parts.first.service == PrototypeService.ABEMA)
-                        "Browse prototype samples or paste a public ABEMA link to save its exact item. Imported availability is unknown. Catalogs and account lists are not connected; playback supports only the existing samples."
+                        "Browse or search channels, or paste a public ABEMA link, including future content. Add saves to Tachiai. Availability is unknown; playback currently supports the existing samples. My List and History access is not yet verified."
                     else "Connect Twitch account in Providers for Following, channel search, published replays and playback. Live channels is a live listing; search and exact lookup also find offline channels. Without available account access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback availability is checked when opening the viewer.").also { it.load() }
                 reading = false
                 val handoff = pendingPreview

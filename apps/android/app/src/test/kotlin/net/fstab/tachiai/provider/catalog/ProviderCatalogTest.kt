@@ -11,6 +11,8 @@ class ProviderCatalogTest {
     @Test fun browseLabelsAndInitialCollectionsAreBoundedWithoutAssumingAccess() {
         assertEquals("All", CatalogCapabilities().browseTitle)
         assertNull(CatalogCapabilities().initialCollectionId)
+        assertEquals("Items", CatalogCapabilities().childrenTitle)
+        assertEquals("Items under", CatalogCapabilities().childrenHeadingPrefix)
         val following = CatalogCollection("following", "Following", CatalogAccess.AUTHORIZATION_REQUIRED)
         val capabilities = CatalogCapabilities(collections = listOf(following), browseTitle = "Live channels",
             initialCollectionId = following.id)
@@ -18,6 +20,8 @@ class ProviderCatalogTest {
         assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, capabilities.collections.single().access)
         listOf("", " Leading", "Trailing ", "x".repeat(65), "Control\n", "Hidden\u200b").forEach { title ->
             assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(browseTitle = title) }
+            assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(childrenTitle = title) }
+            assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(childrenHeadingPrefix = title) }
         }
         assertThrows(IllegalArgumentException::class.java) {
             CatalogCapabilities(collections = listOf(following), initialCollectionId = "unknown")

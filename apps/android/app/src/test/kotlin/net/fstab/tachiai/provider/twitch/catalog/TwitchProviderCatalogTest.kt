@@ -110,6 +110,7 @@ class TwitchProviderCatalogTest {
         val fixture = Fixture(); val caps = fixture.catalog.capabilities()
         assertEquals(CatalogAccess.AVAILABLE, caps.browse); assertEquals("Live channels", caps.browseTitle)
         assertEquals("following", caps.initialCollectionId); assertEquals(CatalogAccess.NOT_VERIFIED, caps.playback)
+        assertEquals("Videos", caps.childrenTitle); assertEquals("Videos from", caps.childrenHeadingPrefix)
         assertEquals(1, fixture.authValidations.get()); assertTrue(fixture.calls.isEmpty())
         fixture.store.beginConnection()
         assertEquals(CatalogAccess.RECONNECT_REQUIRED, fixture.catalog.capabilities().browse)
@@ -117,6 +118,27 @@ class TwitchProviderCatalogTest {
         assertEquals(CatalogAccess.NOT_VERIFIED, blocked.catalog.capabilities().lookup)
         failure(blocked.catalog.lookup("channel123"), CatalogFailure.TEMPORARY)
         assertEquals(0, blocked.authValidations.get()); assertTrue(blocked.calls.isEmpty())
+    }
+
+    @Test fun parentFollowingContinuationSurvivesPublishedVideoBrowsing() {
+        val fixture = Fixture()
+        fixture.execute = { request -> when (request.operation) {
+            TwitchHelixOperation.FOLLOWED -> if (request.url.query.contains("after=")) page(listOf(followed("456")))
+                else page(listOf(followed("123")), "provider-parent-page2")
+            TwitchHelixOperation.STREAMS -> page()
+            TwitchHelixOperation.VIDEOS -> page(listOf(video("789")))
+            else -> error("Unexpected operation")
+        } }
+        fixture.catalog.use { catalog ->
+            val parent = value(catalog.browse(CatalogQuery(collectionId = "following")))
+            assertEquals(listOf(broadcaster("123")), parent.entries.map { it.resource })
+            assertNotNull(parent.nextCursor)
+            val child = value(catalog.browse(CatalogQuery(parent = parent.entries.single().resource)))
+            assertEquals(listOf(vod("789")), child.entries.map { it.resource })
+            val restoredPage = value(catalog.browse(CatalogQuery(collectionId = "following", cursor = parent.nextCursor)))
+            assertEquals(listOf(broadcaster("456")), restoredPage.entries.map { it.resource })
+            assertNull(restoredPage.nextCursor)
+        }
     }
 
     @Test fun historyIsUnverifiedWithOrWithoutCatalogAccessAndNeverTriggersAuthorizationOrMetadata() {

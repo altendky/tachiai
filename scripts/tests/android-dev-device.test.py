@@ -8,6 +8,7 @@
 import importlib.util
 import hashlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -47,6 +48,356 @@ class DeviceTests(unittest.TestCase):
             folder = device.sdk.joinpath(*package.split(";"))
             folder.mkdir(parents=True)
             (folder / "source.properties").write_text(f"Pkg.Revision={revision}\n")
+
+    def memory_fixture(self):
+        self.populate()
+        executable = self.device.sdk / "emulator/qemu/linux-x86_64/qemu-system-x86_64"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"synthetic-executable")
+        proc = Path(self.folder.name) / "proc"
+        (proc / "pressure").mkdir(parents=True)
+        (proc / "meminfo").write_text("\n".join(f"{key}: {number} kB" for key, number in
+            zip(module.HOST_MEMORY, (64000000, 15000000, 0, 0))) + "\nIgnored: PRIVATE_HOST_TEXT\n")
+        (proc / "pressure/memory").write_text(
+            "some avg10=0.00 avg60=0.10 avg300=1.25 total=123456\n"
+            "full avg10=0.00 avg60=0.05 avg300=1.00 total=65432\n")
+        (proc / "mount-namespace").write_bytes(b"synthetic-namespace")
+        (proc / "self/ns").mkdir(parents=True)
+        (proc / "self/ns/mnt").symlink_to(proc / "mount-namespace")
+        (proc / "self/root").symlink_to("/")
+        return proc, self.memory_process(proc, executable), executable
+
+    def memory_process(self, proc, executable, pid="321", ticks=12345, arguments=None, owned_fd=True):
+        process = proc / pid
+        process.mkdir()
+        (process / "ns").mkdir()
+        (process / "ns/mnt").symlink_to(proc / "mount-namespace")
+        (process / "root").symlink_to("/")
+        (process / "comm").write_text("qemu-system-x86\n")
+        (process / "exe").symlink_to(executable)
+        (process / "stat").write_text(f"{pid} (qemu-system-x86) " + " ".join(["S"] + ["0"] * 18 + [str(ticks)] + ["0"] * 8))
+        arguments = arguments if arguments is not None else [str(executable), "-avd", "tachiai-dev", "-port", "5580",
+            "-gpu", "software", "-ignored", "PRIVATE_ARGUMENT"]
+        (process / "cmdline").write_bytes("\0".join(arguments).encode() + b"\0")
+        (process / "status").write_text("Name: PRIVATE_PROCESS_TEXT\n" +
+            "\n".join(f"{key}: {number} kB" for key, number in zip(module.PROCESS_MEMORY,
+                (5000000, 5100000, 4800000, 190000, 10000, 0, 8000000, 8100000))) + "\nUnknown: PRIVATE_TEXT\n")
+        (process / "smaps_rollup").write_text("PRIVATE_MAP_HEADER\n" +
+            "\n".join(f"{key}: {number} kB" for key, number in zip(module.ROLLUP_MEMORY, range(100, 111))))
+        (process / "fd").mkdir()
+        if owned_fd:
+            (process / "fd/7").symlink_to(self.device.avd / "userdata-qemu.img")
+        return process
+
+    def test_memory_is_a_bounded_scalar_snapshot_without_commands_private_output_or_state_mutation(self):
+        proc, process, executable = self.memory_fixture()
+        before = {path.name: path.read_bytes() for path in self.device.avd.iterdir() if path.is_file()}
+        other = proc / "654"; other.mkdir(); (other / "comm").write_text("another-process\n")
+        read = module.bounded_proc_read
+        observed = []
+        def guarded(path, maximum=65536):
+            observed.append(path)
+            self.assertNotIn(path.name, ("environ", "maps", "userdata-qemu.img"))
+            self.assertFalse(path == other / "cmdline")
+            return read(path, maximum)
+        with patch.object(self.device, "run") as run, patch.object(self.device, "adb") as adb, \
+                patch("subprocess.Popen") as launch, patch.object(module, "bounded_proc_read", side_effect=guarded):
+            result = self.device.memory(proc)
+        self.assertEqual(result["status"], "AVAILABLE"); self.assertEqual(result["pid"], 321)
+        self.assertEqual(result["start_ticks"], 12345); self.assertEqual(result["process_kib"]["VmRSS"], 5000000)
+        self.assertEqual(set(result["process_kib"]), set(module.PROCESS_MEMORY))
+        self.assertEqual(set(result["host_kib"]), set(module.HOST_MEMORY))
+        self.assertEqual(result["rollup"]["status"], "AVAILABLE")
+        self.assertEqual(set(result["rollup"]["kib"]), set(module.ROLLUP_MEMORY))
+        self.assertEqual(result["pressure"]["some"]["total_us"], 123456)
+        encoded = json.dumps(result)
+        self.assertLess(len(encoded), 4096); self.assertNotIn("PRIVATE", encoded)
+        self.assertNotIn(str(self.device.state), encoded); self.assertNotIn(str(executable), encoded)
+        self.assertNotIn("qemu", encoded); self.assertNotIn("software", encoded)
+        self.assertTrue(result["utc"].endswith("+00:00"))
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.device.avd.iterdir() if path.is_file()})
+        run.assert_not_called(); adb.assert_not_called(); launch.assert_not_called()
+        self.assertTrue(observed)
+
+    def test_memory_validates_owned_configuration_before_reading_proc(self):
+        proc, _, _ = self.memory_fixture()
+        for path in (self.device.avd / "tachiai-profile.toml", self.device.sdk / "emulator/source.properties"):
+            original = path.read_bytes(); path.write_text("invalid")
+            with patch.object(module, "bounded_proc_read") as read, patch.object(self.device, "run") as run:
+                result = self.device.memory(proc)
+            self.assertEqual(result["reason"], "CONFIGURATION_UNVERIFIED")
+            read.assert_not_called(); run.assert_not_called(); path.write_bytes(original)
+
+    def test_memory_sdk_symlink_loop_is_closed_before_proc_reads(self):
+        proc, _, executable = self.memory_fixture()
+        executable.unlink(); executable.symlink_to(executable)
+        with patch.object(module, "bounded_proc_read") as read, patch("sys.stderr", new_callable=io.StringIO) as errors:
+            result = self.device.memory(proc)
+        self.assertEqual(set(result), {"utc", "status", "reason"})
+        self.assertEqual(result["reason"], "CONFIGURATION_UNVERIFIED")
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertNotIn(self.folder.name, json.dumps(result)); self.assertEqual(errors.getvalue(), "")
+        read.assert_not_called()
+
+    def test_memory_proc_resolution_symlink_loops_never_export_raw_paths(self):
+        proc, process, executable = self.memory_fixture()
+        arguments = [str(executable), "-avd", "tachiai-dev", "-port", "5580"]
+        loop = Path(self.folder.name) / "PRIVATE_LOOP"; loop.symlink_to(loop)
+        owned = self.device.avd / "userdata-qemu.img"; original = owned.read_bytes()
+        for location in ("exe", "datadir", "userdata"):
+            with self.subTest(location=location):
+                if location == "exe":
+                    (process / "exe").unlink(); (process / "exe").symlink_to(process / "exe")
+                elif location == "datadir":
+                    (process / "cmdline").write_bytes("\0".join(arguments + ["-datadir", str(loop)]).encode() + b"\0")
+                else:
+                    owned.unlink(); owned.symlink_to(owned)
+                result = self.device.memory(proc)
+                self.assertEqual(set(result), {"utc", "status", "reason"})
+                self.assertEqual(result["status"], "UNAVAILABLE")
+                self.assertIn(result["reason"], ("IDENTITY_UNVERIFIED", "PROC_UNAVAILABLE"))
+                self.assertNotIn("PRIVATE", json.dumps(result)); self.assertNotIn(self.folder.name, json.dumps(result))
+                if location == "exe":
+                    (process / "exe").unlink(); (process / "exe").symlink_to(executable)
+                elif location == "datadir":
+                    (process / "cmdline").write_bytes("\0".join(arguments).encode() + b"\0")
+                else:
+                    owned.unlink(); owned.write_bytes(original)
+
+    def test_memory_python312_resolution_runtime_errors_remain_fixed_cli_json(self):
+        proc, process, executable = self.memory_fixture()
+        resolve = Path.resolve; memory = module.Device.memory
+        arguments = [str(executable), "-avd", "tachiai-dev", "-port", "5580"]
+        directory = Path(self.folder.name) / "PRIVATE_DATADIR"
+        for target, reason, datadir in ((executable, "CONFIGURATION_UNVERIFIED", False),
+            (self.device.avd, "CONFIGURATION_UNVERIFIED", False),
+            (process / "exe", "IDENTITY_UNVERIFIED", False),
+            (directory, "IDENTITY_UNVERIFIED", True),
+            (self.device.avd / "userdata-qemu.img", "IDENTITY_UNVERIFIED", False)):
+            with self.subTest(target=target.name):
+                (process / "cmdline").write_bytes("\0".join(arguments + (["-datadir", str(directory)] if datadir else [])).encode() + b"\0")
+                def fail_one(path, *args, **kwargs):
+                    if path == target:
+                        raise RuntimeError(f"PRIVATE_RESOLUTION_FAILURE {target}")
+                    return resolve(path, *args, **kwargs)
+                with patch.object(Path, "resolve", autospec=True, side_effect=fail_one), \
+                        patch.object(module.Device, "memory", autospec=True, side_effect=lambda device: memory(device, proc)), \
+                        patch("sys.argv", ["android-dev-device.py", "--state-dir", self.folder.name, "memory"]), \
+                        patch("os.umask"), patch("sys.stdout", new_callable=io.StringIO) as output, \
+                        patch("sys.stderr", new_callable=io.StringIO) as errors, patch("subprocess.run") as run:
+                    module.main()
+                result = json.loads(output.getvalue())
+                self.assertEqual(set(result), {"utc", "status", "reason"})
+                self.assertEqual(result["status"], "UNAVAILABLE"); self.assertEqual(result["reason"], reason)
+                self.assertNotIn("PRIVATE", output.getvalue()); self.assertNotIn(self.folder.name, output.getvalue())
+                self.assertEqual(errors.getvalue(), ""); run.assert_not_called()
+
+    def test_memory_requires_same_proven_mount_and_root_context_on_both_identity_passes(self):
+        proc, process, _ = self.memory_fixture()
+        other = Path(self.folder.name) / "PRIVATE_OTHER_CONTEXT"; other.mkdir()
+        for proof in (process / "ns/mnt", process / "root", proc / "self/ns/mnt", proc / "self/root"):
+            original = proof.readlink()
+            for replacement in (other, None):
+                with self.subTest(proof=proof, replacement=replacement):
+                    proof.unlink()
+                    if replacement is not None:
+                        proof.symlink_to(replacement)
+                    result = self.device.memory(proc)
+                    self.assertEqual(result["reason"], "IDENTITY_UNVERIFIED")
+                    self.assertEqual(set(result), {"utc", "status", "reason"})
+                    self.assertNotIn("PRIVATE", json.dumps(result))
+                    if replacement is not None:
+                        proof.unlink()
+                    proof.symlink_to(original)
+        stat = Path.stat
+        def denied_context(path, *args, **kwargs):
+            if path == process / "ns/mnt":
+                raise PermissionError(f"PRIVATE_CONTEXT {path}")
+            return stat(path, *args, **kwargs)
+        with patch.object(Path, "stat", autospec=True, side_effect=denied_context):
+            result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "PERMISSION_DENIED")
+        self.assertEqual(set(result), {"utc", "status", "reason"}); self.assertNotIn("PRIVATE", json.dumps(result))
+        read = module.bounded_proc_read
+        def change_context_after_status(path, maximum=65536):
+            value = read(path, maximum)
+            if path == process / "status":
+                (process / "ns/mnt").unlink(); (process / "ns/mnt").symlink_to(other)
+            return value
+        with patch.object(module, "bounded_proc_read", side_effect=change_context_after_status):
+            result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "IDENTITY_UNVERIFIED"); self.assertNotIn("process_kib", result)
+
+    def test_memory_matching_path_text_cannot_replace_kernel_object_proof(self):
+        proc, process, executable = self.memory_fixture()
+        stat = Path.stat; read = module.bounded_proc_read
+        other = Path(self.folder.name) / "PRIVATE_OTHER_OBJECT"; other.write_bytes(b"other-object")
+        different = other.stat()
+        arguments = [str(executable), "-avd", "tachiai-dev", "-port", "5580"]
+        for path in (process / "exe", process / "fd/7", process / "root" / self.device.avd.relative_to("/")):
+            for late in (False, True):
+                with self.subTest(path=path, late=late):
+                    active = not late
+                    (process / "cmdline").write_bytes("\0".join(arguments + (["-datadir", str(self.device.avd)] if path.name.endswith(".avd") else [])).encode() + b"\0")
+                    def mismatched_object(candidate, *args, **kwargs):
+                        return different if active and candidate == path else stat(candidate, *args, **kwargs)
+                    def activate_after_status(candidate, maximum=65536):
+                        nonlocal active
+                        value = read(candidate, maximum)
+                        if candidate == process / "status":
+                            active = True
+                        return value
+                    with patch.object(Path, "stat", autospec=True, side_effect=mismatched_object), \
+                            patch.object(module, "bounded_proc_read", side_effect=activate_after_status):
+                        result = self.device.memory(proc)
+                    self.assertEqual(result["reason"], "IDENTITY_UNVERIFIED")
+                    self.assertEqual(result["status"], "UNAVAILABLE")
+                    self.assertEqual(set(result), {"utc", "status", "reason"})
+                    self.assertNotIn("PRIVATE", json.dumps(result)); self.assertNotIn(self.folder.name, json.dumps(result))
+
+    def test_memory_requires_exact_executable_avd_port_and_single_known_argument_fields(self):
+        proc, process, executable = self.memory_fixture()
+        arguments = [str(executable), "-avd", "tachiai-dev", "-port", "5580"]
+        for wrong in ([str(executable), "-avd", "other", "-port", "5580"],
+            [str(executable), "-avd", "tachiai-dev", "-port", "5582"],
+            arguments + ["-avd", "tachiai-dev"], arguments + ["-port", "5580"], arguments[:-1]):
+            (process / "cmdline").write_bytes("\0".join(wrong).encode() + b"\0")
+            result = self.device.memory(proc)
+            self.assertEqual(result["status"], "UNAVAILABLE"); self.assertNotIn("process_kib", result)
+        (process / "cmdline").write_bytes("\0".join(arguments).encode() + b"\0")
+        other = Path(self.folder.name) / "other-executable"; other.write_bytes(b"fixture")
+        (process / "exe").unlink(); (process / "exe").symlink_to(other)
+        self.assertEqual(self.device.memory(proc)["reason"], "PROCESS_NOT_VISIBLE")
+
+    def test_memory_never_guesses_owned_userdata_when_environment_or_fd_proof_is_unavailable(self):
+        proc, process, executable = self.memory_fixture()
+        (process / "fd/7").unlink()
+        self.assertEqual(self.device.memory(proc)["reason"], "IDENTITY_UNVERIFIED")
+        arguments = [str(executable), "-avd", "tachiai-dev", "-port", "5580", "-datadir", str(self.device.avd)]
+        (process / "cmdline").write_bytes("\0".join(arguments).encode() + b"\0")
+        self.assertEqual(self.device.memory(proc)["status"], "AVAILABLE")
+        (process / "cmdline").write_bytes("\0".join(arguments[:-1] + ["/" + str(self.device.avd)]).encode() + b"\0")
+        self.assertEqual(self.device.memory(proc)["status"], "AVAILABLE")
+        (process / "fd/7").symlink_to(self.device.avd / "userdata-qemu.img")
+        wrong = Path(self.folder.name) / "other.avd"; wrong.mkdir()
+        for changed in (arguments[:-1] + [str(wrong)], arguments + ["-datadir", str(self.device.avd)], arguments[:-1] + ["relative.avd"]):
+            (process / "cmdline").write_bytes("\0".join(changed).encode() + b"\0")
+            self.assertEqual(self.device.memory(proc)["reason"], "IDENTITY_UNVERIFIED")
+
+    def test_memory_absent_or_hidden_processes_are_unavailable_and_never_report_zero_usage(self):
+        proc, process, _ = self.memory_fixture()
+        (process / "comm").write_text("sandbox-only-process\n")
+        result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "PROCESS_NOT_VISIBLE")
+        self.assertEqual(set(result), {"utc", "status", "reason"})
+        self.assertEqual(result["status"], "UNAVAILABLE")
+
+    def test_memory_rejects_ambiguous_owned_processes_before_any_metrics_are_read(self):
+        proc, _, executable = self.memory_fixture()
+        self.memory_process(proc, executable, pid="322", ticks=54321)
+        read = module.bounded_proc_read
+        def guarded(path, maximum=65536):
+            self.assertNotIn(path.name, ("status", "meminfo", "smaps_rollup"))
+            return read(path, maximum)
+        with patch.object(module, "bounded_proc_read", side_effect=guarded):
+            self.assertEqual(self.device.memory(proc)["reason"], "PROCESS_AMBIGUOUS")
+
+    def test_memory_rechecks_start_ticks_to_reject_pid_reuse_and_changed_identity(self):
+        proc, process, _ = self.memory_fixture()
+        with patch.object(module.EmulatorMemory, "start_ticks", side_effect=[12345, 12345, 54321, 54321]):
+            result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "IDENTITY_CHANGED"); self.assertNotIn("process_kib", result)
+        read = module.bounded_proc_read
+        def change_after_status(path, maximum=65536):
+            value = read(path, maximum)
+            if path == process / "status":
+                (process / "cmdline").write_bytes(b"fixture\0-avd\0other\0-port\0" + b"5580\0")
+            return value
+        with patch.object(module, "bounded_proc_read", side_effect=change_after_status):
+            self.assertEqual(self.device.memory(proc)["reason"], "IDENTITY_CHANGED")
+
+    def test_memory_closed_permission_and_disappearance_categories_never_expose_exception_text(self):
+        proc, process, _ = self.memory_fixture()
+        read = module.bounded_proc_read
+        for exception, reason in ((PermissionError("PRIVATE_DENIAL"), "PERMISSION_DENIED"),
+                                  (FileNotFoundError("PRIVATE_PATH"), "PROCESS_DISAPPEARED")):
+            def refuse(path, maximum=65536):
+                if path == process / "status":
+                    raise exception
+                return read(path, maximum)
+            with patch.object(module, "bounded_proc_read", side_effect=refuse):
+                result = self.device.memory(proc)
+            self.assertEqual(result["reason"], reason); self.assertNotIn("PRIVATE", json.dumps(result))
+            self.assertNotIn("process_kib", result)
+        with patch.object(module, "bounded_proc_read", side_effect=PermissionError("PRIVATE_NAMESPACE")):
+            self.assertEqual(self.device.memory(proc)["reason"], "PERMISSION_DENIED")
+
+    def test_memory_optional_rollup_refusal_is_explicit_but_required_identity_is_still_rechecked(self):
+        proc, process, _ = self.memory_fixture(); read = module.bounded_proc_read
+        def no_rollup(path, maximum=65536):
+            if path == process / "smaps_rollup":
+                raise PermissionError("PRIVATE_ROLLUP")
+            return read(path, maximum)
+        with patch.object(module, "bounded_proc_read", side_effect=no_rollup):
+            result = self.device.memory(proc)
+        self.assertEqual(result["status"], "AVAILABLE")
+        self.assertEqual(result["rollup"], {"status": "UNAVAILABLE", "reason": "PERMISSION_DENIED"})
+        self.assertEqual(result["process_kib"]["VmRSS"], 5000000)
+        (process / "smaps_rollup").write_text("Rss: invalid kB\n")
+        self.assertEqual(self.device.memory(proc)["rollup"], {"status": "UNAVAILABLE", "reason": "METRICS_INVALID"})
+        (process / "smaps_rollup").unlink()
+        self.assertEqual(self.device.memory(proc)["rollup"], {"status": "UNAVAILABLE", "reason": "METRICS_UNAVAILABLE"})
+
+    def test_memory_required_metric_shape_and_bounds_fail_whole_snapshot_closed(self):
+        proc, process, _ = self.memory_fixture(); status = process / "status"
+        original = status.read_text()
+        for malformed in (original.replace("VmRSS:", "UnknownRSS:"), original + "VmRSS: 5 kB\n",
+            original.replace("5000000 kB", "-1 kB"), original.replace("5000000 kB", "5 MB"),
+            original.replace("5000000 kB", "nan kB"), original.replace("5000000 kB", str(2**63) + " kB")):
+            status.write_text(malformed); result = self.device.memory(proc)
+            self.assertEqual(result["reason"], "METRICS_INVALID"); self.assertNotIn("process_kib", result)
+        status.write_text(original)
+        (proc / "meminfo").write_text("MemTotal: 1 kB\n")
+        self.assertEqual(self.device.memory(proc)["reason"], "METRICS_INVALID")
+
+    def test_memory_pressure_and_proc_reads_are_bounded_and_accept_no_arbitrary_values(self):
+        proc, process, _ = self.memory_fixture()
+        pressure = proc / "pressure/memory"; original = pressure.read_text()
+        for malformed in (original.replace("avg10=0.00", "avg10=nan"), original.replace("avg10=0.00", "avg10=101.00"),
+            original.replace("total=123456", "total=1.5"), original.replace("total=123456", "total=" + str(2**63)),
+            original.replace("full", "some"), original + "PRIVATE_FIELD\n"):
+            pressure.write_text(malformed)
+            self.assertEqual(self.device.memory(proc)["reason"], "METRICS_INVALID")
+        pressure.write_text(original)
+        (process / "cmdline").write_bytes(b"x" * 65537)
+        result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "METADATA_INVALID"); self.assertNotIn("process_kib", result)
+        self.assertEqual(module.memory_reason(module.MemoryUnavailable("PRIVATE_UNKNOWN")), "PROC_UNAVAILABLE")
+
+    def test_memory_stat_requires_matching_pid_and_live_start_identity(self):
+        proc, process, _ = self.memory_fixture(); stat = process / "stat"; original = stat.read_text()
+        for malformed in (original.replace("321 (", "999 ("), "321 (fixture) S 1", original.replace("12345", "-1"),
+                          original.replace(") S ", ") INVALID_STATE ")):
+            stat.write_text(malformed)
+            self.assertEqual(self.device.memory(proc)["reason"], "IDENTITY_UNVERIFIED")
+        stat.write_text(original.replace(") S ", ") Z "))
+        self.assertEqual(self.device.memory(proc)["reason"], "PROCESS_DISAPPEARED")
+
+    def test_memory_missing_host_proc_or_required_pressure_is_not_reported_as_emulator_disappearance(self):
+        proc, _, _ = self.memory_fixture()
+        (proc / "pressure/memory").unlink()
+        result = self.device.memory(proc)
+        self.assertEqual(result["reason"], "PROC_UNAVAILABLE"); self.assertNotIn("process_kib", result)
+        self.assertEqual(self.device.memory(proc / "missing-namespace")["reason"], "PROC_UNAVAILABLE")
+
+    def test_memory_cli_uses_only_new_explicit_read_only_command(self):
+        result = {"utc": "2026-10-11T08:41:11+00:00", "status": "UNAVAILABLE", "reason": "PROCESS_NOT_VISIBLE"}
+        with patch("sys.argv", ["android-dev-device.py", "--state-dir", self.folder.name, "memory"]), \
+                patch.object(module.Device, "memory", return_value=result) as memory, patch("os.umask"), \
+                patch("subprocess.run") as run, patch("subprocess.Popen") as launch, patch("sys.stdout", new_callable=io.StringIO) as output:
+            module.main()
+        self.assertEqual(json.loads(output.getvalue()), result); memory.assert_called_once_with()
+        run.assert_not_called(); launch.assert_not_called()
 
     def test_existing_device_is_preserved_without_any_command(self):
         self.populate()

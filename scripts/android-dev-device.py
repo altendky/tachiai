@@ -6,10 +6,13 @@
 """Manage one persistent local AVD without touching a connected phone."""
 
 import argparse
+import datetime
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +27,197 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "apps/android/dev-device.toml"
 CERTIFICATE = "A258F5F71E7D828F51A3AAF6AA94F97B9DBFBD64E0CE08394A59C120914A7A17"
 APPLICATION = "net.fstab.tachiai"
+PROCESS_MEMORY = ("VmRSS", "VmHWM", "RssAnon", "RssFile", "RssShmem", "VmSwap", "VmSize", "VmPeak")
+ROLLUP_MEMORY = ("Rss", "Pss", "Pss_Anon", "Pss_File", "Pss_Shmem", "Private_Clean", "Private_Dirty",
+                 "Anonymous", "AnonHugePages", "Swap", "SwapPss")
+HOST_MEMORY = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
+MEMORY_REASONS = {"CONFIGURATION_UNVERIFIED", "METADATA_INVALID", "METRICS_INVALID", "METRICS_UNAVAILABLE", "IDENTITY_UNVERIFIED",
+                  "IDENTITY_CHANGED", "PROCESS_DISAPPEARED", "PROCESS_NOT_VISIBLE", "PROCESS_AMBIGUOUS",
+                  "PERMISSION_DENIED", "PROC_UNAVAILABLE"}
+
+
+class MemoryUnavailable(Exception):
+    """Closed diagnostic category; never contains a proc path or raw input."""
+
+
+def bounded_proc_read(path, maximum=65536):
+    with path.open("rb") as source:
+        value = source.read(maximum + 1)
+    if len(value) > maximum:
+        raise MemoryUnavailable("METADATA_INVALID")
+    return value
+
+
+def resolve_memory_identity(path):
+    try:
+        return path.resolve(strict=True)
+    except RuntimeError:
+        # Python 3.12 reports symlink loops as RuntimeError rather than OSError.
+        raise MemoryUnavailable("IDENTITY_UNVERIFIED") from None
+
+
+def memory_object(path):
+    metadata = path.stat()
+    return metadata.st_dev, metadata.st_ino
+
+
+def memory_counters(raw, fields):
+    values = {}
+    for line in raw.decode("ascii").splitlines():
+        key, separator, rest = line.partition(":")
+        if not separator or key not in fields:
+            continue
+        match = re.fullmatch(r"\s*([0-9]{1,19})\s+kB\s*", rest)
+        if key in values or match is None or int(match[1]) > 2**63 - 1:
+            raise MemoryUnavailable("METRICS_INVALID")
+        values[key] = int(match[1])
+    if set(values) != set(fields):
+        raise MemoryUnavailable("METRICS_INVALID")
+    return values
+
+
+class EmulatorMemory:
+    """Read scalar proc metadata only; never execute ADB or read guest files."""
+
+    def __init__(self, proc, executable, avd, name, port):
+        self.proc, self.executable, self.avd = proc, executable, avd
+        self.name, self.port = name, str(port)
+
+    def start_ticks(self, process):
+        stat = bounded_proc_read(process / "stat", 4096).decode("ascii")
+        before, separator, after = stat.rpartition(") ")
+        fields = after.split()
+        if not separator or before.partition(" (")[0] != process.name or len(fields) < 20 or \
+                re.fullmatch(r"[0-9]{1,19}", fields[19]) is None or int(fields[19]) > 2**63 - 1:
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        if fields[0] in ("Z", "X", "x"):
+            raise MemoryUnavailable("PROCESS_DISAPPEARED")
+        if fields[0] not in ("R", "S", "D", "T", "t", "W", "K", "I", "P"):
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        return int(fields[19])
+
+    def context(self, process):
+        try:
+            if memory_object(self.proc / "self/ns/mnt") != memory_object(process / "ns/mnt") or \
+                    memory_object(self.proc / "self/root") != memory_object(process / "root"):
+                raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        except FileNotFoundError:
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED") from None
+
+    def owned_data(self, process, arguments):
+        if "-datadir" in arguments:
+            position = arguments.index("-datadir")
+            if arguments.count("-datadir") != 1 or position + 1 >= len(arguments):
+                return False
+            directory = Path(arguments[position + 1])
+            return directory.is_absolute() and resolve_memory_identity(directory) == self.avd and \
+                memory_object(process / "root" / self.avd.relative_to("/")) == memory_object(self.avd)
+        # Default AVD selection comes from launcher environment, which is never
+        # read. Require kernel FD metadata proving the owned userdata instead.
+        for count, descriptor in enumerate((process / "fd").iterdir()):
+            if count >= 1024:
+                raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+            try:
+                target = descriptor.readlink()
+                if target.is_absolute() and target.name in ("userdata-qemu.img", "userdata-qemu.img.qcow2", "userdata.img") and \
+                        resolve_memory_identity(target).parent == self.avd:
+                    if memory_object(descriptor) != memory_object(self.avd / target.name):
+                        raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+                    return True
+            except FileNotFoundError:
+                continue  # An unrelated descriptor can close during inspection.
+        return False
+
+    def identity(self, process):
+        ticks = self.start_ticks(process)
+        self.context(process)
+        if resolve_memory_identity(process / "exe") != self.executable:
+            return None
+        if memory_object(process / "exe") != memory_object(self.executable):
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        raw = bounded_proc_read(process / "cmdline")
+        if not raw or not raw.endswith(b"\0"):
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        arguments = raw.decode("utf-8").split("\0")[:-1]
+        for flag, expected in (("-avd", self.name), ("-port", self.port)):
+            if arguments.count(flag) != 1 or arguments.index(flag) + 1 >= len(arguments) or \
+                    arguments[arguments.index(flag) + 1] != expected:
+                return None
+        if not self.owned_data(process, arguments):
+            raise MemoryUnavailable("IDENTITY_UNVERIFIED")
+        if self.start_ticks(process) != ticks:
+            raise MemoryUnavailable("IDENTITY_CHANGED")
+        self.context(process)
+        return ticks
+
+    def pressure(self):
+        values = {}
+        for line in bounded_proc_read(self.proc / "pressure/memory", 1024).decode("ascii").splitlines():
+            parts = line.split()
+            if len(parts) != 5 or parts[0] not in ("some", "full") or parts[0] in values:
+                raise MemoryUnavailable("METRICS_INVALID")
+            item = {}
+            for part, key in zip(parts[1:], ("avg10", "avg60", "avg300", "total")):
+                name, separator, value = part.partition("=")
+                if not separator or name != key or re.fullmatch(r"[0-9]{1,19}(?:\.[0-9]{1,6})?", value) is None:
+                    raise MemoryUnavailable("METRICS_INVALID")
+                number = int(value) if key == "total" and "." not in value else float(value)
+                if key == "total" and (not isinstance(number, int) or number > 2**63 - 1) or key != "total" and number > 100:
+                    raise MemoryUnavailable("METRICS_INVALID")
+                item["total_us" if key == "total" else key] = number
+            values[parts[0]] = item
+        if set(values) != {"some", "full"}:
+            raise MemoryUnavailable("METRICS_INVALID")
+        return values
+
+    def snapshot(self):
+        matches = []
+        for count, process in enumerate(self.proc.iterdir()):
+            if count >= 8192:
+                raise MemoryUnavailable("PROC_UNAVAILABLE")
+            if re.fullmatch(r"[1-9][0-9]{0,9}", process.name) is None:
+                continue
+            try:
+                if bounded_proc_read(process / "comm", 256).strip() != b"qemu-system-x86":
+                    continue
+                ticks = self.identity(process)
+                if ticks is not None:
+                    matches.append((process, ticks))
+                    if len(matches) != 1:
+                        raise MemoryUnavailable("PROCESS_AMBIGUOUS")
+            except FileNotFoundError:
+                continue  # A process can exit during the initial bounded scan.
+        if not matches:
+            raise MemoryUnavailable("PROCESS_NOT_VISIBLE")
+        process, ticks = matches[0]
+        try:
+            counters = memory_counters(bounded_proc_read(process / "status", 16384), PROCESS_MEMORY)
+        except FileNotFoundError:
+            raise MemoryUnavailable("PROCESS_DISAPPEARED") from None
+        host = memory_counters(bounded_proc_read(self.proc / "meminfo"), HOST_MEMORY)
+        pressure = self.pressure()
+        try:
+            rollup = {"status": "AVAILABLE", "kib": memory_counters(bounded_proc_read(process / "smaps_rollup", 16384), ROLLUP_MEMORY)}
+        except (OSError, UnicodeError, MemoryUnavailable) as error:
+            rollup = {"status": "UNAVAILABLE", "reason": "METRICS_UNAVAILABLE" if isinstance(error, FileNotFoundError) else memory_reason(error)}
+        try:
+            identity = self.identity(process)
+        except FileNotFoundError:
+            raise MemoryUnavailable("PROCESS_DISAPPEARED") from None
+        if identity != ticks:
+            raise MemoryUnavailable("IDENTITY_CHANGED")
+        return {"status": "AVAILABLE", "pid": int(process.name), "start_ticks": ticks,
+                "process_kib": counters, "host_kib": host, "pressure": pressure, "rollup": rollup}
+
+
+def memory_reason(error):
+    if isinstance(error, MemoryUnavailable):
+        return str(error) if str(error) in MEMORY_REASONS else "PROC_UNAVAILABLE"
+    if isinstance(error, PermissionError):
+        return "PERMISSION_DENIED"
+    if isinstance(error, UnicodeError):
+        return "METADATA_INVALID"
+    return "PROC_UNAVAILABLE"
 
 
 def properties(path):
@@ -180,6 +374,20 @@ class Device:
         if self.adb("shell", "getprop", "sys.boot_completed", capture=True, timeout=10).stdout.strip() != "1":
             raise ValueError("Development emulator has not finished booting.")
 
+    def memory(self, proc=Path("/proc")):
+        utc = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        try:
+            self.verify_sdk()
+            self.verify_avd()
+            executable = (self.sdk / "emulator/qemu/linux-x86_64/qemu-system-x86_64").resolve(strict=True)
+        except (OSError, ValueError, RuntimeError):
+            return {"utc": utc, "status": "UNAVAILABLE", "reason": "CONFIGURATION_UNVERIFIED"}
+        try:
+            result = EmulatorMemory(proc, executable, self.avd, self.spec["name"], self.spec["port"]).snapshot()
+        except (OSError, UnicodeError, MemoryUnavailable) as error:
+            result = {"status": "UNAVAILABLE", "reason": memory_reason(error)}
+        return {"utc": utc, **result}
+
     def start(self, headless, cold_boot=False, gpu=None):
         selected_gpu = gpu if gpu is not None else self.profile["runtime"]["gpu"]
         if selected_gpu not in ("auto", "host", "software", "swiftshader", "swangle", "lavapipe"):
@@ -276,6 +484,7 @@ def main():
                        help="Override the profile renderer; stop first to change an existing process")
     commands.add_parser("stop")
     commands.add_parser("status")
+    commands.add_parser("memory", help="Read bounded host/emulator memory metadata only; never start or change a device")
     commands.add_parser("configure", help="Apply non-secret Android preferences from the repo profile")
     install = commands.add_parser("install")
     install.add_argument("apk", nargs="?", type=Path,
@@ -291,6 +500,8 @@ def main():
     elif args.command == "status":
         device.ready()
         print(f"Ready: {device.spec['name']} ({device.serial}); data: {device.avd}")
+    elif args.command == "memory":
+        print(json.dumps(device.memory(), sort_keys=True))
     elif args.command == "configure":
         device.configure()
     elif args.command == "install":

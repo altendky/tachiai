@@ -43,7 +43,7 @@ subsequent approval above provides the current integration authority. See the
 
 | Feature | Official ABEMA behavior | Tachiai implementation boundary |
 | --- | --- | --- |
-| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local channel name/ID search and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; its actual guest response remains unverified. Global search, genres and complete provider coverage are not implemented. |
+| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local channel name/ID search and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. Global search, genres and complete provider coverage are not implemented. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
 | My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |
@@ -290,9 +290,37 @@ owner and encrypted-record hashes without account validation or persistent
 writes. Up to six local pages reuse the same snapshot/GET; the closed output
 records normalized count, display truncation and one validated public slot
 candidate after cleanup, preferring `sumo` when present in the retained prefix.
-It emits no exact raw byte size or provider date horizon. Actual guest compatibility, raw scalar types, response sizes and the
-available horizon remain unverified; Schedule does not settle those #100/#101
-criteria or exact-slot playback.
+It emits no exact raw byte size or provider date horizon.
+
+On 2026-10-11, the combined source passed 2,375 JVM tests across 285 reports
+with no failures, errors or skips, all 76 owned guest JavaScript cases, scoped
+hooks/documentation, lint, release isolation, instrumentation compilation and
+both APK assemblies. Both certificates matched the shared debug signer. The
+verified app and ordinary test APK were installed on persistent `tachiai-dev`.
+One explicit saved-route Schedule observation passed in 15.72 seconds: one
+fresh-guest timetable GET yielded a normalized prefix of 501 exact broadcasts,
+consumed through six local pages, with display truncation reported. Captured
+ownership and encrypted records were unchanged after cleanup. No account
+validation, automatic Add, configured write or playback occurred.
+
+A separate exact-slot refresh for the public candidate returned by that
+snapshot passed in 12.72 seconds. It returned the same channel/slot identity
+with UNKNOWN availability and no schedule, preserving captured ownership and
+encrypted records. Fifteen network-blocked Android/IPC guards from the delivered
+slot source had already passed before these real requests. Afterwards, all
+17 isolated network-blocked guest-runtime/IPC cases passed in 2.583 seconds,
+including the new Schedule projection and primitive parcel guards. The test
+manifest was restored byte-identically, the ordinary test APK rebuilt with the
+shared certificate and reinstalled, and the normal launcher restored. Protected
+records remained unchanged. This completes bounded metadata acceptance for the
+focused slot issue, not slot playback.
+
+Both observations used Android 16/API 36, x86-64, WebView 133.0.6943.137,
+the instance's captured saved route, unknown exit country and a fresh guest
+without the existing ABEMA account. They establish compatibility with these
+actual responses within local parsing bounds. Exact raw byte sizes, full
+provider date horizon, changing-schema compatibility and complete All coverage
+remain unverified; the broader #100/#101 issues remain open.
 
 ### Existing-account connection implementation
 

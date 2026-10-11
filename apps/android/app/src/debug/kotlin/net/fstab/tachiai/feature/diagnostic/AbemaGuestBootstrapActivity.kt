@@ -96,6 +96,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private lateinit var choose: Spinner
     private lateinit var start: Button
     private lateinit var verifyProfile: Button
+    private lateinit var verifyEpisode: Button
     private var instances: List<ProviderInstance> = emptyList()
     @Volatile private var attempt: Attempt? = null
 
@@ -113,7 +114,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
         host.addView(TextView(this).apply {
-            text = "ABEMA guest preparation · debug only\nSelect a saved ABEMA provider and explicitly prepare a fresh guest using its saved route. No account login or playback. Cookies are disabled; acceptance is unverified."
+            text = "ABEMA guest preparation · debug only\nSelect a saved ABEMA provider and explicitly prepare or verify a fresh guest using its saved route. No account login or playback. Cookies are disabled; episode acceptance is unverified."
         })
         status = TextView(this).apply { text = "Loading saved providers. No provider request has started." }
         host.addView(status)
@@ -125,6 +126,11 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_PROFILE) }
         }
         host.addView(verifyProfile)
+        verifyEpisode = Button(this).apply {
+            text = "Verify guest episode metadata"; isEnabled = false
+            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_EPISODE) }
+        }
+        host.addView(verifyEpisode)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { stop("STOPPED") } })
         host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
@@ -163,6 +169,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         if (!::start.isInitialized) return
         start.isEnabled = foreground.get() && instances.isNotEmpty() && !admission.unavailable
         verifyProfile.isEnabled = start.isEnabled
+        verifyEpisode.isEnabled = start.isEnabled
         choose.isEnabled = start.isEnabled
     }
     private fun outcome(category: String) {
@@ -171,6 +178,8 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             "PREPARED" -> "Guest prepared. No existing account is connected; the transient guest has been discarded."
             "GUEST_PROFILE_BOUND" -> "Guest profile identity verified. No existing account is connected; the transient guest and profile have been discarded."
             "VERIFYING_PROFILE" -> "Preparing a fresh guest and verifying its server profile through the selected provider route."
+            "EXACT_EPISODE_METADATA" -> "Exact episode metadata verified. The transient guest and metadata have been discarded; no account or playback is connected."
+            "VERIFYING_EPISODE" -> "Preparing a fresh guest and verifying one fixed episode through the selected provider route."
             "PREPARING" -> "Preparing guest through the selected provider route."
             "CLEANUP_FAILED" -> "Cleanup could not be confirmed. Further attempts are blocked in this process."
             else -> "Guest preparation ended: $category. No account is connected."
@@ -183,15 +192,21 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         val active = Attempt(run, operation, diagnostics)
         attempt = active
         Log.d("TachiaiAbemaGuest", "routeMode=${selected.setup.route?.mode?.name ?: "UNSET"}")
-        controls(); outcome(if (operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE) "VERIFYING_PROFILE" else "PREPARING")
+        controls(); outcome(when (operation) {
+            AbemaGuestBootstrapOperation.GUEST_ONLY -> "PREPARING"
+            AbemaGuestBootstrapOperation.VERIFY_PROFILE -> "VERIFYING_PROFILE"
+            AbemaGuestBootstrapOperation.VERIFY_EPISODE -> "VERIFYING_EPISODE"
+        })
         handler.postDelayed({ if (attempt === active) stop("TIMEOUT") }, 45_000)
         worker.execute {
             try {
                 active.owner = readOwner(selected.id)
                 check(sameOwner(active))
-                val route = if (operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE)
-                    RouteSession.createAbemaGuestProfile(active.owner!!.profile, active.preparation)
-                    else RouteSession.createAbemaGuest(active.owner!!.profile, active.preparation)
+                val route = when (operation) {
+                    AbemaGuestBootstrapOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(active.owner!!.profile, active.preparation)
+                    AbemaGuestBootstrapOperation.VERIFY_PROFILE -> RouteSession.createAbemaGuestProfile(active.owner!!.profile, active.preparation)
+                    AbemaGuestBootstrapOperation.VERIFY_EPISODE -> RouteSession.createAbemaGuestEpisode(active.owner!!.profile, active.preparation)
+                }
                 active.route.set(route)
                 check(sameOwner(active))
                 val files = linkedMapOf<String, ByteArray>()
@@ -279,6 +294,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
                 }
                 if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST) return null
                 if (AbemaGuestBootstrapPolicy.isProfile(uri)) return null
+                if (AbemaGuestBootstrapPolicy.isEpisode(uri)) return null
                 val bytes = files[uri.path] ?: return refused()
                 return WebResourceResponse(if (request.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                     200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(active.operation),
@@ -336,9 +352,14 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
                     verifyThen(active) { stop("PREPARED") }
                 state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
                     verifyThen(active) { stop("GUEST_PROFILE_BOUND") }
+                state == "EXACT_EPISODE_METADATA" && failure == "NONE" && active.operation == AbemaGuestBootstrapOperation.VERIFY_EPISODE ->
+                    verifyThen(active) { stop("EXACT_EPISODE_METADATA") }
                 state == "REFUSED" && failure in setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT",
-                    "PROFILE_HTTP", "PROFILE_RESPONSE", "PROFILE_TIMEOUT") -> stop("GUEST_$failure")
-                raw == null || raw == "null" || (state in setOf("WAITING", "MODULES", "GUEST", "PROFILE") && failure == "NONE") ->
+                    "PROFILE_HTTP", "PROFILE_RESPONSE", "PROFILE_TIMEOUT", "EPISODE_RESPONSE", "EPISODE_TIMEOUT",
+                    "EPISODE_TRANSPORT", "EPISODE_REDIRECT", "EPISODE_HTTP_401", "EPISODE_HTTP_403", "EPISODE_HTTP_404",
+                    "EPISODE_HTTP_410", "EPISODE_HTTP_429", "EPISODE_HTTP_3XX", "EPISODE_HTTP_4XX", "EPISODE_HTTP_5XX",
+                    "EPISODE_HTTP_OTHER") -> stop("GUEST_$failure")
+                raw == null || raw == "null" || (state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE") && failure == "NONE") ->
                     handler.postDelayed({ poll(active) }, 100)
                 else -> stop("STATUS_REFUSED")
             }

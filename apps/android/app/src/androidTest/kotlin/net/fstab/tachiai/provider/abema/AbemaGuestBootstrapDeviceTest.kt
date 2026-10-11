@@ -63,6 +63,10 @@ class AbemaGuestBootstrapDeviceTest {
         ownedRuntime("VERIFY_PROFILE", "GUEST_PROFILE_BOUND", 2)
     }
 
+    @Test fun actualOwnedJavaScriptVerifiesOnlyExactSyntheticEpisodeWithNetworkingBlocked() {
+        ownedRuntime("VERIFY_EPISODE", "EXACT_EPISODE_METADATA", 2)
+    }
+
     private fun ownedRuntime(operation: String, expected: String, count: Int) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
@@ -72,6 +76,8 @@ class AbemaGuestBootstrapDeviceTest {
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529')
+                return new Response('{"id":"394-72_s10_p8529","episode":{"title":"PRIVATE_EPISODE_TITLE"},"source":{"url":"https://private.invalid/MUST_NOT_FETCH"}}', {status:200});
               if (url.startsWith('https://api.p-c3-e.abema-tv.com/'))
                 return new Response('{"profile":{"userId":"FIXTURE_USER","name":"PRIVATE_NAME"},"subscriptions":[]}', {status:200});
               return new Response('{"user_id":"FIXTURE_USER","access_token":"FIXTURE_ACCESS"}', {status:200});
@@ -113,23 +119,30 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "REFUSED")) break
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "REFUSED")) break
                 Thread.sleep(50)
             }
             assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
             assertEquals(2, status?.length())
             val publicShape = evaluate("""JSON.stringify({count:requests.length, names:Object.keys(window.__tachiaiGuest_$nonce),
                 omit:requests.every(request=>request.options.credentials==='omit'),
-                profile:requests.length===2 && requests[1].options.method==='GET' &&
+                profile:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
+                  requests[1].options.method==='GET' &&
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
+                  requests[1].options.redirect==='error',
+                episode:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529' &&
+                  requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
                   requests[1].options.redirect==='error'})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
             assertEquals(operation == "VERIFY_PROFILE", observed.getBoolean("profile"))
+            assertEquals(operation == "VERIFY_EPISODE", observed.getBoolean("episode"))
             assertEquals("[\"status\",\"stop\"]", observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
             assertFalse(publicShape.contains("PRIVATE_NAME"))
+            assertFalse(publicShape.contains("PRIVATE_EPISODE_TITLE")); assertFalse(publicShape.contains("394-72"))
             evaluate("window.__tachiaiGuest_$nonce.stop(); window.__tachiaiGuest_$nonce.status()")!!.let {
                 assertEquals("STOPPED", JSONObject(it).getString("state"))
             }

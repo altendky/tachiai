@@ -97,6 +97,62 @@ class AbemaGuestBootstrapPolicyTest {
         assertFalse(guestOnly.admit(profile, false, "GET"))
     }
 
+    @Test fun episodeModeAdmitsOnlyOneFixedExactPathWithoutWideningGuestOrProfile() {
+        val operation = AbemaGuestBootstrapOperation.VERIFY_EPISODE
+        val episode = URI(AbemaGuestBootstrapPolicy.EPISODE)
+        for (method in listOf("GET", "OPTIONS")) {
+            assertTrue(AbemaGuestBootstrapPolicy.allows(episode, false, method, operation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, true, method, operation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, false, method))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, false, method, profileOperation))
+        }
+        assertFalse(AbemaGuestBootstrapPolicy.allows(profile, false, "GET", operation))
+        for (method in listOf("POST", "PUT", "DELETE", "HEAD"))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, false, method, operation))
+        for (url in listOf("$episode?x=1", "$episode#fragment", "$episode/", "$episode/children",
+            "https://api.p-c3-e.abema-tv.com/v1/video/programs/OTHER",
+            "https://api.p-c3-e.abema-tv.com/v1/video/programs/%3394-72_s10_p8529",
+            "https://api.p-c3-e.abema-tv.com/v1/video/../video/programs/394-72_s10_p8529",
+            "https://api.p-c3-e.abema-tv.com:443/v1/video/programs/394-72_s10_p8529",
+            "https://fixture@api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529",
+            "http://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529",
+            "https://api.abema.io/v1/video/programs/394-72_s10_p8529",
+            "https://api.p-c3-e.abema-tv.com.other.invalid/v1/video/programs/394-72_s10_p8529",
+            "https://api.p-c3-e.abema-tv.com/v1/media/token", "https://abema.tv/api/auth/accessToken")) {
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "GET", operation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "OPTIONS", operation))
+        }
+        val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation)
+        assertTrue(csp.contains("${AbemaGuestBootstrapPolicy.EPISODE};"))
+        assertFalse(csp.contains("/v1/users/")); assertFalse(csp.contains("api.abema.io"))
+        assertTrue(csp.contains("media-src 'none'"))
+    }
+
+    @Test fun episodeAdmissionRequiresGuestAndAllowsOnlyOnePrecedingSamePathPreflightAndGET() {
+        val operation = AbemaGuestBootstrapOperation.VERIFY_EPISODE
+        val episode = URI(AbemaGuestBootstrapPolicy.EPISODE)
+        val request = AbemaGuestRequestAdmission(operation)
+        assertFalse(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+        assertTrue(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(request.admit(profile, false, "GET"))
+        for (headers in listOf(emptyMap(), preflight - "Origin", preflight + ("Origin" to "https://other.invalid"),
+            preflight + ("Access-Control-Request-Method" to "POST"),
+            preflight + ("Access-Control-Request-Headers" to "authorization,content-type"),
+            preflight + ("origin" to "https://abema.tv")))
+            assertFalse(request.admit(episode, false, "OPTIONS", headers))
+        assertTrue(request.admit(episode, false, "OPTIONS", preflight))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+        assertTrue(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+        val withoutPreflight = AbemaGuestRequestAdmission(operation)
+        assertTrue(withoutPreflight.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertTrue(withoutPreflight.admit(episode, false, "GET"))
+        assertFalse(withoutPreflight.admit(episode, false, "OPTIONS", preflight))
+    }
+
     @Test fun productionHeaderProjectionNeverReadsGETBearerAndRetainsOnlyCORSPreflightFields() {
         assertTrue(AbemaGuestBootstrapPolicy.corsHeaders("GET") { error("Must not inspect GET headers") }.isEmpty())
         val headers = preflight + mapOf("Authorization" to "Bearer PRIVATE_FIXTURE", "Cookie" to "PRIVATE_COOKIE",

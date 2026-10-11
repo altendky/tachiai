@@ -25,6 +25,29 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529') {
+        if (options.delayedEpisode) await delayed;
+        if (options.episodeNetworkFailure) throw new Error('PRIVATE_EPISODE_ERROR');
+        if (options.episodeRedirected) return { status: 200, body: {}, redirected: true };
+        if (options.episodeMissingBody) return { status: 200, body: null };
+        if (Object.hasOwn(options, 'episodeStatus') && options.episodeStatus !== 200) return {
+          status: options.episodeStatus,
+          get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        const bytes = options.episodeBytes || options.episodeText || JSON.stringify(options.episode || {
+          id: '394-72_s10_p8529', episode: { title: 'PRIVATE_EPISODE_TITLE' },
+          source: { url: 'https://private.invalid/MUST_NOT_FETCH' }, status: 'ignored',
+        });
+        if (options.delayedEpisodeRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: new TextEncoder().encode(bytes) }; },
+            cancel: async () => {},
+          }) } };
+        }
+        return new Response(bytes, { status: options.episodeStatus || 200 });
+      }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/')) {
         if (options.delayedProfile) await delayed;
         if (options.profileNetworkFailure) throw new Error('PRIVATE_PROFILE_ERROR');
@@ -289,6 +312,122 @@ test('profile timeout and repeated start abort pending work without granting a b
   assert.equal(timeout.requests[1].request.signal.aborted, true);
   timeout.release(); await settle(); assert.deepEqual(timeout.state(), { state: 'REFUSED', failure: 'PROFILE_TIMEOUT' });
   const again = fixture({ operation: 'VERIFY_PROFILE', delayedProfile: true }); again.start(); await settle(); again.start();
+  assert.equal(again.requests[1].request.signal.aborted, true); again.release(); await settle();
+  assert.equal(again.state().state, 'REFUSED'); assert.equal(again.requests.length, 2);
+});
+
+test('episode verification requests exactly one fixed program after a fresh guest and exports only status', async () => {
+  const value = fixture({ operation: 'VERIFY_EPISODE' }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'EXACT_EPISODE_METADATA', failure: 'NONE' });
+  assert.equal(value.requests.length, 2); assert.ok(value.context.loaded.includes(74284));
+  const { url, request } = value.requests[1];
+  assert.equal(url, 'https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529');
+  assert.equal(request.method, 'GET'); assert.equal(request.mode, 'cors');
+  assert.equal(request.credentials, 'omit'); assert.equal(request.cache, 'no-store'); assert.equal(request.redirect, 'error');
+  assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), { accept: 'application/json', authorization: 'Bearer FIXTURE_ACCESS' });
+  assert.deepEqual(Array.from(value.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop']);
+  assert.doesNotMatch(JSON.stringify(value.state()), /394-72|PRIVATE_|FIXTURE_|source|title|access/);
+  value.stop(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+});
+
+test('episode identity and nested title are exact, bounded and safe Unicode, without interpreting unrelated fields', async () => {
+  for (const episode of [null, [], {}, { id: 'OTHER', episode: { title: 'Title' } },
+    { id: '394-72_s10_p8529', title: 'Title' }, { id: '394-72_s10_p8529', episode: [] },
+    ...[null, 42, [], '', 'x'.repeat(161), ' leading', 'trailing ', 'line\nbreak', 'x\u200dy', '\ud800', '\udc00'].map(title =>
+      ({ id: '394-72_s10_p8529', episode: { title } }))]) {
+    const value = fixture({ operation: 'VERIFY_EPISODE', episodeText: JSON.stringify(episode) });
+    value.start(); await settle(); assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'EPISODE_RESPONSE' });
+    assert.equal(value.requests.length, 2);
+  }
+  const valid = fixture({ operation: 'VERIFY_EPISODE', episode: {
+    id: '394-72_s10_p8529', episode: { title: 'Fixture \ud83d\ude00' },
+    source: { url: 'https://private.invalid/MUST_NOT_FETCH' }, term: null, status: 'UNKNOWN',
+  } });
+  valid.start(); await settle(); assert.equal(valid.state().state, 'EXACT_EPISODE_METADATA');
+  assert.equal(valid.requests.length, 2);
+  const maximumTitle = fixture({ operation: 'VERIFY_EPISODE', episode: {
+    id: '394-72_s10_p8529', episode: { title: 'x'.repeat(160) },
+  } });
+  maximumTitle.start(); await settle(); assert.equal(maximumTitle.state().state, 'EXACT_EPISODE_METADATA');
+});
+
+test('episode validates entire JSON for duplicate keys, structure limits, trailing data and malformed values', async () => {
+  const prefix = '"id":"394-72_s10_p8529","episode":{"title":"Title"}';
+  for (const episodeText of [
+    '{' + prefix + ',"id":"394-72_s10_p8529"}',
+    '{' + prefix + ',"\\u0069d":"394-72_s10_p8529"}',
+    '{"id":"394-72_s10_p8529","episode":{"title":"Title","\\u0074itle":"Title"}}',
+    '{' + prefix + ',"ignored":{"key":1,"key":2}}',
+    '{' + prefix + '}true', '{' + prefix + ',}', '{' + prefix + ',"ignored":01}',
+    '{' + prefix + ',"ignored":1e999}', '{' + prefix + ',"ignored":"\\ud800"}',
+    '{' + prefix + ',"deep":' + '['.repeat(17) + '0' + ']'.repeat(17) + '}',
+    JSON.stringify({ id: '394-72_s10_p8529', episode: { title: 'Title' }, other: Array(1001).fill(0) }),
+    JSON.stringify({ id: '394-72_s10_p8529', episode: { title: 'Title' }, other: Array(5).fill(Array(1000).fill(0)) }),
+  ]) {
+    const value = fixture({ operation: 'VERIFY_EPISODE', episodeText }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'EPISODE_RESPONSE' }); assert.equal(value.requests.length, 2);
+  }
+});
+
+test('episode has a separate 512KiB strict UTF-8 bound while original profile remains 64KiB', async () => {
+  const document = { id: '394-72_s10_p8529', episode: { title: 'Title' }, ignored: 'x'.repeat(70000) };
+  const accepted = fixture({ operation: 'VERIFY_EPISODE', episode: document }); accepted.start(); await settle();
+  assert.equal(accepted.state().state, 'EXACT_EPISODE_METADATA');
+  for (const episodeBytes of [JSON.stringify({ ...document, ignored: 'x'.repeat(512 * 1024) }),
+    Uint8Array.from([123, 34, 0xff, 34, 125])]) {
+    const value = fixture({ operation: 'VERIFY_EPISODE', episodeBytes }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'EPISODE_RESPONSE' });
+  }
+  const profile = fixture({ operation: 'VERIFY_PROFILE', profile: { profile: { userId: 'FIXTURE_USER' }, ignored: 'x'.repeat(70000) } });
+  profile.start(); await settle(); assert.equal(profile.state().failure, 'PROFILE_RESPONSE');
+});
+
+test('episode refusal never retries, substitutes origin, fetches a profile or exposes exception text', async () => {
+  for (const [options, expected] of [
+    ...[401, 403, 404, 410, 429].map(episodeStatus => [{ episodeStatus }, 'EPISODE_HTTP_' + episodeStatus]),
+    ...[300, 301, 302, 399].map(episodeStatus => [{ episodeStatus }, 'EPISODE_HTTP_3XX']),
+    ...[400, 402, 409, 499].map(episodeStatus => [{ episodeStatus }, 'EPISODE_HTTP_4XX']),
+    ...[500, 503, 599].map(episodeStatus => [{ episodeStatus }, 'EPISODE_HTTP_5XX']),
+    ...[100, 199, 201, 204, 299].map(episodeStatus => [{ episodeStatus }, 'EPISODE_HTTP_OTHER']),
+    [{ episodeNetworkFailure: true }, 'EPISODE_TRANSPORT'], [{ episodeRedirected: true }, 'EPISODE_REDIRECT'],
+  ]) {
+    const fixtureOptions = { operation: 'VERIFY_EPISODE', ...options };
+    const value = fixture(fixtureOptions); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: expected }); assert.equal(value.requests.length, 2);
+    assert.notEqual(fixtureOptions.refusedBodyRead, true);
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_|394-72/);
+  }
+  for (const apiOrigin of ['https://api.abema.io', 'https://other.invalid', 'https://api.p-c3-e.abema-tv.com/']) {
+    const value = fixture({ operation: 'VERIFY_EPISODE', apiOrigin }); value.start(); await settle();
+    assert.equal(value.requests.length, 0); assert.equal(value.state().failure, 'POLICY');
+  }
+});
+
+test('episode malformed HTTP status and absent success body are response failures without opening refusal data', async () => {
+  for (const options of [...[undefined, null, 0, 99, 600, 200.5, '401', NaN, Infinity].map(episodeStatus => ({ episodeStatus })),
+    { episodeMissingBody: true }]) {
+    const fixtureOptions = { operation: 'VERIFY_EPISODE', ...options };
+    const value = fixture(fixtureOptions); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'EPISODE_RESPONSE' });
+    assert.equal(value.requests.length, 2); assert.notEqual(fixtureOptions.refusedBodyRead, true);
+  }
+});
+
+test('episode late response/body, timeout and repeated start cannot publish or dispatch more requests', async () => {
+  for (const delay of ['delayedEpisode', 'delayedEpisodeRead']) {
+    const value = fixture({ operation: 'VERIFY_EPISODE', [delay]: true }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'EPISODE', failure: 'NONE' });
+    value.stop(); assert.equal(value.requests[1].request.signal.aborted, true);
+    value.release(); await settle(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+    assert.equal(value.requests.length, 2); assert.equal(value.timers.size, 0);
+  }
+  for (const delay of ['delayedEpisode', 'delayedEpisodeRead']) {
+    const timeout = fixture({ operation: 'VERIFY_EPISODE', [delay]: true }); timeout.start(); await settle();
+    for (const callback of timeout.timers.values()) callback();
+    assert.equal(timeout.requests[1].request.signal.aborted, true); timeout.release(); await settle();
+    assert.deepEqual(timeout.state(), { state: 'REFUSED', failure: 'EPISODE_TIMEOUT' });
+  }
+  const again = fixture({ operation: 'VERIFY_EPISODE', delayedEpisode: true }); again.start(); await settle(); again.start();
   assert.equal(again.requests[1].request.signal.aborted, true); again.release(); await settle();
   assert.equal(again.state().state, 'REFUSED'); assert.equal(again.requests.length, 2);
 });

@@ -191,10 +191,14 @@ internal class AbemaGuestRuntimeCoordinator(
         val view = active.view ?: return
         view.status { raw ->
             if (!runtimeCurrent(active) || active.view !== view) return@status
-            val value = json(raw, 256)?.takeIf { it.length() == 2 }
+            val decoded = json(raw, if (active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) 1024 else 256)
+            val observation = decoded?.takeIf { active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN }
+                ?.let(AbemaDeviceTokenObservation::category)
+            val value = decoded?.takeIf { it.length() == 2 }
             val state = value?.opt("state") as? String
             val failure = value?.opt("failure") as? String
             when {
+                observation != null -> verifyThen(active) { stop(active, observation) }
                 state == "PREPARED" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.GUEST_ONLY ->
                     verifyThen(active) { stop(active, "PREPARED") }
                 state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
@@ -211,9 +215,13 @@ internal class AbemaGuestRuntimeCoordinator(
                     } else verifyThen(active) { stop(active, "EXACT_EPISODE_METADATA") }
                 }
                 state == "REFUSED" && failure in FAILURES && (failure?.startsWith("CHALLENGE_") != true ||
-                    active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) -> stop(active, "GUEST_$failure")
+                    active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
+                        AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN)) && (failure?.startsWith("TOKEN_") != true ||
+                    active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) -> stop(active, "GUEST_$failure")
                 raw == null || raw == "null" || ((state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE") ||
-                    state == "CHALLENGE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) && failure == "NONE") ->
+                    state == "CHALLENGE" && active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
+                        AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) ||
+                    state == "TOKEN" && active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) && failure == "NONE") ->
                     main.delay(active, 100) { poll(active) }
                 else -> stop(active, "STATUS_REFUSED")
             }
@@ -306,7 +314,8 @@ internal class AbemaGuestRuntimeCoordinator(
             "EPISODE_HTTP_3XX", "EPISODE_HTTP_4XX", "EPISODE_HTTP_5XX", "EPISODE_HTTP_OTHER",
             "CHALLENGE_POLICY", "CHALLENGE_RESPONSE", "CHALLENGE_TIMEOUT", "CHALLENGE_TRANSPORT", "CHALLENGE_REDIRECT",
             "CHALLENGE_HTTP_401", "CHALLENGE_HTTP_403", "CHALLENGE_HTTP_404", "CHALLENGE_HTTP_410", "CHALLENGE_HTTP_429",
-            "CHALLENGE_HTTP_3XX", "CHALLENGE_HTTP_4XX", "CHALLENGE_HTTP_5XX", "CHALLENGE_HTTP_OTHER")
+            "CHALLENGE_HTTP_3XX", "CHALLENGE_HTTP_4XX", "CHALLENGE_HTTP_5XX", "CHALLENGE_HTTP_OTHER",
+            "TOKEN_POLICY", "TOKEN_RESPONSE", "TOKEN_TIMEOUT", "TOKEN_TRANSPORT", "TOKEN_REDIRECT", "TOKEN_CHALLENGE_EXPIRED")
         fun safeEpisodeTitle(title: String): Boolean {
             if (title.length !in 1..160 || title != title.trim()) return false
             var at = 0

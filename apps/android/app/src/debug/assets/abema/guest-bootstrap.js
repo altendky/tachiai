@@ -13,6 +13,8 @@
   let guest;
   let episode;
   let challengeStarted;
+  let budgetFailure = 'CHALLENGE_TIMEOUT';
+  let tokenObservation;
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const stop = (category = 'NONE') => {
     stopped = true;
@@ -20,6 +22,7 @@
     state = category === 'NONE' ? 'STOPPED' : 'REFUSED';
     guest = undefined;
     episode = undefined;
+    tokenObservation = undefined;
     for (const controller of controllers) controller.abort();
     controllers.clear();
   };
@@ -28,7 +31,7 @@
     if (challengeStarted !== undefined) {
       const elapsed = performance.now() - challengeStarted;
       if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 45000) {
-        failure = 'CHALLENGE_TIMEOUT'; throw new Error();
+        failure = budgetFailure; throw new Error();
       }
     }
   };
@@ -140,7 +143,7 @@
         uri.hostname === 'abema.tv' && uri.port === '' && uri.username === '' && uri.password === '' && uri.hash === '';
     } catch { return false; }
   }
-  function parseChallengeText(text) {
+  function parseChallengeText(text, retainDeviceCode = false) {
     const reply = parseBoundedJsonText(text, true);
     const fields = ['device_code', 'user_code', 'verification_uri', 'verification_uri_complete', 'expires_in'];
     if (!reply || Array.isArray(reply) || typeof reply !== 'object' || Object.keys(reply).length !== fields.length ||
@@ -149,8 +152,35 @@
       typeof reply.user_code !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(reply.user_code) ||
       !validChallengeUri(reply.verification_uri) || !validChallengeUri(reply.verification_uri_complete) ||
       !Number.isSafeInteger(reply.expires_in) || reply.expires_in < 1 || reply.expires_in > 3600) throw new Error();
-    // No projection: all five private fields are discarded with this stack.
-    // This local lifetime ceiling never extends the monotonic attempt budget.
+    // The observation operation alone retains these two fields in its private
+    // stack until one request completes. No URI, user code or code crosses JS.
+    // This local lifetime ceiling never extends the original attempt budget.
+    if (retainDeviceCode) return Object.freeze({ deviceCode: reply.device_code, expiresIn: reply.expires_in });
+  }
+  // Static recovery vocabulary is only an allowlist for observation. It does
+  // not establish device-token pending/terminal semantics, including HTTP 400.
+  const tokenCodes = Object.freeze(['UNSPECIFIED', 'NOT_FOUND', 'CONFLICT', 'INVALID_ARGUMENT', 'DATABASE',
+    'UNEXPECTED', 'EXPIRED', 'ALREADY_EXIST', 'FORBIDDEN', 'ALREADY_HAS_AUTHORITY', 'UNAUTHORIZED', 'INTERNAL',
+    'DEVICE_AUTHORIZATION_EXPIRED', 'SYNC_CODE_FLOW_EXPIRED', 'RESOURCE_EXHAUSTED', 'TOKEN_REVOKED', 'AUTHORIZATION_PENDING']);
+  const tokenReasons = Object.freeze(['ERROR_REASON_UNSPECIFIED', 'ERROR_REASON_ACCOUNT_DELETED', 'ERROR_REASON_LOGGED_OUT']);
+  const vocabulary = (value, values) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < values.length ?
+    values[value] : typeof value === 'string' && values.includes(value) ? value : 'UNRECOGNIZED';
+  function observeTokenRefusal(text) {
+    let reply;
+    try { reply = parseBoundedJsonText(text, true); }
+    catch { return { schema: 'MALFORMED', code: 'UNVERIFIED', reason: 'UNVERIFIED' }; }
+    if (!reply || Array.isArray(reply) || typeof reply !== 'object')
+      return { schema: 'UNVERIFIED', code: 'UNVERIFIED', reason: 'UNVERIFIED' };
+    const fields = ['code', 'message', 'reason'].filter(key => Object.hasOwn(reply, key));
+    // Message content and unknown fields are never interpreted. Only the
+    // reviewed field-set/types and exact code/reason allowlists survive.
+    if (Object.keys(reply).length !== fields.length ||
+      fields.some(key => key === 'message' ? typeof reply[key] !== 'string' :
+        !(typeof reply[key] === 'string' || typeof reply[key] === 'number' && Number.isSafeInteger(reply[key]))))
+      return { schema: 'UNVERIFIED', code: 'UNVERIFIED', reason: 'UNVERIFIED' };
+    return { schema: fields.length ? 'FLAT_' + fields.map(key => key.toUpperCase()).join('_') : 'EMPTY',
+      code: Object.hasOwn(reply, 'code') ? vocabulary(reply.code, tokenCodes) : 'ABSENT',
+      reason: Object.hasOwn(reply, 'reason') ? vocabulary(reply.reason, tokenReasons) : 'ABSENT' };
   }
   const diagnosticEpisodeId = '394-72_s10_p8529';
   let episodeId;
@@ -257,7 +287,7 @@
       try { return project(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
       finally { bytes.fill(0); }
     } catch {
-      if (!stopped && failure !== 'CHALLENGE_TIMEOUT') failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
+      if (!stopped && failure !== budgetFailure) failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
       throw new Error();
     } finally {
       for (const part of parts) part.fill(0);
@@ -266,9 +296,78 @@
       controllers.delete(controller);
     }
   }
+  // Separate from boundedReply: only this explicit one-response observation
+  // can inspect a refusal body. Success bodies are never opened or decoded.
+  async function tokenReply(url, options, challengeDeadline) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    controllers.add(controller);
+    const parts = [];
+    let reader;
+    let refused = 'TRANSPORT';
+    const withinDeadline = () => {
+      alive();
+      const now = performance.now();
+      if (!Number.isFinite(now) || now >= challengeDeadline) { failure = 'TOKEN_CHALLENGE_EXPIRED'; throw new Error(); }
+      if (controller.signal.aborted) throw new Error();
+    };
+    try {
+      // Both original request budget and private challenge lifetime are
+      // checked immediately before the only admitted token POST.
+      withinDeadline();
+      const reply = await nativeFetch(url, { ...options, credentials: 'omit', cache: 'no-store',
+        redirect: 'error', signal: controller.signal });
+      withinDeadline();
+      refused = 'RESPONSE';
+      const status = reply?.status;
+      if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error();
+      if (reply.redirected) { refused = 'REDIRECT'; throw new Error(); }
+      const http = status >= 200 && status < 300 ? 'HTTP_2XX_UNEXPECTED' :
+        [400, 401, 403, 404, 410, 429].includes(status) ? 'HTTP_' + status :
+        status >= 300 && status < 400 ? 'HTTP_3XX' : status >= 400 && status < 500 ? 'HTTP_4XX' :
+        status >= 500 ? 'HTTP_5XX' : 'HTTP_OTHER';
+      if (status < 400) {
+        // Abort without even touching reply.body: no grant can be adopted.
+        controller.abort();
+        return Object.freeze({ http, schema: 'NOT_READ', code: 'NOT_OBSERVED', reason: 'NOT_OBSERVED' });
+      }
+      if (!reply.body) throw new Error();
+      reader = reply.body.getReader();
+      let size = 0;
+      for (;;) {
+        const next = await reader.read(); withinDeadline();
+        if (next.done) break;
+        if (!(next.value instanceof Uint8Array)) throw new Error();
+        size += next.value.byteLength;
+        parts.push(next.value);
+        if (size > 65536) {
+          controller.abort();
+          return Object.freeze({ http, schema: 'OVERSIZED', code: 'UNVERIFIED', reason: 'UNVERIFIED' });
+        }
+      }
+      const bytes = new Uint8Array(size);
+      let at = 0;
+      for (const part of parts) { bytes.set(part, at); at += part.byteLength; }
+      try {
+        let text;
+        try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+        catch { return Object.freeze({ http, schema: 'INVALID_UTF8', code: 'UNVERIFIED', reason: 'UNVERIFIED' }); }
+        return Object.freeze({ http, ...observeTokenRefusal(text) });
+      } finally { bytes.fill(0); }
+    } catch {
+      if (!stopped && ![budgetFailure, 'TOKEN_CHALLENGE_EXPIRED'].includes(failure))
+        failure = 'TOKEN_' + (controller.signal.aborted ? 'TIMEOUT' : refused);
+      throw new Error();
+    } finally {
+      controller.abort();
+      for (const part of parts) part.fill(0);
+      try { await reader?.cancel(); } catch {}
+      clearTimeout(timer); controllers.delete(controller);
+    }
+  }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         resourceId !== undefined)) {
       stop('RUNTIME'); return;
@@ -276,27 +375,35 @@
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
-      status: () => stringify({ state, failure }), stop: () => stop(),
+      status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
         stringify(episode) : null } : {}),
     }) });
     (async () => {
       try {
         state = 'MODULES';
-        if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+        const observeToken = operation === 'OBSERVE_DEVICE_TOKEN';
+        const deviceAuthorization = operation === 'VERIFY_DEVICE_AUTHORIZATION' || observeToken;
+        if (deviceAuthorization) {
+          budgetFailure = observeToken ? 'TOKEN_TIMEOUT' : 'CHALLENGE_TIMEOUT';
           challengeStarted = performance.now(); alive();
         }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
+        let tokenEndpoint;
         if (operation !== 'GUEST_ONLY') {
           apiOrigin = load(74284).FH?.apiOrigin;
           if (apiOrigin !== 'https://api.p-c3-e.abema-tv.com') { failure = 'POLICY'; throw new Error(); }
         }
-        if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+        if (deviceAuthorization) {
           challengeEndpoint = new URL(load(24968).T.OAUTH_DEVICE_AUTHORIZATION, location.origin).href;
           if (challengeEndpoint !== 'https://abema.tv/api/auth/oauth/device/authorization') {
             failure = 'CHALLENGE_POLICY'; throw new Error();
+          }
+          if (observeToken) {
+            tokenEndpoint = new URL(load(24968).T.OAUTH_DEVICE_TOKEN, location.origin).href;
+            if (tokenEndpoint !== 'https://abema.tv/api/auth/oauth/device/token') { failure = 'TOKEN_POLICY'; throw new Error(); }
           }
         }
         const deviceId = crypto.randomUUID();
@@ -323,7 +430,7 @@
         if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
         guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
         failure = 'NONE';
-        if (operation === 'VERIFY_PROFILE' || operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+        if (operation === 'VERIFY_PROFILE' || deviceAuthorization) {
           state = 'PROFILE';
           const profileId = await boundedReply(apiOrigin + '/v1/users/' + guest.userId,
             { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
@@ -334,7 +441,7 @@
           // Same server profile is the future client binding, still a guest.
           guest = Object.freeze({ ...guest, clientId: profileId });
           failure = 'NONE';
-          if (operation === 'VERIFY_DEVICE_AUTHORIZATION') {
+          if (deviceAuthorization) {
             state = 'CHALLENGE'; failure = 'CHALLENGE_POLICY';
             const payload = load(2953).pG.toJSON({ clientId: guest.clientId });
             if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
@@ -345,11 +452,35 @@
             if (!wire || Array.isArray(wire) || typeof wire !== 'object' || Object.keys(wire).length !== 1 ||
               !Object.hasOwn(wire, 'client_id') || wire.client_id !== guest.clientId) throw new Error();
             alive(); failure = 'NONE';
-            await boundedReply(challengeEndpoint, { method: 'POST',
+            const challengeRequestedAt = performance.now();
+            const challenge = await boundedReply(challengeEndpoint, { method: 'POST',
               headers: { accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer ' + guest.accessToken },
-              body: challengeBody }, parseChallengeText, 'CHALLENGE_');
-            alive(); guest = undefined;
-            failure = 'NONE'; state = 'CHALLENGE_VALIDATED_AND_DISCARDED';
+              body: challengeBody }, text => parseChallengeText(text, observeToken), 'CHALLENGE_');
+            alive();
+            if (observeToken) {
+              state = 'TOKEN'; failure = 'TOKEN_POLICY';
+              const tokenPayload = load(2953).dK.toJSON({ deviceCode: challenge.deviceCode, clientId: guest.clientId,
+                deviceType: load(50052).bq.DEVICE_TYPE_WEB, grantType: 'urn:ietf:params:oauth:grant-type:device_code' });
+              const fields = ['client_id', 'device_code', 'grant_type', 'device_type'];
+              const validBody = value => value && typeof value === 'object' && !Array.isArray(value) &&
+                Object.keys(value).length === 4 && fields.every(key => Object.hasOwn(value, key)) &&
+                value.client_id === guest.clientId && value.device_code === challenge.deviceCode &&
+                value.grant_type === 'urn:ietf:params:oauth:grant-type:device_code' && value.device_type === 3;
+              if (!validBody(tokenPayload)) throw new Error();
+              const tokenBody = stringify(tokenPayload);
+              if (typeof tokenBody !== 'string' || new TextEncoder().encode(tokenBody).byteLength > 8192 ||
+                !validBody(parseBoundedJsonText(tokenBody, true))) throw new Error();
+              alive(); failure = 'NONE';
+              const challengeDeadline = challengeRequestedAt + challenge.expiresIn * 1000;
+              tokenObservation = await tokenReply(tokenEndpoint, { method: 'POST',
+                headers: { accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer ' + guest.accessToken },
+                body: tokenBody }, challengeDeadline);
+              if (performance.now() >= challengeDeadline) { failure = 'TOKEN_CHALLENGE_EXPIRED'; throw new Error(); }
+              alive(); guest = undefined;
+              failure = 'NONE'; state = 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED';
+            } else {
+              guest = undefined; failure = 'NONE'; state = 'CHALLENGE_VALIDATED_AND_DISCARDED';
+            }
           } else state = 'GUEST_PROFILE_BOUND';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';

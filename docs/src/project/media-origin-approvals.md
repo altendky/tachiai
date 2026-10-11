@@ -53,6 +53,22 @@ The returned verification URIs remain in JavaScript, are locally restricted and
 discarded, and confer no navigation approval. See
 [the challenge boundary](abema-guest-bootstrap.md#optional-device-authorization-challenge-verification).
 
+### Memory-only ABEMA pre-approval device-token observation
+
+Under the same general integration approval, the separate explicit observation
+operation adds one exact JSON POST to
+`https://abema.tv/api/auth/oauth/device/token` after its own fresh guest, matching
+profile and strictly validated challenge. The endpoint and unchanged four-field
+request DTO are static first-party bundle findings. A distinct route purpose,
+owned policy and CSP admit this sequence once; existing purposes are unchanged.
+No new host, browser navigation, cookie use, polling/retry, renewal or media
+destination is admitted. Only bounded refusal-schema and reviewed recovery
+vocabulary categories can leave the runtime, after confirmed cleanup. An
+unexpected success body is never opened or adopted. See
+[the observation boundary](abema-guest-bootstrap.md#optional-pre-approval-device-token-observation).
+Actual response acceptance is recorded separately and cannot qualify unobserved
+terminal states or establish a connected account.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

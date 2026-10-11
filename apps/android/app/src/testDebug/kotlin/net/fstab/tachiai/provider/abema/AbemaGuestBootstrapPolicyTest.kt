@@ -5,6 +5,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaGuestBootstrapPolicyTest {
+    private val profileOperation = AbemaGuestBootstrapOperation.VERIFY_PROFILE
+    private val profile = URI("${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/FIXTURE_USER")
+    private val preflight = mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET",
+        "Access-Control-Request-Headers" to "authorization")
+
     @Test fun onlyOwnedDocumentAssetsAndOneGuestMethodAreAdmitted() {
         assertTrue(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.PAGE), true, "GET"))
         assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.PAGE), false, "GET"))
@@ -36,5 +41,66 @@ class AbemaGuestBootstrapPolicyTest {
         }
         assertFalse(AbemaGuestBootstrapPolicy.CONTENT_SECURITY_POLICY.contains("media-src https"))
         assertFalse(AbemaGuestBootstrapPolicy.CONTENT_SECURITY_POLICY.contains("api.p-c3"))
+    }
+
+    @Test fun explicitProfileModeAdmitsOnlyNormalizedIdentityPathAndBoundedPreflight() {
+        for (method in listOf("GET", "OPTIONS")) {
+            assertTrue(AbemaGuestBootstrapPolicy.allows(profile, false, method, profileOperation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(profile, true, method, profileOperation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(profile, false, method))
+        }
+        for (method in listOf("POST", "PUT", "DELETE", "HEAD"))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(profile, false, method, profileOperation))
+        for (url in listOf("http://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER",
+            "https://api.p-c3-e.abema-tv.com:443/v1/users/FIXTURE_USER",
+            "https://fixture@api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER",
+            "https://api.p-c3-e.abema-tv.com/v1/users/%46IXTURE_USER",
+            "https://api.p-c3-e.abema-tv.com/v1/users/../users/FIXTURE_USER",
+            "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER?x=1",
+            "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER#fragment",
+            "https://api.p-c3-e.abema-tv.com/v1/users/", "$profile/children", "$profile/",
+            "${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/${"A".repeat(257)}",
+            "https://api.abema.io/v1/users/FIXTURE_USER", "https://other.invalid/v1/users/FIXTURE_USER",
+            "https://api.p-c3-e.abema-tv.com/v1/channels", "https://api.p-c3-e.abema-tv.com/v1/media/token",
+            "https://abema.tv/api/auth/accessToken", "https://abema.tv/api/auth/oauth/device/authorization")) {
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "GET", profileOperation))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "OPTIONS", profileOperation))
+        }
+        assertEquals(AbemaGuestBootstrapPolicy.CONTENT_SECURITY_POLICY,
+            AbemaGuestBootstrapPolicy.contentSecurityPolicy(AbemaGuestBootstrapOperation.GUEST_ONLY))
+        val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(profileOperation)
+        assertTrue(csp.contains("${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/;"))
+        assertFalse(csp.contains("api.abema.io")); assertTrue(csp.contains("media-src 'none'"))
+    }
+
+    @Test fun attemptAdmissionRequiresGuestAndCapsExactProfileGETAndOPTIONSWithoutRetainingPublicState() {
+        val request = AbemaGuestRequestAdmission(profileOperation)
+        assertFalse(request.admit(profile, false, "GET"))
+        assertTrue(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        for (headers in listOf(emptyMap(), preflight - "Origin", preflight + ("Origin" to "https://other.invalid"),
+            preflight + ("Access-Control-Request-Method" to "POST"),
+            preflight + ("Access-Control-Request-Headers" to "authorization,content-type"),
+            preflight + ("origin" to "https://abema.tv")))
+            assertFalse(request.admit(profile, false, "OPTIONS", headers))
+        assertTrue(request.admit(profile, false, "OPTIONS", preflight))
+        assertFalse(request.admit(profile, false, "OPTIONS", preflight))
+        assertFalse(request.admit(URI("${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/OTHER"), false, "GET"))
+        assertTrue(request.admit(profile, false, "GET")); assertFalse(request.admit(profile, false, "GET"))
+        assertFalse(request.toString().contains("FIXTURE_USER"))
+        val cachedPreflight = AbemaGuestRequestAdmission(profileOperation)
+        assertTrue(cachedPreflight.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertTrue(cachedPreflight.admit(profile, false, "GET"))
+        assertFalse(cachedPreflight.admit(profile, false, "OPTIONS", preflight))
+        val guestOnly = AbemaGuestRequestAdmission(AbemaGuestBootstrapOperation.GUEST_ONLY)
+        assertTrue(guestOnly.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(guestOnly.admit(profile, false, "GET"))
+    }
+
+    @Test fun productionHeaderProjectionNeverReadsGETBearerAndRetainsOnlyCORSPreflightFields() {
+        assertTrue(AbemaGuestBootstrapPolicy.corsHeaders("GET") { error("Must not inspect GET headers") }.isEmpty())
+        val headers = preflight + mapOf("Authorization" to "Bearer PRIVATE_FIXTURE", "Cookie" to "PRIVATE_COOKIE",
+            "User-Agent" to "FIXTURE")
+        assertEquals(preflight, AbemaGuestBootstrapPolicy.corsHeaders("OPTIONS") { headers })
     }
 }

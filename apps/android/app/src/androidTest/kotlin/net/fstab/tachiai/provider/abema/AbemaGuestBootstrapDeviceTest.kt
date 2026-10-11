@@ -56,6 +56,14 @@ class AbemaGuestBootstrapDeviceTest {
     }
 
     @Test fun actualOwnedJavaScriptPreparesAndDiscardsOnlySyntheticGuestWithoutAnyNetwork() {
+        ownedRuntime("GUEST_ONLY", "PREPARED", 1)
+    }
+
+    @Test fun actualOwnedJavaScriptBindsOnlyMatchingSyntheticServerProfileWithNetworkingBlocked() {
+        ownedRuntime("VERIFY_PROFILE", "GUEST_PROFILE_BOUND", 2)
+    }
+
+    private fun ownedRuntime(operation: String, expected: String, count: Int) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
@@ -64,6 +72,8 @@ class AbemaGuestBootstrapDeviceTest {
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url.startsWith('https://api.p-c3-e.abema-tv.com/'))
+                return new Response('{"profile":{"userId":"FIXTURE_USER","name":"PRIVATE_NAME"},"subscriptions":[]}', {status:200});
               return new Response('{"user_id":"FIXTURE_USER","access_token":"FIXTURE_ACCESS"}', {status:200});
             };
         """.trimIndent()
@@ -73,12 +83,13 @@ class AbemaGuestBootstrapDeviceTest {
               5304(module) { module.exports = { rM: { toJSON: value => value }, V8: { fromJSON: value => ({userId:value.user_id, accessToken:value.access_token}) } }; },
               50052(module) { module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
               24968(module) { module.exports = { T: { LOGIN_GUEST: '/api/auth/login/guest' } }; },
+              74284(module) { module.exports = { FH: { apiOrigin: 'https://api.p-c3-e.abema-tv.com' } }; },
               14405() { throw new Error('LICENSE_HELPER_MUST_NOT_RUN'); }
             }, () => { throw new Error('ENTRY_MUST_NOT_RUN'); }]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[2], {32746(module) { module.exports = {}; }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[3], {21470() { throw new Error('SOURCE_MUST_NOT_RUN'); }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[4], {75284() { throw new Error('DRM_MUST_NOT_RUN'); }}]);
-            window.__tachiaiStartGuestBootstrap('$nonce');
+            window.__tachiaiStartGuestBootstrap('$nonce', '$operation');
         """.trimIndent()
         val browser = AtomicReference<WebView>()
         instrumentation.runOnMainSync {
@@ -102,16 +113,23 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "REFUSED")) break
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "REFUSED")) break
                 Thread.sleep(50)
             }
-            assertEquals("PREPARED", status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
+            assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
             assertEquals(2, status?.length())
-            val publicShape = evaluate("JSON.stringify({count:requests.length, names:Object.keys(window.__tachiaiGuest_$nonce), omit:requests[0].options.credentials==='omit'})")!!
+            val publicShape = evaluate("""JSON.stringify({count:requests.length, names:Object.keys(window.__tachiaiGuest_$nonce),
+                omit:requests.every(request=>request.options.credentials==='omit'),
+                profile:requests.length===2 && requests[1].options.method==='GET' &&
+                  requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
+                  requests[1].options.redirect==='error'})""")!!
             val observed = JSONObject(publicShape)
-            assertEquals(1, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
+            assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
+            assertEquals(operation == "VERIFY_PROFILE", observed.getBoolean("profile"))
             assertEquals("[\"status\",\"stop\"]", observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
+            assertFalse(publicShape.contains("PRIVATE_NAME"))
             evaluate("window.__tachiaiGuest_$nonce.stop(); window.__tachiaiGuest_$nonce.status()")!!.let {
                 assertEquals("STOPPED", JSONObject(it).getString("state"))
             }

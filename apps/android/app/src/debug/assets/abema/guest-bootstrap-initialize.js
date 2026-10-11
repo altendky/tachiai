@@ -1,1 +1,1 @@
-window.__tachiaiStartGuestBootstrap('__NONCE__');
+window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__');

@@ -25,6 +25,23 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/')) {
+        if (options.delayedProfile) await delayed;
+        if (options.profileNetworkFailure) throw new Error('PRIVATE_PROFILE_ERROR');
+        if (options.profileRedirected) return { status: 200, body: {}, redirected: true };
+        const bytes = options.profileBytes || options.profileText || JSON.stringify(options.profile || {
+          profile: { userId: options.guest?.user_id || 'FIXTURE_USER', name: 'PRIVATE_NAME' }, subscriptions: [],
+        });
+        if (options.delayedProfileRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: new TextEncoder().encode(bytes) }; },
+            cancel: async () => {},
+          }) } };
+        }
+        return new Response(bytes, { status: options.profileStatus || 200 });
+      }
       if (options.delayed) await delayed;
       if (options.networkFailure) throw new Error('PRIVATE_FIXTURE_ERROR');
       const bytes = options.bytes || options.text || JSON.stringify(options.guest || {
@@ -51,6 +68,7 @@ function fixture(options = {}) {
     }; },
     50052(module) { loaded.push(50052); module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
     24968(module) { loaded.push(24968); module.exports = { T: { LOGIN_GUEST: fake.endpoint || '/api/auth/login/guest' } }; },
+    74284(module) { loaded.push(74284); module.exports = { FH: { apiOrigin: fake.apiOrigin || 'https://api.p-c3-e.abema-tv.com' } }; },
     14405() { throw new Error('LICENSE_HELPER_MUST_NOT_LOAD'); },
     27594() { throw new Error('LICENSE_UTILITY_MUST_NOT_LOAD'); },
     17046() { throw new Error('SOURCE_MUST_NOT_LOAD'); },
@@ -67,7 +85,7 @@ function fixture(options = {}) {
   }]);`, context);
   const call = script => vm.runInContext(script, context, { timeout: 1000 });
   return { context, requests, timers, device, release, call,
-    start: () => call(`window.__tachiaiStartGuestBootstrap('${nonce}')`),
+    start: () => call(`window.__tachiaiStartGuestBootstrap('${nonce}', '${options.operation || 'GUEST_ONLY'}')`),
     stop: () => call(`window['${apiName}'].stop()`),
     state: () => JSON.parse(call(`window['${apiName}'].status()`)),
   };
@@ -191,5 +209,86 @@ test('owned document has only the reviewed four external-code slots and no media
   assert.equal((html.match(/<script /g) || []).length, 6);
   assert.doesNotMatch(html, /<video|<audio|<iframe|<form|https:\/\//);
   const initialize = fs.readFileSync(path.join(assets, 'guest-bootstrap-initialize.js'), 'utf8');
-  assert.equal(initialize.trim(), "window.__tachiaiStartGuestBootstrap('__NONCE__');");
+  assert.equal(initialize.trim(), "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__');");
+});
+
+test('explicit verification uses pinned config and one cookie-free matching profile GET, retaining only closed status', async () => {
+  const value = fixture({ operation: 'VERIFY_PROFILE' }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'GUEST_PROFILE_BOUND', failure: 'NONE' });
+  assert.equal(value.requests.length, 2);
+  assert.ok(value.context.loaded.includes(74284));
+  const { url, request } = value.requests[1];
+  assert.equal(url, 'https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER');
+  assert.equal(request.method, 'GET'); assert.equal(request.mode, 'cors'); assert.equal(request.body, undefined);
+  assert.equal(request.credentials, 'omit'); assert.equal(request.cache, 'no-store'); assert.equal(request.redirect, 'error');
+  assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), { accept: 'application/json', authorization: 'Bearer FIXTURE_ACCESS' });
+  assert.deepEqual(Array.from(value.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop']);
+  assert.doesNotMatch(JSON.stringify(value.state()), /FIXTURE_|PRIVATE_NAME|subscriptions|userId|clientId/);
+  value.stop(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+  assert.equal(value.timers.size, 0);
+});
+
+test('profile projection rejects missing/mismatched identities, duplicated keys, malformed or excessive structures', async () => {
+  for (const profileText of [
+    '{}', '{"userId":"FIXTURE_USER"}', '{"profile":null}', '{"profile":[]}',
+    '{"profile":{"userId":12}}', '{"profile":{"userId":"OTHER"}}',
+    '{"profile":{"userId":""}}', '{"profile":{"userId":"FIXTURE/USER"}}',
+    JSON.stringify({ profile: { userId: 'A'.repeat(257) } }),
+    '{"profile":{"userId":"FIXTURE_USER","userId":"FIXTURE_USER"}}',
+    '{"profile":{"userId":"FIXTURE_USER","\\u0075serId":"FIXTURE_USER"}}',
+    '{"profile":{"userId":"FIXTURE_USER"},"profile":{"userId":"FIXTURE_USER"}}',
+    '{"profile":{"userId":"FIXTURE_USER"},"other":{"key":1,"key":2}}',
+    '{"profile":{"userId":"FIXTURE_USER"}}true', '{"profile":{"userId":"FIXTURE_USER"},}',
+    '{"profile":{"userId":"FIXTURE_USER"},"other":01}',
+    '{"profile":{"userId":"FIXTURE_USER"},"other":1e999}',
+    JSON.stringify({ profile: { userId: 'FIXTURE_USER' }, other: Array(1001).fill(0) }),
+    '{"profile":{"userId":"FIXTURE_USER"},"deep":' + '['.repeat(17) + '0' + ']'.repeat(17) + '}',
+    JSON.stringify({ profile: { userId: 'FIXTURE_USER' }, other: Array(5).fill(Array(1000).fill(0)) }),
+  ]) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', profileText }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'PROFILE_RESPONSE' });
+    assert.equal(value.requests.length, 2);
+  }
+  const valid = fixture({ operation: 'VERIFY_PROFILE', profileText: '{"profile":{"userId":"FIXTURE_USER","name":null},"ignored":[true,false,null,1.25,-2e2,{"__proto__":1}]}' });
+  valid.start(); await settle(); assert.equal(valid.state().state, 'GUEST_PROFILE_BOUND');
+});
+
+test('profile HTTP/network/redirect failures do not renew or substitute another API origin', async () => {
+  for (const profileStatus of [301, 302, 401, 403, 404, 429, 500, 503]) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', profileStatus }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'PROFILE_HTTP' }); assert.equal(value.requests.length, 2);
+  }
+  for (const options of [{ profileRedirected: true }, { profileNetworkFailure: true }]) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', ...options }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'PROFILE_HTTP' });
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_PROFILE_ERROR|FIXTURE_/);
+  }
+  for (const apiOrigin of ['https://api.abema.io', 'https://other.invalid', 'https://api.p-c3-e.abema-tv.com/', 'http://api.p-c3-e.abema-tv.com']) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', apiOrigin }); value.start(); await settle();
+    assert.equal(value.requests.length, 0); assert.equal(value.state().failure, 'POLICY');
+  }
+});
+
+test('profile bytes are bounded strict UTF-8 and late response/body after stop cannot publish', async () => {
+  for (const profileBytes of ['x'.repeat(65537), Uint8Array.from([123, 34, 0xff, 34, 125])]) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', profileBytes }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'PROFILE_RESPONSE' });
+  }
+  for (const delay of ['delayedProfile', 'delayedProfileRead']) {
+    const value = fixture({ operation: 'VERIFY_PROFILE', [delay]: true }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'PROFILE', failure: 'NONE' });
+    value.stop(); assert.equal(value.requests[1].request.signal.aborted, true);
+    value.release(); await settle(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+    assert.equal(value.timers.size, 0);
+  }
+});
+
+test('profile timeout and repeated start abort pending work without granting a bound result', async () => {
+  const timeout = fixture({ operation: 'VERIFY_PROFILE', delayedProfile: true }); timeout.start(); await settle();
+  for (const callback of timeout.timers.values()) callback();
+  assert.equal(timeout.requests[1].request.signal.aborted, true);
+  timeout.release(); await settle(); assert.deepEqual(timeout.state(), { state: 'REFUSED', failure: 'PROFILE_TIMEOUT' });
+  const again = fixture({ operation: 'VERIFY_PROFILE', delayedProfile: true }); again.start(); await settle(); again.start();
+  assert.equal(again.requests[1].request.signal.aborted, true); again.release(); await settle();
+  assert.equal(again.state().state, 'REFUSED'); assert.equal(again.requests.length, 2);
 });

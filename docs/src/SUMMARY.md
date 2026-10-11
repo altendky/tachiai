@@ -5,7 +5,7 @@
   - [Architecture](project/architecture.md)
   - [Provider integrations](project/provider-integrations.md)
   - [ABEMA catalog and account access](project/abema-catalog-access.md)
-  - [ABEMA guest-only preparation](project/abema-guest-bootstrap.md)
+  - [ABEMA guest preparation and profile verification](project/abema-guest-bootstrap.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
   - [Twitch catalog authorization prototype](project/twitch-catalog-authorization.md)

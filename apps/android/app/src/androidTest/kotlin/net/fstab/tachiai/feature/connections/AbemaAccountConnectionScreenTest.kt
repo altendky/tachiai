@@ -16,19 +16,62 @@ import org.junit.Test
 // Synthetic UI only; no provider binding, authorization storage or WebView.
 class AbemaAccountConnectionScreenTest {
     @get:Rule val compose = createComposeRule()
-    @Test fun intendedAccountRequiresConfirmationAndInputIsClearedAfterDispatch() {
+    @Test fun intendedAccountIsVisibleWithoutConfirmationAndNormalizedInputIsClearedAfterDispatch() {
         var expected: String? = null
         compose.setContent { TachiaiPrototypeTheme {
             AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
                 { expected = it }, {}, {}, {}, {}, {}, {}, {})
         } }
         compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithTag("abema-account-identity").performScrollTo().performTextInput("fixture-account")
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
-        compose.onNode(isToggleable()).performScrollTo().performClick()
+        compose.onNodeWithTag("abema-account-identity").performScrollTo().performTextInput("  fixture-account  ")
+        compose.onNodeWithTag("abema-account-identity").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Password))
+        compose.onAllNodes(isToggleable()).assertCountEquals(0)
+        compose.onNodeWithText("I confirm this is the existing account I intend to connect.").assertDoesNotExist()
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
         compose.onNodeWithText("Connect ABEMA").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("fixture-account", expected) }
         compose.onNodeWithTag("abema-account-identity").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+    }
+    @Test fun invalidInputShowsGuidanceAndAnOverlongIdIsNotSilentlyShortened() {
+        var connects = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                { connects++ }, {}, {}, {}, {}, {}, {}, {})
+        } }
+        for (invalid in listOf("invalid account", "  ", "fixture@example.test", "a".repeat(257))) {
+            compose.onNodeWithTag("abema-account-identity").performScrollTo().performTextReplacement(invalid)
+            compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithTag("abema-account-identity").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString(invalid)))
+            compose.onNodeWithText("Use 1–256 letters, numbers, underscores or hyphens. Outer whitespace is ignored.").performScrollTo().assertExists()
+        }
+        compose.runOnIdle { assertEquals(0, connects) }
+        compose.onNodeWithTag("abema-account-identity").performScrollTo().performTextReplacement("a".repeat(256))
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Use 1–256 letters, numbers, underscores or hyphens. Outer whitespace is ignored.").assertDoesNotExist()
+    }
+    @Test fun controllerReadinessReadingAndBusyStatePreventAnEnabledNoOpAndKeepInput() {
+        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+        var ready by androidx.compose.runtime.mutableStateOf(true); var connects = 0; var backs = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, {}, {}, { backs++ }, ready = ready)
+        } }
+        compose.onNodeWithTag("abema-account-identity").performScrollTo().performTextInput("fixture-account")
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
+        compose.runOnIdle { ready = false }
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Validate saved ABEMA account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Check ABEMA authorization").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("ABEMA account setup is unavailable. Return to providers and reopen this account.").performScrollTo().assertExists()
+        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, backs); ready = true; state = state.copy(progress = AbemaAccountProgress.READING) }
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Reading protected account setup…").performScrollTo().assertExists()
+        compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.IDLE, busy = true) }
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Wait for the current ABEMA action to finish.").performScrollTo().assertExists()
+        compose.onNodeWithTag("abema-account-identity").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("fixture-account")))
+        compose.runOnIdle { assertEquals(0, connects); state = state.copy(busy = false) }
+        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
     }
     @Test fun accountIdentityIsNeverRestoredAndGenericStateContainsOnlyFiniteCategories() {
         val restoration = StateRestorationTester(compose)

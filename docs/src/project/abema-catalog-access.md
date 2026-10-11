@@ -229,8 +229,12 @@ entitlement, collection access or playback merely from login success.
 
 The debug Providers screen now offers an instance-owned ABEMA account screen.
 The owner enters the intended ABEMA account ID only in that protected screen;
-the value stays in memory and is cleared across recreation. This is an identity
-check for the provider-controlled approval, not a password prompt. The app
+the value is visible, stays in memory and is cleared across recreation. Entering
+a valid ID enables Connect once the controller is ready; no extra confirmation
+checkbox is required. Only surrounding whitespace is removed, and rejected
+input receives validation guidance. The exact normalized ID must still match
+the returned account and authenticated profile. This is an identity check for
+the provider-controlled approval, not a password prompt. The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
 runtime and route cleanup. The external browser handles provider login and

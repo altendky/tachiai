@@ -16,6 +16,7 @@
   let http = 0;
   let selected;
   let selectedEpisode;
+  let selectedChannel;
   let expectedGateway;
   let license;
   let user;
@@ -27,7 +28,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
-    response = selected = selectedEpisode = expectedGateway = license = user = operation = undefined;
+    response = selected = selectedEpisode = selectedChannel = expectedGateway = license = user = operation = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -231,11 +232,15 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel) => {
     const configured = requestedEpisode !== undefined;
+    const configuredChannel = requestedChannel !== undefined;
+    if (configuredChannel && (configured || replay || typeof requestedChannel !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requestedChannel))) return;
     if (configured && (!replay || typeof requestedEpisode !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestedEpisode))) return;
     const episodeId = configured ? requestedEpisode : '394-72_s10_p8529';
+    const channelId = configuredChannel ? requestedChannel : 'abema-news';
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
     const name = '__tachiaiNative_' + nonce;
@@ -244,6 +249,7 @@
       metadata: () => stringify({ phase, modules: count, lastModule, http }),
       selectedSource: () => !stopped && state === 'READY' ? selected : null,
       sourceBinding: () => !stopped && state === 'READY' && replay ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
+      channelBinding: () => !stopped && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
       begin,
       take: () => { if (stopped || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -252,7 +258,7 @@
     (async () => {
       try {
         const load = loadModules();
-        if (configured && load(74284).kt?.api !== 'https://api.p-c3-e.abema-tv.com') throw new Error();
+        if ((configured || configuredChannel) && load(74284).kt?.api !== 'https://api.p-c3-e.abema-tv.com') throw new Error();
         const utilities = load(27594);
         const helper = load(14405);
         operation = (helper.__esModule ? helper.default : helper)(utilities.__esModule ? utilities.default : utilities);
@@ -265,10 +271,10 @@
         const request = load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
           applicationKeySecret, deviceId });
         const guestReply = await json(new URL(load(24968).T.LOGIN_GUEST, location.origin), {
-          method: 'POST', credentials: configured ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
+          method: 'POST', credentials: configured || configuredChannel ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
           body: stringify(request),
         }, 65536);
-        if (configured && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
+        if ((configured || configuredChannel) && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
           !guestReply.user_id || guestReply.user_id.length > 256 || !guestReply.access_token || guestReply.access_token.length > 8192)) throw new Error();
         user = load(5304).V8.fromJSON(guestReply);
         if (typeof user.userId !== 'string' || typeof user.accessToken !== 'string' ||
@@ -284,13 +290,13 @@
         state = 'WAITING_SOURCE'; phase = 'CONTENT';
         // Source/session construction below is supplied from reviewed provider
         // interfaces; never fall back to the original page or a guessed MPD.
-        await prepareSource(load, user, replay, deviceId, configured, episodeId);
+        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId);
         alive();
         phase = 'READY'; state = 'READY';
       } catch { stop(true); }
     })();
   };
-  async function prepareSource(load, identity, replay, deviceId, configured, episodeId) {
+  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId) {
     const browser = load(60506).N;
     const clientInfo = {
       app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
@@ -303,12 +309,24 @@
     // Current remote flag evaluation is not established by this prototype.
     const flags = { getValue: (name, fallback) => load(91966).sD().stringVariation(name, fallback) };
     if (!replay) {
-      const metadata = await json('https://api.abema.io/v1/channels', { credentials: 'omit' });
-      const channels = metadata.channels?.filter(channel => channel.id === 'abema-news');
+      const metadata = await json('https://api.abema.io/v1/channels', { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
+      if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
+        metadata.channels.some(channel => !channel || typeof channel !== 'object' || Array.isArray(channel) ||
+          typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) throw new Error();
+      const channels = metadata.channels?.filter(channel => channel.id === channelId);
       if (!Array.isArray(channels) || channels.length !== 1 || channels[0].viewingOpened !== true ||
         typeof channels[0].playback?.dash !== 'string' ||
         (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean')) throw new Error();
       const channel = channels[0];
+      if (configuredChannel) {
+        const playback = channel.playback;
+        if (!playback || typeof playback !== 'object' || Array.isArray(playback) ||
+          (channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
+          channel.status?.drm === true || !usableChannelPlaylist(playback.dash, channelId) ||
+          (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
+            (playback.yospace.dash !== undefined && (typeof playback.yospace.dash !== 'string' ||
+              playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash)))))) throw new Error();
+      }
       phase = 'SOURCE';
       // Fresh owned identity + advertised playlists, not the full player's
       // global token store. Ad-cluster/device classification is not established;
@@ -318,8 +336,23 @@
         contentId: channel.id, mediaToken: identity.mediaToken },
         preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
       if (typeof selected !== 'string' || !selected) throw new Error();
+      if (configuredChannel) {
+        // The provider may leave an advertised alternate unused. Its selector
+        // performs no I/O; bind the returned choice before any native request,
+        // preserving its advertisement decision without a second selection.
+        const source = new URL(selected);
+        const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
+        if (!usableChannelPlaylist(selected, channelId) || source.href.length > 2048 ||
+          [...source.searchParams.keys()].some(key => !allowed.has(key)) ||
+          source.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
+          new Set(source.searchParams.keys()).size !== [...source.searchParams.keys()].length ||
+          source.searchParams.get('t') !== identity.mediaToken || source.searchParams.get('enc') !== 'clear' ||
+          source.searchParams.get('ut') !== '1' || !['pc_chrome', 'pc_unknown'].includes(source.searchParams.get('dt')) ||
+          (source.searchParams.has('sw') && source.searchParams.get('sw') !== '0')) throw new Error();
+      }
       phase = 'CONFIG';
-      await prepareLegacyLicense(load, identity);
+      await prepareLegacyLicense(load, identity, channelId);
+      selectedChannel = channelId;
       return;
     }
     let content;
@@ -473,7 +506,17 @@
     selectedEpisode = episodeId;
     license = licenseURL.href;
   }
-  async function prepareLegacyLicense(load, identity) {
+  function usableChannelPlaylist(value, channelId) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || /[\u0000-\u0020\\]/.test(value)) return false;
+    const raw = value.split('?')[0];
+    if (raw.includes('%') || raw.split('/').some(part => part === '.' || part === '..')) return false;
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.hash &&
+      /^[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net$/.test(url.hostname) &&
+      url.pathname.startsWith('/channel/' + channelId + '/') && url.pathname.endsWith('.mpd') &&
+      /^[A-Za-z0-9_./~$-]+$/.test(url.pathname);
+  }
+  async function prepareLegacyLicense(load, identity, channelId) {
     // Public legacy DASH wrapper binds the Clear Key endpoint to a Linear
     // channel using these three parameters. Compose ordinary URL fields only;
     // response processing stays in the unchanged provider helper.
@@ -481,7 +524,7 @@
     if (url.protocol !== 'https:' || url.hostname !== 'license.p-c3-e.abema-tv.com' || url.port ||
       url.pathname !== '/abematv-dash' || url.username || url.password || url.search || url.hash) throw new Error();
     url.searchParams.set('t', identity.mediaToken);
-    url.searchParams.set('cid', 'abema-news');
+    url.searchParams.set('cid', channelId);
     url.searchParams.set('ct', 'channel');
     license = url.href;
   }

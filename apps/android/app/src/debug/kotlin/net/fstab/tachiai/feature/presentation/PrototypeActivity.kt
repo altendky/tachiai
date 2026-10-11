@@ -322,7 +322,7 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaEpisodes = useCachedAbema)
+            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -525,7 +525,8 @@ open class PrototypeActivity : ComponentActivity() {
                             helper::destroy) { !helper.cleanupFailed } },
                         onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
                         episodeResource = source.resource.takeIf { replay },
-                        ownership = if (!replay) null else androidAbemaEpisodePlaybackOwnership(this,
+                        channelResource = source.resource.takeIf { !replay && source.historicalSource == null },
+                        ownership = if (!replay && source.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(this,
                             checkNotNull(source.resolve(activeInstances)),
                             checkNotNull(routeProfiles[source.instanceId]).getOrThrow(), feedActive, feedDiagnostics(index)))
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))

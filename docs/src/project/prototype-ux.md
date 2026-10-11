@@ -530,8 +530,11 @@ availability permits verification; unknown or ineligible runtime metadata refuse
 playback and retains the configured item. Provider/route ownership is reread on
 workers, and the process-owned cleanup boundary applies to both independent
 duplicate feeds. The original full-page comparison refuses new configured
-episodes. Channels, slots, series and account-backed selections remain separate
-work; this path does not substitute News or a fixed replay. See
+episodes. Exact configured linear channels use the same identity and ownership
+boundary: a fresh channel snapshot must admit the selected ID, and its source,
+MPD and initial channel license must agree. The historical comparison refuses
+new channels. Slots, series and account-backed selections remain separate work;
+these paths do not substitute News or a fixed replay. See
 [configured episode playback](abema-catalog-access.md#exact-configured-episode-playback).
 The cached native path now admits the user-approved single-label
 `*-abematv.akamaized.net` CDN family. New eligible origins remain blocked pending

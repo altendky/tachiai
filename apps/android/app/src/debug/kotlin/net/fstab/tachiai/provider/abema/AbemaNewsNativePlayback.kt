@@ -10,6 +10,7 @@ import org.json.JSONObject
 // Transient source/standard initialization, never a loggable data class.
 internal interface AbemaNativeDashSource { val uri: URI; val kids: List<UUID> }
 internal class AbemaNewsNativeSource(override val uri: URI, override val kids: List<UUID>) : AbemaNativeDashSource
+internal class AbemaChannelNativeSource(val channelId: String, override val uri: URI, override val kids: List<UUID>) : AbemaNativeDashSource
 
 internal enum class AbemaNewsMediaUriPolicy { ALLOWED, AUTHORITY, USER_INFO, FRAGMENT, QUERY, CHANNEL_ROOT, PATH, UNDECLARED }
 
@@ -29,10 +30,10 @@ internal fun abemaNewsCdnUriPolicy(uri: URI, approvedPrototype: Boolean = false)
 
 // Preserve the original guessed-root predicate for the metadata URI and its
 // comparison fixtures. Native media instead needs exact MPD-declared files.
-internal fun abemaNewsMediaUriPolicy(uri: URI, approvedPrototype: Boolean = false): AbemaNewsMediaUriPolicy {
+internal fun abemaNewsMediaUriPolicy(uri: URI, approvedPrototype: Boolean = false, channelId: String = "abema-news"): AbemaNewsMediaUriPolicy {
     val common = abemaNewsCdnUriPolicy(uri, approvedPrototype)
     return if (common in listOf(AbemaNewsMediaUriPolicy.ALLOWED, AbemaNewsMediaUriPolicy.PATH) &&
-        uri.rawPath?.startsWith("/channel/abema-news/") != true) AbemaNewsMediaUriPolicy.CHANNEL_ROOT else common
+        (!validAbemaChannelIdentity(channelId) || uri.rawPath?.startsWith("/channel/$channelId/") != true)) AbemaNewsMediaUriPolicy.CHANNEL_ROOT else common
 }
 
 internal fun allowedAbemaNewsMediaUri(uri: URI): Boolean =

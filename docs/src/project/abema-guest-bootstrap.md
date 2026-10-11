@@ -247,9 +247,33 @@ operation and catalog metadata IPC retain their contracts. String references
 are released on teardown; complete heap wiping is not claimed.
 
 No polling loop, saved grant, Connected status, account collection/history,
-playback or license handling is added. Local verification and the single actual
-pre-approval observation are recorded when completed; this boundary alone does
-not establish account approval, denied/expired/revoked states or durable session
+playback or license handling is added. Verification on 2026-10-11 passed 2,005 JVM
+tests in 239 reports, 46 direct JavaScript checks, lint, release isolation,
+instrumentation compilation and both signed APK assemblies. Ten selected
+synthetic guest/metadata Android fixtures passed with networking blocked,
+including token refusal and unexpected-success body avoidance. The temporary
+guest-process instrumentation override was removed; the ordinary test APK was
+rebuilt, verified and restored before actual acceptance. Both APKs match the
+shared debug signing identity.
+
+One explicit pre-approval attempt on persistent `tachiai-dev` (`emulator-5580`),
+Android 16/API 36, Google APIs x86-64, WebView 133.0.6943.137 completed through
+the selected saved connection in 10.795 seconds. Its fixed outcome was
+**TOKEN_OBSERVATION_HTTP_400_FLAT_CODE_MESSAGE_CODE_AUTHORIZATION_PENDING_REASON_ABSENT**,
+published after confirmed cleanup; controls were re-enabled. This establishes
+one visible HTTP 400 with a strictly typed flat code/message response whose code
+matched the reviewed authorization-pending vocabulary and whose reason field
+was absent. Provider message text and private fields were discarded. No approval
+page was opened, account grant adopted, media/license requested or saved record
+changed. The account context remained a fresh transient guest; egress region
+was not independently remeasured. Normal app entry was restored afterward.
+
+The host OOM killer terminated the previous emulator before deployment; after
+the build completed, normal startup of the same persistent AVD succeeded and
+encrypted records still matched the earlier baseline. Memory growth remains
+the independent investigation [#166](https://github.com/altendky/tachiai/issues/166),
+not a claimed provider failure. The bounded successful observation does not
+qualify denied/expired/revoked responses, account approval or durable session
 lifetime. Those remain [#103](https://github.com/altendky/tachiai/issues/103).
 
 ## Optional exact episode verification

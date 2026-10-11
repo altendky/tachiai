@@ -17,7 +17,7 @@ import okhttp3.OkHttpClient
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 
-private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION }
+private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION }
 
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
@@ -37,7 +37,7 @@ internal class RouteSession private constructor(
     // Anonymous ABEMA metadata uses a private, credential-free client even on
     // System. Java's process-global authenticators/cookie handlers cannot attach
     // account state to that request; existing playback/Twitch openers are retained.
-    private val client: OkHttpClient? = if (backend == null && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION)) null else OkHttpClient.Builder()
+    private val client: OkHttpClient? = if (backend == null && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION)) null else OkHttpClient.Builder()
         .proxy(if (backend == null) Proxy.NO_PROXY else Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
         .proxyAuthenticator(if (backend == null) Authenticator.NONE else
             routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
@@ -59,9 +59,10 @@ internal class RouteSession private constructor(
             RoutePurpose.ABEMA_GUEST_EPISODE -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
+            RoutePurpose.ABEMA_ACCOUNT_COLLECTION -> require(url.host == "api.p-c3-e.abema-tv.com")
             RoutePurpose.PLAYBACK -> Unit
         }
-        if (isSystem && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION)) return url.openConnection() as HttpsURLConnection
+        if (isSystem && purpose !in setOf(RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION)) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
@@ -140,6 +141,15 @@ internal class RouteSession private constructor(
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_EPISODE_METADATA)
 
+        // Account collections use a closed modern API origin. The adapter owns
+        // the exact read-only path/query and private, instance-bound grant.
+        fun createAbemaAccountCollections(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_ACCOUNT_COLLECTION)
+
         // Public-code download and isolated guest purpose only. The runtime's
         // exact URI policy separately refuses navigation and other auth APIs.
         fun createAbemaGuest(profile: ConnectionProfile?,
@@ -202,6 +212,7 @@ internal class RouteSession private constructor(
                         RoutePurpose.ABEMA_GUEST_EPISODE -> "abema.tv,api.p-c3-e.abema-tv.com"
                         RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION -> "abema.tv,api.p-c3-e.abema-tv.com"
                         RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> "abema.tv,api.p-c3-e.abema-tv.com"
+                        RoutePurpose.ABEMA_ACCOUNT_COLLECTION -> "api.p-c3-e.abema-tv.com"
                         RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
                     }))
                 backend = ownBackend(checkNotNull(backend))

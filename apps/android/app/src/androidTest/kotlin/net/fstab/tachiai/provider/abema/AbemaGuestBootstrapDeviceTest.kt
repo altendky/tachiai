@@ -73,6 +73,9 @@ class AbemaGuestBootstrapDeviceTest {
     @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
     }
+    @Test fun actualOwnedJavaScriptPreparesOnlyPrivateBoundAccountChallengeWithNetworkingBlocked() {
+        ownedRuntime("PREPARE_ACCOUNT_LINK", "ACCOUNT_LINK_READY", 3)
+    }
 
     @Test fun actualOwnedJavaScriptObservesOneSyntheticRefusalWithoutPrivateProjectionWithNetworkingBlocked() {
         ownedRuntime("OBSERVE_DEVICE_TOKEN", AbemaDeviceTokenObservation.STATE, 4)
@@ -150,11 +153,19 @@ class AbemaGuestBootstrapDeviceTest {
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
                 if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED",
-                    AbemaDeviceTokenObservation.STATE, "REFUSED")) break
+                    "ACCOUNT_LINK_READY", AbemaDeviceTokenObservation.STATE, "REFUSED")) break
                 Thread.sleep(50)
             }
             assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
             assertEquals(if (operation == "OBSERVE_DEVICE_TOKEN") 6 else 2, status?.length())
+            if (operation == "PREPARE_ACCOUNT_LINK") {
+                val privateProjection = evaluate("window.__tachiaiGuest_$nonce?.accountLink() || null") ?: error("Private fixture projection absent")
+                val challenge = net.fstab.tachiai.provider.abema.account.decodeAbemaAccountChallenge(privateProjection, 1000, 1001)
+                assertEquals("FIXTURE_USER", challenge.guestId); assertEquals(challenge.guestId, challenge.clientId)
+                assertEquals("PRIVATE_DEVICE_CODE", challenge.deviceCode)
+                assertFalse(status.toString().contains("PRIVATE")); assertFalse(status.toString().contains("FIXTURE"))
+                assertFalse(challenge.toString().contains("PRIVATE"))
+            }
             if (operation == "OBSERVE_DEVICE_TOKEN") {
                 assertNotNull(AbemaDeviceTokenObservation.category(checkNotNull(status)))
                 assertEquals(if (tokenStatus == 200) "HTTP_2XX_UNEXPECTED" else "HTTP_400", status?.optString("http"))
@@ -196,11 +207,15 @@ class AbemaGuestBootstrapDeviceTest {
                   JSON.parse(requests[3].options.body).device_type===3})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
-            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN"), observed.getBoolean("profile"))
+            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("profile"))
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
-            assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN"), observed.getBoolean("challenge"))
+            assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("challenge"))
             assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
-            assertEquals(if (operation == "FETCH_EPISODE") "[\"status\",\"stop\",\"metadata\"]" else "[\"status\",\"stop\"]",
+            assertEquals(when (operation) {
+                "FETCH_EPISODE" -> "[\"status\",\"stop\",\"metadata\"]"
+                "PREPARE_ACCOUNT_LINK" -> "[\"status\",\"stop\",\"accountLink\"]"
+                else -> "[\"status\",\"stop\"]"
+            },
                 observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
             assertFalse(publicShape.contains("PRIVATE_NAME"))
@@ -219,6 +234,7 @@ class AbemaGuestBootstrapDeviceTest {
                 assertEquals("STOPPED", JSONObject(it).getString("state"))
             }
             assertNull(evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null"))
+            assertNull(evaluate("window.__tachiaiGuest_$nonce.accountLink?.() || null"))
         } finally {
             instrumentation.runOnMainSync { browser.get().stopLoading(); browser.get().destroy() }
         }

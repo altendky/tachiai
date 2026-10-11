@@ -26,6 +26,7 @@ class ProvidersScreenTest {
         } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithText("Twitch account").assertDoesNotExist()
+        compose.onNodeWithText("ABEMA account").performScrollTo().assertExists()
         compose.onNodeWithText("Back to providers").performScrollTo().performClick()
         compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
@@ -33,6 +34,18 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Connect Twitch").assertDoesNotExist()
         compose.onAllNodesWithText("Twitch account").assertCountEquals(1)
         compose.onNodeWithText("Twitch account").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
+    }
+    @Test fun abemaAccountUsesExactSavedOwnerWithoutSavingEditorDraft() {
+        val second = ProviderInstance("12345678-1234-1234-1234-123456789abe", PrototypeService.ABEMA, "ABEMA 2")
+        var connected: String? = null; var saved = false
+        compose.setContent { TachiaiPrototypeTheme {
+            ProviderInstancesScreen(defaultProviderInstances() + second, emptyList(), false, null,
+                {}, { _, _, _ -> saved = true }, {}, onCatalogConnection = { connected = it })
+        } }
+        compose.onNodeWithText("Configure ABEMA 2").performScrollTo().performClick()
+        compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
+        compose.onNodeWithText("ABEMA account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
     }
     @Test fun manageStreamsUsesStableSelectedInstanceWithoutSavingItsDraft() {

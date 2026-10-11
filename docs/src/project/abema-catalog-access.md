@@ -224,6 +224,53 @@ before promising multiple independently connected ABEMA instances. Account
 connection must not repurpose fresh-guest native state or imply verified
 entitlement, collection access or playback merely from login success.
 
+### Existing-account connection implementation
+
+The debug Providers screen now offers an instance-owned ABEMA account screen.
+The owner enters the intended ABEMA account ID only in that protected screen;
+the value stays in memory and is cleared across recreation. This is an identity
+check for the provider-controlled approval, not a password prompt. The app
+prepares a fresh guest and short-lived challenge in a separate private process,
+then returns the private challenge through same-UID IPC only after confirmed
+runtime and route cleanup. The external browser handles provider login and
+approval using its own account and network state, without page injection or
+cookie transfer.
+
+Before offering approval, the app must prove that the native profile operation
+accepts the matching fresh guest bearer and refuses a deliberately invalid
+bearer. A successful public profile lookup alone is insufficient. Polling pauses
+while the app is away and retains the original challenge expiry; foreground
+polling additionally has a five-minute limit. Only the observed flat
+AUTHORIZATION_PENDING response permits bounded continued polling. Unknown
+responses or uncertain cleanup stop the attempt.
+
+A returned grant must have a matching provider user ID, JWT subject, fresh
+authenticated profile and the owner's explicit intended ID. JWT decoding alone
+is not cryptographic validation. A positive finite future expiry is required;
+the Twitch-specific seven-day unknown-expiry policy does not apply. Native
+cookie-independent renewal is unverified and therefore requires reconnection
+rather than a cookie or refresh fallback.
+
+Accepted grants use a separate per-instance AndroidKeyStore AES-GCM binding and
+no-backup atomic file. Startup/resume requires fresh validation; foreground,
+route, expiry, shared-store revision and Forget checks revoke stale leases.
+Replacement failure conditionally restores the exact prior protected record,
+never a newer replacement or Forget state. Forget first revokes admission, then
+clears local authorization while retaining configured choices and routes.
+
+HTTP, stream and backend cleanup use bounded exactly-once receipts. Fatal,
+reentrant, timed-out or unconfirmed cleanup cannot publish a connection or
+release a still-owned backend. Original resources stay retained and that
+instance is blocked until process restart. Diagnostics contain only closed
+failure categories, without provider errors, bearer values, account IDs or
+challenge destinations.
+
+This source implementation still needs Android verification and actual
+intended-account acceptance. A connected account would not by itself establish
+My List, history, entitlement or account-backed playback. Those capabilities
+need separate endpoint and intended-account evidence; #103 remains open until
+its real account criteria are met.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata

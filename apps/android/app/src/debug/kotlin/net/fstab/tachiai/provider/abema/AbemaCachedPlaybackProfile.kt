@@ -8,7 +8,7 @@ import android.webkit.WebView
 // Shared by the cached viewer and the inert observation surface. Never selects
 // a default/login WebView profile and never inspects or clears cookies/storage.
 internal fun configureAbemaCachedPlaybackProfile(context: Context) {
-    check(Build.VERSION.SDK_INT >= 28)
+    if (Build.VERSION.SDK_INT < 28) throw IllegalStateException("Cached playback profile requires API 28")
     check(Application.getProcessName() == "${context.packageName}:prototype_cached_player")
     if (!cachedProfileConfigured) {
         WebView.setDataDirectorySuffix("prototype-cached-player")

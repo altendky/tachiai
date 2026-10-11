@@ -102,7 +102,7 @@ repos:
         pass_filenames: false
 
       - id: abema-guest-bootstrap-tests
-        name: ABEMA guest bootstrap and profile fixture tests
+        name: ABEMA guest bootstrap and metadata fixture tests
         entry: node scripts/tests/abema-guest-bootstrap.test.cjs
         language: system
         files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-guest-bootstrap\.test\.cjs$'

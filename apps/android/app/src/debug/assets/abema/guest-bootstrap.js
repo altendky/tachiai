@@ -11,12 +11,14 @@
   let started = false;
   let stopped = false;
   let guest;
+  let episode;
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const stop = (category = 'NONE') => {
     stopped = true;
     failure = category;
     state = category === 'NONE' ? 'STOPPED' : 'REFUSED';
     guest = undefined;
+    episode = undefined;
     for (const controller of controllers) controller.abort();
     controllers.clear();
   };
@@ -24,7 +26,7 @@
   window.addEventListener('error', event => { event.preventDefault(); stop('RUNTIME'); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop('RUNTIME'); });
   // Unchanged module factories may not make their own network requests. This
-  // closure alone owns the bounded guest and optional profile requests.
+  // closure alone owns the bounded guest and optional profile/episode requests.
   window.fetch = () => { stop('POLICY'); return Promise.reject(new Error()); };
   // The verified guest DTO is a flat string object. Refuse duplicates (including
   // escaped key spellings), nested/unknown fields and trailing data rather than
@@ -54,17 +56,26 @@
     return value;
   }
   // Validate the entire bounded JSON structure, including escaped duplicate
-  // keys, before projecting only profile.userId. Private unrelated values are
-  // never adopted into the session/UI. This is app-owned parsing, not a copied
+  // keys, before projecting only profile.userId or exact episode metadata.
+  // Unrelated values are never adopted into the session/UI. This is app-owned
+  // parsing, not a copied
   // provider helper or identity/entitlement algorithm.
-  function parseProfileText(text) {
+  function parseBoundedJsonText(text, unicode = false) {
     let at = 0, nodes = 0;
     const whitespace = () => { while (at < text.length && /[\x20\t\r\n]/.test(text[at])) at++; };
     const string = () => {
       const match = /^"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/.exec(text.slice(at));
       if (!match) throw new Error();
       at += match[0].length;
-      return parse(match[0]);
+      const result = parse(match[0]);
+      if (unicode) for (let index = 0; index < result.length; index++) {
+        const code = result.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const low = result.charCodeAt(++index);
+          if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error();
+        } else if (code >= 0xdc00 && code <= 0xdfff) throw new Error();
+      }
+      return result;
     };
     const value = depth => {
       whitespace();
@@ -98,10 +109,25 @@
       return result;
     };
     const reply = value(0); whitespace();
-    if (at !== text.length || !reply || Array.isArray(reply) || typeof reply !== 'object' ||
+    if (at !== text.length) throw new Error();
+    return reply;
+  }
+  function parseProfileText(text) {
+    const reply = parseBoundedJsonText(text);
+    if (!reply || Array.isArray(reply) || typeof reply !== 'object' ||
       !reply.profile || Array.isArray(reply.profile) || typeof reply.profile !== 'object' ||
       typeof reply.profile.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.profile.userId)) throw new Error();
     return reply.profile.userId;
+  }
+  const episodeId = '394-72_s10_p8529';
+  function parseEpisodeText(text) {
+    const reply = parseBoundedJsonText(text, true);
+    if (!reply || Array.isArray(reply) || typeof reply !== 'object' || reply.id !== episodeId ||
+      !reply.episode || Array.isArray(reply.episode) || typeof reply.episode !== 'object' ||
+      typeof reply.episode.title !== 'string' || reply.episode.title.length < 1 || reply.episode.title.length > 160 ||
+      reply.episode.title !== reply.episode.title.trim() || /[\p{Cc}\p{Cf}]/u.test(reply.episode.title)) throw new Error();
+    // No source URLs, schedule/status/term fields or entitlement are retained.
+    return Object.freeze({ id: reply.id, title: reply.episode.title });
   }
   function loadModules() {
     const chunks = window.__LOADABLE_LOADED_CHUNKS__;
@@ -146,7 +172,7 @@
     };
     return load;
   }
-  async function boundedReply(url, options, project, prefix = '') {
+  async function boundedReply(url, options, project, prefix = '', maximum = 65536) {
     alive();
     const controller = new AbortController();
     controllers.add(controller);
@@ -156,14 +182,30 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    let refused = 'HTTP';
+    const episodeRequest = prefix === 'EPISODE_';
+    let refused = episodeRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
       const reply = await nativeFetch(url, { ...options, credentials: 'omit', cache: 'no-store',
         redirect: 'error', signal: controller.signal,
       });
       withinDeadline();
-      if (reply.status !== 200 || !reply.body || reply.redirected) throw new Error();
+      if (episodeRequest) {
+        refused = 'RESPONSE';
+        const status = reply?.status;
+        if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error();
+        if (status !== 200) {
+          // Only reviewed closed categories leave JS. Do not open refusal
+          // bodies or export arbitrary status values/request data.
+          refused = [401, 403, 404, 410, 429].includes(status) ? 'HTTP_' + status :
+            status >= 300 && status < 400 ? 'HTTP_3XX' :
+            status >= 400 && status < 500 ? 'HTTP_4XX' :
+            status >= 500 ? 'HTTP_5XX' : 'HTTP_OTHER';
+          throw new Error();
+        }
+        if (reply.redirected) { refused = 'REDIRECT'; throw new Error(); }
+        if (!reply.body) throw new Error();
+      } else if (reply.status !== 200 || !reply.body || reply.redirected) throw new Error();
       refused = 'RESPONSE';
       reader = reply.body.getReader();
       let size = 0;
@@ -172,7 +214,7 @@
         withinDeadline();
         if (next.done) break;
         size += next.value.byteLength;
-        if (size > 65536) throw new Error();
+        if (size > maximum) throw new Error();
         parts.push(next.value);
       }
       const bytes = new Uint8Array(size);
@@ -192,7 +234,7 @@
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY') => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE'].includes(operation)) {
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE'].includes(operation)) {
       stop('RUNTIME'); return;
     }
     started = true;
@@ -204,7 +246,7 @@
         state = 'MODULES';
         const load = loadModules();
         let apiOrigin;
-        if (operation === 'VERIFY_PROFILE') {
+        if (operation !== 'GUEST_ONLY') {
           apiOrigin = load(74284).FH?.apiOrigin;
           if (apiOrigin !== 'https://api.p-c3-e.abema-tv.com') { failure = 'POLICY'; throw new Error(); }
         }
@@ -243,6 +285,12 @@
           // Same server profile is the future client binding, still a guest.
           guest = Object.freeze({ ...guest, clientId: profileId });
           failure = 'NONE'; state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'VERIFY_EPISODE') {
+          state = 'EPISODE';
+          episode = await boundedReply(apiOrigin + '/v1/video/programs/' + episodeId,
+            { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
+            parseEpisodeText, 'EPISODE_', 512 * 1024);
+          alive(); failure = 'NONE'; state = 'EXACT_EPISODE_METADATA';
         } else state = 'PREPARED';
         // Identity/grant remain closure-owned until stop discards them. A native
         // policy URI transiently includes the profile ID. No account connection,

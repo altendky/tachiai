@@ -1,4 +1,4 @@
-# ABEMA guest preparation and profile verification
+# ABEMA guest preparation and metadata verification
 
 Issue [#150](https://github.com/altendky/tachiai/issues/150) adds an explicit
 debug observation entry for a fresh ABEMA guest. It is a prerequisite experiment
@@ -8,6 +8,10 @@ connection, device challenge, renewal or playback implementation. Issue
 [#155](https://github.com/altendky/tachiai/issues/155) adds a separate explicit,
 memory-only guest profile verification action. Its bounded provider observation
 is recorded below; existing-account linking remains separate.
+Issue [#157](https://github.com/altendky/tachiai/issues/157) adds a separately
+explicit guest-authenticated check of one fixed episode. Its bounded saved-route
+acceptance is recorded below; configured-item refresh in
+[#153](https://github.com/altendky/tachiai/issues/153) remains separate.
 
 ## Implemented boundary
 
@@ -19,6 +23,9 @@ The separate **Verify guest profile** action captures an immutable profile
 operation before preparation and starts its own fresh guest. Neither action
 starts automatically, accepts an operation/identity from an Intent or connects
 an existing account.
+**Verify guest episode metadata** likewise captures an immutable episode
+operation and uses only the fixed public episode `394-72_s10_p8529`. It accepts
+no resource argument or external extras and starts a separate fresh guest.
 Provider names and saved route titles are shown; no account identifiers or grant
 values enter the UI. The activity does not alter provider, route or configured
 source records.
@@ -29,7 +36,7 @@ fails; it cannot become System access. The narrow guest route purpose admits
 `abema.tv` only. Public-code downloads use that route and the existing reviewed
 four-chunk size/SHA-256 cache. Cache files contain public code only. All four
 unchanged chunks register factories; application/runtime callbacks do not run.
-Only the guest dependency path and, for profile verification, the unchanged
+Only the guest dependency path and, for profile/episode verification, the unchanged
 configuration module are invoked. There is no source/CDM/license helper,
 media element, provider page or account form.
 
@@ -112,6 +119,130 @@ profile HTTP/response/timeout refusal. No provider account grant is persisted,
 Connected status published or account-backed capability enabled. Successful
 teardown discards all transient guest/profile references.
 
+## Optional exact episode verification
+
+Module 74284 of the same pinned first-party asset supplies the coherent current
+API origin. Static DTO module 91060 supplies raw program `id` and nested
+`episode.title`. A separately verified coherent current public revision, distinct
+from the pinned guest chunks, establishes an actual bearer-authenticated program
+caller at the same API origin. Its module 62073 allows an omitted division query;
+the primary episode gateway additionally supplies provider-derived division and
+`include=tvod`. Neither static path establishes current guest access or entitlement.
+
+The current entry is
+[9298](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js), SHA-256
+`34207e8d8ff54721927e7dc93edcdfa20c2af99e50c66c8ad5defe5e8e0f03e5`.
+Its coherent terminal chunks are
+[417](https://abema.tv/assets/compat/5c2204aa07c3f44b.417.bundle.js), SHA-256
+`dcd0df95575f3059425e44f43ac4983a9c5c425667608fce93af9d8a631e37f2`, and
+[9361](https://abema.tv/assets/compat/de87d72968864070.9361.bundle.js), SHA-256
+`3458c695f85106b211f3d23d8554a2442f2e968ced0d0d427d5d751a8602a0fd`.
+The observed cross-origin CORS transport uses the active bearer and defaults to
+same-origin credentials, which exclude browser cookies for this API. No extra
+application-signature/client-ID header or registered-account-only guard was
+found in these callers. The provider wrapper can renew after 401 and retry once;
+that behavior is excluded from this one-shot operation. Current chunk hashes
+are not mixed into the older pinned guest runtime.
+
+`VERIFY_EPISODE` requires that unchanged configuration module's exact modern
+origin before preparing the guest. It then makes one cookie-free, no-store,
+redirect-refusing CORS GET to
+`https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529`, using the fresh
+guest bearer. The distinct `ABEMA_GUEST_EPISODE` route purpose permits only
+`abema.tv` for guest/assets and the modern API host. Its owned request policy and
+CSP admit only the original document/assets, one guest POST and that exact
+episode GET, with at most one preceding same-path OPTIONS under the same strict
+preflight rules. No profile, second episode, fallback, retry or renewal request
+is admitted. Guest-only/profile purposes remain unchanged.
+
+The episode fetch has its own 15-second limit within the original 45-second
+attempt. Its streamed body is limited to 512 KiB, strict UTF-8, 16 nesting levels,
+4,096 JSON nodes and 1,000 array items. The shared strict JSON reader preserves
+the original profile's 64 KiB bound and validation behavior. Episode validation
+rejects duplicate or escaped-duplicate keys anywhere, malformed/trailing JSON,
+unpaired surrogates in any string, a mismatched raw `id`, and a missing/unsafe
+nested title. The title must be trimmed, 1–160 UTF-16 code units and free of Unicode
+control/format characters. It retains only identity/title in the JS closure;
+source URLs, status, terms and other values are discarded without being fetched
+or interpreted as availability, entitlement or playability.
+
+Only fixed **EXACT_EPISODE_METADATA** can leave the runtime, after the worker owner
+reread and confirmed destruction/route cleanup. No identity/title projection API
+is exposed. Episode failures distinguish observed HTTP 401/403/404/410/429 and
+closed 3xx/4xx/5xx/other ranges from fetch/transport/CORS rejection with no visible
+response (`EPISODE_TRANSPORT`), an observed redirected success response,
+invalid status/body/metadata and timeout. Only integer HTTP 100–599 values are
+classified; arbitrary numeric status, error bodies and exception text are never
+exported. Redirect-refusing fetch can itself reject into the transport category;
+that category does not identify a particular network or CORS cause. Guest-only
+and profile failure behavior remains unchanged. The same foreground, cancellation,
+stale-callback and poisoned-cleanup gates apply. No durable grant, account
+Connected state, service/Binder handoff, catalog capability or configured-item
+write is added. Acceptance is limited to the separately recorded exact episode
+and device context below.
+
+The initial July resource `394-72_s10_p8510` produced the combined legacy
+`GUEST_EPISODE_HTTP` result in one explicitly started attempt on 2026-10-11.
+After refining only the diagnostics, a separate explicit attempt with that
+same resource produced **GUEST_EPISODE_HTTP_404**, establishing a visible HTTP
+404 rather than a fetch failure. Neither attempt opened refusal bodies or
+accepted episode metadata. The cause of the 404 is unverified; it is not proof
+of an existing-account requirement. Both completed confirmed runtime/route
+cleanup and reenabled the controls. Protected encrypted records were unchanged.
+The refined build passed all 23 direct JavaScript cases and 1,903 JVM cases,
+lint, instrumentation compilation, release isolation and shared signer checks.
+It was installed data-preservingly on persistent `tachiai-dev`, Android 16/API 36
+Google APIs x86-64, WebView 133.0.6943.137, region unknown, existing account not
+used. No profile, challenge, collection, playback or license request was made.
+
+The fixed debug resource is now the September day-15 highlights
+`394-72_s10_p8529`, previously recorded in the
+[successful replay experiment](native-access-experiments.md#native-free-replay-and-held-timing--2026-10-06).
+Its check requires another explicit action after rebuilding; this resource
+change is not a fallback within the July attempt or a substitution for a user's
+configured item. The separate anonymous probe retains its original July ID.
+
+The separate September check on 2026-10-11 completed with
+**EXACT_EPISODE_METADATA** through **SAVED_CONNECTION**: the response supplied the
+exact requested raw ID and a strictly validated nested title. Only the fixed
+result left the JS closure, after final owner reread, runtime destruction and
+route cleanup; controls were enabled afterward. Fresh guest and metadata were
+discarded. No refusal-body read, profile/account/challenge/collection, source,
+playback or license request occurred, and no fallback or retry was used.
+
+Context: persistent `tachiai-dev`, Android 16/API 36 Google APIs x86-64, Google
+WebView 133.0.6943.137, region unknown, existing provider account not used.
+The installed app SHA-256 was
+`59649510284d341f5567807d5588483235b59fb53b6112c8223646387745b3a7`;
+the restored ordinary test APK SHA-256 was
+`f33707b3e813042af860b10e8b9d46d20969351cd4c21f6cc978fbc10837e82e`.
+Both use the shared debug certificate. Full checks passed 1,903 JVM cases,
+23 direct JavaScript cases, lint, instrumentation compilation and release
+isolation. All four networking-blocked isolated guest-process Android fixtures
+passed in 0.687 seconds without skips. The temporary instrumentation override
+was removed; source, merged and packaged manifests were verified ordinary and
+the ordinary test APK rebuilt, signer-verified and reinstalled. Protected
+encrypted records were byte-for-byte unchanged across update, fixtures,
+restoration and the completed real check.
+
+This establishes guest metadata access for this exact episode/context. It does
+not establish availability, entitlement, playback, general catalog integration,
+My List/history access or an existing-account connection. Missing configured
+items must retain their own identities; the debug resource is never a catalog
+fallback.
+
+On 2026-10-11, the separately opt-in anonymous #153 probes selected historical
+`api.abema.io` and modern `api.p-c3-e.abema-tv.com` origins in separate runs. Both
+same-path GETs returned HTTP 401 (6.199 and 6.193 seconds respectively) through
+**SAVED_CONNECTION** on persistent `tachiai-dev`, Android 16/API 36 Google APIs
+x86-64, Google WebView 133.0.6943.137, region unknown. Neither error body was
+opened. Each run made one anonymous GET without cookies, authorization, redirects,
+retries or origin fallback, completed cleanup and left protected records
+unchanged. The modern-only `createAbemaEpisodeCatalog` route and explicit
+`AbemaEpisodeMetadataProbeDeviceTest` remain reproducible refusal probes. These
+401 results establish anonymous refusal in this context; they establish neither
+an existing-account requirement nor guest-authenticated metadata acceptance.
+
 ## Verification and observation
 
 Provider-free JS fixtures exercise selected factories, one fresh request,
@@ -126,6 +257,11 @@ configuration/fetch: identity agreement, strict JSON bounds, HTTP/redirect/netwo
 failures and cancellation during response/body reading. Policy fixtures exercise
 one-shot GET/preflight admission and the closed route purpose. These are not
 observations of Chromium preflight interception or real server CORS acceptance.
+Episode fixtures exercise exact identity/nested-title validation, full JSON and
+UTF-8/body bounds, HTTP refusal, late body cancellation and timeout. The synthetic
+Android fixture executes the actual owned JS with a fixed program response,
+networking blocked and only status/stop exported. These checks do not establish
+real guest bearer acceptance, current endpoint/schema compatibility or CORS.
 
 The Android guest fixtures skip in the ordinary instrumentation process before
 any WebView/CookieManager API. To run them, use a temporary test-only instrumentation
@@ -154,6 +290,10 @@ For a separately authorized profile observation, choose **Verify guest profile**
 once and apply the same before/after saved-record comparison and safe context
 recording. Do not capture the request URI, headers, profile body or auth screens.
 Profile rejection remains a technical limitation and admits no fallback.
+For the separately selected episode check, tap **Verify guest episode metadata**
+once and use the same protected-record comparison/context recording. Inspect
+only the fixed outcome; do not capture requests, body or title. Any refusal is a
+technical result and triggers no second origin, account or playback request.
 
 On 2026-10-11, the combined implementation passed 1,891 JVM tests, Android lint,
 instrumentation compilation, release isolation and shared-debug-certificate APK

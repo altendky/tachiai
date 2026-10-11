@@ -12,6 +12,17 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.UUID
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.provider.abema.AbemaChannelException
+import net.fstab.tachiai.provider.abema.AbemaChannelFailure
+import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogAuthException
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogAuthFailure
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogNetworkException
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogStoreException
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogStoreFailure
+import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixException
+import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixFailure
+import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixNetworkException
 
 internal enum class FailureStage {
     VIEWER_OPEN, VIEWER_BLOCKED, VIEWER_END_SESSION, VIEWER_DISPOSE, FEED_CLOSE,
@@ -44,6 +55,11 @@ internal enum class FailureThread { MAIN, WORKER }
 internal enum class FailureRelation { FIRST, SECONDARY, BLOCKED }
 internal enum class FailureCategory {
     NONE, NETWORK_ON_MAIN_THREAD, IO, ILLEGAL_STATE, ILLEGAL_ARGUMENT, SECURITY, CANCELLED, OTHER,
+    ABEMA_CHANNEL_INVALID_RESPONSE, ABEMA_CHANNEL_RESPONSE_LIMIT, ABEMA_CHANNEL_POLICY_REFUSED, ABEMA_CHANNEL_COOKIE_HANDLER_REFUSED, ABEMA_CHANNEL_CANCELLED, ABEMA_CHANNEL_TIME_LIMIT_REACHED, ABEMA_CHANNEL_NETWORK_FAILED, ABEMA_CHANNEL_CLEANUP_FAILED,
+    TWITCH_CATALOG_AUTH_INVALID_RESPONSE, TWITCH_CATALOG_AUTH_REJECTED, TWITCH_CATALOG_AUTH_CLIENT_MISMATCH, TWITCH_CATALOG_AUTH_USER_MISMATCH, TWITCH_CATALOG_AUTH_SCOPE_MISMATCH, TWITCH_CATALOG_AUTH_EXPIRED, TWITCH_CATALOG_AUTH_NETWORK,
+    TWITCH_HELIX_INVALID_INPUT, TWITCH_HELIX_INVALID_RESPONSE,
+    TWITCH_CATALOG_NETWORK_DNS, TWITCH_CATALOG_NETWORK_TIMEOUT, TWITCH_CATALOG_NETWORK_TLS, TWITCH_CATALOG_NETWORK_CONNECTION, TWITCH_CATALOG_NETWORK_INTERRUPTED, TWITCH_CATALOG_NETWORK_BUDGET, TWITCH_CATALOG_NETWORK_BACKGROUND, TWITCH_CATALOG_NETWORK_IO,
+    TWITCH_CATALOG_STORE_STORAGE, TWITCH_CATALOG_STORE_INVALID_RECORD, TWITCH_CATALOG_STORE_CLIENT_MISMATCH,
 }
 
 // An allowlist translates stack metadata into our own fixed vocabulary. There
@@ -98,11 +114,62 @@ internal data class SafeFailure(
 ) {
     init { require(causes.size <= 4 && frames.size <= 8) }
     companion object {
+        // Map typed, closed adapter values explicitly; provider strings and grant
+        // fields never become diagnostic vocabulary.
+        private fun providerCategory(value: AbemaChannelFailure): FailureCategory = when (value) {
+            AbemaChannelFailure.INVALID_RESPONSE -> FailureCategory.ABEMA_CHANNEL_INVALID_RESPONSE
+            AbemaChannelFailure.RESPONSE_LIMIT -> FailureCategory.ABEMA_CHANNEL_RESPONSE_LIMIT
+            AbemaChannelFailure.POLICY_REFUSED -> FailureCategory.ABEMA_CHANNEL_POLICY_REFUSED
+            AbemaChannelFailure.COOKIE_HANDLER_REFUSED -> FailureCategory.ABEMA_CHANNEL_COOKIE_HANDLER_REFUSED
+            AbemaChannelFailure.CANCELLED -> FailureCategory.ABEMA_CHANNEL_CANCELLED
+            AbemaChannelFailure.TIME_LIMIT_REACHED -> FailureCategory.ABEMA_CHANNEL_TIME_LIMIT_REACHED
+            AbemaChannelFailure.NETWORK_FAILED -> FailureCategory.ABEMA_CHANNEL_NETWORK_FAILED
+            AbemaChannelFailure.CLEANUP_FAILED -> FailureCategory.ABEMA_CHANNEL_CLEANUP_FAILED
+        }
+
+        private fun providerCategory(value: TwitchCatalogAuthFailure): FailureCategory = when (value) {
+            TwitchCatalogAuthFailure.INVALID_RESPONSE -> FailureCategory.TWITCH_CATALOG_AUTH_INVALID_RESPONSE
+            TwitchCatalogAuthFailure.REJECTED -> FailureCategory.TWITCH_CATALOG_AUTH_REJECTED
+            TwitchCatalogAuthFailure.CLIENT_MISMATCH -> FailureCategory.TWITCH_CATALOG_AUTH_CLIENT_MISMATCH
+            TwitchCatalogAuthFailure.USER_MISMATCH -> FailureCategory.TWITCH_CATALOG_AUTH_USER_MISMATCH
+            TwitchCatalogAuthFailure.SCOPE_MISMATCH -> FailureCategory.TWITCH_CATALOG_AUTH_SCOPE_MISMATCH
+            TwitchCatalogAuthFailure.EXPIRED -> FailureCategory.TWITCH_CATALOG_AUTH_EXPIRED
+            TwitchCatalogAuthFailure.NETWORK -> FailureCategory.TWITCH_CATALOG_AUTH_NETWORK
+        }
+
+        private fun providerCategory(value: TwitchHelixFailure): FailureCategory = when (value) {
+            TwitchHelixFailure.INVALID_INPUT -> FailureCategory.TWITCH_HELIX_INVALID_INPUT
+            TwitchHelixFailure.INVALID_RESPONSE -> FailureCategory.TWITCH_HELIX_INVALID_RESPONSE
+        }
+
+        private fun providerCategory(value: DeviceNetworkFailure): FailureCategory = when (value) {
+            DeviceNetworkFailure.DNS -> FailureCategory.TWITCH_CATALOG_NETWORK_DNS
+            DeviceNetworkFailure.TIMEOUT -> FailureCategory.TWITCH_CATALOG_NETWORK_TIMEOUT
+            DeviceNetworkFailure.TLS -> FailureCategory.TWITCH_CATALOG_NETWORK_TLS
+            DeviceNetworkFailure.CONNECTION -> FailureCategory.TWITCH_CATALOG_NETWORK_CONNECTION
+            DeviceNetworkFailure.INTERRUPTED -> FailureCategory.TWITCH_CATALOG_NETWORK_INTERRUPTED
+            DeviceNetworkFailure.BUDGET -> FailureCategory.TWITCH_CATALOG_NETWORK_BUDGET
+            DeviceNetworkFailure.BACKGROUND -> FailureCategory.TWITCH_CATALOG_NETWORK_BACKGROUND
+            DeviceNetworkFailure.IO -> FailureCategory.TWITCH_CATALOG_NETWORK_IO
+        }
+
+        private fun providerCategory(value: TwitchCatalogStoreFailure): FailureCategory = when (value) {
+            TwitchCatalogStoreFailure.STORAGE -> FailureCategory.TWITCH_CATALOG_STORE_STORAGE
+            TwitchCatalogStoreFailure.INVALID_RECORD -> FailureCategory.TWITCH_CATALOG_STORE_INVALID_RECORD
+            TwitchCatalogStoreFailure.CLIENT_MISMATCH -> FailureCategory.TWITCH_CATALOG_STORE_CLIENT_MISMATCH
+        }
+
         fun capture(error: Throwable?): SafeFailure {
             if (error == null) return SafeFailure(FailureCategory.NONE)
             fun category(value: Throwable): FailureCategory = when {
                 // Avoid an Android dependency in the pure JVM codec/tests.
                 value.javaClass.name == "android.os.NetworkOnMainThreadException" -> FailureCategory.NETWORK_ON_MAIN_THREAD
+                value is AbemaChannelException -> providerCategory(value.category)
+                value is TwitchCatalogAuthException -> providerCategory(value.failure)
+                value is TwitchHelixException -> providerCategory(value.failure)
+                value is TwitchCatalogNetworkException -> providerCategory(value.category)
+                value is TwitchHelixNetworkException -> providerCategory(value.category)
+                value is TwitchCatalogStoreException -> providerCategory(value.failure)
                 value is java.util.concurrent.CancellationException -> FailureCategory.CANCELLED
                 value is IOException -> FailureCategory.IO
                 value is IllegalStateException -> FailureCategory.ILLEGAL_STATE

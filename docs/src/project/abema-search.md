@@ -5,9 +5,12 @@ implements provider-wide public Search behind `ProviderCatalog`, plus explicit
 episodes under an exact Season. It uses the provider instance's saved route and
 a fresh guest. My List, History and Schedule retain independent operations and
 access gates. Two bounded Search observations on `tachiai-dev` returned valid
-public metadata. Exact Season acceptance remains **unverified** because neither
-result supplied a Season candidate. Static evidence and synthetic fixtures are
-separate from an observed provider response.
+public metadata. A separately guarded Series observation returned an explicit
+Season candidate using that Program's paired Series/Season identities; it also
+established that all 20 rows omitted the duplicate Season parent field. A separate
+filtered request then passed with20 exact episode rows and more remaining.
+Static evidence and synthetic fixtures remain separate from bounded provider
+observations; no full coverage, entitlement or playback is established.
 
 Search replaces the channel-only filter in this composed catalog; Channels
 browsing remains available. Search from a selected account collection starts a
@@ -33,6 +36,7 @@ provider code or a permanent contract.
 | [5492](https://abema.tv/assets/compat/423c28bfb552a09a.5492.bundle.js) | 16173 | `7b15ac51c355a606637cdfff1add4903e2b4ed0089c741540647bd72edb1f454` |
 | [3795](https://abema.tv/assets/compat/35a6b0a35f792be3.3795.bundle.js) | 24615 | `21d6351a212c51f452521fc18c87b499c4e263c761ab64f35091553d6dd61398` |
 | [6245](https://abema.tv/assets/compat/3eaa977a7f089316.6245.bundle.js) | 106549 | `9f2b52d6cd326ab34ad8dd6d372ea9218f8dac6bd50db9964a661696f73f8c89` |
+| [9361](https://abema.tv/assets/compat/de87d72968864070.9361.bundle.js) | 93964 | `3458c695f85106b211f3d23d8554a2442f2e968ced0d0d427d5d751a8602a0fd` |
 
 6755/module85507 and 7944/module24971 construct bearer GETs to
 `/v1/search/modules` and `/v1/search/modules/{id}`. Summary uses `query`,
@@ -58,10 +62,14 @@ conflicting identities and malformed responses refuse instead of becoming empty.
 
 3795/module88594 supplies optional `seasonId` to Series-program GET;
 6245/module95597 pages the selected Season at limit20/order seq or -seq.
-9298/module91060 supplies `series.id`, `season.id` and `season.seriesId`.
-Exact Season children use existing order=seq with the filter and require all
-three returned identities. Unfiltered Series requests and seven-field start IPC
-remain valid; only filtered requests carry the additional Season field/proof.
+9298/module91060 supplies `series.id` and `season.id`, and permits the duplicate
+`season.seriesId` to be omitted.9361/module17351 opens the provider's Season
+selector using the same Program's paired Series/Season IDs without that duplicate
+field; its fallback does not establish membership by itself. Exact Season
+children use existing order=seq with the filter and require both returned parent
+IDs to match. A present duplicate parent must also match; null, empty, wrong-type
+or contradictory values refuse. Unfiltered Series requests and seven-field start
+IPC remain valid; only filtered requests carry the additional Season field/proof.
 
 ## Paging, bounds and refusals
 
@@ -98,7 +106,7 @@ Future/offline items can be configured explicitly. Metadata is not playback
 evidence; collections are never silently replaced by a parent/first episode,
 and Live Event results establish no playback capability.
 
-## Verification and pending observations
+## Verification and bounded observations
 
 Provider-free Node fixtures cover all five arms, Spots, summary/detail URLs,
 strict body/JSON limits, refusals, cancellation and exact Season parents. JVM
@@ -123,6 +131,43 @@ establish bounded metadata compatibility, not full provider coverage or playback
 Device: persistent tachiai-dev, Android16/API36, x86-64, WebView133.0.6943.137,
 saved connection, exit country unestablished, fresh guest, no account validation.
 
+A test-only candidate fixture initially failed in ActivityScenario launch matching
+before publishing a provider result. The diagnostic Activity clears its Intent;
+its replacement observes the exact class and requires a single resumed, focused
+window within five seconds, then confirms destruction within five seconds.
+The separately opted-in launch/cleanup check passed2.864s. Its existing Activity
+initialization reads saved providers, but the fixture starts no runtime or provider
+request. One subsequent existing Series GET passed11.893s with20 episodes but no
+triple-field candidate. A further request specifically testing DTO omission
+passed10.695s:20 exact Series matches,20 valid Season IDs,20 absent duplicate
+parents, no matching or invalid duplicates. It returned public pair
+`394-72`/`394-72_s10` under `SAME_PROGRAM_ABSENT_PARENT_FIELD` evidence. Candidate
+association is separate from filtered Season acceptance. Protected records and
+captured owners stayed unchanged; ordinary instrumentation/Main were restored
+after the first checks. No response body, title, account data or inferred ID was
+retained.
+
+After the absence-only duplicate-parent correction, local Android verification
+passed2m31s with2,390 JVM cases/288 reports and zero failures/errors/skips, lint,
+release isolation, instrumentation compilation, both APK assemblies and both
+shared debug certificates. Eighty-five Node cases pass, including absence versus
+null/empty/type/conflict and wrong-Series refusals. Independent review found no
+blockers. The new actual owned-WebView absence fixture ran with networking
+blocked and passed0.360s, zero skips. The temporary guest-process manifest was
+restored byte-identically; ordinary instrumentation was rebuilt, signed and
+reinstalled.
+
+One separately opted-in exact filtered Season request using returned pair
+`394-72`/`394-72_s10` passed11.741s and reported `EXACT_SEASON_PAGE`:20 unique
+episode rows, one page, more remaining. Each returned Series/Season parent
+matched; absent duplicate parent was accepted while present invalid values
+remain refused. This is positive returned-row metadata evidence, not an empty
+response or guessed identity. Captured ownership, confirmed cleanup and protected
+record hashes stayed unchanged. The ordinary Main screen was restored. Device,
+engine, saved-route/fresh-guest state and unestablished exit country match the
+Search observations above. No Add, account validation, configuration write or
+playback occurred.
+
 `AbemaSearchMetadataDeviceTest` skips by default before stores, services or UI.
 On verified `tachiai-dev`, `tachiaiReadOnlyAbemaSearch=true` uses fixed public
 query `相撲`, one summary and at most one needed detail through the saved route.
@@ -143,3 +188,16 @@ without alternate parent or automatic Search fallback. Restore normal
 instrumentation/launcher afterward. Record actual outcomes, observed kinds,
 scalar compatibility and refusals after observation. Unobserved kinds remain
 unverified; broader #100/#101 coverage and account acceptance remain separate.
+
+`AbemaSeasonCandidateDeviceTest` requires its explicit
+`tachiaiReadOnlyAbemaSeasonCandidate=true` gate, verified tachiai-dev and exact
+guest-process test instrumentation before saved state/UI access. It performs one
+existing unfiltered Series request, adds only test-owned projection fields, then
+strictly removes them before the production decoder. It publishes bounded shape
+counts and one public pair only after accepted page/row, current owner, unchanged
+record and confirmed cleanup checks. Its original explicit-parent and separately
+absent-parent candidates have distinct evidence labels. Uncertain cleanup retains
+actual probe resources. The independent
+`tachiaiReadOnlyAbemaSeasonCandidateHarness=true` gate exercises only Activity
+launch/adoption/finish; normal test instrumentation must be restored after either
+probe. Neither gate authorizes a guessed Season, account request, Add or playback.

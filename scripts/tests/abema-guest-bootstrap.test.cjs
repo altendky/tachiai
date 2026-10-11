@@ -418,10 +418,20 @@ test('season-filtered children prove both exact parents and preserve unfiltered 
   const f = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [program], version: 'v1' } });
   f.start(); await settle(); assert.equal(f.state().state, 'EXACT_SERIES_PAGE'); assert.match(f.requests[1].url, /&seasonId=season-A$/);
   assert.equal(JSON.parse(f.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
-  for (const season of [undefined, { id: 'other', seriesId: 'series-A' }, { id: 'season-A', seriesId: 'other' }, { id: 'season-A' }]) {
+  const absent = fixture({ operation: 'FETCH_SERIES', resourceId,
+    series: { programs: [{ ...program, season: { id: 'season-A' } }], version: 'v1' } });
+  absent.start(); await settle(); assert.equal(absent.state().state, 'EXACT_SERIES_PAGE');
+  assert.equal(JSON.parse(absent.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
+  for (const season of [undefined, null, [], { id: 'other', seriesId: 'series-A' }, { id: 'other' },
+    { id: 'season-A', seriesId: 'other' }, { id: 'season-A', seriesId: null },
+    { id: 'season-A', seriesId: '' }, { id: 'season-A', seriesId: 0 },
+    { id: 'season-A', seriesId: false }, { id: 'season-A', seriesId: {} }]) {
     const value = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [{ ...program, season }], version: 'v1' } });
     value.start(); await settle(); assert.equal(value.state().failure, 'SERIES_RESPONSE');
   }
+  const wrongSeries = fixture({ operation: 'FETCH_SERIES', resourceId, series: {
+    programs: [{ ...program, series: { id: 'other' }, season: { id: 'season-A' } }], version: 'v1' } });
+  wrongSeries.start(); await settle(); assert.equal(wrongSeries.state().failure, 'SERIES_RESPONSE');
   const empty = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [], version: 'v1' } });
   empty.start(); await settle(); assert.equal(JSON.parse(empty.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
 });

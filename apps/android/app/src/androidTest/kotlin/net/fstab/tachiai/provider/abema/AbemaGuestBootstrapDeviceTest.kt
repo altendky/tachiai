@@ -90,6 +90,11 @@ class AbemaGuestBootstrapDeviceTest {
         ownedRuntime("FETCH_SERIES", "EXACT_SERIES_PAGE", 2,
             seriesRequest = AbemaSeriesPageRequest("fixture-series-A", seasonId = "fixture-season-A"))
     }
+    @Test fun actualOwnedJavaScriptAcceptsAbsentDuplicateSeasonParentWithNetworkingBlocked() {
+        ownedRuntime("FETCH_SERIES", "EXACT_SERIES_PAGE", 2,
+            seriesRequest = AbemaSeriesPageRequest("fixture-series-A", seasonId = "fixture-season-A"),
+            omitSeasonParent = true)
+    }
 
     @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
@@ -111,7 +116,7 @@ class AbemaGuestBootstrapDeviceTest {
 
     private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null, tokenStatus: Int = 400,
         seriesRequest: AbemaSeriesPageRequest? = null, slotRequest: AbemaSlotRequest? = null,
-        searchRequest: AbemaSearchRequest? = null) {
+        searchRequest: AbemaSearchRequest? = null, omitSeasonParent: Boolean = false) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
@@ -133,7 +138,9 @@ class AbemaGuestBootstrapDeviceTest {
         val seriesReply = JSONObject.quote(JSONObject().put("version", seriesRequest?.version ?: "v opaque+1")
             .put("programs", org.json.JSONArray().put(JSONObject().put("id", "fixture-episode-1")
                 .put("series", JSONObject().put("id", seriesRequest?.seriesId ?: "fixture-series"))
-                .apply { seriesRequest?.seasonId?.let { put("season", JSONObject().put("id", it).put("seriesId", seriesRequest.seriesId)) } }
+                .apply { seriesRequest?.seasonId?.let { put("season", JSONObject().put("id", it).apply {
+                    if (!omitSeasonParent) put("seriesId", seriesRequest.seriesId)
+                }) } }
                 .put("episode", JSONObject().put("title", "Fixture episode"))
                 .put("source", JSONObject().put("url", "https://private.invalid/MUST_NOT_FETCH"))))
             .put("offset", 999).toString())

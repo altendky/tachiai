@@ -30,6 +30,7 @@ internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
         var closed = false
         var cleanupFailed = false
         fun current(): Boolean = canUse() && !synchronized(lock) { closed || cleanupFailed } &&
+            !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
             route != null && captured.routeUsable && captured.sameOwnership(route.presentation) &&
             !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
             runCatching { captured.sameOwnership(binding.owner()) }
@@ -40,11 +41,15 @@ internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
             runCatching { providerInstanceStore(application).read { legacyProviderSettings(application) }
                 .any { it.id == instanceId && it.service == PrototypeService.TWITCH } }
                 .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
-        val catalog = TwitchProviderCatalog(instanceId, binding.session(),
+        val session = binding.session()
+        val helix = TwitchProviderCatalog(instanceId, session,
             transportFactory = { gate -> OwnedTwitchHelixTransport(route?.profile,
                 canRequest = { gate() && current() },
                 onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics) },
             canPublish = ::current)
+        val catalog = TwitchContinueWatchingCatalog(helix, session,
+            transportFactory = { gate -> OwnedTwitchContinueWatchingTransport(instanceId, route?.profile,
+                canRequest = { gate() && current() }, diagnostics = diagnostics) }, canUse = ::current)
         val owned = object : ProviderCatalog by catalog {
             override fun close() {
                 if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return

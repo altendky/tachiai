@@ -40,6 +40,28 @@ class RouteSessionTest {
         return response
     }
 
+    @Test fun continueWatchingPurposeUsesPrivateClientOnSystemAndOnlyExactGqlPathOnBothRoutes() {
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        for (selected in listOf(null, profile)) {
+            val backend = FakeBackend()
+            val route = RouteSession.createTwitchContinueWatching(selected) { _, security ->
+                assertEquals("gql.twitch.tv", security.allowedHosts); backend
+            }
+            try {
+                val connection = route.open(URL("https://gql.twitch.tv/gql"))
+                assertTrue(connection is RoutedHttpsConnection)
+                val client = RouteSession::class.java.getDeclaredField("client").apply { isAccessible = true }.get(route) as OkHttpClient
+                assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar); assertSame(okhttp3.Authenticator.NONE, client.authenticator)
+                assertFalse(client.followRedirects); assertFalse(client.followSslRedirects); assertFalse(client.retryOnConnectionFailure)
+                if (selected == null) assertSame(java.net.Proxy.NO_PROXY, client.proxy)
+                for (url in listOf("https://gql.twitch.tv/", "https://gql.twitch.tv/gql?query=other", "https://id.twitch.tv/gql",
+                    "https://api.twitch.tv/gql", "https://gql.twitch.tv/gql#token", "https://other.gql.twitch.tv/gql"))
+                    assertThrows(IllegalArgumentException::class.java) { route.open(URL(url)) }
+                connection.disconnect()
+            } finally { route.close() }
+            assertEquals(if (selected == null) 0 else 1, backend.closes)
+        }
+    }
     @Test fun abemaMetadataPurposeUsesAnOwnedAnonymousClientAndOnlyItsHost() {
         val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
         for (selected in listOf(null, profile)) {

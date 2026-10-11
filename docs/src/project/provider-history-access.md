@@ -5,8 +5,10 @@ This is partial research for
 2026-10-09. History can help discover previously viewed channels and on-demand
 items without making them favorites. A bounded undocumented ABEMA read-only
 adapter is now implemented as described below; intended-account retrieval
-remains unverified. No supported native Twitch account-history retrieval path
-was established; #102 remains open.
+remains unverified. An optional bounded Twitch Continue Watching adapter is
+implemented below, with real Smart TV compatibility still unverified. No
+comprehensive Twitch account-history retrieval path was established; #102
+remains open.
 
 ## ABEMA read-only History adapter — 2026-10-11
 
@@ -50,6 +52,105 @@ gates and exact conservative projection, and logs only closed outcomes and
 counts. A separate protected-record baseline must be established after the
 owner's intentional grant write. No real account or device check has yet run;
 source fixtures cannot establish account access, history coverage or retention.
+
+## Twitch bounded Continue Watching adapter — 2026-10-11
+
+The debug Twitch catalog additionally offers **Continue watching** through the
+shared collection and explicit Add interface. This is provider-owned unfinished
+VOD viewing, not complete chronological History, Following membership or
+Tachiai usage recording. Comprehensive History remains NOT_VERIFIED. Browsing
+never configures entries automatically, modifies provider history or removes
+already configured exact videos. Refresh and native playback keep their existing
+independent metadata, account and entitlement checks.
+
+The first-party `FollowedStreamsContinueWatching` query and
+`ContinueWatchingViewedVideoEdge`/`PreviewCardVideo` fragments select
+`currentUser.id`, the first twenty `viewedVideos` edges, their `history.position`
+and `history.updatedAt`, and video identity, title, duration and owner identity.
+The reduced fixed query requests only those known fields. There is no cursor or
+invented pagination. Twenty is the first-party client's selected bound, not
+evidence of full account-history coverage or a provider maximum.
+
+The first-party shelf preserves provider edge order, includes nonzero progress
+and duration updated within an inclusive fourteen-day cutoff, and defaults to
+at most 95% watched, including exactly 95%. Its threshold is dynamically
+configurable on Twitch. Tachiai implements that bounded default projection; it
+does not claim complete shelf parity. Progress/duration use numeric seconds
+ratio arithmetic, while update time is passed to JavaScript Date by that client.
+Raw schema types and nullability are not verified. Tachiai's local restrictions
+accept finite nonnegative numeric progress/duration no greater than one year,
+integer epoch milliseconds or a strict ISO instant for update time, unique exact
+video IDs and valid owner IDs/logins. Strict UTF-8 JSON rejects duplicate object
+members, unknown joins, malformed/error pages, excessive nesting and a response
+over 64 KiB. These are conservative local bounds, not a provider contract.
+Only exact VIDEO resources, public titles and UNKNOWN availability enter the
+shared catalog; progress, update times and provider responses are not persisted
+or displayed and cannot extend grant retention.
+
+The transport sends one fixed JSON POST to `https://gql.twitch.tv/gql` through a
+separate closed route purpose. It uses the same maintained Smart TV client and
+OAuth grant as account-backed discovery, with a private no-cookie/no-ambient-auth
+client even on System. It does not copy browser cookies, request another scope,
+retry with a browser/blank client identity, fabricate integrity headers or follow
+redirects. Exact client/user/Following scope validation, original seven-day
+unknown-expiry retention, captured instance/route/generation, foreground ownership
+and final protected-record rereads remain required.
+
+Collection access defaults to NOT_VERIFIED. A separate proof requires an actual
+HTTP 401/403 response to an invalid sentinel grant followed by HTTP 200 and a
+strictly parsed page naming the intended maintained account. A successful
+ordinary account check or playback lease cannot establish this proof. HTTP 200
+with null `currentUser`, GraphQL errors or a different user cannot establish it
+either. The first positive page is kept in RAM for one use only; its proof and
+original combined operation have a thirty-second bound. No provider-specific
+error text is guessed into an authorization result. An endpoint refusal clears
+only Continue Watching proof and its seed, preserving a valid Following grant.
+Unverified/refused access is never reported as a successful empty collection.
+
+Every HTTP owner, close receipt and temporary route remains owned until cleanup
+is confirmed. Unknown cleanup retains the actual handles and poisons admission
+for that exact provider instance for the lifetime of the process. The existing
+Android connection binding checks this for account validation/Connect, catalog
+operations and selected-resource playback; new facades cannot bypass it. Local
+Forget does not infer cleanup or release retained handles. There is no timeout,
+late-receipt unpoisoning or automatic route/backend release while HTTP remains
+uncertain. A normally observed collection HTTP refusal does not poison admission.
+
+Public primary evidence fetched cookie-free, without authorization, redirects,
+retries or script execution on 2026-10-11:
+
+| Public asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [Query and shelf filter](https://assets.twitch.tv/assets/90896-1e602a6ec0b0b67636b5.js) | 14,706 | `d1d2787210630c7d0d169051b5794ff268a6db33b30be1ba2a2ac4d7c80b5a6f` |
+| [Video fragment](https://assets.twitch.tv/assets/pages.following.components.following-continue-watching-4073694f3703384e4565.js) | 6,771 | `6a8244ca347393eb9676f36a866661d0dd824ef2c4e144adbea8408572dbf3e4` |
+| [Entry HTML](https://www.twitch.tv/) | 203,359 | `ffc69f74767466a91da43c06e8fcf4ce0710c51dee4ff2f7fccaeeec4a694d38` |
+| [Direct core bundle](https://assets.twitch.tv/assets/core-ec1e57f743ef3b2d5fa6.js) | 950,047 | `0ab994272d818080de5c2a5901c3805f06f821eb9cce17755dd6ca5ba5c9088f` |
+| [Direct entry bundle](https://assets.twitch.tv/assets/51010-c3c438f2c6a3b853753d.js) | 14,064 | `1433fe889d6ff3e461bf687fb43265302ebf7deef42736e4e11992cd6f82ed2d` |
+
+The HTML manifest references the exact query/video assets above, establishing
+coherent public provenance. The two directly referenced bundles do not expose
+the imported query hook's complete transport construction. The HTML's separate
+PlaybackAccessToken warm-up posts OAuth with a browser client identity and an
+optional device cookie; it does not establish Continue Watching's mandatory
+headers, cookie/integrity requirements or compatibility with the Smart TV grant.
+No real-account GraphQL request or device observation has run. A provider refusal
+or incompatible negative-proof convention may keep this optional collection
+unavailable while Following works normally.
+
+`TwitchContinueWatchingDeviceTest` skips before private access by default. Its
+explicit opt-in is `tachiaiReadOnlyTwitchContinueWatching=true` plus a
+`twitchProviderInstance` and verified tachiai-dev AVD in the ordinary app process.
+It requires an already READY grant with more than ninety seconds of retained
+validity, maintains foreground/route ownership, forbids protected writes and
+consent/refresh/reconnect, and refuses validation that would require expiry
+tightening. It exercises the same production collection/session/route classes,
+but this extra write-refusing fixture guard is not ordinary connection behavior.
+One sentinel/positive proof consumes at most one intended-account page with no
+retry, continuation, Add or playback. It verifies encrypted-record and route
+preservation and logs only closed result categories and entry counts. Intended
+account, scalar shape, empty/unfinished VOD behavior and native playback still
+require separate authorized runtime acceptance; synthetic tests prove only the
+local safety and projection contract.
 
 ## User-approved meaning and access — 2026-10-10
 

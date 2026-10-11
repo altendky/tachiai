@@ -150,6 +150,18 @@ long-lived emulator allocations and graphics/WebView behavior remain unresolved.
 [Issue #166](https://github.com/altendky/tachiai/issues/166) tracks measurements;
 no RAM, renderer or OOM-priority change follows from this observation alone.
 
+A subsequent 15-minute observation at 09:08:22–09:23:22 UTC took 31 snapshots,
+30 seconds apart, around four Android verification attempts and brief periods
+between/after builds. Every snapshot verified the same process and had readable
+optional rollup counters. RSS rose from 5,642,000 to 5,644,232 KiB (about 2.2 MiB);
+host available memory ranged from 9,538,184 to 15,388,948 KiB. Host swap remained
+zero, and the largest sampled memory-pressure average was 0.05 percent. No OOM
+occurred in that window. These samples do not reproduce the earlier 13.9 GiB
+anonymous footprint or establish a leak/cause. The next useful observation is a
+longer bounded series on the same process through idle time and ordinary viewer
+lifecycle, comparing process growth with host headroom; allocator attribution and
+recurrence prevention remain unverified.
+
 Default local state is `${XDG_DATA_HOME:-$HOME/.local/share}/tachiai/android/`:
 
 - `sdk/`: downloaded public SDK tools and system image;

@@ -303,7 +303,7 @@ test('search detail uses the canonical raw offset with symbolic enums and no sum
   assert.equal(f.requests.length, 2); assert.equal(JSON.parse(f.call(`window['${apiName}'].metadata()`)).modules[0].entries.length, 1);
 });
 test('strict search roots module counts arm joins and exact parents refuse malformed replies instead of appearing empty', async () => {
-  const mutations = [reply => { delete reply.modules; }, reply => { reply.modules = null; }, reply => { reply.modules[0].id = 'unknown'; },
+  const mutations = [reply => { delete reply.modules; reply.other = true; }, reply => { reply.modules = null; }, reply => { reply.modules[0].id = 'unknown'; },
     reply => { reply.modules[0].totalItemCount = '1'; }, reply => { reply.modules[0].totalItemCount = 1000001; },
     reply => { reply.modules[0].displayName = 1; }, reply => { reply.modules[0].moduleType = 0; },
     reply => { reply.modules[0].items = {}; }, reply => { reply.modules[0].items.content.results = null; },
@@ -327,6 +327,44 @@ test('strict search roots module counts arm joins and exact parents refuse malfo
   }
   const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest('episode'), search: { module: searchModule([], 'package', 0) } });
   f.start(); await settle(); assert.equal(f.state().failure, 'SEARCH_RESPONSE');
+});
+test('search normalizes omitted protobuf empty fields without masking malformed or nonempty replies', async () => {
+  const empty = { id: 'timeshift', displayName: 'Empty results', moduleType: 1, items: { content: {} } };
+  const spot = { id: 'genres', moduleType: 2, items: { spot: {} } };
+  const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(),
+    search: { modules: [searchModule(), empty, spot] } });
+  f.start(); await settle(); assert.deepEqual(f.state(), { state: 'SEARCH_PAGE', failure: 'NONE' });
+  const modules = JSON.parse(f.call(`window['${apiName}'].metadata()`)).modules;
+  assert.equal(modules[0].entries.length, 1);
+  assert.deepEqual(modules[1], { id: 'timeshift', title: 'Empty results', total: 0, entries: [] });
+  assert.equal(modules.length, 2);
+  for (const search of [{}, { modules: [] }]) {
+    const valid = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search });
+    valid.start(); await settle(); assert.equal(valid.state().state, 'SEARCH_PAGE');
+    assert.deepEqual(JSON.parse(valid.call(`window['${apiName}'].metadata()`)), { modules: [] });
+  }
+  const detail = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest('timeshift'), search: { module: empty } });
+  detail.start(); await settle(); assert.equal(detail.state().state, 'SEARCH_PAGE');
+  const mutations = [
+    module => { module.totalItemCount = null; }, module => { module.totalItemCount = '0'; },
+    module => { module.totalItemCount = -1; }, module => { module.items.content.results = null; },
+    module => { module.items.content.results = {}; }, module => { module.items.content.results = ''; },
+    module => { module.items.content.results = [searchItem()]; }, module => { delete module.items.content; },
+    module => { module.items.content = null; }
+  ];
+  for (const mutate of mutations) {
+    const module = JSON.parse(JSON.stringify(empty)); mutate(module);
+    const refused = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search: { modules: [searchModule(), module] } });
+    refused.start(); await settle(); assert.equal(refused.state().failure, 'SEARCH_RESPONSE');
+    assert.equal(refused.call(`window['${apiName}'].metadata()`), null);
+  }
+  for (const results of [null, {}, '']) {
+    const refused = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(),
+      search: { modules: [{ ...spot, items: { spot: { results } } }] } });
+    refused.start(); await settle(); assert.equal(refused.state().failure, 'SEARCH_RESPONSE');
+  }
+  const missing = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest('episode'), search: {} });
+  missing.start(); await settle(); assert.equal(missing.state().failure, 'SEARCH_RESPONSE');
 });
 test('search whole response bounds strict UTF8 duplicate keys and conflicting cross-module identities refuse', async () => {
   const nodes = JSON.stringify({ modules: [], ignored: Array.from({ length: 1000 }, () =>

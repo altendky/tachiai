@@ -418,7 +418,11 @@
       'CONTENT_TYPE_VIDEO_SERIES', 'CONTENT_TYPE_SLOT', 'CONTENT_TYPE_LIVE_EVENT'];
     const moduleTypes = ['MODULE_TYPE_UNSPECIFIED', 'MODULE_TYPE_CONTENT', 'MODULE_TYPE_SPOT'];
     if (!object(reply)) throw new Error();
-    const raw = request.moduleId === null ? reply.modules : [reply.module];
+    // First-party serializers omit zero counts and empty repeated fields.
+    // Normalize absence only; explicit null/wrong types still refuse, as do
+    // missing identity-bearing containers or a missing count with actual rows.
+    const raw = request.moduleId === null ?
+      (Object.keys(reply).length === 0 ? [] : reply.modules) : [reply.module];
     if (!Array.isArray(raw) || raw.length > 16 || request.moduleId !== null && !object(reply.module)) throw new Error();
     const modules = [], moduleIds = new Set(), all = new Map();
     for (const module of raw) {
@@ -427,15 +431,19 @@
       moduleIds.add(module.id);
       const moduleType = type(module.moduleType, moduleTypes);
       if (moduleType === 2 && request.moduleId === null) {
-        if (!object(module.items.spot) || !Array.isArray(module.items.spot.results) || module.items.content != null) throw new Error();
+        if (!object(module.items.spot) || module.items.content != null) throw new Error();
+        const results = Object.hasOwn(module.items.spot, 'results') ? module.items.spot.results : [];
+        if (!Array.isArray(results)) throw new Error();
         continue;
       }
       if (moduleType !== 1 || !searchModules.includes(module.id) || request.moduleId !== null && module.id !== request.moduleId ||
-        !object(module.items.content) || !Array.isArray(module.items.content.results) || module.items.spot != null ||
-        !Number.isSafeInteger(module.totalItemCount) || module.totalItemCount < module.items.content.results.length ||
-        module.totalItemCount > 1000000 || module.items.content.results.length > (request.moduleId === null ? 8 : 20)) throw new Error();
+        !object(module.items.content) || module.items.spot != null) throw new Error();
+      const results = Object.hasOwn(module.items.content, 'results') ? module.items.content.results : [];
+      const total = Object.hasOwn(module, 'totalItemCount') ? module.totalItemCount : 0;
+      if (!Array.isArray(results) || !Number.isSafeInteger(total) || total < results.length || total > 1000000 ||
+        results.length > (request.moduleId === null ? 8 : 20)) throw new Error();
       const entries = [], seen = new Set();
-      for (const result of module.items.content.results) {
+      for (const result of results) {
         if (!object(result) || !id(result.contentId) || !object(result.contentData)) throw new Error();
         const contentType = type(result.contentType, types), arm = arms[contentType - 1];
         const present = Object.keys(result.contentData).filter(key => result.contentData[key] != null);
@@ -456,7 +464,7 @@
         seen.add(key); all.set(key, label);
         entries.push(Object.freeze({ kind, id: identity, title: label }));
       }
-      modules.push(Object.freeze({ id: module.id, title: title(module.displayName, 64), total: module.totalItemCount, entries }));
+      modules.push(Object.freeze({ id: module.id, title: title(module.displayName, 64), total, entries }));
     }
     if (modules.length > 6 || request.moduleId !== null && modules.length !== 1) throw new Error();
     const projection = Object.freeze({ modules });

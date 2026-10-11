@@ -17,7 +17,8 @@ class AbemaGuestDeviceAuthorizationPolicyTest {
         for (method in listOf("GET", "OPTIONS", "PUT", "DELETE", "HEAD"))
             assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, false, method, operation))
         assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, true, "POST", operation))
-        for (other in AbemaGuestBootstrapOperation.entries.filter { it !in setOf(operation, AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) }) {
+        for (other in AbemaGuestBootstrapOperation.entries.filter { it !in setOf(operation,
+            AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK) }) {
             val id = if (other == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null
             assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, false, "POST", other, id))
             assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(other, id).contains(AbemaGuestBootstrapPolicy.CHALLENGE))
@@ -37,6 +38,30 @@ class AbemaGuestDeviceAuthorizationPolicyTest {
         assertTrue(csp.contains("connect-src ${AbemaGuestBootstrapPolicy.GUEST} ${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/ ${AbemaGuestBootstrapPolicy.CHALLENGE};"))
         assertTrue(csp.contains("media-src 'none'")); assertTrue(csp.contains("form-action 'none'"))
         assertFalse(csp.contains("/device/token")); assertFalse(csp.contains("/accessToken")); assertFalse(csp.contains("/video/"))
+    }
+
+    @Test fun explicitAccountLinkAdmitsOneMatchedChallengeWithoutTokenPollingOrOtherGuestExpansion() {
+        val linking = AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK
+        val admission = AbemaGuestRequestAdmission(linking)
+        val token = URI(AbemaGuestBootstrapPolicy.DEVICE_TOKEN)
+        assertFalse(admission.admit(challenge, false, "POST"))
+        assertTrue(admission.admit(guest, false, "POST"))
+        assertFalse(admission.admit(challenge, false, "POST"))
+        assertTrue(admission.admit(profile, false, "OPTIONS", preflight))
+        assertFalse(admission.admit(URI("${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/OTHER"), false, "GET"))
+        assertTrue(admission.admit(profile, false, "GET"))
+        assertTrue(admission.admit(challenge, false, "POST"))
+        assertFalse(admission.admit(challenge, false, "POST"))
+        assertFalse(admission.admit(token, false, "POST"))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(token, false, "POST", linking))
+        assertTrue(AbemaGuestBootstrapPolicy.contentSecurityPolicy(linking).contains(AbemaGuestBootstrapPolicy.CHALLENGE))
+        assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(linking).contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
+        for (existing in listOf(AbemaGuestBootstrapOperation.GUEST_ONLY, AbemaGuestBootstrapOperation.VERIFY_PROFILE,
+            AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE)) {
+            val id = if (existing == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null
+            assertFalse(AbemaGuestBootstrapPolicy.allows(challenge, false, "POST", existing, id))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(token, false, "POST", existing, id))
+        }
     }
 
     @Test fun admissionRequiresGuestThenOneMatchingProfileGETThenOneChallengePOST() {

@@ -45,6 +45,7 @@ class AbemaGuestRuntimeCoordinatorTest {
         var statusState: String? = null
         var statusFailure = "NONE"
         var statusOverride: JSONObject? = null
+        var linkOverride: String? = null
         val views = mutableListOf<View>()
         inner class View(val request: AbemaGuestRuntimeRequest,
             val currentView: (AbemaGuestRuntimeView) -> Boolean,
@@ -59,6 +60,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                 val state = statusState ?: when (operation) {
                     AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> "CHALLENGE_VALIDATED_AND_DISCARDED"
                     AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> AbemaDeviceTokenObservation.STATE
+                    AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> "ACCOUNT_LINK_READY"
                     else -> "EXACT_EPISODE_METADATA"
                 }
                 val value = statusOverride ?: JSONObject().put("state", state).put("failure", statusFailure).apply {
@@ -70,6 +72,13 @@ class AbemaGuestRuntimeCoordinatorTest {
             override fun metadata(callback: (String?) -> Unit) {
                 events += "projection"
                 callback(JSONObject.quote(JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
+            }
+            override fun accountLink(callback: (String?) -> Unit) {
+                events += "private-projection"
+                callback(JSONObject.quote(linkOverride ?: JSONObject().put("guestId", "guest").put("guestBearer", "PRIVATE_BEARER")
+                    .put("clientId", "guest").put("deviceCode", "PRIVATE_CODE")
+                    .put("tokenBody", "{\"client_id\":\"guest\",\"device_code\":\"PRIVATE_CODE\",\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\",\"device_type\":3}")
+                    .put("verificationUri", "https://abema.tv/account/transfer?code=PRIVATE_CODE").put("expiresIn", 300).toString()))
             }
             override fun destroy(): Boolean { events += "destroy"; return this@Fixture.destroy.invoke() }
         }
@@ -131,6 +140,32 @@ class AbemaGuestRuntimeCoordinatorTest {
         assertTrue(f.events.indexOf("clear-confirmed") < f.events.indexOf("close-backend"))
         assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
         assertFalse(f.runtime.unavailable)
+    }
+
+    @Test fun privateAccountChallengePublishesOnlyAfterConfirmedCleanupAndFinalOwnerCheck() {
+        val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK); f.holdClear = true
+        assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty()); assertTrue(f.events.contains("destroy"))
+        f.clearCallback?.invoke(); f.pump()
+        assertEquals("ACCOUNT_LINK_READY", f.results.single().category); assertNotNull(f.results.single().accountChallenge)
+        assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend")); assertNull(f.results.single().entry)
+        assertFalse(f.results.single().toString().contains("PRIVATE"))
+    }
+    @Test fun privateChallengeNeverPublishesAfterOwnerLossCleanupFailureOrExpiry() {
+        for (loss in 0..2) {
+            val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK); f.holdClear = true
+            assertTrue(f.start()); f.pump()
+            when (loss) { 0 -> f.matching = false; 1 -> f.onClose = { error("PRIVATE CLOSE") }; 2 -> f.main.now += 300001 }
+            f.clearCallback?.invoke(); f.pump(); assertNull(f.results.single().accountChallenge)
+            if (loss == 1) assertTrue(f.runtime.unavailable)
+        }
+    }
+    @Test fun privateChallengeRejectsDuplicateBindingOrWrongStatusOperation() {
+        val malformed = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)
+        malformed.linkOverride = "{\"guestId\":\"guest\",\"guestId\":\"other\"}"
+        assertTrue(malformed.start()); malformed.pump(); assertNull(malformed.results.single().accountChallenge)
+        assertEquals("GUEST_CHALLENGE_RESPONSE", malformed.results.single().category)
+        val wrong = Fixture(); wrong.statusState = "ACCOUNT_LINK_READY"
+        assertTrue(wrong.start()); wrong.pump(); assertEquals("STATUS_REFUSED", wrong.results.single().category); assertNull(wrong.results.single().accountChallenge)
     }
 
     @Test fun capturedOwnerProofMismatchRefusesBeforeAnyPreparationOrProviderDispatch() {

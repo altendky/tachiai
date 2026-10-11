@@ -35,8 +35,15 @@ class ProvidersActivity : ComponentActivity() {
                 onCreate = ::create,
                 onManageStreams = { startActivity(Intent(this, ManageStreamsActivity::class.java)
                     .putExtra(ManageStreamsActivity.INSTANCE_ID, it)) },
-                onCatalogConnection = { startActivity(Intent(this, TwitchCatalogConnectionActivity::class.java)
-                    .putExtra(TwitchCatalogConnectionActivity.INSTANCE_ID, it)) })
+                onCatalogConnection = { id ->
+                    val service = value.singleOrNull { it.id == id }?.service
+                    val activity = when (service) {
+                        PrototypeService.ABEMA -> AbemaAccountConnectionActivity::class.java
+                        PrototypeService.TWITCH -> TwitchCatalogConnectionActivity::class.java
+                        else -> null
+                    }
+                    activity?.let { startActivity(Intent(this, it).putExtra("PROVIDER_INSTANCE_ID", id)) }
+                })
         } }
     }
 

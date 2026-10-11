@@ -100,10 +100,12 @@ instance snapshots before preparation. Saved quality defaults are item-owned;
 duplicate feeds share those defaults and retain independent session overrides.
 Restart checkpoints use the same local references and accept old enum choices.
 
-The shipped discovery adapters retain **Prototype samples**. They browse and
-search the existing public sample resources, with unknown availability. Following
-and My List are explicitly not verified in those sample adapters. The debug Twitch
-manager now uses the separate [connected catalog](twitch-connected-catalog.md),
+Historical sample adapters retain **Prototype samples**, with unknown
+availability and unverified account collections. The ABEMA manager now uses the
+[public Channels adapter](abema-catalog-access.md#public-channels-adapter) for
+real channel browsing, local search, lookup and refresh, while My List and
+History remain unverified. The debug Twitch manager uses the separate
+[connected catalog](twitch-connected-catalog.md),
 including exact lookup and channel-video children when account access is available.
 Connected exact channel lookup can include bounded [known schedule context](twitch-connected-catalog.md#known-schedule-context),
 with the same optional Scheduled label used by the shared entry UI. This is a
@@ -160,8 +162,10 @@ one transaction or add an immediate idle account-change observer.
 
 Connected Twitch can refresh immutable broadcaster and exact video resources,
 including a locally imported video's metadata after account access is available.
-Historical aliases are not silently converted. ABEMA refresh remains unsupported;
-its public-link import does not establish structured metadata or account access.
+Historical aliases are not silently converted. ABEMA can refresh exact channel
+metadata through its saved route; absent channels preserve the saved entry/title.
+Slot, episode and series refresh remains unverified. Public-link import alone
+does not establish structured metadata or account access.
 Refreshing metadata does not establish playback entitlement or native support.
 
 ### Twitch public video-link import

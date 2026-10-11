@@ -69,6 +69,34 @@ unexpected success body is never opened or adopted. See
 Actual response acceptance is recorded separately and cannot qualify unobserved
 terminal states or establish a connected account.
 
+### Routed ABEMA account approval — 2026-10-11
+
+The owner requested an in-app browser using the configured provider route after
+the external Chrome approval page displayed Sorry. That report does not establish
+a regional or routing cause. The approval-only route admits exact HTTPS hosts
+`abema.tv`, `auth.abema.tv` and `api.p-c3-e.abema-tv.com`; top-level navigation
+is restricted to the first two. Retained first-party account bundle5206,
+SHA-256 d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81,
+uses same-origin `/api/auth/…` login/session/device requests and declares the
+auth and modern API origins. No media, license, image, advertising, analytics,
+lookalike, non-HTTPS or arbitrary redirect destination is added.
+
+The approval browser uses its own process and persistent WebView profile,
+provider-controlled pages, normal TLS and the instance's captured route proof
+and original challenge deadline. It loads only after proxy application, rejects
+other destinations without a direct-network fallback, and has no native bridge
+or injected scripts. Its own browser login is separate from protected native
+grants and is never exported. Returning after confirmed cleanup allows the
+existing explicit Continue action; it does not establish approval, token lifetime,
+account identity, collection access or browser-email compatibility.
+This browser currently requires an imported connection, whose CONNECT bridge
+enforces the three hosts even after redirects. System-network approval is
+refused before page loading because Android's
+[request interception](https://developer.android.com/reference/android/webkit/WebViewClient#shouldInterceptRequest(android.webkit.WebView,%20android.webkit.WebResourceRequest))
+does not recheck subsequent resource redirects. A host-restricted direct CONNECT
+bridge remains needed for that browser mode; native System account requests and
+other route purposes retain their existing behavior.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

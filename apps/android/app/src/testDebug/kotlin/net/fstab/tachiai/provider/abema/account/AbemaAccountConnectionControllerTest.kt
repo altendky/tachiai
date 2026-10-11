@@ -77,6 +77,20 @@ class AbemaAccountConnectionControllerTest {
         assertEquals("intended-account", f.store.read()?.grant?.userId); assertEquals(1, f.tokens)
         assertFalse(f.controller.state.value.toString().contains("intended-account")); assertFalse(f.controller.state.value.toString().contains("private-code"))
     }
+    @Test fun routedBrowserReceivesOnlyOriginalInstanceOwnerAndDeadlineWithoutPublishingPrivateUri() {
+        val f = Fixture(); f.prepared()
+        var request: AbemaApprovalBrowserRequest? = null
+        f.controller.handoffBrowser { request = it; true }; f.pump()
+        val captured = checkNotNull(request)
+        assertEquals(f.id, captured.instanceId)
+        assertEquals(f.owner.proof(), captured.ownerProof)
+        assertEquals(1000000L, captured.deadlineElapsedMs)
+        assertTrue(validAbemaVerificationUri(captured.verificationUri))
+        assertFalse(f.controller.state.value.toString().contains(captured.verificationUri))
+        assertNull(f.storage.bytes); assertEquals(0, f.tokens)
+        f.controller.cancelAction(); f.pump()
+        assertFalse(f.controller.state.value.canContinue)
+    }
     @Test fun positiveProfileAloneCannotPermitHandoffOrPersistence() {
         val f = Fixture(); f.negativeAccepted = true; f.controller.load(); f.pump()
         f.controller.connect(); f.pump()

@@ -238,15 +238,28 @@ it does not establish that the device-approval URL itself offers email login.
 The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
-runtime and route cleanup. The external browser handles provider login and
-approval using its own account and network state, without page injection or
-cookie transfer.
+runtime and route cleanup. Approval opens in a separate in-app ABEMA browser
+process/profile through this instance's saved route. It uses provider-controlled
+pages, normal TLS, and its own persistent ABEMA browser login; Chrome cookies
+are not read or transferred. The browser has no native JavaScript bridge,
+injected scripts, file/content access, downloads or external navigation fallback.
+It admits only the reviewed ABEMA account origins, not playback or advertising
+destinations. The returned native account grant remains separate and per-instance.
+This browser currently requires a saved connection: its authenticated CONNECT
+bridge enforces destinations even across Chromium redirects. System-network
+browser approval needs an equivalent direct bridge; WebView interception alone
+does not check every redirected resource. Existing System-network native account
+requests are unchanged. A missing saved route is explained before page loading.
 
 Before offering approval, the app must prove that the native profile operation
 accepts the matching fresh guest bearer and refuses a deliberately invalid
 bearer. A successful public profile lookup alone is insufficient. Polling pauses
 while the app is away and retains the original challenge expiry; foreground
-polling additionally has a five-minute limit. Only the observed flat
+polling additionally has a five-minute limit. Returning from the browser is
+not proof of approval: Continue still verifies the token and account profile.
+Browser return requires confirmed view, proxy and route cleanup; failure cancels
+the native handoff. Original owner proof and expiry also gate browser loading
+and resources. Only the observed flat
 AUTHORIZATION_PENDING response permits bounded continued polling. Unknown
 responses or uncertain cleanup stop the attempt.
 

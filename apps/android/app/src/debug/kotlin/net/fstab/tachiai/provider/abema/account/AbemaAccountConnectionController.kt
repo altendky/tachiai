@@ -142,7 +142,8 @@ internal class AbemaAccountConnectionController(
     }
     // URI crosses only this explicit protected Activity callback. Foreground
     // loss retains the challenge but cancels all active requests and leases.
-    fun handoff(launch: (String) -> Boolean) {
+    fun handoff(launch: (String) -> Boolean) = handoffBrowser { launch(it.verificationUri) }
+    fun handoffBrowser(launch: (AbemaApprovalBrowserRequest) -> Boolean) {
         val prepared = synchronized(lock) { link?.takeIf { !busy && foreground && !closed && !it.handedOff && elapsedMs() < it.challenge.deadlineElapsedMs } } ?: return
         run(AbemaAccountProgress.CHECKING) { run ->
             if (elapsedMs() >= prepared.challenge.deadlineElapsedMs) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
@@ -161,7 +162,9 @@ internal class AbemaAccountConnectionController(
                     return@post
                 }
                 if (!current(run) || link !== prepared) return@post
-                if (!launch(prepared.challenge.verificationUri)) { prepared.handedOff = false; publish(AbemaAccountProgress.APPROVAL_READY) }
+                val request = AbemaApprovalBrowserRequest(prepared.owner.instance.id, prepared.owner.proof(),
+                    prepared.challenge.verificationUri, prepared.challenge.deadlineElapsedMs)
+                if (!launch(request)) { prepared.handedOff = false; publish(AbemaAccountProgress.APPROVAL_READY) }
             } }
         }
     }

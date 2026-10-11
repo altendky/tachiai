@@ -205,6 +205,14 @@ internal class RouteSession private constructor(
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_SERIES)
 
+        // Exact query/module URI and one-use GET belong to FETCH_SEARCH.
+        fun createAbemaGuestSearch(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_SERIES)
+
         fun createAbemaGuestEpisode(profile: ConnectionProfile?,
             preparation: RoutePreparation = RoutePreparation(),
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->

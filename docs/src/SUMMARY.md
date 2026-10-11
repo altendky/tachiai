@@ -6,6 +6,7 @@
   - [Provider integrations](project/provider-integrations.md)
   - [ABEMA catalog and account access](project/abema-catalog-access.md)
   - [ABEMA guest preparation and metadata verification](project/abema-guest-bootstrap.md)
+  - [ABEMA public Search and exact Seasons](project/abema-search.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
   - [Twitch catalog authorization prototype](project/twitch-catalog-authorization.md)

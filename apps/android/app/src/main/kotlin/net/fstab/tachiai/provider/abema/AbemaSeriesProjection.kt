@@ -42,11 +42,12 @@ private class SeriesProjectionReader(private val text: String) {
         check(seen == allowed)
     }
     fun read(request: AbemaSeriesPageRequest): AbemaSeriesPage {
-        var parent: String? = null; var version: String? = null
+        var parent: String? = null; var version: String? = null; var season: String? = null
         val entries = mutableListOf<CatalogEntry>()
-        objectFields(setOf("seriesId", "version", "programs")) { key -> when (key) {
+        objectFields(setOf("seriesId", "version", "programs") + if (request.seasonId == null) emptySet() else setOf("seasonId")) { key -> when (key) {
             "seriesId" -> parent = string()
             "version" -> version = string()
+            "seasonId" -> season = string()
             "programs" -> {
                 need('[')
                 if (!take(']')) {
@@ -61,8 +62,8 @@ private class SeriesProjectionReader(private val text: String) {
                 }
             }
         } }
-        space(); check(at == text.length && parent == request.seriesId)
+        space(); check(at == text.length && parent == request.seriesId && season == request.seasonId)
         check(request.version == null || version == request.version)
-        return AbemaSeriesPage(request.seriesId, entries, checkNotNull(version))
+        return AbemaSeriesPage(request.seriesId, entries, checkNotNull(version), season)
     }
 }

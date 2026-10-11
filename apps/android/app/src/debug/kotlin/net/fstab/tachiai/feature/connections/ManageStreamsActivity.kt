@@ -119,7 +119,7 @@ class ManageStreamsActivity : ComponentActivity() {
                 controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
                     diagnostics = diagnostics,
                     notice = if (parts.first.service == PrototypeService.ABEMA)
-                        "Browse or search channels, or paste a public ABEMA link, including future content. Add saves to Tachiai. Availability is unknown; playback currently supports the existing samples. My List and History access is not yet verified."
+                        "Browse channels and Schedule, search ABEMA, or paste a public link. Open a series or season to choose an episode. Add saves the item to Tachiai, including offline or future content. Playback depends on current provider access. My List and History require a connected ABEMA account."
                     else "Connect Twitch account in Providers for Following, channel search, published replays and playback. Live channels is a live listing; search and exact lookup also find offline channels. Without available account access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback availability is checked when opening the viewer.").also { it.load() }
                 reading = false
                 val handoff = pendingPreview

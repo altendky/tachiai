@@ -84,6 +84,12 @@ class AbemaGuestBootstrapDeviceTest {
     @Test fun actualOwnedJavaScriptProjectsOnlyPublicScheduleIdentitiesWithNetworkingBlocked() {
         ownedRuntime("FETCH_SCHEDULE", "SCHEDULE_SNAPSHOT", 2)
     }
+    @Test fun actualOwnedJavaScriptProjectsSummaryAndDetailAndExactSeasonWithNetworkingBlocked() {
+        ownedRuntime("FETCH_SEARCH", "SEARCH_PAGE", 2, searchRequest = AbemaSearchRequest("Public 雪 + /"))
+        ownedRuntime("FETCH_SEARCH", "SEARCH_PAGE", 2, searchRequest = AbemaSearchRequest("Public 雪 + /", "episode", 20))
+        ownedRuntime("FETCH_SERIES", "EXACT_SERIES_PAGE", 2,
+            seriesRequest = AbemaSeriesPageRequest("fixture-series-A", seasonId = "fixture-season-A"))
+    }
 
     @Test fun actualOwnedJavaScriptValidatesAndDiscardsOnlySyntheticDeviceChallengeWithNetworkingBlocked() {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
@@ -104,7 +110,8 @@ class AbemaGuestBootstrapDeviceTest {
     }
 
     private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null, tokenStatus: Int = 400,
-        seriesRequest: AbemaSeriesPageRequest? = null, slotRequest: AbemaSlotRequest? = null) {
+        seriesRequest: AbemaSeriesPageRequest? = null, slotRequest: AbemaSlotRequest? = null,
+        searchRequest: AbemaSearchRequest? = null) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
@@ -113,12 +120,20 @@ class AbemaGuestBootstrapDeviceTest {
         check(AbemaGuestBootstrapPolicy.validEpisodeId(requested))
         val seriesUrl = JSONObject.quote(seriesRequest?.url() ?: "https://fixture.invalid/not-series")
         val slotUrl = JSONObject.quote(slotRequest?.url() ?: "https://fixture.invalid/not-slot")
+        val searchUrl = JSONObject.quote(searchRequest?.url() ?: "https://fixture.invalid/not-search")
+        val searchModule = JSONObject().put("id", "episode").put("displayName", "Episodes").put("moduleType", 1).put("totalItemCount", 1)
+            .put("items", JSONObject().put("content", JSONObject().put("results", org.json.JSONArray().put(
+                JSONObject().put("contentId", "fixture-episode-1").put("contentType", 1)
+                    .put("contentData", JSONObject().put("videoEpisode", JSONObject().put("title", "Future episode")))))))
+        val searchReply = JSONObject.quote((if (searchRequest?.moduleId == null) JSONObject().put("modules", org.json.JSONArray().put(searchModule))
+            else JSONObject().put("module", searchModule)).toString())
         val slotReply = JSONObject.quote(JSONObject().put("slot", JSONObject().put("id", slotRequest?.slotId ?: "fixture-slot")
             .put("channelId", slotRequest?.channelId ?: "fixture-channel").put("title", "Future slot")
             .put("startAt", 9999999999L).put("source", "https://private.invalid/MUST_NOT_FETCH")).toString())
         val seriesReply = JSONObject.quote(JSONObject().put("version", seriesRequest?.version ?: "v opaque+1")
             .put("programs", org.json.JSONArray().put(JSONObject().put("id", "fixture-episode-1")
                 .put("series", JSONObject().put("id", seriesRequest?.seriesId ?: "fixture-series"))
+                .apply { seriesRequest?.seasonId?.let { put("season", JSONObject().put("id", it).put("seriesId", seriesRequest.seriesId)) } }
                 .put("episode", JSONObject().put("title", "Fixture episode"))
                 .put("source", JSONObject().put("url", "https://private.invalid/MUST_NOT_FETCH"))))
             .put("offset", 999).toString())
@@ -127,14 +142,18 @@ class AbemaGuestBootstrapDeviceTest {
             .put("slots", org.json.JSONArray().put(JSONObject().put("id", "slot-A").put("channelId", "sumo")
                 .put("title", "Future slot").put("startAt", 9999999999L)
                 .put("source", "https://private.invalid/MUST_NOT_FETCH"))).toString())
-        val seriesArgument = slotRequest?.let { ", " + JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
+        val seriesArgument = searchRequest?.let { ", " + JSONObject().put("query", it.query).put("moduleId", it.moduleId ?: JSONObject.NULL)
+            .put("offset", it.offset).toString() }
+            ?: slotRequest?.let { ", " + JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
             ?: seriesRequest?.let { request -> ", " + JSONObject().put("seriesId", request.seriesId)
-            .put("offset", request.offset).put("version", request.version ?: JSONObject.NULL).toString() }
+            .put("offset", request.offset).put("version", request.version ?: JSONObject.NULL)
+            .apply { request.seasonId?.let { put("seasonId", it) } }.toString() }
             ?: resourceId?.let { ", " + JSONObject.quote(it) } ?: ""
         val before = """
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === $searchUrl) return new Response($searchReply, {status:200});
               if (url === '${AbemaGuestBootstrapPolicy.SCHEDULE}') return new Response($scheduleReply, {status:200});
               if (url === $slotUrl) return new Response($slotReply, {status:200});
               if (url === $seriesUrl) return new Response($seriesReply, {status:200});
@@ -248,6 +267,9 @@ class AbemaGuestBootstrapDeviceTest {
                 schedule:requests.length===2 && requests[1].url==='${AbemaGuestBootstrapPolicy.SCHEDULE}' &&
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
+                search:requests.length===2 && requests[1].url===$searchUrl && requests[1].options.method==='GET' &&
+                  requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' && requests[1].options.mode==='cors' &&
+                  requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
                 challenge:(requests.length===3 || requests.length===4) && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
                   requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[2].url==='https://abema.tv/api/auth/oauth/device/authorization' &&
@@ -275,10 +297,11 @@ class AbemaGuestBootstrapDeviceTest {
             assertEquals(operation == "FETCH_SERIES", observed.getBoolean("series"))
             assertEquals(operation == "FETCH_SLOT", observed.getBoolean("slot"))
             assertEquals(operation == "FETCH_SCHEDULE", observed.getBoolean("schedule"))
+            assertEquals(operation == "FETCH_SEARCH", observed.getBoolean("search"))
             assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("challenge"))
             assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
             assertEquals(when (operation) {
-                "FETCH_EPISODE", "FETCH_SERIES", "FETCH_SLOT", "FETCH_SCHEDULE" -> "[\"status\",\"stop\",\"metadata\"]"
+                "FETCH_EPISODE", "FETCH_SERIES", "FETCH_SLOT", "FETCH_SCHEDULE", "FETCH_SEARCH" -> "[\"status\",\"stop\",\"metadata\"]"
                 "PREPARE_ACCOUNT_LINK" -> "[\"status\",\"stop\",\"accountLink\"]"
                 "PREPARE_ACCOUNT_VALIDATION" -> "[\"status\",\"stop\",\"accountValidation\"]"
                 else -> "[\"status\",\"stop\"]"
@@ -310,9 +333,16 @@ class AbemaGuestBootstrapDeviceTest {
                 assertNull(snapshot.entries.single().scheduledStartEpochMs)
                 assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
                 assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH")); assertFalse(metadata.contains("startAt"))
+            } else if (operation == "FETCH_SEARCH") {
+                val reply = decodeAbemaSearchProjection(checkNotNull(metadata), checkNotNull(searchRequest))!!
+                assertEquals("fixture-episode-1", reply.modules.single().entries.single().resource.identity)
+                assertEquals(net.fstab.tachiai.provider.catalog.CatalogAvailability.UNKNOWN, reply.modules.single().entries.single().availability)
+                assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
+                assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH"))
             } else if (operation == "FETCH_SERIES") {
                 val page = decodeAbemaSeriesProjection(checkNotNull(metadata), checkNotNull(seriesRequest))
                 assertNotNull(page); assertEquals(seriesRequest.seriesId, page!!.seriesId)
+                assertEquals(seriesRequest.seasonId, page.seasonId)
                 assertEquals(1, page.entries.size); assertEquals("fixture-episode-1", page.entries.single().resource.identity)
                 assertEquals(net.fstab.tachiai.provider.catalog.CatalogAvailability.UNKNOWN, page.entries.single().availability)
                 assertNull(page.entries.single().scheduledStartEpochMs)

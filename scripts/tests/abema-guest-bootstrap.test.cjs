@@ -26,6 +26,25 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/search/modules')) {
+        if (options.delayedSearch) await delayed;
+        if (options.searchNetworkFailure) throw new Error('PRIVATE_SEARCH_ERROR');
+        if (Object.hasOwn(options, 'searchStatus') && options.searchStatus !== 200) return {
+          status: options.searchStatus, get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        if (options.searchRedirected) return { status: 200, redirected: true,
+          get body() { options.refusedBodyRead = true; throw new Error(); } };
+        const bytes = options.searchBytes || options.searchText || JSON.stringify(options.search || searchReply());
+        if (options.delayedSearchRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes }; },
+            cancel: async () => { options.searchReaderCancelled = true; },
+          }) } };
+        }
+        return new Response(bytes, { status: 200 });
+      }
       if (url === 'https://api.p-c3-e.abema-tv.com/v1/timetable/dataSet') {
         if (options.delayedSchedule) await delayed;
         if (options.scheduleNetworkFailure) throw new Error('PRIVATE_SCHEDULE_ERROR');
@@ -246,6 +265,128 @@ function fixture(options = {}) {
   };
 }
 async function settle() { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); }
+const searchRequest = (moduleId = null, offset = 0) => ({ query: 'Sumo 雪 + /', moduleId, offset });
+function searchItem(contentType = 1, contentId = 'episode-A') {
+  const arm = ['videoEpisode', 'videoSeason', 'videoSeries', 'slot', 'liveEvent'][contentType - 1];
+  return { contentId, contentType, contentData: { [arm]: { title: 'Future item 雪 😀', seriesId: 'series-A', channelId: 'channel-A',
+    source: 'PRIVATE_MUST_NOT_RETAIN', startAt: 9999999999, label: { free: false } } } };
+}
+function searchModule(items = [searchItem()], id = 'episode', total = items.length) {
+  return { id, displayName: 'Provider results', moduleType: 1, totalItemCount: total, items: { content: { results: items } } };
+}
+function searchReply() { return { modules: [searchModule()] }; }
+test('global search summary binds one exact encoded GET and preserves all five distinct resource kinds without account or playback data', async () => {
+  const module = searchModule([searchItem(1), searchItem(2, 'season-A'), searchItem(3, 'series-A'),
+    searchItem(4, 'slot-A'), searchItem(5, 'event-A')], 'package', 100);
+  const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search: { modules: [module,
+    { id: 'genres', moduleType: 'MODULE_TYPE_SPOT', items: { spot: { results: [] } } }] } });
+  f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'SEARCH_PAGE', failure: 'NONE' });
+  assert.deepEqual(f.requests.map(r => r.url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/search/modules?query=Sumo+%E9%9B%AA+%2B+%2F&device=WEB_MOBILE&itemLimit=8']);
+  const rows = JSON.parse(f.call(`window['${apiName}'].metadata()`));
+  assert.deepEqual(rows.modules[0].entries.map(e => [e.kind, e.id]), [['episode', 'episode-A'], ['season', 'series-A/season-A'],
+    ['series', 'series-A'], ['slot', 'channel-A/slot-A'], ['live_event', 'event-A']]);
+  assert.equal(rows.modules[0].total, 100); assert.equal(rows.modules.length, 1);
+  assert.doesNotMatch(JSON.stringify(rows), /PRIVATE|startAt|label|source|seriesId|account|access/);
+  assert.ok(f.requests.every(r => r.request.credentials === 'omit' && r.request.redirect === 'error' && r.request.cache === 'no-store'));
+  assert.equal(f.requests[1].request.method, 'GET'); assert.equal(f.requests[1].request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+  assert.equal(f.call(`typeof window['${apiName}'].accountLink`), 'undefined');
+  f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+});
+test('search detail uses the canonical raw offset with symbolic enums and no summary request or automatic pagination', async () => {
+  const item = searchItem(); item.contentType = 'CONTENT_TYPE_VIDEO_EPISODE';
+  const module = searchModule([item], 'episode', 200); module.moduleType = 'MODULE_TYPE_CONTENT';
+  const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest('episode', 20), search: { module } });
+  f.start(); await settle(); assert.equal(f.state().state, 'SEARCH_PAGE');
+  assert.match(f.requests[1].url, /\/modules\/episode\?query=.*&device=WEB_MOBILE&limit=20&offset=20$/);
+  assert.equal(f.requests.length, 2); assert.equal(JSON.parse(f.call(`window['${apiName}'].metadata()`)).modules[0].entries.length, 1);
+});
+test('strict search roots module counts arm joins and exact parents refuse malformed replies instead of appearing empty', async () => {
+  const mutations = [reply => { delete reply.modules; }, reply => { reply.modules = null; }, reply => { reply.modules[0].id = 'unknown'; },
+    reply => { reply.modules[0].totalItemCount = '1'; }, reply => { reply.modules[0].totalItemCount = 1000001; },
+    reply => { reply.modules[0].displayName = 1; }, reply => { reply.modules[0].moduleType = 0; },
+    reply => { reply.modules[0].items = {}; }, reply => { reply.modules[0].items.content.results = null; },
+    reply => { reply.modules[0].items.content.results = Array.from({ length: 9 }, (_, i) => searchItem(1, 'item-' + i)); reply.modules[0].totalItemCount = 9; },
+    reply => { reply.modules[0].items.content.results[0].contentType = 99; },
+    reply => { reply.modules[0].items.content.results[0].contentId = 1; },
+    reply => { reply.modules[0].items.content.results[0].contentData.videoSeries = { title: 'Other' }; },
+    reply => { reply.modules[0].items.content.results[0].contentData.videoEpisode.title = '\ud800'; },
+    reply => { reply.modules[0].items.content.results = [searchItem(2)]; delete reply.modules[0].items.content.results[0].contentData.videoSeason.seriesId; },
+    reply => { reply.modules[0].items.content.results = [searchItem(4)]; delete reply.modules[0].items.content.results[0].contentData.slot.channelId; },
+    reply => { reply.modules.push(reply.modules[0]); }, reply => { reply.modules[0].items.content.results.push(searchItem()); reply.modules[0].totalItemCount = 2; }];
+  for (const mutate of mutations) {
+    const reply = searchReply(); mutate(reply);
+    const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search: reply }); f.start(); await settle();
+    assert.deepEqual(f.state(), { state: 'REFUSED', failure: 'SEARCH_RESPONSE' }); assert.equal(f.requests.length, 2);
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+  for (const search of [{ modules: [] }, { modules: [searchModule([], 'episode', 0)] }]) {
+    const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search }); f.start(); await settle();
+    assert.equal(f.state().state, 'SEARCH_PAGE');
+  }
+  const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest('episode'), search: { module: searchModule([], 'package', 0) } });
+  f.start(); await settle(); assert.equal(f.state().failure, 'SEARCH_RESPONSE');
+});
+test('search whole response bounds strict UTF8 duplicate keys and conflicting cross-module identities refuse', async () => {
+  const nodes = JSON.stringify({ modules: [], ignored: Array.from({ length: 1000 }, () =>
+    Object.fromEntries(Array.from({ length: 50 }, (_, index) => ['k' + index, 0]))) });
+  assert.ok(Buffer.byteLength(nodes) < 512 * 1024);
+  for (const searchText of ['{"modules":[],"\\u006dodules":[]}', JSON.stringify(searchReply()) + 'true',
+    '{"modules":[],"ignored":"\\ud800"}', '['.repeat(26) + '0' + ']'.repeat(26), ' '.repeat(512 * 1024 + 1),
+    JSON.stringify({ modules: [], ignored: Array(1001).fill(0) }), nodes]) {
+    const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), searchText }); f.start(); await settle();
+    assert.equal(f.state().failure, 'SEARCH_RESPONSE');
+  }
+  const f = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), searchBytes: Uint8Array.from([0xff]) });
+  f.start(); await settle(); assert.equal(f.state().failure, 'SEARCH_RESPONSE');
+  const other = searchItem(); other.contentData.videoEpisode.title = 'Conflicting';
+  const conflict = fixture({ operation: 'FETCH_SEARCH', resourceId: searchRequest(), search: {
+    modules: [searchModule(), searchModule([other], 'timeshift')] } });
+  conflict.start(); await settle(); assert.equal(conflict.state().failure, 'SEARCH_RESPONSE');
+});
+test('search closed refusals leave bodies unread and never retry or touch account endpoints', async () => {
+  for (const [options, failure] of [[{ searchStatus: 401 }, 'SEARCH_HTTP_401'], [{ searchStatus: 403 }, 'SEARCH_HTTP_403'],
+    [{ searchStatus: 429 }, 'SEARCH_HTTP_429'], [{ searchNetworkFailure: true }, 'SEARCH_TRANSPORT'], [{ searchRedirected: true }, 'SEARCH_REDIRECT']]) {
+    const input = { operation: 'FETCH_SEARCH', resourceId: searchRequest(), ...options };
+    const f = fixture(input); f.start(); await settle(); assert.deepEqual(f.state(), { state: 'REFUSED', failure });
+    assert.equal(input.refusedBodyRead, undefined); assert.equal(f.requests.length, 2); assert.doesNotMatch(JSON.stringify(f.state()), /PRIVATE/);
+  }
+});
+test('search cancellation during held headers or body and original aggregate deadline discard late results', async () => {
+  for (const delay of ['delayedSearch', 'delayedSearchRead']) for (const cancel of [true, false]) {
+    const options = { operation: 'FETCH_SEARCH', resourceId: searchRequest(), elapsedMs: 0, [delay]: true };
+    const f = fixture(options); f.start(); await settle(); assert.equal(f.state().state, 'SEARCH');
+    if (cancel) f.stop(); else options.elapsedMs = 45000;
+    f.release(); await settle(); assert.deepEqual(f.state(), cancel ? { state: 'STOPPED', failure: 'NONE' } : { state: 'REFUSED', failure: 'SEARCH_TIMEOUT' });
+    assert.equal(f.requests.length, 2); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('search immutable request rejects arbitrary module offset URL fields and malformed query before dispatch', async () => {
+  for (const resourceId of [{ ...searchRequest(), query: '' }, { ...searchRequest(), query: '\u202eprivate' },
+    { ...searchRequest(), moduleId: 'unknown' }, { ...searchRequest(), offset: 20 }, searchRequest('episode', 1), searchRequest('episode', 10000),
+    { ...searchRequest(), url: 'https://private.invalid/' }]) {
+    const f = fixture({ operation: 'FETCH_SEARCH', resourceId }); f.start(); await settle();
+    assert.equal(f.requests.length, 0); assert.equal(f.call(`typeof window['${apiName}']`), 'undefined');
+  }
+  const original = searchRequest(); const frozen = fixture({ operation: 'FETCH_SEARCH', resourceId: original });
+  frozen.start(); original.query = 'Changed'; original.moduleId = 'timeshift'; original.offset = 40;
+  await settle(); assert.equal(frozen.state().state, 'SEARCH_PAGE');
+  assert.match(frozen.requests[1].url, /\?query=Sumo\+%E9%9B%AA\+%2B\+%2F&device=WEB_MOBILE&itemLimit=8$/);
+});
+test('season-filtered children prove both exact parents and preserve unfiltered series projection', async () => {
+  const resourceId = { seriesId: 'series-A', seasonId: 'season-A', offset: 0, version: null };
+  const program = { id: 'episode-A', series: { id: 'series-A' }, season: { id: 'season-A', seriesId: 'series-A' }, episode: { title: 'Future episode' } };
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [program], version: 'v1' } });
+  f.start(); await settle(); assert.equal(f.state().state, 'EXACT_SERIES_PAGE'); assert.match(f.requests[1].url, /&seasonId=season-A$/);
+  assert.equal(JSON.parse(f.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
+  for (const season of [undefined, { id: 'other', seriesId: 'series-A' }, { id: 'season-A', seriesId: 'other' }, { id: 'season-A' }]) {
+    const value = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [{ ...program, season }], version: 'v1' } });
+    value.start(); await settle(); assert.equal(value.state().failure, 'SERIES_RESPONSE');
+  }
+  const empty = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [], version: 'v1' } });
+  empty.start(); await settle(); assert.equal(JSON.parse(empty.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
+});
 const slotRequest = (channelId = 'channel-A', slotId = 'slot-A') => ({ channelId, slotId });
 test('slot operation binds two exact channel and slot identities and discards timing sources and private metadata', async () => {
   for (const resourceId of [slotRequest(), slotRequest('channel-B', 'slot-B_2')]) {

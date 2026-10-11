@@ -34,10 +34,14 @@ internal class AbemaSeriesChildrenCatalog(
     }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         val parent = query.parent ?: run { clear(); return delegate.browse(query) }
-        if (parent.providerId != providerId || parent.kind != "series" || parent.intent != CatalogIntent.COLLECTION)
+        if (parent.providerId != providerId || parent.kind !in setOf("series", "season") || parent.intent != CatalogIntent.COLLECTION)
             return CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
-        if (!validAbemaSeriesId(parent.identity) || query.collectionId != null || query.search != null)
+        val season = if (parent.kind == "season") abemaSeasonParent(parent) else null
+        if ((parent.kind == "series" && !validAbemaSeriesId(parent.identity) || parent.kind == "season" && season == null) ||
+            query.collectionId != null || query.search != null)
             return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+        val seriesId = season?.first ?: parent.identity
+        val seasonId = season?.second
         return synchronized(operation) {
             val local = synchronized(lock) { revision }
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
@@ -48,7 +52,7 @@ internal class AbemaSeriesChildrenCatalog(
             }
             if (query.cursor != null && (saved == null || saved.parent != parent || saved.revision != local))
                 return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
-            val request = saved?.request ?: AbemaSeriesPageRequest(parent.identity)
+            val request = saved?.request ?: AbemaSeriesPageRequest(seriesId, seasonId = seasonId)
             var transport: AbemaSeriesTransport? = null
             var cleanup = true
             val result = try {
@@ -70,7 +74,7 @@ internal class AbemaSeriesChildrenCatalog(
                 is CatalogResult.Value -> result.value
             }
             val seen = saved?.seen.orEmpty()
-            if (page.seriesId != parent.identity || request.version != null && page.version != request.version || page.entries.any { it.resource.identity in seen }) {
+            if (page.seriesId != seriesId || page.seasonId != seasonId || request.version != null && page.version != request.version || page.entries.any { it.resource.identity in seen }) {
                 clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
             if (page.entries.size == ABEMA_SERIES_PAGE_LIMIT && request.offset == ABEMA_SERIES_MAX_OFFSET) {
@@ -80,7 +84,7 @@ internal class AbemaSeriesChildrenCatalog(
             val admitted = synchronized(lock) {
                 if (closed || poisoned || revision != local) false else {
                 if (next != null) {
-                    cursors[next] = Cursor(parent, AbemaSeriesPageRequest(parent.identity, request.offset + 20, page.version), local,
+                    cursors[next] = Cursor(parent, AbemaSeriesPageRequest(seriesId, request.offset + 20, page.version, seasonId), local,
                         seen + page.entries.map { it.resource.identity })
                     while (cursors.size > 16) cursors.remove(cursors.keys.first())
                 }

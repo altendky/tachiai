@@ -43,7 +43,7 @@ subsequent approval above provides the current integration authority. See the
 
 | Feature | Official ABEMA behavior | Tachiai implementation boundary |
 | --- | --- | --- |
-| Public discovery | Search, genres and timetable on provider pages | Channels browsing, local channel name/ID search and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. Global search, genres and complete provider coverage are not implemented. |
+| Public discovery | Search, genres and timetable on provider pages | Channels browsing and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. [Provider-wide Search and exact Season children](abema-search.md) are implemented with actual acceptance pending. Genres and complete provider coverage are not implemented. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
 | My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |
@@ -115,7 +115,7 @@ an ID or substitute another day, division, program or fixed sample.
 discovery in Manage streams with a real ABEMA Channels adapter behind the shared
 catalog interface. It sends one anonymous GET to
 [the public channel endpoint](https://api.abema.io/v1/channels) through that
-instance's explicit saved route. Search filters channel names/IDs locally; pages
+instance's explicit saved route. The original adapter filters channel names/IDs locally; pages
 of 20 use a bounded in-memory snapshot and opaque, single-use continuations
 owned by the instance, captured route and query. A new query, lookup, refresh,
 access loss or close discards the previous continuation. Channels success does
@@ -232,8 +232,9 @@ The public catalog under [#100](https://github.com/altendky/tachiai/issues/100)
 and [#101](https://github.com/altendky/tachiai/issues/101) offers **Schedule**
 alongside **Channels**, My List and History. Schedule uses a fresh guest rather
 than a saved account grant. Missing or unverified account collections do not
-block this public query. Search still filters the Channels snapshot by channel
-name/ID; Schedule does not claim global provider search or complete All coverage.
+block this public query. [Provider-wide Search](abema-search.md) wraps Channels
+with separate summary/detail requests; Schedule itself does not claim global
+provider search or complete All coverage.
 
 The retained coherent
 [9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),

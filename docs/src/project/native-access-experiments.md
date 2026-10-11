@@ -4174,6 +4174,85 @@ not a new actual two-feed acceptance. These short emulator runs do not establish
 sustained playback, acoustic output, complete advertisements, physical-device
 DRM/decoding or account access.
 
+## Exact configured linear channels — 2026-10-11
+
+Issue [#170](https://github.com/altendky/tachiai/issues/170) carries the configured
+canonical channel into the cached native session. The channel and episode
+resource parameters are mutually exclusive. A missing parameter retains an
+explicit historical comparison; an invalid requested identity never selects News.
+
+The exact pinned unchanged
+[8204 asset](https://abema.tv/assets/compat/1deb672fea92d35e.8204.bundle.js)
+was independently retrieved and verified: 18786 bytes, SHA-256
+`8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d`.
+Module 21470 selects the advertised linear playlist with its existing
+advertisement behavior and `enforcePlainStream=false`. Its initial channel
+license uses the selected channel identity; no newer live-event gateway or
+different asset revision is substituted.
+
+The owned runtime uses one fresh guest and strict UTF-8/duplicate-free JSON
+limited to 512 KiB and 500 channels. Exactly one selected raw ID must have
+explicit `viewingOpened`, usable DASH playback and a supported DRM mode.
+Widevine-only metadata refuses. The selected source must retain the approved
+CDN, exact channel MPD root and one token equal to the fresh media token. Its
+initial license must have matching `ct=channel`, `cid` and token. The app-owned
+canonical binding is checked before native resolution; native code requests
+only that exact MPD, requires protected initial KIDs and retains existing
+declared-media/live-transition and changed-protection refusal boundaries.
+Worker ownership, foreground/epoch/deadline checks, independent feed state and
+confirmed cleanup remain inherited from the delivered episode foundation.
+
+An advertised alternate may have a different path even when the unchanged
+provider selector leaves it unused. Pinned module 21470 performs synchronous
+selection and query construction without network access or navigation. The
+owned runtime therefore bounds the alternate's structure/string and preserves
+its bytes, then binds the actual returned selection before any native request.
+If that selection lacks the exact channel root, it refuses without a second
+selection. Empty alternates retain the provider's unavailable-alternate
+semantics. No alternate is fetched merely to inspect it, and no ad-free mode is
+forced. Fixtures cover an unused unbound alternate and refusal of that same
+alternate when selected.
+
+Independent source review found no substantive remaining finding. Final local
+checks passed 2,023 JVM tests in 242 reports with no failures, errors or skips,
+47 direct JavaScript cases, lint, release isolation, instrumentation compilation
+and app/test assembly. Both APK certificates matched the shared debug identity.
+Two networking-blocked owned-JavaScript device fixtures passed on the corrected
+source; four native source/cleanup fixtures passed before the source-selection
+correction, whose native implementation was unchanged.
+
+The persistent tachiai-dev AVD was Android 16/API 36, Google APIs x86-64, with
+WebView 133.0.6943.137. Each run used the existing ABEMA instance's saved route,
+one fresh anonymous guest/helper/token/native CDM and one muted observation feed.
+Region was not remeasured and no provider account was adopted. The configured
+Shogi channel passed in 18.438 seconds; separately explicit historical News
+and replay checks passed in 11.519 and 18.428 seconds. Each rendered a native
+frame and advanced playback position beyond 500 ms, confirmed teardown and
+retained the captured route owner. All protected encrypted records were
+byte-for-byte equal to the same baseline captured before installation.
+
+Before the selection correction, one Shogi attempt returned PLAYBACK_REFUSED
+in 10.940 seconds after CONTENT HTTP 200 and before source publication. A
+separate public host snapshot and pinned selector inspection exposed the unused
+alternate guard described above. The corrected success is consistent with that
+guard defect, but the earlier saved-route body was not retained; its exact
+cause is not proved. Both outcomes remain evidence rather than a hidden retry.
+
+The temporary cached-process instrumentation override was removed. The ordinary
+test APK was rebuilt, both certificates reverified, its packaged manifest
+confirmed to have no targetProcesses override, and it was reinstalled with data
+preserved before returning to the normal launcher. Final app SHA-256 is
+`3099478d7b7142eb2383761c9955f2bf43089bf758ba080d475021ad82c3c054`;
+ordinary test APK SHA-256 is
+`682f7affbbf48660bfbd08c26f6e89c7d23bf7c1cca49147be24c03fefb9ae3f`.
+
+These short one-feed emulator observations establish the selected channel's
+bounded playback and historical regressions. Sustained playback, complete
+advertisement equivalence, acoustic output, physical-device DRM/decoding and
+actual duplicate-channel playback remain unverified. This adds no renewal,
+account adoption, source fallback, copied provider algorithm, key extraction or
+new media-origin family.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

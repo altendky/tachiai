@@ -10,3 +10,9 @@ internal fun supportedConfiguredAbemaEpisode(resource: CatalogResource): Boolean
         validAbemaEpisodeIdentity(resource.identity)
 
 internal fun validAbemaEpisodeIdentity(id: String): Boolean = id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))
+
+internal fun supportedConfiguredAbemaChannel(resource: CatalogResource): Boolean =
+    resource.providerId.value == "abema" && resource.kind == "channel" && resource.intent == CatalogIntent.CHANNEL &&
+        validAbemaChannelIdentity(resource.identity)
+
+internal fun validAbemaChannelIdentity(id: String): Boolean = id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))

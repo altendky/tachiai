@@ -372,6 +372,25 @@ class FailureJournalTest {
         }
     }
 
+    @Test fun `typed cached helper evidence retains distinct categories and repeats without throwable metadata or schema changes`() {
+        val journal = FailureJournal(journalFile())
+        val reporter = FailureReporter(journal::record, clock = { 100_000 })
+        val categories = listOf(FailureCategory.ABEMA_CACHED_TIMER_EXPIRED, FailureCategory.ABEMA_CACHED_OWNED_CANCELLED,
+            FailureCategory.ABEMA_CACHED_FETCH_REJECTED_BEFORE_HTTP, FailureCategory.ABEMA_CACHED_HTTP_REFUSED,
+            FailureCategory.ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED, FailureCategory.ABEMA_CACHED_UNKNOWN)
+        for (category in categories) repeat(2) { reporter.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, category) }
+        val records = journal.read()
+        assertEquals(categories, records.map { it.failure.category })
+        assertTrue(records.all { it.count == 2 && it.failure.causes.isEmpty() && it.failure.frames.isEmpty() })
+        assertTrue(records.all { it.rootId == records.first().recordId })
+        assertEquals("tachiai-failure-diagnostics-v1", FailureJournalCodec.HEADER)
+        assertEquals(records, FailureJournalCodec.decode(FailureJournalCodec.encode(records)))
+        var fallback = 0
+        FailureReporter({ throw AssertionError("private sink") }, fallback = { fallback++ })
+            .reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, FailureCategory.ABEMA_CACHED_UNKNOWN)
+        assertEquals(1, fallback)
+    }
+
     private fun observation(stage: FailureStage = FailureStage.ROUTE_CREATE) = FailureObservation(
         100_000, "1".repeat(32), stage, FailureSlot.NONE, FailureThread.WORKER, false, SafeFailure(FailureCategory.IO),
     )

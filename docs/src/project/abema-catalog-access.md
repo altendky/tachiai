@@ -186,7 +186,8 @@ pages or request provider metadata. The separate
 accepts a bare link with explicit instance selection and a one-time preview;
 compatibility with ABEMA's own sharing UI remains unobserved. Unknown
 availability remains UNKNOWN; configured episodes have a separate fresh runtime
-eligibility check, while other unsupported resource types refuse playback.
+eligibility check, as do exact configured linear channels. Other unsupported
+resource types refuse playback.
 
 That handoff alone does not implement native Channels/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
@@ -328,6 +329,36 @@ for the same Morning episode failed before a guest HTTP status returned; its
 cause remains unverified. All runs confirmed cleanup and unchanged protected
 records. This is bounded guest playback evidence, not account, sustained-playback
 or physical-device acceptance.
+
+### Exact configured linear-channel playback
+
+Issue [#170](https://github.com/altendky/tachiai/issues/170) adds canonical
+`channel`/`CHANNEL` resources to the same configured-selection contract. The
+cached session receives the immutable requested channel, with its instance,
+route, configured UUID, quality and recovery identity retained. The historical
+full-page comparison refuses new channel selections rather than substituting News.
+
+A fresh owning guest retrieves one bounded, duplicate-free channel snapshot.
+Admission requires exactly one matching raw ID, explicit `viewingOpened`, usable
+advertised playback and a supported DRM mode. Saved UNKNOWN availability only
+permits this verification. Missing or ambiguous metadata and Widevine-only
+channels refuse; no alternate selection is tried. The unchanged pinned linear
+selector retains its advertisement behavior. Selected source, exact channel MPD
+root, fresh media token and initial channel license must agree. Native declared
+media, protected initialization, bounded live transitions, ownership and cleanup
+remain enforced independently for each feed.
+
+Unused advertised alternates are retained unchanged as bounded metadata; they
+do not need to have the selected channel's MPD path. The unchanged provider
+selector performs no I/O. Its returned selection must pass the exact source
+binding before native access, and an unbound selected alternate refuses without
+substitution. This preserves the provider's source/ad decision.
+
+This slice implements linear-channel intent. It does not resolve a scheduled
+slot to a different current broadcast, automatically choose a series episode,
+connect an account or retrieve My List/history. Static review and fixtures do not
+establish actual playback; bounded device evidence is recorded separately in
+[native experiments](native-access-experiments.md#exact-configured-linear-channels--2026-10-11).
 
 ## Remaining gates and issue status
 

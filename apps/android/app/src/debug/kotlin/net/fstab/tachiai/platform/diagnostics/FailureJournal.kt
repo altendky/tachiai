@@ -60,6 +60,8 @@ internal enum class FailureCategory {
     TWITCH_HELIX_INVALID_INPUT, TWITCH_HELIX_INVALID_RESPONSE,
     TWITCH_CATALOG_NETWORK_DNS, TWITCH_CATALOG_NETWORK_TIMEOUT, TWITCH_CATALOG_NETWORK_TLS, TWITCH_CATALOG_NETWORK_CONNECTION, TWITCH_CATALOG_NETWORK_INTERRUPTED, TWITCH_CATALOG_NETWORK_BUDGET, TWITCH_CATALOG_NETWORK_BACKGROUND, TWITCH_CATALOG_NETWORK_IO,
     TWITCH_CATALOG_STORE_STORAGE, TWITCH_CATALOG_STORE_INVALID_RECORD, TWITCH_CATALOG_STORE_CLIENT_MISMATCH,
+    ABEMA_CACHED_TIMER_EXPIRED, ABEMA_CACHED_OWNED_CANCELLED, ABEMA_CACHED_FETCH_REJECTED_BEFORE_HTTP,
+    ABEMA_CACHED_HTTP_REFUSED, ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED, ABEMA_CACHED_UNKNOWN,
 }
 
 // An allowlist translates stack metadata into our own fixed vocabulary. There
@@ -223,12 +225,16 @@ internal class FailureReporter(
     }
     fun newSession(): FailureReporter = FailureReporter(sink, clock, thread, fallback, slot = slot)
     fun forSlot(value: FailureSlot): FailureReporter = FailureReporter(sink, clock, thread, fallback, sessionId, value)
-    fun report(stage: FailureStage, error: Throwable? = null, reason: PrototypeFailureReason? = null) = record(stage, error, false, reason)
-    fun blocked(stage: FailureStage) = record(stage, null, true, null)
-    private fun record(stage: FailureStage, error: Throwable?, blocked: Boolean, reason: PrototypeFailureReason?) {
+    fun report(stage: FailureStage, error: Throwable? = null, reason: PrototypeFailureReason? = null) =
+        record(stage, { SafeFailure.capture(error) }, false, reason)
+    // Typed app-owned evidence has no throwable, stack, causes or arbitrary text.
+    fun reportCategory(stage: FailureStage, category: FailureCategory, reason: PrototypeFailureReason? = null) =
+        record(stage, { SafeFailure(category) }, false, reason)
+    fun blocked(stage: FailureStage) = record(stage, { SafeFailure(FailureCategory.NONE) }, true, null)
+    private fun record(stage: FailureStage, safe: () -> SafeFailure, blocked: Boolean, reason: PrototypeFailureReason?) {
         try {
             sink(FailureObservation(clock().coerceIn(0, 9_999_999_999_999), sessionId, stage, slot, thread(), blocked,
-                SafeFailure.capture(error), reason))
+                safe(), reason))
         } catch (_: Throwable) {
             try { fallback() } catch (_: Throwable) { /* Diagnostics cannot replace the original failure. */ }
         }

@@ -3,6 +3,7 @@ package net.fstab.tachiai.presentation
 import java.util.Collections
 import java.util.Locale
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaEpisode
+import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaChannel
 import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchVideo
@@ -22,7 +23,9 @@ internal data class ConfiguredPlaybackFeed(
             require(historicalSource.service == service && historicalSource.kind == kind &&
                 prototypeCatalogResource(historicalSource) == resource)
         } else {
-            require(service == PrototypeService.ABEMA && kind == PrototypePlaybackKind.REPLAY && supportedConfiguredAbemaEpisode(resource) ||
+            require(service == PrototypeService.ABEMA &&
+                (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredAbemaEpisode(resource) ||
+                    kind == PrototypePlaybackKind.LIVE && supportedConfiguredAbemaChannel(resource)) ||
                 service == PrototypeService.TWITCH &&
                     (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredTwitchVideo(resource) ||
                         kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)))
@@ -31,7 +34,7 @@ internal data class ConfiguredPlaybackFeed(
 
     val instanceId: String get() = choice.instanceId
     val diagnosticName: String get() = historicalSource?.name ?: when {
-        service == PrototypeService.ABEMA -> "ABEMA_CONFIGURED_EPISODE"
+        service == PrototypeService.ABEMA -> if (kind == PrototypePlaybackKind.LIVE) "ABEMA_CONFIGURED_CHANNEL" else "ABEMA_CONFIGURED_EPISODE"
         kind == PrototypePlaybackKind.LIVE -> "TWITCH_CONFIGURED_BROADCASTER"
         else -> "TWITCH_CONFIGURED_VIDEO"
     }

@@ -24,6 +24,8 @@ const freeProgram = (id = '394-72_s10_p8529') => ({
 const liveChannel = () => ({ id: 'abema-news', viewingOpened: true,
   playback: { dash: 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd' },
   status: { drm: true } });
+const configuredLinearChannel = id => ({ id, viewingOpened: true,
+  playback: { dash: `https://linear-abematv.akamaized.net/channel/${id}/manifest.mpd` }, status: { drm: false } });
 const replayStream = (overrides = {}) => ({ streamingTechnology: 'FIXTURE_DASH',
   drm: { systemId: 'FIXTURE_CUSTOM' }, rawKey: false,
   manifestChain: [{ url: 'https://linear-abematv.akamaized.net/synthetic-replay/manifest.mpd',
@@ -50,11 +52,17 @@ function fixture(options = {}) {
     fetch: async (url, request) => {
       const uri = new URL(String(url));
       requests.push({ uri, request });
+      if (Object.hasOwn(options.rejections || {}, uri.pathname)) throw options.rejections[uri.pathname];
+      if (options.reply && options.replyPath === uri.pathname) return options.reply;
       if (options.deferGuest && uri.pathname === '/api/auth/login/guest') await deferred;
+      if (options.deferLicense && uri.pathname === '/abematv-dash') await deferred;
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
-      else if (uri.pathname === '/v1/channels') body = options.channels || { channels: [liveChannel()] };
+      else if (uri.pathname === '/v1/channels') {
+        if (options.deferChannels) await deferred;
+        body = options.channels || { channels: [liveChannel()] };
+      }
       else if (uri.pathname.startsWith('/v1/video/programs/')) {
         if (options.deferProgram) await deferred;
         body = options.program || freeProgram(uri.pathname.split('/').at(-1));
@@ -182,9 +190,12 @@ function fixture(options = {}) {
     21470(module, exports, require) { require.d(exports, { tw: () => config => {
       observed.legacy.push(config);
       if (fake.selectedURL !== undefined) return fake.selectedURL;
-      const url = new URL(config.sourceParam.playlists.dash);
+      const url = new URL(fake.selectYospace ? config.sourceParam.playlists.yospace.dash : config.sourceParam.playlists.dash);
       url.searchParams.set('t', config.sourceParam.mediaToken);
       if (config.sourceParam.isDrm) url.searchParams.set('enc', 'wv');
+      if (fake.configuredLinear) {
+        url.searchParams.set('enc', 'clear'); url.searchParams.set('dt', 'pc_chrome'); url.searchParams.set('ut', '1');
+      }
       return url.href;
     } }); },
     78307(module, exports, require) { require.d(exports, {}, { rC: {
@@ -195,7 +206,9 @@ function fixture(options = {}) {
   const evaluate = expression => vm.runInContext(expression, context, { timeout: 1000 });
   return {
     requests, events, release, context, evaluate,
+    expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
     start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -211,6 +224,224 @@ async function waitFor(value, expected) {
   }
   assert.equal(value.status(), expected);
 }
+
+async function waitForRequests(value, count) {
+  for (let attempt = 0; value.requests.length < count && attempt < 100; attempt++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.requests.length, count);
+}
+
+test('owned timer latches before abort and ignored AbortSignal cannot publish late guest READY or another request', async () => {
+  const value = fixture({ deferGuest: true }); value.start(); await waitForRequests(value, 1);
+  value.expireTimers(); assert.equal(value.status(), 'FAILED');
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests[0].request.signal.aborted, true);
+  value.stop(); value.release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests.length, 1); assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('explicit owner stop survives ignored abort and subsequent timer or unknown failure', async () => {
+  const value = fixture({ deferGuest: true }); value.start(); await waitForRequests(value, 1);
+  value.stop(); assert.equal(value.metadata().failure, 'OWNED_CANCELLED');
+  value.expireTimers(); value.release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'OWNED_CANCELLED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests.length, 1); assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('fetch rejection is proved before HTTP and request status resets without inspecting arbitrary exception properties', async () => {
+  let reads = 0;
+  const privateFailure = Object.fromEntries(['name', 'message', 'cause', 'stack', 'code'].map(name =>
+    [name, { get() { reads++; throw new Error('private-secret'); } }]));
+  const error = {};
+  for (const [name, descriptor] of Object.entries(privateFailure)) Object.defineProperty(error, name, descriptor);
+  for (const endpoint of ['/api/auth/login/guest', '/v1/media/token', '/abematv-dash']) {
+    const value = fixture({ rejections: { [endpoint]: error } }); value.start();
+    if (endpoint === '/abematv-dash') { await waitFor(value, 'READY'); value.begin(challenge); }
+    await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().http, 0); assert.equal(value.metadata().failure, 'FETCH_REJECTED_BEFORE_HTTP');
+    value.stop(); assert.equal(value.metadata().failure, 'FETCH_REJECTED_BEFORE_HTTP');
+    assert.ok(!JSON.stringify(value.metadata()).includes('private-secret'));
+  }
+  assert.equal(reads, 0);
+});
+
+test('numeric returned HTTP refusal and strict bounded UTF8 JSON refusal remain distinct through cleanup', async () => {
+  for (const status of [201, 401, 403, 429, 500]) {
+    const value = fixture({ httpStatus: status }); value.start(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, 'HTTP_REFUSED'); assert.equal(value.metadata().http, status);
+    value.stop(); assert.equal(value.metadata().failure, 'HTTP_REFUSED');
+  }
+  for (const text of ['{not-json', '{"id":1,"id":2}', 'x'.repeat(65537), new Uint8Array([0xc3, 0x28])]) {
+    const value = fixture({ responseBytes: { '/api/auth/login/guest': text } }); value.start(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.metadata().http, 200);
+    value.stop(); assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.requests.length, 1);
+  }
+});
+
+test('unproved response read failure and unknown preparation remain UNKNOWN without rejection metadata access', async () => {
+  let reads = 0;
+  const error = {};
+  for (const name of ['name', 'message', 'cause', 'stack']) Object.defineProperty(error, name, { get() { reads++; throw new Error('private'); } });
+  const reply = { status: 200, body: { getReader: () => ({ read: async () => { throw error; }, cancel: async () => {} }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().failure, 'UNKNOWN'); assert.equal(value.metadata().http, 200); assert.equal(reads, 0);
+  const preparation = fixture({ guest: {} }); preparation.start(); await waitFor(preparation, 'FAILED');
+  assert.equal(preparation.metadata().failure, 'UNKNOWN');
+});
+
+test('first validation refusal cannot be replaced by a timer or stop while body cleanup is pending', async () => {
+  let finishCancel;
+  const cancelled = new Promise(resolve => { finishCancel = resolve; });
+  const reply = { status: 200, body: { getReader: () => ({
+    read: async () => ({ done: false, value: new Uint8Array(65537) }), cancel: () => cancelled,
+  }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitForRequests(value, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  value.expireTimers(); value.stop(); finishCancel(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.requests.length, 1);
+});
+
+test('timer during successful body reader cleanup discards the late body and cannot begin token setup', async () => {
+  let finishCancel; let read = false;
+  const cancelled = new Promise(resolve => { finishCancel = resolve; });
+  const bytes = new TextEncoder().encode('{"user_id":"TEST_USER","access_token":"TEST_ACCESS"}');
+  const reply = { status: 200, body: { getReader: () => ({ read: async () => {
+    if (read) return { done: true }; read = true; return { done: false, value: bytes };
+  }, cancel: () => cancelled }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitForRequests(value, 1);
+  await new Promise(resolve => setImmediate(resolve)); value.expireTimers(); finishCancel();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.status(), 'FAILED'); assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  assert.equal(value.metadata().http, 200); assert.equal(value.requests.length, 1);
+});
+
+test('terminal license failures retain current bounded evidence and never run or export the opaque helper', async () => {
+  const refused = fixture({ statuses: { '/abematv-dash': 403 } }); refused.start(); await waitFor(refused, 'READY');
+  refused.begin(challenge); await waitFor(refused, 'FAILED');
+  assert.equal(refused.metadata().phase, 'LICENSE'); assert.equal(refused.metadata().failure, 'HTTP_REFUSED');
+  assert.equal(refused.metadata().http, 403); assert.equal(refused.evaluate('observed.operation.length'), 0); assert.equal(refused.take(), null);
+  const timed = fixture({ deferLicense: true }); timed.start(); await waitFor(timed, 'READY');
+  timed.begin(challenge); await waitForRequests(timed, 4); timed.expireTimers();
+  assert.equal(timed.metadata().http, 0); assert.equal(timed.metadata().failure, 'TIMER_EXPIRED');
+  timed.release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(timed.status(), 'FAILED'); assert.equal(timed.evaluate('observed.operation.length'), 0); assert.equal(timed.take(), null);
+});
+
+test('successful opaque take and later cleanup stop do not manufacture owner cancellation', async () => {
+  const value = fixture(); value.start(); await waitFor(value, 'READY');
+  value.begin(challenge); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
+  assert.equal(value.metadata().failure, 'NONE'); value.stop(); assert.equal(value.metadata().failure, 'NONE');
+});
+
+test('configured linear IDs retain advertised selection and exact independent source and initial license identity', async () => {
+  for (const id of ['fixture-one', 'fixture-two', 'abema-news']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel('other'), configuredLinearChannel(id)] } });
+    value.startChannel(id); await waitFor(value, 'READY');
+    assert.equal(value.requests.length, 3);
+    assert.equal(value.requests[0].request.credentials, 'omit');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].channelBinding()`));
+    assert.equal(binding.channelId, id);
+    assert.equal(new URL(binding.uri).pathname, `/channel/${id}/manifest.mpd`);
+    assert.equal(new URL(binding.uri).searchParams.get('t'), 'TEST_MEDIA');
+    assert.equal(value.evaluate('observed.legacy[0].sourceParam.contentId'), id);
+    assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(value.evaluate('observed.sources.length'), 0);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const license = value.requests.at(-1).uri;
+    assert.equal(license.searchParams.get('ct'), 'channel'); assert.equal(license.searchParams.get('cid'), id);
+    assert.equal(license.searchParams.get('t'), 'TEST_MEDIA'); assert.equal(value.evaluate('observed.operation.length'), 1);
+    assert.ok(value.take()); assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null);
+  }
+});
+
+test('configured linear snapshot refuses missing duplicated wrong unavailable malformed and oversized records', async () => {
+  const id = 'fixture-one'; const base = configuredLinearChannel(id);
+  for (const channels of [[], [configuredLinearChannel('other')], [base, base],
+    [{ ...base, viewingOpened: false }], [{ ...base, viewingOpened: 'true' }],
+    [{ ...base, status: { drm: true } }], [{ ...base, status: { drm: 'false' } }],
+    [{ ...base, playback: [] }], [{ ...base, playback: { dash: base.playback.dash.replace(id, 'other') } }],
+    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: false } } }],
+    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: 'x'.repeat(2049) } } }],
+    Array.from({ length: 501 }, (_, index) => configuredLinearChannel('fixture-' + index))]) {
+    const value = fixture({ configuredLinear: true, channels: { channels } }); value.startChannel(id);
+    await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+  for (const text of [`{"channels":[{"id":"${id}","id":"${id}"}]}`, JSON.stringify({ channels: [base], padding: 'x'.repeat(512 * 1024) })]) {
+    const value = fixture({ configuredLinear: true, responseTexts: { '/v1/channels': text } });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('configured linear source refuses wrong root token duplicates unsupported DRM and unsafe URLs without another candidate', async () => {
+  const id = 'fixture-one'; const uri = configuredLinearChannel(id).playback.dash;
+  for (const selectedURL of [uri + '?t=WRONG&enc=clear&dt=pc_chrome&ut=1',
+    uri + '?t=TEST_MEDIA&t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1',
+    uri + '?t=TEST_MEDIA&enc=wv&dt=pc_chrome&ut=1', uri + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1&session=unknown',
+    uri.replace(id, 'other') + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1',
+    uri.replace('/channel/', '/channel/%2e%2e/') + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] }, selectedURL });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+    assert.equal(value.evaluate('observed.legacy.length'), 1); assert.equal(value.evaluate('observed.sources.length'), 0);
+  }
+  for (const licenseURL of ['https://license.p-c3-e.abema-tv.com/abematv-dash?cid=other', 'https://unapproved.invalid/abematv-dash']) {
+    const value = fixture({ configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] }, licenseURL });
+    value.startChannel(id); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3);
+  }
+});
+
+test('configured linear keeps advertised yospace selection and cancellation refuses delayed snapshot publication', async () => {
+  const id = 'fixture-one'; const channel = configuredLinearChannel(id);
+  channel.playback.yospace = { dash: channel.playback.dash.replace('manifest', 'ad-session') };
+  const value = fixture({ configuredLinear: true, selectYospace: true, channels: { channels: [channel] } });
+  value.startChannel(id); await waitFor(value, 'READY');
+  assert.equal(new URL(JSON.parse(value.evaluate(`window['${name}'].channelBinding()`)).uri).pathname, `/channel/${id}/ad-session.mpd`);
+  assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+  const delayed = fixture({ configuredLinear: true, channels: { channels: [channel] }, deferChannels: true });
+  delayed.startChannel(id); await waitFor(delayed, 'WAITING_SOURCE'); delayed.stop(); delayed.release();
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(delayed.status(), 'FAILED');
+  assert.equal(delayed.evaluate(`window['${name}'].channelBinding()`), null); assert.equal(delayed.evaluate('observed.legacy.length'), 0);
+  for (const bad of ['', 'x'.repeat(65), '../other', 'fixture/one']) {
+    const invalid = fixture(); invalid.startChannel(bad); assert.equal(invalid.requests.length, 0);
+  }
+});
+
+test('configured linear binds only the provider selection while retaining unused alternate bytes and refusing selected unbound alternates', async () => {
+  const id = 'fixture-one';
+  for (const alternate of ['', 'https://linear-abematv.akamaized.net/advertised-ad-session/manifest.mpd',
+    'https://unapproved.invalid/advertised-ad-session/manifest.mpd']) {
+    const channel = configuredLinearChannel(id); channel.playback.yospace = { dash: alternate };
+    const options = { configuredLinear: true, channels: { channels: [channel] } };
+    const primary = fixture(options); primary.startChannel(id); await waitFor(primary, 'READY');
+    assert.equal(primary.evaluate('observed.legacy.length'), 1);
+    assert.equal(primary.evaluate('observed.legacy[0].sourceParam.playlists.yospace.dash'), alternate);
+    assert.equal(primary.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(new URL(JSON.parse(primary.evaluate(`window['${name}'].channelBinding()`)).uri).pathname,
+      `/channel/${id}/manifest.mpd`);
+    assert.equal(primary.requests.length, 3);
+    const selectedAlternate = fixture({ ...options, selectYospace: true }); selectedAlternate.startChannel(id);
+    await waitFor(selectedAlternate, 'FAILED');
+    assert.equal(selectedAlternate.evaluate('observed.legacy.length'), 1);
+    assert.equal(selectedAlternate.requests.length, 3);
+    assert.equal(selectedAlternate.begin(challenge), 'REFUSED');
+    assert.equal(selectedAlternate.evaluate(`window['${name}'].channelBinding()`), null);
+  }
+});
+
+test('duplicate configured linear feeds own independent helper exchange and cancellation state', async () => {
+  const id = 'fixture-one';
+  const options = { configuredLinear: true, channels: { channels: [configuredLinearChannel(id)] } };
+  const first = fixture(options); const second = fixture(options);
+  first.startChannel(id); second.startChannel(id);
+  await waitFor(first, 'READY'); await waitFor(second, 'READY');
+  first.stop(); assert.equal(first.evaluate(`window['${name}'].channelBinding()`), null);
+  assert.equal(second.status(), 'READY'); assert.equal(second.begin(challenge), 'WORKING'); await waitFor(second, 'RESPONSE');
+  assert.equal(first.evaluate('observed.operation.length'), 0); assert.equal(second.evaluate('observed.operation.length'), 1);
+  assert.equal(second.begin(challenge), 'REFUSED'); assert.ok(second.take());
+  assert.equal(first.requests.length, 3); assert.equal(second.requests.length, 4);
+});
 
 test('live bootstrap skips app entries and supports getter/plain exports across four chunks', async () => {
   const value = fixture(); value.start(); await waitFor(value, 'READY');
@@ -513,9 +744,10 @@ test('replay free/content windows require integer future epoch seconds covering 
 test('diagnostics contain only fixed categories and bounded primitive counters', async () => {
   const value = fixture(); value.start(); await waitFor(value, 'READY');
   const metadata = value.metadata();
-  assert.deepEqual(Object.keys(metadata).sort(), ['http', 'lastModule', 'modules', 'phase']);
+  assert.deepEqual(Object.keys(metadata).sort(), ['failure', 'http', 'lastModule', 'modules', 'phase']);
   assert.equal(metadata.phase, 'READY');
   assert.equal(metadata.http, 200);
+  assert.equal(metadata.failure, 'NONE');
   assert.equal(typeof metadata.modules, 'number');
   assert.ok(!JSON.stringify(metadata).includes('TEST_'));
 });

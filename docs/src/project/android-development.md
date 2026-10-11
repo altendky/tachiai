@@ -110,6 +110,58 @@ those require user-controlled setup again. They are not part of the recipe.
 
 ## Local state and sensitive configuration
 
+### Read-only host memory snapshot
+
+To inspect the existing emulator without starting, stopping or changing it:
+
+```sh
+uv run scripts/android-dev-device.py memory
+```
+
+The command prints one bounded JSON snapshot. It verifies the owned AVD and SDK,
+the exact emulator executable, AVD name and port, the process's owned userdata
+metadata, and its PID/start time before and after reading the counters. Matching
+kernel mount/root context and executable/data object identities prevent identical
+path text in another namespace from being mistaken for the owned emulator. It does
+not execute ADB or inspect guest files, process environment, memory mappings,
+account information or UI. Output contains only fixed categories, UTC time,
+process identity and numeric memory counters.
+
+An `AVAILABLE` result includes emulator RSS/high-water mark, anonymous/file/shared
+memory, swap and virtual size; host available memory and swap; and memory
+pressure averages/cumulative stall time. `smaps_rollup` proportional/private
+memory is optional and reports its own availability. These counters describe
+host process memory, not the AVD's configured guest RAM. One growing sample does
+not establish a leak or identify an allocation owner.
+
+`UNAVAILABLE` is a closed diagnostic result. Restricted process namespaces or
+permissions can hide the emulator even while ADB can reach it;
+`PROCESS_NOT_VISIBLE` does not establish that it stopped and never becomes a
+zero-memory measurement. Run the same command in a host context with read access
+when appropriate. A disappearing, ambiguous or changed process refuses the
+snapshot. Compare repeated samples only while PID and `start_ticks` agree.
+
+On 2026-10-11 at 08:33:05 UTC, the host kernel killed the existing `tachiai-dev`
+QEMU process during an Android build after anonymous RSS reached 14,571,508 KiB
+(about 13.9 GiB). No second emulator had been started. The build completed and a
+normal restart of the same persistent AVD preserved Tachiai's encrypted records.
+This establishes a host OOM event, not its cause. Build/desktop pressure,
+long-lived emulator allocations and graphics/WebView behavior remain unresolved.
+[Issue #166](https://github.com/altendky/tachiai/issues/166) tracks measurements;
+no RAM, renderer or OOM-priority change follows from this observation alone.
+
+A subsequent 15-minute observation at 09:08:22–09:23:22 UTC took 31 snapshots,
+30 seconds apart, around four Android verification attempts and brief periods
+between/after builds. Every snapshot verified the same process and had readable
+optional rollup counters. RSS rose from 5,642,000 to 5,644,232 KiB (about 2.2 MiB);
+host available memory ranged from 9,538,184 to 15,388,948 KiB. Host swap remained
+zero, and the largest sampled memory-pressure average was 0.05 percent. No OOM
+occurred in that window. These samples do not reproduce the earlier 13.9 GiB
+anonymous footprint or establish a leak/cause. The next useful observation is a
+longer bounded series on the same process through idle time and ordinary viewer
+lifecycle, comparing process growth with host headroom; allocator attribution and
+recurrence prevention remain unverified.
+
 Default local state is `${XDG_DATA_HOME:-$HOME/.local/share}/tachiai/android/`:
 
 - `sdk/`: downloaded public SDK tools and system image;

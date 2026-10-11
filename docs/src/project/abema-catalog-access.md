@@ -236,6 +236,13 @@ internal provider identity comes from the approved token response rather than
 the user's email sign-in identifier. Provider documentation describes
 [email account sharing and mobile-app QR approval](https://help.abema.tv/hc/ja/articles/28570588900377);
 it does not establish that the device-approval URL itself offers email login.
+The coherent public account-method selector independently offers provider-owned
+email sign-in followed by an emailed code, alongside separate app-account
+sharing. The public
+[device-switch chunk](https://abema.tv/assets/compat/914d635da0a8f46f.7663.bundle.js)
+uses legacy CLIENT_SWITCH device-code operations, distinct from modern OAuth.
+Their codes and fields are not interchangeable. Static login options do not
+establish approval of Tachiai's challenge; entry remains on provider pages.
 The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
@@ -313,6 +320,20 @@ Actual intended-account acceptance remains outstanding. A connected account woul
 My List, history, entitlement or account-backed playback. Those capabilities
 need separate endpoint and intended-account evidence; #103 remains open until
 its real account criteria are met.
+
+On 2026-10-11, the corrected routed browser still displayed the known regional
+refusal without invoking its region adapter. After Return/Cancel and confirmed
+cleanup, one separate cookie-free fixed CDN region GET returned HTTP200 through
+the captured saved route in 1.428 seconds. A separately opted-in fixed public
+approval-page GET, without activation query, cookies, redirects or retries and
+using the public default WebView identity, returned HTTP200 and 31,585 bytes of
+regional Sorry HTML without initial client-region assignment, in 2.019 seconds.
+That public response is server-side refusal and may differ from private
+activation HTML. Endpoint acceptance does not establish a Japanese exit address
+or account approval. Device geolocation remains disabled; no invented
+coordinates or region flags are supplied. Persistent tachiai-dev, Android
+16/API 36, WebView 133.0.6943.137 and unchanged encrypted records bound these
+observations.
 
 ### Account-backed My List adapter
 
@@ -398,10 +419,20 @@ requested offset and owner revision; subsequent results must match the pinned
 version. Missing, unsupported or changed versions refuse visibly rather than
 claim that a list is exhausted. Response offset is not interpreted.
 
-This is a conservative implementation and static-evidence boundary. Actual
-fresh-guest compatibility, raw version shape and versioned-request behavior
-remain separate acceptance gates. Network-blocked fixtures and opt-in
-saved-route observations must preserve existing authorization/configuration.
+Two explicit read-only saved-route checks on 2026-10-11 used exact sumo series
+`394-72`: one first-page check passed in 20.648 seconds and one separately
+requested two-page check passed in 28.841 seconds. Each page contained 20 valid
+distinct episodes; the second request used the first page's accepted nonempty
+string version, matched it and had no overlap with the first page. This proves
+bounded fresh-guest compatibility and versioned-request acceptance for that
+series, not snapshot guarantees for every provider update. The device was
+persistent tachiai-dev, Android 16/API 36, WebView 133.0.6943.137, with captured
+saved route, unmeasured exit country and no existing-account grant. No item was
+added or played, and protected records stayed unchanged. Thirteen network-blocked
+Android fixtures, including the two-series/versioned-page projection and private
+IPC guards, subsequently passed in 2.43 seconds. Provider-free JS/JVM coverage
+preceded the actual requests; the Android fixtures ran afterwards. Temporary
+guest-process instrumentation targeting was restored to the ordinary manifest.
 Series browsing does not imply global video search, timetable/slot resolution
 or an automatically playable permanent sumo collection.
 

@@ -12,6 +12,7 @@
   let stopped = false;
   let guest;
   let episode;
+  let series;
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
@@ -24,6 +25,7 @@
     state = category === 'NONE' ? 'STOPPED' : 'REFUSED';
     guest = undefined;
     episode = undefined;
+    series = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
     accountValidation = undefined;
@@ -251,7 +253,7 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_';
     let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
@@ -370,19 +372,31 @@
       clearTimeout(timer); controllers.delete(controller);
     }
   }
+  const validSeriesVersion = value => typeof value === 'string' && value.length >= 1 && value.length <= 256 &&
+    value === value.trim() && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
+  function validSeriesRequest(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).sort().join(',') === 'offset,seriesId,version' &&
+      typeof value.seriesId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seriesId) &&
+      Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 9980 && value.offset % 20 === 0 &&
+      (value.offset === 0 ? value.version === null : validSeriesVersion(value.version));
+  }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
-        resourceId !== undefined)) {
+        operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
+    const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
         stringify(episode) : null } : {}),
+      ...(operation === 'FETCH_SERIES' ? { metadata: () => !stopped && state === 'EXACT_SERIES_PAGE' && failure === 'NONE' ?
+        stringify(series) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -402,6 +416,7 @@
           budgetFailure = prepareValidation ? 'PROFILE_TIMEOUT' : observeToken ? 'TOKEN_TIMEOUT' : 'CHALLENGE_TIMEOUT';
           challengeStarted = performance.now(); alive();
         }
+        if (operation === 'FETCH_SERIES') { budgetFailure = 'SERIES_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
@@ -507,6 +522,31 @@
             accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
             guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'FETCH_SERIES') {
+          state = 'SERIES';
+          const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');
+          url.searchParams.set('order', 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
+          if (seriesRequest.version !== null) url.searchParams.set('seriesVersion', seriesRequest.version);
+          series = await boundedReply(url.href, { method: 'GET', mode: 'cors',
+            headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } }, text => {
+              const reply = parseBoundedJsonText(text, true);
+              if (!reply || Array.isArray(reply) || typeof reply !== 'object' || !Array.isArray(reply.programs) ||
+                reply.programs.length > 20 || !validSeriesVersion(reply.version) ||
+                seriesRequest.version !== null && reply.version !== seriesRequest.version) throw new Error();
+              const ids = new Set();
+              const programs = reply.programs.map(item => {
+                if (!item || Array.isArray(item) || typeof item !== 'object' || typeof item.id !== 'string' ||
+                  !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.id) || ids.has(item.id) ||
+                  !item.series || Array.isArray(item.series) || item.series.id !== seriesRequest.seriesId ||
+                  !item.episode || Array.isArray(item.episode) || typeof item.episode.title !== 'string' ||
+                  item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
+                  /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();
+                ids.add(item.id);
+                return Object.freeze({ id: item.id, title: item.episode.title.trim() });
+              });
+              return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs });
+            }, 'SERIES_', 512 * 1024);
+          alive(); guest = undefined; failure = 'NONE'; state = 'EXACT_SERIES_PAGE';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';
           episode = await boundedReply(apiOrigin + '/v1/video/programs/' + episodeId,

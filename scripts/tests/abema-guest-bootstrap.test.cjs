@@ -69,6 +69,26 @@ function fixture(options = {}) {
         if (Object.hasOwn(options, 'challengeCompletionMs')) options.elapsedMs = options.challengeCompletionMs;
         return new Response(bytes, { status: 200 });
       }
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/series/')) {
+        if (options.delayedSeries) await delayed;
+        if (options.seriesNetworkFailure) throw new Error('PRIVATE_SERIES_ERROR');
+        if (Object.hasOwn(options, 'seriesStatus') && options.seriesStatus !== 200) return {
+          status: options.seriesStatus, get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        if (options.seriesRedirected) return { status: 200, redirected: true, get body() { options.refusedBodyRead = true; throw new Error(); } };
+        const bytes = options.seriesBytes || options.seriesText || JSON.stringify(options.series || {
+          programs: [{ id: 'fixture-episode', series: { id: options.resourceId.seriesId }, episode: { title: 'Future episode' },
+            source: { url: 'https://private.invalid/MUST_NOT_FETCH' } }], version: options.resourceId.version || 'version-1', offset: 'DISCARDED',
+        });
+        if (options.delayedSeriesRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: new TextEncoder().encode(bytes) }; }, cancel: async () => {},
+          }) } };
+        }
+        return new Response(bytes, { status: 200 });
+      }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/programs/')) {
         if (options.delayedEpisode) await delayed;
         if (options.episodeNetworkFailure) throw new Error('PRIVATE_EPISODE_ERROR');
@@ -184,6 +204,93 @@ function fixture(options = {}) {
   };
 }
 async function settle() { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); }
+const seriesRequest = (seriesId = 'series-A', offset = 0, version = null) => ({ seriesId, offset, version });
+test('series operation uses exact two parents and projects only explicit unknown episode rows', async () => {
+  for (const parent of ['series-A', 'series-B_2']) {
+    const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(parent) }); f.start(); await settle();
+    assert.deepEqual(f.state(), { state: 'EXACT_SERIES_PAGE', failure: 'NONE' });
+    assert.deepEqual(f.requests.map(r => r.url), ['https://abema.tv/api/auth/login/guest',
+      `https://api.p-c3-e.abema-tv.com/v1/video/series/${parent}/programs?order=seq&limit=20&offset=0`]);
+    assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)), {
+      seriesId: parent, version: 'version-1', programs: [{ id: 'fixture-episode', title: 'Future episode' }],
+    });
+    assert.ok(f.requests.every(r => r.request.credentials === 'omit' && r.request.redirect === 'error' && r.request.cache === 'no-store'));
+    assert.equal(f.requests[1].request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+    assert.ok(!Array.from(f.context.loaded).includes(17046));
+    f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('series continuation pins a raw string version and ignores response offset', async () => {
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest('series-A', 20, 'v +&/雪') });
+  f.start(); await settle();
+  assert.equal(f.state().state, 'EXACT_SERIES_PAGE');
+  assert.equal(f.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=seq&limit=20&offset=20&seriesVersion=v+%2B%26%2F%E9%9B%AA');
+});
+test('series page refuses mismatched duplicate malformed oversized rows and unsupported raw versions', async () => {
+  const row = { id: 'episode-A', series: { id: 'series-A' }, episode: { title: 'Episode' } };
+  const bad = [null, 1, { programs: [] }, { programs: [], version: 2 }, { programs: [], version: '' },
+    { programs: Array(21).fill(row), version: 'v' }, { programs: [row, row], version: 'v' },
+    ...[null, [], {}, { ...row, id: 2 }, { ...row, series: { id: 'other' } },
+      { ...row, episode: { title: '\u202eprivate' } }, { ...row, episode: { title: '\ud800' } },
+      { ...row, episode: { title: 'x'.repeat(161) } }].map(item => ({ programs: [item], version: 'v' }))];
+  for (const series of bad) {
+    const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(), seriesText: JSON.stringify(series) });
+    f.start(); await settle(); assert.deepEqual(f.state(), { state: 'REFUSED', failure: 'SERIES_RESPONSE' });
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  }
+  const drift = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest('series-A', 20, 'old'), series: { programs: [], version: 'new' } });
+  drift.start(); await settle(); assert.equal(drift.state().failure, 'SERIES_RESPONSE');
+});
+test('series raw JSON rejects escaped duplicates trailing data invalid UTF8 and body bounds', async () => {
+  for (const extra of [
+    { seriesText: '{"programs":[],"version":"a","\\u0076ersion":"b"}' },
+    { seriesText: '{"programs":[],"version":"a"} trailing' },
+    { seriesBytes: new Uint8Array([0xff]) },
+    { seriesText: ' '.repeat(512 * 1024 + 1) },
+    { seriesText: '{"programs":[],"version":"a","other":' + '['.repeat(18) + '1' + ']'.repeat(18) + '}' },
+  ]) {
+    const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(), ...extra }); f.start(); await settle();
+    assert.equal(f.state().failure, 'SERIES_RESPONSE'); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('series empty and twenty-row pages retain exact order without inferring eligibility', async () => {
+  for (const count of [0, 20]) {
+    const programs = Array.from({ length: count }, (_, i) => ({ id: `episode-${i}`, series: { id: 'series-A' },
+      episode: { title: `Not-live ${i}` }, endAt: 0, status: { drm: true }, playback: { source: 'ignored' } }));
+    const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(), series: { programs, version: 'v' } });
+    f.start(); await settle(); assert.equal(f.state().state, 'EXACT_SERIES_PAGE');
+    assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)).programs.map(r => r.id), programs.map(r => r.id));
+  }
+});
+test('series HTTP refusals stay body-unread and transport failures have closed categories', async () => {
+  for (const status of [401, 403, 404, 410, 429, 503]) {
+    const options = { operation: 'FETCH_SERIES', resourceId: seriesRequest(), seriesStatus: status };
+    const f = fixture(options); f.start(); await settle();
+    assert.equal(f.state().failure, status === 503 ? 'SERIES_HTTP_5XX' : `SERIES_HTTP_${status}`);
+    assert.equal(options.refusedBodyRead, undefined);
+  }
+  for (const [extra, expected] of [[{ seriesNetworkFailure: true }, 'SERIES_TRANSPORT'], [{ seriesRedirected: true }, 'SERIES_REDIRECT']]) {
+    const options = { operation: 'FETCH_SERIES', resourceId: seriesRequest(), ...extra };
+    const f = fixture(options); f.start(); await settle(); assert.equal(f.state().failure, expected);
+    assert.equal(options.refusedBodyRead, undefined);
+  }
+});
+test('series cancellation and original deadline refuse delayed publication without another request', async () => {
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(), delayedSeriesRead: true });
+  f.start(); await settle(); f.stop(); f.release(); await settle();
+  assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  const options = { operation: 'FETCH_SERIES', resourceId: seriesRequest(), delayedSeries: true };
+  const late = fixture(options); late.start(); await settle(); options.elapsedMs = 45000; late.release(); await settle();
+  assert.equal(late.state().failure, 'SERIES_TIMEOUT'); assert.equal(late.call(`window['${apiName}'].metadata()`), null);
+});
+test('series invalid immutable request and incoherent origin refuse before provider dispatch', async () => {
+  for (const resourceId of [undefined, seriesRequest('../bad'), seriesRequest('series-A', 1), seriesRequest('series-A', 20),
+    seriesRequest('series-A', 0, 'unexpected'), seriesRequest('series-A', 10000, 'v')]) {
+    const f = fixture({ operation: 'FETCH_SERIES', resourceId }); f.start(); await settle(); assert.equal(f.requests.length, 0);
+  }
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest(), apiOrigin: 'https://api.abema.io' });
+  f.start(); await settle(); assert.equal(f.state().failure, 'POLICY'); assert.equal(f.requests.length, 0);
+});
 function challengeReply() {
   return { device_code: 'PRIVATE_DEVICE_CODE', user_code: 'PRIVATE_USER_CODE',
     verification_uri: 'https://abema.tv/account/transfer',

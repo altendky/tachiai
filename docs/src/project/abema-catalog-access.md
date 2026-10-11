@@ -243,8 +243,17 @@ process/profile through this instance's saved route. It uses provider-controlled
 pages, normal TLS, and its own persistent ABEMA browser login; Chrome cookies
 are not read or transferred. The browser has no native JavaScript bridge,
 injected scripts, file/content access, downloads or external navigation fallback.
-It admits only the reviewed ABEMA account origins, not playback or advertising
-destinations. The returned native account grant remains separate and per-instance.
+It admits the reviewed ABEMA account origins and a provider region-check origin.
+A narrow native adapter owns the exact GET without following redirects; initial
+browser admission refuses CDN media/navigation. The shared CONNECT host policy
+cannot restrict every same-CDN path reached through an account-resource redirect,
+which Android does not re-intercept; no such redirect was observed. The previous
+resource policy blocked that check with HTTP403, which the first-party page
+interprets as region denial; the owner's in-app screenshot reports that refusal.
+The correction lets ABEMA perform its own check without rewriting eligibility.
+Device geolocation is disabled and location prompts are refused; the network
+location is the configured route exit. The returned native account grant remains
+separate and per-instance.
 This browser currently requires a saved connection: its authenticated CONNECT
 bridge enforces destinations even across Chromium redirects. System-network
 browser approval needs an equivalent direct bridge; WebView interception alone
@@ -345,6 +354,53 @@ intended-account My List retrieval remains an acceptance gate, distinct from
 profile authorization proof. Broader discovery and exact slot/series resolution
 remain outstanding in #101; this adapter does not choose a current channel or
 an arbitrary episode on behalf of a collection.
+
+### Explicit series episode browsing
+
+Issue [#176](https://github.com/altendky/tachiai/issues/176) adds a narrow
+series-children adapter through the existing shared catalog. A selected exact
+series remains a collection: the user browses its episodes, chooses an exact
+episode and explicitly adds it to Tachiai's configured list. The provider's
+auto-next/first-item behavior does not choose a configured playback resource.
+Back and Add retain the shared management flow; provider omissions or refusal
+never remove configured identities, order or quality preferences.
+
+The retained coherent
+[9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),
+[3795 request/DTO chunk](https://abema.tv/assets/compat/35a6b0a35f792be3.3795.bundle.js)
+and [6245 consumer](https://abema.tv/assets/compat/3eaa977a7f089316.6245.bundle.js)
+establish a bearer GET to the reviewed modern API's exact series-program path.
+The consumer requests pages of 20 with ascending `seq` or descending `-seq`
+order and advances its requested offset by 20. Program ID and matching series
+ID establish exact identity; the nested episode title supplies display text.
+Series-local search is not global video search, and calendar timestamp
+conversion does not establish every provider timestamp's units.
+
+The initial adapter uses ascending `seq`, a fixed page size of 20 and bounded
+locally requested offsets. The isolated guest operation retains one immutable
+series/page request, the owning instance/route proof, original deadline and
+foreground checks. It exports only strictly normalized public episode rows
+after confirmed runtime/route cleanup. Duplicate or wrong-parent joins,
+malformed titles and ambiguous response data refuse the page. Availability
+remains UNKNOWN, without inferred schedule, progress or entitlement. No
+existing-account connection, approval challenge, browser or grant write is
+part of this operation.
+
+The provider DTO coerces version to String and offset to Number; its reviewed
+consumer ignores both and supplies no version parameter. Those coercions do
+not prove raw wire types or stable snapshot semantics. Tachiai initially
+accepts only a nonempty bounded raw version string, with no coercion. Transient
+single-use continuation handles bind that version, exact parent, order,
+requested offset and owner revision; subsequent results must match the pinned
+version. Missing, unsupported or changed versions refuse visibly rather than
+claim that a list is exhausted. Response offset is not interpreted.
+
+This is a conservative implementation and static-evidence boundary. Actual
+fresh-guest compatibility, raw version shape and versioned-request behavior
+remain separate acceptance gates. Network-blocked fixtures and opt-in
+saved-route observations must preserve existing authorization/configuration.
+Series browsing does not imply global video search, timetable/slot resolution
+or an automatically playable permanent sumo collection.
 
 ### Exact configured episodes
 

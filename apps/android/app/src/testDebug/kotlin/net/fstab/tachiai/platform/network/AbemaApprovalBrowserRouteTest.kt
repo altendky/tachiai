@@ -30,7 +30,8 @@ class AbemaApprovalBrowserRouteTest {
         try {
             assertFalse(route.isSystem)
             for (url in listOf("https://abema.tv/account/change-from-device?fixture=code",
-                "https://auth.abema.tv:443/login/email", "https://api.p-c3-e.abema-tv.com/v1/users/fixture")) {
+                "https://auth.abema.tv:443/login/email", "https://api.p-c3-e.abema-tv.com/v1/users/fixture",
+                "https://ds-glb-linear-abematv.akamaized.net/region")) {
                 val connection = route.open(URL(url))
                 assertTrue(connection is RoutedHttpsConnection)
                 assertTrue(connection.usingProxy()); connection.disconnect()
@@ -48,7 +49,9 @@ class AbemaApprovalBrowserRouteTest {
             for (url in listOf("http://abema.tv/", "https://user@abema.tv/", "https://abema.tv:0443/",
                 "https://abema.tv:444/", "https://abema.tv/#fixture", "https://abema.tv/a/%2e%2e/login",
                 "https://auth.abema.tv.evil.invalid/", "https://api.abema.io/", "https://id.twitch.tv/",
-                "https://license.p-c3-e.abema-tv.com/", "https://image.p-c2-x.abema-tv.com/"))
+                "https://license.p-c3-e.abema-tv.com/", "https://image.p-c2-x.abema-tv.com/",
+                "https://ds-glb-linear-abematv.akamaized.net/channel/fixture/playlist.m3u8",
+                "https://ds-glb-linear-abematv.akamaized.net/region?fixture=value"))
                 assertThrows(IllegalArgumentException::class.java) { route.open(URL(url)) }
         } finally { route.close() }
         route.close()
@@ -80,6 +83,7 @@ class AbemaApprovalBrowserRouteTest {
                 assertTrue(connection is RoutedHttpsConnection)
                 assertEquals(selected != null, connection.usingProxy()); connection.disconnect()
                 assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://auth.abema.tv/login/email")) }
+                assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://ds-glb-linear-abematv.akamaized.net/region")) }
             }
             finally { route.close() }
         }

@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.*
@@ -14,6 +15,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.web.configureSecureSettings
@@ -33,6 +36,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         internal const val OWNER_PROOF = "OWNER_PROOF"
         internal const val VERIFICATION_URI = "VERIFICATION_URI"
         internal const val DEADLINE = "DEADLINE_ELAPSED_MS"
+        private const val LOG_TAG = "TachiaiAbemaApproval"
         private val occupied = AtomicBoolean()
         private val poisoned = AtomicBoolean()
         private var profileConfigured = false
@@ -47,8 +51,10 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         @Volatile var backend: AbemaAccountCleanupReceipt<RouteBackend>? = null
         @Volatile var route: RouteSession? = null
         @Volatile var routeClose: AbemaAccountCleanupReceipt<RouteSession>? = null
+        @Volatile var regionCheck: AbemaApprovalRegionCheck? = null
         fun closeConfirmed(): Boolean {
             if (!prepared.await(1, TimeUnit.SECONDS)) return false
+            if (regionCheck?.closeConfirmed() == false) return false
             val closed = routeClose?.await() ?: (backend?.await() ?: true)
             return closed && preparation.cleanupConfirmed
         }
@@ -94,6 +100,11 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             }
             WebView.setWebContentsDebuggingEnabled(false)
             val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            ViewCompat.setOnApplyWindowInsetsListener(column) { host, insets ->
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                host.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                insets
+            }
             status = TextView(this).apply { text = "Preparing ABEMA’s browser through the saved route…"; setPadding(16, 16, 16, 16) }
             column.addView(status)
             column.addView(Button(this).apply {
@@ -105,12 +116,16 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             browser.configureSecureSettings()
             browser.settings.blockNetworkLoads = true
             browser.settings.saveFormData = false
+            browser.settings.setGeolocationEnabled(false)
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(browser, false)
             browser.webViewClient = client()
             browser.webChromeClient = object : WebChromeClient() {
                 override fun onConsoleMessage(message: ConsoleMessage?) = true
                 override fun onPermissionRequest(permission: PermissionRequest) { permission.deny() }
+                override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                    callback?.invoke(origin, false, false)
+                }
                 // Default script dialogs do not inherit the secure window and
                 // must not present provider text or credential prompts there.
                 override fun onJsAlert(browser: WebView?, url: String?, message: String?, result: JsResult): Boolean {
@@ -135,8 +150,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 allowFileAccess = false; allowContentAccess = false; blockNetworkLoads = true
             }
             serviceWorkers.setServiceWorkerClient(object : ServiceWorkerClient() {
-                override fun shouldInterceptRequest(resource: WebResourceRequest): WebResourceResponse? =
-                    if (allowed(resource) && currentOnWorker()) null else blocked()
+                override fun shouldInterceptRequest(resource: WebResourceRequest) = intercept(resource)
             })
             column.addView(browser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             setContentView(column)
@@ -180,6 +194,8 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                         }
                     })
                 handle.routeClose = AbemaAccountCleanupReceipt(checkNotNull(handle.route), RouteSession::close)
+                handle.regionCheck = AbemaApprovalRegionCheck(checkNotNull(handle.route), ::currentOnWorker,
+                    SystemClock::elapsedRealtime, request.deadlineElapsedMs)
                 valid = !ending && request.current(SystemClock.elapsedRealtime()) && sameOwner()
             } catch (_: Throwable) { valid = false }
             finally {
@@ -226,8 +242,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             if (refused && current()) status.text = "This destination is unavailable in ABEMA account approval."
             return refused
         }
-        override fun shouldInterceptRequest(browser: WebView, resource: WebResourceRequest): WebResourceResponse? =
-            if (allowed(resource) && currentOnWorker()) null else blocked()
+        override fun shouldInterceptRequest(browser: WebView, resource: WebResourceRequest) = intercept(resource)
         override fun onReceivedSslError(browser: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
             handler.cancel(); closeBrowser(false)
         }
@@ -249,7 +264,39 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
     }
     private fun allowed(resource: WebResourceRequest) = if (resource.isForMainFrame)
         AbemaApprovalBrowserPolicy.allowedNavigation(resource.url.toString())
-        else AbemaApprovalBrowserPolicy.allowedResource(resource.url.toString())
+        else AbemaApprovalBrowserPolicy.allowedResource(resource.url.toString(), resource.method)
+    private fun intercept(resource: WebResourceRequest): WebResourceResponse? {
+        if (!allowed(resource) || !currentOnWorker()) return blocked()
+        if (resource.url.host != AbemaApprovalBrowserPolicy.REGION_HOST) return null
+        val origins = resource.requestHeaders.filterKeys { it.equals("Origin", true) }.values
+        if (origins.size > 1 || resource.requestHeaders.keys.any {
+            it.equals("Cookie", true) || it.equals("Authorization", true) || it.equals("Proxy-Authorization", true)
+        }) {
+            main.post { closeBrowser(false) }
+            return blocked()
+        }
+        val result = owned?.regionCheck?.check(origins.singleOrNull())
+        if (!currentOnWorker()) return blocked()
+        return when (result) {
+            is AbemaApprovalRegionResult.Reply -> {
+                Log.i(LOG_TAG, when (result.status) { 200 -> "REGION_HTTP_200"; 403 -> "REGION_HTTP_403"; else -> "REGION_HTTP_OTHER" })
+                if (result.status == 403) main.post {
+                    if (current()) status.text = "ABEMA rejected this route’s region. Return to Tachiai."
+                }
+                WebResourceResponse("text/plain", "UTF-8", result.status, "Provider region response",
+                    result.headers, ByteArrayInputStream(ByteArray(0)))
+            }
+            is AbemaApprovalRegionResult.Failure -> {
+                Log.i(LOG_TAG, "REGION_FAILURE_${result.category.name}")
+                main.post { closeBrowser(false) }
+                blocked()
+            }
+            null -> {
+                main.post { closeBrowser(false) }
+                blocked()
+            }
+        }
+    }
     private fun blocked() = WebResourceResponse("text/plain", "UTF-8", 403, "Unavailable", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     private fun resumeBrowser() {
         if (!current()) return
@@ -283,6 +330,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         var destroyed = true
         try {
             handle?.preparation?.cancel()
+            handle?.regionCheck?.cancel()
             browser?.settings?.blockNetworkLoads = true
             browser?.stopLoading(); browser?.onPause(); browser?.pauseTimers(); browser?.destroy()
             if (profileConfigured) {

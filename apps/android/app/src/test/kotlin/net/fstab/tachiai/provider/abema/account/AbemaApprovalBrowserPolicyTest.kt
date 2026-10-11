@@ -42,8 +42,25 @@ class AbemaApprovalBrowserPolicyTest {
         assertTrue(AbemaApprovalBrowserPolicy.allowedResource(api))
         assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation(api))
         assertEquals("abema-provider-approval", AbemaApprovalBrowserPolicy.PROFILE_SUFFIX)
-        assertEquals(setOf("abema.tv", "auth.abema.tv", "api.p-c3-e.abema-tv.com"),
+        assertEquals(setOf("abema.tv", "auth.abema.tv", "api.p-c3-e.abema-tv.com", "ds-glb-linear-abematv.akamaized.net"),
             AbemaApprovalBrowserPolicy.HOSTS.split(',').toSet())
+    }
+
+    @Test fun providerRegionCheckIsAnExactGetResourceWithoutCdnNavigationOrMedia() {
+        val origin = "https://ds-glb-linear-abematv.akamaized.net"
+        for (port in listOf("", ":443")) {
+            val url = "$origin$port/region"
+            assertTrue(AbemaApprovalBrowserPolicy.allowedResource(url, "GET"))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation(url))
+            for (method in listOf("POST", "HEAD", "OPTIONS", "get", ""))
+                assertFalse(method, AbemaApprovalBrowserPolicy.allowedResource(url, method))
+        }
+        for (suffix in listOf("", "/", "/region/", "//region", "/%72egion", "/region?fixture=value",
+            "/region#fixture", "/channel/fixture/playlist.m3u8", "/media/fixture"))
+            assertFalse(suffix, AbemaApprovalBrowserPolicy.allowedResource(origin + suffix))
+        assertFalse(AbemaApprovalBrowserPolicy.allowedResource("https://ds-glb-linear-abematv.akamaized.net.other.invalid/region"))
+        assertFalse(AbemaApprovalBrowserPolicy.allowedResource("http://ds-glb-linear-abematv.akamaized.net/region"))
+        assertTrue(AbemaApprovalBrowserPolicy.allowedResource("https://abema.tv/api/auth/login/email", "POST"))
     }
 
     @Test fun unsafeAuthoritiesSchemesTraversalAndHiddenControlsAreRefused() {

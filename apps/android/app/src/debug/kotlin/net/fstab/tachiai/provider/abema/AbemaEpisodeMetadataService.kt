@@ -52,7 +52,7 @@ class AbemaEpisodeMetadataService : Service() {
         val owner = Active(request, reply, lease, death)
         active = owner
         val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            request.episodeId, request.nonce, request.ownerProof, request.deadline, lease::current)) completed@{ result ->
+            request.episodeId, request.nonce, request.ownerProof, request.deadline, canRemainActive = lease::current)) completed@{ result ->
             if (active !== owner) return@completed
             active = null
             runCatching { reply.binder.unlinkToDeath(death, 0) }

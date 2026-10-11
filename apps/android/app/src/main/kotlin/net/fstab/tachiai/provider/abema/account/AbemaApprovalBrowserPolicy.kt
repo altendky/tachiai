@@ -24,15 +24,22 @@ internal class AbemaApprovalBrowserRequest(
 
 // Separate from playback and guest policies. First-party account code uses
 // same-origin /api/auth requests and declares these auth/modern API origins;
+// The provider's separate region check is a single reviewed GET resource;
 // media, license, advertising and analytics destinations are not admitted.
 internal object AbemaApprovalBrowserPolicy {
     const val PROFILE_SUFFIX = "abema-provider-approval"
-    const val HOSTS = "abema.tv,auth.abema.tv,api.p-c3-e.abema-tv.com"
+    const val REGION_HOST = "ds-glb-linear-abematv.akamaized.net"
+    const val HOSTS = "abema.tv,auth.abema.tv,api.p-c3-e.abema-tv.com,$REGION_HOST"
     private val navigationHosts = setOf("abema.tv", "auth.abema.tv")
     private val resourceHosts = HOSTS.split(',').toSet()
 
     fun allowedNavigation(text: String) = allowed(text, navigationHosts)
-    fun allowedResource(text: String) = allowed(text, resourceHosts)
+    fun allowedResource(text: String, method: String = "GET"): Boolean {
+        if (!allowed(text, resourceHosts)) return false
+        val uri = URI(text)
+        return uri.host != REGION_HOST || (method == "GET" && uri.rawPath == "/region" &&
+            uri.rawQuery == null && uri.rawFragment == null)
+    }
 
     private fun allowed(text: String, hosts: Set<String>): Boolean = runCatching {
         if (text.length !in 1..8192 || text.any { it.code !in 33..126 } || '\\' in text) return false

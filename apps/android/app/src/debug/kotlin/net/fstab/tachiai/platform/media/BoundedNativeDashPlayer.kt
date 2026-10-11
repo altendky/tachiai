@@ -62,15 +62,31 @@ internal class BoundedNativeDashPlayer(
     initialDrmFormat: Format? = null,
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     private val onFailure: NativeFailureObserver = { _, _ -> },
+    onCleanupOwner: (NativeCleanupReceipt) -> Unit = {},
+    onCleanupUnconfirmed: () -> Unit = {},
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
-    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = openConnection, onFailure = onFailure)
-    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = openConnection, onFailure = onFailure)
+    private val cleanup = NativeCleanupReceipt(onCleanupUnconfirmed).also(onCleanupOwner).also { it.own(0) {
+        observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease)
+    } }
+    private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
+        openInput = { request -> cleanup.input { request.inputStream } },
+        openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) })
+        .also { owned -> cleanup.own(10) { owned.close() } }
+    private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
+        openInput = { request -> cleanup.input { request.inputStream } },
+        openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) })
+        .also { owned -> cleanup.own(20) { owned.close() } }
     val player: ExoPlayer
-    private val quality = NativePlayerQuality(context)
+    private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40) {
+        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { owned.close() }
+    } }
 
     init {
+        try {
         // Media3 error chains may carry source/license URIs. Keep logging off
         // for this isolated process even after release; report closed enums only.
         Log.setLogLevel(Log.LOG_LEVEL_OFF)
@@ -135,7 +151,7 @@ internal class BoundedNativeDashPlayer(
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setMediaSourceFactory(sourceFactory)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
-            .build()
+            .build().also { owned -> cleanup.ownPlayer(owned, { released }, onFailure) }
         try {
             quality.bind(player)
             player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
@@ -158,7 +174,7 @@ internal class BoundedNativeDashPlayer(
                 }
                 override fun onPlayerError(error: PlaybackException) {
                     if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
-                    if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); close() }
+                    if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(onFailure, ::close) }
                 }
             })
             player.addAnalyticsListener(object : AnalyticsListener {
@@ -170,24 +186,25 @@ internal class BoundedNativeDashPlayer(
                     if (!released) onEvent(NativeDashEvent.DRM_FAILED, 0)
                 }
             })
-        } catch (_: Exception) {
+        } catch (error: Throwable) {
             // The activity cannot own this player until construction returns.
             // Do not call close(): the ticker below is not initialized yet.
             released = true
             budget.stop()
-            try { beforeRelease() } finally {
-                try { requests.close(); manifests.close() } finally {
-                    try { player.release() } finally { quality.close() }
-                }
-            }
+            try { cleanup.close() } catch (_: Throwable) { /* Retained by the construction owner. */ }
             throw IOException("Native player initialization refused")
+        }
+        } catch (error: Throwable) {
+            released = true; budget.stop()
+            try { cleanup.close() } catch (_: Throwable) { /* Retained by the construction owner. */ }
+            throw error
         }
     }
 
     private val ticker = object : Runnable {
         override fun run() {
             if (released) return
-            if (!budget.active) { onEvent(NativeDashEvent.LIMIT_REACHED, 0); close() }
+            if (!budget.active) { onEvent(NativeDashEvent.LIMIT_REACHED, 0); cleanup.stopInternally(onFailure, ::close) }
             else handler.postDelayed(this, 250)
         }
     }
@@ -251,17 +268,12 @@ internal class BoundedNativeDashPlayer(
         Looper.myLooper() == player.applicationLooper && timingActive() && quality.request(player, preferences)
 
     override fun close() {
-        if (released) return
+        if (released) { cleanup.close(); return }
         released = true
+        cleanup.seal()
         handler.removeCallbacks(ticker)
         budget.stop()
-        closeNativeResources(
-            { observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease) },
-            { requests.close() },
-            { manifests.close() },
-            { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } },
-            { observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { quality.close() } },
-        )
+        cleanup.close()
         onEvent(NativeDashEvent.STOPPED, 0)
     }
 }

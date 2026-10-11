@@ -109,11 +109,19 @@ Both ABI dynamic closures and 16 KiB ELF alignment passed static checks.
 These owned results do not establish commercial-provider playback, ARM64 runtime
 or Android TV behavior.
 
-Teardown closes players/helpers before clearing Chromium's override and closing
-owned transports. Stop, background and the existing presentation deadline govern
-route lifetime too. Failed or unconfirmed cleanup blocks another run; force-stop
-and relaunch may be required. Role swaps retain route ownership. Import/Save
-still does not activate a route; Open viewer is the explicit connection action.
+Cached-viewer teardown requires confirmed helper destruction before clearing
+Chromium's override, then its matching acknowledgment before closing owned
+transports. A process-owned run retains preparation, both feed slots, helper
+contexts and routes across Activity recreation or late worker delivery. Pending
+preparation must finish before transport closure. Destruction, cancellation,
+clear dispatch/acknowledgment or backend-close uncertainty strongly retains the
+resources and blocks another run; a timeout or late callback cannot clear that
+state. Each distinct route closes once after successful teardown. Stop,
+background and the existing presentation deadline govern route lifetime too;
+explicit recovery may require restarting the dedicated process. Role swaps
+retain route ownership. Import/Save still does not activate a route; Open viewer
+is the explicit connection action. These receipt rules are tracked in
+[#161](https://github.com/altendky/tachiai/issues/161).
 
 Route initialization receives a per-presentation preparation owner before a
 backend constructor starts. Stop, background, destruction and presentation expiry

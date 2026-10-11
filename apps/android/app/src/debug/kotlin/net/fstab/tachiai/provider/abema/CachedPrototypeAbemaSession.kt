@@ -10,7 +10,6 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.view.View
-import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
@@ -52,6 +51,7 @@ import net.fstab.tachiai.platform.media.NativeDashEvent
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.NativeMediaEvent
+import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.platform.media.awaitOpaqueResponse
@@ -78,9 +78,18 @@ internal class CachedPrototypeAbemaSession(
     private val onEvent: (PrototypeFeedEvent) -> Unit,
     private val route: RouteSession? = null,
     private val diagnostics: FailureReporter = FailureReporter.NONE,
+    private val onHelperCreated: (CachedAbemaHelperCleanup) -> Unit = {},
+    private val onCleanupChanged: () -> Unit = {},
 ) : PrototypeFeedSession {
     private val handler = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
+        finishTransportCleanup(); onCleanupChanged()
+    }
+    private val transportFinalizing = AtomicBoolean()
+    private val transportFinalized = AtomicBoolean()
+    val cleanupPending get() = worker.pending || (closed.get() && !transportFinalized.get())
+    private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { cleanupFailed = true; onCleanupChanged() }
+    @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
     private val closed = AtomicBoolean(false)
     private val networkReviewNeeded = AtomicBoolean(false)
     private val cdnJournal = AbemaCdnReviewJournal(File(context.noBackupFilesDir, "abema-cdn-review.tsv"))
@@ -105,16 +114,21 @@ internal class CachedPrototypeAbemaSession(
     private val firstFailure = PrototypeFeedFailureLatch()
     private var helperFailure: PrototypeFeedFailure? = null
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
-    override var cleanupFailed: Boolean = false
+    @Volatile override var cleanupFailed: Boolean = false
         private set
+
+    val cleanupConfirmed get() = closed.get() && !cleanupFailed && !cleanupPending &&
+        transportCleanup.confirmed && (nativeCleanup?.confirmed != false)
 
     override val providerView: View = WebView(context)
     private val view get() = providerView as WebView
+    private val helperCleanup = CachedAbemaHelperCleanup.forView(view, diagnostics)
     override val member: NativePairMember? get() = nativeHost
     override val player: Player? get() = nativeHost?.player
 
     init {
         check(Looper.myLooper() == Looper.getMainLooper())
+        onHelperCreated(helperCleanup)
         configureBrowser()
     }
 
@@ -239,8 +253,9 @@ internal class CachedPrototypeAbemaSession(
                 val http = AbemaPublicBundleHttp(
                     canRun = { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline },
                     identity = identity,
-                    open = ::openConnection,
-                    onFailure = { diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
+                    open = { url -> transportCleanup.allocate(10, { openConnection(url) }) { it.disconnect() } },
+                    onFailure = { transportCleanup.failed(); cleanupFailed = true; diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
+                    openInput = { request -> transportCleanup.input { request.inputStream } },
                 )
                 bundleTransport.set(http)
                 return try {
@@ -248,8 +263,8 @@ internal class CachedPrototypeAbemaSession(
                         { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline }, identity)
                         .prepare(http::fetch)
                 } finally {
-                    bundleTransport.compareAndSet(http, null)
-                    http.close()
+                    try { http.close(); bundleTransport.compareAndSet(http, null) }
+                    catch (error: Throwable) { cleanupFailed = true; throw error }
                 }
             }
             try {
@@ -289,7 +304,9 @@ internal class CachedPrototypeAbemaSession(
                     else -> PrototypeFailureReason.PREPARATION_FAILED
                 }
                 handler.post { if (!closed.get() && revision.get() == run) fail(PrototypeFeedFailure(reason)) }
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
+                // Cleanup Errors must remain a safe retained failure, never
+                // escape this owned worker to Android's uncaught handler.
                 if (preparationCurrent(run)) diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)
                 handler.post { if (!closed.get() && revision.get() == run) fail() }
             }
@@ -367,13 +384,23 @@ internal class CachedPrototypeAbemaSession(
                 val requests = BoundedMediaRequests(checkNotNull(budget).child(), { current(run) && it == uri }, { event, code ->
                     record("manifest=${event.name} code=$code")
                     rememberMedia(event, code)
-                }, canRequest = { current(run) }, openConnection = ::openConnection, onFailure = diagnostics.nativeObserver())
+                }, canRequest = { current(run) },
+                    openConnection = { url -> transportCleanup.allocate(10, { openConnection(url) }) { it.disconnect() } },
+                    openInput = { request -> transportCleanup.input { request.inputStream } },
+                    openErrorInput = { request -> transportCleanup.optionalInput { request.errorStream } },
+                    onFailure = { stage, error ->
+                        if (stage == NativeFailureStage.MEDIA_DISCONNECT) { transportCleanup.failed(); cleanupFailed = true }
+                        diagnostics.nativeObserver()(stage, error)
+                    })
                 sourceRequests.set(requests)
                 val source = try { readSource(uri, requests) }
-                finally { sourceRequests.compareAndSet(requests, null); requests.close() }
+                finally {
+                    try { requests.close(); sourceRequests.compareAndSet(requests, null) }
+                    catch (error: Throwable) { cleanupFailed = true; throw error }
+                }
                 check(current(run) && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
                 handler.post { if (current(run) && allows(view.url)) createNative(source, run) }
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 if (current(run)) diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
                 handler.post { if (!closed.get() && revision.get() == run) fail() }
             }
@@ -445,7 +472,9 @@ internal class CachedPrototypeAbemaSession(
                 initialDrmFormat = if (replay) null else Format.Builder().setSampleMimeType(MimeTypes.VIDEO_H264)
                     .setDrmInitData(DrmInitData(C.CENC_TYPE_cenc, DrmInitData.SchemeData(
                         C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build(),
-                openConnection = ::openConnection, onFailure = diagnostics.nativeObserver())
+                openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
+                onCleanupOwner = { nativeCleanup = it },
+                onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })
             nativeHost = created
             created.start(source.uri, playWhenReady = false)
         } catch (error: Exception) {
@@ -594,28 +623,42 @@ internal class CachedPrototypeAbemaSession(
     }
     override fun close() = finish(PrototypeFeedEvent.STOPPED)
 
+    private fun finishTransportCleanup() {
+        if (!closed.get() || worker.pending || !transportFinalizing.compareAndSet(false, true)) return
+        try {
+            if (!diagnostics.cleanupAll(FailureStage.SOURCE_REQUESTS_CLOSE) { transportCleanup.close() }) cleanupFailed = true
+        } finally { transportFinalized.set(true); onCleanupChanged() }
+    }
+
     private fun finish(event: PrototypeFeedEvent) {
         if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { finish(event) }; return }
         if (!closed.compareAndSet(false, true)) return
+        transportCleanup.seal()
         revision.incrementAndGet()
         routeCurrent.set(false)
         handler.removeCallbacksAndMessages(null)
         sourcePending.getAndSet(null)?.complete(null)
         pending.getAndSet(null)?.complete(null)
+        var nativeClosed = nativeHost == null
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
-            FailureStage.BUNDLE_TRANSPORT_CLOSE to { bundleTransport.getAndSet(null)?.close() },
-            FailureStage.SOURCE_REQUESTS_CLOSE to { sourceRequests.getAndSet(null)?.close() },
+            FailureStage.BUNDLE_TRANSPORT_CLOSE to {
+                val owned = bundleTransport.get(); owned?.close(); bundleTransport.compareAndSet(owned, null)
+            },
+            FailureStage.SOURCE_REQUESTS_CLOSE to {
+                val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)
+            },
             FailureStage.HELPER_STOP to { if (allows(view.url)) view.evaluateJavascript("window['$name']?.stop()", null) },
-            FailureStage.NATIVE_HOST_CLOSE to { nativeHost?.close() },
-            FailureStage.WEBVIEW_STOP to { view.stopLoading() }, FailureStage.WEBVIEW_PAUSE to { view.onPause() },
-            FailureStage.WEBVIEW_DETACH to { (view.parent as? ViewGroup)?.removeView(view) },
-            FailureStage.WEBVIEW_DESTROY to { view.webChromeClient = null; view.destroy() },
+            FailureStage.NATIVE_HOST_CLOSE to { nativeHost?.close(); nativeCleanup?.close(); nativeClosed = true },
+            FailureStage.WEBVIEW_DESTROY to {
+                if (!helperCleanup.destroy() || helperCleanup.cleanupFailed) cleanupFailed = true
+            },
             FailureStage.RESOURCES_CLEAR to { ownedResources = emptyMap() },
             FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
         )) {
-            if (!diagnostics.cleanup(stage, cleanup)) cleanupFailed = true
+            if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }
-        nativeHost = null
+        if (nativeClosed) nativeHost = null
+        finishTransportCleanup()
         emit(event)
     }
 }

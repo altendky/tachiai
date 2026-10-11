@@ -110,6 +110,21 @@ open class PrototypeActivity : ComponentActivity() {
         private var routeDiagnostics = FailureReporter.NONE
         private val recoveryState = PrototypeRecoveryState()
         private val routeCloser = Executors.newSingleThreadExecutor()
+        private val cleanupHandler = Handler(Looper.getMainLooper())
+        private val cachedCleanup: CachedViewerCleanupCoordinator by lazy { CachedViewerCleanupCoordinator(
+            post = { cleanupHandler.post(it) },
+            delay = { millis, action -> cleanupHandler.postDelayed(action, millis) },
+            closeWorker = routeCloser,
+            clearProxy = { reporter, complete -> webRoute.clear(reporter, complete) },
+            changed = {
+                if (cachedCleanup.failed) {
+                    if (!cachedCleanup.playbackFailed) routeCleanupFailed = true
+                    recoveryState.fail(if (cachedCleanup.playbackFailed) PrototypeRecoveryKind.PLAYBACK_CLEANUP_UNCONFIRMED
+                        else PrototypeRecoveryKind.ROUTE_CLEANUP_UNCONFIRMED)
+                }
+                recoveryState.notifyChanged()
+            },
+        ) }
     }
     protected open val useCachedAbema: Boolean = false
     private val handler = Handler(Looper.getMainLooper())
@@ -117,6 +132,7 @@ open class PrototypeActivity : ComponentActivity() {
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
     private var routePreparation: RoutePreparation? = null
+    private var cachedRun: CachedViewerCleanupCoordinator.Run? = null
     private var selection: ConfiguredPlaybackSelection? = null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
@@ -208,7 +224,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun initializeDiagnostics() {
-        diagnostics = if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy)
+        diagnostics = if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy || (useCachedAbema && cachedCleanup.unavailable))
             routeDiagnostics else FailureDiagnostics.create(this)
     }
 
@@ -232,7 +248,8 @@ open class PrototypeActivity : ComponentActivity() {
         else if (cleanupFailed) recoveryState.fail(PrototypeRecoveryKind.PLAYBACK_CLEANUP_UNCONFIRMED)
         val incident = recoveryState.incident
         hasRecovery = incident != null
-        playbackAvailable = incident == null && !routesPending && !routeCleanupPending && !webRoute.busy
+        playbackAvailable = incident == null && !routesPending && !routeCleanupPending && !webRoute.busy &&
+            !(useCachedAbema && cachedCleanup.unavailable)
         recoveryMessage = incident?.let { "Playback blocked. Recovery category: ${it.kind.code}." }
             ?: if (!playbackAvailable) "The previous route is still stopping. Please wait." else null
         if (incident?.restarting == true) dismissRecoveryDialog()
@@ -294,7 +311,7 @@ open class PrototypeActivity : ComponentActivity() {
             showPicker(null); showRecoveryDialog(true); return
         }
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
-        if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy) {
+        if (routesPending || routeCleanupPending || routeCleanupFailed || webRoute.busy || (useCachedAbema && cachedCleanup.unavailable)) {
             if (cleanupFailed || routeCleanupFailed) routeDiagnostics.blocked(FailureStage.ROUTE_BLOCKED)
             showPicker(if (cleanupFailed || routeCleanupFailed)
                 "Route cleanup could not be confirmed. Use Recovery options to restart."
@@ -318,6 +335,10 @@ open class PrototypeActivity : ComponentActivity() {
             showPicker("Playback stopped because cleanup could not be confirmed."); return
         }
         diagnostics = diagnostics.newSession()
+        if (useCachedAbema) {
+            cachedRun = cachedCleanup.begin(diagnostics)
+            if (cachedRun == null) { showPicker("The previous route is still stopping. Please retry shortly."); return }
+        }
         val run = epoch.incrementAndGet()
         qualitySession = ViewerQualityState(activeConfiguredSources.map { it.choice }, qualityDefaults)
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
@@ -355,14 +376,18 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun prepareRoutes(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
         val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
+        val ownedRun = cachedRun
+        ownedRun?.let { cachedCleanup.preparation(it, preparation::cancel) }
         routeDiagnostics = diagnostics
         val choices = activeInstances.toList()
         routesPending = true
         recoveryState.notifyChanged()
         worker.execute {
+            try {
             val plan = planProviderInstanceRoutes(selected, choices, connectionProfileStore(this)::selected)
             if (!plan.abemaCompatible) {
                 handler.post {
+                    ownedRun?.let { cachedCleanup.prepared(it, preparation.cleanupConfirmed) }
                     routesPending = false
                     recoveryState.notifyChanged()
                     if (sharedBudget.active && epoch.get() == run) stopToPicker(
@@ -372,7 +397,16 @@ open class PrototypeActivity : ComponentActivity() {
             }
             val registry = RouteSessionRegistry { profile ->
                 check(sharedBudget.active)
-                RouteSession.create(profile, preparation)
+                if (ownedRun == null) RouteSession.create(profile, preparation)
+                else {
+                    var partial: CachedViewerRouteBackend? = null
+                    RouteSession.createRetained(profile, preparation, ownBackend = { backend ->
+                        CachedViewerRouteBackend(backend).also {
+                            partial = it
+                            cachedCleanup.route(ownedRun, it)
+                        }
+                    }).also { route -> cachedCleanup.route(ownedRun, route, partial) }
+                }
             }
             val results = selected.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to
                 runCatching {
@@ -383,8 +417,16 @@ open class PrototypeActivity : ComponentActivity() {
                 }
             }
             handler.post {
+                ownedRun?.let { cachedCleanup.prepared(it, preparation.cleanupConfirmed) }
                 val created = results.mapNotNull { it.value.getOrNull() }.distinct()
-                if (!sharedBudget.active || epoch.get() != run || isDestroyed || isFinishing || !preparation.cleanupConfirmed) {
+                if (!sharedBudget.active || epoch.get() != run || isDestroyed || isFinishing || !preparation.cleanupConfirmed ||
+                    (ownedRun != null && !cachedCleanup.current(ownedRun))) {
+                    if (ownedRun != null) {
+                        cachedCleanup.end(ownedRun)
+                        routesPending = false
+                        recoveryState.notifyChanged()
+                        return@post
+                    }
                     closeRoutesAsync(created) { accepted ->
                         routesPending = false
                         if (!accepted || !preparation.cleanupConfirmed) {
@@ -408,6 +450,7 @@ open class PrototypeActivity : ComponentActivity() {
                 createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.TWITCH))
                 val abema = selected.feeds.firstOrNull { it.service == PrototypeService.ABEMA }?.let { routes[it.instanceId] }
                 if (useCachedAbema && abema != null) {
+                    checkNotNull(ownedRun).let(cachedCleanup::proxyWillChange)
                     var completed = false
                     fun complete(accepted: Boolean) {
                         if (completed) return
@@ -419,7 +462,11 @@ open class PrototypeActivity : ComponentActivity() {
                             else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
                         }
                     }
-                    webRoute.install(abema, ::complete, diagnostics)
+                    try { webRoute.install(abema, ::complete, diagnostics) }
+                    catch (error: Throwable) {
+                        diagnostics.report(FailureStage.WEB_ROUTE_INSTALL, error)
+                        complete(false)
+                    }
                     handler.postDelayed({
                         if (!completed && sharedBudget.active && epoch.get() == run)
                             diagnostics.report(FailureStage.ROUTE_INSTALL_TIMEOUT)
@@ -427,12 +474,25 @@ open class PrototypeActivity : ComponentActivity() {
                     }, 3_000)
                 } else createFeeds(selected, sharedBudget, run, setup, setOf(PrototypeService.ABEMA))
             }
+            } catch (error: Throwable) {
+                if (ownedRun == null) throw error
+                diagnostics.report(FailureStage.ROUTE_PREPARATION, error)
+                handler.post {
+                    ownedRun?.let { cachedCleanup.prepared(it, preparation.cleanupConfirmed); cachedCleanup.end(it) }
+                    routesPending = false
+                    if (sharedBudget.active && epoch.get() == run) stopToPicker("Route preparation failed. Playback stopped.")
+                    recoveryState.notifyChanged()
+                }
+            }
         }
     }
 
     private fun createFeeds(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout,
         providers: Set<PrototypeService>) {
-        fun active() = resumed.get() && epoch.get() == run && !isFinishing
+        val ownedRun = cachedRun
+        fun active() = resumed.get() && epoch.get() == run && !isFinishing &&
+            (ownedRun == null || cachedCleanup.current(ownedRun))
+        if (!active()) return
         val created = mutableListOf<Pair<Int, PrototypeFeedSession>>()
         selected.feeds.forEachIndexed { index, source ->
             if (source.service !in providers || failures[index] != null || sessions[index] != null) return@forEachIndexed
@@ -456,7 +516,10 @@ open class PrototypeActivity : ComponentActivity() {
                 val feedActive = { active() && failures[index] == null }
                 val session = when (source.service) {
                     PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
-                        route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index))
+                        route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index),
+                        onHelperCreated = { helper -> cachedCleanup.helper(checkNotNull(ownedRun), helper,
+                            helper::destroy) { !helper.cleanupFailed } },
+                        onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId
@@ -473,14 +536,25 @@ open class PrototypeActivity : ComponentActivity() {
                                     androidTwitchLiveIdentityResolver(this, instanceId, profile, feedActive,
                                         twitchBroadcasterRetryGate, expectedRoute = routeChoice)
                                 }, openConnection = route::open,
-                                diagnostics = feedDiagnostics(index), preparationFactory = preparation)
+                                diagnostics = feedDiagnostics(index), preparationFactory = preparation,
+                                onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                         } else PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
                             openConnection = route::open, preparationFactory = preparation,
                             diagnostics = feedDiagnostics(index),
-                            initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L)
+                            initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L,
+                            onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                     }
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
+                ownedRun?.let { cachedCleanup.feed(it, index, session,
+                    pending = { (session as? CachedPrototypeAbemaSession)?.cleanupPending == true },
+                    knownFailed = { session.cleanupFailed }) {
+                    when (session) {
+                        is CachedPrototypeAbemaSession -> session.cleanupConfirmed
+                        is PrototypeTwitchSession -> session.cleanupConfirmed
+                        else -> !session.cleanupFailed
+                    }
+                } }
                 created += index to session
                 session.providerView?.let { page ->
                     if (useCachedAbema) {
@@ -757,7 +831,8 @@ open class PrototypeActivity : ComponentActivity() {
         surfaces.getOrNull(index)?.player = null
         val host = sessions[index]
         sessions = sessions.toMutableList().also { it[index] = null }
-        val closed = feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { host?.close() } && host?.cleanupFailed != true
+        val closed = cachedRun?.let { cachedCleanup.closeFeed(it, index) } ?:
+            (feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { host?.close() } && host?.cleanupFailed != true)
         if (!closed) {
             feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)
             cleanupFailed = true
@@ -790,12 +865,16 @@ open class PrototypeActivity : ComponentActivity() {
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()
+        cachedRun?.let(cachedCleanup::end)
         if (!diagnostics.cleanupAll(FailureStage.VIEWER_END) { viewer?.endSession() }) cleanupFailed = true
         viewer = null
         qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
-        playback?.close(); playback = null
+        if (useCachedAbema) {
+            if (!diagnostics.cleanupAll(FailureStage.PLAYBACK_CLOSE) { playback?.close() }) cleanupFailed = true
+        } else playback?.close()
+        playback = null
         surfaces.forEach { it.player = null }; surfaces = emptyList()
-        sessions.forEachIndexed { index, session ->
+        if (cachedRun == null) sessions.forEachIndexed { index, session ->
             if (!feedDiagnostics(index).cleanupAll(FailureStage.FEED_CLOSE) { session?.close() } || session?.cleanupFailed == true) {
                 feedDiagnostics(index).report(FailureStage.FEED_CLEANUP_UNCONFIRMED)
                 cleanupFailed = true
@@ -812,6 +891,18 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun releaseRoutes() {
+        cachedRun?.let { owned ->
+            cachedCleanup.end(owned)
+            if (cachedCleanup.failed) cleanupFailed = true
+            cachedRun = null
+            routePreparation = null
+            routes = emptyMap(); routeProfiles = emptyMap(); routeChoices = emptyMap()
+            updateRecoveryState(); recoveryState.notifyChanged()
+            return
+        }
+        // Cached resources are owned by the process coordinator even when the
+        // Activity has already relinquished its local handle.
+        if (useCachedAbema) return
         cancelRoutePreparation()
         val oldRoutes = routes.values.distinct()
         routes = emptyMap()
@@ -833,13 +924,7 @@ open class PrototypeActivity : ComponentActivity() {
             if (!confirmed) { cleanupFailed = true; routeCleanupFailed = true }
             updateRecoveryState(); recoveryState.notifyChanged()
         }
-        if (useCachedAbema) {
-            webRoute.clear(diagnostics) { closeRoutes(true) }
-            handler.postDelayed({
-                if (!completed) diagnostics.report(FailureStage.ROUTE_CLEAR_TIMEOUT)
-                closeRoutes(false)
-            }, 3_000)
-        } else closeRoutes(true)
+        closeRoutes(true) // Noncached route lifecycle only; cached ownership returned above.
     }
 
     private fun closeRoutesAsync(owned: List<RouteSession>, onComplete: (Boolean) -> Unit) {
@@ -851,6 +936,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun cancelRoutePreparation() {
+        if (cachedRun != null) return // The process owner signals and retains it.
         if (routePreparation?.cancel() == false) {
             diagnostics.report(FailureStage.ROUTE_CANCEL_UNCONFIRMED)
             cleanupFailed = true; routeCleanupFailed = true; routeCleanupPending = true

@@ -18,11 +18,12 @@ class AbemaPublicBundleHttpTest {
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, bytes.size)
     private class Connection(url: URL, val body: ByteArray, val status: Int = 200,
         val length: Long = -1, val mime: String? = "application/javascript; charset=utf-8",
-        val beforeResponse: () -> Unit = {}, val beforeRead: () -> Unit = {}) : HttpsURLConnection(url) {
+        val beforeResponse: () -> Unit = {}, val beforeRead: () -> Unit = {},
+        val closeStream: () -> Unit = {}, val disconnectAction: () -> Unit = {}) : HttpsURLConnection(url) {
         var disconnected = false
         var bodyRead = false
         override fun connect() = Unit
-        override fun disconnect() { disconnected = true }
+        override fun disconnect() { disconnected = true; disconnectAction() }
         override fun usingProxy() = false
         override fun getCipherSuite() = "fixture"
         override fun getLocalCertificates(): Array<Certificate>? = null
@@ -33,6 +34,7 @@ class AbemaPublicBundleHttpTest {
         override fun getInputStream(): InputStream {
             bodyRead = true
             return object : ByteArrayInputStream(body) {
+                override fun close() { closeStream() }
                 override fun read(buffer: ByteArray, offset: Int, count: Int): Int {
                     beforeRead()
                     return super.read(buffer, offset, count)
@@ -175,4 +177,39 @@ class AbemaPublicBundleHttpTest {
         assertTrue(connection.disconnected)
         assertFalse(connection.bodyRead)
     }
+
+    @Test fun streamCloseErrorNotifiesOwnerAttemptsDisconnectAndRetainsFirstFailure() {
+        var streamCloses = 0
+        val error = AssertionError("fixture")
+        val connection = Connection(identity().uri.toURL(), bytes, closeStream = {
+            streamCloses++; if (streamCloses == 1) throw error
+        })
+        val receipt = net.fstab.tachiai.platform.media.NativeCleanupReceipt()
+        val seen = mutableListOf<Throwable>()
+        val http = AbemaPublicBundleHttp(identity = identity(),
+            open = { receipt.allocate(10, { connection }) { it.disconnect() } },
+            openInput = { receipt.input { it.inputStream } },
+            onFailure = { receipt.failed(); seen.add(it) })
+        assertSame(error, assertThrows(AssertionError::class.java) { http.fetch() })
+        assertTrue(connection.disconnected); assertSame(error, seen.single())
+        http.close()
+        assertThrows(IOException::class.java) { receipt.close() }
+        assertFalse(receipt.confirmed); assertEquals(1, streamCloses)
+    }
+    @Test fun disconnectErrorAfterActiveRemovalCannotBecomeConfirmedOnLaterSuccess() {
+        var disconnects = 0; val error = AssertionError("fixture")
+        val connection = Connection(identity().uri.toURL(), bytes, status = 503,
+            disconnectAction = { disconnects++; if (disconnects == 1) throw error })
+        val receipt = net.fstab.tachiai.platform.media.NativeCleanupReceipt()
+        val seen = mutableListOf<Throwable>()
+        val http = AbemaPublicBundleHttp(identity = identity(),
+            open = { receipt.allocate(10, { connection }) { it.disconnect() } },
+            onFailure = { receipt.failed(); seen.add(it) })
+        failure(AbemaBundleFailure.NETWORK_FAILED) { http.fetch() }
+        assertFalse(connection.bodyRead); assertSame(error, seen.single())
+        http.close()
+        assertThrows(IOException::class.java) { receipt.close() }
+        assertEquals(2, disconnects); assertFalse(receipt.confirmed)
+    }
+
 }

@@ -38,10 +38,11 @@ internal fun configuredTwitchBroadcasterSession(context: Context, resource: Cata
     openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
     diagnostics: FailureReporter = FailureReporter.NONE,
-    preparationFactory: (() -> TwitchPlaybackPreparation)? = null): PrototypeTwitchSession =
+    preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
+    onCleanupChanged: () -> Unit = {}): PrototypeTwitchSession =
     PrototypeTwitchSession(context, false, resource.identity, active, onEvent, openConnection,
         authorization, diagnostics, broadcasterResource = resource, liveIdentityResolverFactory = liveIdentityResolverFactory,
-        preparationFactory = preparationFactory)
+        preparationFactory = preparationFactory, onCleanupChanged = onCleanupChanged)
 
 @UnstableApi
 internal class PrototypeTwitchSession(
@@ -57,6 +58,7 @@ internal class PrototypeTwitchSession(
     private val broadcasterResource: CatalogResource? = null,
     private val liveIdentityResolverFactory: (() -> TwitchLiveIdentityResolver)? = null,
     preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
+    private val onCleanupChanged: () -> Unit = {},
 ) : PrototypeFeedSession {
     init {
         if (broadcasterResource == null) {
@@ -77,11 +79,13 @@ internal class PrototypeTwitchSession(
     private val firstFailure = PrototypeFeedFailureLatch()
     private val identityResolver = AtomicReference<TwitchLiveIdentityResolver?>()
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
-    override var cleanupFailed: Boolean = false
+    @Volatile override var cleanupFailed: Boolean = false
         private set
     private val preparation = preparationFactory?.invoke()
         ?: NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection, authorization)
     private var host: BoundedNativePlayer? = null
+    @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
+    val cleanupConfirmed get() = closed.get() && !cleanupFailed && nativeCleanup?.confirmed != false
     override val providerView: View? = null
     override val member: NativePairMember? get() = host
     override val player: Player? get() = host?.player
@@ -152,6 +156,8 @@ internal class PrototypeTwitchSession(
                             allowedUri = { allowedTwitchMediaUri(it, observedReplayCdn = replay) },
                             handleAudioFocus = false, canRequest = { preparation.checkStored() },
                             openConnection = openConnection,
+                            onCleanupOwner = { nativeCleanup = it },
+                            onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() },
                             onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
@@ -245,13 +251,14 @@ internal class PrototypeTwitchSession(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         releaseIdentityResolver()
+        var nativeClosed = host == null
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.TWITCH_PREPARATION_CLOSE to { preparation.close() },
-            FailureStage.NATIVE_HOST_CLOSE to { host?.close() },
+            FailureStage.NATIVE_HOST_CLOSE to { host?.close(); nativeCleanup?.close(); nativeClosed = true },
             FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
         )) {
-            if (!diagnostics.cleanup(stage, cleanup)) cleanupFailed = true
+            if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }
-        host = null
+        if (nativeClosed) host = null
     }
 }

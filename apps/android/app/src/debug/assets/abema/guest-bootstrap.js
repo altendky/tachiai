@@ -119,7 +119,8 @@
       typeof reply.profile.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.profile.userId)) throw new Error();
     return reply.profile.userId;
   }
-  const episodeId = '394-72_s10_p8529';
+  const diagnosticEpisodeId = '394-72_s10_p8529';
+  let episodeId;
   function parseEpisodeText(text) {
     const reply = parseBoundedJsonText(text, true);
     if (!reply || Array.isArray(reply) || typeof reply !== 'object' || reply.id !== episodeId ||
@@ -232,14 +233,19 @@
       controllers.delete(controller);
     }
   }
-  window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY') => {
+  window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE'].includes(operation)) {
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE'].includes(operation) ||
+      (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
+        resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
     started = true;
+    episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure }), stop: () => stop(),
+      ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
+        stringify(episode) : null } : {}),
     }) });
     (async () => {
       try {
@@ -285,7 +291,7 @@
           // Same server profile is the future client binding, still a guest.
           guest = Object.freeze({ ...guest, clientId: profileId });
           failure = 'NONE'; state = 'GUEST_PROFILE_BOUND';
-        } else if (operation === 'VERIFY_EPISODE') {
+        } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';
           episode = await boundedReply(apiOrigin + '/v1/video/programs/' + episodeId,
             { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },

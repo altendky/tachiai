@@ -1,10 +1,16 @@
 package net.fstab.tachiai.provider.abema
 
+import android.app.Application
+import android.content.Intent
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ActivityScenario
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback
+import androidx.test.runner.lifecycle.Stage
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.CookieHandler
@@ -54,6 +60,101 @@ class AbemaEpisodeMetadataProbeDeviceTest {
             "{\"id\":\"$EPISODE\",\"episode\":{\"title\":\" Fixture\"}}",
             "[$valid]",
         )) assertThrows(Refused::class.java) { projectEpisode(invalid) }
+    }
+
+    @Test fun optInSavedRouteRefreshesExactEpisodeThroughActualAndroidCatalogAndPreservesEncryptedRecords() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaEpisodeRefresh") == "true")
+        assumeTrue(Build.VERSION.SDK_INT >= 28)
+        assumeTrue(Application.getProcessName() == instrumentation.targetContext.packageName)
+        val verifiedAvd = try {
+            ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation
+                .executeShellCommand("getprop ro.boot.qemu.avd_name")).use { input ->
+                val bytes = ByteArray(129)
+                var size = 0
+                while (size < bytes.size) {
+                    val count = input.read(bytes, size, bytes.size - size)
+                    if (count < 0) break
+                    size += count
+                }
+                size <= 128 && String(bytes, 0, size, Charsets.UTF_8).trim() == "tachiai-dev"
+            }
+        } catch (_: Throwable) { false }
+        assumeTrue("Requires verified tachiai-dev AVD", verifiedAvd)
+
+        // This is the ordinary instrumentation/main process. Only the bound
+        // production service creates a WebView in the isolated guest process.
+        val context = instrumentation.targetContext
+        val instanceId = defaultProviderInstanceId(PrototypeService.ABEMA)
+        fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
+            { providerInstanceStore(context).read { legacyProviderSettings(context) } },
+            { connectionProfileStore(context).selected(it) })
+        val before = encryptedRecords(context.noBackupFilesDir)
+        val owner = readOwner()
+        // Instrumentation can restart the main process without an Activity.
+        // Explicitly open the passive launcher menu, never a provider page or
+        // playback action, before establishing the foreground lease.
+        val foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(
+            Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        val active = AtomicBoolean()
+        val lifecycle = ActivityLifecycleMonitorRegistry.getInstance()
+        val callback = ActivityLifecycleCallback { _, stage ->
+            if (stage in setOf(Stage.PAUSED, Stage.STOPPED, Stage.DESTROYED)) active.set(false)
+        }
+        instrumentation.runOnMainSync {
+            active.set(lifecycle.getActivitiesInStage(Stage.RESUMED).isNotEmpty())
+            lifecycle.addLifecycleCallback(callback)
+        }
+        val resource = CatalogResource(ProviderId("abema"), "episode", "394-72_s10_p8529", CatalogIntent.VIDEO)
+        var catalog: ProviderCatalog? = null
+        var result: CatalogResult<CatalogEntry>? = null
+        var closeReturned = false
+        val started = SystemClock.elapsedRealtime()
+        try {
+            assertTrue("Refresh probe requires the app to remain foreground", active.get())
+            catalog = androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), active::get)
+            result = catalog.refresh(resource)
+        } finally {
+            active.set(false)
+            try { catalog?.close(); closeReturned = true }
+            finally {
+                instrumentation.runOnMainSync { lifecycle.removeLifecycleCallback(callback) }
+                foreground.close()
+            }
+        }
+        val after = encryptedRecords(context.noBackupFilesDir)
+        val storesUnchanged = before.keys == after.keys && before.all { (name, digest) ->
+            after[name]?.let { MessageDigest.isEqual(digest, it) } == true
+        }
+        val ownerUnchanged = owner.sameOwnership(readOwner())
+        val entry = (result as? CatalogResult.Value)?.value
+        val exactMetadata = entry != null && entry.resource == resource && entry.availability == CatalogAvailability.UNKNOWN &&
+            entry.scheduledStartEpochMs == null
+        // Output is closed categories only. No provider title, response, owner
+        // proof, configuration or stored bytes enter logs/assertion messages.
+        val outcome = when {
+            !closeReturned -> "CLOSE_FAILED"
+            !storesUnchanged -> "STORES_CHANGED"
+            !ownerUnchanged -> "OWNER_CHANGED"
+            exactMetadata -> "EXACT_EPISODE_METADATA"
+            result is CatalogResult.Failure -> "CATALOG_${result.reason.name}"
+            else -> "INVALID_RESPONSE"
+        }
+        Log.i("TachiaiAbemaEpisodeProbe", "source=GUEST_CATALOG outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
+            "routeMode=${owner.instance.setup.route!!.mode.name}")
+        assertTrue("Catalog refresh must finish within its bounded operation and cleanup budgets",
+            SystemClock.elapsedRealtime() - started in 0 until 70_000)
+        assertTrue("Catalog refresh must preserve encrypted records", storesUnchanged)
+        assertTrue("Catalog refresh must preserve its captured owner", ownerUnchanged)
+        // Facade close signals local cancellation/unbinding; the successful
+        // metadata reply itself requires remote confirmed cleanup. This check
+        // does not independently prove Binder release or remote teardown.
+        assertTrue("Catalog refresh must release its local facade", closeReturned)
+        assertTrue("Catalog refresh must return exact normalized episode metadata", exactMetadata)
     }
 
     @Test fun optInSavedRouteChecksOneAnonymousEpisodeAndPreservesEncryptedRecords() {

@@ -80,6 +80,10 @@
             android:exported="false"
             android:process=":abema_guest_bootstrap" />
         <service
+            android:name=".provider.abema.AbemaSeriesMetadataService"
+            android:exported="false"
+            android:process=":abema_guest_bootstrap" />
+        <service
             android:name=".provider.abema.account.AbemaAccountBootstrapService"
             android:exported="false"
             android:process=":abema_guest_bootstrap" />

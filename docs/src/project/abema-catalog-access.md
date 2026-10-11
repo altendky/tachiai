@@ -327,6 +327,53 @@ profile authorization proof. Broader discovery and exact slot/series resolution
 remain outstanding in #101; this adapter does not choose a current channel or
 an arbitrary episode on behalf of a collection.
 
+### Explicit series episode browsing
+
+Issue [#176](https://github.com/altendky/tachiai/issues/176) adds a narrow
+series-children adapter through the existing shared catalog. A selected exact
+series remains a collection: the user browses its episodes, chooses an exact
+episode and explicitly adds it to Tachiai's configured list. The provider's
+auto-next/first-item behavior does not choose a configured playback resource.
+Back and Add retain the shared management flow; provider omissions or refusal
+never remove configured identities, order or quality preferences.
+
+The retained coherent
+[9298 entry](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js),
+[3795 request/DTO chunk](https://abema.tv/assets/compat/35a6b0a35f792be3.3795.bundle.js)
+and [6245 consumer](https://abema.tv/assets/compat/3eaa977a7f089316.6245.bundle.js)
+establish a bearer GET to the reviewed modern API's exact series-program path.
+The consumer requests pages of 20 with ascending `seq` or descending `-seq`
+order and advances its requested offset by 20. Program ID and matching series
+ID establish exact identity; the nested episode title supplies display text.
+Series-local search is not global video search, and calendar timestamp
+conversion does not establish every provider timestamp's units.
+
+The initial adapter uses ascending `seq`, a fixed page size of 20 and bounded
+locally requested offsets. The isolated guest operation retains one immutable
+series/page request, the owning instance/route proof, original deadline and
+foreground checks. It exports only strictly normalized public episode rows
+after confirmed runtime/route cleanup. Duplicate or wrong-parent joins,
+malformed titles and ambiguous response data refuse the page. Availability
+remains UNKNOWN, without inferred schedule, progress or entitlement. No
+existing-account connection, approval challenge, browser or grant write is
+part of this operation.
+
+The provider DTO coerces version to String and offset to Number; its reviewed
+consumer ignores both and supplies no version parameter. Those coercions do
+not prove raw wire types or stable snapshot semantics. Tachiai initially
+accepts only a nonempty bounded raw version string, with no coercion. Transient
+single-use continuation handles bind that version, exact parent, order,
+requested offset and owner revision; subsequent results must match the pinned
+version. Missing, unsupported or changed versions refuse visibly rather than
+claim that a list is exhausted. Response offset is not interpreted.
+
+This is a conservative implementation and static-evidence boundary. Actual
+fresh-guest compatibility, raw version shape and versioned-request behavior
+remain separate acceptance gates. Network-blocked fixtures and opt-in
+saved-route observations must preserve existing authorization/configuration.
+Series browsing does not imply global video search, timetable/slot resolution
+or an automatically playable permanent sumo collection.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata

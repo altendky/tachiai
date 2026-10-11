@@ -39,6 +39,11 @@ internal fun readAbemaCatalogRouteOwner(instanceId: String, readInstances: () ->
     return AbemaCatalogRouteOwner(instance, profile)
 }
 
+// Protected owner reads run on workers, outside lifecycle locks. A successful
+// read cannot resurrect admission revoked while that read was in progress.
+internal fun abemaCatalogOwnerCurrent(canRemainActive: () -> Boolean, readOwnerMatches: () -> Boolean): Boolean =
+    canRemainActive() && (try { readOwnerMatches() } catch (_: Throwable) { false }) && canRemainActive()
+
 // Constructed/called on workers. Local import owns the instance separately from
 // metadata admission, so a broken saved route never becomes a System request.
 internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
@@ -54,19 +59,25 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     var closed = false
     var cleanupFailed = false
     fun canRemainActive(): Boolean = canUse() && !synchronized(lock) { closed || cleanupFailed }
-    fun current(): Boolean = canRemainActive() && captured != null &&
-        runCatching { captured.sameOwnership(readOwner()) }
+    fun current(): Boolean = abemaCatalogOwnerCurrent(::canRemainActive) {
+        captured != null && runCatching { captured.sameOwnership(readOwner()) }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
+    }
     fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
         runCatching { instances().any { it.id == instanceId && it.service == PrototypeService.ABEMA } }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
-    val publicCatalog = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
+    val channels = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
         OwnedAbemaChannelTransport(captured?.profile, canRequest = { gate() && current() },
             onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics)
     }, canPublish = ::current, episodeTransportFactory = if (captured == null) null else { gate ->
         AndroidAbemaEpisodeMetadataClient(application, instanceId, captured.proof(),
             canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
     })
+    val publicCatalog = AbemaSeriesChildrenCatalog(channels,
+        transportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
+            AndroidAbemaSeriesMetadataClient(application, instanceId, captured.proof(),
+                canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
+        }, canPublish = ::current)
     // Account proof is worker-owned and cannot start Connect or mutate storage.
     // Its cleanup gate is separate so an unverified collection does not disable
     // independently usable public discovery or local configured-item management.

@@ -228,9 +228,14 @@ entitlement, collection access or playback merely from login success.
 ### Existing-account connection implementation
 
 The debug Providers screen now offers an instance-owned ABEMA account screen.
-The owner enters the intended ABEMA account ID only in that protected screen;
-the value stays in memory and is cleared across recreation. This is an identity
-check for the provider-controlled approval, not a password prompt. The app
+Connect is enabled once the controller is ready and idle, without entering an
+account ID, email or password and without a confirmation checkbox. ABEMA handles
+sign-in, account selection and approval through its own browser or app. The
+internal provider identity comes from the approved token response rather than
+the user's email sign-in identifier. Provider documentation describes
+[email account sharing and mobile-app QR approval](https://help.abema.tv/hc/ja/articles/28570588900377);
+it does not establish that the device-approval URL itself offers email login.
+The app
 prepares a fresh guest and short-lived challenge in a separate private process,
 then returns the private challenge through same-UID IPC only after confirmed
 runtime and route cleanup. The external browser handles provider login and
@@ -245,8 +250,9 @@ polling additionally has a five-minute limit. Only the observed flat
 AUTHORIZATION_PENDING response permits bounded continued polling. Unknown
 responses or uncertain cleanup stop the attempt.
 
-A returned grant must have a matching provider user ID, JWT subject, fresh
-authenticated profile and the owner's explicit intended ID. JWT decoding alone
+A returned grant must have exact agreement among its provider user ID, JWT
+subject and fresh authenticated profile, and must differ from the fresh guest.
+The account explicitly approved on ABEMA is the selected account. JWT decoding alone
 is not cryptographic validation. A positive finite future expiry is required;
 the Twitch-specific seven-day unknown-expiry policy does not apply. Native
 cookie-independent renewal is unverified and therefore requires reconnection

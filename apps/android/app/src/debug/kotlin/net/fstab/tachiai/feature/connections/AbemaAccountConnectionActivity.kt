@@ -33,9 +33,9 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             BackHandler { finish() }
             val current = controller
             val state = if (current == null) initial else current.state.collectAsState().value
-            AbemaAccountConnectionScreen(state, { current?.connect(it) }, { current?.handoff(::openApproval) },
+            AbemaAccountConnectionScreen(state, { current?.connect() }, { current?.handoff(::openApproval) },
                 { current?.continueApproval() }, { current?.revalidate() }, { current?.checkEnforcement() },
-                { current?.forget() }, { current?.cancelAction() }, ::finish)
+                { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null)
         } }
         val id = intent.getStringExtra(INSTANCE_ID)
         if (id == null || !validProviderInstanceId(id)) { initial = initial.copy(status = AbemaAccountStatus.NOT_VERIFIED, progress = AbemaAccountProgress.IDLE); return }

@@ -26,6 +26,7 @@ class AbemaAccountConnectionControllerTest {
         var profileMismatch = false; var preparations = 0; var tokens = 0; var closed = 0; var closeThrows = false
         var onToken: () -> Unit = {}
         var ownerReads = 0
+        val profileIds = mutableListOf<String>()
         val results = ArrayDeque<AbemaAccountTokenResult>()
         val worker = Work(); val cancel = Work(); val main = ArrayDeque<() -> Unit>()
         private val later = mutableListOf<Pair<Long, () -> Unit>>()
@@ -41,11 +42,12 @@ class AbemaAccountConnectionControllerTest {
             override fun transport(owner: AbemaCatalogRouteOwner, gate: () -> Boolean) = object : AbemaAccountTransport {
                 override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
                     if (!gate()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                    profileIds.add(id)
                     if (bearer == "tachiai-invalid-bearer" && !negativeAccepted) return AbemaAccountProfileResult.Rejected
                     return AbemaAccountProfileResult.Identity(if (profileMismatch && id != "guest") "other" else id)
                 }
-                override fun token(challenge: AbemaAccountChallenge, expectedId: String): AbemaAccountTokenResult {
-                    assertEquals("intended-account", expectedId); tokens++; onToken()
+                override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult {
+                    assertEquals("guest", challenge.clientId); tokens++; onToken()
                     return results.removeFirstOrNull() ?: AbemaAccountTokenResult.Pending
                 }
                 override fun cancelActiveRequest() = Unit
@@ -63,9 +65,9 @@ class AbemaAccountConnectionControllerTest {
                 if (!did) return
             }; error("Fixture did not settle")
         }
-        fun prepared() { controller.load(); pump(); controller.connect("intended-account"); pump(); assertTrue(controller.state.value.canApprove) }
+        fun prepared() { controller.load(); pump(); controller.connect(); pump(); assertTrue(controller.state.value.canApprove) }
         fun handedOff() { prepared(); var launched = false; controller.handoff { launched = true; assertTrue(validAbemaVerificationUri(it)); true }; pump(); assertTrue(launched) }
-        fun granted() = AbemaAccountTokenResult.Granted(decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall))
+        fun granted(id: String = "intended-account") = AbemaAccountTokenResult.Granted(decodedAbemaGrant(fixtureAccountToken(id), id, wall))
     }
     @Test fun completeProviderControlledFlowPersistsOnlyMatchingPositiveGrantAfterPrivateHandoff() {
         val f = Fixture(); f.handedOff(); assertNull(f.storage.bytes)
@@ -77,7 +79,7 @@ class AbemaAccountConnectionControllerTest {
     }
     @Test fun positiveProfileAloneCannotPermitHandoffOrPersistence() {
         val f = Fixture(); f.negativeAccepted = true; f.controller.load(); f.pump()
-        f.controller.connect("intended-account"); f.pump()
+        f.controller.connect(); f.pump()
         assertFalse(f.controller.state.value.canApprove); assertEquals(AbemaAccountStatus.NOT_VERIFIED, f.controller.state.value.status)
         var launches = 0; f.controller.handoff { launches++; true }; f.pump(); assertEquals(0, launches); assertNull(f.storage.bytes); assertEquals(0, f.tokens)
     }
@@ -129,13 +131,38 @@ class AbemaAccountConnectionControllerTest {
         f.negativeAccepted = false; f.controller.revalidate(); f.pump(); assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
         f.controller.close(); assertNotNull(f.store.read())
     }
-    @Test fun invalidConnectWithCurrentLeaseIsPureLocalGuardWithoutOwnerReadOrWorkerDispatch() {
-        val f = Fixture(); f.handedOff(); f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
+    @Test fun connectRequiresNoIdentityAndNeverReadsProtectedOwnershipOnTheCaller() {
+        val f = Fixture(); f.controller.load(); f.pump(); val reads = f.ownerReads
+        f.controller.setForeground(false); f.controller.connect()
+        assertTrue(f.worker.queued.isEmpty()); assertEquals(reads, f.ownerReads)
+        f.controller.setForeground(true); f.controller.connect()
+        assertEquals(reads, f.ownerReads); assertEquals(1, f.worker.queued.size)
+        f.controller.connect(); assertEquals(1, f.worker.queued.size); assertEquals(reads, f.ownerReads)
+        f.pump(); assertTrue(f.controller.state.value.canApprove); assertNull(f.storage.bytes)
+    }
+    @Test fun providerApprovedAccountDefinesTheSavedIdentityWithoutManualInput() {
+        val f = Fixture(); f.controller.load(); f.pump()
+        val reads = f.ownerReads
+        f.controller.connect()
+        assertEquals(reads, f.ownerReads) // No protected read on the caller.
+        assertEquals(AbemaAccountProgress.PREPARING, f.controller.state.value.progress)
+        f.pump(); assertTrue(f.controller.state.value.canApprove)
+        f.controller.handoff { true }; f.pump(); f.results.add(f.granted("different-approved-account"))
+        f.controller.continueApproval(); f.pump()
         assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
-        val reads = f.ownerReads; val previous = f.storage.bytes!!.copyOf()
-        f.controller.connect("invalid account ID")
-        assertEquals(reads, f.ownerReads); assertTrue(f.worker.queued.isEmpty())
-        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status); assertArrayEquals(previous, f.storage.bytes)
+        assertEquals("different-approved-account", f.store.read()!!.grant.userId); assertEquals(1, f.tokens)
+        assertFalse(f.controller.state.value.toString().contains("different-approved-account"))
+    }
+    @Test fun returnedGuestIdentityNeverReplacesAnExistingAccountOrRequestsItsProfile() {
+        val f = Fixture(); f.handedOff(); f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
+        val previous = f.storage.bytes!!.copyOf()
+        f.controller.connect(); f.pump(); f.controller.handoff { true }; f.pump()
+        val profiles = f.profileIds.size
+        f.results.add(f.granted("guest")); f.controller.continueApproval(); f.pump()
+        assertFalse(f.controller.state.value.canApprove); assertFalse(f.controller.state.value.canContinue)
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status) // The prior valid account remains usable.
+        assertEquals(profiles, f.profileIds.size); assertEquals(2, f.tokens)
+        assertArrayEquals(previous, f.storage.bytes); assertEquals("intended-account", f.store.read()!!.grant.userId)
     }
     @Test fun queuedApprovalHandoffChecksExpiryBeforeWorkerAndBeforeMainLaunch() {
         for (beforeWorker in listOf(true, false)) {
@@ -173,7 +200,7 @@ class AbemaAccountConnectionControllerTest {
             val f = Fixture(); f.handedOff(); f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
             assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
             val previous = f.storage.bytes!!.copyOf()
-            f.controller.connect("intended-account"); f.pump(); f.controller.handoff { true }; f.pump()
+            f.controller.connect(); f.pump(); f.controller.handoff { true }; f.pump()
             val entered = CountDownLatch(1); val release = CountDownLatch(1); val holdFirst = AtomicBoolean(true)
             val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
             f.storage.writeHook = { if (holdFirst.getAndSet(false)) { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) } }

@@ -18,6 +18,7 @@
   let selected;
   let selectedEpisode;
   let selectedChannel;
+  let selectedSlot;
   let expectedGateway;
   let license;
   let user;
@@ -34,7 +35,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
-    response = selected = selectedEpisode = selectedChannel = expectedGateway = license = user = operation = undefined;
+    response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -252,15 +253,19 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
+    const configuredSlot = requestedSlot !== undefined;
+    if (configuredSlot && (configured || configuredChannel || !replay || typeof requestedSlot !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requestedSlot))) return;
     if (configuredChannel && (configured || replay || typeof requestedChannel !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requestedChannel))) return;
     if (configured && (!replay || typeof requestedEpisode !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestedEpisode))) return;
     const episodeId = configured ? requestedEpisode : '394-72_s10_p8529';
     const channelId = configuredChannel ? requestedChannel : 'abema-news';
+    const slotRequest = configuredSlot ? requestedSlot.split('/') : undefined;
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
     const name = '__tachiaiNative_' + nonce;
@@ -268,8 +273,10 @@
       status: () => state,
       metadata: () => stringify({ phase, modules: count, lastModule, http, failure }),
       selectedSource: () => !stopped && state === 'READY' ? selected : null,
-      sourceBinding: () => !stopped && state === 'READY' && replay ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
+      sourceBinding: () => !stopped && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       channelBinding: () => !stopped && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
+      slotBinding: () => !stopped && state === 'READY' && configuredSlot ?
+        stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected }) : null,
       begin,
       take: () => { if (stopped || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -278,7 +285,7 @@
     (async () => {
       try {
         const load = loadModules();
-        if ((configured || configuredChannel) && load(74284).kt?.api !== 'https://api.p-c3-e.abema-tv.com') throw new Error();
+        if ((configured || configuredChannel || configuredSlot) && load(74284).kt?.api !== 'https://api.p-c3-e.abema-tv.com') throw new Error();
         const utilities = load(27594);
         const helper = load(14405);
         operation = (helper.__esModule ? helper.default : helper)(utilities.__esModule ? utilities.default : utilities);
@@ -291,10 +298,10 @@
         const request = load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
           applicationKeySecret, deviceId });
         const guestReply = await json(new URL(load(24968).T.LOGIN_GUEST, location.origin), {
-          method: 'POST', credentials: configured || configuredChannel ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
+          method: 'POST', credentials: configured || configuredChannel || configuredSlot ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
           body: stringify(request),
         }, 65536);
-        if ((configured || configuredChannel) && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
+        if ((configured || configuredChannel || configuredSlot) && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
           !guestReply.user_id || guestReply.user_id.length > 256 || !guestReply.access_token || guestReply.access_token.length > 8192)) throw new Error();
         user = load(5304).V8.fromJSON(guestReply);
         if (typeof user.userId !== 'string' || typeof user.accessToken !== 'string' ||
@@ -310,13 +317,13 @@
         state = 'WAITING_SOURCE'; phase = 'CONTENT';
         // Source/session construction below is supplied from reviewed provider
         // interfaces; never fall back to the original page or a guessed MPD.
-        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId);
+        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest);
         alive();
         phase = 'READY'; state = 'READY';
       } catch { stop(true); }
     })();
   };
-  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId) {
+  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest) {
     const browser = load(60506).N;
     const clientInfo = {
       app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
@@ -328,6 +335,10 @@
     // Invoke the provider's uninitialized/default feature adapter unchanged.
     // Current remote flag evaluation is not established by this prototype.
     const flags = { getValue: (name, fallback) => load(91966).sD().stringVariation(name, fallback) };
+    if (slotRequest) {
+      await prepareSlotSource(load, identity, browser, slotRequest);
+      return;
+    }
     if (!replay) {
       const metadata = await json('https://api.abema.io/v1/channels', { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
       if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
@@ -536,16 +547,124 @@
       url.pathname.startsWith('/channel/' + channelId + '/') && url.pathname.endsWith('.mpd') &&
       /^[A-Za-z0-9_./~$-]+$/.test(url.pathname);
   }
-  async function prepareLegacyLicense(load, identity, channelId) {
+  async function prepareLegacyLicense(load, identity, contentId, contentType = 'channel') {
     // Public legacy DASH wrapper binds the Clear Key endpoint to a Linear
-    // channel using these three parameters. Compose ordinary URL fields only;
+    // channel, or Timeshift slot, using these three parameters. Compose URL fields only;
     // response processing stays in the unchanged provider helper.
     const url = new URL(load(78307).rC.CLEARKEY);
     if (url.protocol !== 'https:' || url.hostname !== 'license.p-c3-e.abema-tv.com' || url.port ||
       url.pathname !== '/abematv-dash' || url.username || url.password || url.search || url.hash) throw new Error();
     url.searchParams.set('t', identity.mediaToken);
-    url.searchParams.set('cid', channelId);
-    url.searchParams.set('ct', 'channel');
+    if (!['channel', 'slot'].includes(contentType)) throw new Error();
+    url.searchParams.set('cid', contentId);
+    url.searchParams.set('ct', contentType);
     license = url.href;
+  }
+  async function prepareSlotSource(load, identity, browser, [channelId, slotId]) {
+    // Fixed public HTML is read as data in this cookie-free owned runtime.
+    // Never load/execute the page or fabricate GPS/country/timezone. A CDN200,
+    // saved route, returned playlist or Japan-only policy is not positive region proof.
+    phase = 'SLOT_REGION';
+    await requireSlotRegion();
+    alive();
+    phase = 'CONTENT';
+    const slot = await json('https://api.p-c3-e.abema-tv.com/v1/media/slots/' + slotId + '?include=payperview', {
+      credentials: 'omit', cache: 'no-store', headers: { Authorization: 'Bearer ' + identity.accessToken },
+    }, 512 * 1024);
+    const record = value => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (!record(slot) || slot.id !== slotId || slot.channelId !== channelId) refuseResponse();
+    phase = 'SLOT_FREE';
+    if (!record(slot.flags) || slot.flags.timeshift !== true || slot.flags.timeshiftFree !== true) throw new Error();
+    phase = 'SLOT_RESTRICTIONS';
+    if ((slot.flags.paused !== undefined && slot.flags.paused !== false) ||
+      (slot.mark !== undefined && (!record(slot.mark) || (slot.mark.drm !== undefined && slot.mark.drm !== false))) ||
+      (slot.payperview !== undefined && slot.payperview !== null) ||
+      !record(slot.broadcastRegionPolicies) ||
+      ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.timeshift)) throw new Error();
+    phase = 'SLOT_WINDOW';
+    const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
+    const future = value => seconds(value) && value * 1000 > Date.now() + 300000;
+    // This first guest slice supports ended ordinary catch-up, not live/chase.
+    // Explicit free plus absent/zero free-end uses the separate general window.
+    if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt ||
+      slot.endAt * 1000 > Date.now() || !future(slot.timeshiftEndAt) ||
+      (slot.timeshiftFreeEndAt !== undefined && slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
+    phase = 'SOURCE';
+    if (!record(slot.playback) || !usableSlotPlaylist(slot.playback.dash, slotId) ||
+      (slot.playback.yospace !== undefined && (!record(slot.playback.yospace) ||
+        (slot.playback.yospace.dash !== undefined && (typeof slot.playback.yospace.dash !== 'string' ||
+          slot.playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(slot.playback.yospace.dash)))))) throw new Error();
+    // Provider initial ad-cluster0 and absent device classification are verified
+    // defaults. Keep truthful Android UA, unchanged ad selection, and no forced
+    // plain mode or invented completion/tracking. Separate IMA remains outside
+    // the user-approved debug native path, as for existing configured episodes.
+    selected = load(21470).tw({ sourceParam: { type: load(68610).Y1.Streaming,
+      playlists: slot.playback, isDrm: slot.mark?.drm === true, contentId: slotId,
+      mediaToken: identity.mediaToken, cffId: 0, dtid: null },
+      preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
+    if (!usableSlotPlaylist(selected, slotId)) throw new Error();
+    const url = new URL(selected);
+    const allowed = new Set(['t', 'enc', 'dt', 'ut', 'ccf', 'sw']);
+    const names = [...url.searchParams.keys()];
+    if (new Set(names).size !== names.length || names.some(key => !allowed.has(key)) ||
+      url.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
+      url.searchParams.get('t') !== identity.mediaToken || url.searchParams.get('enc') !== 'clear' ||
+      url.searchParams.get('ut') !== '1' || url.searchParams.get('ccf') !== '0' ||
+      !['pc_chrome', 'pc_unknown'].includes(url.searchParams.get('dt')) ||
+      (url.searchParams.has('sw') && url.searchParams.get('sw') !== '0')) throw new Error();
+    phase = 'CONFIG';
+    await prepareLegacyLicense(load, identity, slotId, 'slot');
+    selectedChannel = channelId;
+    selectedSlot = slotId;
+  }
+  function usableSlotPlaylist(value, slotId) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 2048 ||
+      /[\u0000-\u0020\\#]/.test(value)) return false;
+    const raw = value.split('?')[0];
+    if (!/^https:\/\/[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net\//.test(raw) || raw.includes('%') ||
+      raw.split('/').some(part => part === '.' || part === '..')) return false;
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+      /^[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net$/.test(url.hostname) &&
+      url.pathname.split('/').includes(slotId) && url.pathname.endsWith('.mpd') &&
+      /^[A-Za-z0-9_./~$-]+$/.test(url.pathname);
+  }
+  async function requireSlotRegion() {
+    const bytes = await fetchBytes('https://abema.tv/now-on-air/abema-news', { credentials: 'omit', cache: 'no-store' }, 512 * 1024);
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    finally { bytes.fill(0); }
+    if (text.includes('com-application-SorryPage')) throw new Error();
+    const assignments = [...text.matchAll(/window\.__CLIENT_REGION__\s*=\s*/g)];
+    if (assignments.length !== 1) refuseResponse();
+    const start = assignments[0].index + assignments[0][0].length;
+    if (text[start] !== '{') refuseResponse();
+    let quoted = false, escaped = false, depth = 0, end = -1;
+    for (let at = start; at < Math.min(text.length, start + 8192); at++) {
+      const char = text[at];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) { end = at + 1; break; }
+    }
+    if (end < 0 || !/^\s*;/.test(text.slice(end))) refuseResponse();
+    let region;
+    try { region = parseBoundedJsonText(text.slice(start, end)); }
+    catch { refuseResponse(); }
+    if (!region || Array.isArray(region) || region.isAllowed !== true || typeof region.status !== 'boolean' ||
+      region.isoCountryCode !== 'JP' || region.divisionCode !== 0 ||
+      region.cdnURL !== 'https://ds-glb-linear-abematv.akamaized.net/region' ||
+      (region.timezone !== undefined && (typeof region.timezone !== 'string' || region.timezone.length > 64))) throw new Error();
+    if (region.status) {
+      // Provider status=true requires this additional CDN check. Requiring200
+      // rather than its transport-error fallback is a stricter local refusal;
+      // this status alone is never treated as returned Japan/country evidence.
+      const checked = await fetchBytes(region.cdnURL, { credentials: 'omit', cache: 'no-store' }, 4096);
+      checked.fill(0);
+    }
+    alive();
   }
 })();

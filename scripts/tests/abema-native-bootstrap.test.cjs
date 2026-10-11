@@ -26,6 +26,17 @@ const liveChannel = () => ({ id: 'abema-news', viewingOpened: true,
   status: { drm: true } });
 const configuredLinearChannel = id => ({ id, viewingOpened: true,
   playback: { dash: `https://linear-abematv.akamaized.net/channel/${id}/manifest.mpd` }, status: { drm: false } });
+const freeSlot = (channelId = 'sumo', id = 'fixture-slot') => ({
+  id, channelId, title: 'Synthetic broadcast', startAt: fixtureNow / 1000 - 600,
+  endAt: fixtureNow / 1000 - 300, timeshiftEndAt: futureSeconds,
+  flags: { timeshift: true, timeshiftFree: true }, mark: {},
+  broadcastRegionPolicies: { timeshift: 1 },
+  playback: { dash: `https://ds-vod-abematv.akamaized.net/occurrence/${id}/manifest.mpd` },
+});
+const slotRegion = overrides => '<script>window.__CLIENT_REGION__=' + JSON.stringify({
+  isAllowed: true, status: false, isoCountryCode: 'JP', divisionCode: 0,
+  cdnURL: 'https://ds-glb-linear-abematv.akamaized.net/region', ...overrides,
+}) + ';</script>';
 const replayStream = (overrides = {}) => ({ streamingTechnology: 'FIXTURE_DASH',
   drm: { systemId: 'FIXTURE_CUSTOM' }, rawKey: false,
   manifestChain: [{ url: 'https://linear-abematv.akamaized.net/synthetic-replay/manifest.mpd',
@@ -56,6 +67,8 @@ function fixture(options = {}) {
       if (options.reply && options.replyPath === uri.pathname) return options.reply;
       if (options.deferGuest && uri.pathname === '/api/auth/login/guest') await deferred;
       if (options.deferLicense && uri.pathname === '/abematv-dash') await deferred;
+      if (options.deferRegion && uri.pathname === '/now-on-air/abema-news') await deferred;
+      if (options.deferSlot && uri.pathname.startsWith('/v1/media/slots/')) await deferred;
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
@@ -68,10 +81,14 @@ function fixture(options = {}) {
         body = options.program || freeProgram(uri.pathname.split('/').at(-1));
       }
       else if (uri.pathname.startsWith('/v1/playbackResources/')) body = { synthetic: true };
+      else if (uri.pathname.startsWith('/v1/media/slots/')) body = options.slot || freeSlot();
+      else if (uri.pathname === '/now-on-air/abema-news') body = options.regionPage ?? slotRegion();
+      else if (uri.pathname === '/region') body = '';
       else if (uri.pathname === '/abematv-dash') body = { syntheticEnvelope: true };
       else throw new Error('UNEXPECTED_FIXTURE_REQUEST');
       const status = options.statuses?.[uri.pathname] || options.httpStatus || 200;
-      const text = options.responseBytes?.[uri.pathname] ?? options.responseTexts?.[uri.pathname] ?? JSON.stringify(body);
+      const text = options.responseBytes?.[uri.pathname] ?? options.responseTexts?.[uri.pathname] ??
+        (uri.pathname === '/now-on-air/abema-news' || uri.pathname === '/region' ? body : JSON.stringify(body));
       return new Response(text, { status });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
@@ -193,9 +210,10 @@ function fixture(options = {}) {
       const url = new URL(fake.selectYospace ? config.sourceParam.playlists.yospace.dash : config.sourceParam.playlists.dash);
       url.searchParams.set('t', config.sourceParam.mediaToken);
       if (config.sourceParam.isDrm) url.searchParams.set('enc', 'wv');
-      if (fake.configuredLinear) {
+      if (fake.configuredLinear || fake.configuredSlot) {
         url.searchParams.set('enc', 'clear'); url.searchParams.set('dt', 'pc_chrome'); url.searchParams.set('ut', '1');
       }
+      if (fake.configuredSlot && config.sourceParam.cffId != null) url.searchParams.set('ccf', config.sourceParam.cffId);
       return url.href;
     } }); },
     78307(module, exports, require) { require.d(exports, {}, { rC: {
@@ -209,6 +227,7 @@ function fixture(options = {}) {
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
     start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
     startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -1043,4 +1062,145 @@ test('configured stop rejects delayed metadata and duplicate feeds use independe
   assert.equal(second.begin(challenge), 'WORKING'); await waitFor(second, 'RESPONSE');
   assert.equal(first.evaluate('observed.operation.length'), 0);
   assert.equal(second.evaluate('observed.operation.length'), 1);
+});
+
+test('exact free ended slot binds both IDs and preserves provider selector defaults and slot license', async () => {
+  for (const freeEnd of [undefined, 0, futureSeconds]) {
+    const slot = freeSlot(); if (freeEnd !== undefined) slot.timeshiftFreeEndAt = freeEnd;
+    const value = fixture({ configuredSlot: true, slot }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'READY');
+    assert.deepEqual(value.requests.map(item => item.uri.pathname), [
+      '/api/auth/login/guest', '/v1/media/token', '/now-on-air/abema-news', '/v1/media/slots/fixture-slot',
+    ]);
+    assert.ok(value.requests.every(item => item.request.credentials === 'omit'));
+    assert.equal(value.requests.at(-1).uri.search, '?include=payperview');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot');
+    assert.equal(new URL(binding.uri).searchParams.get('t'), 'TEST_MEDIA');
+    assert.equal(value.evaluate(`window['${name}'].sourceBinding()`), null);
+    assert.equal(value.evaluate('observed.legacy.length'), 1);
+    const selected = JSON.parse(value.evaluate('JSON.stringify(observed.legacy[0])'));
+    assert.equal(selected.enforcePlainStream, false); assert.equal(selected.preferDashPlaylist, true);
+    assert.equal(selected.ua.os.name, 'Android'); assert.equal(selected.sourceParam.contentId, 'fixture-slot');
+    assert.equal(selected.sourceParam.cffId, 0); assert.equal(selected.sourceParam.dtid, null);
+    assert.equal(value.evaluate('observed.sources.length'), 0);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const license = value.requests.at(-1).uri;
+    assert.equal(license.searchParams.get('ct'), 'slot'); assert.equal(license.searchParams.get('cid'), 'fixture-slot');
+    assert.equal(license.searchParams.get('t'), 'TEST_MEDIA');
+    assert.equal(value.take() !== null, true); assert.equal(value.status(), 'STOPPED');
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null);
+  }
+});
+
+test('slot region needs explicit provider Japan NONE and allowed fields without inventing location', async () => {
+  const invalid = [slotRegion({ isAllowed: false }), slotRegion({ status: null }),
+    slotRegion({ isoCountryCode: 'US' }), slotRegion({ divisionCode: 1 }), slotRegion({ divisionCode: '0' }),
+    slotRegion({ divisionCode: undefined }), slotRegion({ cdnURL: 'https://unrelated.invalid/region' }),
+    '<div class="com-application-SorryPage">Refused</div>' + slotRegion(), '<div>No assignment</div>',
+    slotRegion() + slotRegion(), slotRegion().replace('"divisionCode":0', '"divisionCode":0,"divisionCode":1'),
+    slotRegion().replace('"divisionCode":0', '"divisionCode":0,"division\\u0043ode":1'),
+    slotRegion().replace(';</script>', ' || arbitraryCode();</script>')];
+  for (const regionPage of invalid) {
+    const value = fixture({ configuredSlot: true, regionPage }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'FAILED'); assert.equal(value.metadata().phase, 'SLOT_REGION');
+    assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.requests.some(item => item.uri.pathname === '/region'), false);
+  }
+});
+
+test('slot region status true checks exact CDN and failure refuses before metadata without treating200asJapan', async () => {
+  const valid = fixture({ configuredSlot: true, regionPage: slotRegion({ status: true }) });
+  valid.startSlot('sumo/fixture-slot'); await waitFor(valid, 'READY');
+  assert.equal(valid.requests[3].uri.href, 'https://ds-glb-linear-abematv.akamaized.net/region');
+  for (const status of [403, 302]) {
+    const value = fixture({ configuredSlot: true, regionPage: slotRegion({ status: true }), statuses: { '/region': status } });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('slot admission refuses wrong identities future live expired nonfree paid and unsupported restrictions', async () => {
+  const changes = [slot => { slot.id = 'other-slot'; }, slot => { slot.channelId = 'other-channel'; },
+    slot => { delete slot.flags.timeshiftFree; }, slot => { slot.flags.timeshiftFree = false; },
+    slot => { slot.flags.timeshiftFree = 'true'; }, slot => { slot.flags.timeshift = false; },
+    slot => { slot.flags.paused = true; }, slot => { slot.flags.paused = null; },
+    slot => { slot.mark.drm = true; }, slot => { slot.payperview = {}; },
+    slot => { slot.broadcastRegionPolicies.timeshift = 2; }, slot => { delete slot.broadcastRegionPolicies; },
+    slot => { slot.endAt = futureSeconds; }, slot => { slot.startAt = slot.endAt; },
+    slot => { slot.startAt = 0; }, slot => { slot.timeshiftEndAt = 0; },
+    slot => { delete slot.timeshiftEndAt; }, slot => { slot.timeshiftEndAt = fixtureNow / 1000; },
+    slot => { slot.timeshiftEndAt = fixtureNow / 1000 + 300; },
+    slot => { slot.timeshiftFreeEndAt = fixtureNow / 1000 - 1; },
+    slot => { slot.timeshiftFreeEndAt = null; }, slot => { slot.timeshiftFreeEndAt = '0'; }];
+  for (const change of changes) {
+    const slot = freeSlot(); change(slot);
+    const value = fixture({ configuredSlot: true, slot }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 4);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
+test('slot selected manifest keeps exact path segment fresh token closed query and original ad selection', async () => {
+  const selected = 'https://ds-vod-abematv.akamaized.net/occurrence/fixture-slot/manifest.mpd?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1&ccf=0';
+  const invalid = [selected.replace('/fixture-slot/', '/other-slot/'),
+    selected.replace('/fixture-slot/', '/fixture-slot-extra/'), selected.replace('abematv.', 'abematv.invalid.'),
+    selected.replace('https://', 'https://@'), selected.replace('https://', 'https://user@'), selected + '#',
+    selected.replace('/occurrence/', '/ignored/../occurrence/'), selected.replace('/fixture-slot/', '/fixture%2Dslot/'),
+    selected.replace('t=TEST_MEDIA', 't=OTHER_MEDIA'), selected + '&t=TEST_MEDIA', selected + '&premium=1',
+    selected.replace('enc=clear', 'enc=wv'), selected.replace('ccf=0', 'ccf=1'), selected.replace('&ccf=0', ''),
+    selected.replace('dt=pc_chrome', 'dt=unverified'), selected + '&sw=1'];
+  for (const selectedURL of invalid) {
+    const value = fixture({ configuredSlot: true, selectedURL }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 4);
+    assert.equal(value.evaluate('observed.legacy.length'), 1); assert.equal(value.begin(challenge), 'REFUSED');
+  }
+  const slot = freeSlot(); slot.playback.yospace = { dash: 'https://ds-vod-abematv.akamaized.net/other-slot/manifest.mpd' };
+  const unused = fixture({ configuredSlot: true, slot }); unused.startSlot('sumo/fixture-slot'); await waitFor(unused, 'READY');
+  const chosen = fixture({ configuredSlot: true, slot, selectYospace: true }); chosen.startSlot('sumo/fixture-slot');
+  await waitFor(chosen, 'FAILED'); assert.equal(chosen.evaluate('observed.legacy.length'), 1);
+});
+
+test('slot stop and timer reject ignored-abort late region or metadata without source fallback', async () => {
+  for (const [option, count] of [['deferRegion', 3], ['deferSlot', 4]]) {
+    for (const timed of [false, true]) {
+      const value = fixture({ configuredSlot: true, [option]: true }); value.startSlot('sumo/fixture-slot');
+      await waitForRequests(value, count); if (timed) value.expireTimers(); else value.stop();
+      value.release(); await waitFor(value, timed ? 'FAILED' : 'STOPPED');
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(value.requests.length, count); assert.equal(value.evaluate('observed.legacy.length'), 0);
+      assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null); assert.equal(value.begin(challenge), 'REFUSED');
+    }
+  }
+});
+
+test('slot identity and mutually exclusive resource arguments reject before any provider operation', () => {
+  for (const id of ['sumo', 'sumo/', '/fixture-slot', 'sumo/fixture-slot/extra', 'sumo/fixture%2Dslot',
+    'sumo/fixture slot', 'sumo/..', 'sumo/' + 'x'.repeat(65), 'x'.repeat(65) + '/fixture-slot', 42, null]) {
+    const value = fixture({ configuredSlot: true }); value.startSlot(id);
+    assert.equal(value.requests.length, 0); assert.equal(value.status(), undefined);
+  }
+  for (const args of ["true, 'fixture-episode', undefined, 'sumo/fixture-slot'",
+    "true, undefined, 'sumo', 'sumo/fixture-slot'", "false, undefined, undefined, 'sumo/fixture-slot'"]) {
+    const value = fixture({ configuredSlot: true });
+    value.evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${args})`);
+    assert.equal(value.requests.length, 0); assert.equal(value.status(), undefined);
+  }
+});
+
+test('slot raw metadata duplicate encoding corruption and bounds refuse before selection', async () => {
+  const endpoint = '/v1/media/slots/fixture-slot';
+  const valid = JSON.stringify(freeSlot());
+  for (const text of [valid + ' trailing', valid.replace('"id":', '"id":"fixture-slot","i\\u0064":'),
+    valid.replace('"timeshiftFree":true', '"timeshiftFree":true,"timeshiftFree":false'),
+    valid.slice(0, -1) + ',"extra":' + '['.repeat(17) + '0' + ']'.repeat(17) + '}',
+    valid.slice(0, -1) + ',"extra":"' + 'x'.repeat(512 * 1024) + '"}',
+    valid.slice(0, -1) + ',"extra":"\\ud800"}']) {
+    const value = fixture({ configuredSlot: true, responseTexts: { [endpoint]: text } });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+  const value = fixture({ configuredSlot: true, responseBytes: { [endpoint]: new Uint8Array([0xc3, 0x28]) } });
+  value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+  assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.legacy.length'), 0);
 });

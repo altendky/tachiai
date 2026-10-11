@@ -39,6 +39,43 @@ class AbemaConfiguredEpisodeSourceDeviceTest {
 
     private fun channelUri(id: String) = URI("https://linear-abematv.akamaized.net/channel/$id/manifest.mpd?t=synthetic&enc=clear&dt=pc_chrome&ut=1")
 
+    private fun slotUri(id: String) = URI("https://ds-vod-abematv.akamaized.net/occurrence/$id/manifest.mpd?t=synthetic&enc=clear&dt=pc_chrome&ut=1&ccf=0")
+
+    @Test fun exactSlotNativeConsumerRetainsBothIdsAndProtectedInitializationWithConfirmedCleanup() {
+        for (id in listOf("fixture-one", "fixture-two")) {
+            val selected = slotUri(id)
+            val connection = Connection(selected.toURL(), mpd.toByteArray())
+            val requests = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { it == selected }, { _, _ -> }, { true },
+                openConnection = { assertEquals(selected.toURL(), it); connection })
+            try {
+                val resolved = resolveAbemaSlotNativeSource(selected, requests, "fixture-channel", id)
+                assertEquals("fixture-channel", resolved.channelId); assertEquals(id, resolved.slotId)
+                assertEquals(selected, resolved.uri); assertEquals(listOf(kid), resolved.kids)
+                assertTrue(connection.closed); assertFalse(resolved.toString().contains("synthetic"))
+            } finally { requests.close() }
+        }
+    }
+
+    @Test fun exactSlotNativeConsumerRejectsWrongSlotBeforeIoAndCancelledOrClearInitialization() {
+        val id = "fixture-one"; val selected = slotUri(id)
+        var opened = 0; var active = true
+        val requests = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { true }, { _, _ -> }, { active },
+            openConnection = { opened++; Connection(it, mpd.toByteArray()) { active = false } })
+        try {
+            assertThrows(IOException::class.java) { resolveAbemaSlotNativeSource(slotUri("other"), requests, "fixture-channel", id) }
+            assertEquals(0, opened)
+            assertThrows(IOException::class.java) { resolveAbemaSlotNativeSource(selected, requests, "fixture-channel", id) }
+            assertEquals(1, opened)
+        } finally { requests.close() }
+        val body = "<MPD xmlns='urn:mpeg:dash:schema:mpd:2011'><Period/></MPD>".toByteArray()
+        val connection = Connection(selected.toURL(), body)
+        val invalid = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { true }, { _, _ -> }, { true }, openConnection = { connection })
+        try {
+            assertThrows(IOException::class.java) { resolveAbemaSlotNativeSource(selected, invalid, "fixture-channel", id) }
+            assertTrue(connection.closed)
+        } finally { invalid.close() }
+    }
+
     @Test fun exactChannelNativeConsumerRetainsBothIdsAndProtectedInitializationWithConfirmedTransportCleanup() {
         for (id in listOf("fixture-one", "fixture-two")) {
             val selected = channelUri(id)

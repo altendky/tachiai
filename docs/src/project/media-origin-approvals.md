@@ -124,6 +124,28 @@ does not recheck subsequent resource redirects. A host-restricted direct CONNECT
 bridge remains needed for that browser mode; native System account requests and
 other route purposes retain their existing behavior.
 
+### Exact broadcast catch-up preparation — 2026-10-11
+
+Under the general integration approval, the cached native adapter adds one
+cookie-free GET to the exact selected slot at
+`https://api.p-c3-e.abema-tv.com/v1/media/slots/{slotId}?include=payperview`.
+The strict response must match both saved channel and slot IDs. Its separate
+slot policy reads the fixed public `https://abema.tv/now-on-air/abema-news` HTML
+as bounded data, without provider navigation or script execution, and permits
+the exact region CDN GET above only when the returned region requires it.
+Positive returned Japan/NONE-division eligibility remains necessary; no physical
+or fabricated location, cookie, country override or redirect is supplied.
+
+The verified legacy license request uses the existing exact HTTPS endpoint
+`https://license.p-c3-e.abema-tv.com/abematv-dash` with slot content type, the
+selected slot ID and the fresh guest media token. Source admission retains the
+existing approved CDN family and requires the exact slot path segment and closed
+initial selector query. MPD-declared resources remain bounded by the existing
+declared-media consumer; no guessed root, current-channel fallback or arbitrary
+host is admitted. These are implemented request boundaries, with actual eligible
+slot manifest/license/rendered playback still unverified. See
+[the catch-up adapter](abema-catalog-access.md#exact-broadcast-catch-up-adapter).
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

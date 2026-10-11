@@ -1,1 +1,1 @@
-window.__tachiaiStartNativeBootstrap('__NONCE__', __NATIVE_REPLAY____EPISODE_ARGUMENT____CHANNEL_ARGUMENT__);
+window.__tachiaiStartNativeBootstrap('__NONCE__', __NATIVE_REPLAY____EPISODE_ARGUMENT____CHANNEL_ARGUMENT____SLOT_ARGUMENT__);

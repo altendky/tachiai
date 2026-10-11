@@ -85,14 +85,19 @@ internal class CachedPrototypeAbemaSession(
     private val episodeResource: CatalogResource? = null,
     private val ownership: AbemaEpisodePlaybackOwnership? = null,
     private val channelResource: CatalogResource? = null,
+    private val slotResource: CatalogResource? = null,
 ) : PrototypeFeedSession {
     init {
         require(episodeResource == null || replay && supportedConfiguredAbemaEpisode(episodeResource) && route != null && ownership != null)
         require(channelResource == null || !replay && episodeResource == null && supportedConfiguredAbemaChannel(channelResource) && route != null && ownership != null)
-        require(episodeResource != null || channelResource != null || ownership == null)
+        require(slotResource == null || replay && episodeResource == null && channelResource == null &&
+            supportedConfiguredAbemaSlot(slotResource) && route != null && ownership != null)
+        require(episodeResource != null || channelResource != null || slotResource != null || ownership == null)
     }
     private val episodeId get() = episodeResource?.identity ?: "394-72_s10_p8529"
     private val channelId get() = channelResource?.identity ?: "abema-news"
+    private val slotChannelId get() = checkNotNull(slotResource).identity.substringBefore('/')
+    private val slotId get() = checkNotNull(slotResource).identity.substringAfter('/')
     private val handler = Handler(Looper.getMainLooper())
     private val worker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
         finishTransportCleanup(); onCleanupChanged()
@@ -202,7 +207,7 @@ internal class CachedPrototypeAbemaSession(
                 val uri = runCatching { URI(request.url.toString()) }.getOrNull()
                 val live = preparationCurrent(revision.get()) && workerOwned()
                 val allowed = uri != null && live &&
-                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity, channelResource?.identity)
+                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity, channelResource?.identity, slotResource?.identity)
                 if (!allowed) {
                     val category = if (!live) "LIFECYCLE" else
                         AbemaNativeBootstrapPolicy.refusalCategory(uri, request.isForMainFrame, request.method)
@@ -219,7 +224,7 @@ internal class CachedPrototypeAbemaSession(
                         return refusedResource()
                     }
                     return WebResourceResponse(if (request.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
-                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.contentSecurityPolicy(episodeResource?.identity, channelResource?.identity),
+                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.contentSecurityPolicy(episodeResource?.identity, channelResource?.identity, slotResource?.identity),
                             "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(local))
                 }
                 return null // Only exact policy-approved provider API endpoints.
@@ -300,7 +305,8 @@ internal class CachedPrototypeAbemaSession(
                         .bufferedReader().use { it.readText() }.replace("__NONCE__", nonce)
                         .replace("__NATIVE_REPLAY__", replay.toString())
                         .replace("__EPISODE_ARGUMENT__", episodeResource?.let { ", " + JSONObject.quote(it.identity) } ?: "")
-                        .replace("__CHANNEL_ARGUMENT__", channelResource?.let { ", undefined, " + JSONObject.quote(it.identity) } ?: "").toByteArray(Charsets.UTF_8),
+                        .replace("__CHANNEL_ARGUMENT__", channelResource?.let { ", undefined, " + JSONObject.quote(it.identity) } ?: "")
+                        .replace("__SLOT_ARGUMENT__", slotResource?.let { ", undefined, undefined, " + JSONObject.quote(it.identity) } ?: "").toByteArray(Charsets.UTF_8),
                 )
                 handler.post {
                     if (preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline) {
@@ -385,7 +391,8 @@ internal class CachedPrototypeAbemaSession(
                     else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
                 http >= 400 -> PrototypeFeedFailure(if (http == 404) PrototypeFailureReason.MEDIA_NOT_FOUND
                     else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
-                phase == "SOURCE_SESSION_REQUIRED" || phase == "SOURCE_MODE_UNSUPPORTED" || phase.startsWith("REPLAY_") ->
+                phase == "SOURCE_SESSION_REQUIRED" || phase == "SOURCE_MODE_UNSUPPORTED" ||
+                    phase.startsWith("REPLAY_") || phase.startsWith("SLOT_") ->
                     PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA)
                 phase == "LICENSE" -> PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED)
                 else -> null
@@ -429,6 +436,7 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun readSource(uri: URI, requests: BoundedMediaRequests): AbemaNativeDashSource {
+        if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId)
         if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
         if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))
@@ -449,11 +457,14 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun createNative(source: AbemaNativeDashSource, run: Long) {
-        if (replay && (source !is AbemaReplayNativeSource || source.episodeId != episodeId)) { fail(); return }
+        if (slotResource != null && (source !is AbemaSlotNativeSource || source.channelId != slotChannelId || source.slotId != slotId)) { fail(); return }
+        if (replay && slotResource == null && (source !is AbemaReplayNativeSource || source.episodeId != episodeId)) { fail(); return }
         if (channelResource != null && (source !is AbemaChannelNativeSource || source.channelId != channelId)) { fail(); return }
         val policy = DeclaredDashMediaPolicy(source.uri) { uri ->
             reviewCdn(uri, AbemaCdnStage.DECLARED_MEDIA)
-            if (replay) {
+            if (slotResource != null) {
+                allowsAbemaSlotDeclaredMedia(uri)
+            } else if (replay) {
                 abemaReplayCdnUriPolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE) == AbemaReplayUriPolicy.ALLOWED
             }
             else AbemaNativeBootstrapPolicy.allowsNewsCdn(uri, approvedPrototype = true, channelId = channelId)
@@ -512,11 +523,12 @@ internal class CachedPrototypeAbemaSession(
         check(sourcePending.compareAndSet(null, completion))
         handler.post {
             if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
-            else view.evaluateJavascript("window['$name']?.${when { episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null") { raw ->
+            else view.evaluateJavascript("window['$name']?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null") { raw ->
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
                     val selected = quoted(raw, 12_000)
                     val uri = when {
+                        slotResource != null -> parseAbemaSlotSourceBinding(selected, slotChannelId, slotId)
                         episodeResource != null -> parseAbemaEpisodeSourceBinding(selected, episodeId)
                         channelResource != null -> parseAbemaChannelSourceBinding(selected, channelId)
                         else -> runCatching { URI(selected ?: "") }.getOrNull()
@@ -527,12 +539,13 @@ internal class CachedPrototypeAbemaSession(
                             record("cdnReview=UNAVAILABLE"); completion.complete(null); return@evaluateJavascript
                         }
                     }
-                    val allowed = uri != null && if (replay)
+                    val allowed = uri != null && if (slotResource != null) allowsAbemaSlotSource(uri, slotChannelId, slotId)
+                    else if (replay)
                         abemaReplaySelectedSourcePolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId) == AbemaReplayUriPolicy.ALLOWED
                     else AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId)
                     record("source=${if (allowed) "ALLOWED" else "REFUSED"}")
                     if (!allowed && uri != null) remember(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
-                    if (!allowed && replay) {
+                    if (!allowed && replay && slotResource == null) {
                         val category = uri?.let { abemaReplaySelectedSourcePolicy(it, AbemaReplayCdnScope.APPROVED_PROTOTYPE).name } ?: "INVALID_URI"
                         val shape = when {
                             uri == null -> "INVALID_URI"

@@ -46,6 +46,7 @@ class AbemaGuestRuntimeCoordinatorTest {
         var seriesProjection: String? = null
         var slotRequest = AbemaSlotRequest("channel-A", "slot-A")
         var slotProjection: String? = null
+        var scheduleProjection: String? = null
         var statusState: String? = null
         var statusFailure = "NONE"
         var statusOverride: JSONObject? = null
@@ -71,6 +72,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                     AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION -> "ACCOUNT_VALIDATION_READY"
                     AbemaGuestBootstrapOperation.FETCH_SERIES -> "EXACT_SERIES_PAGE"
                     AbemaGuestBootstrapOperation.FETCH_SLOT -> "EXACT_SLOT_METADATA"
+                    AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> "SCHEDULE_SNAPSHOT"
                     else -> "EXACT_EPISODE_METADATA"
                 }
                 val value = statusOverride ?: JSONObject().put("state", state).put("failure", statusFailure).apply {
@@ -84,6 +86,8 @@ class AbemaGuestRuntimeCoordinatorTest {
                 callback(JSONObject.quote(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
                     slotProjection ?: JSONObject().put("id", slotRequest.slotId).put("channelId", slotRequest.channelId)
                         .put("title", "Future slot").toString()
+                    else if (operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE)
+                    scheduleProjection ?: "{\"slots\":[{\"id\":\"slot-A\",\"channelId\":\"channel-A\",\"title\":\"Future slot\"}],\"truncated\":false}"
                     else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                     seriesProjection ?: "{\"seriesId\":\"$seriesParent\",\"version\":\"v1\",\"programs\":[{\"id\":\"episode-A\",\"title\":\"Future episode\"}]}"
                     else JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
@@ -151,6 +155,39 @@ class AbemaGuestRuntimeCoordinatorTest {
             }
             error("Fixture did not settle")
         }
+    }
+
+    @Test fun schedulePublishesOnlyAfterConfirmedCleanupAndFinalCapturedOwnerCheck() {
+        val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { holdClear = true }
+        assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+        assertTrue(f.events.indexOf("destroy") < f.events.indexOf("clear-dispatched"))
+        f.clearCallback!!.invoke(); f.pump()
+        val result = f.results.single(); assertEquals("SCHEDULE_SNAPSHOT", result.category)
+        assertEquals("channel-A/slot-A", result.scheduleSnapshot!!.entries.single().resource.identity)
+        assertNull(result.entry); assertNull(result.seriesPage); assertNull(result.accountChallenge); assertNull(result.accountValidation)
+        assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
+    }
+    @Test fun scheduleMalformedCrossModeOwnerForegroundExpiryAndCleanupFailuresNeverExportSnapshot() {
+        val malformed = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { scheduleProjection = "{\"slots\":[],\"truncated\":true}" }
+        assertTrue(malformed.start()); malformed.pump(); assertEquals("GUEST_SCHEDULE_RESPONSE", malformed.results.single().category)
+        assertNull(malformed.results.single().scheduleSnapshot)
+        for (mode in 0..2) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { holdClear = true }
+            assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+            when (mode) { 0 -> f.foreground = false; 1 -> f.matching = false; else -> f.main.now += 45000 }
+            f.clearCallback!!.invoke(); f.pump(); assertNull(f.results.single().scheduleSnapshot)
+        }
+        val failed = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { destroy = { false } }
+        assertTrue(failed.start()); failed.pump(); assertEquals("CLEANUP_FAILED", failed.results.single().category)
+        assertNull(failed.results.single().scheduleSnapshot); assertTrue(failed.runtime.unavailable)
+        for (operation in listOf(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SERIES)) {
+            val f = Fixture(operation).apply { statusState = "REFUSED"; statusFailure = "SCHEDULE_HTTP_429" }
+            assertTrue(f.start()); f.pump()
+            assertEquals(if (operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE) "GUEST_SCHEDULE_HTTP_429" else "STATUS_REFUSED", f.results.single().category)
+            assertNull(f.results.single().scheduleSnapshot)
+        }
+        val cross = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { statusState = "REFUSED"; statusFailure = "SERIES_HTTP_404" }
+        assertTrue(cross.start()); cross.pump(); assertEquals("STATUS_REFUSED", cross.results.single().category)
     }
 
     @Test fun slotProjectionBindsTwoExactParentsAndPublishesOnlyAfterConfirmedCleanup() {

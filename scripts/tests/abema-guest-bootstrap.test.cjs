@@ -26,6 +26,25 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url === 'https://api.p-c3-e.abema-tv.com/v1/timetable/dataSet') {
+        if (options.delayedSchedule) await delayed;
+        if (options.scheduleNetworkFailure) throw new Error('PRIVATE_SCHEDULE_ERROR');
+        if (Object.hasOwn(options, 'scheduleStatus') && options.scheduleStatus !== 200) return {
+          status: options.scheduleStatus, get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        if (options.scheduleRedirected) return { status: 200, redirected: true,
+          get body() { options.refusedBodyRead = true; throw new Error(); } };
+        const bytes = options.scheduleBytes || options.scheduleText || JSON.stringify(options.schedule || scheduleReply());
+        if (options.delayedScheduleRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes }; },
+            cancel: async () => { options.scheduleReaderCancelled = true; },
+          }) } };
+        }
+        return new Response(bytes, { status: 200 });
+      }
       if (url === 'https://abema.tv/api/auth/oauth/device/token') {
         if (options.delayedToken) await delayed;
         if (options.tokenNetworkFailure) throw new Error('PRIVATE_TOKEN_ERROR');
@@ -391,6 +410,133 @@ function challengeReply() {
     verification_uri: 'https://abema.tv/account/transfer',
     verification_uri_complete: 'https://abema.tv/account/transfer?code=PRIVATE_USER_CODE', expires_in: 300 };
 }
+
+function scheduleReply(count = 1) {
+  return { channels: [{ id: 'fixture-channel', name: 'Fixture channel', source: 'PRIVATE_IGNORED' }],
+    availableDates: ['20261011', '20261012'], slots: Array.from({ length: count }, (_, index) => ({
+      id: 'slot-' + index, channelId: 'fixture-channel', title: 'Future 雪 😀 ' + index,
+      startAt: 9999999999, endAt: 9999999999, timeshift: { free: false },
+      source: { url: 'https://private.invalid/MUST_NOT_FETCH' },
+    })) };
+}
+
+test('public schedule fetches one canonical guest GET and projects only exact identities with no account or playback claims', async () => {
+  const value = fixture({ operation: 'FETCH_SCHEDULE' }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'SCHEDULE_SNAPSHOT', failure: 'NONE' });
+  assert.deepEqual(value.requests.map(({ url }) => url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/timetable/dataSet']);
+  const request = value.requests[1].request;
+  assert.equal(request.method, 'GET'); assert.equal(request.credentials, 'omit'); assert.equal(request.cache, 'no-store');
+  assert.equal(request.redirect, 'error'); assert.equal(request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+  const projection = JSON.parse(value.call(`window['${apiName}'].metadata()`));
+  assert.deepEqual(projection, { slots: [{ id: 'slot-0', channelId: 'fixture-channel', title: 'Future 雪 😀 0' }], truncated: false });
+  assert.doesNotMatch(JSON.stringify(projection), /PRIVATE_|startAt|endAt|timeshift|Bearer|https:|availableDates/);
+  assert.equal(value.timers.size, 0);
+  value.stop(); assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+});
+
+test('schedule keeps exact slots when annotations are missing and does not coerce raw times into availability', async () => {
+  const schedule = scheduleReply(); schedule.channels = []; schedule.availableDates = [];
+  schedule.slots[0].title = '  Future slot  '; schedule.slots[0].startAt = 'PRIVATE_UNVERIFIED';
+  const value = fixture({ operation: 'FETCH_SCHEDULE', schedule }); value.start(); await settle();
+  assert.equal(value.state().state, 'SCHEDULE_SNAPSHOT');
+  assert.deepEqual(JSON.parse(value.call(`window['${apiName}'].metadata()`)), {
+    slots: [{ id: 'slot-0', channelId: 'fixture-channel', title: 'Future slot' }], truncated: false });
+  for (const resourceId of ['slot-0', {}, { url: 'https://other.invalid' }]) {
+    const refused = fixture({ operation: 'FETCH_SCHEDULE', resourceId }); refused.start(); await settle();
+    assert.equal(refused.requests.length, 0); assert.equal(refused.context.loaded.length, 0);
+  }
+});
+
+test('schedule validates the entire raw snapshot before returning its bounded501 distinct prefix', async () => {
+  for (const count of [0, 500, 501, 1500]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', schedule: scheduleReply(count) }); value.start(); await settle();
+    assert.equal(value.state().state, 'SCHEDULE_SNAPSHOT');
+    const projection = JSON.parse(value.call(`window['${apiName}'].metadata()`));
+    assert.equal(projection.slots.length, Math.min(count, 501)); assert.equal(projection.truncated, count > 501);
+    assert.equal(value.requests.length, 2);
+  }
+  const duplicate = scheduleReply(502); duplicate.slots[501].id = 'slot-0'; duplicate.slots[501].channelId = 'other-channel';
+  const invalid = scheduleReply(502); invalid.slots[501].title = '\ud800';
+  for (const schedule of [duplicate, invalid]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', schedule }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_RESPONSE' });
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+
+test('schedule refuses wrapper drift, identity conflicts, malformed dates, types and duplicate JSON keys', async () => {
+  const mutations = [reply => ({ dataSet: reply }), reply => ({ ...reply, slots: {} }), reply => ({ ...reply, channels: null }),
+    reply => ({ ...reply, availableDates: [20261011] }), reply => ({ ...reply, availableDates: ['2026-10-11'] }),
+    reply => ({ ...reply, availableDates: ['20260229'] }), reply => ({ ...reply, availableDates: ['20261011', '20261011'] }),
+    reply => ({ ...reply, channels: [reply.channels[0], { ...reply.channels[0], name: 'Conflict' }] }),
+    reply => ({ ...reply, channels: [{ id: 1 }] }), reply => ({ ...reply, slots: [{ ...reply.slots[0], channelId: '../bad' }] }),
+    reply => ({ ...reply, slots: [{ ...reply.slots[0], title: '' }] }),
+    reply => ({ ...reply, slots: [{ ...reply.slots[0], id: 1 }] })];
+  for (const mutate of mutations) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', schedule: mutate(scheduleReply()) }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_RESPONSE' }); assert.equal(value.requests.length, 2);
+  }
+  for (const scheduleText of ['{"slots":[],"channels":[],"availableDates":[],"\\u0073lots":[]}',
+    JSON.stringify(scheduleReply()) + ' true', '{"slots":[],"channels":[],"availableDates":[],"extra":1e999}',
+    '{"slots":[],"channels":[],"availableDates":[],"extra":"\\ud800"}']) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', scheduleText }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_RESPONSE' });
+  }
+  const leap = fixture({ operation: 'FETCH_SCHEDULE', schedule: { ...scheduleReply(), availableDates: ['20240229'] } });
+  leap.start(); await settle(); assert.equal(leap.state().state, 'SCHEDULE_SNAPSHOT');
+});
+
+test('schedule enforces local raw byte tree array and strict UTF8 admission without changing older metadata bounds', async () => {
+  const texts = [' '.repeat(8 * 1024 * 1024 + 1),
+    JSON.stringify({ ...scheduleReply(), unrelated: Array.from({ length: 20001 }, () => 0) }),
+    JSON.stringify({ ...scheduleReply(), unrelated: Array.from({ length: 24 }, () => 0).reduce(value => [value], 0) })];
+  for (const scheduleText of texts) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', scheduleText }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_RESPONSE' });
+  }
+  const invalid = fixture({ operation: 'FETCH_SCHEDULE', scheduleBytes: Uint8Array.from([123, 34, 0xff, 34, 125]) });
+  invalid.start(); await settle(); assert.equal(invalid.state().failure, 'SCHEDULE_RESPONSE');
+});
+
+test('schedule aggregate300k node ceiling refuses a shallow sub8MiB document with individually admitted arrays', async () => {
+  const unrelated = Object.fromEntries(Array.from({ length: 16 }, (_, index) =>
+    ['array' + index, Array.from({ length: 20000 }, () => 0)]));
+  const scheduleText = JSON.stringify({ ...scheduleReply(), unrelated });
+  assert.ok(new TextEncoder().encode(scheduleText).byteLength < 8 * 1024 * 1024);
+  const value = fixture({ operation: 'FETCH_SCHEDULE', scheduleText }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_RESPONSE' });
+  assert.equal(value.call(`window['${apiName}'].metadata()`), null); assert.equal(value.requests.length, 2);
+  // Schedule-specific ceilings do not enlarge the old 1,000-item bound.
+  const slotText = JSON.stringify({ slot: { id: 'slot-A', channelId: 'channel-A', title: 'Future slot' },
+    unrelated: Array.from({ length: 1001 }, () => 0) });
+  const older = fixture({ operation: 'FETCH_SLOT', resourceId: { channelId: 'channel-A', slotId: 'slot-A' }, slotText });
+  older.start(); await settle(); assert.deepEqual(older.state(), { state: 'REFUSED', failure: 'SLOT_RESPONSE' });
+  assert.equal(older.call(`window['${apiName}'].metadata()`), null);
+});
+
+test('schedule closed failures never open refusal bodies, retry, expose details or retain cancelled late results', async () => {
+  for (const [scheduleStatus, suffix] of [[401, 'HTTP_401'], [403, 'HTTP_403'], [404, 'HTTP_404'], [410, 'HTTP_410'],
+    [429, 'HTTP_429'], [500, 'HTTP_5XX'], [302, 'HTTP_3XX']]) {
+    const options = { operation: 'FETCH_SCHEDULE', scheduleStatus }; const value = fixture(options); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'SCHEDULE_' + suffix });
+    assert.equal(options.refusedBodyRead, undefined); assert.equal(value.requests.length, 2);
+  }
+  for (const [options, failure] of [[{ scheduleNetworkFailure: true }, 'SCHEDULE_TRANSPORT'], [{ scheduleRedirected: true }, 'SCHEDULE_REDIRECT']]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', ...options }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure }); assert.equal(value.requests.length, 2);
+  }
+  for (const delay of ['delayedSchedule', 'delayedScheduleRead']) for (const action of ['stop', 'timeout', 'budget']) {
+    const options = { operation: 'FETCH_SCHEDULE', [delay]: true }; const value = fixture(options); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'SCHEDULE', failure: 'NONE' });
+    if (action === 'stop') value.stop(); else if (action === 'timeout') for (const callback of value.timers.values()) callback();
+    else options.elapsedMs = 45000;
+    value.release(); await settle();
+    assert.deepEqual(value.state(), action === 'stop' ? { state: 'STOPPED', failure: 'NONE' } : { state: 'REFUSED', failure: 'SCHEDULE_TIMEOUT' });
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null); assert.equal(value.requests.length, 2);
+    if (action !== 'budget') assert.equal(value.requests[1].request.signal.aborted, true);
+  }
+});
 
 test('account validation creates only one fresh guest and matching profile with a separate private two-field context', async () => {
   const f = fixture({ operation: 'PREPARE_ACCOUNT_VALIDATION', challengeEndpoint: 'https://unsafe.invalid/',

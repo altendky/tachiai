@@ -17,10 +17,23 @@ internal class AbemaPublicBundleHttp(
     private val onConnectionOwned: (HttpsURLConnection) -> Unit = {},
     private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
 ) : AutoCloseable {
+    private enum class Disconnect { CONFIRMED, AVAILABLE, IN_PROGRESS, FAILED }
     private val lock = Any()
     private var closed = false
     private var active: HttpsURLConnection? = null
+    private var activeInput: InputStream? = null
+    private var disconnect = Disconnect.CONFIRMED
+    private var cleanupFailed = false
     private var fetching = false
+    val cleanupConfirmed get() = synchronized(lock) {
+        !fetching && active == null && activeInput == null && !cleanupFailed && disconnect == Disconnect.CONFIRMED
+    }
+
+    // Keep actual HTTP/body ownership until both close receipts are confirmed.
+    // A held or failed claimant is never replaced by a second disconnect.
+    private fun releaseConfirmedConnection() {
+        if (disconnect == Disconnect.CONFIRMED && activeInput == null && !cleanupFailed) active = null
+    }
 
     fun fetch(): ByteArray {
         val started = clockMs()
@@ -39,17 +52,18 @@ internal class AbemaPublicBundleHttp(
             if (!allowedAbemaPublicBundleUri(identity.uri)) throw AbemaBundleException(AbemaBundleFailure.POLICY_REFUSED)
             synchronized(lock) {
                 checkActive()
-                if (fetching) throw AbemaBundleException(AbemaBundleFailure.POLICY_REFUSED)
+                if (fetching || active != null || cleanupFailed) throw AbemaBundleException(AbemaBundleFailure.POLICY_REFUSED)
                 fetching = true
                 claimed = true
             }
             val request = open(identity.uri.toURL())
             connection = request
-            onConnectionOwned(request)
             synchronized(lock) {
-                checkActive()
                 active = request
+                disconnect = Disconnect.AVAILABLE
             }
+            onConnectionOwned(request)
+            checkActive()
             if (request.url.toURI() != identity.uri) throw AbemaBundleException(AbemaBundleFailure.POLICY_REFUSED)
             request.instanceFollowRedirects = false
             request.connectTimeout = 10_000
@@ -67,6 +81,7 @@ internal class AbemaPublicBundleHttp(
                 (request.contentLengthLong >= 0 && request.contentLengthLong != identity.expectedBytes.toLong()))
                 throw AbemaBundleException(AbemaBundleFailure.SIZE_REFUSED)
             val input = openInput(request)
+            synchronized(lock) { activeInput = input }
             val bytes = try {
                 val output = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
@@ -81,7 +96,14 @@ internal class AbemaPublicBundleHttp(
                 }
                 output.toByteArray()
             } finally {
-                try { input.close() } catch (error: Throwable) {
+                try {
+                    input.close()
+                    synchronized(lock) {
+                        if (activeInput === input) activeInput = null
+                        releaseConfirmedConnection()
+                    }
+                } catch (error: Throwable) {
+                    synchronized(lock) { cleanupFailed = true }
                     runCatching { onFailure(error) }; throw error
                 }
             }
@@ -94,22 +116,39 @@ internal class AbemaPublicBundleHttp(
             checkActive()
             throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
         } finally {
-            synchronized(lock) {
-                if (active === connection) active = null
-                if (claimed) fetching = false
-            }
-            disconnect(connection)
+            try { disconnect(connection) }
+            finally { if (claimed) synchronized(lock) { fetching = false } }
         }
     }
 
     override fun close() {
-        val connection = synchronized(lock) { closed = true; active.also { active = null } }
+        val connection = synchronized(lock) { closed = true; active }
         disconnect(connection)
+        synchronized(lock) {
+            if (active != null || activeInput != null || cleanupFailed || disconnect != Disconnect.CONFIRMED)
+                throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
+        }
     }
 
     private fun disconnect(connection: HttpsURLConnection?) {
-        try { connection?.disconnect() }
+        if (connection == null) return
+        synchronized(lock) {
+            if (active !== connection) return
+            when (disconnect) {
+                Disconnect.CONFIRMED -> return
+                Disconnect.AVAILABLE -> disconnect = Disconnect.IN_PROGRESS
+                Disconnect.IN_PROGRESS, Disconnect.FAILED -> throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
+            }
+        }
+        try {
+            connection.disconnect()
+            synchronized(lock) {
+                disconnect = Disconnect.CONFIRMED
+                releaseConfirmedConnection()
+            }
+        }
         catch (error: Throwable) {
+            synchronized(lock) { disconnect = Disconnect.FAILED; cleanupFailed = true }
             runCatching { onFailure(error) }
             throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
         }

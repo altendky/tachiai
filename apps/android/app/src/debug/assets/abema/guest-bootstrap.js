@@ -14,6 +14,7 @@
   let episode;
   let series;
   let slot;
+  let schedule;
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
@@ -28,6 +29,7 @@
     episode = undefined;
     series = undefined;
     slot = undefined;
+    schedule = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
     accountValidation = undefined;
@@ -80,7 +82,7 @@
   // Unrelated values are never adopted into the session/UI. This is app-owned
   // parsing, not a copied
   // provider helper or identity/entitlement algorithm.
-  function parseBoundedJsonText(text, unicode = false) {
+  function parseBoundedJsonText(text, unicode = false, limits = { depth: 16, nodes: 4096, array: 1000 }) {
     let at = 0, nodes = 0;
     const whitespace = () => { while (at < text.length && /[\x20\t\r\n]/.test(text[at])) at++; };
     const string = () => {
@@ -99,7 +101,7 @@
     };
     const value = depth => {
       whitespace();
-      if (depth > 16 || ++nodes > 4096) throw new Error();
+      if (depth > limits.depth || ++nodes > limits.nodes) throw new Error();
       if (text[at] === '"') return string();
       if (text[at] === '{' || text[at] === '[') {
         const object = text[at++] === '{', end = object ? '}' : ']';
@@ -111,7 +113,7 @@
           if (object) {
             key = string(); whitespace();
             if (Object.hasOwn(result, key) || text[at++] !== ':') throw new Error();
-          } else if (result.length >= 1000) throw new Error();
+          } else if (result.length >= limits.array) throw new Error();
           const item = value(depth + 1);
           if (object) result[key] = item; else result.push(item);
           whitespace();
@@ -255,7 +257,7 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_' || prefix === 'SCHEDULE_';
     let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
@@ -388,9 +390,44 @@
       Object.keys(value).sort().join(',') === 'channelId,slotId' &&
       ['channelId', 'slotId'].every(key => typeof value[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value[key]));
   }
+  function parseScheduleText(text) {
+    // Explicit local admission bounds. A runtime probe must measure the actual
+    // provider response; these are not a claimed provider schema/horizon limit.
+    const reply = parseBoundedJsonText(text, true, { depth: 24, nodes: 300000, array: 20000 });
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
+    if (!object(reply) || !Array.isArray(reply.slots) || !Array.isArray(reply.channels) ||
+      !Array.isArray(reply.availableDates)) throw new Error();
+    const channels = new Set();
+    for (const channel of reply.channels) {
+      if (!object(channel) || !id(channel.id) || channels.has(channel.id) ||
+        Object.hasOwn(channel, 'name') && typeof channel.name !== 'string') throw new Error();
+      channels.add(channel.id);
+    }
+    const dates = new Set();
+    for (const date of reply.availableDates) {
+      if (typeof date !== 'string' || !/^[0-9]{8}$/.test(date) || dates.has(date)) throw new Error();
+      const year = Number(date.slice(0, 4)), month = Number(date.slice(4, 6)), day = Number(date.slice(6));
+      const days = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      if (month < 1 || month > 12 || day < 1 || day > days[month - 1]) throw new Error();
+      dates.add(date);
+    }
+    const ids = new Set(), slots = [];
+    for (const item of reply.slots) {
+      if (!object(item) || !id(item.id) || !id(item.channelId) || ids.has(item.id) ||
+        typeof item.title !== 'string' || item.title.trim().length < 1 || item.title.trim().length > 160 ||
+        /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.title)) throw new Error();
+      ids.add(item.id);
+      // Channel/date annotations do not replace this exact identity. Missing
+      // annotation does not make an otherwise valid broadcast unconfigurable.
+      if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim() }));
+    }
+    return Object.freeze({ slots, truncated: reply.slots.length > slots.length });
+  }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) :
         operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) : resourceId !== undefined)) {
@@ -408,6 +445,8 @@
         stringify(series) : null } : {}),
       ...(operation === 'FETCH_SLOT' ? { metadata: () => !stopped && state === 'EXACT_SLOT_METADATA' && failure === 'NONE' ?
         stringify(slot) : null } : {}),
+      ...(operation === 'FETCH_SCHEDULE' ? { metadata: () => !stopped && state === 'SCHEDULE_SNAPSHOT' && failure === 'NONE' ?
+        stringify(schedule) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -429,6 +468,7 @@
         }
         if (operation === 'FETCH_SERIES') { budgetFailure = 'SERIES_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         if (operation === 'FETCH_SLOT') { budgetFailure = 'SLOT_TIMEOUT'; challengeStarted = performance.now(); alive(); }
+        if (operation === 'FETCH_SCHEDULE') { budgetFailure = 'SCHEDULE_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
@@ -534,6 +574,12 @@
             accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
             guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'FETCH_SCHEDULE') {
+          state = 'SCHEDULE';
+          schedule = await boundedReply(apiOrigin + '/v1/timetable/dataSet', { method: 'GET', mode: 'cors',
+            headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
+          parseScheduleText, 'SCHEDULE_', 8 * 1024 * 1024);
+          alive(); guest = undefined; failure = 'NONE'; state = 'SCHEDULE_SNAPSHOT';
         } else if (operation === 'FETCH_SLOT') {
           state = 'SLOT';
           const url = apiOrigin + '/v1/media/slots/' + slotRequest.slotId + '?include=payperview';

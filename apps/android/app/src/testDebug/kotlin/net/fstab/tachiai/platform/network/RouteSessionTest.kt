@@ -2,6 +2,10 @@ package net.fstab.tachiai.platform.network
 
 import java.io.IOException
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Test
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
@@ -9,8 +13,57 @@ import net.fstab.tachiai.platform.diagnostics.FailureObservation
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.buffer
 
 class RouteSessionTest {
+    @Suppress("UNCHECKED_CAST")
+    private fun ownedConnections(route: RouteSession): MutableSet<RoutedHttpsConnection> =
+        RouteSession::class.java.getDeclaredField("connections").apply { isAccessible = true }
+            .get(route) as MutableSet<RoutedHttpsConnection>
+
+    private fun ownResponse(connection: RoutedHttpsConnection, source: BufferedSource,
+        closeBody: () -> Unit = source::close): Response {
+        val response = Response.Builder().request(Request.Builder().url(connection.url).build())
+            .protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+            .body(object : ResponseBody() {
+                override fun contentType() = null
+                override fun contentLength() = 1L
+                override fun source() = source
+                override fun close() = closeBody()
+            }).build()
+        RoutedHttpsConnection::class.java.getDeclaredField("reply").apply { isAccessible = true }.set(connection, response)
+        return response
+    }
+
+    @Test fun continueWatchingPurposeUsesPrivateClientOnSystemAndOnlyExactGqlPathOnBothRoutes() {
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        for (selected in listOf(null, profile)) {
+            val backend = FakeBackend()
+            val route = RouteSession.createTwitchContinueWatching(selected) { _, security ->
+                assertEquals("gql.twitch.tv", security.allowedHosts); backend
+            }
+            try {
+                val connection = route.open(URL("https://gql.twitch.tv/gql"))
+                assertTrue(connection is RoutedHttpsConnection)
+                val client = RouteSession::class.java.getDeclaredField("client").apply { isAccessible = true }.get(route) as OkHttpClient
+                assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar); assertSame(okhttp3.Authenticator.NONE, client.authenticator)
+                assertFalse(client.followRedirects); assertFalse(client.followSslRedirects); assertFalse(client.retryOnConnectionFailure)
+                if (selected == null) assertSame(java.net.Proxy.NO_PROXY, client.proxy)
+                for (url in listOf("https://gql.twitch.tv/", "https://gql.twitch.tv/gql?query=other", "https://id.twitch.tv/gql",
+                    "https://api.twitch.tv/gql", "https://gql.twitch.tv/gql#token", "https://other.gql.twitch.tv/gql"))
+                    assertThrows(IllegalArgumentException::class.java) { route.open(URL(url)) }
+                connection.disconnect()
+            } finally { route.close() }
+            assertEquals(if (selected == null) 0 else 1, backend.closes)
+        }
+    }
     @Test fun abemaMetadataPurposeUsesAnOwnedAnonymousClientAndOnlyItsHost() {
         val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
         for (selected in listOf(null, profile)) {
@@ -181,21 +234,70 @@ class RouteSessionTest {
         }
         val other = RoutedHttpsConnection(URL("https://example.invalid/"), client, { true }) { otherClosed = true }
         // Populate the owned set without opening sockets or adding a production-only test seam.
-        val field = RouteSession::class.java.getDeclaredField("connections").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        val connections = field.get(route) as MutableSet<RoutedHttpsConnection>
+        val connections = ownedConnections(route)
         connections.add(failing)
         connections.add(other)
         val cleanup = assertThrows(IOException::class.java) { route.close() }
         assertEquals("Route cleanup failed", cleanup.message)
         assertTrue(otherClosed)
         assertEquals(1, backend.closes)
-        assertTrue(connections.isEmpty())
+        assertEquals(setOf(failing), connections)
         assertEquals(listOf(FailureStage.ROUTE_DISCONNECT), observations.map { it.stage })
         assertEquals(FailureCategory.OTHER, observations.single().failure.category)
         assertThrows(IOException::class.java) { route.open(URL("https://example.invalid/")) }
         route.close()
+        assertEquals(setOf(failing), connections)
         assertEquals(1, backend.closes)
+    }
+
+    @Test fun heldResponseBodyRetainsActualConnectionAndReplyAfterRouteCloseTimeout() {
+        val route = RouteSession.createAbemaGuestSchedule(null)
+        val connections = ownedConnections(route)
+        val connection = RoutedHttpsConnection(URL("https://abema.tv/fixture"), OkHttpClient(), { true }) { connections.remove(it) }
+        connections.add(connection)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val closes = AtomicInteger()
+        val response = ownResponse(connection, object : ForwardingSource(Buffer().writeUtf8("x")) {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                return super.read(sink, byteCount)
+            }
+            override fun close() { closes.incrementAndGet(); super.close() }
+        }.buffer())
+        val input = connection.inputStream
+        val readFailure = AtomicReference<Throwable?>()
+        val worker = Thread { try { input.read() } catch (error: Throwable) { readFailure.set(error) } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertThrows(IOException::class.java) { route.close() }
+            assertEquals(setOf(connection), connections); assertEquals(0, closes.get())
+            assertSame(response, RoutedHttpsConnection::class.java.getDeclaredField("reply").apply { isAccessible = true }.get(connection))
+            route.close(); assertEquals(setOf(connection), connections); assertEquals(0, closes.get())
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive)
+            assertTrue(readFailure.get() is IOException)
+            connection.disconnect()
+            assertTrue(connections.isEmpty()); assertEquals(1, closes.get())
+        } finally { release.countDown(); worker.join(5000); connection.disconnect(); route.close() }
+    }
+
+    @Test fun throwingResponseBodyRetainsActualConnectionAndReplyUntilDisconnectIsConfirmed() {
+        val route = RouteSession.createAbemaGuestSchedule(null)
+        val connections = ownedConnections(route)
+        val connection = RoutedHttpsConnection(URL("https://abema.tv/fixture"), OkHttpClient(), { true }) { connections.remove(it) }
+        connections.add(connection)
+        var refuses = true; var closes = 0
+        val body = Buffer().writeUtf8("x")
+        val response = ownResponse(connection, body) {
+            closes++; if (refuses) throw AssertionError("Fixture body close failure"); body.close()
+        }
+        connection.inputStream
+        try {
+            assertThrows(IOException::class.java) { route.close() }
+            assertEquals(setOf(connection), connections); assertEquals(1, closes)
+            assertSame(response, RoutedHttpsConnection::class.java.getDeclaredField("reply").apply { isAccessible = true }.get(connection))
+            route.close(); assertEquals(setOf(connection), connections); assertEquals(1, closes)
+            refuses = false; connection.disconnect()
+            assertTrue(connections.isEmpty()); assertEquals(2, closes)
+        } finally { refuses = false; connection.disconnect(); route.close() }
     }
 
     @Test fun rollbackAssertionErrorDoesNotReplaceOriginalSetupFailureAndRemainsBlocked() {

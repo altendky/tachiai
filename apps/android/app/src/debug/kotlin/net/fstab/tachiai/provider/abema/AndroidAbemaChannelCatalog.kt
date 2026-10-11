@@ -76,7 +76,12 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
         AndroidAbemaSlotMetadataClient(application, instanceId, captured.proof(),
             canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
     })
-    val publicCatalog = AbemaSeriesChildrenCatalog(channels,
+    val schedule = AbemaScheduleCatalog(channels,
+        transportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
+            AndroidAbemaSeriesMetadataClient(application, instanceId, captured.proof(),
+                canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
+        }, canPublish = ::current)
+    val publicCatalog = AbemaSeriesChildrenCatalog(schedule,
         transportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
             AndroidAbemaSeriesMetadataClient(application, instanceId, captured.proof(),
                 canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)

@@ -10,6 +10,27 @@ class AbemaGuestBootstrapPolicyTest {
     private val preflight = mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET",
         "Access-Control-Request-Headers" to "authorization")
 
+    @Test fun scheduleModeAdmitsOnlyCanonicalOneGuestOneGETWithBoundedPreflightAndNoResourceArgument() {
+        val operation = AbemaGuestBootstrapOperation.FETCH_SCHEDULE
+        val uri = URI(AbemaGuestBootstrapPolicy.SCHEDULE)
+        val request = AbemaGuestRequestAdmission(operation)
+        assertFalse(request.admit(uri, false, "GET"))
+        assertTrue(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertTrue(request.admit(uri, false, "OPTIONS", preflight)); assertFalse(request.admit(uri, false, "OPTIONS", preflight))
+        assertTrue(request.admit(uri, false, "GET")); assertFalse(request.admit(uri, false, "GET"))
+        for (url in listOf("${AbemaGuestBootstrapPolicy.SCHEDULE}?division=1", "${AbemaGuestBootstrapPolicy.SCHEDULE}/",
+            AbemaGuestBootstrapPolicy.SCHEDULE.replace("dataSet", "%64ataSet"), "https://api.abema.io/v1/timetable/dataSet",
+            AbemaGuestBootstrapPolicy.CHALLENGE, AbemaGuestBootstrapPolicy.DEVICE_TOKEN,
+            "${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/private", AbemaGuestBootstrapPolicy.EPISODE))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "GET", operation))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(uri, true, "GET", operation))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(uri, false, "POST", operation))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(uri, false, "GET"))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(uri, false, "GET", operation, series = AbemaSeriesPageRequest("series-A")))
+        assertTrue(AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation).contains("${AbemaGuestBootstrapPolicy.SCHEDULE};"))
+        assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation).contains("/v1/users/"))
+    }
+
     @Test fun onlyOwnedDocumentAssetsAndOneGuestMethodAreAdmitted() {
         assertTrue(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.PAGE), true, "GET"))
         assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.PAGE), false, "GET"))

@@ -25,7 +25,7 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
-      if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529') {
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/programs/')) {
         if (options.delayedEpisode) await delayed;
         if (options.episodeNetworkFailure) throw new Error('PRIVATE_EPISODE_ERROR');
         if (options.episodeRedirected) return { status: 200, body: {}, redirected: true };
@@ -35,7 +35,7 @@ function fixture(options = {}) {
           get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
         };
         const bytes = options.episodeBytes || options.episodeText || JSON.stringify(options.episode || {
-          id: '394-72_s10_p8529', episode: { title: 'PRIVATE_EPISODE_TITLE' },
+          id: options.resourceId || '394-72_s10_p8529', episode: { title: 'PRIVATE_EPISODE_TITLE' },
           source: { url: 'https://private.invalid/MUST_NOT_FETCH' }, status: 'ignored',
         });
         if (options.delayedEpisodeRead) {
@@ -108,7 +108,8 @@ function fixture(options = {}) {
   }]);`, context);
   const call = script => vm.runInContext(script, context, { timeout: 1000 });
   return { context, requests, timers, device, release, call,
-    start: () => call(`window.__tachiaiStartGuestBootstrap('${nonce}', '${options.operation || 'GUEST_ONLY'}')`),
+    start: () => call(`window.__tachiaiStartGuestBootstrap('${nonce}', fake.operation || 'GUEST_ONLY'${
+      Object.hasOwn(options, 'resourceId') ? ', fake.resourceId' : ''})`),
     stop: () => call(`window['${apiName}'].stop()`),
     state: () => JSON.parse(call(`window['${apiName}'].status()`)),
   };
@@ -232,7 +233,9 @@ test('owned document has only the reviewed four external-code slots and no media
   assert.equal((html.match(/<script /g) || []).length, 6);
   assert.doesNotMatch(html, /<video|<audio|<iframe|<form|https:\/\//);
   const initialize = fs.readFileSync(path.join(assets, 'guest-bootstrap-initialize.js'), 'utf8');
-  assert.equal(initialize.trim(), "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__');");
+  assert.equal(initialize.trim(), "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__'__RESOURCE_ARGUMENT__);");
+  assert.equal(initialize.replace('__RESOURCE_ARGUMENT__', '').trim(),
+    "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__');");
 });
 
 test('explicit verification uses pinned config and one cookie-free matching profile GET, retaining only closed status', async () => {
@@ -430,4 +433,67 @@ test('episode late response/body, timeout and repeated start cannot publish or d
   const again = fixture({ operation: 'VERIFY_EPISODE', delayedEpisode: true }); again.start(); await settle(); again.start();
   assert.equal(again.requests[1].request.signal.aborted, true); again.release(); await settle();
   assert.equal(again.state().state, 'REFUSED'); assert.equal(again.requests.length, 2);
+});
+
+test('catalog fetch binds two arbitrary exact episodes and projects only validated public identity/title', async () => {
+  for (const resourceId of ['fixture-A_123', '9'.repeat(128)]) {
+    const value = fixture({ operation: 'FETCH_EPISODE', resourceId }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'EXACT_EPISODE_METADATA', failure: 'NONE' });
+    assert.equal(value.requests.length, 2);
+    assert.equal(value.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/programs/' + resourceId);
+    assert.equal(value.requests[1].request.credentials, 'omit'); assert.equal(value.requests[1].request.cache, 'no-store');
+    assert.equal(value.requests[1].request.redirect, 'error');
+    assert.deepEqual(Array.from(value.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop', 'metadata']);
+    const projection = JSON.parse(value.call(`window['${apiName}'].metadata()`));
+    assert.deepEqual(projection, { id: resourceId, title: 'PRIVATE_EPISODE_TITLE' });
+    assert.doesNotMatch(JSON.stringify(projection), /FIXTURE_ACCESS|FIXTURE_USER|source|status|device|application/);
+    assert.doesNotMatch(JSON.stringify(value.state()), /fixture-A|PRIVATE_|FIXTURE_|source|title|access/);
+    projection.title = 'Changed by caller';
+    assert.equal(JSON.parse(value.call(`window['${apiName}'].metadata()`)).title, 'PRIVATE_EPISODE_TITLE');
+    value.stop(); assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+
+test('catalog fetch requires canonical bounded explicit identity while diagnostics cannot accept another resource', async () => {
+  for (const resourceId of [undefined, null, 42, [], {}, '', '-first', '_first', 'x'.repeat(129),
+    'leading ', ' trailing', 'has space', 'has\nline', '日本', 'a/b', 'a.b', 'a%2fb', 'a?query', 'a#fragment']) {
+    const value = fixture({ operation: 'FETCH_EPISODE', resourceId }); value.start(); await settle();
+    assert.equal(value.requests.length, 0); assert.equal(value.context.loaded.length, 0);
+    assert.equal(value.call(`typeof window['${apiName}']`), 'undefined');
+  }
+  const missing = fixture({ operation: 'FETCH_EPISODE' }); missing.start(); await settle();
+  assert.equal(missing.requests.length, 0);
+  for (const operation of ['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE']) {
+    const value = fixture({ operation, resourceId: 'fixture-A' }); value.start(); await settle();
+    assert.equal(value.requests.length, 0); assert.equal(value.context.loaded.length, 0);
+    assert.equal(value.call(`typeof window['${apiName}']`), 'undefined');
+  }
+});
+
+test('catalog fetch never substitutes the diagnostic episode or publishes invalid/refused metadata', async () => {
+  const resourceId = 'fixture-B';
+  for (const options of [
+    { episode: { id: '394-72_s10_p8529', episode: { title: 'Sample' } } },
+    { episodeText: '{"id":"fixture-B","episode":{"title":"A","title":"B"}}' },
+    { episode: { id: resourceId, episode: { title: '\ud800' } } },
+    { episodeStatus: 401 }, { episodeStatus: 404 }, { episodeStatus: 429 }, { episodeNetworkFailure: true },
+  ]) {
+    const value = fixture({ operation: 'FETCH_EPISODE', resourceId, ...options }); value.start(); await settle();
+    assert.equal(value.state().state, 'REFUSED'); assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+    assert.equal(value.requests.length, 2);
+    assert.equal(value.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/programs/' + resourceId);
+  }
+});
+
+test('catalog projection stays unavailable before completion and after cancellation or timeout including late replies', async () => {
+  for (const [delay, timeout] of [['delayedEpisode', false], ['delayedEpisodeRead', false], ['delayedEpisode', true]]) {
+    const value = fixture({ operation: 'FETCH_EPISODE', resourceId: 'fixture-C', [delay]: true }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'EPISODE', failure: 'NONE' });
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+    if (timeout) for (const callback of value.timers.values()) callback(); else value.stop();
+    value.release(); await settle();
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null); assert.equal(value.requests.length, 2);
+    assert.equal(value.state().state, timeout ? 'REFUSED' : 'STOPPED');
+    assert.equal(value.timers.size, 0);
+  }
 });

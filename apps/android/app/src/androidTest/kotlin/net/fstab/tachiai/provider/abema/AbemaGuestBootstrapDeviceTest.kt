@@ -12,8 +12,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.diagnostic.AbemaGuestBootstrapActivity
-import net.fstab.tachiai.feature.diagnostic.configureAbemaGuestWebView
-import net.fstab.tachiai.feature.diagnostic.configureAbemaGuestBootstrapProfile
 import org.json.JSONObject
 import org.json.JSONTokener
 import org.junit.Assert.*
@@ -67,17 +65,24 @@ class AbemaGuestBootstrapDeviceTest {
         ownedRuntime("VERIFY_EPISODE", "EXACT_EPISODE_METADATA", 2)
     }
 
-    private fun ownedRuntime(operation: String, expected: String, count: Int) {
+    @Test fun actualOwnedJavaScriptProjectsOnlyTwoRequestedSyntheticEpisodesWithNetworkingBlocked() {
+        for (id in listOf("fixture-A_123", "fixture-B_456"))
+            ownedRuntime("FETCH_EPISODE", "EXACT_EPISODE_METADATA", 2, id)
+    }
+
+    private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
         val nonce = "1234567890abcdef1234567890abcdef"
+        val requested = resourceId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
+        check(AbemaGuestBootstrapPolicy.validEpisodeId(requested))
         val before = """
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
-              if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529')
-                return new Response('{"id":"394-72_s10_p8529","episode":{"title":"PRIVATE_EPISODE_TITLE"},"source":{"url":"https://private.invalid/MUST_NOT_FETCH"}}', {status:200});
+              if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/$requested')
+                return new Response('{"id":"$requested","episode":{"title":"PRIVATE_EPISODE_TITLE"},"source":{"url":"https://private.invalid/MUST_NOT_FETCH"}}', {status:200});
               if (url.startsWith('https://api.p-c3-e.abema-tv.com/'))
                 return new Response('{"profile":{"userId":"FIXTURE_USER","name":"PRIVATE_NAME"},"subscriptions":[]}', {status:200});
               return new Response('{"user_id":"FIXTURE_USER","access_token":"FIXTURE_ACCESS"}', {status:200});
@@ -95,7 +100,7 @@ class AbemaGuestBootstrapDeviceTest {
             window.__LOADABLE_LOADED_CHUNKS__.push([[2], {32746(module) { module.exports = {}; }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[3], {21470() { throw new Error('SOURCE_MUST_NOT_RUN'); }}]);
             window.__LOADABLE_LOADED_CHUNKS__.push([[4], {75284() { throw new Error('DRM_MUST_NOT_RUN'); }}]);
-            window.__tachiaiStartGuestBootstrap('$nonce', '$operation');
+            window.__tachiaiStartGuestBootstrap('$nonce', '$operation'${resourceId?.let { ", '$it'" } ?: ""});
         """.trimIndent()
         val browser = AtomicReference<WebView>()
         instrumentation.runOnMainSync {
@@ -131,21 +136,31 @@ class AbemaGuestBootstrapDeviceTest {
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
                   requests[1].options.redirect==='error',
-                episode:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/video/programs/394-72_s10_p8529' &&
+                episode:requests.length===2 && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/video/programs/$requested' &&
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
                   requests[1].options.redirect==='error'})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
             assertEquals(operation == "VERIFY_PROFILE", observed.getBoolean("profile"))
-            assertEquals(operation == "VERIFY_EPISODE", observed.getBoolean("episode"))
-            assertEquals("[\"status\",\"stop\"]", observed.getJSONArray("names").toString())
+            assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
+            assertEquals(if (operation == "FETCH_EPISODE") "[\"status\",\"stop\",\"metadata\"]" else "[\"status\",\"stop\"]",
+                observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
             assertFalse(publicShape.contains("PRIVATE_NAME"))
             assertFalse(publicShape.contains("PRIVATE_EPISODE_TITLE")); assertFalse(publicShape.contains("394-72"))
+            val metadata = evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null")
+            if (operation == "FETCH_EPISODE") {
+                val projection = JSONObject(checkNotNull(metadata))
+                assertEquals(2, projection.length()); assertEquals(requested, projection.getString("id"))
+                assertEquals("PRIVATE_EPISODE_TITLE", projection.getString("title"))
+                assertFalse(metadata.contains("FIXTURE_ACCESS")); assertFalse(metadata.contains("FIXTURE_USER"))
+                assertFalse(metadata.contains("source")); assertFalse(metadata.contains("MUST_NOT_FETCH"))
+            } else assertNull(metadata)
             evaluate("window.__tachiaiGuest_$nonce.stop(); window.__tachiaiGuest_$nonce.status()")!!.let {
                 assertEquals("STOPPED", JSONObject(it).getString("state"))
             }
+            assertNull(evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null"))
         } finally {
             instrumentation.runOnMainSync { browser.get().stopLoading(); browser.get().destroy() }
         }

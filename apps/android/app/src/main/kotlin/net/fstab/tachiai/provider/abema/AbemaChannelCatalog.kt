@@ -14,6 +14,7 @@ internal class AbemaChannelCatalog(
     private val transportFactory: (canRequest: () -> Boolean) -> AbemaChannelTransport,
     private val canPublish: () -> Boolean = { true },
     private val wallMs: () -> Long = System::currentTimeMillis,
+    private val episodeTransportFactory: ((canRequest: () -> Boolean) -> AbemaEpisodeTransport)? = null,
 ) : ProviderCatalog {
     init { require(validProviderInstanceId(instanceId)) }
     override val providerId = ProviderId("abema")
@@ -21,6 +22,7 @@ internal class AbemaChannelCatalog(
     private val snapshotLock = Any()
     private val revision = AtomicLong()
     private val active = AtomicReference<AbemaChannelTransport?>()
+    private val activeEpisode = AtomicReference<AbemaEpisodeTransport?>()
     @Volatile private var closed = false
     private class Snapshot(val revision: Long, val search: String?, val entries: List<CatalogEntry>,
         var cursor: String?, var offset: Int)
@@ -29,7 +31,9 @@ internal class AbemaChannelCatalog(
     private fun available() = !closed && try { canPublish() } catch (_: Exception) { false }
     private fun locallyCurrent(local: Long) = !closed && local == revision.get()
     private fun current(local: Long) = locallyCurrent(local) && available()
-    private fun requireCurrent(local: Long) { if (!current(local)) throw Abort(CatalogFailure.ACCESS_REQUIRED) }
+    private fun requireCurrent(local: Long, ownerFailure: CatalogFailure = CatalogFailure.ACCESS_REQUIRED) {
+        if (!current(local)) throw Abort(ownerFailure)
+    }
     private fun requireLocal(local: Long) { if (!locallyCurrent(local)) throw Abort(CatalogFailure.ACCESS_REQUIRED) }
     private fun clearSnapshot() = synchronized(snapshotLock) { snapshot = null }
 
@@ -42,19 +46,20 @@ internal class AbemaChannelCatalog(
                 CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED)))
     }
 
-    private fun <T> operation(resetSnapshot: Boolean = false, work: (Long) -> T): CatalogResult<T> = synchronized(operationLock) {
+    private fun <T> operation(resetSnapshot: Boolean = false,
+        ownerFailure: CatalogFailure = CatalogFailure.ACCESS_REQUIRED, work: (Long) -> T): CatalogResult<T> = synchronized(operationLock) {
         if (resetSnapshot) clearSnapshot()
         val local = revision.get()
         try {
-            requireCurrent(local)
+            requireCurrent(local, ownerFailure)
             val value = work(local)
-            requireCurrent(local)
+            requireCurrent(local, ownerFailure)
             CatalogResult.Value(value)
         } catch (error: Abort) {
             if (error.reason == CatalogFailure.ACCESS_REQUIRED) clearSnapshot()
             CatalogResult.Failure(error.reason, error.retryAt)
         } catch (_: Exception) {
-            if (!current(local)) { clearSnapshot(); CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
+            if (!current(local)) { clearSnapshot(); CatalogResult.Failure(ownerFailure) }
             else CatalogResult.Failure(CatalogFailure.TEMPORARY)
         }
     }
@@ -82,14 +87,16 @@ internal class AbemaChannelCatalog(
                     throw Abort(CatalogFailure.TEMPORARY)
                 return response.entries.toList()
             }
-            429 -> {
-                val now = wallMs().coerceAtLeast(0)
-                val maximum = if (now > Long.MAX_VALUE - 86_400_000) Long.MAX_VALUE else now + 86_400_000
-                val fallback = if (now > Long.MAX_VALUE - 60_000) Long.MAX_VALUE else now + 60_000
-                throw Abort(CatalogFailure.RATE_LIMITED, (response.retryAtEpochMs ?: fallback).coerceIn(now, maximum))
-            }
+            429 -> throw Abort(CatalogFailure.RATE_LIMITED, boundedRetryAt(response.retryAtEpochMs))
             else -> throw Abort(CatalogFailure.TEMPORARY)
         }
+    }
+
+    private fun boundedRetryAt(supplied: Long?): Long {
+        val now = wallMs().coerceAtLeast(0)
+        val maximum = if (now > Long.MAX_VALUE - 86_400_000) Long.MAX_VALUE else now + 86_400_000
+        val fallback = if (now > Long.MAX_VALUE - 60_000) Long.MAX_VALUE else now + 60_000
+        return (supplied ?: fallback).coerceIn(now, maximum)
     }
 
     private fun search(query: CatalogQuery): String? = query.search?.trim()?.also {
@@ -143,6 +150,61 @@ internal class AbemaChannelCatalog(
     private fun channel(resource: CatalogResource) = resource.providerId == providerId && resource.kind == "channel" &&
         resource.intent == CatalogIntent.CHANNEL && resource.identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))
 
+    private fun episode(resource: CatalogResource) = resource.providerId == providerId && resource.kind == "episode" &&
+        resource.intent == CatalogIntent.VIDEO && resource.identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))
+
+    private fun validEpisodeEntry(entry: CatalogEntry, expected: CatalogResource): Boolean {
+        if (entry.resource != expected || entry.availability != CatalogAvailability.UNKNOWN || entry.scheduledStartEpochMs != null ||
+            entry.title.length !in 1..160 || entry.title != entry.title.trim()) return false
+        var index = 0
+        while (index < entry.title.length) {
+            val first = entry.title[index++]
+            val codePoint = if (Character.isHighSurrogate(first)) {
+                if (index == entry.title.length || !Character.isLowSurrogate(entry.title[index])) return false
+                Character.toCodePoint(first, entry.title[index++])
+            } else {
+                if (Character.isLowSurrogate(first)) return false
+                first.code
+            }
+            if (Character.isISOControl(codePoint) || Character.getType(codePoint) == Character.FORMAT.toInt()) return false
+        }
+        return true
+    }
+
+    private fun episodeMetadata(local: Long, resource: CatalogResource): CatalogEntry {
+        val factory = episodeTransportFactory ?: throw Abort(CatalogFailure.NOT_VERIFIED)
+        requireCurrent(local, CatalogFailure.TEMPORARY)
+        val transport = factory { current(local) }
+        if (!activeEpisode.compareAndSet(null, transport)) {
+            transport.close()
+            throw Abort(CatalogFailure.TEMPORARY)
+        }
+        val response = try {
+            requireCurrent(local, CatalogFailure.TEMPORARY)
+            transport.fetch(resource)
+        } finally {
+            try { transport.close() } catch (error: Exception) {
+                // Unknown cleanup cannot admit another metadata attempt. The
+                // transport/coordinator retains any unsafe runtime/route.
+                closed = true
+                revision.incrementAndGet()
+                clearSnapshot()
+                throw error
+            } finally { activeEpisode.compareAndSet(transport, null) }
+        }
+        requireCurrent(local, CatalogFailure.TEMPORARY)
+        return when (response) {
+            is CatalogResult.Value -> response.value.also {
+                if (!validEpisodeEntry(it, resource)) throw Abort(CatalogFailure.TEMPORARY)
+            }
+            is CatalogResult.Failure -> when (response.reason) {
+                CatalogFailure.RATE_LIMITED -> throw Abort(CatalogFailure.RATE_LIMITED, boundedRetryAt(response.retryAtEpochMs))
+                CatalogFailure.TEMPORARY, CatalogFailure.NOT_FOUND, CatalogFailure.NOT_VERIFIED -> throw Abort(response.reason)
+                else -> throw Abort(CatalogFailure.TEMPORARY)
+            }
+        }
+    }
+
     override fun lookup(input: String): CatalogResult<CatalogEntry> = operation(resetSnapshot = true) { local ->
         val imported = parseAbemaPublicResource(input)
         val identity = imported?.resource?.takeIf(::channel)?.identity ?: input.trim(' ')
@@ -152,10 +214,19 @@ internal class AbemaChannelCatalog(
             ?: throw Abort(CatalogFailure.NOT_FOUND)
     }
 
-    override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> = operation(resetSnapshot = true) { local ->
-        if (!channel(resource)) throw Abort(if (resource.providerId == providerId)
-            CatalogFailure.NOT_VERIFIED else CatalogFailure.INVALID_INPUT)
-        channels(local).singleOrNull { it.resource == resource } ?: throw Abort(CatalogFailure.NOT_FOUND)
+    override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> {
+        val episodeRequest = resource.providerId == providerId && resource.kind == "episode"
+        return operation(resetSnapshot = true,
+            ownerFailure = if (episodeRequest) CatalogFailure.TEMPORARY else CatalogFailure.ACCESS_REQUIRED) { local ->
+            if (episodeRequest) {
+                if (!episode(resource)) throw Abort(CatalogFailure.INVALID_INPUT)
+                episodeMetadata(local, resource)
+            } else {
+                if (!channel(resource)) throw Abort(if (resource.providerId == providerId)
+                    CatalogFailure.NOT_VERIFIED else CatalogFailure.INVALID_INPUT)
+                channels(local).singleOrNull { it.resource == resource } ?: throw Abort(CatalogFailure.NOT_FOUND)
+            }
+        }
     }
 
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> =
@@ -165,7 +236,12 @@ internal class AbemaChannelCatalog(
         closed = true
         revision.incrementAndGet()
         clearSnapshot()
-        active.getAndSet(null)?.close()
+        val channelTransport = active.getAndSet(null)
+        val episodeTransport = activeEpisode.getAndSet(null)
+        try { channelTransport?.close() }
+        finally { episodeTransport?.let { transport ->
+            try { transport.cancelActiveRequest() } finally { transport.close() }
+        } }
     }
     override fun toString() = "AbemaChannelCatalog(redacted)"
 }

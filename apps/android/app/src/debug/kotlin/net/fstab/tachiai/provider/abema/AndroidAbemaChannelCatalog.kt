@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.abema
 import android.content.Context
 import java.io.IOException
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
@@ -19,6 +20,8 @@ internal class AbemaCatalogRouteOwner(val instance: ProviderInstance, val profil
     private val fingerprint = "${instance.id}|${instance.service.name}|${choice.mode.name}|${choice.connectionId ?: ""}|" +
         (profile?.let(::routeConfigurationKey) ?: "SYSTEM")
     fun sameOwnership(other: AbemaCatalogRouteOwner) = fingerprint == other.fingerprint
+    fun proof(): String = MessageDigest.getInstance("SHA-256").digest(fingerprint.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 255) }
     override fun toString() = "AbemaCatalogRouteOwner(redacted)"
 }
 
@@ -49,7 +52,8 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     val lock = Any()
     var closed = false
     var cleanupFailed = false
-    fun current(): Boolean = canUse() && !synchronized(lock) { closed || cleanupFailed } && captured != null &&
+    fun canRemainActive(): Boolean = canUse() && !synchronized(lock) { closed || cleanupFailed }
+    fun current(): Boolean = canRemainActive() && captured != null &&
         runCatching { captured.sameOwnership(readOwner()) }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
     fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
@@ -58,7 +62,10 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     val catalog = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
         OwnedAbemaChannelTransport(captured?.profile, canRequest = { gate() && current() },
             onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics)
-    }, canPublish = ::current)
+    }, canPublish = ::current, episodeTransportFactory = if (captured == null) null else { gate ->
+        AndroidAbemaEpisodeMetadataClient(application, instanceId, captured.proof(),
+            canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
+    })
     val owned = object : ProviderCatalog by catalog {
         override fun close() {
             if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return

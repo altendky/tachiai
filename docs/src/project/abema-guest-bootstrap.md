@@ -11,7 +11,8 @@ is recorded below; existing-account linking remains separate.
 Issue [#157](https://github.com/altendky/tachiai/issues/157) adds a separately
 explicit guest-authenticated check of one fixed episode. Its bounded saved-route
 acceptance is recorded below; configured-item refresh in
-[#153](https://github.com/altendky/tachiai/issues/153) remains separate.
+[#153](https://github.com/altendky/tachiai/issues/153) uses a separate common-catalog
+consumer described below. Existing-account access remains separate.
 
 ## Implemented boundary
 
@@ -52,7 +53,7 @@ only admitted response fields are `user_id`, `access_token` and optional
 change must fail for review.
 
 Retained device/application/grant/profile session state stays in the JavaScript
-closure. Native polling exposes only fixed status/failure categories. Platform
+closure. Diagnostic polling exposes only fixed status/failure categories. Platform
 request objects necessarily carry bearer headers and private profile URIs
 transiently; admission never reads/copies GET headers and projects only the three
 fixed CORS preflight fields for OPTIONS. The profile URI is retained only as
@@ -242,6 +243,89 @@ unchanged. The modern-only `createAbemaEpisodeCatalog` route and explicit
 `AbemaEpisodeMetadataProbeDeviceTest` remain reproducible refusal probes. These
 401 results establish anonymous refusal in this context; they establish neither
 an existing-account requirement nor guest-authenticated metadata acceptance.
+
+## Configured episode metadata refresh
+
+The debug Android catalog's explicit episode refresh uses `FETCH_EPISODE` in a
+nonexported, same-UID bound service in the existing `:abema_guest_bootstrap`
+process. Binding does not make a provider request. The management Activity stays
+in place; a valid explicit request captures its instance, canonical public episode
+ID, memory-only owner proof, nonce and monotonic deadline. JS and native admission
+require that exact episode identity; omitting it refuses before guest dispatch.
+The fixed diagnostic sample is never substituted for a configured resource.
+
+The service and diagnostic Activity share one process coordinator, admission
+gate, proxy override, runtime settings and cleanup/retention owner. Protected
+configuration, bundle and backend work stays on workers. WebView, proxy and
+Binder callbacks stay on main. Before any provider dispatch, the service rereads
+the instance/route and compares its memory-only SHA-256 ownership proof with the
+caller's captured proof. No raw profile, route credential or guest field crosses
+IPC. The proof is private, is never logged or persisted and does not itself
+authorize a request.
+
+The caller sends a nonce-bound foreground/revision pulse every 200 ms, with a
+one-second lease. Cancellation, closure, Binder death, lease expiry and the
+immutable operation deadline invalidate admission. This bounds cross-process
+notification latency; it does not provide instantaneous foreground observation.
+Binding is included in the 45-second operation budget. Cleanup can finish for
+another 20 seconds, but that grace never admits requests or publishes an expired
+candidate. The original destroy-before-clear rule and strongly retained poisoned
+runtime/backend apply across both entry points.
+
+Only `FETCH_EPISODE` exposes a JS metadata projection, containing the validated
+public ID and title. Native code independently validates the exact requested
+identity and title, then returns that projection after confirmed destruction,
+route cleanup and a final worker ownership check. Diagnostic operations retain
+their status/stop-only API. Guest values, profile data, raw response metadata,
+source URLs and licensing information never enter the catalog result. Stopping
+the runtime clears the projection.
+
+The existing common catalog/controller/store flow applies the returned title
+to the matching configured entry with UNKNOWN availability and no inferred
+schedule. It preserves the configured UUID, provider instance, resource, current
+order, quality preferences and unrelated records. The separate legacy
+`SourceSetup.name` remains unchanged; there is no separate configured local-label
+field. Local public-link import remains request-free. A missing episode retains
+its configuration and reports NOT_FOUND; 429 reports bounded RATE_LIMITED.
+Unexplained 401/403, transport, response, timeout, owner or cleanup failures
+remain technical failures. They do not imply that an existing account is needed.
+Channel continuations are invalidated on both successful and failed refresh.
+
+This adds metadata refresh only. My List, provider history, existing-account
+connection, scheduled-slot/series discovery and selected-resource playback retain
+their separate verification boundaries.
+
+On 2026-10-11, one separately opt-in read-only check through the actual Android
+catalog and headless service returned **EXACT_EPISODE_METADATA** for
+`394-72_s10_p8529` through **SAVED_CONNECTION**. The selected verifier passed in
+11.856 seconds without skips; it checked exact normalized identity, UNKNOWN
+availability, no schedule, captured-owner agreement and encrypted-record equality.
+The public title was not printed. Runtime cleanup is part of the service's
+successful-result contract; facade close alone is not independent proof of
+remote teardown or Binder release. This catalog observation is separate from
+the earlier fixed diagnostic check.
+
+Context: persistent `tachiai-dev`, Android 16/API 36 Google APIs x86-64, WebView
+133.0.6943.137, region unknown, existing account not used. Installed app SHA-256
+`4047d6ff107809f6f541e5249abedc48d1154e243c4edfc7d8ae983a35e7e294`;
+ordinary test APK SHA-256
+`9f13e89a586871a56fc44906d62f2c4ed9d9e914d83bd9788a55ed3688e29480`.
+Both shared certificates match the procedure. Protected encrypted records were
+byte-for-byte unchanged across update, isolated fixtures, ordinary-test restoration
+and the real read-only check. The passive launcher menu established the test's
+foreground state; no provider page or playback action was opened.
+
+Checks passed 1,939 JVM cases with zero failures/errors/skips, 27 direct JS
+cases, Android lint, instrumentation compilation and release isolation. All
+seven networking-blocked isolated guest-process Android fixtures passed in
+0.952 seconds without skips. The temporary instrumentation override was removed;
+ordinary source/merged/packaged manifests verified and the ordinary test APK
+rebuilt, signer-verified and reinstalled. The first build caught an incorrect
+test callback type, corrected before device deployment. Independent review also
+caught supplementary Unicode format validation and cleanup-deadline drift; both
+were fixed with regression coverage before verification. The actual
+adapter/controller/store preservation path is covered separately with synthetic
+memory stores; this device check deliberately makes no configured-item write.
 
 ## Verification and observation
 

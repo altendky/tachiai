@@ -222,6 +222,27 @@ before promising multiple independently connected ABEMA instances. Account
 connection must not repurpose fresh-guest native state or imply verified
 entitlement, collection access or playback merely from login success.
 
+### Exact configured episodes
+
+[Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata
+refresh for a configured exact episode through the shared catalog contract. Its
+[isolated guest service](abema-guest-bootstrap.md#configured-episode-metadata-refresh)
+uses the owning instance's captured route and the exact public episode ID.
+Only validated public ID/title metadata can return after cleanup and final
+ownership checks; availability remains UNKNOWN. Missing/inaccessible metadata
+retains the saved item, and no diagnostic sample, current broadcast or other
+episode is substituted.
+
+The common controller updates the provider title while preserving the configured
+UUID/instance/resource, current order, quality preferences and unrelated records.
+Separate legacy source labels remain unchanged. Local import still needs no
+network request. This operation neither reads My List/history nor connects an
+existing account; it adds no playback capability. A separate bounded headless
+service/catalog check on persistent `tachiai-dev` accepted exact September episode
+metadata through the saved route on 2026-10-11, with encrypted records unchanged.
+The linked observation records device/engine/account conditions and verification
+limits; it does not establish general availability or entitlement.
+
 ## Remaining gates and issue status
 
 The research establishes public identity distinctions, retention semantics,

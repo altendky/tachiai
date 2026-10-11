@@ -159,4 +159,70 @@ class AbemaGuestBootstrapPolicyTest {
             "User-Agent" to "FIXTURE")
         assertEquals(preflight, AbemaGuestBootstrapPolicy.corsHeaders("OPTIONS") { headers })
     }
+
+    @Test fun catalogEpisodePolicyBindsTwoCanonicalPublicIdentitiesWithoutASampleFallback() {
+        val operation = AbemaGuestBootstrapOperation.FETCH_EPISODE
+        for (id in listOf("fixture-A_123", "9".repeat(128))) {
+            val url = AbemaGuestBootstrapPolicy.episodeUrl(id)
+            val episode = URI(url)
+            assertTrue(AbemaGuestBootstrapPolicy.allows(episode, false, "GET", operation, id))
+            assertTrue(AbemaGuestBootstrapPolicy.allows(episode, false, "OPTIONS", operation, id))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, true, "GET", operation, id))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(episode, false, "POST", operation, id))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.EPISODE), false, "GET", operation, id))
+            assertFalse(AbemaGuestBootstrapPolicy.allows(profile, false, "GET", operation, id))
+            for (other in listOf("$url?x=1", "$url#fragment", "$url/", "$url/children",
+                "${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/video/programs/OTHER", "https://abema.tv/api/auth/accessToken"))
+                assertFalse(AbemaGuestBootstrapPolicy.allows(URI(other), false, "GET", operation, id))
+            val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation, id)
+            assertTrue(csp.contains("$url;")); assertFalse(csp.contains(AbemaGuestBootstrapPolicy.EPISODE))
+            assertFalse(csp.contains("/v1/users/")); assertTrue(csp.contains("media-src 'none'"))
+        }
+    }
+
+    @Test fun catalogEpisodeAdmissionNeedsFreshGuestAndAtMostOneMatchingPreflightAndGET() {
+        val id = "fixture-B"
+        val operation = AbemaGuestBootstrapOperation.FETCH_EPISODE
+        val episode = URI(AbemaGuestBootstrapPolicy.episodeUrl(id))
+        val request = AbemaGuestRequestAdmission(operation, id)
+        assertFalse(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+        assertTrue(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(request.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(request.admit(URI(AbemaGuestBootstrapPolicy.EPISODE), false, "GET"))
+        assertFalse(request.admit(profile, false, "GET"))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight + ("Access-Control-Request-Headers" to "authorization,content-type")))
+        assertTrue(request.admit(episode, false, "OPTIONS", preflight))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+        assertTrue(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "GET"))
+        assertFalse(request.admit(episode, false, "OPTIONS", preflight))
+    }
+
+    @Test fun unsafeEpisodeIdentitiesAndDiagnosticResourceOverridesRefuseBeforeAdmission() {
+        for (id in listOf("", "-first", "_first", "x".repeat(129), "日本", "a/b", "a.b", "a%2fb",
+            "a?query", "a#fragment", "has space", "has\nline")) {
+            assertFalse(AbemaGuestBootstrapPolicy.validEpisodeId(id))
+            assertThrows(IllegalArgumentException::class.java) { AbemaGuestBootstrapPolicy.episodeUrl(id) }
+            assertThrows(IllegalArgumentException::class.java) {
+                AbemaGuestRequestAdmission(AbemaGuestBootstrapOperation.FETCH_EPISODE, id)
+            }
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST",
+                AbemaGuestBootstrapOperation.FETCH_EPISODE, id))
+        }
+        for (operation in listOf(AbemaGuestBootstrapOperation.GUEST_ONLY, AbemaGuestBootstrapOperation.VERIFY_PROFILE,
+            AbemaGuestBootstrapOperation.VERIFY_EPISODE)) {
+            assertThrows(IllegalArgumentException::class.java) { AbemaGuestRequestAdmission(operation, "fixture-C") }
+            assertThrows(IllegalArgumentException::class.java) { AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation, "fixture-C") }
+            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST", operation, "fixture-C"))
+        }
+    }
+
+    @Test fun catalogEpisodeRequiresExplicitIdentityBeforeGuestDispatchOrCSP() {
+        val operation = AbemaGuestBootstrapOperation.FETCH_EPISODE
+        assertThrows(IllegalArgumentException::class.java) { AbemaGuestRequestAdmission(operation) }
+        assertThrows(IllegalArgumentException::class.java) { AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation) }
+        assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST", operation))
+        assertFalse(AbemaGuestBootstrapPolicy.allows(URI(AbemaGuestBootstrapPolicy.EPISODE), false, "GET", operation))
+    }
 }

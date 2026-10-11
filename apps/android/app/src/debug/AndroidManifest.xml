@@ -66,6 +66,10 @@
             android:name=".feature.diagnostic.AbemaGuestBootstrapActivity"
             android:exported="true"
             android:process=":abema_guest_bootstrap" />
+        <service
+            android:name=".provider.abema.AbemaEpisodeMetadataService"
+            android:exported="false"
+            android:process=":abema_guest_bootstrap" />
         <activity
             android:name=".feature.presentation.PrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

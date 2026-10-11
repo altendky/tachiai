@@ -95,6 +95,9 @@ class AbemaSeriesMetadataService : Service() {
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 searchRequest = request.search, canRemainActive = lease::current)
         }) { result ->
+            // Coordinator categories are closed constants after cleanup;
+            // query, titles, identities and provider bodies are never logged.
+            if (result.category != "SEARCH_PAGE") android.util.Log.i("TachiaiAbemaSearchRuntime", result.category)
             val outcome = when (result.category) {
                 "SEARCH_PAGE" -> if (result.searchReply != null) "OK" else "TEMPORARY"
                 "GUEST_SEARCH_HTTP_404", "GUEST_SEARCH_HTTP_410" -> "NOT_FOUND"

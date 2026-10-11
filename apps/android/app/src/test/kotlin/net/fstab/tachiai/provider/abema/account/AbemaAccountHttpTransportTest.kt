@@ -69,14 +69,14 @@ class AbemaAccountHttpTransportTest {
     @Test fun onlyToken400ReadsStrictPendingBodyAndWritesExactCapturedDto() {
         val c = Connection(token, 400, "{\"code\":16,\"message\":\"PRIVATE_PROVIDER_TEXT\"}".toByteArray())
         val challenge = fixtureAccountChallenge()
-        assertSame(AbemaAccountTokenResult.Pending, transport(c).token(challenge, "intended-account"))
+        assertSame(AbemaAccountTokenResult.Pending, transport(c).token(challenge))
         assertEquals(challenge.tokenBody, c.sent.toString("UTF-8")); assertEquals("POST", c.requestMethod)
         assertEquals("Bearer guest-bearer", c.getRequestProperty("Authorization")); assertEquals(1, c.disconnected)
     }
     @Test fun unsupportedSuccessRefusalAndRedirectNeverReadTokenBody() {
         for (status in listOf(201, 204, 302, 401, 403, 429, 500)) {
             val c = Connection(token, status)
-            assertTrue(transport(c).token(fixtureAccountChallenge(), "intended-account") is AbemaAccountTokenResult.Failed)
+            assertTrue(transport(c).token(fixtureAccountChallenge()) is AbemaAccountTokenResult.Failed)
             assertEquals(0, c.opened); assertEquals(1, c.disconnected)
         }
     }
@@ -99,7 +99,7 @@ class AbemaAccountHttpTransportTest {
     }
     @Test fun originalOperationBudgetAndChallengeExpiryApplyBeforeDispatch() {
         val c = Connection(token); val t = transport(c, elapsed = { 300000 })
-        try { t.token(fixtureAccountChallenge(), "intended-account"); fail() } catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.EXPIRED, error.category) }
+        try { t.token(fixtureAccountChallenge()); fail() } catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.EXPIRED, error.category) }
         assertEquals(0, c.opened); assertEquals(0, c.disconnected)
         val slow = Connection(profile); var elapsed = 1000L; slow.responseHook = { elapsed += 15000 }
         try { transport(slow, elapsed = { elapsed }).profile("guest", "guest-bearer"); fail() } catch (_: AbemaAccountException) { }

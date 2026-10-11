@@ -89,7 +89,7 @@ class AbemaCollectionAccountBindingTest {
                             assertTrue(gate()); profileCalls.add(id to bearer); order.add("profile")
                             return profileHook(id, bearer)
                         }
-                        override fun token(challenge: AbemaAccountChallenge, expectedId: String): AbemaAccountTokenResult {
+                        override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult {
                             forbiddenToken.incrementAndGet(); throw AssertionError("No token request from browsing")
                         }
                         override fun cancelActiveRequest() { profileCancels.incrementAndGet() }

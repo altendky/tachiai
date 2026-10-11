@@ -11,43 +11,48 @@ internal fun fixtureAccountChallenge(deadline: Long = 300000) = AbemaAccountChal
     "https://abema.tv/account/transfer?code=private-code", deadline)
 
 class AbemaAccountAuthorizationTest {
-    @Test fun intendedInputTrimsOnlyOuterWhitespaceAndNeverTruncatesOrChangesProviderIdentities() {
+    @Test fun internalProviderIdentitiesRemainExactAndSeparateFromEmailSignIn() {
         for (id in listOf("A", "fixture-account_123", "a".repeat(256))) {
-            assertEquals(id, normalizedIntendedAbemaAccountId(" \t$id\r\n "))
             assertTrue(accountId(id)); assertFalse(accountId(" $id "))
         }
         for (invalid in listOf("", " \t\r\n", "invalid account", "fixture/account", "fixture@example.test",
             "fixture.account", "fixture\u200e", "ｆｉｘｔｕｒｅ", "a".repeat(257)))
-            assertNull(normalizedIntendedAbemaAccountId(invalid))
-        assertNull(normalizedIntendedAbemaAccountId("  " + "a".repeat(257) + "  "))
+            assertFalse(accountId(invalid))
         assertThrows(AbemaAccountException::class.java) { parseAbemaAccountProfile("""{"profile":{"userId":" fixture-account "}}""") }
     }
     private fun grantBody(token: String = fixtureAccountToken(), id: String = "intended-account", type: String = "Bearer") =
         "{\"access_token\":\"$token\",\"token_type\":\"$type\",\"refresh_token\":\"discarded\",\"user_id\":\"$id\"}"
     @Test fun positiveExpiryResponseAndDecodedIdentityAgreeWithoutSignatureClaim() {
-        val result = parseAbemaAccountToken(200, grantBody(), "intended-account", "guest", 1000000) as AbemaAccountTokenResult.Granted
+        val result = parseAbemaAccountToken(200, grantBody(), "guest", 1000000) as AbemaAccountTokenResult.Granted
         assertEquals("intended-account", result.grant.userId); assertEquals(2000000, result.grant.expiresAtMs)
         assertFalse(result.toString().contains(result.grant.bearer)); assertFalse(result.grant.toString().contains("intended"))
     }
     @Test fun missingZeroExpiredNonIntegralAndOverflowExpiryNeverAdoptsGrant() {
         for (expiry in listOf("0", "-1", "1000", "2000.0", "null", "\"2000\"", "9223372036854775807", "1e300"))
-            assertTrue(parseAbemaAccountToken(200, grantBody(fixtureAccountToken(expiry = expiry)), "intended-account", "guest", 1000000) is AbemaAccountTokenResult.Failed)
+            assertTrue(parseAbemaAccountToken(200, grantBody(fixtureAccountToken(expiry = expiry)), "guest", 1000000) is AbemaAccountTokenResult.Failed)
         val missing = "e30." + Base64.getUrlEncoder().withoutPadding().encodeToString("{\"sub\":\"intended-account\"}".toByteArray()) + ".c2ln"
-        assertTrue(parseAbemaAccountToken(200, grantBody(missing), "intended-account", "guest", 1000000) is AbemaAccountTokenResult.Failed)
+        assertTrue(parseAbemaAccountToken(200, grantBody(missing), "guest", 1000000) is AbemaAccountTokenResult.Failed)
     }
-    @Test fun responseSubjectExpectedAccountAndNonGuestIdentityMustAllAgree() {
+    @Test fun responseSubjectAndNonGuestIdentityMustAgree() {
         for (body in listOf(grantBody(id = "other"), grantBody(fixtureAccountToken("other")), grantBody(type = "Basic"), grantBody(fixtureAccountToken("guest"), "guest")))
-            assertTrue(parseAbemaAccountToken(200, body, "intended-account", "guest", 1000000) is AbemaAccountTokenResult.Failed)
-        assertTrue(parseAbemaAccountToken(200, grantBody(fixtureAccountToken("guest"), "guest"), "guest", "guest", 1000000) is AbemaAccountTokenResult.Failed)
+            assertTrue(parseAbemaAccountToken(200, body, "guest", 1000000) is AbemaAccountTokenResult.Failed)
+        for (invalidId in listOf("", "fixture@example.test", " account ", "a".repeat(257)))
+            assertTrue(parseAbemaAccountToken(200, grantBody(fixtureAccountToken(invalidId), invalidId), "guest", 1000000) is AbemaAccountTokenResult.Failed)
+    }
+    @Test fun approvedResponseDefinesTheAccountWithoutManualIdentityInput() {
+        for (id in listOf("first-approved-account", "second-approved-account")) {
+            val result = parseAbemaAccountToken(200, grantBody(fixtureAccountToken(id), id), "guest", 1000000) as AbemaAccountTokenResult.Granted
+            assertEquals(id, result.grant.userId)
+        }
     }
     @Test fun onlyObservedStrictPendingSchemaAllowsAnotherPoll() {
         for (code in listOf("16", "\"AUTHORIZATION_PENDING\""))
-            assertSame(AbemaAccountTokenResult.Pending, parseAbemaAccountToken(400, "{\"code\":$code,\"message\":\"discarded\"}", "intended-account", "guest", 1000000))
+            assertSame(AbemaAccountTokenResult.Pending, parseAbemaAccountToken(400, "{\"code\":$code,\"message\":\"discarded\"}", "guest", 1000000))
         for (body in listOf("{}", "{\"code\":16}", "{\"code\":\"16\",\"message\":\"x\"}",
             "{\"code\":16,\"message\":\"x\",\"reason\":0}", "{\"code\":16,\"message\":null}",
             "{\"code\":16,\"message\":\"x\",\"code\":16}", "{\"code\":16,\"message\":\"x\"}{}"))
-            assertTrue(parseAbemaAccountToken(400, body, "intended-account", "guest", 1000000) is AbemaAccountTokenResult.Failed)
-        assertTrue(parseAbemaAccountToken(401, "{\"code\":16,\"message\":\"x\"}", "intended-account", "guest", 1000000) is AbemaAccountTokenResult.Failed)
+            assertTrue(parseAbemaAccountToken(400, body, "guest", 1000000) is AbemaAccountTokenResult.Failed)
+        assertTrue(parseAbemaAccountToken(401, "{\"code\":16,\"message\":\"x\"}", "guest", 1000000) is AbemaAccountTokenResult.Failed)
     }
     @Test fun fullJsonValidationRejectsIgnoredDuplicatesBadUnicodeAndNesting() {
         for (body in listOf("{\"profile\":{\"userId\":\"good\"},\"ignored\":{\"x\":1,\"x\":2}}",

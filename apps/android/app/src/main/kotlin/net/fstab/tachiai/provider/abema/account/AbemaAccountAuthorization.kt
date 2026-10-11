@@ -10,9 +10,6 @@ internal enum class AbemaAccountFailure { REFUSED, NOT_VERIFIED, TEMPORARY, EXPI
 internal class AbemaAccountException(val category: AbemaAccountFailure) : Exception(category.name, null, false, false)
 internal fun accountRefused(): Nothing = throw AbemaAccountException(AbemaAccountFailure.REFUSED)
 internal fun accountId(value: String) = value.matches(Regex("[A-Za-z0-9_-]{1,256}"))
-// Only the owner's input is normalized. Provider identities remain exact;
-// internal spaces, unsupported characters and overlong IDs are refused.
-internal fun normalizedIntendedAbemaAccountId(value: String): String? = value.trim().takeIf(::accountId)
 internal fun accountToken(value: String) = value.length in 1..6144 && value.all { it.code in 33..126 }
 
 // Values stay inside the protected account flow. None are generic UI state,
@@ -76,10 +73,9 @@ internal fun decodeAbemaAccountChallenge(text: String, beganElapsedMs: Long, now
 
 // Only the observed flat HTTP400 pending response admits another request.
 // Message text is type-checked, discarded and never interpreted or reported.
-internal fun parseAbemaAccountToken(status: Int, body: String?, expectedId: String,
-    guestId: String, nowMs: Long): AbemaAccountTokenResult {
+internal fun parseAbemaAccountToken(status: Int, body: String?, guestId: String, nowMs: Long): AbemaAccountTokenResult {
     try {
-        if (!accountId(expectedId) || expectedId == guestId) accountRefused()
+        if (!accountId(guestId)) accountRefused()
         if (status == 400) {
             val value = AbemaAccountJson.objectValue(body ?: accountRefused(), 65536)
             if (value.keys == setOf("code", "message") && value["message"] is String &&
@@ -91,7 +87,7 @@ internal fun parseAbemaAccountToken(status: Int, body: String?, expectedId: Stri
         if (value.keys != setOf("access_token", "token_type", "refresh_token", "user_id")) accountRefused()
         val token = value["access_token"] as? String ?: accountRefused()
         val id = value["user_id"] as? String ?: accountRefused()
-        if (!accountToken(token) || id != expectedId || id == guestId ||
+        if (!accountToken(token) || !accountId(id) || id == guestId ||
             (value["token_type"] as? String)?.equals("Bearer", true) != true ||
             value["refresh_token"] !is String || (value["refresh_token"] as String).length > 8192) accountRefused()
         val grant = decodedAbemaGrant(token, id, nowMs)

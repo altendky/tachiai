@@ -142,7 +142,11 @@ use an owned client without an origin authenticator or cookie jar; imported
 route credentials remain limited to its local CONNECT listener. The transport
 also refuses an installed global Java cookie handler. Ownership is checked
 before dispatch and publication; cancellation invalidates pending work, and
-uncertain cleanup prevents further metadata admission.
+uncertain cleanup prevents further metadata admission. Concurrent worker cleanup
+joins the single owned disconnect for at most five seconds, preserving an
+interrupted worker's flag. This cleanup grace does not extend the 30-second
+request admission budget or permit cancelled metadata to publish. Disconnect
+failure, timeout and reentrant unconfirmed cleanup remain failures.
 
 Fresh anonymous host research on 2026-10-10 received 58 channels in 52,706 bytes.
 The host region was not established, no account was used and sumo was absent;

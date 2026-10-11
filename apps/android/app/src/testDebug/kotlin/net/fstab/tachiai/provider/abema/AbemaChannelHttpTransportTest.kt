@@ -14,6 +14,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
 import org.junit.Test
@@ -384,6 +386,95 @@ class AbemaChannelHttpTransportTest {
             assertEquals(1, opens)
             assertEquals(1, connection.disconnects)
         } finally { release.countDown(); http.close(); workers.shutdownNow() }
+    }
+
+    @Test fun overlappingCloseWaitsForOneDisconnectAndRejectsItsLateStatus() = overlappingClose(false)
+
+    @Test fun interruptedRequestStillJoinsConcurrentCleanupAndKeepsItsInterrupt() = overlappingClose(true)
+
+    @Test fun failedConcurrentDisconnectPoisonsBothCallersWithoutASecondDisconnect() = overlappingClose(false, true)
+
+    private fun overlappingClose(interruptCleanup: Boolean, cleanupFails: Boolean = false) {
+        val entered = CountDownLatch(1)
+        val releaseResponse = CountDownLatch(1)
+        val disconnectEntered = CountDownLatch(1)
+        val releaseDisconnect = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val interruptedAtExit = AtomicBoolean(false)
+        val workers = Executors.newFixedThreadPool(2)
+        val connection = Connection(url, body, beforeResponse = {
+            entered.countDown(); check(releaseResponse.await(5, TimeUnit.SECONDS))
+        }, onDisconnect = {
+            releaseResponse.countDown(); disconnectEntered.countDown()
+            check(releaseDisconnect.await(5, TimeUnit.SECONDS))
+            if (cleanupFails) throw IOException("PRIVATE_SENTINEL")
+        })
+        val http = AbemaChannelHttpTransport(open = { connection }, onFailure = {
+            if ((it as AbemaChannelException).category == AbemaChannelFailure.CANCELLED) {
+                if (interruptCleanup) Thread.currentThread().interrupt()
+                cancelled.countDown()
+            }
+        })
+        try {
+            val work = workers.submit<AbemaChannelResponse> {
+                try { http.fetch() } finally { interruptedAtExit.set(Thread.currentThread().isInterrupted) }
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val closing = workers.submit { http.close() }
+            assertTrue(disconnectEntered.await(5, TimeUnit.SECONDS))
+            assertTrue(cancelled.await(5, TimeUnit.SECONDS))
+            assertThrows(TimeoutException::class.java) { work.get(100, TimeUnit.MILLISECONDS) }
+            releaseDisconnect.countDown()
+            if (cleanupFails) {
+                val closeError = assertThrows(ExecutionException::class.java) { closing.get(5, TimeUnit.SECONDS) }
+                assertEquals(AbemaChannelFailure.CLEANUP_FAILED, (closeError.cause as AbemaChannelException).category)
+            } else closing.get(5, TimeUnit.SECONDS)
+            val error = assertThrows(ExecutionException::class.java) { work.get(5, TimeUnit.SECONDS) }
+            assertEquals(if (cleanupFails) AbemaChannelFailure.CLEANUP_FAILED else AbemaChannelFailure.CANCELLED,
+                (error.cause as AbemaChannelException).category)
+            assertEquals(interruptCleanup, interruptedAtExit.get())
+            assertFalse(connection.bodyRead)
+            assertEquals(1, connection.disconnects)
+            if (cleanupFails) failure(AbemaChannelFailure.CLEANUP_FAILED) { http.fetch() }
+        } finally { releaseResponse.countDown(); releaseDisconnect.countDown(); http.close(); workers.shutdownNow() }
+    }
+
+    @Test fun aConcurrentDisconnectThatNeverConfirmsWithinTheBoundPoisonsFreshAdmission() {
+        val entered = CountDownLatch(1)
+        val releaseResponse = CountDownLatch(1)
+        val releaseDisconnect = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val workers = Executors.newFixedThreadPool(2)
+        val connection = Connection(url, body, beforeResponse = {
+            entered.countDown(); check(releaseResponse.await(5, TimeUnit.SECONDS))
+        }, onDisconnect = {
+            releaseResponse.countDown(); check(releaseDisconnect.await(15, TimeUnit.SECONDS))
+        })
+        val http = AbemaChannelHttpTransport(open = { connection }, onFailure = {
+            if ((it as AbemaChannelException).category == AbemaChannelFailure.CANCELLED) cancelled.countDown()
+        })
+        try {
+            val work = workers.submit<AbemaChannelResponse> { http.fetch() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val closing = workers.submit { http.close() }
+            assertTrue(cancelled.await(5, TimeUnit.SECONDS))
+            val error = assertThrows(ExecutionException::class.java) { work.get(10, TimeUnit.SECONDS) }
+            assertEquals(AbemaChannelFailure.CLEANUP_FAILED, (error.cause as AbemaChannelException).category)
+            failure(AbemaChannelFailure.CLEANUP_FAILED) { http.fetch() }
+            assertFalse(connection.bodyRead)
+            assertEquals(1, connection.disconnects)
+            releaseDisconnect.countDown(); closing.get(5, TimeUnit.SECONDS)
+        } finally { releaseResponse.countDown(); releaseDisconnect.countDown(); http.close(); workers.shutdownNow() }
+    }
+
+    @Test(timeout = 5_000) fun sameThreadReentrantCancellationCannotDeadlockOrDisconnectTwice() {
+        lateinit var http: AbemaChannelHttpTransport
+        val connection = Connection(url, body, onDisconnect = { http.cancelActiveRequest() })
+        http = AbemaChannelHttpTransport(open = { connection })
+        failure(AbemaChannelFailure.CLEANUP_FAILED) { http.fetch() }
+        failure(AbemaChannelFailure.CLEANUP_FAILED) { http.fetch() }
+        assertEquals(1, connection.disconnects)
+        http.close()
     }
 
     @Test fun closeSignalsAnActiveRequestAndRejectsItsLateStatus() {

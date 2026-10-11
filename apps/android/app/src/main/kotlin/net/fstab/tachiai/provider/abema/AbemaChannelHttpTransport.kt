@@ -8,6 +8,8 @@ import java.nio.charset.CodingErrorAction
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 
 private const val ABEMA_CHANNEL_URL = "https://api.abema.io/v1/channels"
@@ -29,13 +31,41 @@ internal class AbemaChannelHttpTransport(
         private var started = false
         private var completed = false
         private var failed = false
+        private var disconnectThread: Thread? = null
+        private val completion = CountDownLatch(1)
         fun disconnect(): Boolean {
-            synchronized(lock) {
-                if (started) return completed && !failed
-                started = true
+            val first = synchronized(lock) {
+                if (started) false else { started = true; disconnectThread = Thread.currentThread(); true }
             }
-            val success = try { connection.disconnect(); true } catch (_: Exception) { false }
-            synchronized(lock) { completed = true; failed = !success }
+            if (!first) {
+                // Cancellation may release the request worker before the same
+                // disconnect returns. Join its result rather than report an
+                // in-progress cleanup as failed. Reentrant or uncertain cleanup
+                // still fails closed; production callers run on owned workers.
+                synchronized(lock) {
+                    if (completed) return !failed
+                    if (disconnectThread === Thread.currentThread()) return false
+                }
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                var interrupted = false
+                try {
+                    while (true) {
+                        val remaining = deadline - System.nanoTime()
+                        if (remaining <= 0) return false
+                        try {
+                            if (!completion.await(remaining, TimeUnit.NANOSECONDS)) return false
+                            break
+                        } catch (_: InterruptedException) { interrupted = true }
+                    }
+                } finally { if (interrupted) Thread.currentThread().interrupt() }
+                return synchronized(lock) { completed && !failed }
+            }
+            var success = false
+            try { connection.disconnect(); success = true } catch (_: Exception) { }
+            finally {
+                synchronized(lock) { completed = true; failed = !success; disconnectThread = null }
+                completion.countDown()
+            }
             return success
         }
     }

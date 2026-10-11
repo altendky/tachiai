@@ -23,7 +23,7 @@ class AbemaAccountConnectionScreenTest {
         compose.onAllNodes(isToggleable()).assertCountEquals(0)
         compose.onNodeWithTag("abema-account-identity").assertDoesNotExist()
         compose.onNodeWithText("I confirm this is the existing account I intend to connect.").assertDoesNotExist()
-        compose.onNodeWithText("Connect your existing account through ABEMA’s browser or app. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.").performScrollTo().assertExists()
+        compose.onNodeWithText("Connect your existing account through ABEMA’s pages. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.").performScrollTo().assertExists()
         compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
         compose.onNodeWithText("Connect ABEMA").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, connects) }

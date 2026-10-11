@@ -21,6 +21,13 @@
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false" />
         <activity
+            android:name=".feature.connections.AbemaApprovalBrowserActivity"
+            android:theme="@style/Theme.Tachiai.Prototype"
+            android:configChanges="orientation|screenSize"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:process=":abema_approval_browser" />
+        <activity
             android:name=".feature.connections.ManageStreamsActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false" />

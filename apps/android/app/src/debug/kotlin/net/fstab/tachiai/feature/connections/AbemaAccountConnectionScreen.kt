@@ -17,7 +17,7 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("ABEMA account", style = MaterialTheme.typography.headlineSmall)
-        Text("Connect your existing account through ABEMA’s browser or app. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.")
+        Text("Connect your existing account through ABEMA’s pages. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.")
         Text(accountStatusMessage(state.status))
         Text(accountProgressMessage(state.progress))
         if (!ready && !reading) Text("ABEMA account setup is unavailable. Return to providers and reopen this account.")
@@ -25,7 +25,7 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
         Button(onConnect, enabled = ready && !reading && !state.busy) { Text("Connect ABEMA") }
         if (ready && state.canApprove) Button(onApprove) { Text("Open ABEMA approval") }
         if (ready && state.canContinue) Button(onContinue) { Text("Continue after approval") }
-        Text("Requests use this provider instance’s saved route. The external browser uses its own network and account. Requests pause while you are away; returning does not extend the original challenge expiry. Account collections and account playback remain separate integrations.")
+        Text("Approval opens in an in-app browser using this provider instance’s saved route. Its ABEMA browser login is separate from Chrome. Return here after approval and continue; returning does not extend the original request expiry. Account collections and account playback remain separate integrations.")
         Button(onValidate, enabled = ready && !reading && !state.busy) { Text("Validate saved ABEMA account") }
         Button(onCheck, enabled = ready && !reading && !state.busy) { Text("Check ABEMA authorization") }
         TextButton(onForget, enabled = ready && state.progress != AbemaAccountProgress.FORGETTING) { Text("Forget ABEMA account on this device") }

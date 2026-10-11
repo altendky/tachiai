@@ -16,6 +16,9 @@ consumer described below. Existing-account access remains separate.
 Issue [#160](https://github.com/altendky/tachiai/issues/160) adds a separate explicit
 memory-only device-authorization challenge check and discards the response.
 Provider-controlled account approval and grant/session handling remain separate.
+Issue [#163](https://github.com/altendky/tachiai/issues/163) adds a distinct explicit
+pre-approval device-token response observation. It makes one request and discards
+the response; it does not implement an account connection or a polling loop.
 
 ## Implemented boundary
 
@@ -202,6 +205,52 @@ byte-for-byte unchanged; the normal app entry was restored afterward.
 This observation does not establish account approval, polling, returned-account
 identity, expiry/revocation/renewal or cross-device behavior. Those remain in
 [#103](https://github.com/altendky/tachiai/issues/103).
+
+## Optional pre-approval device-token observation
+
+The separate **Observe one device-token response** action prepares a fresh guest,
+verifies its matching server profile and obtains one strictly validated challenge.
+Only this operation retains the private device code and challenge lifetime in
+its JavaScript stack until the request ends. It uses the unchanged pure token
+DTO in module 2953 of the pinned 5206 asset, as invoked by first-party QR
+controller module 22590. The original guest bearer, profile-bound client ID,
+device code, device-code grant type and numeric WEB device type must agree in
+both the DTO and independently checked serialized four-field JSON body.
+
+Its distinct `ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION` route purpose and owned
+policy admit the existing guest/profile/challenge sequence followed by exactly
+one `POST https://abema.tv/api/auth/oauth/device/token`. Existing guest, challenge,
+metadata and playback purposes remain unchanged. The token fetch has a
+15-second limit within the original 45-second monotonic operation deadline.
+Admission also checks a conservative challenge deadline measured from challenge
+request dispatch. Cookies, cache, redirects, repeats, recovery and renewal remain
+refused. No returned verification URI or approval page is opened.
+
+A separate refusal reader bounds bytes to 64 KiB and uses strict UTF-8 and the
+existing bounded duplicate-free JSON parser. It recognizes only flat subsets
+of `code`, `message` and `reason` with reviewed types. Message contents are
+discarded. A predefined field-set category and exact numeric or symbolic
+code/reason vocabulary can survive; unknown fields, wrong types, unknown values,
+malformed or oversized bodies produce fixed categories. Numeric strings are not
+coerced. The vocabulary comes from access-token recovery module 22246; it does
+not by itself establish device-token pending or terminal semantics. HTTP status
+is categorized independently, and HTTP 400 never implies approval pending.
+Unexpected 2xx responses are aborted without touching their body, parsing a
+grant or adopting account state.
+
+Native code independently validates the six-field observation against finite
+allowlists and operation-specific combinations. Only the joined closed category
+can reach UI/logs, after matching-owner, foreground and deadline checks and
+confirmed runtime/route cleanup. No private identity, code, URI, token, provider
+message or raw response leaves JavaScript. The original challenge-and-discard
+operation and catalog metadata IPC retain their contracts. String references
+are released on teardown; complete heap wiping is not claimed.
+
+No polling loop, saved grant, Connected status, account collection/history,
+playback or license handling is added. Local verification and the single actual
+pre-approval observation are recorded when completed; this boundary alone does
+not establish account approval, denied/expired/revoked states or durable session
+lifetime. Those remain [#103](https://github.com/altendky/tachiai/issues/103).
 
 ## Optional exact episode verification
 

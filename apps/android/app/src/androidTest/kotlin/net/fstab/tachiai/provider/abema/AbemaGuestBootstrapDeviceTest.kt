@@ -74,7 +74,15 @@ class AbemaGuestBootstrapDeviceTest {
         ownedRuntime("VERIFY_DEVICE_AUTHORIZATION", "CHALLENGE_VALIDATED_AND_DISCARDED", 3)
     }
 
-    private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null) {
+    @Test fun actualOwnedJavaScriptObservesOneSyntheticRefusalWithoutPrivateProjectionWithNetworkingBlocked() {
+        ownedRuntime("OBSERVE_DEVICE_TOKEN", AbemaDeviceTokenObservation.STATE, 4)
+    }
+
+    @Test fun actualOwnedJavaScriptSkipsUnexpectedSyntheticTokenSuccessBodyWithNetworkingBlocked() {
+        ownedRuntime("OBSERVE_DEVICE_TOKEN", AbemaDeviceTokenObservation.STATE, 4, tokenStatus = 200)
+    }
+
+    private fun ownedRuntime(operation: String, expected: String, count: Int, resourceId: String? = null, tokenStatus: Int = 400) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
         val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
@@ -85,6 +93,12 @@ class AbemaGuestBootstrapDeviceTest {
             window.requests = [];
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
+              if (url === 'https://abema.tv/api/auth/oauth/device/token') {
+                if ($tokenStatus === 200) return {status:200, get body() {
+                  window.tokenBodyOpened = true; throw new Error('PRIVATE_SUCCESS_MUST_NOT_OPEN');
+                }};
+                return new Response('{"code":16,"message":"PRIVATE_PROVIDER_MESSAGE","reason":0}', {status:400});
+              }
               if (url === 'https://abema.tv/api/auth/oauth/device/authorization')
                 return new Response('{"device_code":"PRIVATE_DEVICE_CODE","user_code":"PRIVATE_USER_CODE","verification_uri":"https://abema.tv/account/transfer","verification_uri_complete":"https://abema.tv/account/transfer?code=PRIVATE_USER_CODE","expires_in":300}', {status:200});
               if (url === 'https://api.p-c3-e.abema-tv.com/v1/video/programs/$requested')
@@ -99,8 +113,10 @@ class AbemaGuestBootstrapDeviceTest {
               2833(module, exports, require) { require(32746); module.exports = { B9: () => 42, b2: async () => 'FIXTURE_APPLICATION' }; },
               5304(module) { module.exports = { rM: { toJSON: value => value }, V8: { fromJSON: value => ({userId:value.user_id, accessToken:value.access_token}) } }; },
               50052(module) { module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
-              24968(module) { module.exports = { T: { LOGIN_GUEST: '/api/auth/login/guest', OAUTH_DEVICE_AUTHORIZATION: '/api/auth/oauth/device/authorization' } }; },
-              2953(module) { module.exports = { pG: { toJSON: value => ({client_id:value.clientId}) } }; },
+              24968(module) { module.exports = { T: { LOGIN_GUEST: '/api/auth/login/guest', OAUTH_DEVICE_AUTHORIZATION: '/api/auth/oauth/device/authorization',
+                OAUTH_DEVICE_TOKEN: '/api/auth/oauth/device/token' } }; },
+              2953(module) { module.exports = { pG: { toJSON: value => ({client_id:value.clientId}) },
+                dK: { toJSON: value => ({client_id:value.clientId, device_code:value.deviceCode, grant_type:value.grantType, device_type:3}) } }; },
               74284(module) { module.exports = { FH: { apiOrigin: 'https://api.p-c3-e.abema-tv.com' } }; },
               14405() { throw new Error('LICENSE_HELPER_MUST_NOT_RUN'); },
               92546() { throw new Error('REQUEST_DRIVER_MUST_NOT_RUN'); },
@@ -133,14 +149,23 @@ class AbemaGuestBootstrapDeviceTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
-                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED", "REFUSED")) break
+                if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED",
+                    AbemaDeviceTokenObservation.STATE, "REFUSED")) break
                 Thread.sleep(50)
             }
             assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
-            assertEquals(2, status?.length())
+            assertEquals(if (operation == "OBSERVE_DEVICE_TOKEN") 6 else 2, status?.length())
+            if (operation == "OBSERVE_DEVICE_TOKEN") {
+                assertNotNull(AbemaDeviceTokenObservation.category(checkNotNull(status)))
+                assertEquals(if (tokenStatus == 200) "HTTP_2XX_UNEXPECTED" else "HTTP_400", status?.optString("http"))
+                assertEquals(if (tokenStatus == 200) "NOT_READ" else "FLAT_CODE_MESSAGE_REASON", status?.optString("schema"))
+                assertEquals(if (tokenStatus == 200) "NOT_OBSERVED" else "AUTHORIZATION_PENDING", status?.optString("code"))
+                assertEquals(if (tokenStatus == 200) "NOT_OBSERVED" else "ERROR_REASON_UNSPECIFIED", status?.optString("reason"))
+                assertFalse(status.toString().contains("PRIVATE_")); assertFalse(status.toString().contains("FIXTURE_"))
+            }
             val publicShape = evaluate("""JSON.stringify({count:requests.length, names:Object.keys(window.__tachiaiGuest_$nonce),
                 omit:requests.every(request=>request.options.credentials==='omit'),
-                profile:(requests.length===2 || requests.length===3) && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
+                profile:(requests.length===2 || requests.length===3 || requests.length===4) && requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[1].options.method==='GET' &&
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
@@ -149,7 +174,7 @@ class AbemaGuestBootstrapDeviceTest {
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' &&
                   requests[1].options.redirect==='error',
-                challenge:requests.length===3 && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
+                challenge:(requests.length===3 || requests.length===4) && requests[0].url==='https://abema.tv/api/auth/login/guest' &&
                   requests[1].url==='https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER' &&
                   requests[2].url==='https://abema.tv/api/auth/oauth/device/authorization' &&
                   requests[2].options.method==='POST' && requests[2].options.headers.accept==='application/json' &&
@@ -157,17 +182,30 @@ class AbemaGuestBootstrapDeviceTest {
                   requests[2].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[2].options.cache==='no-store' && requests[2].options.redirect==='error' &&
                   Object.keys(JSON.parse(requests[2].options.body)).length===1 &&
-                  JSON.parse(requests[2].options.body).client_id==='FIXTURE_USER'})""")!!
+                  JSON.parse(requests[2].options.body).client_id==='FIXTURE_USER',
+                token:requests.length===4 && requests[3].url==='https://abema.tv/api/auth/oauth/device/token' &&
+                  requests[3].options.method==='POST' && requests[3].options.headers.accept==='application/json' &&
+                  requests[3].options.headers['content-type']==='application/json' &&
+                  requests[3].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
+                  requests[3].options.cache==='no-store' && requests[3].options.redirect==='error' &&
+                  requests[3].options.signal.aborted && window.tokenBodyOpened !== true &&
+                  Object.keys(JSON.parse(requests[3].options.body)).length===4 &&
+                  JSON.parse(requests[3].options.body).client_id==='FIXTURE_USER' &&
+                  JSON.parse(requests[3].options.body).device_code==='PRIVATE_DEVICE_CODE' &&
+                  JSON.parse(requests[3].options.body).grant_type==='urn:ietf:params:oauth:grant-type:device_code' &&
+                  JSON.parse(requests[3].options.body).device_type===3})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
-            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION"), observed.getBoolean("profile"))
+            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN"), observed.getBoolean("profile"))
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
-            assertEquals(operation == "VERIFY_DEVICE_AUTHORIZATION", observed.getBoolean("challenge"))
+            assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN"), observed.getBoolean("challenge"))
+            assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
             assertEquals(if (operation == "FETCH_EPISODE") "[\"status\",\"stop\",\"metadata\"]" else "[\"status\",\"stop\"]",
                 observed.getJSONArray("names").toString())
             assertFalse(publicShape.contains("FIXTURE_ACCESS")); assertFalse(publicShape.contains("FIXTURE_USER"))
             assertFalse(publicShape.contains("PRIVATE_NAME"))
             assertFalse(publicShape.contains("PRIVATE_DEVICE_CODE")); assertFalse(publicShape.contains("PRIVATE_USER_CODE"))
+            assertFalse(publicShape.contains("PRIVATE_PROVIDER_MESSAGE"))
             assertFalse(publicShape.contains("PRIVATE_EPISODE_TITLE")); assertFalse(publicShape.contains("394-72"))
             val metadata = evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null")
             if (operation == "FETCH_EPISODE") {

@@ -17,7 +17,7 @@ function fixture(options = {}) {
   let release;
   const delayed = new Promise(resolve => { release = resolve; });
   const device = `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`;
-  const context = vm.createContext({ URL, Response, TextEncoder, TextDecoder, AbortController,
+  const context = vm.createContext({ URL, Response, TextEncoder, TextDecoder, AbortController, Uint8Array,
     performance: { now: () => options.elapsedMs ?? 0 },
     location: { origin: options.origin || 'https://abema.tv' },
     crypto: { randomUUID: () => device },
@@ -26,6 +26,28 @@ function fixture(options = {}) {
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url === 'https://abema.tv/api/auth/oauth/device/token') {
+        if (options.delayedToken) await delayed;
+        if (options.tokenNetworkFailure) throw new Error('PRIVATE_TOKEN_ERROR');
+        const status = Object.hasOwn(options, 'tokenStatus') ? options.tokenStatus : 400;
+        if (options.tokenRedirected) return { status, redirected: true,
+          get body() { options.tokenBodyOpened = true; throw new Error('PRIVATE_TOKEN_BODY'); } };
+        if (typeof status === 'number' && status < 400) return { status,
+          get body() { options.tokenBodyOpened = true; throw new Error('TOKEN_BODY_MUST_NOT_OPEN'); } };
+        if (options.tokenMissingBody) return { status, body: null };
+        const bytes = options.tokenBytes || options.tokenText || JSON.stringify(options.tokenReply || {
+          code: 16, message: 'PRIVATE_PROVIDER_MESSAGE', reason: 0,
+        });
+        if (options.delayedTokenRead) {
+          let read = false;
+          return { status, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes }; },
+            cancel: async () => { options.tokenReaderCancelled = true; },
+          }) } };
+        }
+        return { status, body: new Response(bytes).body };
+      }
       if (url === 'https://abema.tv/api/auth/oauth/device/authorization') {
         if (options.delayedChallenge) await delayed;
         if (options.challengeNetworkFailure) throw new Error('PRIVATE_CHALLENGE_ERROR');
@@ -44,6 +66,7 @@ function fixture(options = {}) {
             cancel: async () => {},
           }) } };
         }
+        if (Object.hasOwn(options, 'challengeCompletionMs')) options.elapsedMs = options.challengeCompletionMs;
         return new Response(bytes, { status: 200 });
       }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/programs/')) {
@@ -95,7 +118,7 @@ function fixture(options = {}) {
       return new Response(bytes, { status: options.status || 200 });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = []; challengeSerialized = [];', context);
+  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = []; challengeSerialized = []; tokenSerialized = [];', context);
   vm.runInContext(source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     2833(module, exports, require) { loaded.push(2833); require(32746); module.exports = {
@@ -112,7 +135,8 @@ function fixture(options = {}) {
     }; },
     50052(module) { loaded.push(50052); module.exports = { bq: { DEVICE_TYPE_WEB: 'WEB' } }; },
     24968(module) { loaded.push(24968); module.exports = { T: { LOGIN_GUEST: fake.endpoint || '/api/auth/login/guest',
-      OAUTH_DEVICE_AUTHORIZATION: fake.challengeEndpoint || '/api/auth/oauth/device/authorization' } }; },
+      OAUTH_DEVICE_AUTHORIZATION: fake.challengeEndpoint || '/api/auth/oauth/device/authorization',
+      OAUTH_DEVICE_TOKEN: fake.tokenEndpoint || '/api/auth/oauth/device/token' } }; },
     2953(module) { loaded.push(2953); module.exports = { pG: { toJSON: value => {
       challengeSerialized.push(value);
       if (fake.inheritedChallengeModel) return Object.assign(Object.create({ client_id: value.clientId }), { extra: true });
@@ -121,6 +145,18 @@ function fixture(options = {}) {
       });
       return fake.challengeModelExtra ? { client_id: value.clientId, extra: true } :
         { client_id: fake.wrongChallengeModel ? 'OTHER' : value.clientId };
+    } }, dK: { toJSON: value => {
+      tokenSerialized.push(value);
+      const payload = { client_id: value.clientId, device_code: value.deviceCode,
+        grant_type: value.grantType, device_type: 3 };
+      if (fake.inheritedTokenModel) return Object.assign(Object.create({ client_id: value.clientId }), {
+        device_code: value.deviceCode, grant_type: value.grantType, device_type: 3, extra: true });
+      if (fake.wrongTokenField) payload[fake.wrongTokenField] = fake.wrongTokenValue;
+      if (fake.tokenModelExtra) payload.extra = true;
+      if (fake.wrongTokenWire) return Object.defineProperty(payload, 'toJSON', {
+        value: () => ({ ...payload, client_id: 'OTHER' }),
+      });
+      return payload;
     } } }; },
     74284(module) { loaded.push(74284); module.exports = { FH: { apiOrigin: fake.apiOrigin || 'https://api.p-c3-e.abema-tv.com' } }; },
     14405() { throw new Error('LICENSE_HELPER_MUST_NOT_LOAD'); },
@@ -687,4 +723,189 @@ test('challenge original elapsed budget cannot restart across guest, profile and
   const options = { operation: 'VERIFY_DEVICE_AUTHORIZATION', elapsedMs: 0, delayedChallenge: true };
   const value = fixture(options); value.start(); await settle(); options.elapsedMs = 44999; value.release(); await settle();
   assert.equal(value.state().state, 'CHALLENGE_VALIDATED_AND_DISCARDED');
+});
+
+test('token observation binds one fresh matched challenge through the unchanged four-field DTO and current guest bearer', async () => {
+  const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN' }); value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED', failure: 'NONE',
+    http: 'HTTP_400', schema: 'FLAT_CODE_MESSAGE_REASON', code: 'AUTHORIZATION_PENDING', reason: 'ERROR_REASON_UNSPECIFIED' });
+  assert.deepEqual(value.requests.map(({ url }) => url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER', 'https://abema.tv/api/auth/oauth/device/authorization',
+    'https://abema.tv/api/auth/oauth/device/token']);
+  const { request } = value.requests[3];
+  assert.equal(request.method, 'POST'); assert.deepEqual(JSON.parse(request.body), {
+    client_id: 'FIXTURE_USER', device_code: 'PRIVATE_DEVICE_CODE',
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_type: 3,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), {
+    accept: 'application/json', 'content-type': 'application/json', authorization: 'Bearer FIXTURE_ACCESS',
+  });
+  assert.ok(value.requests.every(({ request }) => request.credentials === 'omit' && request.cache === 'no-store' && request.redirect === 'error'));
+  assert.deepEqual(JSON.parse(JSON.stringify(value.context.tokenSerialized)), [{ clientId: 'FIXTURE_USER',
+    deviceCode: 'PRIVATE_DEVICE_CODE', deviceType: 'WEB', grantType: 'urn:ietf:params:oauth:grant-type:device_code' }]);
+  assert.deepEqual(Array.from(value.call(`Object.keys(window['${apiName}'])`)), ['status', 'stop']);
+  assert.equal(value.call(`window['${apiName}'].metadata?.() || null`), null);
+  assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_|https:|Bearer|device_code|user_code/);
+  assert.deepEqual(Array.from(value.context.loaded).sort((a, b) => a - b), [2833, 2953, 5304, 24968, 32746, 50052, 74284].sort((a, b) => a - b));
+  assert.equal(request.signal.aborted, true); assert.equal(value.timers.size, 0);
+  value.stop(); assert.deepEqual(value.state(), { state: 'STOPPED', failure: 'NONE' });
+  value.start(); await settle(); assert.equal(value.requests.length, 4);
+});
+
+test('token request requires exact endpoint, own DTO fields and independently matching serialized body before dispatch', async () => {
+  for (const options of [{ wrongTokenField: 'client_id', wrongTokenValue: 'OTHER' },
+    { wrongTokenField: 'device_code', wrongTokenValue: 'OTHER' }, { wrongTokenField: 'grant_type', wrongTokenValue: 'OTHER' },
+    { wrongTokenField: 'device_type', wrongTokenValue: '3' }, { wrongTokenField: 'device_type', wrongTokenValue: 2 },
+    { tokenModelExtra: true }, { inheritedTokenModel: true }, { wrongTokenWire: true }]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', ...options }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_POLICY' }); assert.equal(value.requests.length, 3);
+  }
+  for (const tokenEndpoint of ['/api/auth/accessToken', '/api/auth/oauth/device/token?extra=1',
+    '/api/auth/oauth/device/%74oken', 'https://other.invalid/api/auth/oauth/device/token']) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenEndpoint }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_POLICY' }); assert.equal(value.requests.length, 0);
+  }
+  for (const options of [{ profile: { profile: { userId: 'OTHER' } } }, { wrongChallengeModel: true },
+    { challenge: { ...challengeReply(), expires_in: 0 } }]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', ...options }); value.start(); await settle();
+    assert.equal(value.state().state, 'REFUSED'); assert.ok(value.requests.length <= 3);
+  }
+  const resource = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', resourceId: 'fixture-episode' }); resource.start(); await settle();
+  assert.equal(resource.requests.length, 0); assert.equal(resource.context.loaded.length, 0);
+  assert.equal(resource.call(`window['${apiName}']`), undefined);
+});
+
+test('token refusal reports numeric or exact symbolic observed vocabulary independently of HTTP status', async () => {
+  const codes = ['UNSPECIFIED', 'NOT_FOUND', 'CONFLICT', 'INVALID_ARGUMENT', 'DATABASE', 'UNEXPECTED', 'EXPIRED',
+    'ALREADY_EXIST', 'FORBIDDEN', 'ALREADY_HAS_AUTHORITY', 'UNAUTHORIZED', 'INTERNAL', 'DEVICE_AUTHORIZATION_EXPIRED',
+    'SYNC_CODE_FLOW_EXPIRED', 'RESOURCE_EXHAUSTED', 'TOKEN_REVOKED', 'AUTHORIZATION_PENDING'];
+  const reasons = ['ERROR_REASON_UNSPECIFIED', 'ERROR_REASON_ACCOUNT_DELETED', 'ERROR_REASON_LOGGED_OUT'];
+  for (let index = 0; index < codes.length; index++) for (const code of [index, codes[index]]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenStatus: 401,
+      tokenReply: { code, message: 'PRIVATE_ANY_MESSAGE', reason: reasons[index % 3] } }); value.start(); await settle();
+    assert.equal(value.state().http, 'HTTP_401'); assert.equal(value.state().code, codes[index]);
+    assert.equal(value.state().reason, reasons[index % 3]); assert.equal(value.requests.length, 4);
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_/);
+  }
+  for (let reason = 0; reason < reasons.length; reason++) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenReply: { reason } }); value.start(); await settle();
+    assert.equal(value.state().schema, 'FLAT_REASON'); assert.equal(value.state().code, 'ABSENT');
+    assert.equal(value.state().reason, reasons[reason]);
+  }
+  const empty = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenReply: {} }); empty.start(); await settle();
+  assert.deepEqual(empty.state(), { state: 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED', failure: 'NONE',
+    http: 'HTTP_400', schema: 'EMPTY', code: 'ABSENT', reason: 'ABSENT' });
+});
+
+test('HTTP400 alone and unknown refusal values never establish pending or leak provider text', async () => {
+  for (const tokenReply of [{ message: 'PRIVATE_AUTHORIZATION_PENDING' }, { code: '16' }, { code: 'authorization_pending' },
+    { code: 17 }, { code: -1 }, { code: 'PRIVATE_UNKNOWN_CODE', reason: 'PRIVATE_UNKNOWN_REASON' },
+    { code: 16, reason: '2' }]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenReply }); value.start(); await settle();
+    assert.equal(value.state().http, 'HTTP_400');
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_|FIXTURE_/);
+    if (tokenReply.code !== 16) assert.notEqual(value.state().code, 'AUTHORIZATION_PENDING');
+    if (Object.hasOwn(tokenReply, 'code') && tokenReply.code !== 16) assert.equal(value.state().code, 'UNRECOGNIZED');
+    assert.equal(value.requests.length, 4);
+  }
+  for (const tokenReply of [{ code: 16, extra: 'PRIVATE' }, { error: 'authorization_pending' }, { code: true },
+    { code: null }, { code: [] }, { code: {} }, { code: 1.5 }, { code: 16, reason: true },
+    { code: 16, message: {} }, ['PRIVATE'], null]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenText: JSON.stringify(tokenReply) }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED', failure: 'NONE',
+      http: 'HTTP_400', schema: 'UNVERIFIED', code: 'UNVERIFIED', reason: 'UNVERIFIED' });
+  }
+});
+
+test('token refusal schema records only reviewed flat field sets while message content adds no semantics', async () => {
+  for (const tokenReply of [{ code: 16 }, { message: '' }, { reason: 2 }, { code: 16, message: 'PRIVATE' },
+    { code: 16, reason: 2 }, { message: 'PRIVATE', reason: 2 }, { code: 16, message: 'PRIVATE', reason: 2 }]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenReply }); value.start(); await settle();
+    assert.equal(value.state().schema, 'FLAT_' + ['code', 'message', 'reason'].filter(key => Object.hasOwn(tokenReply, key)).join('_').toUpperCase());
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE/); assert.equal(value.requests.length, 4);
+  }
+});
+
+test('strict refusal JSON rejects duplicate escaped keys, trailing data, nesting and malformed Unicode without value projection', async () => {
+  for (const tokenText of ['{"code":16,"code":12}', '{"code":16,"\\u0063ode":12}',
+    '{"message":"PRIVATE","message":"PRIVATE_OTHER"}', '{"code":16}true', '{"code":16,}',
+    '{"code":16', '{"code":1e999}', '{"message":"\\ud800"}',
+    '['.repeat(18) + '0' + ']'.repeat(18), JSON.stringify(Array.from({ length: 1001 }, () => 1))]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenText }); value.start(); await settle();
+    assert.equal(value.state().http, 'HTTP_400'); assert.equal(value.state().schema, 'MALFORMED');
+    assert.equal(value.state().code, 'UNVERIFIED'); assert.equal(value.state().reason, 'UNVERIFIED');
+    assert.doesNotMatch(JSON.stringify(value.state()), /PRIVATE_/);
+  }
+});
+
+test('refusal bytes enforce64KiB strict UTF8 and discard oversized or invalid data using fixed categories', async () => {
+  for (const [tokenBytes, schema] of [['x'.repeat(65537), 'OVERSIZED'],
+    [Uint8Array.from([123, 34, 0xff, 34, 125]), 'INVALID_UTF8']]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenBytes }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED', failure: 'NONE',
+      http: 'HTTP_400', schema, code: 'UNVERIFIED', reason: 'UNVERIFIED' });
+    assert.equal(value.requests.length, 4); assert.equal(value.requests[3].request.signal.aborted, true);
+  }
+  const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenText: '{"code":16}'.padEnd(65536, ' ') });
+  value.start(); await settle(); assert.equal(value.state().code, 'AUTHORIZATION_PENDING');
+});
+
+test('unexpected2xx and other nonrefusal statuses abort without opening token bodies or adopting grants', async () => {
+  for (const [tokenStatus, http] of [[200, 'HTTP_2XX_UNEXPECTED'], [201, 'HTTP_2XX_UNEXPECTED'], [204, 'HTTP_2XX_UNEXPECTED'],
+    [299, 'HTTP_2XX_UNEXPECTED'], [301, 'HTTP_3XX'], [399, 'HTTP_3XX'], [100, 'HTTP_OTHER'], [199, 'HTTP_OTHER']]) {
+    const options = { operation: 'OBSERVE_DEVICE_TOKEN', tokenStatus };
+    const value = fixture(options); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'TOKEN_RESPONSE_OBSERVED_AND_DISCARDED', failure: 'NONE',
+      http, schema: 'NOT_READ', code: 'NOT_OBSERVED', reason: 'NOT_OBSERVED' });
+    assert.equal(options.tokenBodyOpened, undefined); assert.equal(value.requests[3].request.signal.aborted, true);
+    assert.equal(value.requests.length, 4);
+  }
+});
+
+test('closed token HTTP transport and response categories expose no raw status or details and never retry', async () => {
+  for (const [tokenStatus, http] of [[400, 'HTTP_400'], [401, 'HTTP_401'], [403, 'HTTP_403'], [404, 'HTTP_404'],
+    [410, 'HTTP_410'], [429, 'HTTP_429'], [499, 'HTTP_4XX'], [500, 'HTTP_5XX'], [599, 'HTTP_5XX']]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenStatus }); value.start(); await settle();
+    assert.equal(value.state().http, http); assert.equal(value.requests.length, 4);
+  }
+  for (const tokenStatus of [99, 600, null, undefined, '400', 400.5]) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', tokenStatus }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_RESPONSE' }); assert.equal(value.requests.length, 4);
+  }
+  for (const [options, failure] of [[{ tokenNetworkFailure: true }, 'TOKEN_TRANSPORT'],
+    [{ tokenRedirected: true }, 'TOKEN_REDIRECT'], [{ tokenMissingBody: true }, 'TOKEN_RESPONSE']]) {
+    const input = { operation: 'OBSERVE_DEVICE_TOKEN', ...options }; const value = fixture(input); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure }); assert.equal(input.tokenBodyOpened, undefined);
+    assert.equal(value.requests.length, 4);
+  }
+});
+
+test('token cancellation during headers or body discards every late observation and keeps requests one-shot', async () => {
+  for (const delay of ['delayedToken', 'delayedTokenRead']) for (const action of ['stop', 'timeout', 'again']) {
+    const value = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', [delay]: true }); value.start(); await settle();
+    assert.deepEqual(value.state(), { state: 'TOKEN', failure: 'NONE' });
+    if (action === 'stop') value.stop();
+    else if (action === 'timeout') for (const callback of value.timers.values()) callback(); else value.start();
+    assert.equal(value.requests[3].request.signal.aborted, true); value.release(); await settle();
+    assert.deepEqual(value.state(), action === 'stop' ? { state: 'STOPPED', failure: 'NONE' } :
+      { state: 'REFUSED', failure: action === 'timeout' ? 'TOKEN_TIMEOUT' : 'RUNTIME' });
+    assert.equal(value.requests.length, 4); assert.equal(value.timers.size, 0);
+    assert.equal(value.call(`window['${apiName}'].metadata?.() || null`), null);
+  }
+});
+
+test('private challenge expiry prevents token admission and rejects replies after lifetime without extending original45seconds', async () => {
+  const expired = fixture({ operation: 'OBSERVE_DEVICE_TOKEN', challengeCompletionMs: 1000,
+    challenge: { ...challengeReply(), expires_in: 1 } }); expired.start(); await settle();
+  assert.deepEqual(expired.state(), { state: 'REFUSED', failure: 'TOKEN_CHALLENGE_EXPIRED' }); assert.equal(expired.requests.length, 3);
+  for (const delay of ['delayedToken', 'delayedTokenRead']) {
+    const options = { operation: 'OBSERVE_DEVICE_TOKEN', elapsedMs: 0, [delay]: true, challenge: { ...challengeReply(), expires_in: 1 } };
+    const value = fixture(options); value.start(); await settle(); options.elapsedMs = 1000; value.release(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_CHALLENGE_EXPIRED' }); assert.equal(value.requests.length, 4);
+  }
+  for (const [delay, count] of [['delayed', 1], ['delayedProfile', 2], ['delayedChallenge', 3], ['delayedToken', 4], ['delayedTokenRead', 4]]) {
+    const options = { operation: 'OBSERVE_DEVICE_TOKEN', elapsedMs: 0, [delay]: true };
+    const value = fixture(options); value.start(); await settle(); options.elapsedMs = 45000; value.release(); await settle();
+    assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_TIMEOUT' }); assert.equal(value.requests.length, count);
+  }
 });

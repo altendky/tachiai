@@ -29,6 +29,14 @@ uses that connection for supported Helix discovery, while native preparation
 obtains a separately bounded validated lease from the same credential owner.
 Synthetic verification does not establish actual provider acceptance.
 
+The user's subsequent 2026-10-10 decision requires a connected Twitch account
+for current native discovery and playback. Signed-out native access is deferred
+to non-agent [issue #144](https://github.com/altendky/tachiai/issues/144) and no
+longer blocks #99. General access and undocumented endpoints where no documented
+API exists are authorized under the
+[current integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10).
+This does not verify a new endpoint or complete real-account acceptance.
+
 ## Documented metadata and identities
 
 | Operation | Authorization | Identity or limit |
@@ -140,7 +148,7 @@ replacement instance.
 | Valid catalog session | Native All/search, exact lookup, channel videos and Following |
 | Disconnected | Local exact public video URL import; metadata remains unknown; channel/logins require connected identity lookup |
 | Provider-controlled browsing | External discovery followed by explicit URL/share import; no automatic result extraction |
-| Native anonymous All/search | Unresolved access architecture; not implemented by this recommendation |
+| Native anonymous All/search | Deferred to non-agent #144; current integration requires login |
 
 An app-token service could support anonymous native browsing, but introduces
 deployment, registration and operational ownership. No service was selected or
@@ -152,10 +160,11 @@ requires secrets to remain confidential.
 
 Disconnected local import must normalize only recognized public resource
 formats; it cannot import credentials, signed media URLs or arbitrary pages.
-It does not prove existence or promise playback. Signed-out native browsing
-remains a product/access decision for
-[#99](https://github.com/altendky/tachiai/issues/99), not a removed requirement.
-Connected discovery, fixtures and configured storage can proceed independently.
+It does not prove existence or promise playback. Signed-out native browsing is
+outside current #99 acceptance and tracked independently in
+[#144](https://github.com/altendky/tachiai/issues/144). Connected All/search and
+Following remain required; All is not limited to followed channels. Connected
+discovery, fixtures and configured storage can proceed independently.
 
 [Issue #120](https://github.com/altendky/tachiai/issues/120) implements the bounded
 exact-video case in the shared manager. It accepts only bare public video links,

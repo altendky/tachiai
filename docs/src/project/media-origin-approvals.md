@@ -4,6 +4,26 @@ This is a user-approved network boundary for the debug-only cached ABEMA
 prototype, not a claim of provider support, CDN ownership, or distribution
 permission. Historical page-backed examples retain their exact-host policies.
 
+## General integration scope — 2026-10-10
+
+The user subsequently approved general ABEMA and Twitch access, including
+undocumented endpoints where a needed operation has no documented API, and
+replacement of fixed experiments after actual configured selections work. See
+the [current integration approval](security-and-privacy.md#general-provider-integration-approval--2026-10-10)
+and updated issues #99–#103. This supersedes earlier fixed-content permission
+limits; necessary provider endpoint and network-policy changes can be developed
+under that authority without a repeat approval for the same scope.
+
+Verify and document each required destination and its request/resource binding
+before changing an allowlist. This general approval does not admit arbitrary
+hosts, redirects, lookalike domains or signed URLs without checks. Existing
+runtime policies and pending-origin handling remain implemented behavior until
+explicit code changes are verified. A review-journal entry remains evidence,
+not an access grant or proof of provider ownership/entitlement.
+
+The dated decisions below describe the historical cached prototype. They do
+not establish a complete endpoint inventory for the approved general integration.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |
@@ -52,7 +72,9 @@ invalid input and raw error details are not printed. A missing journal is not
 proof that no origin was attempted. Logcat emits only a pending/unavailable
 category, not the URL pattern. No scheduled monitoring is installed.
 
-For each new pattern, ask the user before granting access. Record the sanitized
+For each new pattern outside the approved general integration scope, ask the
+user before granting access. For a necessary provider destination within that
+scope, verify and document the bounded policy change. Record the sanitized
 origin, observation context and explicit approval or rejection here. Then add
 that exact HTTPS origin to the corresponding compiled approval/denial set in
 `AbemaCdnApprovalPolicy`, add a regression test, rebuild, and retry. Denials take

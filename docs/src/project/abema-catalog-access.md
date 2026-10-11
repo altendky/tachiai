@@ -6,6 +6,17 @@ This is the bounded documentation research for
 selection model, but do not establish a supported external catalog or account
 integration. The remaining account-access gates below keep #100 open.
 
+## Current authorization — 2026-10-10
+
+The user now authorizes general ABEMA catalog, existing-account/session,
+collection and selected-resource playback integration, including undocumented
+endpoints wherever a needed operation has no documented API. The old
+supported-only and fixed-content permission limits are superseded by the
+[current integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10)
+and the updated #100/#101/#103 bodies. Lack of official API documentation is an
+evidence classification, not another permission gate. Technical access/session,
+identity, route and entitlement verification remains outstanding.
+
 ## Evidence boundary
 
 Research used official ABEMA help and public content pages. It did not use an
@@ -18,8 +29,9 @@ current regional availability, playback entitlement or Android behavior.
 
 The existing cached native prototype creates fresh guest state and prepares
 fixed sample resources. It is not an existing user's account connection or a
-general catalog integration. Its reviewed guest/metadata/playback requests do
-not grant broader catalog, authentication or licensing scope. See the
+general catalog integration. Its reviewed guest/metadata/playback requests
+did not themselves grant broader catalog, authentication or licensing scope; the
+subsequent approval above provides the current integration authority. See the
 [security boundaries](security-and-privacy.md) and
 [media-origin approvals](media-origin-approvals.md).
 
@@ -113,9 +125,9 @@ availability and the exact-sample-only playback boundary remain explicit.
 
 That handoff does not implement native All/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
-proof that Tachiai can retrieve My List or history. No account-page scraping,
-script injection, native bridge, cookie transfer or private authentication
-workaround is proposed.
+proof that Tachiai can retrieve My List or history. The local handoff does not
+use account-page scraping, script injection, a native bridge or cookie transfer.
+Actual account integration is separate work under the current approval.
 
 Map public identities into the shared catalog contract from
 [issue #96](https://github.com/altendky/tachiai/issues/96). Keep ABEMA's slot,
@@ -133,7 +145,8 @@ alone cannot implement resource selection. Unsupported imported resources must
 not resolve to News or the fixed replay.
 
 [Issue #103](https://github.com/altendky/tachiai/issues/103) can develop common
-connection-state/controller fixtures and an isolated provider-browser design.
+connection-state/controller fixtures and the verified account integration,
+including authorized undocumented endpoints where necessary.
 Real account connection requires verification of Android behavior, instance
 ownership, selected route, session persistence and a non-invasive connection
 check. Opening ABEMA externally does not demonstrate that a Tachiai instance is
@@ -142,8 +155,8 @@ connected. Without that verification, report account access as not verified.
 Provider credentials and codes stay on ABEMA-controlled pages. Distinct browser
 storage/account isolation and process-wide WebView routing must be established
 before promising multiple independently connected ABEMA instances. Account
-connection must not repurpose fresh-guest native state or imply expanded native
-authentication, entitlement or DRM handling.
+connection must not repurpose fresh-guest native state or imply verified
+entitlement, collection access or playback merely from login success.
 
 ## Remaining gates and issue status
 
@@ -151,7 +164,7 @@ The research establishes public identity distinctions, retention semantics,
 documented account features and a bounded import direction. It does not settle
 the implementation-ready account-access acceptance of #100. Keep #100 open for:
 
-- A supported structured catalog and existing-account My List access design,
+- A verified structured catalog and existing-account My List access design,
   or an explicit resolution of those capability limits. A missing API search
   result is not sufficient proof of permanent lack of support.
 - Between-basho channel availability, annual title rollover, exact
@@ -159,12 +172,12 @@ the implementation-ready account-access acceptance of #100. Keep #100 open for:
 - Whether channel ordering is account-owned/synchronized and retrievable.
 - Verified Android account connection, session/account isolation, route
   ownership, persistence, switching, expiry/revocation and logout behavior.
-- Required discovery/account origins and endpoints reviewed separately from
-  current cached playback network approvals.
+- Required discovery/account origins and endpoint-policy changes verified and
+  documented under the current general integration approval.
 
 Account-backed My List in #101 requires both #103's working instance-owned
 connection and verified collection access. A connection alone, public import
 or fixture success does not satisfy that acceptance. Account-backed history in
 [issue #102](https://github.com/altendky/tachiai/issues/102) additionally requires
-its own supported retrieval findings. Public import and fixture/UI work remain
+its own verified retrieval findings. Public import and fixture/UI work remain
 independent of these account-backed gates; outstanding work must remain tracked.

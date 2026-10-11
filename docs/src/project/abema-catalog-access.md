@@ -186,7 +186,8 @@ pages or request provider metadata. The separate
 accepts a bare link with explicit instance selection and a one-time preview;
 compatibility with ABEMA's own sharing UI remains unobserved. Unknown
 availability remains UNKNOWN; configured episodes have a separate fresh runtime
-eligibility check, while other unsupported resource types refuse playback.
+eligibility check, as do exact configured linear channels. Other unsupported
+resource types refuse playback.
 
 That handoff alone does not implement native Channels/search or account-list retrieval.
 Selecting one public link from a provider account page is manual import, not
@@ -299,6 +300,12 @@ selector retains its advertisement behavior. Selected source, exact channel MPD
 root, fresh media token and initial channel license must agree. Native declared
 media, protected initialization, bounded live transitions, ownership and cleanup
 remain enforced independently for each feed.
+
+Unused advertised alternates are retained unchanged as bounded metadata; they
+do not need to have the selected channel's MPD path. The unchanged provider
+selector performs no I/O. Its returned selection must pass the exact source
+binding before native access, and an unbound selected alternate refuses without
+substitution. This preserves the provider's source/ad decision.
 
 This slice implements linear-channel intent. It does not resolve a scheduled
 slot to a different current broadcast, automatically choose a series episode,

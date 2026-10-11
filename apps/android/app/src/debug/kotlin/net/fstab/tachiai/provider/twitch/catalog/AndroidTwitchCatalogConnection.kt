@@ -69,6 +69,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         // Main-looper publication admission must never reread the registry,
         // imported profile or encrypted grant. Durable checks remain below.
         override fun canPublishLocally(): Boolean = canUse() && captured.presentation.routeUsable &&
+            !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
             !synchronized(lock) { closed || cleanupFailed }
         private fun currentOwner(): Boolean = canPublishLocally() &&
             runCatching { val current = readOwner().presentation

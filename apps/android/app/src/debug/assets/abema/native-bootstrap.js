@@ -15,6 +15,8 @@
   let lastModule = 0;
   let http = 0;
   let selected;
+  let selectedEpisode;
+  let expectedGateway;
   let license;
   let user;
   let operation;
@@ -25,7 +27,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
-    response = selected = license = user = operation = undefined;
+    response = selected = selectedEpisode = expectedGateway = license = user = operation = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -57,6 +59,8 @@
   };
   const fetchBytes = async (url, options = {}, maximum = 1024 * 1024) => {
     alive();
+    if (expectedGateway && new URL(String(url)).hostname === 'streaming-api-cf.p-c2-x.abema-tv.com' &&
+      String(url) !== expectedGateway) throw new Error();
     const controller = new AbortController();
     controllers.add(controller);
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -69,9 +73,61 @@
   };
   const json = async (url, options = {}, maximum = 1024 * 1024) => {
     const bytes = await fetchBytes(url, options, maximum);
-    try { return parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    try { return parseBoundedJsonText(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
     finally { bytes.fill(0); }
   };
+  function parseBoundedJsonText(text, unicode = true) {
+    let at = 0, nodes = 0;
+    const whitespace = () => { while (at < text.length && /[\x20\t\r\n]/.test(text[at])) at++; };
+    const string = () => {
+      const match = /^"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/.exec(text.slice(at));
+      if (!match) throw new Error();
+      at += match[0].length;
+      const result = parse(match[0]);
+      if (unicode) for (let index = 0; index < result.length; index++) {
+        const code = result.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const low = result.charCodeAt(++index);
+          if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error();
+        } else if (code >= 0xdc00 && code <= 0xdfff) throw new Error();
+      }
+      return result;
+    };
+    const value = depth => {
+      whitespace();
+      if (depth > 16 || ++nodes > 4096) throw new Error();
+      if (text[at] === '"') return string();
+      if (text[at] === '{' || text[at] === '[') {
+        const object = text[at++] === '{', end = object ? '}' : ']';
+        const result = object ? Object.create(null) : [];
+        whitespace();
+        if (text[at] !== end) for (;;) {
+          whitespace();
+          let key;
+          if (object) {
+            key = string(); whitespace();
+            if (Object.hasOwn(result, key) || text[at++] !== ':') throw new Error();
+          } else if (result.length >= 1000) throw new Error();
+          const item = value(depth + 1);
+          if (object) result[key] = item; else result.push(item);
+          whitespace();
+          if (text[at] !== ',') break;
+          at++;
+        }
+        if (text[at++] !== end) throw new Error();
+        return result;
+      }
+      const match = /^(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/.exec(text.slice(at));
+      if (!match) throw new Error();
+      at += match[0].length;
+      const result = parse(match[0]);
+      if (typeof result === 'number' && !Number.isFinite(result)) throw new Error();
+      return result;
+    };
+    const reply = value(0); whitespace();
+    if (at !== text.length) throw new Error();
+    return reply;
+  }
   // Original gateway uses fetch. Bound its response and disallow redirects while
   // leaving its selection logic and request contents unchanged. Native policy
   // and CSP separately admit only reviewed endpoints.
@@ -175,7 +231,11 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode) => {
+    const configured = requestedEpisode !== undefined;
+    if (configured && (!replay || typeof requestedEpisode !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestedEpisode))) return;
+    const episodeId = configured ? requestedEpisode : '394-72_s10_p8529';
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
     const name = '__tachiaiNative_' + nonce;
@@ -183,6 +243,7 @@
       status: () => state,
       metadata: () => stringify({ phase, modules: count, lastModule, http }),
       selectedSource: () => !stopped && state === 'READY' ? selected : null,
+      sourceBinding: () => !stopped && state === 'READY' && replay ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       begin,
       take: () => { if (stopped || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -191,6 +252,7 @@
     (async () => {
       try {
         const load = loadModules();
+        if (configured && load(74284).kt?.api !== 'https://api.p-c3-e.abema-tv.com') throw new Error();
         const utilities = load(27594);
         const helper = load(14405);
         operation = (helper.__esModule ? helper.default : helper)(utilities.__esModule ? utilities.default : utilities);
@@ -203,9 +265,11 @@
         const request = load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
           applicationKeySecret, deviceId });
         const guestReply = await json(new URL(load(24968).T.LOGIN_GUEST, location.origin), {
-          method: 'POST', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
+          method: 'POST', credentials: configured ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
           body: stringify(request),
         }, 65536);
+        if (configured && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
+          !guestReply.user_id || guestReply.user_id.length > 256 || !guestReply.access_token || guestReply.access_token.length > 8192)) throw new Error();
         user = load(5304).V8.fromJSON(guestReply);
         if (typeof user.userId !== 'string' || typeof user.accessToken !== 'string' ||
           !user.userId || user.userId.length > 256 || !user.accessToken || user.accessToken.length > 8192) throw new Error();
@@ -220,13 +284,13 @@
         state = 'WAITING_SOURCE'; phase = 'CONTENT';
         // Source/session construction below is supplied from reviewed provider
         // interfaces; never fall back to the original page or a guessed MPD.
-        await prepareSource(load, user, replay, deviceId);
+        await prepareSource(load, user, replay, deviceId, configured, episodeId);
         alive();
         phase = 'READY'; state = 'READY';
       } catch { stop(true); }
     })();
   };
-  async function prepareSource(load, identity, replay, deviceId) {
+  async function prepareSource(load, identity, replay, deviceId, configured, episodeId) {
     const browser = load(60506).N;
     const clientInfo = {
       app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
@@ -260,25 +324,29 @@
     }
     let content;
     if (replay) {
-      const metadata = await json('https://api.abema.io/v1/video/programs/394-72_s10_p8529', {
+      const metadataOrigin = configured ? load(74284).kt.api : 'https://api.abema.io';
+      const metadata = await json(metadataOrigin + '/v1/video/programs/' + episodeId, {
         credentials: 'omit', headers: { Authorization: 'Bearer ' + identity.accessToken },
-      });
+      }, 512 * 1024);
       // This is deliberately narrower than the provider's general entitlement
       // model. Require explicit free/unrestricted metadata, not DTO-coerced
       // truthiness, and a free window covering the entire bounded session.
-      // Epoch seconds are an experimental assumption; milliseconds refuse.
+      // Current free-end/term consumers use epoch seconds. Milliseconds refuse.
       const future = value => Number.isSafeInteger(value) && value < 100000000000 &&
         value * 1000 > Date.now() + 300000;
       phase = 'REPLAY_FREE';
       const mediaStatus = metadata?.mediaStatus;
       // Provider drm=false/omitted can select Clear Key, not unencrypted media.
       // This hint proves neither entitlement nor CENC; the MPD/CDM gate does.
-      if (metadata?.id !== '394-72_s10_p8529' || metadata.label?.free !== true ||
+      if (metadata?.id !== episodeId || metadata.label?.free !== true ||
         (mediaStatus != null && (typeof mediaStatus !== 'object' || Array.isArray(mediaStatus) ||
           (mediaStatus.drm !== undefined && typeof mediaStatus.drm !== 'boolean') ||
           (mediaStatus.downloadOnlyDrm !== undefined && mediaStatus.downloadOnlyDrm !== false)))) throw new Error();
       phase = 'REPLAY_WINDOW';
-      if (!future(metadata.freeEndAt) || !future(metadata.endAt)) throw new Error();
+      // Current first-party consumers compare freeEndAt and term.endAt to
+      // floor(Date.now()/1000). Standalone endAt units remain a historical
+      // assumption and are not used as a new selected-program entitlement.
+      if (!future(metadata.freeEndAt) || (!configured && !future(metadata.endAt))) throw new Error();
       phase = 'REPLAY_RESTRICTIONS';
       for (const [field, marker] of [['rentalInfo', 'REPLAY_RENTAL'], ['precedenceTerm', 'REPLAY_PRECEDENCE'],
         ['deviceRestriction', 'REPLAY_DEVICE']]) {
@@ -320,12 +388,19 @@
       if (metadata.partnerContentViewingAuthorities !== undefined &&
         (!Array.isArray(metadata.partnerContentViewingAuthorities) || metadata.partnerContentViewingAuthorities.length)) throw new Error();
       phase = 'REPLAY_TERMS';
+      if (configured && (!Array.isArray(metadata.terms) || !metadata.terms.length || metadata.terms.length > 64 ||
+        metadata.terms.some(term => !record(term) || Object.keys(term).length !== 2 ||
+          !Object.hasOwn(term, 'onDemandType') || !Object.hasOwn(term, 'endAt')))) throw new Error();
       if (metadata.terms !== undefined && (!Array.isArray(metadata.terms) || metadata.terms.some(term =>
           ![3, 'VIDEO_ON_DEMAND_TYPE_ADVERTISING'].includes(term?.onDemandType) || !future(term.endAt)))) throw new Error();
       phase = 'CONTENT';
       const program = load(91060).OW.fromJSON(metadata);
-      if (typeof program.playback?.arin !== 'string' || !program.playback.arin || program.playback.arin.length > 256) throw new Error();
-      content = { source: { type: 'program', programId: '394-72_s10_p8529', arin: program.playback.arin } };
+      if (program.id !== episodeId || typeof metadata.playback?.arin !== 'string' ||
+        program.playback?.arin !== metadata.playback.arin || typeof program.playback?.arin !== 'string' ||
+        !/^[A-Za-z0-9_:.~-]{1,256}$/.test(program.playback.arin) ||
+        program.playback.arin === '.' || program.playback.arin === '..') throw new Error();
+      content = { source: { type: 'program', programId: episodeId, arin: program.playback.arin } };
+      if (configured) expectedGateway = 'https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/' + program.playback.arin;
     }
     const useCase = replay ? 'vod' : 'live';
     phase = 'SOURCE';
@@ -372,6 +447,15 @@
       safariMaxHeight: undefined })) if (value !== undefined) url.searchParams.append(name, value);
     selected = load(65364).createMediaURL({ playbackURL: url.href, content,
       query: { t: identity.mediaToken, enc: 'clear', dtid: content.source.deviceTypeId } });
+    if (typeof selected !== 'string' || selected.length > 2048) throw new Error();
+    if (configured) {
+      const sourceUrl = new URL(selected);
+      if (sourceUrl.protocol !== 'https:' || sourceUrl.username || sourceUrl.password || sourceUrl.hash ||
+        sourceUrl.port || !sourceUrl.pathname.endsWith('.mpd') ||
+        !new RegExp('(^|/)' + episodeId + '([/.]|$)').test(sourceUrl.pathname) ||
+        sourceUrl.pathname.includes('%') || sourceUrl.pathname.split('/').some(part => part === '.' || part === '..') ||
+        sourceUrl.searchParams.getAll('t').length !== 1 || sourceUrl.searchParams.get('t') !== identity.mediaToken) throw new Error();
+    }
     phase = 'CONFIG';
     const configuration = load(73418).createConfiguration(stream.drm, stream.licenseTemplateURL,
       stream.certificateTemplateURL, clientInfo, content);
@@ -379,6 +463,14 @@
     const licenseURL = new URL(configuration?.licenseUrl);
     if (licenseURL.protocol !== 'https:' || licenseURL.hostname !== 'license.p-c3-e.abema-tv.com' || licenseURL.port ||
       licenseURL.pathname !== '/abematv-dash' || licenseURL.username || licenseURL.password || licenseURL.hash) throw new Error();
+    if (configured) {
+      const names = Array.from(licenseURL.searchParams.keys());
+      if (new Set(names).size !== names.length ||
+        names.some(name => !['t', 'ct', 'cid', 'tt', 'tk', 'dt'].includes(name)) ||
+        licenseURL.searchParams.get('ct') !== 'program' || licenseURL.searchParams.get('cid') !== episodeId ||
+        licenseURL.searchParams.get('t') !== identity.mediaToken) throw new Error();
+    }
+    selectedEpisode = episodeId;
     license = licenseURL.href;
   }
   async function prepareLegacyLicense(load, identity) {

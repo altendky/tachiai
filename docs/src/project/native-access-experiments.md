@@ -4095,6 +4095,85 @@ added APPROVED selected-manifest/declared-media patterns for
 observations. No additional origin approval was required. The run was stopped
 after this short regression check, returning the phone to the source picker.
 
+## Exact configured episodes — 2026-10-11
+
+Issue [#164](https://github.com/altendky/tachiai/issues/164) carries the common
+resolver's exact ABEMA episode into the cached native runtime. The provider-owned
+predicate accepts only canonical episode/VIDEO identity; generic presentation
+does not interpret provider URLs or entitlement. A frozen instance/route owner is
+reread on workers around preparation, native requests and the initial exchange.
+Main-thread publication uses the epoch/foreground/budget and sticky owner state.
+The delivered process-owned cleanup receipts remain in force. Each duplicate
+feed owns an independent fresh guest, helper, media token and CDM.
+
+The pinned unchanged
+[5206 asset](https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js)
+supplies the coherent API configuration, program DTO, filter/comparator, source
+gateway, media URL and DRM configuration. Selected mode requests only the exact
+modern `/v1/video/programs/{episodeId}` after fresh guest setup. Strict bounded
+UTF-8/duplicate-free JSON rejects mismatched raw/converted IDs and ARIN, malformed
+eligibility and unsupported trial/restriction/source modes. ARIN is opaque: its
+raw/DTO equality and exact gateway request are checked, without inventing an
+identifier grammar or deriving a program ID from it.
+
+Separately retained current first-party consumers establish that `freeEndAt`
+and advertising-term `endAt` are compared with epoch seconds. Module 15684 in
+[9118](https://abema.tv/assets/compat/450251252b4eb096.9118.bundle.js)
+tests free advertising terms; 17351 in
+[9361](https://abema.tv/assets/compat/de87d72968864070.9361.bundle.js)
+passes the provider's seconds clock, and 92443 in
+[7666](https://abema.tv/assets/compat/f95a0098c0f808ce.7666.bundle.js)
+uses the same term-expiry comparison. These consumers are static evidence and
+are not loaded into or mixed with the pinned runtime. No corresponding standalone
+program-end or broadcast-date entitlement clock was established. The selected
+path therefore requires explicit free labels and valid nonempty advertising
+terms/free windows covering the session; this duration coverage is a conservative
+local restriction, not complete entitlement equivalence. Historical-only checks
+remain bounded comparisons.
+
+The source URL must retain the exact episode identity, approved CDN and one
+query token equal to the fresh media token. Native code checks the app-owned
+two-field source binding before and after resolving its exact MPD and declared
+media. Pinned modules 73418/3136/93427 construct initial license parameters
+`ct=program`, `cid=programId` and `t=mediaToken`; selected mode requires that
+agreement before the unchanged opaque exchange. Existing protected initialization,
+KID agreement and one-initial-exchange limits remain. No helper algorithm is
+copied, key extracted, response reused, renewal added or new CDN family admitted.
+An opaque/unbound source or unsupported mode refuses without a fixed fallback.
+
+Local verification passed 2017 JVM tests (241 reports, no failures/errors/skips),
+41 direct owned-JavaScript cases, Android lint, release isolation, instrumentation
+compilation, app/test assembly and shared signing-certificate checks. Three
+network-blocked Android fixtures exercised two exact IDs through the owned JS
+and native source resolver without provider requests or saved-store mutations.
+
+Bounded observations used persistent `tachiai-dev`, Android 16/API 36, Google APIs
+x86_64 and WebView 133.0.6943.137, with the saved ABEMA connection. Exit region
+was not remeasured. Each run used a fresh anonymous guest; no account grant was
+adopted. The 12-minute ABEMA Morning episode of 2026-10-08,
+[`89-70_s111_p4016`](https://abema.tv/video/episode/89-70_s111_p4016), was selected
+explicitly through an in-memory configured source, common resolver and production
+session. Its first 12.554-second attempt refused during GUEST preparation before
+a returned HTTP status. Separate News and exact configured historical replay
+`394-72_s10_p8529` runs rendered frames and advanced position in 11.784 and
+12.495 seconds. A disclosed isolated repeat of the original Morning selection
+on the unchanged build/route passed in 13.051 seconds: exact modern metadata,
+source/MPD, fresh CDM/opaque exchange, native frame and advancing position.
+The original failure was not reproduced; its transport/guest cause is unknown.
+No automatic retry, source substitution, cookie change or refusal weakening was
+added to obtain the successful result.
+
+Every actual run confirmed teardown, unchanged route ownership and byte-identical
+protected encrypted records. Fixtures and observations used only in-memory
+entries/assignments; no configured item, route, grant or recovery checkpoint was
+written. Temporary cached-process test targeting was removed afterward and the
+ordinary test APK rebuilt, certificate/manifest verified and reinstalled before
+returning to the normal launcher. The observed runs used one feed; independent
+duplicate-feed identity, quality and lifecycle state are covered by fixtures,
+not a new actual two-feed acceptance. These short emulator runs do not establish
+sustained playback, acoustic output, complete advertisements, physical-device
+DRM/decoding or account access.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

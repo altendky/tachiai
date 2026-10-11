@@ -60,6 +60,7 @@ import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.provider.catalog.CatalogResource
 import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
@@ -80,7 +81,14 @@ internal class CachedPrototypeAbemaSession(
     private val diagnostics: FailureReporter = FailureReporter.NONE,
     private val onHelperCreated: (CachedAbemaHelperCleanup) -> Unit = {},
     private val onCleanupChanged: () -> Unit = {},
+    private val episodeResource: CatalogResource? = null,
+    private val ownership: AbemaEpisodePlaybackOwnership? = null,
 ) : PrototypeFeedSession {
+    init {
+        require(episodeResource == null || replay && supportedConfiguredAbemaEpisode(episodeResource) && route != null && ownership != null)
+        require(episodeResource != null || ownership == null)
+    }
+    private val episodeId get() = episodeResource?.identity ?: "394-72_s10_p8529"
     private val handler = Handler(Looper.getMainLooper())
     private val worker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
         finishTransportCleanup(); onCleanupChanged()
@@ -134,10 +142,13 @@ internal class CachedPrototypeAbemaSession(
 
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationCurrent(run: Long) = !closed.get() && revision.get() == run && active() &&
-        budget?.active == true && SystemClock.elapsedRealtime() < deadline
+        budget?.active == true && SystemClock.elapsedRealtime() < deadline && ownership?.canContinue() != false
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
-    private fun openConnection(url: URL): HttpsURLConnection =
-        route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
+    private fun workerOwned(): Boolean = ownership?.checkWorker() != false
+    private fun openConnection(url: URL): HttpsURLConnection {
+        if (!workerOwned()) throw java.io.IOException("Selected playback owner unavailable")
+        return route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
+    }
     override fun canContinue(): Boolean = current(revision.get())
     override fun checkAuthorization(): Boolean = canContinue()
 
@@ -184,9 +195,9 @@ internal class CachedPrototypeAbemaSession(
             }
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val uri = runCatching { URI(request.url.toString()) }.getOrNull()
-                val live = preparationCurrent(revision.get())
+                val live = preparationCurrent(revision.get()) && workerOwned()
                 val allowed = uri != null && live &&
-                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method)
+                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity)
                 if (!allowed) {
                     val category = if (!live) "LIFECYCLE" else
                         AbemaNativeBootstrapPolicy.refusalCategory(uri, request.isForMainFrame, request.method)
@@ -203,7 +214,7 @@ internal class CachedPrototypeAbemaSession(
                         return refusedResource()
                     }
                     return WebResourceResponse(if (request.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
-                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.CONTENT_SECURITY_POLICY,
+                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.contentSecurityPolicy(episodeResource?.identity),
                             "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(local))
                 }
                 return null // Only exact policy-approved provider API endpoints.
@@ -268,7 +279,7 @@ internal class CachedPrototypeAbemaSession(
                 }
             }
             try {
-                check(preparationCurrent(run) && CookieHandler.getDefault() == null)
+                check(preparationCurrent(run) && workerOwned() && CookieHandler.getDefault() == null)
                 val prepared = cached(AbemaPublicBundleIdentity())
                 val support = cached(AbemaPublicBundleIdentity.bootstrapSupport())
                 val legacy = cached(AbemaPublicBundleIdentity.legacySource())
@@ -282,7 +293,8 @@ internal class CachedPrototypeAbemaSession(
                     "/_tachiai/native/utilities.js" to utilities.bytes,
                     "/_tachiai/native/initialize.js" to view.context.assets.open("abema/native-bootstrap-initialize.js")
                         .bufferedReader().use { it.readText() }.replace("__NONCE__", nonce)
-                        .replace("__NATIVE_REPLAY__", replay.toString()).toByteArray(Charsets.UTF_8),
+                        .replace("__NATIVE_REPLAY__", replay.toString())
+                        .replace("__EPISODE_ARGUMENT__", episodeResource?.let { ", " + JSONObject.quote(it.identity) } ?: "").toByteArray(Charsets.UTF_8),
                 )
                 handler.post {
                     if (preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline) {
@@ -378,7 +390,7 @@ internal class CachedPrototypeAbemaSession(
         emit(PrototypeFeedEvent.PREPARING)
         worker.execute {
             try {
-                check(current(run) && CookieHandler.getDefault() == null)
+                check(current(run) && workerOwned() && CookieHandler.getDefault() == null)
                 val uri = selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000))
                     ?: throw IllegalStateException()
                 val requests = BoundedMediaRequests(checkNotNull(budget).child(), { current(run) && it == uri }, { event, code ->
@@ -398,7 +410,7 @@ internal class CachedPrototypeAbemaSession(
                     try { requests.close(); sourceRequests.compareAndSet(requests, null) }
                     catch (error: Throwable) { cleanupFailed = true; throw error }
                 }
-                check(current(run) && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
+                check(current(run) && workerOwned() && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
                 handler.post { if (current(run) && allows(view.url)) createNative(source, run) }
             } catch (error: Throwable) {
                 if (current(run)) diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
@@ -408,7 +420,7 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun readSource(uri: URI, requests: BoundedMediaRequests): AbemaNativeDashSource {
-        if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE)
+        if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true))
         val source = requests.create(C.DATA_TYPE_MANIFEST)
         return try {
@@ -427,6 +439,7 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun createNative(source: AbemaNativeDashSource, run: Long) {
+        if (replay && (source !is AbemaReplayNativeSource || source.episodeId != episodeId)) { fail(); return }
         val policy = DeclaredDashMediaPolicy(source.uri) { uri ->
             reviewCdn(uri, AbemaCdnStage.DECLARED_MEDIA)
             if (replay) {
@@ -488,10 +501,12 @@ internal class CachedPrototypeAbemaSession(
         check(sourcePending.compareAndSet(null, completion))
         handler.post {
             if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
-            else view.evaluateJavascript("window['$name']?.selectedSource() || null") { raw ->
+            else view.evaluateJavascript("window['$name']?.${if (episodeResource == null) "selectedSource" else "sourceBinding"}() || null") { raw ->
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
-                    val uri = runCatching { URI(quoted(raw, 12_000) ?: "") }.getOrNull()
+                    val selected = quoted(raw, 12_000)
+                    val uri = if (episodeResource == null) runCatching { URI(selected ?: "") }.getOrNull()
+                        else parseAbemaEpisodeSourceBinding(selected, episodeId)
                     if (uri != null) {
                         try { reviewCdn(uri, AbemaCdnStage.SELECTED_MANIFEST) }
                         catch (_: Exception) {
@@ -499,7 +514,7 @@ internal class CachedPrototypeAbemaSession(
                         }
                     }
                     val allowed = uri != null && if (replay)
-                        abemaReplaySelectedSourcePolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE) == AbemaReplayUriPolicy.ALLOWED
+                        abemaReplaySelectedSourcePolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId) == AbemaReplayUriPolicy.ALLOWED
                     else AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true)
                     record("source=${if (allowed) "ALLOWED" else "REFUSED"}")
                     if (!allowed && uri != null) remember(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
@@ -527,6 +542,7 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun broker(challenge: ByteArray, run: Long, exchangeDeadline: Long): ByteArray? {
+        if (!workerOwned()) return null
         val completion = CompletableFuture<ByteArray?>()
         check(pending.compareAndSet(null, completion))
         val encoded = Base64.encodeToString(challenge, Base64.NO_WRAP)
@@ -537,7 +553,11 @@ internal class CachedPrototypeAbemaSession(
                 else pollResponse(completion, run, exchangeDeadline)
             }
         }
-        return try { awaitOpaqueResponse(completion, exchangeDeadline - SystemClock.elapsedRealtime()) }
+        return try {
+            awaitOpaqueResponse(completion, exchangeDeadline - SystemClock.elapsedRealtime())?.let { bytes ->
+                if (workerOwned() && current(run)) bytes else { bytes.fill(0); null }
+            }
+        }
         finally { pending.compareAndSet(completion, null) }
     }
 

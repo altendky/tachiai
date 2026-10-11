@@ -157,15 +157,23 @@ class AbemaLocalImportCatalogTest {
     @Test fun selectionKeepsImportedIdentitiesAndNeverSubstitutesSamplePlayback() {
         val catalog = AbemaLocalImportCatalog(owner, setups)
         val routeOwner = owner.copy(setup = owner.setup.copy(route = SourceRouteChoice.system))
-        fun selection(url: String): ConfiguredPrototypeSelectionResult {
+        fun selection(url: String, allowEpisodes: Boolean = true): ConfiguredPrototypeSelectionResult {
             val configured = ConfiguredSource(java.util.UUID.randomUUID().toString(), owner.id, entry(catalog, url))
             return resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(configured.choice, configured.choice),
-                listOf(configured), listOf(routeOwner))
+                listOf(configured), listOf(routeOwner), allowConfiguredAbemaEpisodes = allowEpisodes)
         }
-        listOf("https://abema.tv/channels/sumo", "https://abema.tv/channels/sumo/slots/A63wR6irBEskZM",
-            "https://abema.tv/video/episode/394-72_s10_p845").forEach {
+        listOf("https://abema.tv/channels/sumo", "https://abema.tv/channels/sumo/slots/A63wR6irBEskZM").forEach {
             assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED), selection(it))
         }
+        val episodeUrl = "https://abema.tv/video/episode/394-72_s10_p845"
+        val episode = (selection(episodeUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
+        episode.feeds.forEach {
+            assertEquals(CatalogResource(ProviderId("abema"), "episode", "394-72_s10_p845", CatalogIntent.VIDEO), it.resource)
+            assertNull(it.historicalSource)
+            assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
+        }
+        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
+            selection(episodeUrl, allowEpisodes = false))
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
             selection("https://abema.tv/video/title/394-72"))
         assertEquals(PrototypeSource.ABEMA_LIVE,

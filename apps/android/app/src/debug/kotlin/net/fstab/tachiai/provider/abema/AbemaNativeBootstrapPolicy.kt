@@ -16,6 +16,14 @@ internal object AbemaNativeBootstrapPolicy {
         "img-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; " +
         "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
+    fun contentSecurityPolicy(episodeId: String? = null): String {
+        if (episodeId == null) return CONTENT_SECURITY_POLICY
+        require(validAbemaEpisodeIdentity(episodeId))
+        return CONTENT_SECURITY_POLICY.replace("https://api.abema.io/v1/channels ", "")
+            .replace("https://api.abema.io/v1/video/programs/394-72_s10_p8529", episodeUrl(episodeId))
+    }
+    private fun episodeUrl(id: String) = "https://api.p-c3-e.abema-tv.com/v1/video/programs/$id"
+
     // Closed shape categories only: never return a host, path, query or ARIN.
     fun refusalCategory(uri: URI?, mainFrame: Boolean, method: String): String = when {
         uri == null -> "INVALID_URI"
@@ -54,7 +62,8 @@ internal object AbemaNativeBootstrapPolicy {
     fun allowsNewsCdn(uri: URI, approvedPrototype: Boolean = false): Boolean = allowsNewsSource(uri, approvedPrototype) ||
         abemaNewsCdnUriPolicy(uri, approvedPrototype) == AbemaNewsMediaUriPolicy.ALLOWED
 
-    fun allows(uri: URI, mainFrame: Boolean, method: String): Boolean {
+    fun allows(uri: URI, mainFrame: Boolean, method: String, episodeId: String? = null): Boolean {
+        if (episodeId != null && !validAbemaEpisodeIdentity(episodeId)) return false
         if (uri.scheme != "https" || uri.port != -1 || uri.rawUserInfo != null || uri.rawFragment != null ||
             uri.toString().length > 4096 || uri.rawPath != uri.path || uri.normalize() != uri) return false
         if (mainFrame) return method == "GET" && uri.toString() == PAGE
@@ -66,15 +75,18 @@ internal object AbemaNativeBootstrapPolicy {
         }
         return when (uri.host) {
             "abema.tv" -> uri.toString() == "$ORIGIN/api/auth/login/guest" && method == "POST"
-            "api.p-c3-e.abema-tv.com" -> uri.path == "/v1/media/token" && method in setOf("GET", "OPTIONS") &&
+            "api.p-c3-e.abema-tv.com" -> if (uri.path == "/v1/media/token") method in setOf("GET", "OPTIONS") &&
                 queryNames(uri) == setOf("osName", "osVersion", "osLang", "osTimezone", "appVersion")
-            "api.abema.io" -> uri.path in setOf("/v1/channels", "/v1/video/programs/394-72_s10_p8529") && uri.rawQuery == null &&
+                else episodeId != null && uri.toString() == episodeUrl(episodeId) && method in setOf("GET", "OPTIONS")
+            "api.abema.io" -> episodeId == null && uri.path in setOf("/v1/channels", "/v1/video/programs/394-72_s10_p8529") && uri.rawQuery == null &&
                 method in setOf("GET", "OPTIONS")
             "streaming-api-cf.p-c2-x.abema-tv.com" -> method == "GET" && uri.rawQuery == null &&
                 Regex("/v1/playbackResources/[A-Za-z0-9_:.~-]{1,256}").matches(uri.path)
             "license.p-c3-e.abema-tv.com" -> uri.path == "/abematv-dash" && method in setOf("POST", "OPTIONS") &&
                 queryNames(uri)?.let { "t" in it && it.all { name -> name in setOf("t", "ct", "cid", "tt", "tk", "dt") } } == true &&
-                uri.rawQuery?.split('&')?.filter { it.startsWith("dt=") }?.all { it == "dt=web_android" } == true
+                uri.rawQuery?.split('&')?.filter { it.startsWith("dt=") }?.all { it == "dt=web_android" } == true &&
+                (episodeId == null || uri.rawQuery?.split('&')?.associate { it.substringBefore('=') to it.substringAfter('=') }
+                    ?.let { it["ct"] == "program" && it["cid"] == episodeId } == true)
             else -> false
         }
     }

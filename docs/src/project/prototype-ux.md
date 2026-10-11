@@ -521,6 +521,18 @@ Remote flag evaluation, ad-cluster discovery, full device classification and rep
 entitlement equivalence remain experimental gates, not established equivalence
 to the full player. Device results are recorded in
 [native experiments](native-access-experiments.md).
+
+Exact configured ABEMA episodes now carry their immutable resource through the
+cached session, rather than selecting a replay from a Boolean alone. Fresh modern
+metadata, raw/converted identity and ARIN, free terms, selected source/MPD and
+initial license must agree with that episode and its fresh token. Saved UNKNOWN
+availability permits verification; unknown or ineligible runtime metadata refuses
+playback and retains the configured item. Provider/route ownership is reread on
+workers, and the process-owned cleanup boundary applies to both independent
+duplicate feeds. The original full-page comparison refuses new configured
+episodes. Channels, slots, series and account-backed selections remain separate
+work; this path does not substitute News or a fixed replay. See
+[configured episode playback](abema-catalog-access.md#exact-configured-episode-playback).
 The cached native path now admits the user-approved single-label
 `*-abematv.akamaized.net` CDN family. New eligible origins remain blocked pending
 approval and are saved as token-free patterns in a bounded app-private journal;

@@ -61,7 +61,9 @@ internal fun configureAbemaGuestWebView(view: WebView) {
 }
 
 // Explicit debug observation only. No automatic request on creation, no account
-// connection, and no guest/device/token data ever crosses the owned JS closure.
+// connection. Retained session binding remains JS-owned. Platform request objects
+// transiently carry bearer headers/private URIs; admission never copies bearer
+// headers and no private request data enters diagnostics/UI/storage.
 @SuppressLint("SetTextI18n")
 class AbemaGuestBootstrapActivity : ComponentActivity() {
     companion object {
@@ -72,13 +74,13 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         // no automatic backend close or process kill can expose System access.
         private var retainedAttempt: Attempt? = null
     }
-    private class Attempt(val run: Long, diagnostics: FailureReporter) {
+    private class Attempt(val run: Long, val operation: AbemaGuestBootstrapOperation, diagnostics: FailureReporter) {
         val preparation = RoutePreparation(diagnostics)
         val prepared = CountDownLatch(1)
         val cancellationFinished = CountDownLatch(1)
         val route = AtomicReference<RouteSession?>()
         val download = AtomicReference<AbemaPublicBundleHttp?>()
-        val guestDispatched = AtomicBoolean()
+        val requests = AbemaGuestRequestAdmission(operation)
         val cleanupFailed = AtomicBoolean()
         val retainRoute = AtomicBoolean()
         val nonce = UUID.randomUUID().toString().replace("-", "")
@@ -93,6 +95,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var choose: Spinner
     private lateinit var start: Button
+    private lateinit var verifyProfile: Button
     private var instances: List<ProviderInstance> = emptyList()
     @Volatile private var attempt: Attempt? = null
 
@@ -115,8 +118,13 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         status = TextView(this).apply { text = "Loading saved providers. No provider request has started." }
         host.addView(status)
         choose = Spinner(this).apply { isEnabled = false }; host.addView(choose)
-        start = Button(this).apply { text = "Prepare guest"; isEnabled = false; setOnClickListener { begin() } }
+        start = Button(this).apply { text = "Prepare guest"; isEnabled = false; setOnClickListener { begin(AbemaGuestBootstrapOperation.GUEST_ONLY) } }
         host.addView(start)
+        verifyProfile = Button(this).apply {
+            text = "Verify guest profile"; isEnabled = false
+            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_PROFILE) }
+        }
+        host.addView(verifyProfile)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { stop("STOPPED") } })
         host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
@@ -154,31 +162,36 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private fun controls() {
         if (!::start.isInitialized) return
         start.isEnabled = foreground.get() && instances.isNotEmpty() && !admission.unavailable
+        verifyProfile.isEnabled = start.isEnabled
         choose.isEnabled = start.isEnabled
     }
     private fun outcome(category: String) {
         Log.d("TachiaiAbemaGuest", "outcome=$category")
         status.text = when (category) {
             "PREPARED" -> "Guest prepared. No existing account is connected; the transient guest has been discarded."
+            "GUEST_PROFILE_BOUND" -> "Guest profile identity verified. No existing account is connected; the transient guest and profile have been discarded."
+            "VERIFYING_PROFILE" -> "Preparing a fresh guest and verifying its server profile through the selected provider route."
             "PREPARING" -> "Preparing guest through the selected provider route."
             "CLEANUP_FAILED" -> "Cleanup could not be confirmed. Further attempts are blocked in this process."
             else -> "Guest preparation ended: $category. No account is connected."
         }
     }
 
-    private fun begin() {
+    private fun begin(operation: AbemaGuestBootstrapOperation) {
         val selected = instances.getOrNull(choose.selectedItemPosition) ?: return
         val run = admission.begin(foreground.get()) ?: return
-        val active = Attempt(run, diagnostics)
+        val active = Attempt(run, operation, diagnostics)
         attempt = active
         Log.d("TachiaiAbemaGuest", "routeMode=${selected.setup.route?.mode?.name ?: "UNSET"}")
-        controls(); outcome("PREPARING")
+        controls(); outcome(if (operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE) "VERIFYING_PROFILE" else "PREPARING")
         handler.postDelayed({ if (attempt === active) stop("TIMEOUT") }, 45_000)
         worker.execute {
             try {
                 active.owner = readOwner(selected.id)
                 check(sameOwner(active))
-                val route = RouteSession.createAbemaGuest(active.owner!!.profile, active.preparation)
+                val route = if (operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE)
+                    RouteSession.createAbemaGuestProfile(active.owner!!.profile, active.preparation)
+                    else RouteSession.createAbemaGuest(active.owner!!.profile, active.preparation)
                 active.route.set(route)
                 check(sameOwner(active))
                 val files = linkedMapOf<String, ByteArray>()
@@ -197,7 +210,8 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
                 files["/_tachiai/guest/index.html"] = assets.open("abema/guest-bootstrap.html").use { it.readBytes() }
                 files["/_tachiai/guest/control.js"] = assets.open("abema/guest-bootstrap.js").use { it.readBytes() }
                 files["/_tachiai/guest/initialize.js"] = assets.open("abema/guest-bootstrap-initialize.js")
-                    .bufferedReader().use { it.readText() }.replace("__NONCE__", active.nonce).toByteArray(Charsets.UTF_8)
+                    .bufferedReader().use { it.readText() }.replace("__NONCE__", active.nonce)
+                    .replace("__OPERATION__", operation.name).toByteArray(Charsets.UTF_8)
                 check(sameOwner(active))
                 handler.post {
                     if (current(active)) webRoute.install(route, { applied ->
@@ -256,16 +270,18 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val uri = runCatching { URI(request.url.toString()) }.getOrNull()
                 val allowed = runtimeCurrent(active) && uri != null &&
-                    AbemaGuestBootstrapPolicy.allows(uri, request.isForMainFrame, request.method) &&
-                    runCatching { sameOwner(active) }.getOrDefault(false)
-                if (!allowed || (uri.toString() == AbemaGuestBootstrapPolicy.GUEST && !active.guestDispatched.compareAndSet(false, true))) {
+                    runCatching { sameOwner(active) }.getOrDefault(false) &&
+                    active.requests.admit(uri, request.isForMainFrame, request.method,
+                        AbemaGuestBootstrapPolicy.corsHeaders(request.method) { request.requestHeaders })
+                if (!allowed) {
                     handler.post { runtimeCallback(active, view) { stop(active, "RESOURCE_REFUSED") } }
                     return refused()
                 }
                 if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST) return null
-                val bytes = files[uri!!.path] ?: return refused()
+                if (AbemaGuestBootstrapPolicy.isProfile(uri)) return null
+                val bytes = files[uri.path] ?: return refused()
                 return WebResourceResponse(if (request.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
-                    200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.CONTENT_SECURITY_POLICY,
+                    200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(active.operation),
                         "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
@@ -316,9 +332,13 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             val state = value?.opt("state") as? String
             val failure = value?.opt("failure") as? String
             when {
-                state == "PREPARED" && failure == "NONE" -> verifyThen(active) { stop("PREPARED") }
-                state == "REFUSED" && failure in setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT") -> stop("GUEST_$failure")
-                raw == null || raw == "null" || (state in setOf("WAITING", "MODULES", "GUEST") && failure == "NONE") ->
+                state == "PREPARED" && failure == "NONE" && active.operation == AbemaGuestBootstrapOperation.GUEST_ONLY ->
+                    verifyThen(active) { stop("PREPARED") }
+                state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
+                    verifyThen(active) { stop("GUEST_PROFILE_BOUND") }
+                state == "REFUSED" && failure in setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT",
+                    "PROFILE_HTTP", "PROFILE_RESPONSE", "PROFILE_TIMEOUT") -> stop("GUEST_$failure")
+                raw == null || raw == "null" || (state in setOf("WAITING", "MODULES", "GUEST", "PROFILE") && failure == "NONE") ->
                     handler.postDelayed({ poll(active) }, 100)
                 else -> stop("STATUS_REFUSED")
             }

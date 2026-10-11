@@ -191,4 +191,47 @@ class AbemaGuestBootstrapLifecycleTest {
             RouteSession.createAbemaGuest(selected) { _, _ -> error("Failed imported route") }
         }
     }
+
+    @Test fun profileRoutePurposeIsExplicitClosedAndCannotSubstituteLegacyAPIOrSystem() {
+        var closes = 0
+        val selected = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        RouteSession.createAbemaGuestProfile(selected) { actual, security ->
+            assertSame(selected, actual); assertEquals("abema.tv,api.p-c3-e.abema-tv.com", security.allowedHosts)
+            object : RouteBackend { override val proxyPort = 12345; override fun close() { closes++ } }
+        }.use { route ->
+            assertFalse(route.isSystem)
+            route.open(URL("https://abema.tv/api/auth/login/guest")).disconnect()
+            route.open(URL("https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER")).disconnect()
+            for (host in listOf("api.abema.io", "auth.abema.tv", "license.p-c3-e.abema-tv.com", "other.invalid"))
+                assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://$host/")) }
+        }
+        assertEquals(1, closes)
+        RouteSession.createAbemaGuestProfile(null).use { system ->
+            assertTrue(system.isSystem)
+            assertThrows(IllegalArgumentException::class.java) { system.open(URL("https://api.abema.io/v1/users/FIXTURE_USER")) }
+        }
+        assertThrows(java.io.IOException::class.java) {
+            RouteSession.createAbemaGuestProfile(selected) { _, _ -> error("Failed imported route") }
+        }
+    }
+
+    @Test fun boundProfileOutcomeWaitsForConfirmedCleanupAndCannotSurviveBackgroundOrStaleRun() {
+        val gate = AbemaGuestBootstrapLifecycle { 1000L }
+        val proxy = Proxy(); val route = AbemaWebViewRoute(proxy) {}
+        val run = checkNotNull(gate.begin(true))
+        route.installProxy(12345) { gate.routeApplied(run, true) }; proxy.installed!!.invoke()
+        var published: String? = null
+        assertFalse(gate.runtimeCallback(run, false, true) { published = "GUEST_PROFILE_BOUND" })
+        assertTrue(gate.beginCleanup(run))
+        gate.destroyBeforeRouteClear(run, { true }) {
+            route.clear {
+                gate.finishCleanup(run, true, {}) { confirmed -> if (confirmed) published = "GUEST_PROFILE_BOUND" }
+            }
+        }
+        assertNull(published); assertNull(gate.begin(true))
+        proxy.cleared!!.invoke(); assertEquals("GUEST_PROFILE_BOUND", published)
+        val next = checkNotNull(gate.begin(true)); assertTrue(gate.routeApplied(next, true))
+        assertFalse(gate.runtimeCallback(run, true, true) { published = "STALE" })
+        assertEquals("GUEST_PROFILE_BOUND", published)
+    }
 }

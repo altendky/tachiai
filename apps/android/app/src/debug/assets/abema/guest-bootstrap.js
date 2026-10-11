@@ -24,7 +24,7 @@
   window.addEventListener('error', event => { event.preventDefault(); stop('RUNTIME'); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop('RUNTIME'); });
   // Unchanged module factories may not make their own network requests. This
-  // closure alone owns the single bounded guest request.
+  // closure alone owns the bounded guest and optional profile requests.
   window.fetch = () => { stop('POLICY'); return Promise.reject(new Error()); };
   // The verified guest DTO is a flat string object. Refuse duplicates (including
   // escaped key spellings), nested/unknown fields and trailing data rather than
@@ -52,6 +52,56 @@
     character('}'); whitespace();
     if (at !== text.length) throw new Error();
     return value;
+  }
+  // Validate the entire bounded JSON structure, including escaped duplicate
+  // keys, before projecting only profile.userId. Private unrelated values are
+  // never adopted into the session/UI. This is app-owned parsing, not a copied
+  // provider helper or identity/entitlement algorithm.
+  function parseProfileText(text) {
+    let at = 0, nodes = 0;
+    const whitespace = () => { while (at < text.length && /[\x20\t\r\n]/.test(text[at])) at++; };
+    const string = () => {
+      const match = /^"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/.exec(text.slice(at));
+      if (!match) throw new Error();
+      at += match[0].length;
+      return parse(match[0]);
+    };
+    const value = depth => {
+      whitespace();
+      if (depth > 16 || ++nodes > 4096) throw new Error();
+      if (text[at] === '"') return string();
+      if (text[at] === '{' || text[at] === '[') {
+        const object = text[at++] === '{', end = object ? '}' : ']';
+        const result = object ? Object.create(null) : [];
+        whitespace();
+        if (text[at] !== end) for (;;) {
+          whitespace();
+          let key;
+          if (object) {
+            key = string(); whitespace();
+            if (Object.hasOwn(result, key) || text[at++] !== ':') throw new Error();
+          } else if (result.length >= 1000) throw new Error();
+          const item = value(depth + 1);
+          if (object) result[key] = item; else result.push(item);
+          whitespace();
+          if (text[at] !== ',') break;
+          at++;
+        }
+        if (text[at++] !== end) throw new Error();
+        return result;
+      }
+      const match = /^(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/.exec(text.slice(at));
+      if (!match) throw new Error();
+      at += match[0].length;
+      const result = parse(match[0]);
+      if (typeof result === 'number' && !Number.isFinite(result)) throw new Error();
+      return result;
+    };
+    const reply = value(0); whitespace();
+    if (at !== text.length || !reply || Array.isArray(reply) || typeof reply !== 'object' ||
+      !reply.profile || Array.isArray(reply.profile) || typeof reply.profile !== 'object' ||
+      typeof reply.profile.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.profile.userId)) throw new Error();
+    return reply.profile.userId;
   }
   function loadModules() {
     const chunks = window.__LOADABLE_LOADED_CHUNKS__;
@@ -96,23 +146,25 @@
     };
     return load;
   }
-  async function guestReply(url, body) {
+  async function boundedReply(url, options, project, prefix = '') {
     alive();
     const controller = new AbortController();
     controllers.add(controller);
     const timer = setTimeout(() => controller.abort(), 15000);
     const withinDeadline = () => {
       alive();
-      if (controller.signal.aborted) { failure = 'TIMEOUT'; throw new Error(); }
+      if (controller.signal.aborted) throw new Error();
     };
     let reader;
+    let refused = 'HTTP';
     const parts = [];
     try {
-      const reply = await nativeFetch(url, { method: 'POST', credentials: 'omit', cache: 'no-store',
+      const reply = await nativeFetch(url, { ...options, credentials: 'omit', cache: 'no-store',
         redirect: 'error', signal: controller.signal,
-        headers: { accept: 'application/json', 'content-type': 'application/json' }, body });
+      });
       withinDeadline();
-      if (reply.status !== 200 || !reply.body || reply.redirected) { failure = 'HTTP'; throw new Error(); }
+      if (reply.status !== 200 || !reply.body || reply.redirected) throw new Error();
+      refused = 'RESPONSE';
       reader = reply.body.getReader();
       let size = 0;
       for (;;) {
@@ -120,16 +172,16 @@
         withinDeadline();
         if (next.done) break;
         size += next.value.byteLength;
-        if (size > 65536) { failure = 'RESPONSE'; throw new Error(); }
+        if (size > 65536) throw new Error();
         parts.push(next.value);
       }
       const bytes = new Uint8Array(size);
       let offset = 0;
       for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-      try { failure = 'RESPONSE'; return parseGuestText(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+      try { return project(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
       finally { bytes.fill(0); }
     } catch {
-      if (controller.signal.aborted && !stopped) failure = 'TIMEOUT';
+      if (!stopped) failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
       throw new Error();
     } finally {
       for (const part of parts) part.fill(0);
@@ -138,8 +190,9 @@
       controllers.delete(controller);
     }
   }
-  window.__tachiaiStartGuestBootstrap = nonce => {
-    if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce)) {
+  window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY') => {
+    if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE'].includes(operation)) {
       stop('RUNTIME'); return;
     }
     started = true;
@@ -150,6 +203,11 @@
       try {
         state = 'MODULES';
         const load = loadModules();
+        let apiOrigin;
+        if (operation === 'VERIFY_PROFILE') {
+          apiOrigin = load(74284).FH?.apiOrigin;
+          if (apiOrigin !== 'https://api.p-c3-e.abema-tv.com') { failure = 'POLICY'; throw new Error(); }
+        }
         const deviceId = crypto.randomUUID();
         if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(deviceId)) throw new Error();
         const helper = load(2833);
@@ -162,7 +220,8 @@
           applicationKeySecret, deviceId }));
         if (typeof body !== 'string' || new TextEncoder().encode(body).byteLength > 16384) throw new Error();
         state = 'GUEST';
-        const reply = await guestReply(endpoint.href, body);
+        const reply = await boundedReply(endpoint.href, { method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' }, body }, parseGuestText);
         alive();
         failure = 'RESPONSE';
         if (!reply || typeof reply !== 'object' || Array.isArray(reply) ||
@@ -172,10 +231,22 @@
         const user = load(5304).V8.fromJSON(reply);
         if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
         guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
-        // Guest stays within this closure. No profile/challenge/refresh/account
-        // connection or playback is implied. Strings are not provably wiped.
         failure = 'NONE';
-        state = 'PREPARED';
+        if (operation === 'VERIFY_PROFILE') {
+          state = 'PROFILE';
+          const profileId = await boundedReply(apiOrigin + '/v1/users/' + guest.userId,
+            { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
+            parseProfileText, 'PROFILE_');
+          alive();
+          failure = 'PROFILE_RESPONSE';
+          if (profileId !== guest.userId) throw new Error();
+          // Same server profile is the future client binding, still a guest.
+          guest = Object.freeze({ ...guest, clientId: profileId });
+          failure = 'NONE'; state = 'GUEST_PROFILE_BOUND';
+        } else state = 'PREPARED';
+        // Identity/grant remain closure-owned until stop discards them. A native
+        // policy URI transiently includes the profile ID. No account connection,
+        // challenge, refresh or playback is implied; strings are not wipeable.
       } catch { if (!stopped) stop(failure === 'NONE' ? 'RUNTIME' : failure); }
     })();
   };

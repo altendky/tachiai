@@ -4141,10 +4141,38 @@ KID agreement and one-initial-exchange limits remain. No helper algorithm is
 copied, key extracted, response reused, renewal added or new CDN family admitted.
 An opaque/unbound source or unsupported mode refuses without a fixed fallback.
 
-Local fixtures and bounded persistent-device observations are recorded when
-completed. Static identity, eligibility and policy wiring does not by itself
-prove native frames, sustained playback, full advertisements or physical-device
-DRM/decoder behavior. Existing-account access remains separate.
+Local verification passed 2017 JVM tests (241 reports, no failures/errors/skips),
+41 direct owned-JavaScript cases, Android lint, release isolation, instrumentation
+compilation, app/test assembly and shared signing-certificate checks. Three
+network-blocked Android fixtures exercised two exact IDs through the owned JS
+and native source resolver without provider requests or saved-store mutations.
+
+Bounded observations used persistent `tachiai-dev`, Android 16/API 36, Google APIs
+x86_64 and WebView 133.0.6943.137, with the saved ABEMA connection. Exit region
+was not remeasured. Each run used a fresh anonymous guest; no account grant was
+adopted. The 12-minute ABEMA Morning episode of 2026-10-08,
+[`89-70_s111_p4016`](https://abema.tv/video/episode/89-70_s111_p4016), was selected
+explicitly through an in-memory configured source, common resolver and production
+session. Its first 12.554-second attempt refused during GUEST preparation before
+a returned HTTP status. Separate News and exact configured historical replay
+`394-72_s10_p8529` runs rendered frames and advanced position in 11.784 and
+12.495 seconds. A disclosed isolated repeat of the original Morning selection
+on the unchanged build/route passed in 13.051 seconds: exact modern metadata,
+source/MPD, fresh CDM/opaque exchange, native frame and advancing position.
+The original failure was not reproduced; its transport/guest cause is unknown.
+No automatic retry, source substitution, cookie change or refusal weakening was
+added to obtain the successful result.
+
+Every actual run confirmed teardown, unchanged route ownership and byte-identical
+protected encrypted records. Fixtures and observations used only in-memory
+entries/assignments; no configured item, route, grant or recovery checkpoint was
+written. Temporary cached-process test targeting was removed afterward and the
+ordinary test APK rebuilt, certificate/manifest verified and reinstalled before
+returning to the normal launcher. The observed runs used one feed; independent
+duplicate-feed identity, quality and lifecycle state are covered by fixtures,
+not a new actual two-feed acceptance. These short emulator runs do not establish
+sustained playback, acoustic output, complete advertisements, physical-device
+DRM/decoding or account access.
 
 ## Unresolved gates
 

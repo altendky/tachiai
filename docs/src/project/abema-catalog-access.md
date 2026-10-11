@@ -273,7 +273,14 @@ items remain configured while playback returns a safe refusal. This guest slice
 does not add My List, history, account adoption or renewal. Channels, exact slots,
 series and broader discovery remain [#101](https://github.com/altendky/tachiai/issues/101).
 See [the native boundary](native-access-experiments.md#exact-configured-episodes--2026-10-11)
-for static evidence and eventual bounded device observations.
+for static evidence and bounded device observations. On 2026-10-11, persistent
+`tachiai-dev` rendered the distinct ABEMA Morning episode `89-70_s111_p4016`
+and advanced its native position in an explicitly selected 13.051-second run.
+Separate historical News and replay regressions also passed. An earlier attempt
+for the same Morning episode failed before a guest HTTP status returned; its
+cause remains unverified. All runs confirmed cleanup and unchanged protected
+records. This is bounded guest playback evidence, not account, sustained-playback
+or physical-device acceptance.
 
 ## Remaining gates and issue status
 

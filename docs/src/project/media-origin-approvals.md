@@ -38,6 +38,21 @@ listener. Channel IDs/names are metadata, never proof of live state or entitleme
 See [the bounded catalog implementation](abema-catalog-access.md#public-channels-adapter)
 for snapshot limits, instance/route ownership and evidence boundaries.
 
+### Memory-only ABEMA device-authorization challenge
+
+The explicit guest diagnostic's device-authorization operation uses the existing
+`abema.tv` and `api.p-c3-e.abema-tv.com` origins under the general integration
+approval. After one fresh guest POST and matching server-profile GET, its owned
+policy admits one exact JSON POST to
+`https://abema.tv/api/auth/oauth/device/authorization`. The destination and
+profile-derived client request are verified static first-party bundle findings;
+cookie-free response acceptance remains a bounded runtime check. Its separate
+route purpose leaves catalog and playback purposes unchanged. No token-polling,
+renewal, verification-navigation, collection or media destination is added.
+The returned verification URIs remain in JavaScript, are locally restricted and
+discarded, and confer no navigation approval. See
+[the challenge boundary](abema-guest-bootstrap.md#optional-device-authorization-challenge-verification).
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

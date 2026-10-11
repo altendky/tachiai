@@ -33,6 +33,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private lateinit var start: Button
     private lateinit var verifyProfile: Button
     private lateinit var verifyEpisode: Button
+    private lateinit var verifyChallenge: Button
     private var instances: List<ProviderInstance> = emptyList()
     private var nonce: String? = null
 
@@ -57,6 +58,8 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_PROFILE) } }; host.addView(verifyProfile)
         verifyEpisode = Button(this).apply { text = "Verify guest episode metadata"; isEnabled = false
             setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_EPISODE) } }; host.addView(verifyEpisode)
+        verifyChallenge = Button(this).apply { text = "Verify device authorization challenge"; isEnabled = false
+            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) } }; host.addView(verifyChallenge)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { cancel() } })
         host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
@@ -83,7 +86,8 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private fun controls() {
         if (!::start.isInitialized || !::runtime.isInitialized) return
         start.isEnabled = foreground.get() && instances.isNotEmpty() && !runtime.unavailable
-        verifyProfile.isEnabled = start.isEnabled; verifyEpisode.isEnabled = start.isEnabled; choose.isEnabled = start.isEnabled
+        verifyProfile.isEnabled = start.isEnabled; verifyEpisode.isEnabled = start.isEnabled
+        verifyChallenge.isEnabled = start.isEnabled; choose.isEnabled = start.isEnabled
     }
     private fun outcome(category: String) {
         Log.d("TachiaiAbemaGuest", "outcome=$category")
@@ -91,6 +95,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             "PREPARED" -> "Guest prepared. No existing account is connected; the transient guest has been discarded."
             "GUEST_PROFILE_BOUND" -> "Guest profile identity verified. No existing account is connected; the transient guest and profile have been discarded."
             "EXACT_EPISODE_METADATA" -> "Exact episode metadata verified. The transient guest and metadata have been discarded; no account or playback is connected."
+            "CHALLENGE_VALIDATED_AND_DISCARDED" -> "Device challenge response validated and discarded. No approval page was opened and no existing account is connected."
             "ENDING" -> "Ending guest preparation and confirming route cleanup."
             "PREPARING" -> "Preparing guest through the selected provider route."
             "CLEANUP_FAILED" -> "Cleanup could not be confirmed. Further attempts are blocked in this process."

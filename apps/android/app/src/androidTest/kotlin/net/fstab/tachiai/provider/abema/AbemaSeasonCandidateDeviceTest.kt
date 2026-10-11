@@ -36,13 +36,19 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 // Test APK only. The opt-in gate precedes saved state, UI and all WebView APIs.
-// One known unfiltered Series page; no guessed Season, Search, continuation,
+// One known unfiltered Series page or exact Slot; no guessed identities, continuation,
 // account capability, Add, playback, provider mutation or production DTO change.
 class AbemaSeasonCandidateDeviceTest {
     @Test fun optInOneKnownSeriesPageObservesOnlyAnExplicitReturnedSeasonParent() {
         verifiedProbeInstrumentation("tachiaiReadOnlyAbemaSeasonCandidate")
         val phases = HarnessPhases()
         try { observe(phases) } catch (_: Throwable) { failHarness(phases) }
+    }
+
+    @Test fun optInOneKnownSlotObservesOnlyClosedSourceAndWindowShapes() {
+        verifiedProbeInstrumentation("tachiaiReadOnlyAbemaSlotShape")
+        val phases = HarnessPhases()
+        try { observe(phases, Observation.SLOT_SHAPE) } catch (_: Throwable) { failHarness(phases, Observation.SLOT_SHAPE) }
     }
 
     @Test fun optInOnlyAdoptsAndDestroysTheIdleGuestActivity() {
@@ -84,10 +90,59 @@ class AbemaSeasonCandidateDeviceTest {
         return instrumentation
     }
 
-    private fun failHarness(phases: HarnessPhases): Nothing {
+    private fun failHarness(phases: HarnessPhases, observation: Observation = Observation.SERIES_CANDIDATE): Nothing {
         val phase = phases.failure.get() ?: phases.current.get()
-        Log.i("TachiaiAbemaSeasonCandidateProbe", "outcome=HARNESS_FAILED phase=${phase.name}")
-        throw AssertionError("Public Season candidate observation failed closed checks at ${phase.name}")
+        Log.i(observation.tag, "outcome=HARNESS_FAILED phase=${phase.name}")
+        throw AssertionError("Public metadata observation failed closed checks at ${phase.name}")
+    }
+
+    @Test fun syntheticSlotShapesAreClosedAndStrippedWithoutChangingThePublicProjection() {
+        fun marker() = JSONObject().apply {
+            SLOT_FIELDS.keys.forEach { put(it, SlotShape.ABSENT.name) }
+            SLOT_PARENTS.values.flatten().forEach { put(it, SlotShape.PARENT_UNAVAILABLE.name) }
+        }
+        fun projection(shapes: Any = marker(), id: Any = SLOT_ID, channel: Any = SLOT_CHANNEL) = JSONObject()
+            .put("id", id).put("channelId", channel).put("title", "Fixture broadcast").put(SLOT_SHAPE_FIELD, shapes)
+        val closed = marker().put("playback", "OBJECT").put("playbackDash", "STRING").put("playbackArin", "EMPTY_STRING")
+            .put("flags", "OBJECT").put("paused", "FALSE").put("timeshift", "TRUE").put("timeshiftFree", "NULL")
+            .put("dashFlag", "ABSENT").put("chasePlay", "ABSENT")
+            .put("mark", "EMPTY_OBJECT").put("drm", "ABSENT").put("payperview", "NULL")
+            .put("startAt", "ZERO").put("endAt", "POSITIVE_SAFE_INTEGER").put("timeshiftEndAt", "OTHER_NUMBER")
+            .put("broadcastRegionPolicies", "OBJECT").put("linearRegion", "JAPAN_ONLY").put("timeshiftRegion", "OVERSEAS_ONLY")
+            .put("chasePlayFeatureAuthorityIds", "NONEMPTY_ARRAY")
+        val result = stripSlotProjection(JSONObject.quote(projection(closed).toString()))!!
+        val expected = JSONObject().put("id", SLOT_ID).put("channelId", SLOT_CHANNEL).put("title", "Fixture broadcast")
+        assertEquals(expected.toString(), JSONTokener(result.raw).nextValue())
+        assertEquals(SlotShape.ZERO, result.shapes.fields.getValue("startAt"))
+        assertEquals(SlotShape.NULL, result.shapes.fields.getValue("timeshiftFree"))
+        assertEquals(SlotShape.PARENT_UNAVAILABLE, result.shapes.fields.getValue("chaseDash"))
+        assertTrue(result.shapes.render().split(' ').size == SLOT_FIELDS.size)
+        assertFalse(result.raw.contains(SLOT_SHAPE_FIELD))
+        for (parent in listOf("ABSENT", "NULL", "INVALID")) {
+            val source = marker().put("playback", parent)
+            assertNotNull(stripSlotProjection(JSONObject.quote(projection(source).toString())))
+            source.put("playbackDash", "STRING")
+            assertNull(stripSlotProjection(JSONObject.quote(projection(source).toString())))
+        }
+        for (invalid in listOf(marker().put("playbackDash", "TRUE"), marker().put("paused", true),
+            marker().put("startAt", 0), marker().put("linearRegion", "https://synthetic.invalid/"),
+            marker().put("unexpected", "STRING"), marker().apply { remove("endAt") },
+            marker().put("flags", "EMPTY_OBJECT").put("paused", "TRUE"),
+            marker().put("flags", "OBJECT"), JSONObject.NULL, "OBJECT")) {
+            assertNull(stripSlotProjection(JSONObject.quote(projection(invalid).toString())))
+        }
+        assertNull(stripSlotProjection(JSONObject.quote(projection(id = "other-slot").toString())))
+        assertNull(stripSlotProjection(JSONObject.quote(projection(channel = "other-channel").toString())))
+        assertNull(stripSlotProjection(JSONObject.quote(projection(id = 12).toString())))
+        assertNull(stripSlotProjection(JSONObject.quote(projection().put("extra", "STRING").toString())))
+        assertNull(stripSlotProjection("{}"))
+        val single = projection().toString()
+        for (duplicate in listOf(single.replaceFirst("\"playback\":", "\"playback\":\"NULL\",\"playback\":"),
+            single.replaceFirst("\"playback\":", "\"play\\u0062ack\":\"NULL\",\"playback\":"))) {
+            assertNull(stripSlotProjection(JSONObject.quote(duplicate)))
+        }
+        assertNull(stripSlotProjection(JSONObject.quote(single) + "{}"))
+        assertNull(stripSlotProjection(JSONObject.quote(" ".repeat(4097))))
     }
 
     @Test fun syntheticProofIsOptionalStrictAndStrippedBeforeTheUnchangedSeriesDecoder() {
@@ -175,7 +230,7 @@ class AbemaSeasonCandidateDeviceTest {
         assertNull(stripProjection(JSONObject.quote(projection(proof(), absentProof(), shape(parent = "ABSENT")).toString())))
     }
 
-    private fun observe(phases: HarnessPhases) {
+    private fun observe(phases: HarnessPhases, observation: Observation = Observation.SERIES_CANDIDATE) {
         val instrumentation = InstrumentationRegistry.getInstrumentation(); val context = instrumentation.targetContext
         val instanceId = defaultProviderInstanceId(PrototypeService.ABEMA)
         fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
@@ -187,7 +242,7 @@ class AbemaSeasonCandidateDeviceTest {
         }
         phases.at(HarnessPhase.PROFILE_SETUP) { instrumentation.runOnMainSync { configureAbemaGuestBootstrapProfile(context) } }
         val active = AtomicBoolean(); val foreground = IdleForeground(instrumentation, active)
-        val environment = CandidateEnvironment(AndroidAbemaGuestEnvironment(context))
+        val environment = CandidateEnvironment(AndroidAbemaGuestEnvironment(context), observation)
         val probe = Probe(environment)
         val nonce = UUID.randomUUID().toString().replace("-", "")
         val result = AtomicReference<AbemaGuestRuntimeResult?>(); val completed = CountDownLatch(1)
@@ -202,9 +257,11 @@ class AbemaSeasonCandidateDeviceTest {
             }
             phases.at(HarnessPhase.RUNTIME_ADMISSION) {
                 check(retained.compareAndSet(null, probe))
-                val request = AbemaGuestRuntimeRequest(instanceId, AbemaGuestBootstrapOperation.FETCH_SERIES,
+                val request = AbemaGuestRuntimeRequest(instanceId, observation.operation,
                     nonce = nonce, expectedOwnerProof = owner.proof(), deadlineElapsedMs = SystemClock.elapsedRealtime() + 45_000,
-                    seriesRequest = AbemaSeriesPageRequest(SERIES), canRemainActive = active::get)
+                    seriesRequest = if (observation == Observation.SERIES_CANDIDATE) AbemaSeriesPageRequest(SERIES) else null,
+                    slotRequest = if (observation == Observation.SLOT_SHAPE) AbemaSlotRequest(SLOT_CHANNEL, SLOT_ID) else null,
+                    canRemainActive = active::get)
                 instrumentation.runOnMainSync {
                     admitted = probe.runtime.start(request) { value -> result.set(value); completed.countDown() }
                 }
@@ -232,8 +289,31 @@ class AbemaSeasonCandidateDeviceTest {
         val after = phases.at(HarnessPhase.PROTECTED_POSTCHECK) { encryptedRecords(context.noBackupFilesDir) }
         val unchanged = before.keys == after.keys && before.all { (name, digest) -> after[name]?.let { MessageDigest.isEqual(digest, it) } == true }
         val current = phases.at(HarnessPhase.OWNER_POSTCHECK) { owner.sameOwnership(readOwner()) }
-        val value = result.get(); val page = value?.seriesPage
+        val value = result.get()
         val cleanupConfirmed = admitted && completed.count == 0L && !probe.runtime.unavailable
+        if (observation == Observation.SLOT_SHAPE) {
+            val entry = value?.entry
+            val success = value?.category == "EXACT_SLOT_METADATA" && entry != null &&
+                entry.resource == AbemaSlotRequest(SLOT_CHANNEL, SLOT_ID).resource && safeAbemaSeriesText(entry.title, 160) &&
+                entry.availability == CatalogAvailability.UNKNOWN && entry.scheduledStartEpochMs == null
+            val shapes = environment.slotShapes.getAndSet(null).takeIf { cleanupConfirmed && unchanged && current && success }
+            val outcome = when {
+                !cleanupConfirmed -> "CLEANUP_FAILED"; !unchanged -> "STORES_CHANGED"; !current -> "OWNER_CHANGED"
+                success && shapes != null -> "EXACT_SLOT_METADATA"; else -> "INVALID_RESPONSE"
+            }
+            Log.i(observation.tag, "outcome=$outcome" + (shapes?.let { " ${it.render()}" } ?: " shape=NONE"))
+            phases.at(HarnessPhase.RESULT_CHECK) {
+                assertTrue("Public Slot observation exceeded bounded budgets", SystemClock.elapsedRealtime() - started in 0 until 70_000)
+                assertTrue("Public Slot observation changed protected records", unchanged)
+                assertTrue("Public Slot observation changed captured owner", current)
+                assertTrue("Public Slot observation did not confirm cleanup", cleanupConfirmed)
+                assertTrue("Public Slot observation did not return exact normalized metadata", success)
+                assertNotNull("Public Slot observation did not return closed shape categories", shapes)
+            }
+            phases.current.set(HarnessPhase.COMPLETE)
+            return
+        }
+        val page = value?.seriesPage
         val success = value?.category == "EXACT_SERIES_PAGE" && page != null && page.seriesId == SERIES && page.seasonId == null &&
             page.entries.size <= 20 && page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all {
                 it.resource.providerId == ProviderId("abema") && it.resource.kind == "episode" && it.resource.intent == CatalogIntent.VIDEO &&
@@ -274,6 +354,11 @@ class AbemaSeasonCandidateDeviceTest {
         phases.current.set(HarnessPhase.COMPLETE)
         // A valid Series page without a valid Season proof is honest absence,
         // never acceptance of a fabricated parent or an automatic retry.
+    }
+
+    private enum class Observation(val operation: AbemaGuestBootstrapOperation, val tag: String) {
+        SERIES_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SERIES, "TachiaiAbemaSeasonCandidateProbe"),
+        SLOT_SHAPE(AbemaGuestBootstrapOperation.FETCH_SLOT, "TachiaiAbemaSlotShapeProbe"),
     }
 
     private enum class HarnessPhase {
@@ -369,19 +454,25 @@ class AbemaSeasonCandidateDeviceTest {
         val runtime = AbemaGuestRuntimeCoordinator(environment, AndroidAbemaGuestMain(), worker, cleanup, SystemClock::elapsedRealtime)
     }
 
-    private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment) : AbemaGuestRuntimeEnvironment by base {
+    private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment, private val observation: Observation) : AbemaGuestRuntimeEnvironment by base {
         val candidate = AtomicReference<PublicSeasonProof?>()
         val absentCandidate = AtomicReference<PublicSeasonProof?>()
         val shapes = AtomicReference<ShapeCounts?>()
+        val slotShapes = AtomicReference<SlotShapes?>()
         override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
             preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
-            check(request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES && request.seriesRequest?.let {
-                it.seriesId == SERIES && it.offset == 0 && it.version == null && it.seasonId == null
-            } == true)
+            check(request.operation == observation.operation && when (observation) {
+                Observation.SERIES_CANDIDATE -> request.seriesRequest?.let {
+                    it.seriesId == SERIES && it.offset == 0 && it.version == null && it.seasonId == null
+                } == true
+                Observation.SLOT_SHAPE -> request.slotRequest?.let { it.channelId == SLOT_CHANNEL && it.slotId == SLOT_ID } == true
+            })
             val files = base.prepare(owner, request, preparation, canRequest)
             val source = files.getValue(CONTROL_PATH).toString(Charsets.UTF_8)
-            check(source.length <= 128 * 1024 && source.split(PROJECTION).size == 2)
-            return files + (CONTROL_PATH to source.replace(PROJECTION, TEST_PROJECTION).toByteArray(Charsets.UTF_8))
+            val anchor = if (observation == Observation.SERIES_CANDIDATE) PROJECTION else SLOT_PROJECTION
+            val projection = if (observation == Observation.SERIES_CANDIDATE) TEST_PROJECTION else TEST_SLOT_PROJECTION
+            check(source.length <= 128 * 1024 && source.split(anchor).size == 2)
+            return files + (CONTROL_PATH to source.replace(anchor, projection).toByteArray(Charsets.UTF_8))
         }
         override fun newView(request: AbemaGuestRuntimeRequest, preparation: AbemaGuestRuntimePreparation,
             files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaGuestRuntimeView) -> Boolean,
@@ -391,11 +482,17 @@ class AbemaSeasonCandidateDeviceTest {
                 { currentView(wrapped) }, { _, category -> failed(wrapped, category) })
             wrapped = object : AbemaGuestRuntimeView by actual {
                 override fun metadata(callback: (String?) -> Unit) = actual.metadata { raw ->
-                    val stripped = stripProjection(raw)
-                    candidate.set(stripped?.proof)
-                    absentCandidate.set(stripped?.absentProof)
-                    shapes.set(stripped?.shapes)
-                    callback(stripped?.raw)
+                    if (observation == Observation.SERIES_CANDIDATE) {
+                        val stripped = stripProjection(raw)
+                        candidate.set(stripped?.proof)
+                        absentCandidate.set(stripped?.absentProof)
+                        shapes.set(stripped?.shapes)
+                        callback(stripped?.raw)
+                    } else {
+                        val stripped = stripSlotProjection(raw)
+                        slotShapes.set(stripped?.shapes)
+                        callback(stripped?.raw)
+                    }
                 }
             }
             return wrapped
@@ -408,6 +505,15 @@ class AbemaSeasonCandidateDeviceTest {
         val parentAbsent: Int, val parentMatch: Int, val parentInvalid: Int,
         val validParentAbsent: Int, val validParentMatch: Int, val validParentInvalid: Int)
     private class StrippedProjection(val raw: String, val proof: PublicSeasonProof?, val absentProof: PublicSeasonProof?, val shapes: ShapeCounts)
+    private enum class SlotShape {
+        ABSENT, NULL, EMPTY_OBJECT, OBJECT, INVALID, EMPTY_STRING, STRING, PARENT_UNAVAILABLE,
+        TRUE, FALSE, ZERO, POSITIVE_SAFE_INTEGER, OTHER_NUMBER, ALLOW_ALL, JAPAN_ONLY, OVERSEAS_ONLY,
+        OTHER_ENUM, EMPTY_ARRAY, NONEMPTY_ARRAY,
+    }
+    private class SlotShapes(val fields: Map<String, SlotShape>) {
+        fun render() = SLOT_FIELDS.keys.joinToString(" ") { "$it=${fields.getValue(it).name}" }
+    }
+    private class StrippedSlotProjection(val raw: String, val shapes: SlotShapes)
 
     private fun encryptedRecords(directory: File): Map<String, ByteArray> {
         val started = SystemClock.elapsedRealtime()
@@ -431,12 +537,70 @@ class AbemaSeasonCandidateDeviceTest {
 
     companion object {
         private const val SERIES = "394-72"
+        private const val SLOT_CHANNEL = "abema-anime"
+        private const val SLOT_ID = "9FYQvU4hBaZZy1"
         private const val CONTROL_PATH = "/_tachiai/guest/control.js"
         private const val PROOF_FIELD = "tachiaiTestPublicSeasonParent"
         private const val ABSENT_PROOF_FIELD = "tachiaiTestPublicSeasonAbsentParent"
         private const val SHAPE_FIELD = "tachiaiTestPublicSeasonShape"
+        private const val SLOT_SHAPE_FIELD = "tachiaiTestSlotShape"
         private const val PROJECTION = "return Object.freeze({ id: item.id, title: item.episode.title.trim() });"
+        private const val SLOT_PROJECTION = "return Object.freeze({ id: value.id, channelId: value.channelId, title: value.title });"
         private val retained = AtomicReference<Probe?>()
+        private val SLOT_FIELDS = buildMap<String, Set<SlotShape>> {
+            fun fields(names: String, vararg categories: SlotShape) {
+                val allowed = setOf(SlotShape.ABSENT, SlotShape.NULL, SlotShape.INVALID, *categories)
+                names.split(' ').forEach { put(it, allowed) }
+            }
+            fields("playback chasePlayback flags mark broadcastRegionPolicies payperview", SlotShape.EMPTY_OBJECT, SlotShape.OBJECT)
+            fields("playbackDash playbackArin chaseDash chaseArin", SlotShape.EMPTY_STRING, SlotShape.STRING, SlotShape.PARENT_UNAVAILABLE)
+            fields("paused timeshift timeshiftFree dashFlag chasePlay drm", SlotShape.TRUE, SlotShape.FALSE, SlotShape.PARENT_UNAVAILABLE)
+            fields("startAt endAt timeshiftEndAt timeshiftFreeEndAt", SlotShape.ZERO, SlotShape.POSITIVE_SAFE_INTEGER, SlotShape.OTHER_NUMBER)
+            fields("linearRegion timeshiftRegion", SlotShape.ALLOW_ALL, SlotShape.JAPAN_ONLY, SlotShape.OVERSEAS_ONLY, SlotShape.OTHER_ENUM, SlotShape.PARENT_UNAVAILABLE)
+            fields("chasePlayFeatureAuthorityIds", SlotShape.EMPTY_ARRAY, SlotShape.NONEMPTY_ARRAY)
+        }
+        private val SLOT_PARENTS = mapOf("playback" to listOf("playbackDash", "playbackArin"),
+            "chasePlayback" to listOf("chaseDash", "chaseArin"), "flags" to listOf("paused", "timeshift", "timeshiftFree", "dashFlag", "chasePlay"),
+            "mark" to listOf("drm"), "broadcastRegionPolicies" to listOf("linearRegion", "timeshiftRegion"))
+        // Shape only: no playlist, ARIN, timestamp, authority or account value
+        // leaves this app-owned callback. NULL/ZERO are not access decisions.
+        private val TEST_SLOT_PROJECTION = """
+            const record = object => !!object && typeof object === 'object' && !Array.isArray(object);
+            const shape = (object, key, kind) => {
+              if (!record(object)) return 'PARENT_UNAVAILABLE';
+              if (!Object.prototype.hasOwnProperty.call(object, key)) return 'ABSENT';
+              const item = object[key];
+              if (item === null) return 'NULL';
+              if (kind === 'record') return record(item) ? (Object.keys(item).length ? 'OBJECT' : 'EMPTY_OBJECT') : 'INVALID';
+              if (kind === 'string') return typeof item === 'string' ? (item.length ? 'STRING' : 'EMPTY_STRING') : 'INVALID';
+              if (kind === 'boolean') return item === true ? 'TRUE' : item === false ? 'FALSE' : 'INVALID';
+              if (kind === 'number') return typeof item !== 'number' || !Number.isFinite(item) ? 'INVALID' :
+                item === 0 ? 'ZERO' : Number.isSafeInteger(item) && item > 0 ? 'POSITIVE_SAFE_INTEGER' : 'OTHER_NUMBER';
+              if (kind === 'array') return Array.isArray(item) ? (item.length ? 'NONEMPTY_ARRAY' : 'EMPTY_ARRAY') : 'INVALID';
+              if (kind === 'region') {
+                if (item === 0 || item === 'BROADCAST_REGION_ALLOW_ALL') return 'ALLOW_ALL';
+                if (item === 1 || item === 'BROADCAST_REGION_ALLOW_ONLY_JAPAN') return 'JAPAN_ONLY';
+                if (item === 2 || item === 'BROADCAST_REGION_ALLOW_ONLY_OVERSEAS') return 'OVERSEAS_ONLY';
+                return typeof item === 'number' || typeof item === 'string' ? 'OTHER_ENUM' : 'INVALID';
+              }
+              throw new Error();
+            };
+            const shapes = {};
+            for (const key of ['playback', 'chasePlayback', 'flags', 'mark', 'broadcastRegionPolicies', 'payperview'])
+              shapes[key] = shape(value, key, 'record');
+            for (const [name, parent, key, kind] of [
+              ['playbackDash', value.playback, 'dash', 'string'], ['playbackArin', value.playback, 'arin', 'string'],
+              ['chaseDash', value.chasePlayback, 'dash', 'string'], ['chaseArin', value.chasePlayback, 'arin', 'string'],
+              ['paused', value.flags, 'paused', 'boolean'], ['timeshift', value.flags, 'timeshift', 'boolean'],
+              ['timeshiftFree', value.flags, 'timeshiftFree', 'boolean'], ['dashFlag', value.flags, 'dash', 'boolean'],
+              ['chasePlay', value.flags, 'chasePlay', 'boolean'], ['drm', value.mark, 'drm', 'boolean'],
+              ['linearRegion', value.broadcastRegionPolicies, 'linear', 'region'],
+              ['timeshiftRegion', value.broadcastRegionPolicies, 'timeshift', 'region']]) shapes[name] = shape(parent, key, kind);
+            for (const key of ['startAt', 'endAt', 'timeshiftEndAt', 'timeshiftFreeEndAt']) shapes[key] = shape(value, key, 'number');
+            shapes.chasePlayFeatureAuthorityIds = shape(value, 'chasePlayFeatureAuthorityIds', 'array');
+            return Object.freeze({ id: value.id, channelId: value.channelId, title: value.title,
+              $SLOT_SHAPE_FIELD: Object.freeze(shapes) });
+        """.trimIndent()
         private val TEST_PROJECTION = """
             const row = { id: item.id, title: item.episode.title.trim() };
             const parent = item.season;
@@ -523,6 +687,34 @@ class AbemaSeasonCandidateDeviceTest {
             }
             StrippedProjection(JSONObject.quote(value.toString()), candidate, absentCandidate, ShapeCounts(rows.length(), seriesExact, seasonValid,
                 parentAbsent, parentMatch, parentInvalid, validParentAbsent, validParentMatch, validParentInvalid))
+        }.getOrNull()
+
+        private fun stripSlotProjection(raw: String?): StrippedSlotProjection? = runCatching {
+            val encoded = raw?.takeIf { it.length <= 4096 } ?: return null
+            checkAbemaCollectionJson(encoded)
+            val outer = JSONTokener(encoded); val text = outer.nextValue() as? String ?: return null
+            if (outer.nextClean() != '\u0000' || text.toByteArray(Charsets.UTF_8).size > 4096) return null
+            checkAbemaCollectionJson(text)
+            val inner = JSONTokener(text); val value = inner.nextValue() as? JSONObject ?: return null
+            if (inner.nextClean() != '\u0000' || value.keys().asSequence().toSet() != setOf("id", "channelId", "title", SLOT_SHAPE_FIELD) ||
+                value.opt("id") != SLOT_ID || value.opt("channelId") != SLOT_CHANNEL) return null
+            val marker = value.remove(SLOT_SHAPE_FIELD) as? JSONObject ?: return null
+            if (marker.keys().asSequence().toSet() != SLOT_FIELDS.keys) return null
+            val fields = SLOT_FIELDS.mapValues { (name, allowed) ->
+                val category = SlotShape.valueOf(marker.opt(name) as? String ?: return null)
+                if (category !in allowed) return null
+                category
+            }
+            for ((parent, children) in SLOT_PARENTS) {
+                val shape = fields.getValue(parent)
+                if (children.any { name -> when (shape) {
+                    SlotShape.ABSENT, SlotShape.NULL, SlotShape.INVALID -> fields.getValue(name) != SlotShape.PARENT_UNAVAILABLE
+                    SlotShape.EMPTY_OBJECT -> fields.getValue(name) != SlotShape.ABSENT
+                    SlotShape.OBJECT -> fields.getValue(name) == SlotShape.PARENT_UNAVAILABLE
+                    else -> true
+                } }) return null
+            }
+            StrippedSlotProjection(JSONObject.quote(value.toString()), SlotShapes(fields))
         }.getOrNull()
     }
 }

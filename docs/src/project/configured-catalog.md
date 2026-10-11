@@ -118,6 +118,27 @@ cannot silently resolve to the News or replay sample. Known unavailable items
 remain saved; the broadcaster-specific offline assessment below is the only
 exception to blocking their saved availability state before preparation.
 
+### Compact discovery and child navigation
+
+Discovery uses compact rows with separate browse and Add targets. Adapter-owned
+labels describe children: Twitch channels show **Videos**, while a leaf video has
+no child-navigation target. Adding a channel leaves its videos accessible.
+Configured-item remove, reorder and metadata-refresh controls retain their
+existing behavior.
+
+Child browsing names the parent and offers an explicit return action. Android
+Back also returns to the preceding discovery context before leaving management.
+The preceding query, loaded results, continuation and scroll anchor are retained
+in memory; returning does not reload that list or undo an accepted local Add.
+An accepted write continues to its existing atomic save boundary while returning.
+Ordinary rows are about 72–80 dp high; long content and larger fonts may grow them.
+
+The controller retains at most eight preceding discovery contexts, each subject
+to the existing 500-result bound. Starting a root query, refreshing metadata,
+observing access loss or closing management discards retained navigation.
+Scroll anchors and account-derived discovery are not serialized into Activity
+saved state. This adds no provider-history collection or Tachiai usage tracking.
+
 ### Explicit metadata refresh
 
 [Issue #124](https://github.com/altendky/tachiai/issues/124) adds **Refresh metadata**

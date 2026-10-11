@@ -95,6 +95,122 @@ class StreamManagementControllerTest {
         controller.state.first { !it.loading && !it.saving }
     }
 
+    @Test fun backRestoresLoadedQueryCursorAndContextWhileKeepingChildAdds() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last())
+        val memory = Memory()
+        store(memory, catalog.instance).add(catalog.series) { emptyList() }
+        val controller = controller(this, catalog, memory)
+        controller.load(); idle(controller)
+        controller.collection(catalog.collectionId); val parent = idle(controller)
+        controller.children(catalog.parent); var child = idle(controller)
+        assertEquals("Items under Saved show", child.childHeading)
+        assertEquals("Back to Following", child.navigationBackLabel)
+        assertEquals(listOf(parent.discoveryContextId), child.retainedDiscoveryContextIds)
+        assertNotEquals(parent.discoveryContextId, child.discoveryContextId)
+        controller.add(catalog.episode); child = idle(controller)
+        assertTrue(controller.back())
+        val restored = idle(controller)
+        assertEquals(parent.query, restored.query)
+        assertEquals(parent.entries, restored.entries)
+        assertEquals(parent.nextCursor, restored.nextCursor)
+        assertEquals(parent.discoveryContextId, restored.discoveryContextId)
+        assertEquals(child.configured, restored.configured)
+        assertEquals(parent.privacyRevision, restored.privacyRevision)
+        assertNull(restored.childHeading); assertNull(restored.navigationBackLabel)
+        assertTrue(restored.retainedDiscoveryContextIds.isEmpty())
+        val calls = catalog.browses
+        assertFalse(controller.back()); assertEquals(calls, catalog.browses)
+        controller.more(); assertEquals(catalog.items, idle(controller).entries)
+        assertEquals(parent.query.copy(cursor = parent.nextCursor), catalog.lastQuery)
+        controller.close()
+    }
+
+    @Test fun backDuringChildLoadRejectsLateSuccessAndAccessFailure() = runBlocking {
+        for (lateFailure in listOf(null, CatalogFailure.ACCESS_REQUIRED)) {
+            val catalog = Catalog(defaultProviderInstances().last())
+            val controller = controller(this, catalog, Memory(), io = Dispatchers.IO)
+            controller.load(); val parent = idle(controller)
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            catalog.onBrowse = { if (it.parent != null) { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) } }
+            controller.children(catalog.parent)
+            assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+            val pending = coroutineContext[Job]!!.children.toList()
+            assertTrue(controller.state.value.loading)
+            assertTrue(controller.back())
+            assertEquals(parent.entries, controller.state.value.entries)
+            assertFalse(controller.state.value.loading)
+            catalog.failure = lateFailure
+            release.countDown(); pending.forEach { it.join() }
+            val restored = controller.state.value
+            assertEquals(parent.query, restored.query); assertEquals(parent.entries, restored.entries)
+            assertEquals(parent.discoveryContextId, restored.discoveryContextId)
+            assertNull(restored.failure); assertNull(restored.navigationBackLabel)
+            controller.close()
+        }
+    }
+
+    @Test fun backDuringAcceptedChildWriteKeepsSavingAndPublishesCommittedItems() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val controller = controller(this, catalog, memory, io = Dispatchers.IO)
+        controller.load(); val parent = idle(controller)
+        controller.children(catalog.parent); idle(controller)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        memory.beforeWrite = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        controller.add(catalog.episode)
+        assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+        assertTrue(controller.back())
+        assertTrue(controller.state.value.saving)
+        assertEquals(parent.entries, controller.state.value.entries)
+        release.countDown()
+        val restored = idle(controller)
+        assertEquals(catalog.episode.resource, restored.configured!!.single().entry.resource)
+        assertEquals(parent.entries, restored.entries)
+        controller.close()
+    }
+
+    @Test fun observedAccessLossAndRootTransitionsDiscardRetainedPrivateDiscovery() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory())
+        controller.load(); idle(controller)
+        controller.children(catalog.parent); val child = idle(controller)
+        catalog.failure = CatalogFailure.ACCESS_REQUIRED
+        controller.more() // No child continuation; use a new child request to observe access loss.
+        controller.children(catalog.parent); var state = idle(controller)
+        assertEquals(CatalogFailure.ACCESS_REQUIRED, state.failure!!.reason)
+        assertTrue(state.privacyRevision > child.privacyRevision)
+        assertTrue(state.entries.isEmpty()); assertTrue(state.retainedDiscoveryContextIds.isEmpty())
+        assertFalse(controller.back())
+        catalog.failure = null; controller.load(); idle(controller)
+        controller.children(catalog.parent); idle(controller)
+        controller.lookup(catalog.episode.resource.identity); state = idle(controller)
+        assertNull(state.query.parent); assertNull(state.childHeading)
+        assertFalse(controller.back()); assertTrue(state.retainedDiscoveryContextIds.isEmpty())
+        controller.children(catalog.parent); idle(controller)
+        assertTrue(controller.preview(catalog.offline)); assertFalse(controller.back())
+        assertNull(controller.state.value.navigationBackLabel)
+        controller.children(catalog.parent); idle(controller)
+        controller.load(); state = idle(controller)
+        assertFalse(controller.back()); assertTrue(state.retainedDiscoveryContextIds.isEmpty())
+        controller.close()
+        assertTrue(controller.state.value.retainedDiscoveryContextIds.isEmpty())
+        assertNull(controller.state.value.childHeading)
+    }
+
+    @Test fun parentRetentionIsBoundedWithoutDroppingTheExistingReturnPath() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory())
+        controller.load(); idle(controller)
+        repeat(MAX_DISCOVERY_PARENTS) { controller.children(catalog.parent); idle(controller) }
+        val before = controller.state.value
+        val calls = catalog.browses
+        controller.children(catalog.parent)
+        assertEquals(CatalogFailure.INVALID_INPUT, controller.state.value.failure!!.reason)
+        assertEquals(before.discoveryContextId, controller.state.value.discoveryContextId)
+        assertEquals(MAX_DISCOVERY_PARENTS, controller.state.value.retainedDiscoveryContextIds.size)
+        assertEquals(calls, catalog.browses)
+        repeat(MAX_DISCOVERY_PARENTS) { assertTrue(controller.back()) }
+        assertFalse(controller.back())
+        controller.close()
+    }
+
     @Test fun unverifiedHistorySkipsBrowseRetainsConfiguredEntriesAndCanReturnToConnectedCollections() = runBlocking {
         defaultProviderInstances().forEach { instance ->
             val catalog = Catalog(instance).apply { historyAccess = CatalogAccess.NOT_VERIFIED }

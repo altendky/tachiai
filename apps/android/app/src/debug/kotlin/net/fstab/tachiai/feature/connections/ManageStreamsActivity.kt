@@ -63,7 +63,7 @@ class ManageStreamsActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {
-            BackHandler { finish() }
+            BackHandler { if (controller?.back() != true) finish() }
             val current = controller
             if (current != null && message == null) {
                 val state by current.state.collectAsState()
@@ -72,7 +72,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     current::collection, current::children, current::more, current::lookup,
                     current::add, current::remove, current::move, current::retry, ::finish,
                     backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers",
-                    onRefresh = current::refresh)
+                    onRefresh = current::refresh, onDiscoveryBack = { current.back() })
             } else Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")

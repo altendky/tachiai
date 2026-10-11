@@ -12,6 +12,13 @@ outcomes such as route-clear timeout have no exception. Existing closed feed
 failure reasons are retained, including when provider code reports a safe reason
 without throwing.
 
+ABEMA channel failures retain their adapter-owned response, policy, cancellation,
+deadline, network and cleanup distinctions. Twitch catalog authentication,
+metadata, storage and transport failures likewise retain fixed reviewed values,
+including DNS, TLS and timeout. These mappings inspect typed enums, never provider
+messages or grant fields. Unknown exceptions remain OTHER; a structured result
+reported without an exception cannot gain detail from exception capture.
+
 The first observed failure is retained as `FIRST`. Later distinct failures are
 `SECONDARY`; this ordering does not establish causation. For example, a Twitch
 404 and an ABEMA cleanup failure can be independent. Repeated blocked viewer
@@ -66,6 +73,11 @@ Media3 exception logging. The fixed `TachiaiFailure` logcat tag can distinguish
 an unavailable journal from successful recording, but does not contain the
 underlying exception.
 
+Use the matching checkout for collection: new builds read existing v1 journal
+records without migration, while an older collector correctly rejects newer
+categories outside its vocabulary. New fixed categories do not change the v1
+columns, retention, capacity or storage policy.
+
 Correlate `sessionId`, `recordId`/`rootId`, stage, slot and application locations.
 Capture the first failure after starting playback and returning to Sources or
 backgrounding the app. Repeated Open viewer attempts should preserve that
@@ -95,3 +107,8 @@ Run `FailureDiagnosticsDeviceTest` only on an explicitly verified disposable
 emulator: it replaces the diagnostic journal. Never run it or other resetting
 instrumentation on `tachiai-dev` or the phone. These fixtures establish evidence
 retention and safe error handling, not the cause of a provider playback failure.
+
+ProviderFailureCategoryDeviceTest instead uses synthetic errors and an in-memory
+reporter only, with no journal or application-store access. It can verify the
+typed category capture and codec on persistent tachiai-dev without replacing its
+evidence or accessing a provider.

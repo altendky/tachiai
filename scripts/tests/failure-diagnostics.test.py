@@ -41,6 +41,56 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("HTTP_REJECTED", words["PrototypeFailureReason"])
         self.assertEqual(words["FailureRelation"], {"FIRST", "SECONDARY", "BLOCKED"})
 
+
+    def test_extended_provider_categories_are_fixed_and_round_trip_without_schema_changes(self):
+        expected = {
+            "ABEMA_CHANNEL_INVALID_RESPONSE",
+            "ABEMA_CHANNEL_RESPONSE_LIMIT",
+            "ABEMA_CHANNEL_POLICY_REFUSED",
+            "ABEMA_CHANNEL_COOKIE_HANDLER_REFUSED",
+            "ABEMA_CHANNEL_CANCELLED",
+            "ABEMA_CHANNEL_TIME_LIMIT_REACHED",
+            "ABEMA_CHANNEL_NETWORK_FAILED",
+            "ABEMA_CHANNEL_CLEANUP_FAILED",
+            "TWITCH_CATALOG_AUTH_INVALID_RESPONSE",
+            "TWITCH_CATALOG_AUTH_REJECTED",
+            "TWITCH_CATALOG_AUTH_CLIENT_MISMATCH",
+            "TWITCH_CATALOG_AUTH_USER_MISMATCH",
+            "TWITCH_CATALOG_AUTH_SCOPE_MISMATCH",
+            "TWITCH_CATALOG_AUTH_EXPIRED",
+            "TWITCH_CATALOG_AUTH_NETWORK",
+            "TWITCH_HELIX_INVALID_INPUT",
+            "TWITCH_HELIX_INVALID_RESPONSE",
+            "TWITCH_CATALOG_NETWORK_DNS",
+            "TWITCH_CATALOG_NETWORK_TIMEOUT",
+            "TWITCH_CATALOG_NETWORK_TLS",
+            "TWITCH_CATALOG_NETWORK_CONNECTION",
+            "TWITCH_CATALOG_NETWORK_INTERRUPTED",
+            "TWITCH_CATALOG_NETWORK_BUDGET",
+            "TWITCH_CATALOG_NETWORK_BACKGROUND",
+            "TWITCH_CATALOG_NETWORK_IO",
+            "TWITCH_CATALOG_STORE_STORAGE",
+            "TWITCH_CATALOG_STORE_INVALID_RECORD",
+            "TWITCH_CATALOG_STORE_CLIENT_MISMATCH",
+        }
+        words = module.vocabulary()["FailureCategory"]
+        self.assertEqual({value for value in words if value.startswith(("ABEMA_CHANNEL_", "TWITCH_"))}, expected)
+        for category in expected:
+            with self.subTest(category=category):
+                data = self.journal([self.row(**{"4": "CATALOG_LOAD", "9": category, "10": category})])
+                stdout, stderr = io.BytesIO(), io.StringIO()
+                self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 0)
+                self.assertEqual(stdout.getvalue(), data)
+                self.assertEqual(stderr.getvalue(), "")
+
+    def test_unknown_provider_category_is_rejected_without_echoing_input(self):
+        for category in ("ABEMA_CHANNEL_UNKNOWN", "TWITCH_CATALOG_NETWORK_private_secret"):
+            data = self.journal([self.row(**{"9": category})])
+            stdout, stderr = io.BytesIO(), io.StringIO()
+            self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 1)
+            self.assertEqual(stdout.getvalue(), b"")
+            self.assertEqual(stderr.getvalue(), "JOURNAL_INVALID\n")
+
     def test_secret_fields_fail_without_any_output(self):
         secret = "https://secret.example/private?token=password"
         for index in range(13):

@@ -7,6 +7,10 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.provider.abema.AbemaChannelException
+import net.fstab.tachiai.provider.abema.AbemaChannelFailure
+import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
+import net.fstab.tachiai.provider.twitch.catalog.*
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -258,6 +262,114 @@ class FailureJournalTest {
             assertTrue(records.all { it.count == 12 })
             assertEquals(1, records.count { it.relation == FailureRelation.FIRST })
         } finally { executor.shutdownNow() }
+    }
+
+
+    private fun providerFailures(): List<Pair<Throwable, FailureCategory>> = listOf(
+            AbemaChannelException(AbemaChannelFailure.INVALID_RESPONSE) to FailureCategory.ABEMA_CHANNEL_INVALID_RESPONSE,
+            AbemaChannelException(AbemaChannelFailure.RESPONSE_LIMIT) to FailureCategory.ABEMA_CHANNEL_RESPONSE_LIMIT,
+            AbemaChannelException(AbemaChannelFailure.POLICY_REFUSED) to FailureCategory.ABEMA_CHANNEL_POLICY_REFUSED,
+            AbemaChannelException(AbemaChannelFailure.COOKIE_HANDLER_REFUSED) to FailureCategory.ABEMA_CHANNEL_COOKIE_HANDLER_REFUSED,
+            AbemaChannelException(AbemaChannelFailure.CANCELLED) to FailureCategory.ABEMA_CHANNEL_CANCELLED,
+            AbemaChannelException(AbemaChannelFailure.TIME_LIMIT_REACHED) to FailureCategory.ABEMA_CHANNEL_TIME_LIMIT_REACHED,
+            AbemaChannelException(AbemaChannelFailure.NETWORK_FAILED) to FailureCategory.ABEMA_CHANNEL_NETWORK_FAILED,
+            AbemaChannelException(AbemaChannelFailure.CLEANUP_FAILED) to FailureCategory.ABEMA_CHANNEL_CLEANUP_FAILED,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.INVALID_RESPONSE) to FailureCategory.TWITCH_CATALOG_AUTH_INVALID_RESPONSE,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.REJECTED) to FailureCategory.TWITCH_CATALOG_AUTH_REJECTED,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.CLIENT_MISMATCH) to FailureCategory.TWITCH_CATALOG_AUTH_CLIENT_MISMATCH,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.USER_MISMATCH) to FailureCategory.TWITCH_CATALOG_AUTH_USER_MISMATCH,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.SCOPE_MISMATCH) to FailureCategory.TWITCH_CATALOG_AUTH_SCOPE_MISMATCH,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED) to FailureCategory.TWITCH_CATALOG_AUTH_EXPIRED,
+            TwitchCatalogAuthException(TwitchCatalogAuthFailure.NETWORK) to FailureCategory.TWITCH_CATALOG_AUTH_NETWORK,
+            TwitchHelixException(TwitchHelixFailure.INVALID_INPUT) to FailureCategory.TWITCH_HELIX_INVALID_INPUT,
+            TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE) to FailureCategory.TWITCH_HELIX_INVALID_RESPONSE,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.DNS) to FailureCategory.TWITCH_CATALOG_NETWORK_DNS,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.TIMEOUT) to FailureCategory.TWITCH_CATALOG_NETWORK_TIMEOUT,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.TLS) to FailureCategory.TWITCH_CATALOG_NETWORK_TLS,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.CONNECTION) to FailureCategory.TWITCH_CATALOG_NETWORK_CONNECTION,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.INTERRUPTED) to FailureCategory.TWITCH_CATALOG_NETWORK_INTERRUPTED,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.BUDGET) to FailureCategory.TWITCH_CATALOG_NETWORK_BUDGET,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.BACKGROUND) to FailureCategory.TWITCH_CATALOG_NETWORK_BACKGROUND,
+            TwitchCatalogNetworkException(DeviceNetworkFailure.IO) to FailureCategory.TWITCH_CATALOG_NETWORK_IO,
+            TwitchHelixNetworkException(DeviceNetworkFailure.DNS) to FailureCategory.TWITCH_CATALOG_NETWORK_DNS,
+            TwitchHelixNetworkException(DeviceNetworkFailure.TIMEOUT) to FailureCategory.TWITCH_CATALOG_NETWORK_TIMEOUT,
+            TwitchHelixNetworkException(DeviceNetworkFailure.TLS) to FailureCategory.TWITCH_CATALOG_NETWORK_TLS,
+            TwitchHelixNetworkException(DeviceNetworkFailure.CONNECTION) to FailureCategory.TWITCH_CATALOG_NETWORK_CONNECTION,
+            TwitchHelixNetworkException(DeviceNetworkFailure.INTERRUPTED) to FailureCategory.TWITCH_CATALOG_NETWORK_INTERRUPTED,
+            TwitchHelixNetworkException(DeviceNetworkFailure.BUDGET) to FailureCategory.TWITCH_CATALOG_NETWORK_BUDGET,
+            TwitchHelixNetworkException(DeviceNetworkFailure.BACKGROUND) to FailureCategory.TWITCH_CATALOG_NETWORK_BACKGROUND,
+            TwitchHelixNetworkException(DeviceNetworkFailure.IO) to FailureCategory.TWITCH_CATALOG_NETWORK_IO,
+            TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) to FailureCategory.TWITCH_CATALOG_STORE_STORAGE,
+            TwitchCatalogStoreException(TwitchCatalogStoreFailure.INVALID_RECORD) to FailureCategory.TWITCH_CATALOG_STORE_INVALID_RECORD,
+            TwitchCatalogStoreException(TwitchCatalogStoreFailure.CLIENT_MISMATCH) to FailureCategory.TWITCH_CATALOG_STORE_CLIENT_MISMATCH,
+    )
+
+    @Test fun `closed provider failures survive capture codec and existing generic mappings`() {
+        providerFailures().forEach { (error, expected) ->
+            val safe = SafeFailure.capture(error)
+            assertEquals(expected, safe.category)
+            val record = FailureRecord(100_000, "1".repeat(32), "1".repeat(32), "2".repeat(32),
+                FailureStage.CATALOG_LOAD, FailureSlot.NONE, FailureRelation.FIRST, 1,
+                FailureThread.WORKER, safe)
+            assertEquals(listOf(record), FailureJournalCodec.decode(FailureJournalCodec.encode(listOf(record))))
+        }
+        assertEquals(FailureCategory.IO, SafeFailure.capture(IOException("private")).category)
+        assertEquals(FailureCategory.CANCELLED,
+            SafeFailure.capture(java.util.concurrent.CancellationException("private")).category)
+        assertEquals(FailureCategory.OTHER, SafeFailure.capture(Exception("private")).category)
+    }
+
+    @Test fun `provider categories at one stage stay distinct and matching repeats merge`() {
+        val file = journalFile()
+        val journal = FailureJournal(file)
+        val reporter = FailureReporter(journal::record)
+        reporter.report(FailureStage.CATALOG_LOAD, AbemaChannelException(AbemaChannelFailure.NETWORK_FAILED))
+        reporter.report(FailureStage.CATALOG_LOAD, AbemaChannelException(AbemaChannelFailure.CLEANUP_FAILED))
+        reporter.report(FailureStage.CATALOG_LOAD, AbemaChannelException(AbemaChannelFailure.NETWORK_FAILED))
+        val records = FailureJournal(file).read()
+        assertEquals(2, records.size)
+        assertEquals(FailureCategory.ABEMA_CHANNEL_NETWORK_FAILED, records[0].failure.category)
+        assertEquals(FailureCategory.ABEMA_CHANNEL_CLEANUP_FAILED, records[1].failure.category)
+        assertEquals(2, records[0].count)
+        assertEquals(FailureRelation.SECONDARY, records[1].relation)
+        assertEquals(records[0].recordId, records[1].rootId)
+    }
+
+    @Test fun `typed provider causes retain only closed values and ignore private subclass metadata`() {
+        val secret = "https://private.example/user?token=secret-password"
+        val provider = object : TwitchCatalogAuthException(TwitchCatalogAuthFailure.SCOPE_MISMATCH) {
+            val privateGrant = secret
+            override val message: String get() = throw AssertionError("Message must not be inspected")
+            override fun toString(): String = throw AssertionError("Object must not be inspected")
+        }.apply {
+            initCause(SecurityException(secret))
+            stackTrace = arrayOf(StackTraceElement("provider.$secret", secret, secret, 11))
+        }
+        val error = IOException(secret, provider).apply {
+            stackTrace = arrayOf(StackTraceElement("provider.private", secret, secret, 12))
+        }
+        val safe = SafeFailure.capture(error)
+        assertEquals(FailureCategory.IO, safe.category)
+        assertEquals(listOf(FailureCategory.TWITCH_CATALOG_AUTH_SCOPE_MISMATCH, FailureCategory.SECURITY), safe.causes)
+        assertTrue(safe.frames.isEmpty())
+        val record = FailureRecord(100_000, "1".repeat(32), "1".repeat(32), "2".repeat(32),
+            FailureStage.CATALOG_LOAD, FailureSlot.NONE, FailureRelation.FIRST, 1,
+            FailureThread.WORKER, safe)
+        val text = FailureJournalCodec.encode(listOf(record)).toString(Charsets.US_ASCII)
+        listOf(secret, "private.example", "secret-password", "provider.private", "privateGrant").forEach {
+            assertFalse(text.contains(it))
+        }
+    }
+
+    @Test fun `unchanged v1 journal records remain readable and fabricated provider categories are rejected`() {
+        val old = "tachiai-failure-diagnostics-v1\n" +
+            "100000\t11111111111111111111111111111111\t11111111111111111111111111111111\t22222222222222222222222222222222\tCATALOG_LOAD\tNONE\tFIRST\t1\tWORKER\tOTHER\t\t\tNONE\n"
+        val records = FailureJournalCodec.decode(old.toByteArray(Charsets.US_ASCII))
+        assertEquals(FailureCategory.OTHER, records.single().failure.category)
+        assertEquals(old, FailureJournalCodec.encode(records).toString(Charsets.US_ASCII))
+        assertThrows(Exception::class.java) {
+            FailureJournalCodec.decode(old.replace("OTHER", "ABEMA_CHANNEL_private_secret").toByteArray())
+        }
     }
 
     private fun observation(stage: FailureStage = FailureStage.ROUTE_CREATE) = FailureObservation(

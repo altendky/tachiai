@@ -53,12 +53,16 @@ internal data class CatalogCapabilities(
     val collections: List<CatalogCollection> = emptyList(),
     val browseTitle: String = "All",
     val initialCollectionId: String? = null,
+    val childrenTitle: String = "Items",
+    val childrenHeadingPrefix: String = "Items under",
 ) {
     init {
         require(collections.size <= 16 && collections.map { it.id }.distinct().size == collections.size)
         require(browseTitle == browseTitle.trim() && browseTitle.length in 1..64 &&
             browseTitle.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
         require(initialCollectionId == null || collections.any { it.id == initialCollectionId })
+        for (label in listOf(childrenTitle, childrenHeadingPrefix)) require(label == label.trim() && label.length in 1..64 &&
+            label.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
     }
 }
 

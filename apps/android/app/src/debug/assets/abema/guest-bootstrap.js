@@ -13,6 +13,7 @@
   let guest;
   let episode;
   let series;
+  let slot;
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
@@ -26,6 +27,7 @@
     guest = undefined;
     episode = undefined;
     series = undefined;
+    slot = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
     accountValidation = undefined;
@@ -253,7 +255,7 @@
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_';
     let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
@@ -381,22 +383,31 @@
       Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 9980 && value.offset % 20 === 0 &&
       (value.offset === 0 ? value.version === null : validSeriesVersion(value.version));
   }
+  function validSlotRequest(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).sort().join(',') === 'channelId,slotId' &&
+      ['channelId', 'slotId'].every(key => typeof value[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value[key]));
+  }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
-        operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) : resourceId !== undefined)) {
+        operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) :
+        operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
+    const slotRequest = operation === 'FETCH_SLOT' ? Object.freeze({ ...resourceId }) : undefined;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
         stringify(episode) : null } : {}),
       ...(operation === 'FETCH_SERIES' ? { metadata: () => !stopped && state === 'EXACT_SERIES_PAGE' && failure === 'NONE' ?
         stringify(series) : null } : {}),
+      ...(operation === 'FETCH_SLOT' ? { metadata: () => !stopped && state === 'EXACT_SLOT_METADATA' && failure === 'NONE' ?
+        stringify(slot) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -417,6 +428,7 @@
           challengeStarted = performance.now(); alive();
         }
         if (operation === 'FETCH_SERIES') { budgetFailure = 'SERIES_TIMEOUT'; challengeStarted = performance.now(); alive(); }
+        if (operation === 'FETCH_SLOT') { budgetFailure = 'SLOT_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
@@ -522,6 +534,20 @@
             accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
             guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'FETCH_SLOT') {
+          state = 'SLOT';
+          const url = apiOrigin + '/v1/media/slots/' + slotRequest.slotId + '?include=payperview';
+          slot = await boundedReply(url, { method: 'GET', mode: 'cors',
+            headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } }, text => {
+              const raw = parseBoundedJsonText(text, true);
+              const value = raw?.slot;
+              if (!raw || Array.isArray(raw) || typeof raw !== 'object' || !value || Array.isArray(value) ||
+                typeof value !== 'object' || value.id !== slotRequest.slotId || value.channelId !== slotRequest.channelId ||
+                typeof value.title !== 'string' || value.title.length < 1 || value.title.length > 160 ||
+                value.title !== value.title.trim() || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value.title)) throw new Error();
+              return Object.freeze({ id: value.id, channelId: value.channelId, title: value.title });
+            }, 'SLOT_', 512 * 1024);
+          alive(); guest = undefined; failure = 'NONE'; state = 'EXACT_SLOT_METADATA';
         } else if (operation === 'FETCH_SERIES') {
           state = 'SERIES';
           const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');

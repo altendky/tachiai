@@ -113,6 +113,28 @@ no persistent-device operation interrupts pending provider-controlled account
 approval. The operation remains independent of existing-account My List and
 History access.
 
+## Exact broadcast-slot catalog operation
+
+The exact-slot metadata operation under
+[#178](https://github.com/altendky/tachiai/issues/178) uses immutable selected
+channel/slot identity and a separate closed route purpose. Fresh guest setup
+precedes one reviewed media-slot GET with `include=payperview` and at most one
+matching authorization preflight. It does not create an account challenge,
+open a browser, use an existing account or execute playback/licensing.
+
+Slot-specific same-UID messages reuse the existing metadata service's
+Binder death, nonce, foreground pulse, cancellation and cleanup machinery;
+they cannot be mistaken for episode messages. The original operation deadline
+and captured instance/route proof apply throughout. Protected owner reads stay
+on workers and are bracketed by cheap lifecycle checks before publication.
+
+Only the original exact resource and validated provider title leave the
+runtime, after confirmed cleanup. Availability remains UNKNOWN and schedule
+is omitted. Wrong channel/slot, ambiguous data, refusal or late completion
+cannot publish another resource. Source fixtures are distinct from actual
+guest acceptance; separately opted-in device checks must preserve existing
+records and must not interrupt pending provider-controlled approval.
+
 ## Optional guest profile binding
 
 ### Private challenge-free account validation

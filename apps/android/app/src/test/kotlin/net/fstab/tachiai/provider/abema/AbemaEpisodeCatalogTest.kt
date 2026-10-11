@@ -58,10 +58,11 @@ class AbemaEpisodeCatalogTest {
             calls++; Episode({ CatalogResult.Value(entry(it)) })
         }).use { catalog ->
             for (invalid in listOf(resource("x".repeat(129)), resource("a/b"), resource("a.b"),
+                resource().copy(kind = "slot", intent = CatalogIntent.BROADCAST),
                 resource().copy(intent = CatalogIntent.CHANNEL), resource().copy(providerId = ProviderId("twitch"))))
                 failure(CatalogFailure.INVALID_INPUT, catalog.refresh(invalid))
             for (unsupported in listOf(resource().copy(kind = "series", intent = CatalogIntent.COLLECTION),
-                resource().copy(kind = "slot", intent = CatalogIntent.BROADCAST)))
+                resource().copy(kind = "slot", identity = "sumo/slot-1", intent = CatalogIntent.BROADCAST)))
                 failure(CatalogFailure.NOT_VERIFIED, catalog.refresh(unsupported))
             assertEquals(0, calls)
         }

@@ -42,7 +42,12 @@ class AbemaApprovalBrowserPolicyTest {
         assertTrue(AbemaApprovalBrowserPolicy.allowedResource(api))
         assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation(api))
         assertEquals("abema-provider-approval", AbemaApprovalBrowserPolicy.PROFILE_SUFFIX)
-        assertEquals(setOf("abema.tv", "auth.abema.tv", "api.p-c3-e.abema-tv.com", "ds-glb-linear-abematv.akamaized.net"),
+        assertEquals(setOf(
+            "abema.tv",
+            "auth.abema.tv",
+            "api.p-c3-e.abema-tv.com",
+            "ds-glb-linear-abematv.akamaized.net",
+        ),
             AbemaApprovalBrowserPolicy.HOSTS.split(',').toSet())
     }
 

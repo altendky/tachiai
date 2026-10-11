@@ -69,6 +69,29 @@ function fixture(options = {}) {
         if (Object.hasOwn(options, 'challengeCompletionMs')) options.elapsedMs = options.challengeCompletionMs;
         return new Response(bytes, { status: 200 });
       }
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/media/slots/')) {
+        if (options.delayedSlot) await delayed;
+        if (options.slotNetworkFailure) throw new Error('PRIVATE_SLOT_ERROR');
+        if (Object.hasOwn(options, 'slotStatus') && options.slotStatus !== 200) return {
+          status: options.slotStatus, get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); },
+        };
+        if (options.slotRedirected) return { status: 200, redirected: true,
+          get body() { options.refusedBodyRead = true; throw new Error(); } };
+        const bytes = options.slotBytes || options.slotText || JSON.stringify(options.slot || {
+          slot: { id: options.resourceId.slotId, channelId: options.resourceId.channelId, title: 'Future slot',
+            startAt: 9999999999, endAt: 9999999999, source: { url: 'https://private.invalid/MUST_NOT_FETCH' } },
+          payPerView: { title: 'PRIVATE_IGNORED' },
+        });
+        if (options.delayedSlotRead) {
+          let read = false;
+          return { status: 200, body: { getReader: () => ({
+            read: async () => { if (read) return { done: true }; read = true; await delayed;
+              return { done: false, value: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes }; },
+            cancel: async () => {},
+          }) } };
+        }
+        return new Response(bytes, { status: 200 });
+      }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/video/series/')) {
         if (options.delayedSeries) await delayed;
         if (options.seriesNetworkFailure) throw new Error('PRIVATE_SERIES_ERROR');
@@ -204,6 +227,78 @@ function fixture(options = {}) {
   };
 }
 async function settle() { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); }
+const slotRequest = (channelId = 'channel-A', slotId = 'slot-A') => ({ channelId, slotId });
+test('slot operation binds two exact channel and slot identities and discards timing sources and private metadata', async () => {
+  for (const resourceId of [slotRequest(), slotRequest('channel-B', 'slot-B_2')]) {
+    const f = fixture({ operation: 'FETCH_SLOT', resourceId }); f.start(); await settle();
+    assert.deepEqual(f.state(), { state: 'EXACT_SLOT_METADATA', failure: 'NONE' });
+    assert.deepEqual(f.requests.map(r => r.url), ['https://abema.tv/api/auth/login/guest',
+      `https://api.p-c3-e.abema-tv.com/v1/media/slots/${resourceId.slotId}?include=payperview`]);
+    assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)), {
+      id: resourceId.slotId, channelId: resourceId.channelId, title: 'Future slot',
+    });
+    assert.ok(f.requests.every(r => r.request.credentials === 'omit' && r.request.redirect === 'error' && r.request.cache === 'no-store'));
+    assert.equal(f.requests[1].request.method, 'GET'); assert.equal(f.requests[1].request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+    assert.ok(!Array.from(f.context.loaded).includes(17046));
+    assert.equal(f.call(`typeof window['${apiName}'].accountLink`), 'undefined');
+    assert.equal(f.call(`typeof window['${apiName}'].accountValidation`), 'undefined');
+    f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('slot admission rejects mismatched missing malformed and oversized raw identities and titles', async () => {
+  const good = { id: 'slot-A', channelId: 'channel-A', title: 'Slot 雪 😀' };
+  for (const value of [null, [], {}, { ...good, id: 'other' }, { ...good, channelId: 'other' },
+    { ...good, id: 1 }, { ...good, channelId: 2 }, { ...good, title: null }, { ...good, title: '' },
+    { ...good, title: ' title ' }, { ...good, title: '\u202eprivate' }, { ...good, title: '\ud800' },
+    { ...good, title: 'x'.repeat(161) }]) {
+    const f = fixture({ operation: 'FETCH_SLOT', resourceId: slotRequest(), slotText: JSON.stringify({ slot: value }) });
+    f.start(); await settle(); assert.deepEqual(f.state(), { state: 'REFUSED', failure: 'SLOT_RESPONSE' });
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  }
+});
+test('slot whole JSON strict duplicates UTF8 bounds and nesting refuse before normalized publication', async () => {
+  for (const extra of [
+    { slotText: '{"slot":{"id":"slot-A","i\\u0064":"slot-A","channelId":"channel-A","title":"Slot"}}' },
+    { slotText: '{"slot":{"id":"slot-A","channelId":"channel-A","title":"Slot"}} trailing' },
+    { slotText: '{"slot":{"id":"slot-A","channelId":"channel-A","title":"Slot"},"x":' + '['.repeat(18) + '1' + ']'.repeat(18) + '}' },
+    { slotBytes: new Uint8Array([0xff]) }, { slotText: ' '.repeat(512 * 1024 + 1) },
+  ]) {
+    const f = fixture({ operation: 'FETCH_SLOT', resourceId: slotRequest(), ...extra }); f.start(); await settle();
+    assert.equal(f.state().failure, 'SLOT_RESPONSE'); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('slot non200 refusal and redirect leave bodies unread and never retry or switch identity', async () => {
+  for (const status of [401, 403, 404, 410, 429, 503, 302, NaN]) {
+    const options = { operation: 'FETCH_SLOT', resourceId: slotRequest(), slotStatus: status };
+    const f = fixture(options); f.start(); await settle();
+    assert.equal(f.state().failure, status === 503 ? 'SLOT_HTTP_5XX' : status === 302 ? 'SLOT_HTTP_3XX' :
+      Number.isNaN(status) ? 'SLOT_RESPONSE' : `SLOT_HTTP_${status}`);
+    assert.equal(options.refusedBodyRead, undefined); assert.equal(f.requests.length, 2);
+  }
+  for (const [extra, expected] of [[{ slotNetworkFailure: true }, 'SLOT_TRANSPORT'], [{ slotRedirected: true }, 'SLOT_REDIRECT']]) {
+    const options = { operation: 'FETCH_SLOT', resourceId: slotRequest(), ...extra };
+    const f = fixture(options); f.start(); await settle(); assert.equal(f.state().failure, expected);
+    assert.equal(options.refusedBodyRead, undefined);
+  }
+});
+test('slot cancellation and original deadline suppress delayed reads and metadata with no second attempt', async () => {
+  for (const delay of ['delayedSlot', 'delayedSlotRead']) {
+    const f = fixture({ operation: 'FETCH_SLOT', resourceId: slotRequest(), [delay]: true });
+    f.start(); await settle(); f.stop(); f.release(); await settle();
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  }
+  const options = { operation: 'FETCH_SLOT', resourceId: slotRequest(), delayedSlot: true };
+  const late = fixture(options); late.start(); await settle(); options.elapsedMs = 45000; late.release(); await settle();
+  assert.equal(late.state().failure, 'SLOT_TIMEOUT'); assert.equal(late.call(`window['${apiName}'].metadata()`), null);
+});
+test('slot immutable request and coherent modern origin refuse unsupported controls before any provider dispatch', async () => {
+  for (const resourceId of [undefined, slotRequest('../bad'), slotRequest('channel-A', 'x'.repeat(65)),
+    { ...slotRequest(), url: 'https://private.invalid/' }, { seriesId: 'series-A', offset: 0, version: null }]) {
+    const f = fixture({ operation: 'FETCH_SLOT', resourceId }); f.start(); await settle(); assert.equal(f.requests.length, 0);
+  }
+  const f = fixture({ operation: 'FETCH_SLOT', resourceId: slotRequest(), apiOrigin: 'https://api.abema.io' });
+  f.start(); await settle(); assert.equal(f.state().failure, 'POLICY'); assert.equal(f.requests.length, 0);
+});
 const seriesRequest = (seriesId = 'series-A', offset = 0, version = null) => ({ seriesId, offset, version });
 test('series operation uses exact two parents and projects only explicit unknown episode rows', async () => {
   for (const parent of ['series-A', 'series-B_2']) {

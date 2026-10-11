@@ -28,6 +28,30 @@ class AbemaEpisodeMetadataIpcDeviceTest {
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == "${it.targetContext.packageName}:abema_guest_bootstrap")
     }
+    @Test fun slotParcelContractCannotBecomeAnEpisodeAndTypedFacadeRejectsOtherResourcesBeforePrivateReads() {
+        val instrumentation = guestInstrumentation()
+        val request = AbemaSlotMetadataIpc.Start("a".repeat(32), "12345678-1234-1234-1234-123456789abc",
+            AbemaSlotRequest("channel-A", "slot-A"), "b".repeat(64), 46000)
+        val parcel = Parcel.obtain()
+        try {
+            parcel.writeBundle(AbemaSlotMetadataIpc.start(request)); parcel.setDataPosition(0)
+            val restored = checkNotNull(parcel.readBundle(javaClass.classLoader))
+            val fields = checkNotNull(AbemaSlotMetadataIpc.fields(restored))
+            assertEquals(request.slot.resource, AbemaSlotMetadataIpc.decodeStart(fields, 1000)?.slot?.resource)
+            assertNull(AbemaEpisodeMetadataIpc.decodeStart(fields, 1000))
+            restored.putParcelable("raw", Bundle()); assertNull(AbemaSlotMetadataIpc.fields(restored))
+        } finally { parcel.recycle() }
+        var reads = 0
+        val client = AndroidAbemaSlotMetadataClient(instrumentation.targetContext, request.instanceId, request.ownerProof,
+            { reads++; error("No private reads") }, { true })
+        try {
+            assertEquals(CatalogFailure.NOT_VERIFIED, (client.fetch(CatalogResource(ProviderId("abema"),
+                "episode", "slot-A", CatalogIntent.VIDEO)) as CatalogResult.Failure).reason)
+            val result = AtomicReference<CatalogResult<CatalogEntry>>()
+            instrumentation.runOnMainSync { result.set(client.fetch(request.slot.resource)) }
+            assertEquals(CatalogFailure.TEMPORARY, (result.get() as CatalogResult.Failure).reason); assertEquals(0, reads)
+        } finally { client.close(); instrumentation.waitForIdleSync() }
+    }
 
     @Test fun serviceIsPrivateSameGuestProcessAndBindingAloneDoesNotStartRuntime() {
         val instrumentation = guestInstrumentation()

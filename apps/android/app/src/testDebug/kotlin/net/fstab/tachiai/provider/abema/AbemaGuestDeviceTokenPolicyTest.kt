@@ -21,8 +21,9 @@ class AbemaGuestDeviceTokenPolicyTest {
         for (other in AbemaGuestBootstrapOperation.entries.filter { it != operation }) {
             val id = if (other == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null
             val series = if (other == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest("fixture-series") else null
-            assertFalse(AbemaGuestBootstrapPolicy.allows(token, false, "POST", other, id, series))
-            assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(other, id, series).contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
+            val slot = if (other == AbemaGuestBootstrapOperation.FETCH_SLOT) AbemaSlotRequest("fixture-channel", "fixture-slot") else null
+            assertFalse(AbemaGuestBootstrapPolicy.allows(token, false, "POST", other, id, series, slot))
+            assertFalse(AbemaGuestBootstrapPolicy.contentSecurityPolicy(other, id, series, slot).contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
         }
         for (url in listOf("$token?extra=1", "$token#fragment", "$token/", "$token/child",
             "https://abema.tv:443/api/auth/oauth/device/token", "https://fixture@abema.tv/api/auth/oauth/device/token",

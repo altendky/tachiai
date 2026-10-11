@@ -76,6 +76,9 @@ class AbemaGuestBootstrapDeviceTest {
     @Test fun actualOwnedJavaScriptPreparesOnlyPrivateBoundAccountChallengeWithNetworkingBlocked() {
         ownedRuntime("PREPARE_ACCOUNT_LINK", "ACCOUNT_LINK_READY", 3)
     }
+    @Test fun actualOwnedJavaScriptPreparesOnlyPrivateGuestProfileValidationContextWithNetworkingBlocked() {
+        ownedRuntime("PREPARE_ACCOUNT_VALIDATION", "ACCOUNT_VALIDATION_READY", 2)
+    }
 
     @Test fun actualOwnedJavaScriptObservesOneSyntheticRefusalWithoutPrivateProjectionWithNetworkingBlocked() {
         ownedRuntime("OBSERVE_DEVICE_TOKEN", AbemaDeviceTokenObservation.STATE, 4)
@@ -153,7 +156,7 @@ class AbemaGuestBootstrapDeviceTest {
             while (System.nanoTime() < deadline) {
                 status = evaluate("window.__tachiaiGuest_$nonce?.status() || null")?.let(::JSONObject)
                 if (status?.optString("state") in setOf("PREPARED", "GUEST_PROFILE_BOUND", "EXACT_EPISODE_METADATA", "CHALLENGE_VALIDATED_AND_DISCARDED",
-                    "ACCOUNT_LINK_READY", AbemaDeviceTokenObservation.STATE, "REFUSED")) break
+                    "ACCOUNT_LINK_READY", "ACCOUNT_VALIDATION_READY", AbemaDeviceTokenObservation.STATE, "REFUSED")) break
                 Thread.sleep(50)
             }
             assertEquals(expected, status?.optString("state")); assertEquals("NONE", status?.optString("failure"))
@@ -166,6 +169,17 @@ class AbemaGuestBootstrapDeviceTest {
                 assertFalse(status.toString().contains("PRIVATE")); assertFalse(status.toString().contains("FIXTURE"))
                 assertFalse(challenge.toString().contains("PRIVATE"))
             }
+            val privateValidation = evaluate("window.__tachiaiGuest_$nonce.accountValidation?.() || null")
+            if (operation == "PREPARE_ACCOUNT_VALIDATION") {
+                val context = net.fstab.tachiai.provider.abema.account.decodeAbemaAccountValidationContext(
+                    checkNotNull(privateValidation), 46000, 1001)
+                assertEquals("FIXTURE_USER", context.guestId); assertEquals("FIXTURE_ACCESS", context.guestBearer)
+                assertEquals(46000L, context.deadlineElapsedMs)
+                assertEquals(2, JSONObject(privateValidation).length())
+                assertFalse(status.toString().contains("PRIVATE")); assertFalse(status.toString().contains("FIXTURE"))
+                assertFalse(context.toString().contains("FIXTURE"))
+                assertNull(evaluate("window.__tachiaiGuest_$nonce.accountLink?.() || null"))
+            } else assertNull(privateValidation)
             if (operation == "OBSERVE_DEVICE_TOKEN") {
                 assertNotNull(AbemaDeviceTokenObservation.category(checkNotNull(status)))
                 assertEquals(if (tokenStatus == 200) "HTTP_2XX_UNEXPECTED" else "HTTP_400", status?.optString("http"))
@@ -207,13 +221,14 @@ class AbemaGuestBootstrapDeviceTest {
                   JSON.parse(requests[3].options.body).device_type===3})""")!!
             val observed = JSONObject(publicShape)
             assertEquals(count, observed.getInt("count")); assertTrue(observed.getBoolean("omit"))
-            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("profile"))
+            assertEquals(operation in setOf("VERIFY_PROFILE", "VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK", "PREPARE_ACCOUNT_VALIDATION"), observed.getBoolean("profile"))
             assertEquals(operation in setOf("VERIFY_EPISODE", "FETCH_EPISODE"), observed.getBoolean("episode"))
             assertEquals(operation in setOf("VERIFY_DEVICE_AUTHORIZATION", "OBSERVE_DEVICE_TOKEN", "PREPARE_ACCOUNT_LINK"), observed.getBoolean("challenge"))
             assertEquals(operation == "OBSERVE_DEVICE_TOKEN", observed.getBoolean("token"))
             assertEquals(when (operation) {
                 "FETCH_EPISODE" -> "[\"status\",\"stop\",\"metadata\"]"
                 "PREPARE_ACCOUNT_LINK" -> "[\"status\",\"stop\",\"accountLink\"]"
+                "PREPARE_ACCOUNT_VALIDATION" -> "[\"status\",\"stop\",\"accountValidation\"]"
                 else -> "[\"status\",\"stop\"]"
             },
                 observed.getJSONArray("names").toString())
@@ -235,6 +250,7 @@ class AbemaGuestBootstrapDeviceTest {
             }
             assertNull(evaluate("window.__tachiaiGuest_$nonce.metadata?.() || null"))
             assertNull(evaluate("window.__tachiaiGuest_$nonce.accountLink?.() || null"))
+            assertNull(evaluate("window.__tachiaiGuest_$nonce.accountValidation?.() || null"))
         } finally {
             instrumentation.runOnMainSync { browser.get().stopLoading(); browser.get().destroy() }
         }

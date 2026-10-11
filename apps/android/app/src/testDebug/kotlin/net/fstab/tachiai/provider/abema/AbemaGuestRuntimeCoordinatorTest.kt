@@ -46,11 +46,14 @@ class AbemaGuestRuntimeCoordinatorTest {
         var statusFailure = "NONE"
         var statusOverride: JSONObject? = null
         var linkOverride: String? = null
+        var validationOverride: String? = null
+        var holdValidation = false
         val views = mutableListOf<View>()
         inner class View(val request: AbemaGuestRuntimeRequest,
             val currentView: (AbemaGuestRuntimeView) -> Boolean,
             val failed: (AbemaGuestRuntimeView, String) -> Unit) : AbemaGuestRuntimeView {
             var statusCallback: ((String?) -> Unit)? = null
+            var validationCallback: ((String?) -> Unit)? = null
             override fun open() { events += "open" }
             override fun status(callback: (String?) -> Unit) {
                 if (holdStatus) statusCallback = callback
@@ -61,6 +64,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                     AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> "CHALLENGE_VALIDATED_AND_DISCARDED"
                     AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> AbemaDeviceTokenObservation.STATE
                     AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> "ACCOUNT_LINK_READY"
+                    AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION -> "ACCOUNT_VALIDATION_READY"
                     else -> "EXACT_EPISODE_METADATA"
                 }
                 val value = statusOverride ?: JSONObject().put("state", state).put("failure", statusFailure).apply {
@@ -80,6 +84,11 @@ class AbemaGuestRuntimeCoordinatorTest {
                     .put("tokenBody", "{\"client_id\":\"guest\",\"device_code\":\"PRIVATE_CODE\",\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\",\"device_type\":3}")
                     .put("verificationUri", "https://abema.tv/account/transfer?code=PRIVATE_CODE").put("expiresIn", 300).toString()))
             }
+            override fun accountValidation(callback: (String?) -> Unit) {
+                events += "private-validation-projection"
+                if (holdValidation) validationCallback = callback else callback(validationValue())
+            }
+            fun validationValue() = JSONObject.quote(validationOverride ?: "{\"guestId\":\"guest\",\"guestBearer\":\"PRIVATE_BEARER\"}")
             override fun destroy(): Boolean { events += "destroy"; return this@Fixture.destroy.invoke() }
         }
         val environment = object : AbemaGuestRuntimeEnvironment {
@@ -166,6 +175,81 @@ class AbemaGuestRuntimeCoordinatorTest {
         assertEquals("GUEST_CHALLENGE_RESPONSE", malformed.results.single().category)
         val wrong = Fixture(); wrong.statusState = "ACCOUNT_LINK_READY"
         assertTrue(wrong.start()); wrong.pump(); assertEquals("STATUS_REFUSED", wrong.results.single().category); assertNull(wrong.results.single().accountChallenge)
+    }
+    @Test fun privateValidationContextPublishesOnlyAfterConfirmedCleanupAndFinalWorkerOwnerRead() {
+        val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); f.holdClear = true
+        assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+        assertTrue(f.events.contains("private-validation-projection")); assertTrue(f.events.contains("destroy"))
+        assertFalse(f.events.contains("private-projection"))
+        f.clearCallback?.invoke(); f.pump()
+        val result = f.results.single(); assertEquals("ACCOUNT_VALIDATION_READY", result.category)
+        assertEquals("guest", result.accountValidation?.guestId); assertEquals("PRIVATE_BEARER", result.accountValidation?.guestBearer)
+        assertEquals(46000L, result.accountValidation?.deadlineElapsedMs)
+        assertNull(result.accountChallenge); assertNull(result.entry)
+        assertTrue(f.events.indexOf("destroy") < f.events.indexOf("clear-dispatched"))
+        assertTrue(f.events.indexOf("clear-dispatched") < f.events.indexOf("close-backend"))
+        assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
+        assertFalse(result.toString().contains("PRIVATE")); assertFalse(result.accountValidation.toString().contains("PRIVATE"))
+    }
+    @Test fun validationContextNeverPublishesAfterOwnerForegroundDeadlineOrCleanupLoss() {
+        for (loss in 0..5) {
+            val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); f.holdClear = true
+            assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+            when (loss) {
+                0 -> f.matching = false
+                1 -> f.foreground = false
+                2 -> f.main.now = 46000
+                3 -> f.onClose = { throw AssertionError("PRIVATE CLOSE") }
+                4 -> f.onClose = { f.matching = false }
+                5 -> f.main.now = 999
+            }
+            f.clearCallback?.invoke(); f.pump()
+            assertNull(f.results.single().accountValidation); assertNull(f.results.single().accountChallenge)
+            assertNull(f.results.single().entry)
+            if (loss == 3) assertTrue(f.runtime.unavailable)
+        }
+        val failedDestroy = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); failedDestroy.destroy = { false }
+        assertTrue(failedDestroy.start()); failedDestroy.pump()
+        assertEquals("CLEANUP_FAILED", failedDestroy.results.single().category); assertNull(failedDestroy.results.single().accountValidation)
+        assertTrue(failedDestroy.runtime.unavailable); assertFalse(failedDestroy.events.contains("clear-dispatched"))
+    }
+    @Test fun validationRejectsMalformedPrivateProjectionAndStatusFromAnotherOperation() {
+        for (body in listOf("{\"guestId\":\"guest\",\"guestId\":\"other\",\"guestBearer\":\"PRIVATE\"}",
+            "{\"guestId\":\"guest\",\"guestBearer\":\"PRIVATE\",\"deadlineElapsedMs\":999999}",
+            "{\"guestId\":\"guest\",\"guestBearer\":\"PRIVATE\"}{}")) {
+            val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); f.validationOverride = body
+            assertTrue(f.start()); f.pump()
+            assertEquals("GUEST_PROFILE_RESPONSE", f.results.single().category); assertNull(f.results.single().accountValidation)
+        }
+        for (operation in listOf(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK, AbemaGuestBootstrapOperation.VERIFY_PROFILE,
+            AbemaGuestBootstrapOperation.FETCH_EPISODE)) {
+            val f = Fixture(operation); f.statusState = "ACCOUNT_VALIDATION_READY"
+            assertTrue(f.start()); f.pump(); assertEquals("STATUS_REFUSED", f.results.single().category)
+            assertNull(f.results.single().accountValidation); assertFalse(f.events.contains("private-validation-projection"))
+        }
+        val link = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); link.statusState = "ACCOUNT_LINK_READY"
+        assertTrue(link.start()); link.pump(); assertEquals("STATUS_REFUSED", link.results.single().category)
+        assertNull(link.results.single().accountValidation); assertFalse(link.events.contains("private-projection"))
+    }
+    @Test fun latePrivateValidationCallbackCannotPublishOrReachAReplacementAttempt() {
+        val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION); f.holdValidation = true
+        assertTrue(f.start()); f.pump(); val old = f.views.single(); val oldCallback = old.validationCallback!!
+        f.runtime.cancel(nonce); f.pump(); assertNull(f.results.single().accountValidation)
+        f.holdValidation = false; assertTrue(f.start("2".repeat(32))); f.pump()
+        assertEquals("ACCOUNT_VALIDATION_READY", f.results.last().category)
+        val reads = f.reads; oldCallback(old.validationValue()); f.pump()
+        assertEquals(2, f.results.size); assertEquals(reads, f.reads)
+    }
+    @Test fun validationMainCallbacksNeverReadProtectedOwnership() {
+        val f = Fixture(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION)
+        assertTrue(f.start()); assertEquals(0, f.reads)
+        repeat(100) {
+            val didWorker = f.worker.one(); val didCleanup = f.cleanup.one()
+            val reads = f.reads; val didMain = f.main.one(); assertEquals(reads, f.reads)
+            if (!didWorker && !didCleanup && !didMain) return@repeat
+        }
+        assertEquals("ACCOUNT_VALIDATION_READY", f.results.single().category)
+        assertNotNull(f.results.single().accountValidation)
     }
 
     @Test fun capturedOwnerProofMismatchRefusesBeforeAnyPreparationOrProviderDispatch() {

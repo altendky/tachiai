@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal interface AbemaAccountBootstrap : AutoCloseable {
     fun prepare(): AbemaAccountChallenge?
+    fun prepareValidation(): AbemaAccountValidationContext? = null
     fun cancel()
 }
 
@@ -30,6 +31,8 @@ internal class AndroidAbemaAccountBootstrapClient(context: Context, private val 
     private var connection: Connection? = null // Main thread only.
     private fun current(operation: Operation) = !closed.get() && !operation.cancelled &&
         synchronized(lock) { active === operation } && SystemClock.elapsedRealtime() < operation.request.deadline &&
+        (operation.request.mode != AbemaAccountBootstrapIpc.Mode.VALIDATION ||
+            SystemClock.elapsedRealtime() >= operation.request.deadline - AbemaAccountBootstrapIpc.OPERATION_MS) &&
         runCatching(canRemainActive).getOrDefault(false)
     private inner class Connection(val operation: Operation) : ServiceConnection {
         var bound = false
@@ -41,7 +44,7 @@ internal class AndroidAbemaAccountBootstrapClient(context: Context, private val 
                 if (message.sendingUid != Process.myUid() || message.what != AbemaAccountBootstrapIpc.RESULT ||
                     connection !== this@Connection || !current(operation)) return
                 val fields = AbemaAccountBootstrapIpc.fields(message.data) ?: return
-                val value = AbemaAccountBootstrapIpc.readResult(fields, SystemClock.elapsedRealtime()) ?: return
+                val value = AbemaAccountBootstrapIpc.readResult(fields, SystemClock.elapsedRealtime(), operation.request) ?: return
                 synchronized(lock) {
                     if (current(operation) && value.nonce == operation.request.nonce && operation.result == null) {
                         operation.result = value; operation.done.countDown()
@@ -69,10 +72,12 @@ internal class AndroidAbemaAccountBootstrapClient(context: Context, private val 
             main.postAtTime({ pulse() }, this, SystemClock.uptimeMillis() + AbemaAccountBootstrapIpc.PULSE_MS)
         }
     }
-    override fun prepare(): AbemaAccountChallenge? {
+    override fun prepare(): AbemaAccountChallenge? = request(AbemaAccountBootstrapIpc.Mode.LINK)?.challenge
+    override fun prepareValidation(): AbemaAccountValidationContext? = request(AbemaAccountBootstrapIpc.Mode.VALIDATION)?.validation
+    private fun request(mode: AbemaAccountBootstrapIpc.Mode): AbemaAccountBootstrapIpc.Result? {
         if (Looper.myLooper() == Looper.getMainLooper() || Build.VERSION.SDK_INT < 28 || closed.get() || !canRequest()) return null
         val request = AbemaAccountBootstrapIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId, proof,
-            SystemClock.elapsedRealtime() + AbemaAccountBootstrapIpc.OPERATION_MS)
+            SystemClock.elapsedRealtime() + AbemaAccountBootstrapIpc.OPERATION_MS, mode)
         val operation = Operation(request)
         if (!synchronized(lock) { if (active != null || closed.get()) false else { active = operation; true } }) return null
         main.post {
@@ -87,7 +92,9 @@ internal class AndroidAbemaAccountBootstrapClient(context: Context, private val 
             while (!operation.done.await(100, TimeUnit.MILLISECONDS)) {
                 if (!current(operation)) { operation.cancel(); break }
             }
-            return operation.result?.challenge.takeIf { current(operation) && canRequest() }
+            // The protected worker owner check may wait for disk. Recheck the
+            // cheap original deadline/foreground/generation after it returns.
+            return operation.result.takeIf { current(operation) && canRequest() && current(operation) }
         } catch (_: Exception) { operation.cancel(); return null }
         finally {
             synchronized(lock) { if (active === operation) active = null }

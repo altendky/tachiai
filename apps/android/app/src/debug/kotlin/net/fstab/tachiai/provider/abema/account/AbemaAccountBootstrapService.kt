@@ -43,12 +43,17 @@ class AbemaAccountBootstrapService : Service() {
         val death = IBinder.DeathRecipient { lease.cancel(request.nonce); handler.post { if (active?.start === request) coordinator.cancel(request.nonce) } }
         try { reply.binder.linkToDeath(death, 0) } catch (_: Exception) { return }
         val owner = Active(request, reply, lease, death); active = owner
-        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
+        val operation = if (request.mode == AbemaAccountBootstrapIpc.Mode.VALIDATION)
+            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION else AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK
+        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId, operation,
             nonce = request.nonce, expectedOwnerProof = request.proof, deadlineElapsedMs = request.deadline, canRemainActive = lease::current)) completed@{ result ->
             if (active !== owner) return@completed
             active = null; runCatching { reply.binder.unlinkToDeath(death, 0) }
             send(reply, AbemaAccountBootstrapIpc.Result(request.nonce, result.accountChallenge.takeIf {
-                result.category == "ACCOUNT_LINK_READY" && lease.current()
+                request.mode == AbemaAccountBootstrapIpc.Mode.LINK && result.category == "ACCOUNT_LINK_READY" && lease.current()
+            }, result.accountValidation.takeIf {
+                request.mode == AbemaAccountBootstrapIpc.Mode.VALIDATION && result.category == "ACCOUNT_VALIDATION_READY" && lease.current() &&
+                    it?.deadlineElapsedMs == request.deadline
             }))
         }
         if (!accepted) { active = null; lease.cancel(request.nonce); runCatching { reply.binder.unlinkToDeath(death, 0) }; send(reply, AbemaAccountBootstrapIpc.Result(request.nonce, null)) }

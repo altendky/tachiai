@@ -80,7 +80,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         check(canRequest())
         val route = when (request.operation) {
             AbemaGuestBootstrapOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.VERIFY_PROFILE -> RouteSession.createAbemaGuestProfile(saved.profile, prepared.preparing)
+            AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION ->
+                RouteSession.createAbemaGuestProfile(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> RouteSession.createAbemaGuestDeviceAuthorization(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> RouteSession.createAbemaGuestDeviceTokenObservation(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> RouteSession.createAbemaAccountBootstrap(saved.profile, prepared.preparing)
@@ -195,6 +196,11 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)
             if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.accountLink() || null", callback)
+        }
+        override fun accountValidation(callback: (String?) -> Unit) {
+            check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION)
+            if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
+            view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.accountValidation() || null", callback)
         }
         override fun destroy(): Boolean {
             var failed = false

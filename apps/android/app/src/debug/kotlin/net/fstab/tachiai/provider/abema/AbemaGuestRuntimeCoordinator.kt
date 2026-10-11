@@ -11,6 +11,8 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import net.fstab.tachiai.provider.abema.account.AbemaAccountChallenge
 import net.fstab.tachiai.provider.abema.account.decodeAbemaAccountChallenge
+import net.fstab.tachiai.provider.abema.account.AbemaAccountValidationContext
+import net.fstab.tachiai.provider.abema.account.decodeAbemaAccountValidationContext
 
 internal class AbemaGuestRuntimeRequest(
     val instanceId: String,
@@ -28,13 +30,15 @@ internal class AbemaGuestRuntimeRequest(
         require(if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
             episodeId != null && AbemaGuestBootstrapPolicy.validEpisodeId(episodeId) && expectedOwnerProof != null else episodeId == null)
         require(deadlineElapsedMs >= 0)
-        require(operation != AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK || expectedOwnerProof != null)
+        require(operation !in setOf(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
+            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
     }
     val policyEpisodeId get() = episodeId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
     override fun toString() = "AbemaGuestRuntimeRequest(redacted)"
 }
 
-internal class AbemaGuestRuntimeResult(val category: String, val entry: CatalogEntry? = null, val accountChallenge: AbemaAccountChallenge? = null) {
+internal class AbemaGuestRuntimeResult(val category: String, val entry: CatalogEntry? = null,
+    val accountChallenge: AbemaAccountChallenge? = null, val accountValidation: AbemaAccountValidationContext? = null) {
     override fun toString() = "AbemaGuestRuntimeResult(status only)"
 }
 
@@ -55,6 +59,7 @@ internal interface AbemaGuestRuntimeView {
     fun status(callback: (String?) -> Unit)
     fun metadata(callback: (String?) -> Unit)
     fun accountLink(callback: (String?) -> Unit) { callback(null) }
+    fun accountValidation(callback: (String?) -> Unit) { callback(null) }
     fun destroy(): Boolean
     val cleanupConfirmed: Boolean get() = true
 }
@@ -95,6 +100,7 @@ internal class AbemaGuestRuntimeCoordinator(
         @Volatile var view: AbemaGuestRuntimeView? = null
         var entry: CatalogEntry? = null
         var accountChallenge: AbemaAccountChallenge? = null
+        var accountValidation: AbemaAccountValidationContext? = null
     }
     @Volatile private var attempt: Attempt? = null
     private var retainedAttempt: Attempt? = null
@@ -208,6 +214,19 @@ internal class AbemaGuestRuntimeCoordinator(
                     verifyThen(active) { stop(active, "PREPARED") }
                 state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
                     verifyThen(active) { stop(active, "GUEST_PROFILE_BOUND") }
+                state == "ACCOUNT_VALIDATION_READY" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION ->
+                    view.accountValidation { rawContext ->
+                        if (!runtimeCurrent(active) || active.view !== view) return@accountValidation
+                        val context = runCatching {
+                            val outer = JSONTokener(rawContext?.takeIf { it.length <= 49152 } ?: error("Account response refused"))
+                            val text = outer.nextValue() as? String ?: error("Account response refused")
+                            check(outer.nextClean() == '\u0000')
+                            val now = clockMs(); check(now >= active.beganElapsedMs)
+                            decodeAbemaAccountValidationContext(text, active.request.deadlineElapsedMs, now)
+                        }.getOrNull()
+                        if (context == null) stop(active, "GUEST_PROFILE_RESPONSE")
+                        else { active.accountValidation = context; verifyThen(active) { stop(active, "ACCOUNT_VALIDATION_READY") } }
+                    }
                 state == "CHALLENGE_VALIDATED_AND_DISCARDED" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION ->
                     verifyThen(active) { stop(active, "CHALLENGE_VALIDATED_AND_DISCARDED") }
                 state == "ACCOUNT_LINK_READY" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK ->
@@ -310,6 +329,7 @@ internal class AbemaGuestRuntimeCoordinator(
     private fun retain(active: Attempt) {
         active.entry = null
         active.accountChallenge = null
+        active.accountValidation = null
         active.retained.set(true); retainedAttempt = active
     }
     private fun finish(active: Attempt, confirmed: Boolean, category: String) {
@@ -321,9 +341,14 @@ internal class AbemaGuestRuntimeCoordinator(
             val outcome = if (!safe) "CLEANUP_FAILED" else if (!admitted) "CANCELLED" else category
             val entry = active.entry.takeIf { outcome == "EXACT_EPISODE_METADATA" }
             val challenge = active.accountChallenge?.takeIf { outcome == "ACCOUNT_LINK_READY" && clockMs() < it.deadlineElapsedMs }
+            val validation = active.accountValidation?.takeIf { outcome == "ACCOUNT_VALIDATION_READY" &&
+                clockMs() >= active.beganElapsedMs && clockMs() < it.deadlineElapsedMs }
             active.entry = null
             active.accountChallenge = null
-            active.completed(AbemaGuestRuntimeResult(if (outcome == "ACCOUNT_LINK_READY" && challenge == null) "CANCELLED" else outcome, entry, challenge))
+            active.accountValidation = null
+            val missingPrivateResult = outcome == "ACCOUNT_LINK_READY" && challenge == null ||
+                outcome == "ACCOUNT_VALIDATION_READY" && validation == null
+            active.completed(AbemaGuestRuntimeResult(if (missingPrivateResult) "CANCELLED" else outcome, entry, challenge, validation))
         }
     }
 

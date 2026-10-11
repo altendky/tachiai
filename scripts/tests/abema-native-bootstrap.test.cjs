@@ -248,7 +248,8 @@ test('configured linear snapshot refuses missing duplicated wrong unavailable ma
     [{ ...base, viewingOpened: false }], [{ ...base, viewingOpened: 'true' }],
     [{ ...base, status: { drm: true } }], [{ ...base, status: { drm: 'false' } }],
     [{ ...base, playback: [] }], [{ ...base, playback: { dash: base.playback.dash.replace(id, 'other') } }],
-    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: 'https://unapproved.invalid/ad.mpd' } } }],
+    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: false } } }],
+    [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: 'x'.repeat(2049) } } }],
     Array.from({ length: 501 }, (_, index) => configuredLinearChannel('fixture-' + index))]) {
     const value = fixture({ configuredLinear: true, channels: { channels } }); value.startChannel(id);
     await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
@@ -289,6 +290,28 @@ test('configured linear keeps advertised yospace selection and cancellation refu
   assert.equal(delayed.evaluate(`window['${name}'].channelBinding()`), null); assert.equal(delayed.evaluate('observed.legacy.length'), 0);
   for (const bad of ['', 'x'.repeat(65), '../other', 'fixture/one']) {
     const invalid = fixture(); invalid.startChannel(bad); assert.equal(invalid.requests.length, 0);
+  }
+});
+
+test('configured linear binds only the provider selection while retaining unused alternate bytes and refusing selected unbound alternates', async () => {
+  const id = 'fixture-one';
+  for (const alternate of ['', 'https://linear-abematv.akamaized.net/advertised-ad-session/manifest.mpd',
+    'https://unapproved.invalid/advertised-ad-session/manifest.mpd']) {
+    const channel = configuredLinearChannel(id); channel.playback.yospace = { dash: alternate };
+    const options = { configuredLinear: true, channels: { channels: [channel] } };
+    const primary = fixture(options); primary.startChannel(id); await waitFor(primary, 'READY');
+    assert.equal(primary.evaluate('observed.legacy.length'), 1);
+    assert.equal(primary.evaluate('observed.legacy[0].sourceParam.playlists.yospace.dash'), alternate);
+    assert.equal(primary.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(new URL(JSON.parse(primary.evaluate(`window['${name}'].channelBinding()`)).uri).pathname,
+      `/channel/${id}/manifest.mpd`);
+    assert.equal(primary.requests.length, 3);
+    const selectedAlternate = fixture({ ...options, selectYospace: true }); selectedAlternate.startChannel(id);
+    await waitFor(selectedAlternate, 'FAILED');
+    assert.equal(selectedAlternate.evaluate('observed.legacy.length'), 1);
+    assert.equal(selectedAlternate.requests.length, 3);
+    assert.equal(selectedAlternate.begin(challenge), 'REFUSED');
+    assert.equal(selectedAlternate.evaluate(`window['${name}'].channelBinding()`), null);
   }
 });
 

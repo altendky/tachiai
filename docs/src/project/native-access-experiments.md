@@ -4202,6 +4202,17 @@ declared-media/live-transition and changed-protection refusal boundaries.
 Worker ownership, foreground/epoch/deadline checks, independent feed state and
 confirmed cleanup remain inherited from the delivered episode foundation.
 
+An advertised alternate may have a different path even when the unchanged
+provider selector leaves it unused. Pinned module 21470 performs synchronous
+selection and query construction without network access or navigation. The
+owned runtime therefore bounds the alternate's structure/string and preserves
+its bytes, then binds the actual returned selection before any native request.
+If that selection lacks the exact channel root, it refuses without a second
+selection. Empty alternates retain the provider's unavailable-alternate
+semantics. No alternate is fetched merely to inspect it, and no ad-free mode is
+forced. Fixtures cover an unused unbound alternate and refusal of that same
+alternate when selected.
+
 Independent source review found no substantive remaining finding. Real channel
 availability, advertisement equivalence and frame/position acceptance remain
 unverified until the bounded saved-route observation. This adds no renewal,

@@ -300,6 +300,12 @@ root, fresh media token and initial channel license must agree. Native declared
 media, protected initialization, bounded live transitions, ownership and cleanup
 remain enforced independently for each feed.
 
+Unused advertised alternates are retained unchanged as bounded metadata; they
+do not need to have the selected channel's MPD path. The unchanged provider
+selector performs no I/O. Its returned selection must pass the exact source
+binding before native access, and an unbound selected alternate refuses without
+substitution. This preserves the provider's source/ad decision.
+
 This slice implements linear-channel intent. It does not resolve a scheduled
 slot to a different current broadcast, automatically choose a series episode,
 connect an account or retrieve My List/history. Static review and fixtures do not

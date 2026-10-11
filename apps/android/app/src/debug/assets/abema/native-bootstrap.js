@@ -324,7 +324,8 @@
           (channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
           channel.status?.drm === true || !usableChannelPlaylist(playback.dash, channelId) ||
           (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
-            (playback.yospace.dash !== undefined && !usableChannelPlaylist(playback.yospace.dash, channelId))))) throw new Error();
+            (playback.yospace.dash !== undefined && (typeof playback.yospace.dash !== 'string' ||
+              playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash)))))) throw new Error();
       }
       phase = 'SOURCE';
       // Fresh owned identity + advertised playlists, not the full player's
@@ -336,6 +337,9 @@
         preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
       if (typeof selected !== 'string' || !selected) throw new Error();
       if (configuredChannel) {
+        // The provider may leave an advertised alternate unused. Its selector
+        // performs no I/O; bind the returned choice before any native request,
+        // preserving its advertisement decision without a second selection.
         const source = new URL(selected);
         const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
         if (!usableChannelPlaylist(selected, channelId) || source.href.length > 2048 ||

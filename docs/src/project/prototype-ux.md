@@ -390,9 +390,16 @@ fallback is added. The separate guest runtime and ordinary noncached viewer
 retain their own lifecycle contracts.
 
 Implementation and verification are tracked in
-[#161](https://github.com/altendky/tachiai/issues/161). Synthetic ownership checks
-do not reproduce a provider-specific cleanup failure or establish physical-device
-playback, audio or performance.
+[#161](https://github.com/altendky/tachiai/issues/161). On 2026-10-11, the integrated
+build passed 1,990 JVM checks, 46 bootstrap/helper JavaScript checks, lint, release
+isolation and shared debug certificate verification. Seven selected synthetic
+Android checks passed on `tachiai-dev` (Android 16/API 36, x86-64, WebView
+133.0.6943.137), including real unstarted HLS/DASH player release and injected
+in-memory owner/route/player receipts. These checks used no provider requests,
+real proxy changes, saved-store writes or recovery reset. Encrypted saved records
+were byte-for-byte unchanged, and the normal app entry was restored. Synthetic
+ownership checks do not reproduce a provider-specific cleanup failure or establish
+physical-device playback, audio or performance.
 
 ## Source assignment follow-up
 

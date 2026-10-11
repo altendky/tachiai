@@ -144,13 +144,13 @@ class NativePlayerCleanupDeviceTest {
         var releases = 0
         val player = Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { _, method, _ ->
             when (method.name) {
-                "addListener" -> throw IOException("Synthetic observer registration refusal")
+                "addListener" -> throw IllegalStateException("Synthetic observer registration refusal")
                 "release" -> { releases++; null }
                 else -> throw AssertionError("Unexpected fixture player operation")
             }
         } as Player
         val owner = NativeCleanupReceipt()
-        assertThrows(IOException::class.java) { owner.ownPlayer(player, { true }, { _, _ -> }) }
+        assertThrows(IllegalStateException::class.java) { owner.ownPlayer(player, { true }, { _, _ -> }) }
         assertThrows(IOException::class.java) { owner.close() }
         assertEquals(1, releases); assertFalse(owner.confirmed)
         assertThrows(IOException::class.java) { owner.close() }

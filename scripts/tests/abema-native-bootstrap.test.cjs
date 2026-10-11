@@ -52,7 +52,10 @@ function fixture(options = {}) {
     fetch: async (url, request) => {
       const uri = new URL(String(url));
       requests.push({ uri, request });
+      if (Object.hasOwn(options.rejections || {}, uri.pathname)) throw options.rejections[uri.pathname];
+      if (options.reply && options.replyPath === uri.pathname) return options.reply;
       if (options.deferGuest && uri.pathname === '/api/auth/login/guest') await deferred;
+      if (options.deferLicense && uri.pathname === '/abematv-dash') await deferred;
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
@@ -203,6 +206,7 @@ function fixture(options = {}) {
   const evaluate = expression => vm.runInContext(expression, context, { timeout: 1000 });
   return {
     requests, events, release, context, evaluate,
+    expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
     start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
     startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)})`),
     status: () => evaluate(`window['${name}']?.status()`),
@@ -220,6 +224,117 @@ async function waitFor(value, expected) {
   }
   assert.equal(value.status(), expected);
 }
+
+async function waitForRequests(value, count) {
+  for (let attempt = 0; value.requests.length < count && attempt < 100; attempt++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.requests.length, count);
+}
+
+test('owned timer latches before abort and ignored AbortSignal cannot publish late guest READY or another request', async () => {
+  const value = fixture({ deferGuest: true }); value.start(); await waitForRequests(value, 1);
+  value.expireTimers(); assert.equal(value.status(), 'FAILED');
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests[0].request.signal.aborted, true);
+  value.stop(); value.release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests.length, 1); assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('explicit owner stop survives ignored abort and subsequent timer or unknown failure', async () => {
+  const value = fixture({ deferGuest: true }); value.start(); await waitForRequests(value, 1);
+  value.stop(); assert.equal(value.metadata().failure, 'OWNED_CANCELLED');
+  value.expireTimers(); value.release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'OWNED_CANCELLED'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.requests.length, 1); assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('fetch rejection is proved before HTTP and request status resets without inspecting arbitrary exception properties', async () => {
+  let reads = 0;
+  const privateFailure = Object.fromEntries(['name', 'message', 'cause', 'stack', 'code'].map(name =>
+    [name, { get() { reads++; throw new Error('private-secret'); } }]));
+  const error = {};
+  for (const [name, descriptor] of Object.entries(privateFailure)) Object.defineProperty(error, name, descriptor);
+  for (const endpoint of ['/api/auth/login/guest', '/v1/media/token', '/abematv-dash']) {
+    const value = fixture({ rejections: { [endpoint]: error } }); value.start();
+    if (endpoint === '/abematv-dash') { await waitFor(value, 'READY'); value.begin(challenge); }
+    await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().http, 0); assert.equal(value.metadata().failure, 'FETCH_REJECTED_BEFORE_HTTP');
+    value.stop(); assert.equal(value.metadata().failure, 'FETCH_REJECTED_BEFORE_HTTP');
+    assert.ok(!JSON.stringify(value.metadata()).includes('private-secret'));
+  }
+  assert.equal(reads, 0);
+});
+
+test('numeric returned HTTP refusal and strict bounded UTF8 JSON refusal remain distinct through cleanup', async () => {
+  for (const status of [201, 401, 403, 429, 500]) {
+    const value = fixture({ httpStatus: status }); value.start(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, 'HTTP_REFUSED'); assert.equal(value.metadata().http, status);
+    value.stop(); assert.equal(value.metadata().failure, 'HTTP_REFUSED');
+  }
+  for (const text of ['{not-json', '{"id":1,"id":2}', 'x'.repeat(65537), new Uint8Array([0xc3, 0x28])]) {
+    const value = fixture({ responseBytes: { '/api/auth/login/guest': text } }); value.start(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.metadata().http, 200);
+    value.stop(); assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.requests.length, 1);
+  }
+});
+
+test('unproved response read failure and unknown preparation remain UNKNOWN without rejection metadata access', async () => {
+  let reads = 0;
+  const error = {};
+  for (const name of ['name', 'message', 'cause', 'stack']) Object.defineProperty(error, name, { get() { reads++; throw new Error('private'); } });
+  const reply = { status: 200, body: { getReader: () => ({ read: async () => { throw error; }, cancel: async () => {} }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().failure, 'UNKNOWN'); assert.equal(value.metadata().http, 200); assert.equal(reads, 0);
+  const preparation = fixture({ guest: {} }); preparation.start(); await waitFor(preparation, 'FAILED');
+  assert.equal(preparation.metadata().failure, 'UNKNOWN');
+});
+
+test('first validation refusal cannot be replaced by a timer or stop while body cleanup is pending', async () => {
+  let finishCancel;
+  const cancelled = new Promise(resolve => { finishCancel = resolve; });
+  const reply = { status: 200, body: { getReader: () => ({
+    read: async () => ({ done: false, value: new Uint8Array(65537) }), cancel: () => cancelled,
+  }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitForRequests(value, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  value.expireTimers(); value.stop(); finishCancel(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.requests.length, 1);
+});
+
+test('timer during successful body reader cleanup discards the late body and cannot begin token setup', async () => {
+  let finishCancel; let read = false;
+  const cancelled = new Promise(resolve => { finishCancel = resolve; });
+  const bytes = new TextEncoder().encode('{"user_id":"TEST_USER","access_token":"TEST_ACCESS"}');
+  const reply = { status: 200, body: { getReader: () => ({ read: async () => {
+    if (read) return { done: true }; read = true; return { done: false, value: bytes };
+  }, cancel: () => cancelled }) } };
+  const value = fixture({ replyPath: '/api/auth/login/guest', reply }); value.start(); await waitForRequests(value, 1);
+  await new Promise(resolve => setImmediate(resolve)); value.expireTimers(); finishCancel();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.status(), 'FAILED'); assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  assert.equal(value.metadata().http, 200); assert.equal(value.requests.length, 1);
+});
+
+test('terminal license failures retain current bounded evidence and never run or export the opaque helper', async () => {
+  const refused = fixture({ statuses: { '/abematv-dash': 403 } }); refused.start(); await waitFor(refused, 'READY');
+  refused.begin(challenge); await waitFor(refused, 'FAILED');
+  assert.equal(refused.metadata().phase, 'LICENSE'); assert.equal(refused.metadata().failure, 'HTTP_REFUSED');
+  assert.equal(refused.metadata().http, 403); assert.equal(refused.evaluate('observed.operation.length'), 0); assert.equal(refused.take(), null);
+  const timed = fixture({ deferLicense: true }); timed.start(); await waitFor(timed, 'READY');
+  timed.begin(challenge); await waitForRequests(timed, 4); timed.expireTimers();
+  assert.equal(timed.metadata().http, 0); assert.equal(timed.metadata().failure, 'TIMER_EXPIRED');
+  timed.release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(timed.status(), 'FAILED'); assert.equal(timed.evaluate('observed.operation.length'), 0); assert.equal(timed.take(), null);
+});
+
+test('successful opaque take and later cleanup stop do not manufacture owner cancellation', async () => {
+  const value = fixture(); value.start(); await waitFor(value, 'READY');
+  value.begin(challenge); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
+  assert.equal(value.metadata().failure, 'NONE'); value.stop(); assert.equal(value.metadata().failure, 'NONE');
+});
 
 test('configured linear IDs retain advertised selection and exact independent source and initial license identity', async () => {
   for (const id of ['fixture-one', 'fixture-two', 'abema-news']) {
@@ -629,9 +744,10 @@ test('replay free/content windows require integer future epoch seconds covering 
 test('diagnostics contain only fixed categories and bounded primitive counters', async () => {
   const value = fixture(); value.start(); await waitFor(value, 'READY');
   const metadata = value.metadata();
-  assert.deepEqual(Object.keys(metadata).sort(), ['http', 'lastModule', 'modules', 'phase']);
+  assert.deepEqual(Object.keys(metadata).sort(), ['failure', 'http', 'lastModule', 'modules', 'phase']);
   assert.equal(metadata.phase, 'READY');
   assert.equal(metadata.http, 200);
+  assert.equal(metadata.failure, 'NONE');
   assert.equal(typeof metadata.modules, 'number');
   assert.ok(!JSON.stringify(metadata).includes('TEST_'));
 });

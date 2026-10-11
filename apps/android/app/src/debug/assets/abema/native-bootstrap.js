@@ -14,6 +14,7 @@
   let count = 0;
   let lastModule = 0;
   let http = 0;
+  let failure = 'NONE';
   let selected;
   let selectedEpisode;
   let selectedChannel;
@@ -22,9 +23,14 @@
   let user;
   let operation;
   let response;
-  const stop = (failure = false) => {
+  const remember = category => { if (failure === 'NONE') failure = category; };
+  const stop = (failed = false, cancelled = false) => {
+    if (!stopped) {
+      if (cancelled) remember('OWNED_CANCELLED');
+      else if (failed) remember('UNKNOWN');
+    }
     stopped = true;
-    state = failure ? 'FAILED' : 'STOPPED';
+    state = failed ? 'FAILED' : 'STOPPED';
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
@@ -33,9 +39,11 @@
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
   window.__LOADABLE_LOADED_CHUNKS__ = [];
-  const alive = () => { if (stopped) throw new Error(); };
+  const alive = () => { if (stopped || failure !== 'NONE') throw new Error(); };
+  const refuseResponse = () => { remember('RESPONSE_VALIDATION_REFUSED'); throw new Error(); };
   const boundedReply = async (reply, maximum) => {
-    if (reply.status !== 200 || !reply.body) throw new Error();
+    if (reply.status !== 200) { remember('HTTP_REFUSED'); throw new Error(); }
+    if (!reply.body) refuseResponse();
     const reader = reply.body.getReader();
     const parts = [];
     let size = 0;
@@ -45,7 +53,7 @@
         const next = await reader.read();
         if (next.done) break;
         size += next.value.byteLength;
-        if (size > maximum) throw new Error();
+        if (size > maximum) { next.value.fill(0); refuseResponse(); }
         parts.push(next.value);
       }
       alive();
@@ -64,17 +72,29 @@
       String(url) !== expectedGateway) throw new Error();
     const controller = new AbortController();
     controllers.add(controller);
-    const timer = setTimeout(() => controller.abort(), 15000);
+    http = 0;
+    let received = false;
+    const timer = setTimeout(() => { if (!stopped) { remember('TIMER_EXPIRED'); stop(true); } }, 15000);
     try {
       const reply = await nativeFetch(url, { ...options, redirect: 'error', signal: controller.signal });
-      http = reply.status;
       alive();
-      return await boundedReply(reply, maximum);
+      received = true;
+      if (!Number.isInteger(reply.status) || reply.status < 100 || reply.status > 599) throw new Error();
+      http = reply.status;
+      const bytes = await boundedReply(reply, maximum);
+      // Cancellation/timer may run during reader.cancel(), even when the
+      // transport ignores AbortSignal. No late body may start another request.
+      if (stopped) { bytes.fill(0); alive(); }
+      return bytes;
+    } catch {
+      remember(received ? 'UNKNOWN' : 'FETCH_REJECTED_BEFORE_HTTP');
+      throw new Error(); // Never inspect or forward arbitrary rejection fields.
     } finally { clearTimeout(timer); controllers.delete(controller); }
   };
   const json = async (url, options = {}, maximum = 1024 * 1024) => {
     const bytes = await fetchBytes(url, options, maximum);
     try { return parseBoundedJsonText(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { refuseResponse(); }
     finally { bytes.fill(0); }
   };
   function parseBoundedJsonText(text, unicode = true) {
@@ -246,14 +266,14 @@
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
       status: () => state,
-      metadata: () => stringify({ phase, modules: count, lastModule, http }),
+      metadata: () => stringify({ phase, modules: count, lastModule, http, failure }),
       selectedSource: () => !stopped && state === 'READY' ? selected : null,
       sourceBinding: () => !stopped && state === 'READY' && replay ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       channelBinding: () => !stopped && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
       begin,
       take: () => { if (stopped || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
-      stop: () => stop(),
+      stop: () => stop(false, true),
     }) });
     (async () => {
       try {

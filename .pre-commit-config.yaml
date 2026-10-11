@@ -101,6 +101,13 @@ repos:
         files: 'abema/cached-helper[^/]*\.(html|js)$|scripts/tests/abema-cached-helper\.test\.cjs$'
         pass_filenames: false
 
+      - id: abema-guest-bootstrap-tests
+        name: ABEMA guest-only bootstrap fixture tests
+        entry: node scripts/tests/abema-guest-bootstrap.test.cjs
+        language: system
+        files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-guest-bootstrap\.test\.cjs$'
+        pass_filenames: false
+
       - id: abema-helper-runtime-tests
         name: ABEMA offline helper runtime fixture tests
         entry: node scripts/tests/abema-helper-runtime.test.cjs

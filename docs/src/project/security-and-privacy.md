@@ -80,6 +80,12 @@ account-backed verification dependencies remain in force.
 
 ## Authentication boundary
 
+The debug [ABEMA guest-only preparation](abema-guest-bootstrap.md) runs in a
+separate cookie-disabled process/profile and stops after the fresh guest
+response. Its native boundary exposes fixed status categories only; guest
+credentials remain in the owned runtime and are discarded at teardown. It
+neither reads existing browser state nor implements account linking or renewal.
+
 - Provider credentials are entered only into provider-controlled pages.
 - Tachiai does not add key listeners, form listeners, DOM serialization, or
   debugging instrumentation to login and account pages.

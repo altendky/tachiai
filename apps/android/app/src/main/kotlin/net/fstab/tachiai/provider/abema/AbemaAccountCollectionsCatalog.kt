@@ -70,9 +70,10 @@ internal class AbemaAccountCollectionsCatalog(
         if (query.collectionId != "my_list") { clear(); return delegate.browse(query) }
         return synchronized(operations) {
             val local = revision.get()
+            var capturedLease: AbemaCollectionLease? = null
             try {
                 if (query.search != null || query.parent != null) { clear(); throw Abort(CatalogFailure.UNSUPPORTED) }
-                val lease = lease()
+                val lease = lease().also { capturedLease = it }
                 requireCurrent(local, lease)
                 val providerNext = synchronized(state) {
                     if (query.cursor == null) {
@@ -115,7 +116,9 @@ internal class AbemaAccountCollectionsCatalog(
                 if (error.failure == CatalogFailure.ACCESS_REQUIRED) clear()
                 CatalogResult.Failure(error.failure, error.retryAt)
             } catch (_: Throwable) {
-                if (!localCurrent(local) || !usable()) { clear(); CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
+                if (!localCurrent(local) || !usable() || capturedLease?.current() == false) {
+                    clear(); CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
+                }
                 else CatalogResult.Failure(CatalogFailure.TEMPORARY)
             }
         }

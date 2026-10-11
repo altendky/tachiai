@@ -118,6 +118,28 @@ class AbemaAccountCollectionsCatalogTest {
         f.catalog.close()
     }
 
+    @Test fun thrownRequestAfterOwnerOrGenerationLossClearsPrivateContinuationAsAccessFailure() {
+        for (generationLoss in listOf(false, true)) {
+            for (error in listOf(AbemaCollectionException(AbemaCollectionFailure.CANCELLED), AssertionError("Private fixture text"))) {
+                val f = Fixture()
+                val first = value(f.catalog.browse(CatalogQuery(collectionId = "my_list")))
+                f.access.beforeFetch = {
+                    if (generationLoss) f.access.context = "b".repeat(64) else f.access.owns = false
+                    throw error
+                }
+                val refused = f.catalog.browse(CatalogQuery(collectionId = "my_list", cursor = first.nextCursor))
+                failure(refused, CatalogFailure.ACCESS_REQUIRED)
+                assertFalse(refused.toString().contains("Private"))
+                assertEquals(2, f.access.closes)
+                f.access.beforeFetch = {}; f.access.owns = true; f.access.context = "a".repeat(64)
+                failure(f.catalog.browse(CatalogQuery(collectionId = "my_list", cursor = first.nextCursor)), CatalogFailure.ACCESS_REQUIRED)
+                assertEquals(2, f.access.requests.size)
+                assertEquals(0, f.public.browseCalls)
+                f.catalog.close()
+            }
+        }
+    }
+
     @Test fun searchesAndChildrenNeverInventAnAccountEndpointOrAliasAndPublicQueriesInvalidateHandles() {
         val f = Fixture()
         val first = value(f.catalog.browse(CatalogQuery(collectionId = "my_list")))

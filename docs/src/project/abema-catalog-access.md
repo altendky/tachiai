@@ -272,6 +272,48 @@ My List, history, entitlement or account-backed playback. Those capabilities
 need separate endpoint and intended-account evidence; #103 remains open until
 its real account criteria are met.
 
+### Account-backed My List adapter
+
+The debug catalog composes a read-only My List adapter around public Channels
+and inside local public-link import. Existing configured choices remain
+Tachiai-owned: browsing never automatically adds an item, mutates ABEMA's list
+or deletes a configured choice when the provider omits it. History remains a
+separate, unverified capability under #102.
+
+Account validation runs on workers and uses the core session directly. Missing
+or corrupt protected authorization starts no provider request. A valid saved
+candidate needs a fresh challenge-free guest/profile context, matching positive
+and invalid-bearer profile checks and fresh intended-account identity agreement.
+My List additionally must reject an invalid bearer and return a strictly parsed
+page with that intended grant before reporting access as available. All proof
+requests retain the original guest preparation deadline. The first positive
+page can seed one initial browse in memory; it is not persisted as provider
+history or usage data.
+
+The closed collection route admits only the reviewed API host. One fixed
+read-only GET requests at most 20 entries, newest updated first, with typed
+dataset joins and live events included. Responses are bounded to 512 KiB;
+non-success bodies remain unread. Programs map to exact episodes, series and
+slot groups remain collections, slots retain their channel/occurrence identity,
+and live events retain their own identity. Availability stays UNKNOWN rather
+than inferring entitlement, current playback or progress from list membership.
+Missing, conflicting or unknown joins refuse the page rather than substitute
+another item.
+
+Continuation handles are transient and single-use, bound to provider instance,
+route, durable grant generation and shared store revision. Foreground, owner,
+expiry, clock or authorization loss clears admission and private browsing state
+while retaining configured choices. Collection refusal does not erase a saved
+grant or turn an unverified provider response into an expiry diagnosis. Uncertain
+HTTP or backend cleanup retains its actual owner and blocks account admission;
+independently verified public discovery and local import keep separate gates.
+
+Provider-free fixtures and source review are implementation evidence. Actual
+intended-account My List retrieval remains an acceptance gate, distinct from
+profile authorization proof. Broader discovery and exact slot/series resolution
+remain outstanding in #101; this adapter does not choose a current channel or
+an arbitrary episode on behalf of a collection.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata

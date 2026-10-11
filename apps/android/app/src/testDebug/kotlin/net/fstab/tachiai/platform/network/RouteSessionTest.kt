@@ -28,13 +28,15 @@ class RouteSessionTest {
         RouteSession::class.java.getDeclaredField("connections").apply { isAccessible = true }
             .get(route) as MutableSet<RoutedHttpsConnection>
 
-    private fun ownResponse(connection: RoutedHttpsConnection, source: BufferedSource): Response {
+    private fun ownResponse(connection: RoutedHttpsConnection, source: BufferedSource,
+        closeBody: () -> Unit = source::close): Response {
         val response = Response.Builder().request(Request.Builder().url(connection.url).build())
             .protocol(Protocol.HTTP_1_1).code(200).message("fixture")
             .body(object : ResponseBody() {
                 override fun contentType() = null
                 override fun contentLength() = 1L
                 override fun source() = source
+                override fun close() = closeBody()
             }).build()
         RoutedHttpsConnection::class.java.getDeclaredField("reply").apply { isAccessible = true }.set(connection, response)
         return response
@@ -284,9 +286,9 @@ class RouteSessionTest {
         connections.add(connection)
         var refuses = true; var closes = 0
         val body = Buffer().writeUtf8("x")
-        val response = ownResponse(connection, object : BufferedSource by body {
-            override fun close() { closes++; if (refuses) throw AssertionError("Fixture body close failure"); body.close() }
-        })
+        val response = ownResponse(connection, body) {
+            closes++; if (refuses) throw AssertionError("Fixture body close failure"); body.close()
+        }
         connection.inputStream
         try {
             assertThrows(IOException::class.java) { route.close() }

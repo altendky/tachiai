@@ -540,9 +540,9 @@ and inside local public-link import. Existing configured choices remain
 Tachiai-owned: browsing never automatically adds an item, mutates ABEMA's list
 or deletes a configured choice when the provider omits it. The separate
 [History adapter](provider-history-access.md#abema-read-only-history-adapter--2026-10-11)
-uses its own collection binding and endpoint proof under #102; real
-intended-account History acceptance remains unverified. Bounded My List
-acceptance is recorded below.
+uses its own collection binding and endpoint proof under #102, with its separate
+bounded intended-account observation recorded there. Bounded My List acceptance
+is recorded below.
 
 Account validation runs on workers and uses the core session directly. Missing
 or corrupt protected authorization starts no provider request. A valid saved

@@ -260,6 +260,21 @@ class AbemaAccountCollectionsCatalogTest {
         }
     }
 
+    @Test fun directHistoryBrowseDoesNotCheckMyListOrSweepPublicCapabilities() {
+        val id = UUID.randomUUID().toString(); val public = Public(id)
+        val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+        AbemaAccountCollectionsCatalog(public, list, history = history).use { catalog ->
+            assertEquals("first", value(catalog.browse(CatalogQuery(collectionId = "history"))).entries.single().resource.identity)
+            assertTrue(history.accessChecks > 0)
+            assertEquals(listOf<String?>(null), history.requests)
+            assertEquals(0, list.accessChecks)
+            assertEquals(0, list.creates)
+            assertTrue(list.requests.isEmpty())
+            assertEquals(0, public.capabilityCalls)
+            assertEquals(0, public.browseCalls)
+        }
+    }
+
     @Test fun historyAndMyListExposeIndependentAvailabilityAndHistoryHasNoPublicFallback() {
         val id = UUID.randomUUID().toString(); val public = Public(id)
         val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)

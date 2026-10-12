@@ -116,6 +116,36 @@ internal fun parseAbemaAccountProfile(body: String): String {
     val profile = value["profile"] as? Map<*, *> ?: accountRefused()
     return (profile["userId"] as? String)?.takeIf(::accountId) ?: accountRefused()
 }
+// Only the browser's existing first-party GET header is eligible. No login
+// bodies, passwords, passcodes, cookies or browser storage are inspected.
+internal fun abemaEmailRegistrationId(url: String): String? =
+    Regex("https://api\\.p-c3-e\\.abema-tv\\.com/v1/users/([A-Za-z0-9_-]{1,256})/email")
+        .matchEntire(url)?.groupValues?.get(1)
+
+internal fun parseAbemaEmailCandidate(url: String, method: String, headers: Map<String, String>, nowMs: Long): AbemaAccountGrant? {
+    if (method != "GET") return null
+    val id = abemaEmailRegistrationId(url) ?: return null
+    val authorization = headers.entries.filter { it.key.equals("Authorization", ignoreCase = true) }
+    if (authorization.size != 1) return null
+    val value = authorization.single().value
+    if (value.length !in 8..6151 || !value.substring(0, 7).equals("Bearer ", ignoreCase = true)) return null
+    return runCatching { decodedAbemaGrant(value.substring(7), id, nowMs) }.getOrNull()
+}
+
+// Project registration status only; the provider's email remains request-local
+// and is neither returned nor retained in account state or diagnostics.
+internal fun parseAbemaAccountEmailRegistration(body: String): AbemaAccountEmailResult = try {
+    val value = AbemaAccountJson.objectValue(body, 65536)
+    if ("email" !in value || value.keys.any { it !in setOf("email", "hasPassword") } ||
+        "hasPassword" in value && value["hasPassword"] !is Boolean) AbemaAccountEmailResult.INCONCLUSIVE
+    else when (val email = value["email"]) {
+        null, "" -> AbemaAccountEmailResult.UNREGISTERED
+        is String -> if (email.length <= 320 && email.none { it.isWhitespace() || Character.isISOControl(it) || Character.getType(it) == Character.FORMAT.toInt() })
+            AbemaAccountEmailResult.REGISTERED else AbemaAccountEmailResult.INCONCLUSIVE
+        else -> AbemaAccountEmailResult.INCONCLUSIVE
+    }
+} catch (_: Exception) { AbemaAccountEmailResult.INCONCLUSIVE }
+
 internal fun strictAccountUtf8(bytes: ByteArray): String = Charsets.UTF_8.newDecoder()
     .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
     .decode(ByteBuffer.wrap(bytes)).toString()

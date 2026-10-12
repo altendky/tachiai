@@ -11,6 +11,44 @@ internal fun fixtureAccountChallenge(deadline: Long = 300000) = AbemaAccountChal
     "https://abema.tv/account/transfer?code=private-code", deadline)
 
 class AbemaAccountAuthorizationTest {
+    @Test fun emailCandidateRequiresExactTrustedGetAndOneMatchingBearerWithFutureExpiry() {
+        val url = "https://api.p-c3-e.abema-tv.com/v1/users/intended-account/email"
+        val token = fixtureAccountToken()
+        for (name in listOf("Authorization", "authorization", "AUTHORIZATION")) {
+            val grant = parseAbemaEmailCandidate(url, "GET", mapOf(name to "bEaReR $token"), 1000000)!!
+            assertEquals("intended-account", grant.userId); assertEquals(token, grant.bearer)
+            assertEquals(2000000, grant.expiresAtMs)
+        }
+        for (invalid in listOf(url.replace("https:", "http:"), url.replace("api.p-c3-e.abema-tv.com", "abema.tv"),
+            url.replace(".com/", ".com:443/"), url.replace("https://", "https://user@"),
+            url.replace("intended-account", "%69ntended-account"), url.replace("/email", "/email/"),
+            url + "?query", url + "#fragment", url.replace(".com", ".com.evil.invalid"), url.replace("api.", "API.")))
+            assertNull(parseAbemaEmailCandidate(invalid, "GET", mapOf("Authorization" to "Bearer $token"), 1000000))
+        for (method in listOf("POST", "get", "HEAD"))
+            assertNull(parseAbemaEmailCandidate(url, method, mapOf("Authorization" to "Bearer $token"), 1000000))
+        for (headers in listOf(emptyMap(), mapOf("Authorization" to "Basic $token"),
+            mapOf("Authorization" to "Bearer $token", "authorization" to "Bearer $token"),
+            mapOf("Authorization" to "Bearer  $token"), mapOf("Authorization" to "Bearer $token\r\n"),
+            mapOf("Authorization" to "Bearer ${fixtureAccountToken("other")}"),
+            mapOf("Authorization" to "Bearer ${fixtureAccountToken(expiry = "1000")}"),
+            mapOf("Authorization" to "Bearer ${fixtureAccountToken(expiry = "9223372036854775807")}")))
+            assertNull(parseAbemaEmailCandidate(url, "GET", headers, 1000000))
+        assertNull(parseAbemaEmailCandidate(url, "GET", mapOf("Authorization" to "Bearer $token"), -1))
+    }
+    @Test fun emailRegistrationProjectsOnlyBoundedStatusWithoutRequiringALegacyPassword() {
+        for (body in listOf("""{"email":"fixture@example.test","hasPassword":false}""",
+            """{"email":"fixture@example.test","hasPassword":true}""", """{"email":"fixture@example.test"}"""))
+            assertEquals(AbemaAccountEmailResult.REGISTERED, parseAbemaAccountEmailRegistration(body))
+        for (body in listOf("""{"email":null,"hasPassword":false}""", """{"email":""}"""))
+            assertEquals(AbemaAccountEmailResult.UNREGISTERED, parseAbemaAccountEmailRegistration(body))
+        for (body in listOf("{}", """{"email":1}""", """{"email":"fixture@example.test","hasPassword":null}""",
+            """{"email":"fixture@example.test","hasPassword":"false"}""", """{"email":" fixture@example.test"}""",
+            """{"email":"fixture\u200e@example.test"}""", """{"email":"fixture@example.test","other":1}""",
+            """{"email":"fixture@example.test","email":"other@example.test"}""",
+            """{"email":"fixture\ud800@example.test"}""", """{"email":"fixture@example.test"}{}""",
+            "{\"email\":\"${"x".repeat(321)}\"}", " ".repeat(65537)))
+            assertEquals(AbemaAccountEmailResult.INCONCLUSIVE, parseAbemaAccountEmailRegistration(body))
+    }
     @Test fun internalProviderIdentitiesRemainExactAndSeparateFromEmailSignIn() {
         for (id in listOf("A", "fixture-account_123", "a".repeat(256))) {
             assertTrue(accountId(id)); assertFalse(accountId(" $id "))

@@ -88,8 +88,8 @@ internal class AbemaApprovalRegionCheck(
 
     // Called on the interception worker. Only a canonical first-party Origin
     // may be copied; no cookie, bearer, referrer or arbitrary browser header is.
-    fun check(origin: String? = null): AbemaApprovalRegionResult {
-        if (origin != null && origin !in origins)
+    fun check(origin: String? = null, uri: String = URI): AbemaApprovalRegionResult {
+        if (uri !in AbemaApprovalBrowserPolicy.REGION_URIS || origin != null && origin !in origins)
             return AbemaApprovalRegionResult.Failure(AbemaApprovalRegionFailure.REFUSED_REQUEST)
         val done = CountDownLatch(1)
         synchronized(lock) {
@@ -116,12 +116,12 @@ internal class AbemaApprovalRegionCheck(
                 }
                 pending?.receipt?.start()
             }, (end - elapsedMs()).coerceAtLeast(1), TimeUnit.MILLISECONDS)
-            val allocated = Handle(open(URL(URI)), cleanupWaitMs)
+            val allocated = Handle(open(URL(uri)), cleanupWaitMs)
             handle = allocated
             synchronized(lock) { active = allocated }
             checkCurrent()
             val connection = allocated.connection
-            if (connection.url.toExternalForm() != URI) throw Refusal(AbemaApprovalRegionFailure.REFUSED_REQUEST)
+            if (connection.url.toExternalForm() != uri) throw Refusal(AbemaApprovalRegionFailure.REFUSED_REQUEST)
             connection.instanceFollowRedirects = false; connection.useCaches = false
             connection.requestMethod = "GET"; connection.doOutput = false
             val remaining = (end - elapsedMs()).coerceIn(1, 10_000).toInt()
@@ -131,7 +131,7 @@ internal class AbemaApprovalRegionCheck(
             checkCurrent()
             val status = connection.responseCode
             checkCurrent()
-            if (connection.url.toExternalForm() != URI) throw Refusal(AbemaApprovalRegionFailure.REFUSED_REQUEST)
+            if (connection.url.toExternalForm() != uri) throw Refusal(AbemaApprovalRegionFailure.REFUSED_REQUEST)
             if (status in 300..399) throw Refusal(AbemaApprovalRegionFailure.REDIRECT_REFUSED)
             if (status !in 100..599) throw Refusal(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             val allowOrigin = connection.getHeaderField("Access-Control-Allow-Origin")

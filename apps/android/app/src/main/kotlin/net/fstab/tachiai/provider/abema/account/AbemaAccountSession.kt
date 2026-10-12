@@ -7,8 +7,8 @@ internal class AbemaAccountLease internal constructor(val grant: AbemaAccountGra
 }
 
 // No persisted 'validated' bit. Every recreated/resumed session needs a fresh
-// authenticated profile check plus positive/invalid-bearer enforcement evidence
-// made through this captured owner. Pausing drops all usable account leases.
+// profile identity check with the saved grant through this captured owner.
+// Pausing drops all usable account leases.
 internal class AbemaAccountSession(private val store: AbemaAccountGrantStore,
     private val wallMs: () -> Long, private val canUse: () -> Boolean) {
     private val lock = Any()
@@ -42,6 +42,10 @@ internal class AbemaAccountSession(private val store: AbemaAccountGrantStore,
     fun setForeground(value: Boolean) = synchronized(lock) {
         foreground = value; generation++; validatedRevision = null
         status = if (!value) AbemaAccountStatus.PAUSED else if (record == null) AbemaAccountStatus.MISSING else AbemaAccountStatus.UNVERIFIED
+    }
+    fun invalidateValidation() = synchronized(lock) {
+        generation++; validatedRevision = null
+        status = if (!foreground) AbemaAccountStatus.PAUSED else if (record == null) AbemaAccountStatus.MISSING else AbemaAccountStatus.UNVERIFIED
     }
     private class Snapshot(val record: AbemaStoredAccount, val revision: Long, val generation: Long, val lastWall: Long, val validated: Boolean)
     // Only scalar checks run under the session monitor. Protected owner checks,
@@ -77,8 +81,8 @@ internal class AbemaAccountSession(private val store: AbemaAccountGrantStore,
         if (valid(value) == null) return null
         return synchronized(lock) { value.record.takeIf { current(value) } }
     }
-    fun acceptExisting(expected: AbemaStoredAccount, profileId: String, enforcement: Boolean): Boolean {
-        if (profileId != expected.grant.userId || !enforcement) return false
+    fun acceptExisting(expected: AbemaStoredAccount, profileId: String): Boolean {
+        if (profileId != expected.grant.userId) return false
         val value = capture(expected) ?: return false
         if (valid(value) == null) return false
         return synchronized(lock) {
@@ -86,9 +90,9 @@ internal class AbemaAccountSession(private val store: AbemaAccountGrantStore,
             else { validatedRevision = value.revision; status = AbemaAccountStatus.CONNECTED; true }
         }
     }
-    fun acceptReplacement(grant: AbemaAccountGrant, profileId: String, enforcement: Boolean,
+    fun acceptReplacement(grant: AbemaAccountGrant, profileId: String,
         expectedRevision: Long, canCommit: () -> Boolean): Boolean {
-        if (!enforcement || profileId != grant.userId) return false
+        if (profileId != grant.userId) return false
         val prior = capture()
         val (run, minimumWall) = synchronized(lock) { if (!foreground) return false; generation to lastWall }
         if (!canUse() || !currentGeneration(run)) return false

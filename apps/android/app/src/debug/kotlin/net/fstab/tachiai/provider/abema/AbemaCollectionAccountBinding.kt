@@ -35,7 +35,6 @@ internal class AbemaCollectionAccountBinding(
     override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
 ) : AbemaCollectionAccountAccess, AutoCloseable {
     companion object {
-        private const val INVALID_BEARER = "tachiai-invalid-bearer"
         private val cancellationWorkers = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue<Runnable>(32), { action -> Thread(action, "abema-collection-cancel").apply { isDaemon = true } })
         // Whole resources may wait for their own native/route close receipts.
@@ -215,22 +214,14 @@ internal class AbemaCollectionAccountBinding(
             val positive = it.profile(context.guestId, context.guestBearer)
             requireCurrent(::gate)
             if (positive !is AbemaAccountProfileResult.Identity || positive.id != context.guestId) throw Denied()
-            if (it.profile(context.guestId, INVALID_BEARER) !== AbemaAccountProfileResult.Rejected) throw Denied()
-            requireCurrent(::gate)
             val account = it.profile(record.grant.userId, record.grant.bearer)
             if (account !is AbemaAccountProfileResult.Identity || account.id != record.grant.userId || account.id == context.guestId) throw Denied()
             account.id
         }
         requireCurrent(::gate)
-        if (!session.acceptExisting(record, profileId, true)) throw Denied()
+        if (!session.acceptExisting(record, profileId)) throw Denied()
         val accountLease = session.lease() ?: throw Denied()
         fun listGate() = gate() && accountLease.usable() && gate()
-        val negative = owned({ collectionTransportFactory({ INVALID_BEARER.takeIf { listGate() } }, ::listGate) },
-            AbemaCollectionTransport::cancelActiveRequest, ::listGate) {
-            if (it.kind != kind) throw Denied()
-            it.fetch(null)
-        }
-        if (negative.kind != kind || negative.status !in setOf(401, 403)) throw Denied()
         val positive = owned({ collectionTransportFactory({ record.grant.bearer.takeIf { listGate() } }, ::listGate) },
             AbemaCollectionTransport::cancelActiveRequest, ::listGate) {
             if (it.kind != kind) throw Denied()

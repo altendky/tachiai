@@ -71,7 +71,7 @@ class AbemaApprovalRegionDeviceTest {
             return inputClosed && disconnected
         }
     }
-    private class ClientRegion(val allowed: Boolean, val status: Boolean, val expectedCdn: Boolean,
+    private class ClientRegion(val allowed: Boolean, val status: Boolean, val expectedCdn: Boolean, val publicRegionHost: String?,
         val japan: Boolean, val tokyo: Boolean)
     private class PageSummary(val status: Int, val region: ClientRegion?, val sorry: Boolean, val size: Int)
 
@@ -79,7 +79,13 @@ class AbemaApprovalRegionDeviceTest {
         optIn("tachiaiReadOnlyAbemaApprovalRegion", "REGION", ::observe)
     }
     @Test fun optInSavedRouteChecksPublicApprovalPageInitialFlagsWithoutSavedWrites() {
-        optIn("tachiaiReadOnlyAbemaApprovalPage", "PAGE", ::observePage)
+        optIn("tachiaiReadOnlyAbemaApprovalPage", "PAGE") { observePage(it) }
+    }
+    @Test fun optInSavedRouteChecksPublicEmailPageWithWebViewIdentityWithoutSavedWrites() {
+        optIn("tachiaiReadOnlyAbemaEmailPage", "EMAIL_PAGE_WEBVIEW") { observePage(it, email = true) }
+    }
+    @Test fun optInSavedRouteChecksPublicEmailPageWithDesktopReferenceIdentityWithoutSavedWrites() {
+        optIn("tachiaiReadOnlyAbemaEmailPage", "EMAIL_PAGE_DESKTOP") { observePage(it, email = true, desktop = true) }
     }
     private fun optIn(gate: String, prefix: String, observation: (String) -> Unit) {
         val args = InstrumentationRegistry.getArguments()
@@ -115,7 +121,7 @@ class AbemaApprovalRegionDeviceTest {
         }
     }
 
-    private fun observePage(instanceId: String) {
+    private fun observePage(instanceId: String, email: Boolean = false, desktop: Boolean = false) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
             { providerInstanceStore(context).read { legacyProviderSettings(context) } },
@@ -123,6 +129,10 @@ class AbemaApprovalRegionDeviceTest {
         val before = encryptedRecords(context.noBackupFilesDir)
         val owner = readOwner()
         val profile = owner.profile ?: throw ClosedFailure(AbemaApprovalRegionFailure.REFUSED_REQUEST)
+        val selectedSummary = connectionProfileStore(context).summaries().singleOrNull {
+            it.id == owner.instance.setup.route?.connectionId
+        } ?: throw ClosedFailure(AbemaApprovalRegionFailure.REFUSED_REQUEST)
+        val windscribeName = selectedSummary.name.contains("windscribe", ignoreCase = true)
         val started = SystemClock.elapsedRealtime()
         val deadline = started + 45_000
         val owned = Owned()
@@ -139,7 +149,13 @@ class AbemaApprovalRegionDeviceTest {
                 })
             val route = checkNotNull(owned.route)
             owned.routeClose = AbemaAccountCleanupReceipt(route, RouteSession::close)
-            summary = readPage(owned, route, WebSettings.getDefaultUserAgent(context), deadline) {
+            // Fixed public identity from the 2026-10-11 Brave document request.
+            // This is a cookie-free diagnostic comparison, not a login browser
+            // identity change. All other request fields remain identical.
+            val userAgent = if (desktop) "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36" else WebSettings.getDefaultUserAgent(context)
+            val uri = if (email) "https://abema.tv/account" else "https://abema.tv/account/change-from-device"
+            summary = readPage(owned, route, uri, userAgent, deadline) {
                 owner.sameOwnership(readOwner())
             }
         } finally {
@@ -160,14 +176,18 @@ class AbemaApprovalRegionDeviceTest {
         val flags = summary.region?.let { region ->
             "CLIENT_REGION_PRESENT IS_ALLOWED_${if (region.allowed) "TRUE" else "FALSE"} " +
                 "STATUS_${if (region.status) "TRUE" else "FALSE"} CDN_EXPECTED_${if (region.expectedCdn) "TRUE" else "FALSE"} " +
+                "REGION_HOST_${region.publicRegionHost ?: "UNRECOGNIZED"} " +
                 "COUNTRY_${if (region.japan) "JP" else "OTHER"} TIMEZONE_${if (region.tokyo) "TOKYO" else "OTHER"}"
         } ?: "CLIENT_REGION_MISSING"
-        Log.i(LOG_TAG, "$http $flags SORRY_${if (summary.sorry) "TRUE" else "FALSE"} bodyBytes=${summary.size}")
+        val path = if (email) "EMAIL_ACCOUNT" else "DEVICE_ACCOUNT"
+        val identity = if (desktop) "DESKTOP_REFERENCE" else "WEBVIEW_DEFAULT"
+        Log.i(LOG_TAG, "$path $identity SAVED_ROUTE_${profile.kind.id} OWNER_CURRENT_TRUE " +
+            "SELECTED_NAME_CONTAINS_WINDSCRIBE_${if (windscribeName) "TRUE" else "FALSE"} " +
+            "$http $flags SORRY_${if (summary.sorry) "TRUE" else "FALSE"} bodyBytes=${summary.size}")
     }
 
-    private fun readPage(owned: Owned, route: RouteSession, userAgent: String, deadline: Long,
+    private fun readPage(owned: Owned, route: RouteSession, uri: String, userAgent: String, deadline: Long,
         ownerCurrent: () -> Boolean): PageSummary {
-        val uri = "https://abema.tv/account/change-from-device"
         val began = SystemClock.elapsedRealtime()
         val end = minOf(deadline, began + 15_000)
         val expired = AtomicBoolean()
@@ -266,7 +286,12 @@ class AbemaApprovalRegionDeviceTest {
             val country = json.get("isoCountryCode") as? String ?: throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             val timezone = if (json.has("timezone")) json.get("timezone") as? String
                 ?: throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE) else null
-            ClientRegion(allowed, status, cdn == AbemaApprovalRegionCheck.URI, country == "JP", timezone == "Asia/Tokyo")
+            // Only a canonical public ABEMA CDN /region URL can leave this
+            // cookie-free probe; no arbitrary URL/path/query is reported.
+            val publicRegionHost = Regex("https://([a-z0-9-]{1,63}-abematv\\.akamaized\\.net)/region")
+                .matchEntire(cdn)?.groupValues?.get(1)
+            ClientRegion(allowed, status, cdn == AbemaApprovalRegionCheck.URI, publicRegionHost,
+                country == "JP", timezone == "Asia/Tokyo")
         } catch (error: ClosedFailure) { throw error }
         catch (_: Throwable) { throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE) }
     }

@@ -16,8 +16,10 @@ internal sealed interface AbemaAccountProfileResult {
     data object Rejected : AbemaAccountProfileResult
     data object Inconclusive : AbemaAccountProfileResult
 }
+internal enum class AbemaAccountEmailResult { REGISTERED, UNREGISTERED, REJECTED, INCONCLUSIVE }
 internal interface AbemaAccountTransport : AutoCloseable {
     fun profile(id: String, bearer: String): AbemaAccountProfileResult
+    fun emailRegistration(id: String, bearer: String): AbemaAccountEmailResult = AbemaAccountEmailResult.INCONCLUSIVE
     fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult
     fun cancelActiveRequest()
 }
@@ -188,6 +190,16 @@ internal class AbemaAccountHttpTransport(
             200 -> AbemaAccountProfileResult.Identity(parseAbemaAccountProfile(result.body ?: accountRefused()))
             401, 403 -> AbemaAccountProfileResult.Rejected
             else -> AbemaAccountProfileResult.Inconclusive
+        }
+    }
+    override fun emailRegistration(id: String, bearer: String): AbemaAccountEmailResult {
+        if (!accountId(id)) accountRefused()
+        val result = request(URL("https://api.p-c3-e.abema-tv.com/v1/users/$id/email"), bearer)
+        return when (result.status) {
+            200 -> parseAbemaAccountEmailRegistration(result.body ?: accountRefused())
+            401, 403 -> AbemaAccountEmailResult.REJECTED
+            404 -> AbemaAccountEmailResult.UNREGISTERED
+            else -> AbemaAccountEmailResult.INCONCLUSIVE
         }
     }
     override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult {

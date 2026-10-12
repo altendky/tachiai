@@ -115,6 +115,29 @@ class AbemaApprovalRegionCheckTest {
         assertEquals(1, invalid.disconnects); assertEquals(0, invalid.bodyReads)
     }
 
+    @Test fun bothReviewedRegionResourcesUseTheRequestedRouteDestinationAndRefuseOtherUrlsBeforeOpening() {
+        for (uri in listOf("https://ds-glb-linear-abematv.akamaized.net/region",
+            "https://ds-linear-abematv.akamaized.net/region")) {
+            val connection = Connection(url = uri)
+            var opened = 0
+            val check = adapter(connection, onOpen = { opened++; assertEquals(uri, it.toExternalForm()) })
+            assertEquals(200, (check.check("https://abema.tv", uri) as AbemaApprovalRegionResult.Reply).status)
+            assertEquals(1, opened); assertEquals(1, connection.disconnects); assertEquals(0, connection.bodyReads)
+            assertTrue(check.closeConfirmed())
+        }
+        for (uri in listOf("https://ds-linear-abematv.akamaized.net/media", "https://ds-linear-abematv.akamaized.net/region?token=fixture",
+            "https://other-abematv.akamaized.net/region", "https://abema.tv/", "http://ds-linear-abematv.akamaized.net/region")) {
+            var opened = 0
+            val check = adapter(Connection(), onOpen = { opened++ })
+            assertEquals(AbemaApprovalRegionFailure.REFUSED_REQUEST, failure(check.check("https://abema.tv", uri)))
+            assertEquals(0, opened); assertTrue(check.closeConfirmed())
+        }
+        val wrong = Connection(url = "https://ds-glb-linear-abematv.akamaized.net/region")
+        assertEquals(AbemaApprovalRegionFailure.REFUSED_REQUEST,
+            failure(adapter(wrong).check("https://abema.tv", "https://ds-linear-abematv.akamaized.net/region")))
+        assertEquals(1, wrong.disconnects); assertEquals(0, wrong.bodyReads)
+    }
+
     @Test fun redirectsAndWrongReturnedResourceNeverReadLocationFollowOrReadBody() {
         for (status in listOf(300, 301, 302, 303, 304, 307, 308, 399)) {
             val connection = Connection(status)

@@ -8,9 +8,21 @@ import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.provider.abema.account.allowedAccountUrl
 
 // Connection creation only; these fixtures never connect to a provider or proxy.
 class AbemaAccountRouteTest {
+    @Test fun nativeAccountEmailAllowanceIsExactAndUsesTheExistingReviewedHost() {
+        assertTrue(allowedAccountUrl(URL("https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email")))
+        for (url in listOf("http://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email",
+            "https://api.p-c3-e.abema-tv.com:443/v1/users/FIXTURE_USER/email",
+            "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email?private",
+            "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email#private",
+            "https://user@api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email",
+            "https://api.abema.io/v1/users/FIXTURE_USER/email",
+            "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email/other"))
+            assertFalse(allowedAccountUrl(URL(url)))
+    }
     private fun profile() = parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())
     private class Backend : RouteBackend {
         override val proxyPort = 12345
@@ -31,7 +43,8 @@ class AbemaAccountRouteTest {
             }
             try {
                 for (url in listOf("https://abema.tv/api/auth/login/guest", "https://abema.tv/api/auth/oauth/token",
-                    "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER")) {
+                    "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER",
+                    "https://api.p-c3-e.abema-tv.com/v1/users/FIXTURE_USER/email")) {
                     val connection = route.open(URL(url))
                     assertTrue(connection is RoutedHttpsConnection)
                     assertEquals(selected != null, connection.usingProxy()); connection.disconnect()

@@ -36,8 +36,8 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             BackHandler { finish() }
             val current = controller
             val state = if (current == null) initial else current.state.collectAsState().value
-            AbemaAccountConnectionScreen(state, { current?.connect() }, { current?.handoffBrowser(::openApproval) },
-                { current?.continueApproval() }, { current?.revalidate() }, { current?.checkEnforcement() },
+            AbemaAccountConnectionScreen(state, { current?.connectEmail(::openApproval) },
+                { current?.finishEmailConnection() }, { current?.revalidate() },
                 { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null)
         } }
         val id = intent.getStringExtra(INSTANCE_ID)
@@ -51,7 +51,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
                 controller = AbemaAccountConnectionController(binding, AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
                     { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
                     android.os.SystemClock::elapsedRealtime, System::currentTimeMillis, resumed,
-                    FailureDiagnostics.create(applicationContext)).also { if (resumed) it.load() }
+                    FailureDiagnostics.create(applicationContext), AndroidAbemaEmailGrantHandoff.inbox).also { if (resumed) it.load() }
             }
         }
     }
@@ -62,7 +62,8 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
                 .putExtra(AbemaApprovalBrowserActivity.INSTANCE_ID, request.instanceId)
                 .putExtra(AbemaApprovalBrowserActivity.OWNER_PROOF, request.ownerProof)
                 .putExtra(AbemaApprovalBrowserActivity.VERIFICATION_URI, request.verificationUri)
-                .putExtra(AbemaApprovalBrowserActivity.DEADLINE, request.deadlineElapsedMs))
+                .putExtra(AbemaApprovalBrowserActivity.DEADLINE, request.deadlineElapsedMs)
+                .putExtra(AbemaApprovalBrowserActivity.EMAIL_NONCE, request.emailNonce))
             true
         } catch (_: Exception) { false }
     }

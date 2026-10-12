@@ -49,7 +49,7 @@ func localAuth() string {
 
 func TestBridgeAdmission(t *testing.T) {
 	var calls atomic.Int32
-	r, err := newRoute(localUser, localPassword, localRealm, "example.test,*-abematv.akamaized.net,*.ttvnw.net,*.twitchcdn.net", func(context.Context, string) (net.Conn, error) { calls.Add(1); return nil, errConnect }, nil)
+	r, err := newRoute(localUser, localPassword, localRealm, "example.test,*-abematv.akamaized.net,*.ttvnw.net,*.twitchcdn.net,*.abema-tv.com", func(context.Context, string) (net.Conn, error) { calls.Add(1); return nil, errConnect }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,9 @@ func TestBridgeAdmission(t *testing.T) {
 		{"127.0.0.1:443", localAuth(), 403}, {"example.test.evil.test:443", localAuth(), 403},
 		{"evil-abematv.akamaized.net:443", localAuth(), 502}, {"nested.evil-abematv.akamaized.net:443", localAuth(), 403},
 		{"video-weaver.foo.hls.ttvnw.net:443", localAuth(), 502}, {"evilttvnw.net:443", localAuth(), 403},
+		{"auth.abema-tv.com:443", localAuth(), 502}, {"gateway.p-c2-x.abema-tv.com:443", localAuth(), 502},
+		{"abema-tv.com:443", localAuth(), 403}, {"evilabema-tv.com:443", localAuth(), 403},
+		{"gateway.p-c2-x.abema-tv.com.evil.test:443", localAuth(), 403}, {"auth.abema-tv.com:80", localAuth(), 403},
 	} {
 		c, _, status := connect(t, r, test.target, test.auth)
 		c.Close()
@@ -70,8 +73,35 @@ func TestBridgeAdmission(t *testing.T) {
 			t.Fatalf("Wrong admission status: got %d wanted %d", status, test.status)
 		}
 	}
-	if calls.Load() != 2 {
+	if calls.Load() != 4 {
 		t.Fatal("Rejected requests contacted transport")
+	}
+}
+
+func TestApprovedSubdomainPatternsExcludeApexAndLookalikes(t *testing.T) {
+	for _, pattern := range []string{"*.ttvnw.net", "*.twitchcdn.net", "*.abema-tv.com"} {
+		hosts, err := parseHosts(pattern)
+		if err != nil {
+			t.Fatal("Approved pattern refused")
+		}
+		r := Route{allowed: hosts}
+		apex := strings.TrimPrefix(pattern, "*.")
+		for _, host := range []string{"one." + apex, "one.two.three." + apex} {
+			if !r.permits(host) {
+				t.Fatalf("Subdomain refused: %s", host)
+			}
+		}
+		for _, host := range []string{apex, "evil" + apex, "one." + apex + ".evil.test", "." + apex,
+			"one.." + apex, "one." + apex + ".", "ONE." + apex} {
+			if r.permits(host) {
+				t.Fatalf("Outside or invalid host admitted: %s", host)
+			}
+		}
+	}
+	for _, pattern := range []string{"*", "*.com", "*.example.test", "*abema-tv.com", "*.*.abema-tv.com", "*.ABEMA-TV.COM"} {
+		if _, err := parseHosts(pattern); err == nil {
+			t.Fatalf("Unapproved pattern admitted: %s", pattern)
+		}
 	}
 }
 

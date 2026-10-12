@@ -45,27 +45,48 @@ class AbemaApprovalBrowserPolicyTest {
         assertEquals(setOf(
             "abema.tv",
             "auth.abema.tv",
-            "api.p-c3-e.abema-tv.com",
+            "*.abema-tv.com",
             "ds-glb-linear-abematv.akamaized.net",
+            "ds-linear-abematv.akamaized.net",
         ),
             AbemaApprovalBrowserPolicy.HOSTS.split(',').toSet())
     }
 
     @Test fun providerRegionCheckIsAnExactGetResourceWithoutCdnNavigationOrMedia() {
-        val origin = "https://ds-glb-linear-abematv.akamaized.net"
-        for (port in listOf("", ":443")) {
-            val url = "$origin$port/region"
-            assertTrue(AbemaApprovalBrowserPolicy.allowedResource(url, "GET"))
-            assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation(url))
+        for (host in listOf("ds-glb-linear-abematv.akamaized.net", "ds-linear-abematv.akamaized.net")) {
+            val origin = "https://$host"
+            assertTrue(AbemaApprovalBrowserPolicy.allowedResource("$origin/region", "GET"))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation("$origin/region"))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedResource("$origin:443/region"))
             for (method in listOf("POST", "HEAD", "OPTIONS", "get", ""))
-                assertFalse(method, AbemaApprovalBrowserPolicy.allowedResource(url, method))
+                assertFalse(method, AbemaApprovalBrowserPolicy.allowedResource("$origin/region", method))
+            for (suffix in listOf("", "/", "/region/", "//region", "/%72egion", "/region?fixture=value",
+                "/region#fixture", "/channel/fixture/playlist.m3u8", "/media/fixture"))
+                assertFalse(suffix, AbemaApprovalBrowserPolicy.allowedResource(origin + suffix))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedResource("$origin.other.invalid/region"))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedResource("http://$host/region"))
         }
-        for (suffix in listOf("", "/", "/region/", "//region", "/%72egion", "/region?fixture=value",
-            "/region#fixture", "/channel/fixture/playlist.m3u8", "/media/fixture"))
-            assertFalse(suffix, AbemaApprovalBrowserPolicy.allowedResource(origin + suffix))
-        assertFalse(AbemaApprovalBrowserPolicy.allowedResource("https://ds-glb-linear-abematv.akamaized.net.other.invalid/region"))
-        assertFalse(AbemaApprovalBrowserPolicy.allowedResource("http://ds-glb-linear-abematv.akamaized.net/region"))
         assertTrue(AbemaApprovalBrowserPolicy.allowedResource("https://abema.tv/api/auth/login/email", "POST"))
+    }
+
+    @Test fun providerOwnedResourceSubdomainsSupportStartupAndKeepNavigationSeparate() {
+        for (host in listOf("gateway.p-c2-x.abema-tv.com", "api.p-c3-e.abema-tv.com", "image.p-c2-x.abema-tv.com",
+            "media.p-c3-e.abema-tv.com", "license.p-c3-e.abema-tv.com", "streaming-api-cf.p-c2-x.abema-tv.com",
+            "new-api.abema-tv.com", "nested.new-api.abema-tv.com")) {
+            for (method in listOf("GET", "OPTIONS", "POST", "HEAD", "PUT", "DELETE"))
+                assertTrue(AbemaApprovalBrowserPolicy.allowedResource("https://$host/resource?fixture=value", method))
+            assertTrue(AbemaApprovalBrowserPolicy.allowedResource("https://$host:443/resource"))
+            assertFalse(AbemaApprovalBrowserPolicy.allowedNavigation("https://$host/resource"))
+        }
+        for (url in listOf("https://abema-tv.com/web", "https://evilabema-tv.com/web",
+            "https://gateway.p-c2-x.abema-tv.com.other.invalid/web", "https://abema-tv.com.evil.invalid/web",
+            "https://-api.abema-tv.com/web", "https://api-.abema-tv.com/web",
+            "https://${"a".repeat(64)}.abema-tv.com/web", "https://api..abema-tv.com/web",
+            "http://gateway.p-c2-x.abema-tv.com/web", "https://user@gateway.p-c2-x.abema-tv.com/web",
+            "https://gateway.p-c2-x.abema-tv.com:444/web")) {
+            assertFalse(url, AbemaApprovalBrowserPolicy.allowedResource(url))
+            assertFalse(url, AbemaApprovalBrowserPolicy.allowedNavigation(url))
+        }
     }
 
     @Test fun unsafeAuthoritiesSchemesTraversalAndHiddenControlsAreRefused() {
@@ -85,9 +106,8 @@ class AbemaApprovalBrowserPolicyTest {
         }
     }
 
-    @Test fun otherProviderAndMediaOriginsRemainOutsideApprovalPolicy() {
-        for (host in listOf("api.abema.io", "image.p-c2-x.abema-tv.com", "media.p-c3-e.abema-tv.com",
-            "license.p-c3-e.abema-tv.com", "streaming-api-cf.p-c2-x.abema-tv.com", "linear-abematv.akamaized.net",
+    @Test fun unrelatedOriginsRemainOutsideApprovalPolicy() {
+        for (host in listOf("api.abema.io", "linear-abematv.akamaized.net",
             "id.twitch.tv", "gql.twitch.tv", "www.abema.tv", "auth.abema.tv.other.invalid")) {
             val url = "https://$host/fixture"
             assertFalse(url, AbemaApprovalBrowserPolicy.allowedNavigation(url))

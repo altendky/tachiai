@@ -1,14 +1,17 @@
 # ABEMA catalog and account access
 
 The [guest-only preparation experiment](abema-guest-bootstrap.md) isolates the
-fresh-session prerequisite for account linking. It does not verify an existing
-account, profile/client identity or account-backed collection access.
+fresh-session prerequisite for account linking. Its guest evidence is separate
+from the later [native email account acceptance](#native-email-account-acceptance--2026-10-12),
+[My List observation](#intended-account-my-list-acceptance--2026-10-12) and
+[History observation](provider-history-access.md#intended-account-history-acceptance--2026-10-12).
 
-This is the bounded documentation research for
-[issue #100](https://github.com/altendky/tachiai/issues/100), reviewed on
-2026-10-09. Published ABEMA features and public content identities provide a
-selection model, but do not establish a supported external catalog or account
-integration. The remaining account-access gates below keep #100 open.
+This document combines the bounded 2026-10-09 research for
+[issue #100](https://github.com/altendky/tachiai/issues/100) with dated
+implementation and device evidence below. Public discovery, one saved email
+account and first-page account collections have bounded native acceptance;
+they do not establish a supported external catalog or account API. Broader
+coverage, identity and lifecycle gates keep #100 and #101 open.
 
 ## Current authorization — 2026-10-10
 
@@ -18,24 +21,31 @@ endpoints wherever a needed operation has no documented API. The old
 supported-only and fixed-content permission limits are superseded by the
 [current integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10)
 and the updated #100/#101/#103 bodies. Lack of official API documentation is an
-evidence classification, not another permission gate. Technical access/session,
-identity, route and entitlement verification remains outstanding.
+evidence classification, not another permission gate. The dated observations
+below establish bounded acceptance; further lifecycle, route and entitlement
+checks remain outstanding.
 
 ## Evidence boundary
 
-Research used official ABEMA help and public content pages. It did not use an
-ABEMA account, credentials, private API probes, a device, changed network routes,
+The original research used official ABEMA help and public content pages. It did
+not use an ABEMA account, credentials, private API probes, a device, changed network routes,
 or playback/DRM experiments. The research browser's region, engine and account
 state were not established. An attempt to open the public sumo live page returned
 a regional restriction; other pages exposed published program metadata. These
 observations establish public identities and documented service features, not
 current regional availability, playback entitlement or Android behavior.
 
-The existing cached native prototype creates fresh guest state and prepares
-fixed sample resources. It is not an existing user's account connection or a
-general catalog integration. Its reviewed guest/metadata/playback requests
-did not themselves grant broader catalog, authentication or licensing scope; the
-subsequent approval above provides the current integration authority. See the
+The cached native prototype creates fresh guest state separately from the
+instance-owned email account connection. In addition to retained historical
+comparisons, it implements [exact configured episodes](#exact-configured-episode-playback)
+and [linear channels](#exact-configured-linear-channel-playback), with a separate
+[exact-slot bridge](#exact-broadcast-catch-up-adapter).
+The [stronger episode observation](#exact-slot-playback-acceptance-harness--2026-10-12)
+verified rendered video, two advancing READY samples and confirmed cleanup for
+one free episode; eligible-slot, account-required and broader playback remain
+unverified. Guest playback does not establish an existing account or account
+entitlement. The current approval above provides integration authority; reviewed
+requests alone did not grant broader scope. See the
 [security boundaries](security-and-privacy.md) and
 [media-origin approvals](media-origin-approvals.md).
 
@@ -45,12 +55,12 @@ subsequent approval above provides the current integration authority. See the
 | --- | --- | --- |
 | Public discovery | Search, genres and timetable on provider pages | Channels browsing and exact lookup use the bounded public channel endpoint below. A separate public Schedule snapshot projects exact broadcasts; one saved-route guest response passed the bounded device observation below. [Provider-wide Search and exact Season children](abema-search.md) have bounded real metadata acceptance: two Search observations and one exact Season page passed. Genres and complete provider coverage are not implemented. |
 | Future broadcasts | Timetable describes one week ahead and one week back | Save an already published slot before it starts; a future announcement does not supply an unpublished slot ID. |
-| My List | Programs, episodes and series; new-episode and broadcast notifications | Native collection retrieval is not verified. Explicit local import is separate from account-list synchronization. |
+| My List | Programs, episodes and series; new-episode and broadcast notifications | The read-only native adapter has [bounded intended-account acceptance](#intended-account-my-list-acceptance--2026-10-12): one entry, no continuation, saved account/route/configured items preserved. Complete coverage, pagination and all resource kinds remain unverified; local import is separate from account-list synchronization. |
 | Expired items | My List automatically removes expired content | Tachiai retains its configured identities until local removal, independently of provider availability or list membership. |
-| Watch history | Catch-up programs and played videos | Account-backed access is follow-up #102. Coverage of all live-channel viewing is not established. |
+| Watch history | Catch-up programs and played videos | The read-only native adapter has [bounded intended-account acceptance](provider-history-access.md#intended-account-history-acceptance--2026-10-12): two entries and an available continuation that was not followed. Complete history coverage, pagination and all live-channel viewing remain unverified under #102. |
 | Channel preferences | TV preview permits custom channel/competition ordering | Ordering is not proof of a favorites collection, account synchronization or external retrieval. |
 | Account identity | Automatically issued ID owns plans, profile, My List and history | Fresh guest state, an existing account and paid membership are different concepts. |
-| Account sharing | Provider-controlled email verification or ID/one-time-password flow | A documented provider page flow does not establish a Tachiai-owned native grant, session or readable account collection. |
+| Account sharing | Provider-controlled email verification or ID/one-time-password flow | [Provider-controlled email connection](#native-email-account-acceptance--2026-10-12) established protected native grant adoption, fresh validation and process-restart persistence for one instance on tachiai-dev through Windscribe. Other auth methods, multi-instance isolation, switching, expiry/revocation and logout remain unverified. |
 
 Sources: [timetable](https://help.abema.tv/hc/ja/articles/360022626672),
 [My List](https://help.abema.tv/hc/ja/articles/4540947034265),
@@ -65,8 +75,11 @@ Official documentation confirms that existing account data can be shared with
 ABEMA's browser/app surfaces. It does not document a third-party token exchange
 or collection API in the material reviewed. No supported external interface was
 found; this is a bounded negative finding, not proof that partner integrations
-or other supported interfaces do not exist. Native access should remain
-explicitly not verified rather than appear as an empty account list.
+or other supported interfaces do not exist. The later native email, My List and
+History observations establish bounded integration through verified first-party
+behavior, without establishing official external API support. Capabilities outside
+those observations must retain explicit unverified or access-required states
+rather than appear as an empty account list.
 
 ## Public identities and saved intent
 
@@ -126,9 +139,11 @@ The transport accepts at most 512 KiB and 500 unique channels, requires bounded
 valid JSON/UTF-8 and retains only normalized ID/name. It discards playback URLs,
 opaque metadata and cookies. Channel membership and fields such as viewingOpened
 do not establish live state, regional availability or entitlement; every entry
-has UNKNOWN availability. The adapter does not resolve new channels to playback.
-The existing exact historical samples retain their implemented paths until the
-general selected-resource work in #101 is verified.
+has UNKNOWN availability. The catalog adapter itself does not prepare playback.
+The separate [configured linear-channel path](#exact-configured-linear-channel-playback)
+carries exact selected identities; its implementation does not make a Channels
+snapshot proof of entitlement or current live playback. Historical comparisons
+remain separate from selected-resource preparation.
 
 After a successful valid snapshot, a recognized public channel URL absent from
 that snapshot can still be explicitly added with UNKNOWN metadata. A bare ID
@@ -212,13 +227,15 @@ through the cached path described below. Catalog labels alone cannot implement
 resource selection. Unsupported imported resources must not resolve to News or
 the fixed replay.
 
-[Issue #103](https://github.com/altendky/tachiai/issues/103) can develop common
-connection-state/controller fixtures and the verified account integration,
-including authorized undocumented endpoints where necessary.
-Real account connection requires verification of Android behavior, instance
-ownership, selected route, session persistence and a non-invasive connection
-check. Opening ABEMA externally does not demonstrate that a Tachiai instance is
-connected. Without that verification, report account access as not verified.
+[Issue #103](https://github.com/altendky/tachiai/issues/103) has delivered an
+instance-owned [email connection](#native-email-account-acceptance--2026-10-12)
+with native identity/email validation and process-restart persistence on the
+emulator through the saved Windscribe route. Separate read-only My List and
+History observations establish more than login success alone. Opening ABEMA
+externally does not demonstrate that a Tachiai instance is connected. Other
+routes, account switching, expiry/revocation, logout and multiple independent
+instances still need their own verification; authorized undocumented access
+does not remove those technical gates.
 
 Provider credentials and codes stay on ABEMA-controlled pages. Distinct browser
 storage/account isolation and process-wide WebView routing must be established
@@ -1065,24 +1082,39 @@ establish actual playback; bounded device evidence is recorded separately in
 
 ## Remaining gates and issue status
 
-The research establishes public identity distinctions, retention semantics,
-documented account features and a bounded import direction. It does not settle
-the implementation-ready account-access acceptance of #100. Keep #100 open for:
+The original research established public identity distinctions, retention
+semantics and documented account features. Subsequent dated observations establish
+bounded public discovery and episode playback, one saved native email account
+with fresh validation after process restart, one My List entry and two History
+entries. These account observations used the owning Windscribe route on
+tachiai-dev and preserved protected records and configured items. They establish
+bounded access, not complete catalog/account or playback acceptance.
+Keep #100 and #101 open for:
 
-- A verified structured catalog and existing-account My List access design,
-  or an explicit resolution of those capability limits. A missing API search
-  result is not sufficient proof of permanent lack of support.
+- Broader structured discovery and collection coverage, real continuation
+  consumption and every supported My List/History resource kind. Genres and
+  complete provider coverage are not implemented; a missing documented API
+  is neither proof of permanent lack of support nor a new permission gate.
 - Between-basho channel availability, annual title rollover, exact
   slot-to-catch-up mapping and any recurring resolver.
 - Whether channel ordering is account-owned/synchronized and retrievable.
-- Verified Android account connection, session/account isolation, route
-  ownership, persistence, switching, expiry/revocation and logout behavior.
-- Required discovery/account origins and endpoint-policy changes verified and
-  documented under the current general integration approval.
+- Account switching, expiry/reconnection, renewal, revocation/Forget and logout,
+  plus multiple independent browser/native account instances. One successful
+  email account and process restart do not establish those lifecycle cases.
+- Actual account and collection acceptance through other routes, including the
+  implemented System approval bridge, and physical-device/TV behavior. Installation
+  or provider-free route fixtures do not establish that acceptance.
+- Real eligible free-slot, live-slot, Chase, paid/account-required and sustained
+  playback. Metadata/list membership and connected state do not establish
+  entitlement, exact current-occurrence binding or license acceptance.
+- Further required discovery/account origins and endpoint-policy changes verified
+  and documented under the current general integration approval.
 
-Account-backed My List in #101 requires both #103's working instance-owned
-connection and verified collection access. A connection alone, public import
-or fixture success does not satisfy that acceptance. Account-backed history in
-[issue #102](https://github.com/altendky/tachiai/issues/102) additionally requires
-its own verified retrieval findings. Public import and fixture/UI work remain
-independent of these account-backed gates; outstanding work must remain tracked.
+The dated email, My List and [History evidence](provider-history-access.md#intended-account-history-acceptance--2026-10-12)
+satisfy their respective bounded account/endpoint observations; each retains its
+separate ownership, route, foreground, expiry and cleanup admission. Connection
+alone, public import or fixture success does not establish an unobserved collection
+or playback capability. Broader History work remains in
+[issue #102](https://github.com/altendky/tachiai/issues/102). Public discovery/import
+and guest playback remain independent of those account-backed gates; outstanding
+work must remain tracked.

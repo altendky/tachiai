@@ -194,8 +194,8 @@ after confirmed WebView/proxy/backend cleanup and final worker ownership,
 foreground and deadline checks. Old account-link and public metadata wire
 formats remain separate. Main callbacks use cheap lifecycle checks; protected
 owner reads run on workers or WebView background interception. The consumer
-still must independently prove profile bearer enforcement, intended-account
-identity and collection compatibility; this preparation establishes none of
+still must independently check intended-account profile identity and actual
+collection access; this preparation establishes neither of
 those by itself.
 
 ### Guest-only profile observation

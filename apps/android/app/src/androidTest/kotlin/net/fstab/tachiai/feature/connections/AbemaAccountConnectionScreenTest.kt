@@ -17,83 +17,75 @@ class AbemaAccountConnectionScreenTest {
         var connects = 0
         compose.setContent { TachiaiPrototypeTheme {
             AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
-                { connects++ }, {}, {}, {}, {}, {}, {}, {})
+                { connects++ }, {}, {}, {}, {}, {})
         } }
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
         compose.onAllNodes(isToggleable()).assertCountEquals(0)
         compose.onNodeWithTag("abema-account-identity").assertDoesNotExist()
         compose.onNodeWithText("I confirm this is the existing account I intend to connect.").assertDoesNotExist()
-        compose.onNodeWithText("Connect your existing account through ABEMA’s pages. Sign-in and account selection happen in ABEMA. Tachiai never asks for your email or password.").performScrollTo().assertExists()
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().performClick()
+        compose.onNodeWithText("Connect your existing account using ABEMA’s email sign-in. Enter your email address and emailed code only on ABEMA’s pages.").performScrollTo().assertExists()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, connects) }
     }
     @Test fun savedAccountStatusDoesNotReintroduceIdentifierEntry() {
         compose.setContent { TachiaiPrototypeTheme {
             AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.UNVERIFIED, progress = AbemaAccountProgress.IDLE),
-                {}, {}, {}, {}, {}, {}, {}, {})
+                {}, {}, {}, {}, {}, {})
         } }
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
         compose.onNodeWithText("Saved ABEMA account needs fresh validation.").performScrollTo().assertExists()
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
     }
     @Test fun controllerReadinessReadingAndBusyStatePreventAnEnabledNoOp() {
         var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
         var ready by androidx.compose.runtime.mutableStateOf(true); var connects = 0; var backs = 0
         compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, {}, {}, { backs++ }, ready = ready)
+            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, { backs++ }, ready = ready)
         } }
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
         compose.runOnIdle { ready = false }
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Validate saved ABEMA account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Check ABEMA authorization").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Check ABEMA authorization").assertDoesNotExist()
         compose.onNodeWithText("ABEMA account setup is unavailable. Return to providers and reopen this account.").performScrollTo().assertExists()
         compose.onNodeWithText("Back to providers").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, backs); ready = true; state = state.copy(progress = AbemaAccountProgress.READING) }
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Reading protected account setup…").performScrollTo().assertExists()
         compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.IDLE, busy = true) }
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Wait for the current ABEMA action to finish.").performScrollTo().assertExists()
         compose.runOnIdle { assertEquals(0, connects); state = state.copy(busy = false) }
-        compose.onNodeWithText("Connect ABEMA").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
     }
     @Test fun forgetInProgressBlocksAccountActionsAndNavigation() {
         compose.setContent { TachiaiPrototypeTheme {
             AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.FORGETTING, busy = true),
-                {}, {}, {}, {}, {}, {}, {}, {})
+                {}, {}, {}, {}, {}, {})
         } }
-        for (text in listOf("Connect ABEMA", "Validate saved ABEMA account", "Check ABEMA authorization",
+        for (text in listOf("Connect ABEMA by email", "Validate saved ABEMA account",
             "Forget ABEMA account on this device", "Cancel ABEMA action", "Back to providers"))
             compose.onNodeWithText(text).performScrollTo().assertIsNotEnabled()
     }
-    @Test fun approvalAndContinueAreDistinctExplicitActions() {
-        var approvals = 0; var continuation = 0
-        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.APPROVAL_READY, canApprove = true))
+    @Test fun emailCompletionIsOfferedAfterTheProtectedBrowserHandoff() {
+        var completions = 0
+        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.WAITING_APPROVAL))
         compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state,
-                {}, { approvals++ }, { continuation++ }, {}, {}, {}, {}, {})
+            AbemaAccountConnectionScreen(state, {}, { completions++ }, {}, {}, {}, {})
         } }
-        compose.onNodeWithText("Open ABEMA approval").performScrollTo().performClick()
-        compose.onNodeWithText("Continue after approval").assertDoesNotExist()
-        compose.runOnIdle { assertEquals(1, approvals); assertEquals(0, continuation) }
-        compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.WAITING_APPROVAL, canApprove = false, canContinue = true) }
         compose.onNodeWithText("Open ABEMA approval").assertDoesNotExist()
-        compose.onNodeWithText("Continue after approval").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, approvals); assertEquals(1, continuation) }
+        compose.onNodeWithText("Finish email connection").assertDoesNotExist()
+        compose.runOnIdle { state = state.copy(canContinue = true) }
+        compose.onNodeWithText("Finish email connection").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, completions) }
     }
-    @Test fun authorizationCheckUsesPlainActionAndOutcomeTextWithoutDiagnosticCategories() {
-        var checks = 0; var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.ENFORCEMENT_PROVEN))
+    @Test fun accountSetupDoesNotOfferDiagnosticAuthorizationProbes() {
         compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state, {}, {}, {}, {}, { checks++ }, {}, {}, {})
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                {}, {}, {}, {}, {}, {})
         } }
-        compose.onNodeWithText("ABEMA authorization check passed.").performScrollTo().assertExists()
-        compose.onNodeWithText("Check ABEMA authorization").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, checks); state = state.copy(progress = AbemaAccountProgress.ENFORCEMENT_NOT_PROVEN) }
-        compose.onNodeWithText("ABEMA authorization could not be confirmed.").performScrollTo().assertExists()
+        compose.onNodeWithText("Check ABEMA authorization").assertDoesNotExist()
         compose.onNodeWithText("Check profile authorization enforcement").assertDoesNotExist()
-        compose.onNodeWithText("PROFILE_AUTH_ENFORCEMENT_ESTABLISHED").assertDoesNotExist()
-        compose.onNodeWithText("PROFILE_AUTH_ENFORCEMENT_NOT_ESTABLISHED").assertDoesNotExist()
     }
 }

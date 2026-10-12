@@ -32,10 +32,13 @@ Only public identities and titles enter the catalog. Availability stays UNKNOWN;
 viewed time, progress, completion, scheduling and entitlement are not inferred.
 Responses, datasets and continuation values have finite local bounds.
 
-History and My List use separate account bindings and separate endpoint proofs.
-History is available only after fresh intended-account validation, an invalid
-bearer refusal and a strictly parsed positive History page with confirmed
-cleanup. Profile or My List success does not establish History access. Collection
+History and My List use separate account bindings and separate access checks.
+History is available only after a fresh challenge-free guest/profile context,
+matching guest and intended-account profile identities, and a strictly parsed
+History page requested with the saved account grant, with confirmed cleanup.
+Ordinary collection access sends no deliberately invalid bearer; rejection probes
+belong to explicitly selected diagnostics. Actual provider refusals still prevent
+access. Profile or My List success does not establish History access. Collection
 kind is bound into transport admission, response projection, lease context,
 the one-use in-memory first-page seed and continuation handles. A History
 authorization refusal discards its private browsing state without erasing the
@@ -232,7 +235,7 @@ unsupported claim or a promise that connecting an account unlocks retrieval.
 Direct Twitch History browsing fails before catalog validation, refresh or
 metadata HTTP; the sample ABEMA adapter also returns not verified. The native
 ABEMA account adapter now has a separate conditional History path described
-above; its access depends on its own endpoint proof. The existing
+above; its access depends on its own endpoint response. The existing
 shared controller preflight skips unavailable collection browsing, clears the
 discovery surface and retains configured items. Users can return to ordinary
 All/Following/My List discovery with its existing access rules. Generic unverified

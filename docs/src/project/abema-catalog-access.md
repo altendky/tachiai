@@ -323,81 +323,114 @@ actual responses within local parsing bounds. Exact raw byte sizes, full
 provider date horizon, changing-schema compatibility and complete All coverage
 remain unverified; the broader #100/#101 issues remain open.
 
-### Existing-account connection implementation
+### Existing-account email connection implementation
 
-The debug Providers screen now offers an instance-owned ABEMA account screen.
-Connect is enabled once the controller is ready and idle, without entering an
-account ID, email or password and without a confirmation checkbox. ABEMA handles
-sign-in, account selection and approval through its own browser or app. The
-internal provider identity comes from the approved token response rather than
-the user's email sign-in identifier. Provider documentation describes
-[email account sharing and mobile-app QR approval](https://help.abema.tv/hc/ja/articles/28570588900377);
-it does not establish that the device-approval URL itself offers email login.
-The coherent public account-method selector independently offers provider-owned
-email sign-in followed by an emailed code, alongside separate app-account
-sharing. The public
-[device-switch chunk](https://abema.tv/assets/compat/914d635da0a8f46f.7663.bundle.js)
-uses legacy CLIENT_SWITCH device-code operations, distinct from modern OAuth.
-Their codes and fields are not interchangeable. Static login options do not
-establish approval of Tachiai's challenge; entry remains on provider pages.
-The app
-prepares a fresh guest and short-lived challenge in a separate private process,
-then returns the private challenge through same-UID IPC only after confirmed
-runtime and route cleanup. Approval opens in a separate in-app ABEMA browser
-process/profile through this instance's saved route. It uses provider-controlled
-pages, normal TLS, and its own persistent ABEMA browser login; Chrome cookies
-are not read or transferred. The browser has no native JavaScript bridge,
-injected scripts, file/content access, downloads or external navigation fallback.
-It admits the reviewed ABEMA account origins and a provider region-check origin.
-A narrow native adapter owns the exact GET without following redirects; initial
-browser admission refuses CDN media/navigation. The shared CONNECT host policy
-cannot restrict every same-CDN path reached through an account-resource redirect,
-which Android does not re-intercept; no such redirect was observed. The previous
-resource policy blocked that check with HTTP403, which the first-party page
-interprets as region denial; the owner's in-app screenshot reports that refusal.
-The correction lets ABEMA perform its own check without rewriting eligibility.
-Device geolocation is disabled and location prompts are refused; the network
-location is the configured route exit. The returned native account grant remains
-separate and per-instance.
-This browser currently requires a saved connection: its authenticated CONNECT
-bridge enforces destinations even across Chromium redirects. System-network
-browser approval needs an equivalent direct bridge; WebView interception alone
-does not check every redirected resource. Existing System-network native account
-requests are unchanged. A missing saved route is explained before page loading.
+The debug Providers screen offers an instance-owned **ABEMA account** screen.
+**Connect ABEMA by email** opens ABEMA's account page in the isolated routed
+browser. The user chooses **Switch account → Email address**, enters the email
+address and emailed six-character code on provider-controlled pages, then opens
+Account management and returns to Tachiai. **Finish email connection** performs
+native validation and saves the grant. Tachiai has no email/password/code form.
+The other authentication methods are deferred to the human-led
+[issue #196](https://github.com/altendky/tachiai/issues/196), without the agent label.
 
-Before offering approval, the app must prove that the native profile operation
-accepts the matching fresh guest bearer and refuses a deliberately invalid
-bearer. A successful public profile lookup alone is insufficient. Polling pauses
-while the app is away and retains the original challenge expiry; foreground
-polling additionally has a five-minute limit. Returning from the browser is
-not proof of approval: Continue still verifies the token and account profile.
-Browser return requires confirmed view, proxy and route cleanup; failure cancels
-the native handoff. Original owner proof and expiry also gate browser loading
-and resources. Only the observed flat
-AUTHORIZATION_PENDING response permits bounded continued polling. Unknown
-responses or uncertain cleanup stop the attempt.
+The browser passively observes only the Authorization header on the exact
+first-party GET to the modern user's email-setting endpoint. It forwards the
+original request unchanged. A candidate needs matching request identity and JWT
+subject plus a finite future expiry; it is not yet an accepted account. The
+candidate crosses a nonce/instance/owner/deadline-bound, same-UID Binder channel
+only after confirmed browser, proxy and route cleanup. It never enters an
+Intent, activity result, saved state, generic UI or diagnostics. The ordinary
+application process owns acceptance and protected storage.
 
-A returned grant must have exact agreement among its provider user ID, JWT
-subject and fresh authenticated profile, and must differ from the fresh guest.
-The account explicitly approved on ABEMA is the selected account. JWT decoding alone
-is not cryptographic validation. A positive finite future expiry is required;
-the Twitch-specific seven-day unknown-expiry policy does not apply. Native
-cookie-independent renewal is unverified and therefore requires reconnection
-rather than a cookie or refresh fallback.
+Native acceptance checks the captured owner, original store revision, current
+foreground and expiry, then requests the matching profile and a positive
+registered-email result with the candidate bearer through that route. Email
+values are discarded; only a registration category is returned. Guest/no-email,
+rejected, mismatched or late responses cannot publish Connected. JWT decoding
+alone is not cryptographic validation. Rechecking saved authorization revokes
+prior usable leases before checking the saved identity and email registration;
+a refusal cannot retain an earlier Connected status.
 
-Accepted grants use a separate per-instance AndroidKeyStore AES-GCM binding and
-no-backup atomic file. Startup/resume requires fresh validation; foreground,
-route, expiry, shared-store revision and Forget checks revoke stale leases.
-Replacement failure conditionally restores the exact prior protected record,
-never a newer replacement or Forget state. Forget first revokes admission, then
-clears local authorization while retaining configured choices and routes.
+The browser uses normal TLS and its own persistent ABEMA login. It has no native
+JavaScript bridge, injected scripts, cookie readback, file/content access,
+downloads or external navigation fallback. Desktop cookies and tokens are not
+copied to Android. Provider-owned `*.abema-tv.com` browser resources are admitted
+under the owner's 2026-10-12 instruction. The account origins and narrow region GET
+remain separate from playback networking. Geolocation and location prompts are
+refused; region remains the configured route's exit.
 
-HTTP, stream and backend cleanup use bounded exactly-once receipts. Fatal,
-reentrant, timed-out or unconfirmed cleanup cannot publish a connection or
-release a still-owned backend. Original resources stay retained and that
-instance is blocked until process restart. Diagnostics contain only closed
-failure categories, without provider errors, bearer values, account IDs or
-challenge destinations.
+A saved connection is currently required for the browser's destination-enforcing
+CONNECT bridge. System-network browser access still needs an equivalent direct
+bridge; native account requests retain their existing System-network option.
+The native email operation has an original ten-minute deadline, with provider
+code expiry independently enforced by ABEMA. No invalid-credential rejection
+probe or native guest/device challenge is part of normal email setup. The old
+profile-enforcement experiment remains opt-in instrumentation only.
+
+Accepted grants retain the per-instance AndroidKeyStore AES-GCM binding and
+no-backup atomic file. Native renewal is unverified and requires reconnection;
+refresh tokens and browser cookies are not imported or saved. Owner, foreground,
+expiry, shared-store revision and Forget revoke stale leases. Failed replacement
+conditionally restores the exact prior record, never a newer replacement or
+Forget state. Uncertain HTTP/browser/route cleanup prevents publication and
+retains the still-owned resources until process restart.
+
+### First-party desktop email reference — 2026-10-11
+
+One user-directed desktop browser run completed ABEMA's own email sign-in through
+the browser's existing connection. Exact engine/version and egress country were
+not established. Observed requests were guest login HTTP200, email-code issuance
+HTTP200, email login HTTP200, matching profile HTTP200 and registered-email
+lookup HTTP200. The code form closed, Account management displayed the supplied
+email address, and profile requests changed from the initial guest to a second
+identity. Only normalized paths/statuses and these agreement categories were
+recorded; no account identifier, address, code, cookie or token value is retained.
+
+The code request used the email one-time-passcode endpoint and completion used
+the email login endpoint, rather than modern device authorization. The current
+[first-party account asset](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js)
+confirms email issuance, emailed-code login and the registered-email lookup.
+Its email login DTO projects user ID, access token and refresh token without
+requiring OAuth's token type. The browser connector did not retain the successful
+login response body, so that response shape is static first-party evidence,
+not a captured body. The registered-email response was available and agreed
+with the address supplied to the provider. This establishes the first-party
+browser case, not Android header exposure, native grant adoption, session
+renewal, My List/history or account-backed playback.
+
+### Email page and saved-route comparison — 2026-10-11
+
+A fresh `/account` document in the working desktop browser returned HTTP200,
+initial `isAllowed=true` and `status=true`, Japan/Tokyo region categories and no
+Sorry HTML. Its request identity was Linux desktop Chrome155, with the browser
+identified by the owner as Brave. A second navigation timed out; a complete
+successful navigation/resource trace was not captured.
+
+On tachiai-dev, two cookie-free exact `/account` requests used the currently
+selected Windscribe-named WireGuard connection, with matching owner checks,
+confirmed cleanup and unchanged encrypted records. Default WebView and recorded
+desktop User-Agent requests both returned HTTP200, Japan/Tokyo eligibility and
+no Sorry HTML. A follow-up recorded only the canonical public region host:
+`ds-linear-abematv.akamaized.net`. The earlier browser policy admitted only
+`ds-glb-linear-abematv.akamaized.net` and returned a local403 for the second host;
+the verified provider consumer interprets403 as region denial. The corrected
+approval adapter admits the two exact resources and requests the page's actual
+selection through the captured route. These public-page checks establish the
+current saved route's initial eligibility, not completed browser login, grant
+adoption, or a measured exit address.
+
+After the correction, the visible browser on tachiai-dev (Android16/API36,
+WebView133.0.6943.137) recorded saved proxy application, admission of its main
+document request, accepted local proxy authentication and page start/commit/
+finish. No region-adapter result was recorded in that attempt. The protected
+page did not expose account labels to the bounded accessibility check; owner
+visual confirmation and completed email sign-in were outstanding at that stage. These
+stage categories contain no URLs, headers, provider text or credentials. The
+tested APK was installed on both tachiai-dev and the verified Pixel6, with
+matching installed hashes; the phone was not used for this browser experiment.
+
+### Historical device-authorization verification
 
 Local verification passed 2,128 JVM cases, both owned JavaScript suites,
 Android lint/release isolation, instrumentation compilation and app/test
@@ -413,10 +446,11 @@ browser, adopted no account grant and performed no token polling or storage
 write. This bounded profile-enforcement evidence does not establish a
 registered account or collection compatibility.
 
-Actual intended-account acceptance remains outstanding. A connected account would not by itself establish
+At that stage, intended-account acceptance was outstanding. A connected account does not by itself establish
 My List, history, entitlement or account-backed playback. Those capabilities
-need separate endpoint and intended-account evidence; #103 remains open until
-its real account criteria are met.
+need separate endpoint and intended-account evidence. These historical checks
+did not satisfy #103's intended-account acceptance; the later email acceptance
+is recorded below.
 
 On 2026-10-11, the corrected routed browser still displayed the known regional
 refusal without invoking its region adapter. After Return/Cancel and confirmed
@@ -432,6 +466,73 @@ coordinates or region flags are supplied. Persistent tachiai-dev, Android
 16/API 36, WebView 133.0.6943.137 and unchanged encrypted records bound these
 observations.
 
+### Gateway admission audit — 2026-10-12
+
+The exact gateway assumption exists independently of the approval browser.
+The owner-requested browser/CONNECT wildcard does not remove these native
+constraints:
+
+| Area | Current hostname coupling |
+| --- | --- |
+| Route purposes | `RouteSession` repeats `api.p-c3-e.abema-tv.com` in native request admission and CONNECT host lists for profile, metadata, account and collection operations. |
+| Guest preparation | `AbemaGuestBootstrapPolicy` and `guest-bootstrap.js` require that exact configured API origin; generated CSP repeats it. |
+| Email grant adoption | `AbemaAccountAuthorization` recognizes the email-setting request only on that host; native profile/email request constructors also select it. |
+| Replay preparation | Native helper CSP, Kotlin request policy and JavaScript checks repeat the fixed API, `streaming-api-cf.p-c2-x` and `license.p-c3-e` gateways. |
+| Slot region check | `AbemaNativeBootstrapPolicy` still accepts only the global-linear Akamai `/region`, although approval networking recognizes the provider-selected linear alternative. |
+| Selected media | `vod-cf.p-c3-e.abema-tv.com` is recognized by diagnostic classification but excluded by the active approved-media origin set; the playback CONNECT union also lacks it. |
+
+The provider-family origin policy should be distinct from endpoint operation,
+source/session identity, expiry, entitlement and manifest binding. Recognizing a
+provider-selected origin diagnostically is not currently enough for admission.
+This audit establishes duplicated constraints, not verified interchangeability
+of their APIs or completed native support for alternate gateways.
+
+On 2026-10-12 the owner observed the startup splash followed by the generic
+display-failed page, distinct from the earlier regional refusal. Local stages
+confirmed saved proxy application/authentication and document start/commit/
+finish, without a region request. The first-party landing-status request precedes
+that region step; the omitted gateway was another policy mismatch.
+
+After the owner-requested `*.abema-tv.com` browser/CONNECT update, a fresh
+tachiai-dev attempt recorded saved proxy authentication, gateway resource
+admission and then the linear-region adapter's actual HTTP200. Reaching the
+region step establishes advancement beyond the landing-status check; no gateway
+response body or authorization value was captured. Native Go race fixtures,
+both rebuilt AAR ABIs, Android tests/lint/release isolation and shared-signing
+verification passed. The same APK was installed on the emulator and verified
+Pixel6 with matching installed hashes. The owner's subsequent view confirmed
+that Account management opened with email unset; no account identifier or image
+was retained. Email sign-in and native grant acceptance were still pending in
+that startup observation; the phone was not used.
+
+### Native email account acceptance — 2026-10-12
+
+The owner completed provider-controlled email sign-in and the native connection
+on persistent tachiai-dev. A fresh opening of the native ABEMA account screen
+loaded the saved grant and reported that it needed fresh validation. The normal
+**Validate saved ABEMA account** action then reported **ABEMA account validated
+for this instance**. The operation required a matching account-profile identity,
+positive registered-email status, usable protected-store revision, current route
+owner and foreground, and an unexpired finite saved grant before accepting
+Connected. Validation uses the owning instance's saved route and confirmed
+transport cleanup; it does not replace the saved grant.
+
+Context: tachiai-dev/emulator-5580, Android16/API36/x86-64,
+WebView133.0.6943.137, configured Windscribe WireGuard route. The current
+owner-controlled connection followed the successfully admitted provider gateway
+and actual linear-region HTTP200 described above. Only public state labels and
+agreement categories were recorded, without addresses, account identifiers,
+verification codes, tokens, cookies or screenshots.
+
+One app-process stop and normal launcher restart preserved the saved account.
+Reopening its account screen again loaded an unverified protected grant, and
+the same normal validation action again reported Connected. This establishes
+saved native email-account adoption, fresh validation and process-restart
+persistence on the emulator. Future expiry/reconnection, My List, History and
+account-backed playback still need their separate runtime checks.
+The verified Pixel6 has the same installed APK but was not used for this
+account acceptance check.
+
 ### Account-backed My List adapter
 
 The debug catalog composes a read-only My List adapter around public Channels
@@ -444,10 +545,10 @@ intended-account acceptance remains unverified for both collections.
 
 Account validation runs on workers and uses the core session directly. Missing
 or corrupt protected authorization starts no provider request. A valid saved
-candidate needs a fresh challenge-free guest/profile context, matching positive
-and invalid-bearer profile checks and fresh intended-account identity agreement.
-My List additionally must reject an invalid bearer and return a strictly parsed
-page with that intended grant before reporting access as available. All proof
+candidate needs a fresh challenge-free guest/profile context, matching guest
+profile and intended-account identity agreement. My List must return a strictly
+parsed page with that intended grant before reporting access as available.
+Normal collection access makes no invalid-bearer requests. All validation
 requests retain the original guest preparation deadline. The first positive
 page can seed one initial browse in memory; it is not persisted as provider
 history or usage data.

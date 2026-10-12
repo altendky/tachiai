@@ -25,12 +25,15 @@ class AbemaAccountOwnedCleanupTest {
         override fun close() { closes++; hold?.invoke(); if (fail) throw AssertionError("PRIVATE BACKEND CLOSE") }
     }
     private class Connection(private val streamError: Boolean, private val disconnectError: Boolean,
-        private val hold: (() -> Unit)? = null) : HttpsURLConnection(URL("https://api.p-c3-e.abema-tv.com/v1/users/guest")) {
+        private val hold: (() -> Unit)? = null,
+        destination: URL = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest"),
+        private val responseBody: String = "{\"profile\":{\"userId\":\"guest\"}}",
+    ) : HttpsURLConnection(destination) {
         var streamCloses = 0; var disconnects = 0
         override fun getResponseCode() = 200
         override fun getContentType() = "application/json"
         override fun getContentLengthLong() = -1L
-        override fun getInputStream(): InputStream = object : ByteArrayInputStream("{\"profile\":{\"userId\":\"guest\"}}".toByteArray()) {
+        override fun getInputStream(): InputStream = object : ByteArrayInputStream(responseBody.toByteArray()) {
             override fun close() { streamCloses++; if (streamError) throw AssertionError("PRIVATE STREAM ERROR"); super.close() }
         }
         override fun disconnect() { disconnects++; hold?.invoke(); if (disconnectError) throw AssertionError("PRIVATE DISCONNECT ERROR") }
@@ -41,6 +44,19 @@ class AbemaAccountOwnedCleanupTest {
         override fun getServerCertificates(): Array<Certificate> = emptyArray()
         override fun getPeerPrincipal(): Principal? = null
         override fun getLocalPrincipal(): Principal? = null
+    }
+    @Test fun ownedEmailRegistrationDelegatesAndCleansTheExistingAccountRoute() {
+        val backend = Backend()
+        val c = Connection(false, false, destination = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest/email"),
+            responseBody = """{"email":"fixture@example.test","hasPassword":false}""")
+        var poisoned = 0
+        val owned = OwnedAbemaAccountTransport(parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray()),
+            { true }, { poisoned++ }, createBackend = { _, _, _ -> backend }, makeHttpTransport = { _, gate ->
+                AbemaAccountHttpTransport({ c }, gate, { 1000 }, { 1000000 })
+            })
+        assertEquals(AbemaAccountEmailResult.REGISTERED, owned.emailRegistration("guest", "private-bearer"))
+        assertEquals(1, c.streamCloses); assertEquals(1, c.disconnects); assertEquals(1, backend.closes)
+        assertEquals(0, poisoned); owned.close(); assertEquals(1, backend.closes)
     }
     @Test fun actualOwnedCleanupNeverReachesRouteOrBackendCloseAfterAnUnconfirmedHttpClose() {
         for (stream in listOf(true, false)) {
@@ -58,7 +74,7 @@ class AbemaAccountOwnedCleanupTest {
     }
     @Test fun firstHeldNativeCleanupHasAFixedFailureAndCannotReleaseRouteEvenAfterLateCompletion() {
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val finished = CountDownLatch(1)
-        val c = Connection(false, false) { entered.countDown(); try { check(release.await(5, TimeUnit.SECONDS)) } finally { finished.countDown() } }
+        val c = Connection(false, false, hold = { entered.countDown(); try { check(release.await(5, TimeUnit.SECONDS)) } finally { finished.countDown() } })
         val transport = AbemaAccountHttpTransport({ c }, { true }, { 1000 }, { 1000000 }, cleanupWaitMs = 50)
         val worker = Executors.newSingleThreadExecutor(); var routeCloses = 0
         val route = AutoCloseable { routeCloses++ }

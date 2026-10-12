@@ -24,6 +24,11 @@ const maxConnections = 16
 
 var hostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 var localCredentialPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+var subdomainPatterns = map[string]bool{
+	"*.ttvnw.net":     true,
+	"*.twitchcdn.net": true,
+	"*.abema-tv.com":  true,
+}
 
 var errConfig = errors.New("Invalid route configuration")
 var errClosed = errors.New("Route closed")
@@ -65,7 +70,7 @@ func parseHosts(input string) ([]string, error) {
 		return nil, errConfig
 	}
 	for _, host := range hosts {
-		if host != "*-abematv.akamaized.net" && host != "*.ttvnw.net" && host != "*.twitchcdn.net" && !validHost(host) {
+		if host != "*-abematv.akamaized.net" && !subdomainPatterns[host] && !validHost(host) {
 			return nil, errConfig
 		}
 	}
@@ -86,7 +91,7 @@ func (r *Route) permits(host string) bool {
 				return true
 			}
 		}
-		if (allowed == "*.ttvnw.net" || allowed == "*.twitchcdn.net") && strings.HasSuffix(host, allowed[1:]) {
+		if subdomainPatterns[allowed] && strings.HasSuffix(host, allowed[1:]) {
 			prefix := strings.TrimSuffix(host, allowed[1:])
 			if prefix != "" {
 				return true

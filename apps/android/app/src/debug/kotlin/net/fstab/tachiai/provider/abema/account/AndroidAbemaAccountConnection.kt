@@ -180,6 +180,7 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         }
     }
     override fun profile(id: String, bearer: String) = request { it.profile(id, bearer) }
+    override fun emailRegistration(id: String, bearer: String) = request { it.emailRegistration(id, bearer) }
     override fun token(challenge: AbemaAccountChallenge) = request { it.token(challenge) }
     override fun cancelActiveRequest() {
         val owned = synchronized(lock) { revision++; preparing to active }
@@ -201,4 +202,5 @@ internal fun closeAbemaAccountOwnedResources(preparation: RoutePreparation,
     return preparation.cleanupConfirmed
 }
 internal fun allowedAccountUrl(url: URL) = url.toExternalForm() == "https://abema.tv/api/auth/oauth/device/token" ||
+    abemaEmailRegistrationId(url.toExternalForm()) != null ||
     runCatching { AbemaGuestBootstrapPolicy.isProfile(url.toURI()) }.getOrDefault(false)

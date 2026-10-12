@@ -51,6 +51,37 @@ class AbemaAccountHttpTransportTest {
         AbemaAccountHttpTransport({ connection }, gate, elapsed, { 1000000 })
     private val profile = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest")
     private val token = URL("https://abema.tv/api/auth/oauth/device/token")
+    private val email = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest/email")
+    @Test fun emailRegistrationUsesExactGetAndSavedBearerWithConfirmedCleanup() {
+        val c = Connection(email, bytes = """{"email":"fixture@example.test","hasPassword":false}""".toByteArray())
+        val t = transport(c)
+        assertEquals(AbemaAccountEmailResult.REGISTERED, t.emailRegistration("guest", "private-bearer"))
+        assertEquals("GET", c.requestMethod); assertEquals("Bearer private-bearer", c.getRequestProperty("Authorization"))
+        assertNull(c.getRequestProperty("Cookie")); assertEquals(0, c.sent.size())
+        assertFalse(c.instanceFollowRedirects); assertFalse(c.useCaches)
+        assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected); t.close(); assertEquals(1, c.disconnected)
+    }
+    @Test fun emailRefusalsHaveClosedCategoriesAndNeverReadResponseBodies() {
+        for (status in listOf(401, 403, 404, 400, 302, 429, 500, 201)) {
+            val c = Connection(email, status)
+            assertEquals(when (status) {
+                401, 403 -> AbemaAccountEmailResult.REJECTED
+                404 -> AbemaAccountEmailResult.UNREGISTERED
+                else -> AbemaAccountEmailResult.INCONCLUSIVE
+            }, transport(c).emailRegistration("guest", "private-bearer"))
+            assertEquals(0, c.opened); assertEquals(1, c.disconnected)
+        }
+    }
+    @Test fun emailRegistrationCannotReturnAfterOwnerLossOrUnconfirmedCleanup() {
+        for (cleanupFailure in listOf(false, true)) {
+            val c = Connection(email, bytes = """{"email":"fixture@example.test"}""".toByteArray())
+            var allowed = true
+            if (cleanupFailure) c.throwClose = true else c.disconnectHook = { allowed = false }
+            val error = assertThrows(AbemaAccountException::class.java) { transport(c, { allowed }).emailRegistration("guest", "private-bearer") }
+            assertEquals(if (cleanupFailure) AbemaAccountFailure.CLEANUP_FAILED else AbemaAccountFailure.CANCELLED, error.category)
+            assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
+        }
+    }
     @Test fun exactProfileRequestHasBearerAndNoCookiesRedirectOrCachingAndCleansBeforeReturn() {
         val c = Connection(profile); val t = transport(c)
         assertEquals("guest", (t.profile("guest", "private-bearer") as AbemaAccountProfileResult.Identity).id)

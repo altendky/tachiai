@@ -18,15 +18,15 @@ internal class MemoryAbemaAccountStorage : AbemaAccountStorage {
 }
 class AbemaAccountSessionTest {
     private fun fixture() = MemoryAbemaAccountStorage().let { it to AbemaAccountGrantStore(UUID.randomUUID().toString(), it) }
-    @Test fun persistedGrantIsUnusableUntilFreshProfileAndEnforcementThenPauseDropsLease() {
+    @Test fun persistedGrantIsUnusableUntilFreshMatchingProfileThenPauseDropsLease() {
         val (_, store) = fixture(); var now = 1000000L
         val session = AbemaAccountSession(store, { now }, { true }); session.load()
         val grant = decodedAbemaGrant(fixtureAccountToken(), "intended-account", now)
-        assertTrue(session.acceptReplacement(grant, grant.userId, true, store.revision()) { true })
+        assertTrue(session.acceptReplacement(grant, grant.userId, store.revision()) { true })
         val lease = session.lease()!!; assertTrue(lease.usable())
         val restarted = AbemaAccountSession(store, { now }, { true }); restarted.load(); assertNull(restarted.lease())
-        assertFalse(restarted.acceptExisting(restarted.candidate()!!, grant.userId, false))
-        assertTrue(restarted.acceptExisting(restarted.candidate()!!, grant.userId, true)); assertNotNull(restarted.lease())
+        assertFalse(restarted.acceptExisting(restarted.candidate()!!, "other"))
+        assertTrue(restarted.acceptExisting(restarted.candidate()!!, grant.userId)); assertNotNull(restarted.lease())
         session.setForeground(false); assertFalse(lease.usable()); session.setForeground(true); assertNull(session.lease())
     }
     @Test fun expiryRollbackOwnerLossAndForgetImmediatelyInvalidateExistingLease() {
@@ -34,7 +34,7 @@ class AbemaAccountSessionTest {
             val (_, store) = fixture(); var now = 1000000L; var owner = true
             val session = AbemaAccountSession(store, { now }, { owner }); session.load()
             val grant = decodedAbemaGrant(fixtureAccountToken(), "intended-account", now)
-            assertTrue(session.acceptReplacement(grant, grant.userId, true, store.revision()) { true }); val lease = session.lease()!!
+            assertTrue(session.acceptReplacement(grant, grant.userId, store.revision()) { true }); val lease = session.lease()!!
             when (loss) { 0 -> now = 2000000; 1 -> now--; 2 -> owner = false; 3 -> session.forgetImmediately() }
             assertFalse(lease.usable()); assertNull(session.lease())
         }
@@ -67,7 +67,7 @@ class AbemaAccountSessionTest {
         val (storage, store) = fixture()
         val session = AbemaAccountSession(store, { 1000000 }, { true }); session.load()
         val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-        assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+        assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
         val lease = session.lease()!!; val old = storage.bytes!!.copyOf(); val loaded = session.candidate()!!
         var calls = 0
         storage.writeHook = { if (++calls == 1) throw AssertionError("PRIVATE FATAL WRITE") }
@@ -75,7 +75,7 @@ class AbemaAccountSessionTest {
         catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.STORAGE_FAILED, error.category); assertFalse(error.toString().contains("PRIVATE")); assertNull(error.cause) }
         assertArrayEquals(old, storage.bytes); assertFalse(lease.usable())
         try { store.read(); fail() } catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.STORAGE_FAILED, error.category) }
-        assertNull(session.candidate()); assertFalse(session.acceptExisting(loaded, prior.userId, true))
+        assertNull(session.candidate()); assertFalse(session.acceptExisting(loaded, prior.userId))
         storage.writeHook = { throw AssertionError("PRIVATE FATAL FORGET") }
         store.invalidateForget()
         try { store.forget(); fail() } catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.STORAGE_FAILED, error.category); assertNull(error.cause) }
@@ -88,16 +88,16 @@ class AbemaAccountSessionTest {
             val aStore = AbemaAccountGrantStore(id, storage); val bStore = AbemaAccountGrantStore(id, storage)
             val a = AbemaAccountSession(aStore, { 1000000 }, { true }); a.load()
             val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(a.acceptReplacement(prior, prior.userId, true, aStore.revision()) { true })
+            assertTrue(a.acceptReplacement(prior, prior.userId, aStore.revision()) { true })
             val old = a.candidate()!!; val oldLease = a.lease()!!
             val b = AbemaAccountSession(bStore, { 1000000 }, { true }); b.load()
             if (forget) { b.forgetImmediately(); bStore.forget() }
             else {
                 val next = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-                assertTrue(b.acceptReplacement(next, next.userId, true, bStore.revision()) { true })
+                assertTrue(b.acceptReplacement(next, next.userId, bStore.revision()) { true })
                 assertTrue(b.lease()!!.usable())
             }
-            assertNull(a.candidate()); assertFalse(a.acceptExisting(old, prior.userId, true)); assertNull(a.lease()); assertFalse(oldLease.usable())
+            assertNull(a.candidate()); assertFalse(a.acceptExisting(old, prior.userId)); assertNull(a.lease()); assertFalse(oldLease.usable())
             assertNotEquals(AbemaAccountStatus.CONNECTED, a.status())
             if (forget) assertNull(bStore.read()) else assertEquals("other", bStore.read()?.grant?.userId)
         }
@@ -111,10 +111,10 @@ class AbemaAccountSessionTest {
             true
         })
         a.load(); val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-        assertTrue(a.acceptReplacement(prior, prior.userId, true, aStore.revision()) { true })
+        assertTrue(a.acceptReplacement(prior, prior.userId, aStore.revision()) { true })
         val old = a.candidate()!!; a.setForeground(false); a.setForeground(true)
         invalidate = true
-        assertFalse(a.acceptExisting(old, old.grant.userId, true)); assertNull(a.lease()); assertNull(a.candidate())
+        assertFalse(a.acceptExisting(old, old.grant.userId)); assertNull(a.lease()); assertNull(a.candidate())
         assertNotEquals(AbemaAccountStatus.CONNECTED, a.status()); assertNull(bStore.read())
     }
     @Test fun heldPublishedWriteCannotBlockPauseOrForgetAndCannotPublishALateLease() {
@@ -122,7 +122,7 @@ class AbemaAccountSessionTest {
             val (storage, store) = fixture()
             val session = AbemaAccountSession(store, { 1000000 }, { true }); session.load()
             val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+            assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
             val priorRecord = session.candidate()!!; val lease = session.lease()!!; val priorBytes = storage.bytes!!.copyOf()
             val entered = CountDownLatch(1); val release = CountDownLatch(1); val holdFirst = AtomicBoolean(true)
             val workers = Executors.newFixedThreadPool(2); val ui = Executors.newSingleThreadExecutor()
@@ -132,7 +132,7 @@ class AbemaAccountSessionTest {
             try {
                 val expected = store.revision()
                 val replacement = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-                val writing = workers.submit<Boolean> { session.acceptReplacement(replacement, replacement.userId, true, expected) { true } }
+                val writing = workers.submit<Boolean> { session.acceptReplacement(replacement, replacement.userId, expected) { true } }
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 ui.submit { if (forget) session.forgetImmediately() else session.setForeground(false) }.get(1, TimeUnit.SECONDS)
                 assertFalse(lease.usable()); assertNull(session.lease())
@@ -149,7 +149,7 @@ class AbemaAccountSessionTest {
                 }
                 release.countDown(); assertFalse(writing.get(2, TimeUnit.SECONDS))
                 clearing?.get(2, TimeUnit.SECONDS)
-                assertFalse(session.acceptExisting(priorRecord, prior.userId, true)); assertFalse(lease.usable())
+                assertFalse(session.acceptExisting(priorRecord, prior.userId)); assertFalse(lease.usable())
                 if (forget) {
                     assertNull(store.read()); assertTrue(store.usable(store.revision()))
                     session.load(); assertNull(session.candidate())
@@ -168,14 +168,14 @@ class AbemaAccountSessionTest {
                 if (holding.get()) { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }; true
             })
             session.load(); val grant = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(session.acceptReplacement(grant, grant.userId, true, store.revision()) { true })
+            assertTrue(session.acceptReplacement(grant, grant.userId, store.revision()) { true })
             val record = session.candidate()!!; val lease = session.lease()!!
             val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
             holding.set(true)
             try {
                 val checking = worker.submit<Boolean> { when (operation) {
                     0 -> session.candidate() != null
-                    1 -> session.acceptExisting(record, grant.userId, true)
+                    1 -> session.acceptExisting(record, grant.userId)
                     2 -> session.lease() != null
                     else -> { session.failed(AbemaAccountFailure.REFUSED); session.status() == AbemaAccountStatus.CONNECTED }
                 } }
@@ -184,14 +184,14 @@ class AbemaAccountSessionTest {
                 assertFalse(lease.usable()); assertNull(session.lease())
                 release.countDown(); assertFalse(checking.get(2, TimeUnit.SECONDS))
                 assertEquals(if (forget) AbemaAccountStatus.MISSING else AbemaAccountStatus.PAUSED, session.status())
-                assertFalse(session.acceptExisting(record, grant.userId, true))
+                assertFalse(session.acceptExisting(record, grant.userId))
             } finally { release.countDown(); worker.shutdownNow(); ui.shutdownNow() }
         }
     }
     @Test fun heldDiskReadCannotUndoConcurrentImmediateForget() {
         val (storage, store) = fixture(); val session = AbemaAccountSession(store, { 1000000 }, { true }); session.load()
         val grant = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-        assertTrue(session.acceptReplacement(grant, grant.userId, true, store.revision()) { true })
+        assertTrue(session.acceptReplacement(grant, grant.userId, store.revision()) { true })
         val record = session.candidate()!!; val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
         storage.readHook = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
@@ -200,7 +200,7 @@ class AbemaAccountSessionTest {
             ui.submit { session.forgetImmediately() }.get(1, TimeUnit.SECONDS)
             assertEquals(AbemaAccountStatus.MISSING, session.status()); assertNull(session.lease())
             release.countDown(); loading.get(2, TimeUnit.SECONDS)
-            assertNull(session.candidate()); assertFalse(session.acceptExisting(record, grant.userId, true))
+            assertNull(session.candidate()); assertFalse(session.acceptExisting(record, grant.userId))
             assertEquals(AbemaAccountStatus.MISSING, session.status())
             storage.readHook = {}; store.forget(); assertNull(store.read())
         } finally { release.countDown(); worker.shutdownNow(); ui.shutdownNow() }
@@ -209,7 +209,7 @@ class AbemaAccountSessionTest {
         for (validated in listOf(true, false)) {
             val (storage, store) = fixture(); val session = AbemaAccountSession(store, { 1000000 }, { true }); session.load()
             val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+            assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
             val oldLease = session.lease()!!; val oldRecord = session.candidate()!!; val oldBytes = storage.bytes!!.copyOf()
             if (!validated) { session.setForeground(false); session.setForeground(true) }
             val entered = CountDownLatch(1); val release = CountDownLatch(1); var calls = 0
@@ -221,17 +221,17 @@ class AbemaAccountSessionTest {
             } }
             try {
                 val expected = store.revision(); val next = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, true, expected) { true } }
+                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, expected) { true } }
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 assertFalse(store.usable(expected)); assertFalse(oldLease.usable()); assertNull(session.lease())
                 release.countDown(); assertFalse(replacing.get(2, TimeUnit.SECONDS))
                 assertArrayEquals(oldBytes, storage.bytes)
                 assertEquals(if (validated) AbemaAccountStatus.CONNECTED else AbemaAccountStatus.UNVERIFIED, session.status())
-                assertFalse(oldLease.usable()); assertFalse(session.acceptExisting(oldRecord, prior.userId, true))
+                assertFalse(oldLease.usable()); assertFalse(session.acceptExisting(oldRecord, prior.userId))
                 val restored = session.candidate()!!
                 assertEquals(prior.userId, restored.grant.userId)
                 if (validated) assertTrue(session.lease()!!.usable()) else {
-                    assertNull(session.lease()); assertTrue(session.acceptExisting(restored, prior.userId, true)); assertTrue(session.lease()!!.usable())
+                    assertNull(session.lease()); assertTrue(session.acceptExisting(restored, prior.userId)); assertTrue(session.lease()!!.usable())
                 }
             } finally { release.countDown(); worker.shutdownNow() }
         }
@@ -245,12 +245,12 @@ class AbemaAccountSessionTest {
                 owner.get()
             })
             session.load(); val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+            assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
             val oldBytes = storage.bytes!!.copyOf(); val oldLease = session.lease()!!; expected = store.revision(); holding.set(true)
             val worker = Executors.newSingleThreadExecutor(); val ui = Executors.newSingleThreadExecutor()
             try {
                 val next = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, true, expected) { true } }
+                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, expected) { true } }
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 assertEquals("other", store.read()?.grant?.userId) // The held check is after store publication.
                 ui.submit { if (pause) session.setForeground(false) else owner.set(false) }.get(1, TimeUnit.SECONDS)
@@ -272,11 +272,11 @@ class AbemaAccountSessionTest {
                 owner.get()
             })
             session.load(); val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-            assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+            assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
             expected = store.revision(); holding.set(true); val worker = Executors.newSingleThreadExecutor()
             try {
                 val next = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, true, expected) { true } }
+                val replacing = worker.submit<Boolean> { session.acceptReplacement(next, next.userId, expected) { true } }
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 if (forget) newer.forget() else {
                     val third = decodedAbemaGrant(fixtureAccountToken("newer"), "newer", 1000000)
@@ -292,7 +292,7 @@ class AbemaAccountSessionTest {
     @Test fun forgetDuringHeldUncertainRollbackRemainsBlockedUntilConfirmedClear() {
         val (storage, store) = fixture(); val session = AbemaAccountSession(store, { 1000000 }, { true }); session.load()
         val prior = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
-        assertTrue(session.acceptReplacement(prior, prior.userId, true, store.revision()) { true })
+        assertTrue(session.acceptReplacement(prior, prior.userId, store.revision()) { true })
         val oldLease = session.lease()!!; val entered = CountDownLatch(1); val release = CountDownLatch(1); var calls = 0
         storage.writeHook = { when (++calls) {
             1 -> error("PRIVATE UNCERTAIN WRITE")
@@ -302,7 +302,7 @@ class AbemaAccountSessionTest {
         val workers = Executors.newFixedThreadPool(2); val ui = Executors.newSingleThreadExecutor()
         try {
             val expected = store.revision(); val next = decodedAbemaGrant(fixtureAccountToken("other"), "other", 1000000)
-            val replacing = workers.submit<Boolean> { session.acceptReplacement(next, next.userId, true, expected) { true } }
+            val replacing = workers.submit<Boolean> { session.acceptReplacement(next, next.userId, expected) { true } }
             assertTrue(entered.await(1, TimeUnit.SECONDS)); assertFalse(oldLease.usable())
             ui.submit { session.forgetImmediately() }.get(1, TimeUnit.SECONDS)
             val before = store.revision(); val clearing = workers.submit { store.forget() }

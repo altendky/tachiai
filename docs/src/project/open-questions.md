@@ -318,8 +318,10 @@
 - Does live pause/resume retain delayed media, for how long, and across program
   or advertisement transitions?
 - Can the web account flow use ABEMA's ID and one-time password on Android TV?
-- Can ABEMA's provider-controlled email-code account-switching flow work in
-  Tachiai's persistent browser profile when account-required content needs it?
+- After the [verified emulator email connection](abema-catalog-access.md#native-email-account-acceptance--2026-10-12),
+  does provider-controlled email-code switching also work on the target phone,
+  Android TV and other WebView versions, and what account-required playback
+  can the resulting account session support?
   The [official account-sharing instructions](https://help.abema.tv/hc/ja/articles/28570588900377)
   document emailed verification codes for web, mobile and TV, as well as
   account ID/one-time-password sharing. This is an authentication option, not

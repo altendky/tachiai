@@ -541,7 +541,8 @@ Tachiai-owned: browsing never automatically adds an item, mutates ABEMA's list
 or deletes a configured choice when the provider omits it. The separate
 [History adapter](provider-history-access.md#abema-read-only-history-adapter--2026-10-11)
 uses its own collection binding and endpoint proof under #102; real
-intended-account acceptance remains unverified for both collections.
+intended-account History acceptance remains unverified. Bounded My List
+acceptance is recorded below.
 
 Account validation runs on workers and uses the core session directly. Missing
 or corrupt protected authorization starts no provider request. A valid saved
@@ -571,11 +572,40 @@ grant or turn an unverified provider response into an expiry diagnosis. Uncertai
 HTTP or backend cleanup retains its actual owner and blocks account admission;
 independently verified public discovery and local import keep separate gates.
 
-Provider-free fixtures and source review are implementation evidence. Actual
-intended-account My List retrieval remains an acceptance gate, distinct from
-profile authorization proof. Broader discovery and exact slot/series resolution
+Provider-free fixtures and source review are implementation evidence. The
+bounded My List retrieval below establishes more than profile identity alone.
+Broader discovery and exact slot/series resolution
 remain outstanding in #101; this adapter does not choose a current channel or
 an arbitrary episode on behalf of a collection.
+
+### Intended-account My List acceptance — 2026-10-12
+
+After the delivered email connection in
+[PR #200](https://github.com/altendky/tachiai/pull/200), one explicitly opted-in
+read-only observation on persistent tachiai-dev returned
+`MY_LIST_PAGE_ACCEPTED`, with one entry and no continuation. The single executed
+instrumentation case passed in 20.123 seconds with zero skips. Context:
+Android16/API36/x86-64, WebView133.0.6943.137, the owner's saved native email
+grant and the configured Windscribe WireGuard route. The guest/profile context,
+intended-account profile and typed My List response were accepted through that
+captured owner; no account identifier, entry title or resource identity was
+exported or retained in the observation.
+
+The corrected fixture browses My List directly instead of requesting all catalog
+capabilities, which also checks History. It verifies the AVD before private
+reads, holds an explicit foreground lifetime, consumes only the first positive
+page and starts no History, continuation, login, rejection probe or playback.
+Protected record digests and captured route ownership are checked after cleanup,
+including exceptional cleanup paths. The external no-backup/preferences
+baseline was also byte-identical afterward; ordinary launcher state was restored.
+The protected account, routes and configured items were preserved.
+
+Forty-nine targeted collection/binding JVM cases passed, including zero History
+access checks during direct My List browse. Android instrumentation compilation,
+test APK assembly, lint and release isolation passed; app and test certificates
+matched the shared debug identity. This one page does not establish complete
+pagination, every resource kind, History, renewal, entitlement or playback.
+The physical phone was not used for this collection observation.
 
 ### Explicit series episode browsing
 

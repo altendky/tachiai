@@ -18,7 +18,8 @@ class AbemaAccountCollectionsCatalogTest {
             collections = listOf(CatalogCollection("my_list", "My List", CatalogAccess.NOT_VERIFIED),
                 CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED)))
         var browseCalls = 0; var lookupCalls = 0; var refreshCalls = 0; var resolveCalls = 0; var closes = 0
-        override fun capabilities() = caps
+        var capabilityCalls = 0
+        override fun capabilities() = caps.also { capabilityCalls++ }
         override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> { browseCalls++; return CatalogResult.Value(CatalogPage(listOf(entry))) }
         override fun lookup(input: String): CatalogResult<CatalogEntry> { lookupCalls++; return CatalogResult.Value(entry) }
         override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> { refreshCalls++; return CatalogResult.Value(entry) }
@@ -41,7 +42,8 @@ class AbemaAccountCollectionsCatalogTest {
         var beforeFetch: () -> Unit = {}
         var response = response(kind, "first", "provider-next")
         val requests = mutableListOf<String?>()
-        override fun access() = permission
+        var accessChecks = 0
+        override fun access() = permission.also { accessChecks++ }
         override fun lease(): AbemaCollectionLease {
             val captured = context
             return AbemaCollectionLease(leaseInstance, captured, { owns && context == captured }, leaseKind) { gate ->
@@ -240,6 +242,21 @@ class AbemaAccountCollectionsCatalogTest {
             failure(result.get(), CatalogFailure.ACCESS_REQUIRED)
             assertEquals(1, f.access.closes)
             f.catalog.close()
+        }
+    }
+
+    @Test fun directMyListBrowseDoesNotCheckHistoryOrSweepPublicCapabilities() {
+        val id = UUID.randomUUID().toString(); val public = Public(id)
+        val list = Access(id); val history = Access(id, AbemaCollectionKind.HISTORY)
+        AbemaAccountCollectionsCatalog(public, list, history = history).use { catalog ->
+            assertEquals("first", value(catalog.browse(CatalogQuery(collectionId = "my_list"))).entries.single().resource.identity)
+            assertTrue(list.accessChecks > 0)
+            assertEquals(listOf<String?>(null), list.requests)
+            assertEquals(0, history.accessChecks)
+            assertEquals(0, history.creates)
+            assertTrue(history.requests.isEmpty())
+            assertEquals(0, public.capabilityCalls)
+            assertEquals(0, public.browseCalls)
         }
     }
 

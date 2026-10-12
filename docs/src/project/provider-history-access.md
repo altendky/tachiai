@@ -1,12 +1,12 @@
 # Provider watch-history access
 
 This is partial research for
-[issue #102](https://github.com/altendky/tachiai/issues/102), reviewed on
+[issue #102](https://github.com/altendky/tachiai/issues/102), initially reviewed on
 2026-10-09. History can help discover previously viewed channels and on-demand
 items without making them favorites. A bounded undocumented ABEMA read-only
-adapter is now implemented as described below; intended-account retrieval
-remains unverified. An optional bounded Twitch Continue Watching adapter is
-implemented below, with real Smart TV compatibility still unverified. No
+adapter is now implemented as described below, with bounded intended-account
+retrieval observed on 2026-10-12. An optional bounded Twitch Continue Watching
+adapter is implemented below, with real Smart TV compatibility still unverified. No
 comprehensive Twitch account-history retrieval path was established; #102
 remains open.
 
@@ -53,8 +53,38 @@ production factory, without probing My List or requesting another page. It
 checks encrypted-record and route ownership preservation, foreground/deadline
 gates and exact conservative projection, and logs only closed outcomes and
 counts. A separate protected-record baseline must be established after the
-owner's intentional grant write. No real account or device check has yet run;
-source fixtures cannot establish account access, history coverage or retention.
+owner's intentional grant write. The real account check below establishes one
+accepted page; source fixtures alone cannot establish account access, history
+coverage or retention.
+
+### Intended-account History acceptance — 2026-10-12
+
+After the delivered email connection and separate My List acceptance, one
+explicitly opted-in read-only History observation on persistent tachiai-dev
+returned `HISTORY_PAGE_ACCEPTED`, two entries and an available continuation.
+The continuation was not followed. One executed instrumentation case passed in
+19.344 seconds with zero skips. Context: Android16/API36/x86-64,
+WebView133.0.6943.137, the owner's protected native email-account grant and the
+configured Windscribe WireGuard route. The fresh guest/profile context and
+matching intended-account profile preceded the strictly parsed History page.
+No account identifier, entry title, resource identity, progress, timestamp or
+continuation value was exported or retained in this observation.
+
+The fixture browsed History directly, without My List, public capability sweeps,
+account sign-in, rejection probes, playback or configured-item mutation. Its
+guarded setup and nested cleanup attempt callback removal, foreground-scenario
+closure and protected-record/owner verification even after an earlier failure.
+Both internal encrypted-record comparisons and the external no-backup/preferences
+baseline were unchanged afterward; the ordinary launcher was restored. Saved
+authorization, routes and configured items were preserved.
+
+Seventy-two targeted projection, transport, collection and binding JVM cases
+passed, including zero My List access checks during direct History browsing.
+Android instrumentation compilation, test APK assembly, lint and release
+isolation passed, and app/test certificates matched the shared debug identity.
+This is bounded intended-account endpoint acceptance. Complete history coverage,
+pagination, every resource kind, renewal, entitlement, playback and Twitch
+retrieval remain separate checks. The physical phone was not used.
 
 ## Twitch bounded Continue Watching adapter — 2026-10-11
 
@@ -245,9 +275,10 @@ Production adapter, controller and Compose fixtures cover reporting, request
 suppression, retained configured items and return to ordinary discovery. This is
 implemented capability reporting, not real history retrieval or account acceptance.
 That earlier #130 change added no endpoint, scope, export import,
-viewed-time/progress field or history mutation. The new bounded ABEMA endpoint
-adapter still requires intended-account acceptance; #102 remains open for that
-and the remaining Twitch retrieval and privacy requirements.
+viewed-time/progress field or history mutation. The bounded ABEMA endpoint
+adapter now has the intended-account observation recorded above; #102 remains
+open for broader coverage and the remaining Twitch retrieval and privacy
+requirements.
 
 ## Content identity, timing and availability
 

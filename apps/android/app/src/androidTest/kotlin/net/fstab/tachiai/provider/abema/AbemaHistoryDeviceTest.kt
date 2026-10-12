@@ -65,25 +65,28 @@ class AbemaHistoryDeviceTest {
         val owner = readOwner()
         val grant = File(context.noBackupFilesDir, "abema-account-$instanceId.enc")
         check(grant.isFile && !Files.isSymbolicLink(grant.toPath()) && grant.length() in 1..65536)
-        val foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(
-            Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
-                action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
+        var foreground: ActivityScenario<net.fstab.tachiai.MainActivity>? = null
         val active = AtomicBoolean()
         val lifecycle = ActivityLifecycleMonitorRegistry.getInstance()
         val callback = ActivityLifecycleCallback { _, stage ->
             if (stage in setOf(Stage.PAUSED, Stage.STOPPED, Stage.DESTROYED)) active.set(false)
         }
-        instrumentation.runOnMainSync {
-            active.set(lifecycle.getActivitiesInStage(Stage.RESUMED).isNotEmpty())
-            lifecycle.addLifecycleCallback(callback)
-        }
+        var registrationStarted = false
         var catalog: ProviderCatalog? = null
         var result: CatalogResult<CatalogPage>? = null
         var closeReturned = false
         val started = SystemClock.elapsedRealtime()
         try {
+            foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(
+                Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
+                    action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            instrumentation.runOnMainSync {
+                active.set(lifecycle.getActivitiesInStage(Stage.RESUMED).isNotEmpty())
+                registrationStarted = true
+                lifecycle.addLifecycleCallback(callback)
+            }
             check(active.get())
             catalog = androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), active::get)
             // Direct browse establishes only History's own endpoint proof and
@@ -94,14 +97,20 @@ class AbemaHistoryDeviceTest {
             active.set(false)
             try { catalog?.close(); closeReturned = true }
             finally {
-                instrumentation.runOnMainSync { lifecycle.removeLifecycleCallback(callback) }
-                foreground.close()
-                val after = encryptedRecords(context.noBackupFilesDir)
                 try {
-                    assertTrue("History observation changed protected records", before.keys == after.keys &&
-                        before.all { (name, digest) -> after[name]?.let { MessageDigest.isEqual(digest, it) } == true })
-                    assertTrue("History observation changed its captured owner", owner.sameOwnership(readOwner()))
-                } finally { before.values.forEach { it.fill(0) }; after.values.forEach { it.fill(0) } }
+                    if (registrationStarted) instrumentation.runOnMainSync { lifecycle.removeLifecycleCallback(callback) }
+                } finally {
+                    try { foreground?.close() }
+                    finally {
+                        var after: Map<String, ByteArray>? = null
+                        try {
+                            val verified = encryptedRecords(context.noBackupFilesDir).also { after = it }
+                            assertTrue("History observation changed protected records", before.keys == verified.keys &&
+                                before.all { (name, digest) -> verified[name]?.let { MessageDigest.isEqual(digest, it) } == true })
+                            assertTrue("History observation changed its captured owner", owner.sameOwnership(readOwner()))
+                        } finally { before.values.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) } }
+                    }
+                }
             }
         }
         val page = (result as? CatalogResult.Value)?.value

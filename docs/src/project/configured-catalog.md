@@ -215,7 +215,10 @@ playback. Existing rejection, foreground, retention and cleanup gates still appl
 Provider-free model, route and Android session fixtures verify identity, ownership,
 initial position and lifecycle behavior. They do not establish that an arbitrary
 video exists, is accessible, uses an approved CDN or plays with a real account and
-route. Actual newly configured video playback remains unobserved.
+route. A later [bounded configured replay observation](twitch-connected-catalog.md#bounded-configured-replay-observation--2026-10-12)
+verified one existing saved replay through its shared scoped connection and System
+route, including rendered video, advancing positions and definite cleanup. Newly
+added videos, other replays and the full picker/Add flow remain unobserved.
 
 ### Configured Twitch broadcaster playback
 
@@ -251,8 +254,10 @@ retain independent hosts, UUID recovery and saved quality ownership. This adds n
 native endpoints, scopes, origins, DRM behavior or background playback.
 
 Provider-free core, binding and native-session fixtures exercise these boundaries.
-Actual scoped Smart TV connected-account playback, renamed channels, imported-route acceptance
-and provider login reuse remain unobserved.
+Actual scoped Smart TV connected-account live playback, renamed channels,
+imported-route acceptance and provider login reuse remain unobserved. The
+[bounded configured replay observation](twitch-connected-catalog.md#bounded-configured-replay-observation--2026-10-12)
+does not establish broadcaster playback acceptance.
 
 ### ABEMA public-link import
 

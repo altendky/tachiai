@@ -18,7 +18,9 @@ The original implementation and synthetic fixtures did not establish
 real-provider acceptance and made no account or provider requests. The later
 [bounded Following observation](#bounded-following-observation--2026-10-12)
 establishes one maintained account's first page through System network on
-tachiai-dev. Other discovery operations, native playback, provider
+tachiai-dev. A later [bounded configured replay observation](#bounded-configured-replay-observation--2026-10-12)
+establishes native playback of one existing saved replay with that shared scoped
+connection. Other discovery operations, live playback, other replays, provider
 refresh/revocation and imported-route behavior still need separate observations. Anonymous
 native browsing still needs its access architecture; no client secret or app-token
 backend is assumed. These limits remain in
@@ -46,7 +48,9 @@ from the owning instance's shared connection and saved route.
 uses guarded transient current-login mapping and checks that login's ownership
 again before publication. Catalog and native preparation bind the same validated
 user and durable grant generation. This shared scoped-grant use is newly selected
-by the user; real native acceptance remains unverified. Adding an item does not
+by the user; the later [bounded observation](#bounded-configured-replay-observation--2026-10-12)
+verifies one existing configured replay. Live and newly discovered playback remain
+unverified. Adding an item does not
 select a sample under the new label. Earlier token-only LOCAL grants are not
 copied into the shared connection or selected as an automatic fallback.
 
@@ -157,7 +161,8 @@ then was rejected by the former positive-expiry policy. See the
 [authorization evidence](twitch-catalog-authorization.md#verification-limits).
 Those historical checks did not establish validated account access. The later
 maintained-account and Following checks below establish a narrower positive
-result. Anonymous discovery and selected-source playback remain unobserved.
+result. Anonymous discovery remains unobserved. The later configured replay check
+below establishes one selected source's native acceptance.
 Historical zero-scope playback observations do not establish the shared scoped
 connection's provider acceptance.
 
@@ -205,6 +210,67 @@ it does not claim exclusion of an external writer racing those checks.
 This establishes bounded real Following access on one emulator. A separate
 [bounded Continue Watching check](provider-history-access.md#maintained-account-continue-watching-acceptance--2026-10-12)
 also passed. Search, exact
-lookup, published videos, schedules, imported routes, refresh/revocation,
-configured native playback and broader history behavior remain separate acceptance
-work under #99 and #102. Physical-device and TV acceptance are not established.
+lookup, published-video discovery, schedules, imported routes, refresh/revocation,
+broader native playback and history behavior remain separate acceptance work under
+issues #99 and #102. The later replay check below establishes one configured source.
+Physical-device and TV acceptance are not established.
+
+## Bounded configured replay observation — 2026-10-12
+
+An explicitly opted-in `ConfiguredTwitchPlaybackAcceptanceDeviceTest` used one
+existing saved replay on verified persistent tachiai-dev: emulator-5580, Android
+16/API 36, x86_64. It retained the maintained account's shared scoped Smart TV
+grant and the owning instance's **System** route. Playback used native Media3 in
+the foreground ordinary app process, without a provider browser; region was not
+separately measured. The saved record contained five sources and one eligible
+replay. The fixture privately selected that replay and checked its exact item,
+resource, quality, record origin and route ownership. It did not add a source or
+substitute a sample. The existing historical start-position rule was retained;
+diagnostics did not record whether this source matched that historical identity,
+so this observation does not establish newly added or arbitrary-video playback.
+
+The first same-source observation executed one test with zero skips and failed
+the movement check in 23.768 seconds. Official validation and the exact video
+access request both returned HTTP 200, and an actual frame was rendered. Closed
+native events included READY, PLAYING and VIDEO_FRAME followed by BUFFERING, but
+the fixture did not establish two advancing READY samples. Its second sample's
+state and the cause of buffering were not established. Preparation, worker,
+native player, HTTP, route and Activity cleanup were confirmed; owner, item and
+protected records were unchanged. This failed observation is not playback
+acceptance or evidence of a production defect's cause.
+
+A fixture-only correction polls locally for at most ten seconds, keeps its first
+qualified nonnegative READY position on the same player, and requires another
+READY sample at least 1.5 seconds later with a strictly increasing position.
+Buffering preserves that baseline. Failure, foreground and continuation guards
+remain active. READY/frame waits and sampling finish within the original run's
+50-second observation limit, reserving 20 seconds for cleanup within the unchanged
+70-second outer budget. This adds no endpoint, authorization or source retry and
+does not extend provider or playback budgets.
+
+One disclosed repeat of the same saved source passed: one test, zero skips,
+29.784 seconds. The production catalog preparation made exactly one positive
+validation request and one exact video access request, both HTTP 200, followed by
+four production HLS requests. It rendered a frame and observed the same player in
+READY at both position samples, at least 1.5 seconds apart with increasing
+positions. Saved quality was accepted, mute and play requests succeeded, and no
+feed failure was observed. Playback remained within budget. Preparation settled,
+the worker terminated, and native player, HTTP, route and Activity cleanup were
+all confirmed. This repeat does not establish why the first check failed or claim
+a production playback fix.
+
+The fixture's owner, exact configured item and protected-record checks passed.
+Independent hashes of all 20 files under `no_backup` and `shared_prefs` were
+byte-identical before both probes and after the repeat. No grant, profile, source,
+Add, sign-in, refresh, reset or CDN policy change was made. The production APK was
+unchanged; the ordinary shared-signed test APK was installed, its manifest had no
+process overrides, and the normal launcher screen was restored. Diagnostics
+contained only closed categories, HTTP statuses, counts and booleans; credentials,
+source identities, URLs, response bodies and record digests were not recorded.
+
+This establishes bounded native acceptance of one existing configured replay,
+including shared scoped-grant use, rendered video, advancing positions and
+definite cleanup. It does not establish the full picker/Add interaction, live
+playback, other replays, imported routes, refresh/revocation, sustained playback,
+audible output or physical-device/TV behavior.
+[Issue #99](https://github.com/altendky/tachiai/issues/99) remains open.

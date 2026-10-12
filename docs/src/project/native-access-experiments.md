@@ -4155,15 +4155,30 @@ adopted. The 12-minute ABEMA Morning episode of 2026-10-08,
 explicitly through an in-memory configured source, common resolver and production
 session. Its first 12.554-second attempt refused during GUEST preparation before
 a returned HTTP status. Separate News and exact configured historical replay
-`394-72_s10_p8529` runs rendered frames and advanced position in 11.784 and
+`394-72_s10_p8529` runs rendered frames and exceeded the single-position
+threshold in 11.784 and
 12.495 seconds. A disclosed isolated repeat of the original Morning selection
 on the unchanged build/route passed in 13.051 seconds: exact modern metadata,
-source/MPD, fresh CDM/opaque exchange, native frame and advancing position.
+source/MPD, fresh CDM/opaque exchange, native frame and a position above 500 ms.
+These runs used the earlier one-position fixture, not the two separated
+advancing samples required by the corrected 2026-10-12 acceptance harness.
+Its later 39.788-second Morning check refused acceptance with
+`CLEANUP_UNCONFIRMED`, despite closed native READY/PLAYING/VIDEO_FRAME events.
+Movement was not preserved by that run's final diagnostic. Ordinary test targeting,
+Main and unchanged protected state were restored; the
+[catalog evidence](abema-catalog-access.md) records the bounded failure and the
+subsequent fixture-only diagnostic correction. One disclosed same-episode repeat
+then passed in 25.265 seconds with a rendered frame, two advancing READY samples
+and confirmed cleanup, while all 20 protected files/shared preferences remained
+unchanged. The production APK and saved owner were unchanged. The first cleanup
+refusal was not reproduced, and its cause remains unverified. This stronger
+episode check does not establish eligible-slot playback.
 The original failure was not reproduced; its transport/guest cause is unknown.
 No automatic retry, source substitution, cookie change or refusal weakening was
 added to obtain the successful result.
 
-Every actual run confirmed teardown, unchanged route ownership and byte-identical
+Every 2026-10-11 run in this episode section confirmed teardown, unchanged route
+ownership and byte-identical
 protected encrypted records. Fixtures and observations used only in-memory
 entries/assignments; no configured item, route, grant or recovery checkpoint was
 written. Temporary cached-process test targeting was removed afterward and the
@@ -4227,9 +4242,11 @@ one fresh anonymous guest/helper/token/native CDM and one muted observation feed
 Region was not remeasured and no provider account was adopted. The configured
 Shogi channel passed in 18.438 seconds; separately explicit historical News
 and replay checks passed in 11.519 and 18.428 seconds. Each rendered a native
-frame and advanced playback position beyond 500 ms, confirmed teardown and
+frame and reported a single playback position beyond 500 ms, confirmed teardown and
 retained the captured route owner. All protected encrypted records were
 byte-for-byte equal to the same baseline captured before installation.
+These historical runs did not measure two separated advancing samples; the
+corrected 2026-10-12 acceptance harness now requires that stronger movement proof.
 
 Before the selection correction, one Shogi attempt returned PLAYBACK_REFUSED
 in 10.940 seconds after CONTENT HTTP 200 and before source publication. A

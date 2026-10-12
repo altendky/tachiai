@@ -568,10 +568,12 @@
     await requireSlotRegion();
     alive();
     phase = 'CONTENT';
-    const slot = await json('https://api.p-c3-e.abema-tv.com/v1/media/slots/' + slotId + '?include=payperview', {
+    const raw = await json('https://api.p-c3-e.abema-tv.com/v1/media/slots/' + slotId + '?include=payperview', {
       credentials: 'omit', cache: 'no-store', headers: { Authorization: 'Bearer ' + identity.accessToken },
     }, 512 * 1024);
     const record = value => !!value && typeof value === 'object' && !Array.isArray(value);
+    if (!record(raw)) refuseResponse();
+    const slot = raw.slot;
     if (!record(slot) || slot.id !== slotId || slot.channelId !== channelId) refuseResponse();
     phase = 'SLOT_FREE';
     if (!record(slot.flags) || slot.flags.timeshift !== true || slot.flags.timeshiftFree !== true) throw new Error();
@@ -579,6 +581,10 @@
     if ((slot.flags.paused !== undefined && slot.flags.paused !== false) ||
       (slot.mark !== undefined && (!record(slot.mark) || (slot.mark.drm !== undefined && slot.mark.drm !== false))) ||
       (slot.payperview !== undefined && slot.payperview !== null) ||
+      // Outer PPV forms are unverified. Refuse non-null values locally rather
+      // than discard ambiguous paid metadata while unwrapping the known slot.
+      (raw.payperview !== undefined && raw.payperview !== null) ||
+      (raw.payPerView !== undefined && raw.payPerView !== null) ||
       !record(slot.broadcastRegionPolicies) ||
       ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.timeshift)) throw new Error();
     phase = 'SLOT_WINDOW';

@@ -81,7 +81,8 @@ function fixture(options = {}) {
         body = options.program || freeProgram(uri.pathname.split('/').at(-1));
       }
       else if (uri.pathname.startsWith('/v1/playbackResources/')) body = { synthetic: true };
-      else if (uri.pathname.startsWith('/v1/media/slots/')) body = options.slot || freeSlot();
+      else if (uri.pathname.startsWith('/v1/media/slots/')) body = Object.hasOwn(options, 'slotResponse') ? options.slotResponse :
+        { slot: Object.hasOwn(options, 'slot') ? options.slot : freeSlot() };
       else if (uri.pathname === '/now-on-air/abema-news') body = options.regionPage ?? slotRegion();
       else if (uri.pathname === '/region') body = '';
       else if (uri.pathname === '/abematv-dash') body = { syntheticEnvelope: true };
@@ -1093,6 +1094,44 @@ test('exact free ended slot binds both IDs and preserves provider selector defau
   }
 });
 
+test('slot response requires the object envelope and exact nested identities before source or helper activity', async () => {
+  const invalid = [null, [], 1, 'slot', freeSlot(), {}, { slot: null }, { slot: [] }, { slot: 1 }, { slot: 'slot' },
+    { slot: {} }, { slot: { ...freeSlot(), id: 'other-slot' } },
+    { slot: { ...freeSlot(), channelId: 'other-channel' } },
+    { id: 'fixture-slot', channelId: 'sumo', slot: { ...freeSlot(), id: 'other-slot' } },
+    { id: 'fixture-slot', channelId: 'sumo', slot: { ...freeSlot(), channelId: 'other-channel' } }];
+  for (const slotResponse of invalid) {
+    const value = fixture({ configuredSlot: true, slotResponse }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'FAILED'); assert.equal(value.metadata().phase, 'CONTENT');
+    assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null); assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.requests.some(item => item.uri.pathname === '/abematv-dash'), false);
+  }
+});
+
+test('slot envelope preserves unrelated metadata and refuses nested PPV and ambiguous non-null outer forms', async () => {
+  for (const slotResponse of [
+    { slot: freeSlot(), version: 'fixture', extra: { ignored: ['metadata'] } },
+    { slot: { ...freeSlot(), payperview: null }, payperview: null, payPerView: null },
+  ]) {
+    const value = fixture({ configuredSlot: true, slotResponse }); value.startSlot('sumo/fixture-slot');
+    await waitFor(value, 'READY'); assert.equal(value.requests.length, 4);
+    assert.equal(value.evaluate('observed.legacy.length'), 1); assert.equal(value.evaluate('observed.operation.length'), 0);
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot'); value.stop();
+  }
+  for (const field of ['slot.payperview', 'payperview', 'payPerView']) for (const paid of [{}, [], 0, false, '', 'unverified']) {
+    const slotResponse = field === 'slot.payperview' ? { slot: { ...freeSlot(), payperview: paid } } :
+      { slot: freeSlot(), [field]: paid };
+    const value = fixture({ configuredSlot: true, slotResponse });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'SLOT_RESTRICTIONS'); assert.equal(value.requests.length, 4);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
 test('slot region needs explicit provider Japan NONE and allowed fields without inventing location', async () => {
   const invalid = [slotRegion({ isAllowed: false }), slotRegion({ status: null }),
     slotRegion({ isoCountryCode: 'US' }), slotRegion({ divisionCode: 1 }), slotRegion({ divisionCode: '0' }),
@@ -1190,8 +1229,12 @@ test('slot identity and mutually exclusive resource arguments reject before any 
 
 test('slot raw metadata duplicate encoding corruption and bounds refuse before selection', async () => {
   const endpoint = '/v1/media/slots/fixture-slot';
-  const valid = JSON.stringify(freeSlot());
-  for (const text of [valid + ' trailing', valid.replace('"id":', '"id":"fixture-slot","i\\u0064":'),
+  const valid = JSON.stringify({ slot: freeSlot() });
+  for (const text of [valid + ' trailing', valid.replace('{"slot":', '{"slot":null,"slot":'),
+    valid.replace('{"slot":', '{"slot":null,"sl\\u006ft":'),
+    valid.replace('"id":', '"id":"fixture-slot","id":'),
+    valid.replace('"id":', '"id":"fixture-slot","i\\u0064":'),
+    valid.replace('"channelId":', '"channelId":"sumo","channel\\u0049d":'),
     valid.replace('"timeshiftFree":true', '"timeshiftFree":true,"timeshiftFree":false'),
     valid.slice(0, -1) + ',"extra":' + '['.repeat(17) + '0' + ']'.repeat(17) + '}',
     valid.slice(0, -1) + ',"extra":"' + 'x'.repeat(512 * 1024) + '"}',

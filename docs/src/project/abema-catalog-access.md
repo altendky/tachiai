@@ -825,9 +825,60 @@ already-admitted ASCII wire fields, and the actual device rerun passed.
 Ordinary instrumentation/Main were restored and encrypted records unchanged.
 These fixtures establish no actual provider region, account entitlement, license
 acceptance or advancing frames. Real eligible-slot playback remains unverified.
-The current captured route's regional refusal and the observed candidate's
+The earlier captured route's regional refusal and the observed candidate's
 missing free flag do not provide a positive playback acceptance case. Keep193,
 100 and101 open for remaining access modes and bounded actual acceptance.
+
+### Slot response envelope correction — 2026-10-12
+
+Native slot preparation previously treated the complete media-slot reply as the
+selected slot and checked identity on that outer object. The established exact
+metadata decoder and retained first-party slot caller instead read the response's
+`slot` object. The successful exact metadata observation above used that decoder.
+The native fixtures supplied a bare slot DTO, so they missed this mismatch. A
+separate provider-free reproduction accepted the bare DTO but refused a wrapped
+reply before source selection or helper execution; both inputs were synthetic.
+
+Preparation now requires an object envelope containing an object `slot`, with the
+exact requested channel and slot IDs inside it. It accepts no bare or alternate
+wrapper fallback. Whole-response UTF-8, Unicode, duplicate decoded-key, nesting,
+size and trailing-data checks remain in place, including ignored outer fields.
+Existing region, free/rights/windows, source/ad selection and exact license
+binding checks still apply to the selected slot.
+
+Retained first-party evidence puts lowercase `payperview` inside the slot model;
+that field must remain absent or null. Non-null outer `payperview` or `payPerView`
+also refuses preparation as a conservative local restriction on unverified
+forms. This does not establish outer PPV schema or entitlement semantics. Other
+outer metadata and absent/null outer PPV fields are allowed subject to the whole
+JSON checks. The separate exact metadata decoder is unchanged and continues to
+project UNKNOWN availability without granting playback rights.
+
+Verification passed 151 owned JavaScript cases: 66 native-bootstrap and 85
+guest-bootstrap cases, with zero failures/skips. Fixtures cover wrapped success,
+bare/missing/null/scalar/array responses, nested identity mismatches, outer IDs
+that cannot override the selected slot, literal/escaped-equivalent duplicate
+keys and PPV restrictions. Existing region, rights/windows, source/license and
+cancellation cases remain covered. Full Android verification passed 2,449 JVM
+cases across 292 reports with zero failures/errors/skips, lint, release isolation,
+instrumentation compilation, both APK assemblies and shared debug certificates.
+
+On persistent tachiai-dev, one networking-blocked Android test executed and
+passed in 0.64 seconds with zero skips. Context: emulator-5580, Android 16/API 36,
+x86_64, WebView 133.0.6943.137, synthetic fresh guest/module/response data in the
+owned cached-player process. Its three cases checked regional refusal, wrapped
+binding acceptance and bare-response CONTENT refusal; helper calls remained
+zero. It made no real provider, account, manifest, license or playback request.
+The temporary test-process manifest was restored byte-identically, ordinary
+shared-signed instrumentation was restored, and the normal launcher returned.
+
+The same verified production APK was installed with data retained on the emulator
+and the owner's Pixel 6/oriole, Android 17/API 37, arm64. Before/after digests for
+all files under `no_backup` and `shared_prefs` were identical: 20 on the emulator
+and 22 on the phone. The synthetic fixture ran only on the emulator. These
+checks establish response decoding and local admission, while actual eligible
+slot entitlement, manifest/license acceptance and advancing frames remain
+unverified. Issue #193 stays open for that acceptance and broader playback modes.
 
 ### Exact configured episodes
 

@@ -25,6 +25,60 @@ class AbemaWebViewRouteTest {
         }
     }
     private fun route(backend: Backend) = AbemaWebViewRoute(backend, assertThread = {})
+    private fun approval(system: Boolean): RouteSession {
+        val backend = object : RouteBackend {
+            override val proxyPort = 12345
+            override fun close() = Unit
+        }
+        val selected = if (system) null else parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())
+        return RouteSession.createAbemaApprovalBrowser(selected, createSystemBackend = { backend }) { _, _ -> backend }
+    }
+
+    @Test fun bothApprovalModesInstallBridgeAndAwaitApplicationAndClear() {
+        for (system in listOf(true, false)) {
+            val backend = Backend(); val webRoute = route(backend)
+            val session = approval(system)
+            try {
+                var installed: Boolean? = null
+                webRoute.install(session, onComplete = { installed = it })
+                assertNull(installed); assertTrue(webRoute.busy)
+                assertEquals(listOf("proxy:12345"), backend.operations)
+                backend.callbacks[0]()
+                assertEquals(true, installed); assertFalse(webRoute.busy)
+                var cleared = false
+                webRoute.clear { cleared = true }
+                assertFalse(cleared); assertTrue(webRoute.busy)
+                backend.callbacks[1]()
+                assertTrue(cleared); assertFalse(webRoute.busy)
+            } finally { session.close() }
+        }
+    }
+
+    @Test fun unsupportedWebViewRefusesSystemApprovalBridgeWithoutDirectFallback() {
+        val backend = Backend(false); val webRoute = route(backend)
+        val session = approval(true)
+        try {
+            var installed: Boolean? = null
+            webRoute.install(session, onComplete = { installed = it })
+            assertEquals(false, installed); assertTrue(backend.operations.isEmpty())
+        } finally { session.close() }
+    }
+
+    @Test fun ordinarySystemInstallStillClearsAnEarlierBridgeOverride() {
+        val backend = Backend(); val webRoute = route(backend)
+        val approval = approval(true)
+        val ordinary = RouteSession.create(null) { _, _ -> error("System must not allocate") }
+        try {
+            webRoute.install(approval, onComplete = {})
+            backend.callbacks[0]()
+            var installed: Boolean? = null
+            webRoute.install(ordinary, onComplete = { installed = it })
+            assertNull(installed); assertTrue(webRoute.busy)
+            assertEquals(listOf("proxy:12345", "clear"), backend.operations)
+            backend.callbacks[1]()
+            assertEquals(true, installed); assertFalse(webRoute.busy)
+        } finally { approval.close(); ordinary.close() }
+    }
 
     @Test fun importedRouteWaitsForProxyAppliedAndRejectsConcurrentInstall() {
         val backend = Backend()

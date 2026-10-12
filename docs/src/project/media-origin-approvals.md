@@ -130,13 +130,15 @@ or injected scripts. Its own browser login is separate from protected native
 grants and is never exported. Returning after confirmed cleanup allows the
 existing explicit Continue action; it does not establish approval, token lifetime,
 account identity, collection access or browser-email compatibility.
-This browser currently requires an imported connection, whose CONNECT bridge
-enforces the approved provider hosts even after redirects. System-network approval is
-refused before page loading because Android's
+Both explicit System and imported connections use an authenticated, host-restricted
+CONNECT bridge, enforcing the same approved provider hosts even after redirects.
+The System bridge dials through Android's current network; it neither selects a
+gateway nor promises an exit country. Imported transports never fall back to it.
+Both browser modes require confirmed proxy installation because Android's
 [request interception](https://developer.android.com/reference/android/webkit/WebViewClient#shouldInterceptRequest(android.webkit.WebView,%20android.webkit.WebResourceRequest))
-does not recheck subsequent resource redirects. A host-restricted direct CONNECT
-bridge remains needed for that browser mode; native System account requests and
-other route purposes retain their existing behavior.
+does not recheck subsequent resource redirects. Native System account requests
+and other route purposes retain their existing behavior. The bridge does not
+terminate provider TLS, alter region responses or broaden the approved origins.
 
 ### Provider-owned approval resources — 2026-10-12
 

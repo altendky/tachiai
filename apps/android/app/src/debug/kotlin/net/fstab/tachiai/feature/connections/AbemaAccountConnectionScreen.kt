@@ -24,7 +24,7 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
         if (state.busy && state.progress == AbemaAccountProgress.IDLE) Text("Wait for the current ABEMA action to finish.")
         Button(onConnect, enabled = ready && !reading && !state.busy) { Text("Connect ABEMA by email") }
         if (ready && state.canContinue) Button(onContinue) { Text("Finish email connection") }
-        Text("ABEMA opens in an in-app browser through this instance’s saved route. Choose Switch account → Email address, complete sign-in, and open Account management. Return here to finish the connection. This browser login is separate from Chrome.")
+        Text("ABEMA opens in an in-app browser through this instance’s selected connection. Choose Switch account → Email address, complete sign-in, and open Account management. Return here to finish the connection. This browser login is separate from Chrome.")
         Text("Account collections and account playback remain separate integrations.")
         Button(onValidate, enabled = ready && !reading && !state.busy) { Text("Validate saved ABEMA account") }
         TextButton(onForget, enabled = ready && state.progress != AbemaAccountProgress.FORGETTING) { Text("Forget ABEMA account on this device") }

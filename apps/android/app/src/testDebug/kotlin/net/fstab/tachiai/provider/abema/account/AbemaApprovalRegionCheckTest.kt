@@ -54,25 +54,33 @@ class AbemaApprovalRegionCheckTest {
         }
     }
 
-    @Test fun productionConstructorRequiresSavedRouteAndKeepsRouteOwnershipWithCaller() {
-        val system = RouteSession.createAbemaAccountSession(null)
-        try {
-            val error = assertThrows(IllegalArgumentException::class.java) {
-                AbemaApprovalRegionCheck(system, { true }, { 1000 }, 20_000)
+    @Test fun productionConstructorRequiresApprovalPurposeOnBothSelectedModesAndKeepsCallerOwnership() {
+        val profile = parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())
+        for (selected in listOf(null, profile)) {
+            var backendCloses = 0
+            val backend = object : RouteBackend {
+                override val proxyPort = 12345
+                override fun close() { backendCloses++ }
             }
-            assertEquals("ABEMA region check requires a saved route", error.message)
-        } finally { system.close() }
-        var backendCloses = 0
-        val backend = object : RouteBackend {
-            override val proxyPort = 12345
-            override fun close() { backendCloses++ }
+            for (route in listOf(RouteSession.createAbemaAccountSession(selected) { _, _ -> backend },
+                RouteSession.create(selected) { _, _ -> backend })) {
+                try {
+                    val error = assertThrows(IllegalArgumentException::class.java) {
+                        AbemaApprovalRegionCheck(route, { true }, { 1000 }, 20_000)
+                    }
+                    assertEquals("ABEMA region check requires an approval bridge", error.message)
+                } finally { route.close() }
+            }
+            backendCloses = 0
+            val route = RouteSession.createAbemaApprovalBrowser(selected,
+                createSystemBackend = { backend }) { _, _ -> backend }
+            try {
+                val check = AbemaApprovalRegionCheck(route, { true }, { 1000 }, 20_000)
+                assertTrue(check.cleanupConfirmed); assertTrue(check.closeConfirmed())
+                assertEquals(0, backendCloses)
+            } finally { route.close() }
+            assertEquals(1, backendCloses)
         }
-        val route = RouteSession.createAbemaApprovalBrowser(
-            parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())) { _, _ -> backend }
-        val check = AbemaApprovalRegionCheck(route, { true }, { 1000 }, 20_000)
-        assertTrue(check.cleanupConfirmed); assertTrue(check.closeConfirmed())
-        assertEquals(0, backendCloses)
-        route.close(); assertEquals(1, backendCloses)
     }
 
     @Test fun canonicalCookieFreeGetPreservesRealProviderStatusesWithoutOpeningBodies() {

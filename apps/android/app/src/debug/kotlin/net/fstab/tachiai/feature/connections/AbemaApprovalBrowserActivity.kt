@@ -20,6 +20,7 @@ import androidx.core.view.WindowInsetsCompat
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.web.configureSecureSettings
+import net.fstab.tachiai.presentation.SourceRouteMode
 import net.fstab.tachiai.provider.abema.readAbemaCatalogRouteOwner
 import net.fstab.tachiai.provider.abema.account.*
 import java.io.ByteArrayInputStream
@@ -109,7 +110,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 host.setPadding(bars.left, bars.top, bars.right, bars.bottom)
                 insets
             }
-            status = TextView(this).apply { text = "Preparing ABEMA’s browser through the saved route…"; setPadding(16, 16, 16, 16) }
+            status = TextView(this).apply { text = "Preparing ABEMA’s browser through the selected connection…"; setPadding(16, 16, 16, 16) }
             column.addView(status)
             column.addView(Button(this).apply {
                 text = "Return to Tachiai"
@@ -180,14 +181,13 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         main.postDelayed({ if (!ending && !ready) closeBrowser(false) }, 45000)
         workers.execute {
             var valid = false
-            var savedRouteRequired = false
             try {
                 if (ending || !request.current(SystemClock.elapsedRealtime())) return@execute
                 val owner = readAbemaCatalogRouteOwner(request.instanceId,
                     { providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } },
                     { connectionProfileStore(applicationContext).selected(it) })
                 check(owner.proof() == request.ownerProof)
-                if (owner.profile == null) { savedRouteRequired = true; return@execute }
+                check((owner.profile == null) == (owner.instance.setup.route?.mode == SourceRouteMode.SYSTEM))
                 handle.route = RouteSession.createAbemaApprovalBrowser(owner.profile, handle.preparation,
                     ownBackend = { backend ->
                         val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
@@ -206,16 +206,12 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 handle.prepared.countDown()
                 main.post {
                     if (ending) return@post
-                    if (savedRouteRequired) {
-                        status.text = "Choose a saved connection in Providers to use routed ABEMA approval."
-                        return@post
-                    }
                     if (!valid) { closeBrowser(false); return@post }
                     proxy.install(checkNotNull(handle.route), onComplete = { applied ->
                         if (ending) return@install
                         if (!applied || !request.current(SystemClock.elapsedRealtime())) { closeBrowser(false); return@install }
                         ready = true
-                        Log.i(LOG_TAG, "SAVED_ROUTE_PROXY_APPLIED")
+                        Log.i(LOG_TAG, "APPROVAL_ROUTE_PROXY_APPLIED")
                         if (resumed) resumeBrowser()
                         status.text = if (request.emailNonce != null)
                             "In ABEMA, choose Switch account → Email address. After signing in, open Account management, then return to Tachiai."
@@ -263,7 +259,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         override fun onReceivedHttpAuthRequest(browser: WebView, handler: HttpAuthHandler, host: String, realm: String) {
             val route = owned?.route
             if (current() && route?.matchesProxyChallenge(host, realm) == true) {
-                Log.i(LOG_TAG, "SAVED_ROUTE_PROXY_AUTH_ACCEPTED")
+                Log.i(LOG_TAG, "APPROVAL_ROUTE_PROXY_AUTH_ACCEPTED")
                 handler.proceed(route.proxyUsername, route.proxyPassword)
             } else { Log.i(LOG_TAG, "HTTP_AUTH_REFUSED"); handler.cancel() }
         }

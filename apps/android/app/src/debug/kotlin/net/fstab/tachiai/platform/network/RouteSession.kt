@@ -25,13 +25,15 @@ private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATC
 // It never installs Android VpnService or changes the device's active VPN.
 internal class RouteSession private constructor(
     private val backend: RouteBackend?,
+    val isSystem: Boolean,
     val proxyUsername: String,
     val proxyPassword: String,
     val proxyRealm: String,
     private val diagnostics: FailureReporter,
     private val purpose: RoutePurpose = RoutePurpose.PLAYBACK,
 ) : AutoCloseable {
-    val isSystem get() = backend == null
+    val hasProxyBridge get() = backend != null
+    val isAbemaApprovalBridge get() = purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER && hasProxyBridge
     val proxyPort: Int = backend?.proxyPort ?: 0
     private val closed = AtomicBoolean()
     private val connections = Collections.newSetFromMap(ConcurrentHashMap<RoutedHttpsConnection, Boolean>())
@@ -68,14 +70,14 @@ internal class RouteSession private constructor(
             RoutePurpose.ABEMA_APPROVAL_BROWSER -> require(AbemaApprovalBrowserPolicy.allowedResource(url.toExternalForm()))
             RoutePurpose.PLAYBACK -> Unit
         }
-        if (isSystem && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
+        if (!hasProxyBridge && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
         return connection
     }
 
-    fun matchesProxyChallenge(host: String, realm: String) = !isSystem && !closed.get() &&
+    fun matchesProxyChallenge(host: String, realm: String) = hasProxyBridge && !closed.get() &&
         host == "127.0.0.1" && realm == proxyRealm
 
     override fun close() {
@@ -257,31 +259,36 @@ internal class RouteSession private constructor(
         // Visible provider-controlled approval in its own process/profile. Only
         // this purpose admits the verified auth origin; native account purposes
         // retain their narrower hosts. Ownership precedes cancellation rollback.
-        // A saved route's CONNECT admission guards redirect destinations too.
-        // System has no such bridge and is refused only for this browser.
+        // Both selected modes use CONNECT admission for redirect destinations.
+        // System's bridge dials through the OS network; other System factories
+        // remain unbridged. Null here means the validated owner's explicit System.
         fun createAbemaApprovalBrowser(profile: ConnectionProfile?,
             preparation: RoutePreparation = RoutePreparation(),
             ownBackend: (RouteBackend) -> RouteBackend = { it },
+            createSystemBackend: (RouteProxySecurity) -> RouteBackend = { security -> NativeRouteBackend.createSystem(security) },
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
                 selected.protocol.createBackend(selected, security, preparation)
             },
         ): RouteSession {
-            require(profile != null) { "ABEMA approval browser requires a saved route" }
-            return createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_APPROVAL_BROWSER, ownBackend)
+            return createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_APPROVAL_BROWSER,
+                ownBackend, createSystemBackend)
         }
 
         private fun createOwned(profile: ConnectionProfile?, preparation: RoutePreparation,
             createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend,
             purpose: RoutePurpose,
             ownBackend: (RouteBackend) -> RouteBackend = { it },
+            createSystemBackend: ((RouteProxySecurity) -> RouteBackend)? = null,
         ): RouteSession {
+            require(createSystemBackend == null || purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER)
             preparation.checkActive()
-            if (profile == null) return RouteSession(null, "", "", "", preparation.diagnostics, purpose)
+            if (profile == null && createSystemBackend == null)
+                return RouteSession(null, true, "", "", "", preparation.diagnostics, purpose)
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
             return try {
-                backend = createBackend(profile, RouteProxySecurity(username, password, realm,
+                val security = RouteProxySecurity(username, password, realm,
                     when (purpose) {
                         RoutePurpose.TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
                         RoutePurpose.TWITCH_CONTINUE_WATCHING -> "gql.twitch.tv"
@@ -298,17 +305,18 @@ internal class RouteSession private constructor(
                         RoutePurpose.ABEMA_ACCOUNT_SESSION -> "abema.tv,api.p-c3-e.abema-tv.com"
                         RoutePurpose.ABEMA_APPROVAL_BROWSER -> AbemaApprovalBrowserPolicy.HOSTS
                         RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
-                    }))
+                    })
+                backend = if (profile == null) checkNotNull(createSystemBackend)(security) else createBackend(profile, security)
                 backend = ownBackend(checkNotNull(backend))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
-                RouteSession(backend, username, password, realm, preparation.diagnostics, purpose)
+                RouteSession(backend, profile == null, username, password, realm, preparation.diagnostics, purpose)
             } catch (error: Exception) {
                 if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.ROUTE_CREATE, error)
                 runCatching { backend?.close() }.onFailure { cleanupError ->
                     preparation.recordCleanupFailure(FailureStage.ROUTE_CREATE_ROLLBACK, cleanupError)
                 }
-                throw IOException("Imported route could not be initialized")
+                throw IOException(if (profile == null) "System approval route could not be initialized" else "Imported route could not be initialized")
             }
         }
     }

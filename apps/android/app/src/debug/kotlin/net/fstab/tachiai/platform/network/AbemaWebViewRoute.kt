@@ -29,7 +29,7 @@ internal class AbemaWebViewRoute(
     private var clearing = false
 
     fun install(route: RouteSession, onComplete: (Boolean) -> Unit, diagnostics: FailureReporter = FailureReporter.NONE) =
-        installProxy(if (route.isSystem) null else route.proxyPort, diagnostics, onComplete)
+        installProxy(if (route.hasProxyBridge) route.proxyPort else null, diagnostics, onComplete)
 
     // Android-free backend seam for asynchronous ordering/failure tests.
     internal fun installProxy(port: Int?, diagnostics: FailureReporter = FailureReporter.NONE, onComplete: (Boolean) -> Unit) {

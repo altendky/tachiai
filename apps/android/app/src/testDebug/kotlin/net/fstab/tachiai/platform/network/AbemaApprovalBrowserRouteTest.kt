@@ -19,59 +19,65 @@ class AbemaApprovalBrowserRouteTest {
         override fun close() { closes++; if (failClose) error("private fixture cleanup detail") }
     }
 
-    @Test fun importedRouteAdmitsOnlyApprovalOriginsAndOwnsItsNativeClient() {
-        val selected = profile(); val backend = Backend(); var created = 0; var retained = 0
-        val route = RouteSession.createAbemaApprovalBrowser(selected, ownBackend = {
-            retained++; assertSame(backend, it); it
-        }) { actual, security ->
-            created++; assertSame(selected, actual)
-            assertEquals(AbemaApprovalBrowserPolicy.HOSTS, security.allowedHosts); backend
-        }
-        try {
-            assertFalse(route.isSystem)
-            for (url in listOf("https://abema.tv/account/change-from-device?fixture=code",
-                "https://auth.abema.tv:443/login/email", "https://api.p-c3-e.abema-tv.com/v1/users/fixture",
-                "https://ds-glb-linear-abematv.akamaized.net/region", "https://ds-linear-abematv.akamaized.net/region",
-                "https://gateway.p-c2-x.abema-tv.com/web", "https://new-api.abema-tv.com/resource?fixture=value")) {
-                val connection = route.open(URL(url))
-                assertTrue(connection is RoutedHttpsConnection)
-                assertTrue(connection.usingProxy()); connection.disconnect()
+    @Test fun bothSelectedModesAdmitOnlyApprovalOriginsAndOwnTheirPrivateClient() {
+        for (selected in listOf(null, profile())) {
+            val backend = Backend(); var created = 0; var retained = 0
+            val route = RouteSession.createAbemaApprovalBrowser(selected, ownBackend = {
+                retained++; assertSame(backend, it); it
+            }, createSystemBackend = { security ->
+                assertNull(selected); created++
+                assertEquals(AbemaApprovalBrowserPolicy.HOSTS, security.allowedHosts); backend
+            }) { actual, security ->
+                created++; assertSame(selected, actual)
+                assertEquals(AbemaApprovalBrowserPolicy.HOSTS, security.allowedHosts); backend
             }
-            val field = RouteSession::class.java.getDeclaredField("client").apply { isAccessible = true }
-            val client = field.get(route) as OkHttpClient
-            assertSame(CookieJar.NO_COOKIES, client.cookieJar)
-            assertSame(Authenticator.NONE, client.authenticator)
-            assertFalse(client.followRedirects); assertFalse(client.followSslRedirects)
-            assertFalse(client.retryOnConnectionFailure)
-            assertEquals(Proxy.Type.HTTP, client.proxy?.type())
-            assertTrue(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
-            assertFalse(route.matchesProxyChallenge("auth.abema.tv", route.proxyRealm))
-            assertFalse(route.matchesProxyChallenge("127.0.0.1", "other-realm"))
-            for (url in listOf("http://abema.tv/", "https://user@abema.tv/", "https://abema.tv:0443/",
-                "https://abema.tv:444/", "https://abema.tv/#fixture", "https://abema.tv/a/%2e%2e/login",
-                "https://auth.abema.tv.evil.invalid/", "https://api.abema.io/", "https://id.twitch.tv/",
-                "https://ds-glb-linear-abematv.akamaized.net/channel/fixture/playlist.m3u8",
-                "https://ds-glb-linear-abematv.akamaized.net/region?fixture=value",
-                "https://ds-linear-abematv.akamaized.net/region?fixture=value",
-                "https://ds-linear-abematv.akamaized.net/media", "https://ds-linear-abematv.akamaized.net:443/region",
-                "https://abema-tv.com/", "https://fakeabema-tv.com/", "https://new-api.abema-tv.com.other.invalid/"))
-                assertThrows(IllegalArgumentException::class.java) { route.open(URL(url)) }
-        } finally { route.close() }
-        route.close()
-        assertEquals(1, created); assertEquals(created, retained); assertEquals(created, backend.closes)
-        assertFalse(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
-        assertThrows(IOException::class.java) { route.open(URL("https://abema.tv/account")) }
+            try {
+                assertEquals(selected == null, route.isSystem)
+                assertTrue(route.hasProxyBridge); assertTrue(route.isAbemaApprovalBridge)
+                for (url in listOf("https://abema.tv/account/change-from-device?fixture=code",
+                    "https://auth.abema.tv:443/login/email", "https://api.p-c3-e.abema-tv.com/v1/users/fixture",
+                    "https://ds-glb-linear-abematv.akamaized.net/region", "https://ds-linear-abematv.akamaized.net/region",
+                    "https://gateway.p-c2-x.abema-tv.com/web", "https://new-api.abema-tv.com/resource?fixture=value")) {
+                    val connection = route.open(URL(url))
+                    assertTrue(connection is RoutedHttpsConnection)
+                    assertTrue(connection.usingProxy()); connection.disconnect()
+                }
+                val field = RouteSession::class.java.getDeclaredField("client").apply { isAccessible = true }
+                val client = field.get(route) as OkHttpClient
+                assertSame(CookieJar.NO_COOKIES, client.cookieJar)
+                assertSame(Authenticator.NONE, client.authenticator)
+                assertNotSame(Authenticator.NONE, client.proxyAuthenticator)
+                assertFalse(client.followRedirects); assertFalse(client.followSslRedirects)
+                assertFalse(client.retryOnConnectionFailure)
+                assertEquals(Proxy.Type.HTTP, client.proxy?.type())
+                assertTrue(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
+                assertFalse(route.matchesProxyChallenge("auth.abema.tv", route.proxyRealm))
+                assertFalse(route.matchesProxyChallenge("127.0.0.1", "other-realm"))
+                for (url in listOf("http://abema.tv/", "https://user@abema.tv/", "https://abema.tv:0443/",
+                    "https://abema.tv:444/", "https://abema.tv/#fixture", "https://abema.tv/a/%2e%2e/login",
+                    "https://auth.abema.tv.evil.invalid/", "https://api.abema.io/", "https://id.twitch.tv/",
+                    "https://ds-glb-linear-abematv.akamaized.net/channel/fixture/playlist.m3u8",
+                    "https://ds-glb-linear-abematv.akamaized.net/region?fixture=value",
+                    "https://ds-linear-abematv.akamaized.net/region?fixture=value",
+                    "https://ds-linear-abematv.akamaized.net/media", "https://ds-linear-abematv.akamaized.net:443/region",
+                    "https://abema-tv.com/", "https://fakeabema-tv.com/", "https://new-api.abema-tv.com.other.invalid/"))
+                    assertThrows(IllegalArgumentException::class.java) { route.open(URL(url)) }
+            } finally { route.close() }
+            route.close()
+            assertEquals(1, created); assertEquals(created, retained); assertEquals(created, backend.closes)
+            assertFalse(route.matchesProxyChallenge("127.0.0.1", route.proxyRealm))
+            assertThrows(IOException::class.java) { route.open(URL("https://abema.tv/account")) }
+        }
     }
 
-    @Test fun systemApprovalIsRefusedBeforeBackendAllocationOrRetention() {
+    @Test fun cancelledSystemApprovalNeverAllocatesOrRetains() {
         var allocated = 0; var retained = 0
-        for (preparation in listOf(RoutePreparation(), RoutePreparation().apply { cancel() })) {
-            val error = assertThrows(IllegalArgumentException::class.java) {
-                RouteSession.createAbemaApprovalBrowser(null, preparation, ownBackend = { retained++; it }) { _, _ ->
-                    allocated++; Backend()
-                }
+        val preparation = RoutePreparation().apply { cancel() }
+        assertThrows(IOException::class.java) {
+            RouteSession.createAbemaApprovalBrowser(null, preparation, ownBackend = { retained++; it },
+                createSystemBackend = { allocated++; Backend() }) { _, _ ->
+                allocated++; Backend()
             }
-            assertEquals("ABEMA approval browser requires a saved route", error.message)
         }
         assertEquals(0, allocated); assertEquals(0, retained)
     }
@@ -82,6 +88,9 @@ class AbemaApprovalBrowserRouteTest {
                 assertEquals("abema.tv,api.p-c3-e.abema-tv.com", security.allowedHosts); Backend()
             }
             try {
+                assertEquals(selected == null, route.isSystem)
+                assertEquals(selected != null, route.hasProxyBridge)
+                assertFalse(route.isAbemaApprovalBridge)
                 val connection = route.open(URL("https://abema.tv/api/auth/sessions"))
                 assertTrue(connection is RoutedHttpsConnection)
                 assertEquals(selected != null, connection.usingProxy()); connection.disconnect()
@@ -94,6 +103,8 @@ class AbemaApprovalBrowserRouteTest {
         val system = RouteSession.create(null) { _, _ -> error("System must not allocate") }
         try {
             assertTrue(system.isSystem)
+            assertFalse(system.hasProxyBridge); assertFalse(system.isAbemaApprovalBridge)
+            assertFalse(system.matchesProxyChallenge("127.0.0.1", ""))
             val connection = system.open(URL("https://example.invalid/"))
             assertFalse(connection.usingProxy()); connection.disconnect()
         } finally { system.close() }
@@ -112,35 +123,68 @@ class AbemaApprovalBrowserRouteTest {
     }
 
     @Test fun backendOwnershipPrecedesCancellationAndInvalidPortRollback() {
-        for (port in listOf(12345, 0, 65536)) {
-            val preparation = RoutePreparation(); val allocated = Backend(port)
-            var owned: RouteBackend? = null
-            assertThrows(IOException::class.java) {
-                RouteSession.createAbemaApprovalBrowser(profile(), preparation, ownBackend = { backend ->
-                    assertSame(allocated, backend)
-                    object : RouteBackend {
-                        override val proxyPort get() = backend.proxyPort
-                        override fun close() = backend.close()
-                    }.also { owned = it }
-                }) { _, _ ->
+        for (selected in listOf(null, profile())) {
+            for (port in listOf(12345, 0, 65536)) {
+                val preparation = RoutePreparation(); val allocated = Backend(port)
+                var owned: RouteBackend? = null
+                fun create(): RouteBackend {
                     if (port == 12345) preparation.cancel()
-                    allocated
+                    return allocated
                 }
+                assertThrows(IOException::class.java) {
+                    RouteSession.createAbemaApprovalBrowser(selected, preparation, ownBackend = { backend ->
+                        assertSame(allocated, backend)
+                        object : RouteBackend {
+                            override val proxyPort get() = backend.proxyPort
+                            override fun close() = backend.close()
+                        }.also { owned = it }
+                    }, createSystemBackend = { create() }) { _, _ -> create() }
+                }
+                assertNotNull(owned); assertEquals(1, allocated.closes)
+                assertTrue(preparation.cleanupConfirmed)
             }
-            assertNotNull(owned); assertEquals(1, allocated.closes)
-            assertTrue(preparation.cleanupConfirmed)
         }
     }
 
     @Test fun failedRollbackLeavesRetainedOwnerAndUnconfirmedPreparation() {
-        val preparation = RoutePreparation(); val allocated = Backend(0, failClose = true)
-        var owned: RouteBackend? = null
-        val error = assertThrows(IOException::class.java) {
-            RouteSession.createAbemaApprovalBrowser(profile(), preparation, ownBackend = { owned = it; it }) { _, _ -> allocated }
+        for (selected in listOf(null, profile())) {
+            val preparation = RoutePreparation(); val allocated = Backend(0, failClose = true)
+            var owned: RouteBackend? = null
+            val error = assertThrows(IOException::class.java) {
+                RouteSession.createAbemaApprovalBrowser(selected, preparation, ownBackend = { owned = it; it },
+                    createSystemBackend = { allocated }) { _, _ -> allocated }
+            }
+            assertSame(allocated, owned); assertEquals(1, allocated.closes)
+            assertFalse(preparation.cleanupConfirmed); assertTrue(preparation.isCancelled)
+            assertNull(error.cause)
+            assertEquals(if (selected == null) "System approval route could not be initialized" else "Imported route could not be initialized", error.message)
+            assertFalse(error.toString().contains("private fixture"))
         }
-        assertSame(allocated, owned); assertEquals(1, allocated.closes)
-        assertFalse(preparation.cleanupConfirmed); assertTrue(preparation.isCancelled)
-        assertNull(error.cause); assertEquals("Imported route could not be initialized", error.message)
-        assertFalse(error.toString().contains("private fixture"))
+    }
+
+    @Test fun importedFailureNeverCallsSystemFactory() {
+        var systemAllocations = 0
+        val error = assertThrows(IOException::class.java) {
+            RouteSession.createAbemaApprovalBrowser(profile(), createSystemBackend = { systemAllocations++; Backend() }) { _, _ ->
+                throw IOException("private imported failure")
+            }
+        }
+        assertEquals(0, systemAllocations); assertNull(error.cause)
+        assertEquals("Imported route could not be initialized", error.message)
+    }
+
+    @Test fun systemFailureNeverCallsImportedFactoryOrRetainsUnallocatedBackend() {
+        var importedAllocations = 0; var retained = 0
+        val preparation = RoutePreparation()
+        val error = assertThrows(IOException::class.java) {
+            RouteSession.createAbemaApprovalBrowser(null, preparation, ownBackend = { retained++; it },
+                createSystemBackend = { throw IOException("private System failure") }) { _, _ ->
+                importedAllocations++; Backend()
+            }
+        }
+        assertEquals(0, importedAllocations); assertEquals(0, retained)
+        assertTrue(preparation.cleanupConfirmed); assertNull(error.cause)
+        assertEquals("System approval route could not be initialized", error.message)
+        assertFalse(error.toString().contains("private System failure"))
     }
 }

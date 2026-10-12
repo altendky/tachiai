@@ -259,6 +259,24 @@ func (r *Route) serve(client net.Conn) {
 	<-done
 }
 
+// NewSystem opens an authenticated, destination-restricted local CONNECT bridge
+// using the ordinary operating-system network. Provider TLS remains end-to-end.
+func NewSystem(username, password, realm, allowedHosts string) (*Route, error) {
+	return newSystem(username, password, realm, allowedHosts, func(ctx context.Context, target string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	})
+}
+
+func newSystem(username, password, realm, allowedHosts string, dial dialFunc) (*Route, error) {
+	return newRoute(username, password, realm, allowedHosts, func(ctx context.Context, target string) (net.Conn, error) {
+		connection, err := dial(ctx, target)
+		if err != nil {
+			return nil, errConnect
+		}
+		return connection, nil
+	}, nil)
+}
+
 // NewHttpProxy opens an authenticated local bridge to one remote HTTP CONNECT
 // proxy. URI user-info is sent only to the proxy, never the tunneled origin.
 func NewHttpProxy(config, username, password, realm, allowedHosts string) (*Route, error) {

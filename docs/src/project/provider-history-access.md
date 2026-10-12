@@ -87,6 +87,198 @@ This is bounded intended-account endpoint acceptance. Complete history coverage,
 pagination, every resource kind, renewal, entitlement, playback and Twitch
 retrieval remain separate checks. The physical phone was not used.
 
+### Bounded continuation fixture — 2026-10-12
+
+A separate `tachiaiReadOnlyAbemaHistoryContinuation=true` opt-in extends
+`AbemaHistoryDeviceTest` without changing the production adapter. It requests
+History directly, requires a conservatively projected first page and passes its
+opaque `nextCursor` unchanged to exactly one second History browse on the same
+catalog. The observation opt-ins are mutually exclusive. It
+does not probe My List, invoke a capability sweep, request a third page, retry,
+start sign-in, play content or configure a source. A valid empty terminal second
+page is acceptable; cross-page overlap is not rejected without an established
+provider snapshot contract. Differing public handles do not prove provider
+cursor progression, because production replaces provider cursors with fresh
+opaque handles.
+
+Worker checks refuse incomplete AtomicFile writes, backups and the intended
+account's pending-Forget marker before protected reads and around each browse.
+Required lock files must already exist as regular, non-symlink files; the fixture
+does not create them. These checks assume an idle device with no external writer
+and do not atomically exclude a concurrent account/settings change. The factory
+activity gate remains a cheap foreground/deadline check, including its main-thread
+callbacks. A shared fifty-second observation deadline reserves twenty seconds
+inside the original seventy-second operation/cleanup bound; cleanup and
+preservation must also finish within that twenty-second reserve. These are
+acceptance deadlines, not a hard wallclock cancellation guarantee for blocked
+local lifecycle or IPC work. Final preservation checks run independently of
+that revoked foreground gate.
+
+Accepted pages already require the production binding's confirmed request
+cleanup. Facade-close return is reported separately and is not treated as proof
+of request cleanup by itself. The final accepted outcome additionally requires
+both pages' strict projection, bounded timing, no account cleanup poison,
+facade closure and unchanged encrypted records and route ownership. Only closed
+outcomes, counts and continuation/receipt booleans are logged; private history
+contents and cursor values remain transient.
+
+### First continuation attempt — 2026-10-12
+
+One opted-in continuation observation executed one instrumentation case with
+zero skips and failed in 2.827 seconds. The first History browse returned
+`ACCESS_REQUIRED`; no second browse or continuation consumption ran. The closed
+observation reported unchanged encrypted records and owner, returned facade,
+callback and foreground cleanup, and no account cleanup poison. Its incomplete
+observation flag was false; this is not evidence that the fifty-second deadline
+expired. The post-browse foreground, deadline and owner checks passed before the
+first-page refusal.
+
+Production maps every unavailable History binding to `ACCESS_REQUIRED`, including
+local grant refusal, fresh-bootstrap failure and profile/endpoint refusal. This
+observation therefore establishes neither provider denial nor a specific cause.
+Provider request execution and the exact access-failure stage were not established.
+Context: persistent tachiai-dev, Android16/API36/x86-64, the same saved native
+email account and Windscribe route. The independent twenty-file no-backup and
+preferences baseline was byte-identical after test-APK installation and afterward.
+No account write, sign-in, Add, playback, route change or automatic retry occurred.
+Actual continuation acceptance remains outstanding under #102.
+
+A separate `tachiaiReadOnlyAbemaLocalAccount=true` diagnostic narrows local
+grant admission without contacting ABEMA. It uses the production protected grant
+store and account session to load, inspect the closed status, attempt local
+candidate admission and inspect status again. It constructs no Activity,
+catalog, bootstrap or transport, performs no provider validation, and pauses
+the temporary session during cleanup. It shares the device/process, storage,
+owner, budget and preservation guards above. A false candidate can be a completed
+local observation; `LOCAL_ACCOUNT_OBSERVED` does not establish account connection
+or History access. Only closed statuses and booleans are logged.
+
+One separately opted-in local observation then passed one instrumentation case
+with zero skips in 0.161 seconds. Loading reported `UNVERIFIED`; local candidate
+admission returned false and status became `RECONNECT_REQUIRED`. Session pause,
+owner/record preservation, no account cleanup poison and all acceptance budgets
+passed. No Activity, catalog, bootstrap, transport or provider request was
+constructed. The independent twenty-file baseline remained byte-identical;
+the ordinary launcher was restored. This establishes unavailable local native
+grant admission at that observation, without determining a precise cause such
+as expiry or proving provider rejection. At that point a renewed connection
+under #103 was needed before another intended-account continuation check. No
+account grant was replaced or refreshed by either observation.
+
+All seventy-two targeted History projection, collection, binding and HTTP
+transport JVM cases passed with zero failures, errors or skips. Instrumentation
+compilation, test-APK assembly, lint, release isolation, scoped hooks and the
+documentation build passed; the test certificate matched the shared debug
+identity. Independent reviews found no blocker. Production sources and the
+installed app APK were unchanged; only the normal-process test APK was updated.
+The physical phone was not used. The failed continuation attempt is preserved
+above; the successful local diagnostic does not satisfy continuation acceptance.
+
+### Fresh handoff and second-page refusal — 2026-10-12
+
+The owner initiated Connect again and reported that ABEMA opened an already
+authenticated screen. After return, the native account screen had a ready
+**Finish email connection** action. Completing that pending handoff passed
+profile and email-registration validation and reported native `CONNECTED`.
+Exactly one of twenty baseline files changed: the intended instance's protected
+native grant. No files were added or removed; the other nineteen were unchanged.
+This intentional account update is separate from the read-only observations.
+
+The native expiry is taken from the provider token's `exp` claim, with identity,
+clock and saved-record consistency checks. There is no twelve-hour local account
+retention limit. Verified automatic native-grant renewal is not implemented;
+a retained browser login and an unusable native grant can coexist. These
+observations did not measure the previous token's exact lifetime or establish
+why its local candidate was rejected.
+
+Against a new twenty-file baseline captured after that handoff, one fresh
+continuation case executed with zero skips and failed in 20.68 seconds. The first
+History page returned two entries and a continuation; the second browse returned
+`TEMPORARY`. It did not establish accepted continuation metadata. Internal
+encrypted-record and owner checks passed, all facade/callback/foreground cleanup
+returned, and account cleanup was not poisoned. The incomplete observation flag
+again does not establish a deadline expiry.
+
+The external comparison found one changed existing file, the bounded failure
+journal; all encrypted records and the other nineteen files were unchanged,
+with no additions or removals. The strict journal collector reported
+`CATALOG_LOAD` without a detailed cause. The journal was preserved, and the
+ordinary launcher was restored. A further account reconnect is not indicated
+by this second-page refusal; its HTTP/response projection cause still needs
+bounded diagnosis.
+
+### Closed response-shape diagnosis — 2026-10-12
+
+A distinct `tachiaiReadOnlyAbemaHistoryShape=true` test-only mode composes the
+production History binding, bootstrap, profile and routed collection transports.
+It forwards the exact bytes the production parser consumes, without reading
+ahead, and classifies only a complete, strictly checked UTF-8 JSON body within
+the existing 512 KiB bound. Output contains closed HTTP/failure categories,
+field types and array counts; response values, identities, titles, cursors,
+headers and URLs are never logged or persisted. Non-200 bodies remain unread.
+Actual resource-close receipts, owner/record preservation and observation and
+cleanup budgets must pass before shape output is admitted. Cleanup uncertainty
+retains owners and poisons account admission. A parser refusal still fails the
+History acceptance case. Guest bootstrap retains its normal bounded failure
+journal behavior.
+
+Three provider-free instrumentation cases passed in 0.165 seconds, covering
+unchanged bytes, complete versus partial reads, malformed UTF-8 and duplicate
+JSON, bounded shape classification, unread refusal bodies and sticky cleanup
+failure suppression. Test-only installation and these checks preserved all
+twenty baseline files.
+
+One subsequent shape-mode case executed with zero skips and failed in 30.938
+seconds. Both collection responses were HTTP 200 with complete JSON. The first
+had two History references, one timeshift and one video, and a nonempty next
+cursor. The second had `histories: null`, a dataset object whose three known
+arrays were `null`, and a paging object with no next field. The production
+parser classified that second page as `INVALID_RESPONSE`, explaining the
+catalog's `TEMPORARY` refusal. Shape cleanup, budgets, encrypted records and
+route ownership passed; all twenty external baseline files were unchanged, and
+the ordinary launcher was restored.
+
+The retained coherent first-party module 95697 normalizes null History and
+dataset arrays to empty arrays. This establishes a bounded parser compatibility
+defect, rather than an authentication or HTTP refusal. Malformed non-array
+values, missing History fields, unknown references, broken joins and existing
+bounds remain separate refusal cases.
+
+The production projection now treats explicitly null History and known dataset
+arrays as empty arrays. It still requires a present History field and validates
+every supplied dataset entry, including on empty pages; it has no early empty
+return that could skip duplicate identities, malformed fields or bounds. A
+nonempty reference still requires its exact matching dataset entry. Paging and
+cursor validation are unchanged. This does not adopt the first-party model's
+broader coercion of arbitrary malformed values.
+
+### Normal-factory continuation acceptance after the fix — 2026-10-12
+
+Seventy-six targeted History projection, collection, binding and HTTP JVM cases
+passed with zero failures, errors or skips, including four new null-array
+regression cases. Instrumentation compilation, lint, release isolation, scoped
+hooks/docs and independent reviews passed. Both rebuilt APKs matched the shared
+debug signing certificate. The Kotlin compiler emitted non-exhaustive-when
+warnings in this parser; lint and compilation completed successfully. Native
+libraries were unchanged.
+
+After a data-preserving app update, one real normal-production-factory
+continuation case executed with zero skips and passed in 26.145 seconds:
+`HISTORY_CONTINUATION_ACCEPTED`, two first-page entries and an empty terminal
+second page. Both browse calls, conservative projection, request cleanup,
+facade/callback/foreground cleanup, budgets, owner and encrypted-record checks
+passed without account cleanup poison. All twenty external baseline files were
+byte-identical after installation and after the check; the ordinary launcher
+was restored. An earlier command typo selected zero tests and made no provider
+request; it is not counted as acceptance or as a real provider attempt.
+
+Context remains persistent tachiai-dev, Android16/API36/x86-64,
+WebView133.0.6943.137, the freshly validated saved native email-account grant and
+the configured Windscribe WireGuard route. The physical phone was not used.
+This verifies one intended-account continuation to a terminal page, not complete
+history coverage, every resource kind, retention, renewal, entitlement or
+playback. #102 and #103 remain open for their broader scope.
+
 ## Twitch bounded Continue Watching adapter — 2026-10-11
 
 The debug Twitch catalog additionally offers **Continue watching** through the

@@ -39,9 +39,74 @@ class AbemaHistoryProjectionTest {
             val result = parseAbemaHistoryResponse(body)
             assertTrue(result.entries.isEmpty()); assertNull(result.providerNext); assertEquals(AbemaCollectionKind.HISTORY, result.kind)
         }
-        for (body in listOf("{}", """{"mylist":[]}""", """{"histories":null}""", """{"histories":{}}""",
+        for (body in listOf("{}", """{"mylist":[]}""", """{"histories":{}}""",
             """{"histories":[],"dataSet":[]}""", """{"histories":[],"paging":[]}""",
             """{"histories":[],"paging":{"next":null}}""", """{"histories":[],"paging":{"next":1}}""")) rejected(body)
+    }
+
+    @Test fun explicitNullHistoryAndDatasetArraysAcceptTheObservedTerminalPage() {
+        for (histories in listOf("null", "[]")) {
+            val result = parseAbemaHistoryResponse("""{"histories":$histories,
+                "dataSet":{"timeshifts":null,"vods":null,"liveEvents":null},"paging":{}}""")
+            assertEquals(AbemaCollectionKind.HISTORY, result.kind)
+            assertTrue(result.entries.isEmpty()); assertNull(result.providerNext)
+        }
+        val withoutDataset = parseAbemaHistoryResponse("""{"histories":null}""")
+        assertTrue(withoutDataset.entries.isEmpty()); assertNull(withoutDataset.providerNext)
+    }
+
+    @Test fun nonemptyHistoryStillJoinsItsExactKindWhenUnusedDatasetsAreNull() {
+        val kinds = listOf(Triple(1, "timeshifts", "slot"), Triple(2, "vods", "episode"), Triple(3, "liveEvents", "live_event"))
+        for ((type, selected, kind) in kinds) {
+            val parent = if (kind == "slot") ",\"channelId\":\"sumo\"" else ""
+            val datasets = kinds.joinToString(",") { (_, array, _) ->
+                if (array == selected) """"$array":[{"id":"same","title":"Selected"$parent}]"""
+                else """"$array":null"""
+            }
+            val result = parseAbemaHistoryResponse("""{"histories":[{"type":$type,"sourceId":"same"}],"dataSet":{$datasets}}""")
+            val entry = result.entries.single()
+            assertEquals(kind, entry.resource.kind)
+            assertEquals(if (kind == "slot") "sumo/same" else "same", entry.resource.identity)
+            assertEquals(if (kind == "episode") CatalogIntent.VIDEO else CatalogIntent.BROADCAST, entry.resource.intent)
+            assertEquals("Selected", entry.title)
+            assertEquals(CatalogAvailability.UNKNOWN, entry.availability); assertNull(entry.scheduledStartEpochMs)
+            assertNull(result.providerNext)
+            rejected("""{"histories":[{"type":$type,"sourceId":"same"}],
+                "dataSet":{"timeshifts":null,"vods":null,"liveEvents":null}}""")
+        }
+        rejected("""{"histories":[{"type":2,"sourceId":"same"}],"dataSet":{"vods":null,
+            "timeshifts":[{"id":"same","channelId":"sumo","title":"Different kind"}],"liveEvents":null}}""")
+    }
+
+    @Test fun nullNormalizationDoesNotAcceptAbsentReferencesMalformedArraysOrInvalidPaging() {
+        for (body in listOf("{}", """{"error":{"code":403},"dataSet":{}}""",
+            """{"dataSet":{"timeshifts":null,"vods":null,"liveEvents":null},"paging":{}}""")) rejected(body)
+        for (histories in listOf("{}", "\"null\"", "0", "true", "\"[]\""))
+            rejected("""{"histories":$histories,"dataSet":{}}""")
+        for (value in listOf("[]", "0", "true", "\"null\"")) rejected("""{"histories":null,"dataSet":$value}""")
+        for (array in listOf("timeshifts", "vods", "liveEvents")) {
+            for (value in listOf("{}", "0", "true", "\"[]\""))
+                rejected("""{"histories":null,"dataSet":{"$array":$value}}""")
+        }
+        for (paging in listOf("[]", "true", "{\"next\":null}", "{\"next\":1}"))
+            rejected("""{"histories":null,"dataSet":{"vods":null},"paging":$paging}""")
+        for (body in listOf("""{"histories":null,"histories":[]}""",
+            """{"histories":null,"dataSet":{"vods":null,"vods":[]}}""",
+            """{"histories":null,"ignored":"\ud800"}""")) rejected(body)
+    }
+
+    @Test fun nullHistoryStillValidatesDatasetIdentityAndAggregateAndResponseBounds() {
+        val items = List(500) { """{"id":"ep$it","title":"Replay"}""" }.joinToString(",")
+        val bounded = """{"histories":null,"dataSet":{"timeshifts":null,"vods":[$items],"liveEvents":null}}"""
+        assertTrue(parseAbemaHistoryResponse(bounded).entries.isEmpty())
+        rejected("""{"histories":null,"dataSet":{"timeshifts":null,"vods":[$items],
+            "liveEvents":[{"id":"event","title":"Event"}]}}""", AbemaCollectionFailure.RESPONSE_LIMIT)
+        rejected("""{"histories":null,"dataSet":{"vods":[{"id":"same","title":"One"},{"id":"same","title":"Two"}]}}""")
+        rejected("""{"histories":null,"dataSet":{"timeshifts":[{"id":"slot","title":"No parent"}],"vods":null}}""")
+        val ref = """{"type":2,"sourceId":"ep"}"""
+        rejected("""{"histories":[${List(21) { ref }.joinToString(",")}],
+            "dataSet":{"timeshifts":null,"vods":[{"id":"ep","title":"Replay"}],"liveEvents":null}}""", AbemaCollectionFailure.RESPONSE_LIMIT)
+        rejected("""{"histories":null,"ignored":"${"雪".repeat(ABEMA_MY_LIST_RESPONSE_LIMIT / 3)}"}""", AbemaCollectionFailure.RESPONSE_LIMIT)
     }
 
     @Test fun unknownTypesNumericStringsAndMissingOrAmbiguousJoinsRefuseWholePage() {

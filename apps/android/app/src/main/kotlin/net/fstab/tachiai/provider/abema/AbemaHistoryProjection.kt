@@ -14,7 +14,14 @@ internal fun parseAbemaHistoryResponse(body: String): AbemaMyListPage {
     try {
         checkAbemaCollectionJson(body)
         val root = JSONObject(body)
-        val references = root.opt("histories") as? JSONArray ?: invalidHistory()
+        // A verified terminal page uses explicit null arrays. The History
+        // field must still be present; absence is not an empty account list.
+        if (!root.has("histories")) invalidHistory()
+        val references = when (val raw = root.opt("histories")) {
+            JSONObject.NULL -> JSONArray()
+            is JSONArray -> raw
+            else -> invalidHistory()
+        }
         if (references.length() > ABEMA_MY_LIST_PAGE_LIMIT) limitedHistory()
         val dataset = when (val raw = root.opt("dataSet")) {
             null, JSONObject.NULL -> if (references.length() == 0) JSONObject() else invalidHistory()
@@ -29,7 +36,11 @@ internal fun parseAbemaHistoryResponse(body: String): AbemaMyListPage {
         var count = 0
         val joins = HashMap<HistoryType, Map<String, CatalogEntry>>()
         for (type in types) {
-            val items = if (!dataset.has(type.array)) JSONArray() else dataset.opt(type.array) as? JSONArray ?: invalidHistory()
+            val items = when (val raw = dataset.opt(type.array)) {
+                null, JSONObject.NULL -> JSONArray()
+                is JSONArray -> raw
+                else -> invalidHistory()
+            }
             count += items.length()
             if (count > 500) limitedHistory()
             val entries = LinkedHashMap<String, CatalogEntry>()

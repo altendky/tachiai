@@ -202,7 +202,9 @@ counts and booleans after preservation and cleanup checks. The fixture refuses
 observed unfinished encrypted-file state before reads and assumes an idle device;
 it does not claim exclusion of an external writer racing those checks.
 
-This establishes bounded real Following access on one emulator. Search, exact
+This establishes bounded real Following access on one emulator. A separate
+[bounded Continue Watching check](provider-history-access.md#maintained-account-continue-watching-acceptance--2026-10-12)
+also passed. Search, exact
 lookup, published videos, schedules, imported routes, refresh/revocation,
-Continue Watching and configured native playback remain separate acceptance
+configured native playback and broader history behavior remain separate acceptance
 work under #99 and #102. Physical-device and TV acceptance are not established.

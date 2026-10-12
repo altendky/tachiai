@@ -87,6 +87,93 @@ This is bounded intended-account endpoint acceptance. Complete history coverage,
 pagination, every resource kind, renewal, entitlement, playback and Twitch
 retrieval remain separate checks. The physical phone was not used.
 
+### Bounded continuation fixture — 2026-10-12
+
+A separate `tachiaiReadOnlyAbemaHistoryContinuation=true` opt-in extends
+`AbemaHistoryDeviceTest` without changing the production adapter. It requests
+History directly, requires a conservatively projected first page and passes its
+opaque `nextCursor` unchanged to exactly one second History browse on the same
+catalog. The observation opt-ins are mutually exclusive. It
+does not probe My List, invoke a capability sweep, request a third page, retry,
+start sign-in, play content or configure a source. A valid empty terminal second
+page is acceptable; cross-page overlap is not rejected without an established
+provider snapshot contract. Differing public handles do not prove provider
+cursor progression, because production replaces provider cursors with fresh
+opaque handles.
+
+Worker checks refuse incomplete AtomicFile writes, backups and the intended
+account's pending-Forget marker before protected reads and around each browse.
+Required lock files must already exist as regular, non-symlink files; the fixture
+does not create them. These checks assume an idle device with no external writer
+and do not atomically exclude a concurrent account/settings change. The factory
+activity gate remains a cheap foreground/deadline check, including its main-thread
+callbacks. A shared fifty-second observation deadline reserves twenty seconds
+inside the original seventy-second operation/cleanup bound; cleanup and
+preservation must also finish within that twenty-second reserve. These are
+acceptance deadlines, not a hard wallclock cancellation guarantee for blocked
+local lifecycle or IPC work. Final preservation checks run independently of
+that revoked foreground gate.
+
+Accepted pages already require the production binding's confirmed request
+cleanup. Facade-close return is reported separately and is not treated as proof
+of request cleanup by itself. The final accepted outcome additionally requires
+both pages' strict projection, bounded timing, no account cleanup poison,
+facade closure and unchanged encrypted records and route ownership. Only closed
+outcomes, counts and continuation/receipt booleans are logged; private history
+contents and cursor values remain transient.
+
+### First continuation attempt — 2026-10-12
+
+One opted-in continuation observation executed one instrumentation case with
+zero skips and failed in 2.827 seconds. The first History browse returned
+`ACCESS_REQUIRED`; no second browse or continuation consumption ran. The closed
+observation reported unchanged encrypted records and owner, returned facade,
+callback and foreground cleanup, and no account cleanup poison. Its incomplete
+observation flag was false; this is not evidence that the fifty-second deadline
+expired. The post-browse foreground, deadline and owner checks passed before the
+first-page refusal.
+
+Production maps every unavailable History binding to `ACCESS_REQUIRED`, including
+local grant refusal, fresh-bootstrap failure and profile/endpoint refusal. This
+observation therefore establishes neither provider denial nor a specific cause.
+Provider request execution and the exact access-failure stage were not established.
+Context: persistent tachiai-dev, Android16/API36/x86-64, the same saved native
+email account and Windscribe route. The independent twenty-file no-backup and
+preferences baseline was byte-identical after test-APK installation and afterward.
+No account write, sign-in, Add, playback, route change or automatic retry occurred.
+Actual continuation acceptance remains outstanding under #102.
+
+A separate `tachiaiReadOnlyAbemaLocalAccount=true` diagnostic narrows local
+grant admission without contacting ABEMA. It uses the production protected grant
+store and account session to load, inspect the closed status, attempt local
+candidate admission and inspect status again. It constructs no Activity,
+catalog, bootstrap or transport, performs no provider validation, and pauses
+the temporary session during cleanup. It shares the device/process, storage,
+owner, budget and preservation guards above. A false candidate can be a completed
+local observation; `LOCAL_ACCOUNT_OBSERVED` does not establish account connection
+or History access. Only closed statuses and booleans are logged.
+
+One separately opted-in local observation then passed one instrumentation case
+with zero skips in 0.161 seconds. Loading reported `UNVERIFIED`; local candidate
+admission returned false and status became `RECONNECT_REQUIRED`. Session pause,
+owner/record preservation, no account cleanup poison and all acceptance budgets
+passed. No Activity, catalog, bootstrap, transport or provider request was
+constructed. The independent twenty-file baseline remained byte-identical;
+the ordinary launcher was restored. This establishes unavailable local native
+grant admission at that observation, without determining a precise cause such
+as expiry or proving provider rejection. A renewed connection under #103 is
+needed before another intended-account continuation check. No account grant was
+replaced or refreshed by either observation.
+
+All seventy-two targeted History projection, collection, binding and HTTP
+transport JVM cases passed with zero failures, errors or skips. Instrumentation
+compilation, test-APK assembly, lint, release isolation, scoped hooks and the
+documentation build passed; the test certificate matched the shared debug
+identity. Independent reviews found no blocker. Production sources and the
+installed app APK were unchanged; only the normal-process test APK was updated.
+The physical phone was not used. The failed continuation attempt is preserved
+above; the successful local diagnostic does not satisfy continuation acceptance.
+
 ## Twitch bounded Continue Watching adapter — 2026-10-11
 
 The debug Twitch catalog additionally offers **Continue watching** through the

@@ -360,9 +360,13 @@ under the owner's 2026-10-12 instruction. The account origins and narrow region 
 remain separate from playback networking. Geolocation and location prompts are
 refused; region remains the configured route's exit.
 
-A saved connection is currently required for the browser's destination-enforcing
-CONNECT bridge. System-network browser access still needs an equivalent direct
-bridge; native account requests retain their existing System-network option.
+The browser's destination-enforcing CONNECT bridge supports both an explicitly
+selected System connection and an imported connection. System approval uses an
+authenticated, host-restricted loopback bridge whose admitted destinations are
+dialed through Android's current network, including any active device VPN and
+system DNS. Imported routes retain their selected transport and never fall back
+to System. Both modes require confirmed WebView proxy installation before loading
+the provider page. Other System route purposes retain their direct behavior.
 The native email operation has an original ten-minute deadline, with provider
 code expiry independently enforced by ABEMA. No invalid-credential rejection
 probe or native guest/device challenge is part of normal email setup. The old
@@ -375,6 +379,36 @@ expiry, shared-store revision and Forget revoke stale leases. Failed replacement
 conditionally restores the exact prior record, never a newer replacement or
 Forget state. Uncertain HTTP/browser/route cleanup prevents publication and
 retains the still-owned resources until process restart.
+
+### Explicit System approval bridge — 2026-10-12
+
+The approval-only System bridge reuses the existing authenticated CONNECT
+admission, connection bounds, cancellation and opaque tunnel handling. Selected
+System mode and proxy presence are distinct: generic System requests remain
+unbridged, while both approval modes require the restricted bridge. Region checks
+reject generic playback/account routes even when those have an imported backend.
+JVM fixtures cover both selected modes, private client authentication, policy,
+rollback ownership, unsupported WebView proxy installation and callback ordering.
+The full Android checks passed 2,454 JVM cases with zero failures/errors/skips,
+lint, release isolation, instrumentation compilation and both APK assemblies.
+The full provider-free Go race suite passed; both native ABIs, 16 KiB alignment,
+source-companion consistency and the shared debug signing certificate passed.
+
+One explicitly opted-in JNI check executed on persistent `tachiai-dev`, Android
+16/API 36 x86-64, with installed WebView 133.0.6943.137. It passed one test with
+zero skips in 0.088 seconds: three missing/wrong/duplicate-authentication requests
+returned 407, and six authenticated unapproved-host/IP/apex/lookalike/port requests
+returned 403. Confirmed cleanup closed the local listener, and repeated actual
+native close succeeded. Every connection was local; no authenticated approved
+destination, DNS lookup, provider request, browser or WebView override was used.
+This verifies JNI admission and cleanup, not System-provider connectivity, exit
+country, regional eligibility or account approval.
+
+The same verified production APK updated the emulator and the owner's Pixel 6
+(Android 17/API 37 arm64) without clearing data. All protected native records and
+shared preferences remained byte-identical: 20 files on the emulator and 22 on
+the phone. The existing Windscribe ABEMA owner was retained, ordinary Main was
+restored, and phone observations establish installation/preservation only.
 
 ### First-party desktop email reference — 2026-10-11
 

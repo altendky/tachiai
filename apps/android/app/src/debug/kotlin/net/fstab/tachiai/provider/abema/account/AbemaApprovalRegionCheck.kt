@@ -26,7 +26,7 @@ internal sealed interface AbemaApprovalRegionResult {
 // WebView resource redirects are not re-intercepted. This adapter owns the one
 // verified GET itself rather than admitting unrestricted traffic to a CDN host.
 // The opener seam is provider-free test support; production uses the captured,
-// credential-free saved RouteSession and never Java's default URL opener.
+// credential-free approval bridge and never Java's default URL opener.
 internal class AbemaApprovalRegionCheck(
     private val open: (URL) -> HttpsURLConnection,
     private val canRequest: () -> Boolean,
@@ -36,7 +36,7 @@ internal class AbemaApprovalRegionCheck(
 ) {
     constructor(route: RouteSession, canRequest: () -> Boolean, elapsedMs: () -> Long,
         deadlineElapsedMs: Long) : this(route::open, canRequest, elapsedMs, deadlineElapsedMs) {
-        require(!route.isSystem) { "ABEMA region check requires a saved route" }
+        require(route.isAbemaApprovalBridge) { "ABEMA region check requires an approval bridge" }
     }
 
     companion object {

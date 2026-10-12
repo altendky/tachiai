@@ -1,10 +1,16 @@
 package net.fstab.tachiai.platform.network
 
 import routebridge.Route
+import routebridge.Routebridge
 
 // The concrete Go binding stays behind the backend contract. Long native ports
 // are validated before narrowing; RouteSession validates any backend's port too.
 internal class NativeRouteBackend(private val route: Route) : RouteBackend {
+    companion object {
+        fun createSystem(security: RouteProxySecurity): RouteBackend = NativeRouteBackend(
+            Routebridge.newSystem(security.username, security.password, security.realm, security.allowedHosts),
+        )
+    }
     override val proxyPort: Int get() {
         check(route.port in 1L..65535L)
         return route.port.toInt()

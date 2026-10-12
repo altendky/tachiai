@@ -6,7 +6,8 @@ This is partial research for
 items without making them favorites. A bounded undocumented ABEMA read-only
 adapter is now implemented as described below, with bounded intended-account
 retrieval observed on 2026-10-12. An optional bounded Twitch Continue Watching
-adapter is implemented below, with real Smart TV compatibility still unverified. No
+adapter is implemented below, with a bounded maintained-account response observed
+on 2026-10-12. Broader Smart TV compatibility remains unverified. No
 comprehensive Twitch account-history retrieval path was established; #102
 remains open.
 
@@ -110,7 +111,8 @@ at most 95% watched, including exactly 95%. Its threshold is dynamically
 configurable on Twitch. Tachiai implements that bounded default projection; it
 does not claim complete shelf parity. Progress/duration use numeric seconds
 ratio arithmetic, while update time is passed to JavaScript Date by that client.
-Raw schema types and nullability are not verified. Tachiai's local restrictions
+Raw schema types and nullability are not an established provider contract. The
+later bounded positive page passed Tachiai's local restrictions, which
 accept finite nonnegative numeric progress/duration no greater than one year,
 integer epoch milliseconds or a strict ISO instant for update time, unique exact
 video IDs and valid owner IDs/logins. Strict UTF-8 JSON rejects duplicate object
@@ -166,7 +168,9 @@ the imported query hook's complete transport construction. The HTML's separate
 PlaybackAccessToken warm-up posts OAuth with a browser client identity and an
 optional device cookie; it does not establish Continue Watching's mandatory
 headers, cookie/integrity requirements or compatibility with the Smart TV grant.
-No real-account GraphQL request or device observation has run. A provider refusal
+That public-source research made no real-account GraphQL request or device
+observation. The later bounded acceptance below establishes a narrower positive
+result. A provider refusal
 or incompatible negative-proof convention may keep this optional collection
 unavailable while Following works normally.
 
@@ -176,14 +180,62 @@ explicit opt-in is `tachiaiReadOnlyTwitchContinueWatching=true` plus a
 It requires an already READY grant with more than ninety seconds of retained
 validity, maintains foreground/route ownership, forbids protected writes and
 consent/refresh/reconnect, and refuses validation that would require expiry
-tightening. It exercises the same production collection/session/route classes,
-but this extra write-refusing fixture guard is not ordinary connection behavior.
-One sentinel/positive proof consumes at most one intended-account page with no
-retry, continuation, Add or playback. It verifies encrypted-record and route
-preservation and logs only closed result categories and entry counts. Intended
-account, scalar shape, empty/unfinished VOD behavior and native playback still
-require separate authorized runtime acceptance; synthetic tests prove only the
-local safety and projection contract.
+tightening. Existing regular grant and lock files are required; observed unfinished
+encrypted-file writes, pending/failed grant writes and poisoned admission are
+refused before reads. This assumes an idle device rather than excluding an
+external writer racing filesystem checks. Direct owned transports avoid the
+ordinary binding's retirement cleanup. Setup and closure retain every owner until
+cleanup is confirmed, independently verify protected digests and captured owner,
+and wipe partial digest maps. The exact bounded returned projection must match
+the final browse result before acceptance. It exercises the same production
+collection/session/route classes, but these extra fixture guards are not ordinary
+connection behavior.
+
+### Maintained-account Continue Watching acceptance — 2026-10-12
+
+Following the owner's [normal QR connection and saved-grant validation](twitch-catalog-authorization.md#maintained-account-acceptance--2026-10-12)
+and the separate [first Following page check](twitch-connected-catalog.md#bounded-following-observation--2026-10-12),
+one explicitly opted-in Continue Watching check executed and passed in 5.816
+seconds with zero skips. Context: persistent tachiai-dev, emulator-5580, Android
+16/API 36, x86_64, ordinary foreground app process, maintained account and captured
+**System** route. No browser or media player was opened; region was not separately
+measured.
+
+The production session performed one official positive validation GET with HTTP
+200. The existing collection adapter then performed its two fixed GraphQL POSTs:
+the non-account invalid sentinel received HTTP 401, and the retained account
+bearer received HTTP 200 with strictly matching `currentUser` and a parsed page.
+This was optional collection-access verification, separate from completed account
+setup; it did not reconnect, reject the real account grant or request new consent.
+
+The adapter consumed that positive page's one-use seed and returned two unique
+exact VIDEO resources with UNKNOWN availability and no continuation. Final
+entries matched the provider-returned projection exactly. The check required
+both the production thirty-second proof budget and its seventy-second total
+operation/cleanup budget, current account generation/route ownership and definite
+cleanup for both collection owners. All 20 files under `no_backup` and
+`shared_prefs` had identical before/after digests, and the normal launcher screen
+was restored.
+
+No capability sweep, Following/Helix request, refresh, retry, alternative
+identity/cookie/route, pagination, configured Add/removal, provider-history
+mutation or playback was attempted. Diagnostics contain only closed categories,
+statuses, counts and booleans after preservation and cleanup checks. Account and
+video identifiers, titles, progress, viewing times, bodies, credentials and record
+digests were not included in diagnostics or this record. A decoder exception
+would leave its response status unknown rather than infer HTTP 200.
+
+Sixty-eight focused JVM cases passed, including collection proof/projection,
+HTTP/owned cleanup, configured selection and catalog session coverage.
+Instrumentation compilation and APK assembly, lint/release isolation and both
+shared debug-certificate checks passed; the production APK was unchanged. The
+fixture received independent review before the real request.
+
+This establishes one bounded recent unfinished-viewing collection on one
+emulator, not comprehensive Twitch History, full shelf parity, all schema shapes,
+empty-list behavior, Add/selected-video playback, refresh/revocation, imported
+routes or physical-device/TV acceptance. Those broader requirements remain under
+issues #102 and #99.
 
 ## User-approved meaning and access — 2026-10-10
 

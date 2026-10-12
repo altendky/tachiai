@@ -216,6 +216,7 @@ configured Add/removal or session copy between devices occurred.
 This establishes one owner-approved maintained account and normal saved-grant
 validation on the emulator. A later
 [bounded first Following page](twitch-connected-catalog.md#bounded-following-observation--2026-10-12)
-also passed without changing the saved records. Process-restart retention,
-refresh/revocation, Continue Watching, native playback, physical-device and TV
+also passed without changing the saved records, followed by a separate
+[bounded Continue Watching check](provider-history-access.md#maintained-account-continue-watching-acceptance--2026-10-12).
+Process-restart retention, refresh/revocation, native playback, physical-device and TV
 acceptance remain separately bounded work under #99 and #102.

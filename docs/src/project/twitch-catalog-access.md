@@ -20,8 +20,13 @@ investigation made no account requests. A subsequent bounded `tachiai-dev`
 authorization check observed the requested scope, a refresh credential and omitted
 token expiry, then rejection before validation. See the
 [recorded conditions](twitch-catalog-authorization.md#verification-limits).
-Validated account access, Helix responses, refresh, native playback acceptance and
-imported-route account access remain unobserved.
+Later [maintained-account validation](twitch-catalog-authorization.md#maintained-account-acceptance--2026-10-12)
+and the [bounded Following observation](twitch-connected-catalog.md#bounded-following-observation--2026-10-12)
+established account access and real Helix responses on tachiai-dev through System
+networking. A subsequent [bounded configured replay observation](twitch-connected-catalog.md#bounded-configured-replay-observation--2026-10-12)
+established native acceptance of one existing saved replay with the shared scoped
+grant. Refresh, imported-route account access and broader native playback remain
+unobserved.
 
 The [debug connection prototype](twitch-catalog-authorization.md) owns the shared
 grant lifecycle. The [connected catalog prototype](twitch-connected-catalog.md)

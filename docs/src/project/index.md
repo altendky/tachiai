@@ -124,6 +124,11 @@ renewal or unrestricted content access. See the
 
 ## Repository direction
 
+[Language assistance for provider account pages](provider-page-language-assistance.md)
+compares translation and bilingual guidance for the ABEMA email flow. It is
+research for discussion; no translation feature or authentication-boundary
+change has been selected.
+
 [Safe failure diagnostics](failure-diagnostics.md) describes bounded local
 evidence for debug playback/route failures and targeted collection without
 provider secrets or unrestricted error dumps.

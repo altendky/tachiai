@@ -23,10 +23,11 @@ class AbemaConfiguredSlotPlaybackDeviceTest {
         instrumentation.runOnMainSync { configureAbemaCachedPlaybackProfile(context) }
         val script = context.assets.open("abema/native-bootstrap.js").bufferedReader().use { it.readText() }
         val nonce = "1234567890abcdef1234567890abcdef"
-        for (allowed in listOf(false, true)) {
+        for ((allowed, wrapped) in listOf(false to true, true to true, true to false)) {
+            val accepted = allowed && wrapped
             val view = AtomicReference<WebView>()
             val before = """
-                window.fixtureRequests=0;window.fixtureSelections=0;
+                window.fixtureRequests=0;window.fixtureSelections=0;window.fixtureHelpers=0;
                 window.fetch=async(url,options)=>{
                   window.fixtureRequests++;if(options.credentials!=='omit')throw new Error();
                   const path=new URL(url,location.origin).pathname;let body;
@@ -40,13 +41,15 @@ class AbemaConfiguredSlotPlaybackDeviceTest {
                     timeshiftEndAt:Math.floor(Date.now()/1000)+600,flags:{timeshift:true,timeshiftFree:true},mark:{},
                     broadcastRegionPolicies:{timeshift:1},
                     playback:{dash:'https://ds-vod-abematv.akamaized.net/occurrence/fixture-slot/manifest.mpd'}};
-                  else throw new Error();return new Response(JSON.stringify(body),{status:200});
+                  else throw new Error();
+                  if(path==='/v1/media/slots/fixture-slot'&&$wrapped)body={slot:body};
+                  return new Response(JSON.stringify(body),{status:200});
                 };
             """.trimIndent()
             val after = """
                 window.__LOADABLE_LOADED_CHUNKS__.push([[1],{
                   74284(m){m.exports={kt:{api:'https://api.p-c3-e.abema-tv.com'}}},
-                  27594(m){m.exports={}},14405(m){m.exports=()=>()=>0},
+                  27594(m){m.exports={}},14405(m){m.exports=()=>()=>{window.fixtureHelpers++;return 0}},
                   2833(m){m.exports={B9:()=>1,b2:async()=> 'FIXTURE_APPLICATION'}},
                   5304(m){m.exports={rM:{toJSON:v=>v},V8:{fromJSON:v=>({userId:v.user_id,accessToken:v.access_token})}}},
                   50052(m){m.exports={bq:{DEVICE_TYPE_WEB:'WEB'}}},24968(m){m.exports={T:{LOGIN_GUEST:'/api/auth/login/guest'}}},
@@ -78,14 +81,15 @@ class AbemaConfiguredSlotPlaybackDeviceTest {
             }
             try {
                 val deadline = SystemClock.elapsedRealtime() + 10_000
-                val expected = if (allowed) "\"READY\"" else "\"FAILED\""
+                val expected = if (accepted) "\"READY\"" else "\"FAILED\""
                 while (evaluate("window.__tachiaiNative_$nonce?.status()") != expected && SystemClock.elapsedRealtime() < deadline)
                     Thread.sleep(50)
                 assertEquals(expected, evaluate("window.__tachiaiNative_$nonce.status()"))
                 assertEquals(if (allowed) "4" else "3", evaluate("window.fixtureRequests"))
-                assertEquals(if (allowed) "1" else "0", evaluate("window.fixtureSelections"))
+                assertEquals(if (accepted) "1" else "0", evaluate("window.fixtureSelections"))
+                assertEquals("0", evaluate("window.fixtureHelpers"))
                 val metadata = checkNotNull(parseAbemaCachedHelperMetadataCallback(evaluate("window.__tachiaiNative_$nonce.metadata()")))
-                if (allowed) {
+                if (accepted) {
                     assertEquals("READY", metadata.phase)
                     val binding = org.json.JSONTokener(checkNotNull(evaluate("window.__tachiaiNative_$nonce.slotBinding()"))).nextValue() as String
                     val selected = checkNotNull(parseAbemaSlotSourceBinding(binding, "fixture-channel", "fixture-slot"))
@@ -93,7 +97,7 @@ class AbemaConfiguredSlotPlaybackDeviceTest {
                     assertNull(parseAbemaSlotSourceBinding(binding, "other-channel", "fixture-slot"))
                     assertNull(parseAbemaSlotSourceBinding(binding, "fixture-channel", "other-slot"))
                 } else {
-                    assertEquals("SLOT_REGION", metadata.phase)
+                    assertEquals(if (allowed) "CONTENT" else "SLOT_REGION", metadata.phase)
                     assertEquals("null", evaluate("window.__tachiaiNative_$nonce.slotBinding()"))
                 }
                 evaluate("window.__tachiaiNative_$nonce.stop()")

@@ -14,11 +14,12 @@ channels recently active on Twitch. Exact user ID, login or public channel URL
 lookup supplements search for accounts that are absent from those results. A
 published video URL selects that exact replay, highlight or uploaded video.
 
-The implementation and synthetic fixtures do not establish real-provider
-acceptance. Scoped Smart TV consent, actual Helix responses, native playback
-acceptance and provider refresh/revocation
-and imported-route behavior still require supported account/device observations.
-No account or provider requests were used to implement this slice. Anonymous
+The original implementation and synthetic fixtures did not establish
+real-provider acceptance and made no account or provider requests. The later
+[bounded Following observation](#bounded-following-observation--2026-10-12)
+establishes one maintained account's first page through System network on
+tachiai-dev. Other discovery operations, native playback, provider
+refresh/revocation and imported-route behavior still need separate observations. Anonymous
 native browsing still needs its access architecture; no client secret or app-token
 backend is assumed. These limits remain in
 [#99](https://github.com/altendky/tachiai/issues/99).
@@ -89,7 +90,8 @@ duplicate Add preserves the existing item's metadata and quality. The separate
 [explicit metadata-refresh action](configured-catalog.md#explicit-metadata-refresh)
 can update an existing configured snapshot using its exact resource, preserving
 local identity, order and quality. Saved dates are not automatically updated.
-Actual schedule responses and account/route acceptance remain unobserved.
+Actual schedule responses remain unobserved; the later account and Following
+checks do not establish schedule acceptance.
 
 ## Account, routing and pagination
 
@@ -146,13 +148,61 @@ results. Route fixtures cover confinement, cancellation and failed cleanup.
 Shared manager fixtures cover initial collection, global search and configured
 persistence through the same interface used by ABEMA.
 
-Android UI and decoder checks use synthetic isolated fixtures. Emulator results
-do not establish actual account acceptance, physical-device playback, DRM or TV
-behavior. A bounded consent check observed exact scope, refresh presence and
+The original Android UI and decoder checks used synthetic isolated fixtures.
+They did not establish actual account acceptance, physical-device playback, DRM
+or TV behavior. A bounded consent check observed exact scope, refresh presence and
 omitted token expiry, followed by pre-validation rejection. A later check reached
 official validation, passed identity/scope checks and returned zero expiry,
 then was rejected by the former positive-expiry policy. See the
 [authorization evidence](twitch-catalog-authorization.md#verification-limits).
-Validated account access, anonymous discovery and selected-source playback remain
-unobserved. Historical zero-scope playback observations do not establish the
-shared scoped connection's provider acceptance.
+Those historical checks did not establish validated account access. The later
+maintained-account and Following checks below establish a narrower positive
+result. Anonymous discovery and selected-source playback remain unobserved.
+Historical zero-scope playback observations do not establish the shared scoped
+connection's provider acceptance.
+
+## Bounded Following observation — 2026-10-12
+
+After the owner's [normal QR approval and saved-grant validation](twitch-catalog-authorization.md#maintained-account-acceptance--2026-10-12),
+one explicitly opted-in `TwitchFollowingDeviceTest` passed on persistent
+tachiai-dev: emulator-5580, Android 16/API 36, x86_64, configured **System** route,
+foreground ordinary app process. The read used the maintained account, not a
+guest. No provider browser or media player was opened; region was not separately
+measured.
+
+The production catalog session and adapter performed one official validation
+GET, one first Following page GET with limit 20, and one Streams GET for exactly
+the returned broadcaster IDs. All three returned HTTP 200. The adapter produced
+20 unique canonical broadcaster resources with CHANNEL intent: four LIVE and
+16 OFFLINE according to that status response, without schedule requests. The
+Following page had a continuation handle; it was not followed. This is a snapshot
+of that first page, not a complete account listing or a claim that those channels
+remain live.
+
+The device check executed one test with zero skips and passed in 4.966 seconds.
+It independently checked captured route/instance ownership, the stored grant
+generation, operation bounds and definite cleanup. All 20 files under
+`no_backup` and `shared_prefs` had identical before/after digests. The normal
+launcher screen was restored. No refresh, rejected-bearer probe, reconnect,
+Following continuation, configured Add/removal, history or playback was attempted.
+
+Two earlier checks failed because the fixture admitted only one Streams page:
+the provider returned a status cursor and the production adapter correctly
+requested its continuation. Both failed checks preserved the same 20 files.
+The final fixture allows at most one status continuation for the same exact ID
+batch, with the unchanged provider cursor and response; retries, unrelated
+requests, cycles and a third page are refused. In the passing run the first
+status response had no cursor, so a real second status page was not exercised.
+Existing synthetic adapter coverage exercises status pagination separately.
+
+Response bodies, credentials, broadcaster IDs, logins, titles, cursor values,
+activation codes and record digests were not included in diagnostics or this
+record. The positive marker contains only closed categories, HTTP statuses,
+counts and booleans after preservation and cleanup checks. The fixture refuses
+observed unfinished encrypted-file state before reads and assumes an idle device;
+it does not claim exclusion of an external writer racing those checks.
+
+This establishes bounded real Following access on one emulator. Search, exact
+lookup, published videos, schedules, imported routes, refresh/revocation,
+Continue Watching and configured native playback remain separate acceptance
+work under #99 and #102. Physical-device and TV acceptance are not established.

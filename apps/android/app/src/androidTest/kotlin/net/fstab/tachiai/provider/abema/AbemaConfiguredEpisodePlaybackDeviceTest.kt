@@ -17,10 +17,12 @@ import java.net.CookieHandler
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.feature.connections.providerInstanceStore
@@ -28,6 +30,7 @@ import net.fstab.tachiai.feature.diagnostic.AbemaEpisodeObservationActivity
 import net.fstab.tachiai.feature.presentation.CachedViewerCleanupCoordinator
 import net.fstab.tachiai.feature.presentation.CachedViewerRouteBackend
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
+import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.network.*
@@ -44,12 +47,29 @@ import org.junit.Test
 // temporary test target :prototype_cached_player; never reset the saved app.
 @UnstableApi
 class AbemaConfiguredEpisodePlaybackDeviceTest {
-    private enum class ObservationMode(val acceptedOutcome: String) {
-        CONFIGURED_EPISODE("EXACT_EPISODE_FRAME_AND_POSITION"),
-        CONFIGURED_CHANNEL("EXACT_CHANNEL_FRAME_AND_POSITION"),
-        HISTORICAL_NEWS("HISTORICAL_NEWS_FRAME_AND_POSITION"),
-        HISTORICAL_REPLAY("HISTORICAL_REPLAY_FRAME_AND_POSITION"),
+    private enum class Outcome {
+        REFUSED, PLAYBACK_REFUSED, SAFE_FAILURE, CLEANUP_UNCONFIRMED,
+        EXACT_EPISODE_FRAME_AND_POSITION, EXACT_CHANNEL_FRAME_AND_POSITION, EXACT_SLOT_FRAME_AND_POSITION,
+        HISTORICAL_NEWS_FRAME_AND_POSITION, HISTORICAL_REPLAY_FRAME_AND_POSITION,
     }
+    private enum class ObservationMode(val acceptedOutcome: Outcome) {
+        CONFIGURED_EPISODE(Outcome.EXACT_EPISODE_FRAME_AND_POSITION),
+        CONFIGURED_CHANNEL(Outcome.EXACT_CHANNEL_FRAME_AND_POSITION),
+        CONFIGURED_SLOT(Outcome.EXACT_SLOT_FRAME_AND_POSITION),
+        HISTORICAL_NEWS(Outcome.HISTORICAL_NEWS_FRAME_AND_POSITION),
+        HISTORICAL_REPLAY(Outcome.HISTORICAL_REPLAY_FRAME_AND_POSITION),
+    }
+    private data class PlaybackObservation(val outcome: Outcome, val renderedFrame: Boolean, val moved: Boolean?)
+    private enum class SnapshotState { AVAILABLE, UNAVAILABLE }
+    private data class CleanupSnapshot(
+        val state: SnapshotState = SnapshotState.UNAVAILABLE,
+        val phase: CachedViewerCleanupCoordinator.Run.Phase? = null,
+        val failureStage: FailureStage? = null,
+        val sessionPending: Boolean? = null,
+        val sessionFailed: Boolean? = null,
+        val sessionConfirmed: Boolean? = null,
+        val webRouteBusy: Boolean? = null,
+    )
     private fun cachedInstrumentation() = InstrumentationRegistry.getInstrumentation().also {
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == "${it.targetContext.packageName}:prototype_cached_player")
@@ -148,10 +168,28 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
     }
 
     @Test fun optInExactConfiguredEpisodeUsesProductionSessionAndPreservesSavedRecords() {
-        assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaConfiguredPlayback") == "true")
-        val id = InstrumentationRegistry.getArguments().getString("tachiaiAbemaConfiguredEpisodeId")
-        assertTrue("Explicit different public episode is required", id != null && validAbemaEpisodeIdentity(id) && id != "394-72_s10_p8529")
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaConfiguredPlayback") == "true")
+        val id = args.getString("tachiaiAbemaConfiguredEpisodeId")
+        assertTrue("Explicit different public episode and exclusive replay mode are required",
+            id != null && validAbemaEpisodeIdentity(id) && id != "394-72_s10_p8529" &&
+                args.getString("tachiaiAbemaConfiguredSlotIdentity") == null &&
+                args.getString("tachiaiReadOnlyAbemaConfiguredSlot") != "true")
         observePlayback(ObservationMode.CONFIGURED_EPISODE, checkNotNull(id))
+    }
+
+    @Test fun optInExactConfiguredSlotUsesProductionSessionAndPreservesSavedRecords() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaConfiguredSlot") == "true")
+        val identity = args.getString("tachiaiAbemaConfiguredSlotIdentity")
+        val resource = identity?.takeIf(::validAbemaSlotIdentity)?.let {
+            CatalogResource(ProviderId("abema"), "slot", it, CatalogIntent.BROADCAST)
+        }
+        val slot = resource?.let { AbemaSlotRequest.from(it) }
+        assertTrue("Explicit canonical channel/slot and exclusive replay mode are required",
+            slot != null && slot.resource == resource && args.getString("tachiaiAbemaConfiguredEpisodeId") == null &&
+                args.getString("tachiaiReadOnlyAbemaConfiguredPlayback") != "true")
+        observePlayback(ObservationMode.CONFIGURED_SLOT, checkNotNull(slot).resource.identity)
     }
 
     @Test fun optInHistoricalNewsUsesProductionSessionAndPreservesSavedRecords() {
@@ -173,7 +211,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
 
     // Each explicitly selected method starts one bounded run. No loop, retry,
     // source fallback, stored choice or original provider-page comparison.
-    private fun observePlayback(mode: ObservationMode, episodeId: String? = null) {
+    private fun observePlayback(mode: ObservationMode, resourceIdentity: String? = null) {
         val instrumentation = cachedInstrumentation()
         val avd = try { ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation
             .executeShellCommand("getprop ro.boot.qemu.avd_name")).use { input ->
@@ -187,6 +225,14 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val webRoute = AbemaWebViewRoute()
         val cleanupDone = CountDownLatch(1)
         val ended = AtomicBoolean(); val prepared = CountDownLatch(1); val frame = CountDownLatch(1)
+        val renderedFrame = AtomicBoolean()
+        val failureStageCount = AtomicInteger()
+        val failureStages = ConcurrentLinkedQueue<FailureStage>()
+        // Retain only bounded app-owned enums; discard the observation's
+        // timestamp/session/error classification and all provider values.
+        val diagnostics = FailureReporter({ observation ->
+            if (failureStageCount.getAndIncrement() < 16) failureStages.add(observation.stage)
+        })
         val failed = AtomicBoolean(); val active = AtomicBoolean(true)
         var session: CachedPrototypeAbemaSession? = null
         var run: CachedViewerCleanupCoordinator.Run? = null
@@ -195,7 +241,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         var owner: AbemaCatalogRouteOwner? = null
         var coordinator: CachedViewerCleanupCoordinator? = null
         var routePreparation: RoutePreparation? = null
-        var outcome = "REFUSED"
+        var outcome = Outcome.REFUSED
+        var movementObserved: Boolean? = null
+        var playbackObservation: PlaybackObservation? = null
+        var cleanupSnapshot = CleanupSnapshot()
+        var cleanupMainFailed = false
+        var cleanupWaitExpired = false
+        var scenarioCloseFailed = false
         var routeMode = "UNAVAILABLE"
         fun readOwner() = readAbemaCatalogRouteOwner(defaultProviderInstanceId(PrototypeService.ABEMA),
             { providerInstanceStore(context).read { legacyProviderSettings(context) } }, { connectionProfileStore(context).selected(it) })
@@ -206,9 +258,12 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             owner = readOwner(); routeMode = owner.instance.setup.route!!.mode.name
             val source = when (mode) {
                 ObservationMode.CONFIGURED_EPISODE -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
-                    CatalogEntry(CatalogResource(ProviderId("abema"), "episode", checkNotNull(episodeId), CatalogIntent.VIDEO), "Temporary observation"))
+                    CatalogEntry(CatalogResource(ProviderId("abema"), "episode", checkNotNull(resourceIdentity), CatalogIntent.VIDEO), "Temporary observation"))
                 ObservationMode.CONFIGURED_CHANNEL -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
-                    CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(episodeId), CatalogIntent.CHANNEL), "Temporary observation"))
+                    CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(resourceIdentity), CatalogIntent.CHANNEL), "Temporary observation"))
+                ObservationMode.CONFIGURED_SLOT -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
+                    CatalogEntry(checkNotNull(AbemaSlotRequest.from(CatalogResource(ProviderId("abema"), "slot",
+                        checkNotNull(resourceIdentity), CatalogIntent.BROADCAST))).resource, "Temporary observation"))
                 ObservationMode.HISTORICAL_NEWS, ObservationMode.HISTORICAL_REPLAY -> {
                     val historical = if (mode == ObservationMode.HISTORICAL_NEWS) PrototypeSource.ABEMA_LIVE else PrototypeSource.ABEMA_REPLAY
                     legacyConfiguredSources(owner.instance, defaultSourceSetups(), emptyMap()).single { it.entry.resource == prototypeCatalogResource(historical) }
@@ -220,18 +275,20 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val feed = selected.selection.a
             check(feed.resource == resource && selected.selection.b.choice == feed.choice)
             val replay = feed.kind == PrototypePlaybackKind.REPLAY
+            if (mode == ObservationMode.CONFIGURED_SLOT) check(replay && feed.historicalSource == null &&
+                selected.selection.b.resource == resource && AbemaSlotRequest.from(feed.resource)?.resource == resource)
             scenario = ActivityScenario.launch(AbemaEpisodeObservationActivity::class.java)
             val surface = AtomicReference<AbemaEpisodeObservationActivity>()
             scenario.onActivity { surface.set(it) }
             val budget = NativePlaybackBudget(70_000, { active.get() && surface.get().observationActive.get() }, maximumDurationMs = 70_000)
-            val preparation = RoutePreparation().also { routePreparation = it }
+            val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
             lateinit var owned: CachedViewerCleanupCoordinator
             instrumentation.runOnMainSync {
                 owned = CachedViewerCleanupCoordinator(post = { main.post(it) }, delay = { delay, action -> main.postDelayed(action, delay) },
                     closeWorker = worker, clearProxy = { reporter, complete -> webRoute.clear(reporter, complete) },
                     changed = { if (!owned.unavailable) cleanupDone.countDown() })
                 coordinator = owned
-                run = checkNotNull(owned.begin(FailureReporter.NONE))
+                run = checkNotNull(owned.begin(diagnostics))
                 owned.preparation(checkNotNull(run), preparation::cancel)
                 surface.get().ownObservation { if (ended.compareAndSet(false, true)) {
                     active.set(false); budget.stop(); owned.end(checkNotNull(run))
@@ -258,15 +315,18 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                                 session?.player?.let { surface.get().attachPlayer(it) }
                                 session?.member?.setVolume(0f); session?.member?.setTimingPlaying(true); prepared.countDown()
                             }
-                            PrototypeFeedEvent.VIDEO_FRAME -> frame.countDown()
+                            PrototypeFeedEvent.VIDEO_FRAME -> { renderedFrame.set(true); frame.countDown() }
                             PrototypeFeedEvent.FAILED -> { failed.set(true); prepared.countDown(); frame.countDown() }
                             else -> Unit
                         }
-                    }, route = route, onHelperCreated = { helper -> owned.helper(checkNotNull(run), helper, helper::destroy) { !helper.cleanupFailed } },
-                    onCleanupChanged = { main.post { owned.feedCleanupChanged(checkNotNull(run)) } }, episodeResource = feed.resource.takeIf { replay },
-                    channelResource = feed.resource.takeIf { !replay && feed.historicalSource == null },
+                    }, route = route, diagnostics = diagnostics,
+                    onHelperCreated = { helper -> owned.helper(checkNotNull(run), helper, helper::destroy) { !helper.cleanupFailed } },
+                    onCleanupChanged = { main.post { owned.feedCleanupChanged(checkNotNull(run)) } },
+                    episodeResource = feed.resource.takeIf { replay && it.kind == "episode" },
+                    channelResource = feed.resource.takeIf { !replay && feed.historicalSource == null && it.kind == "channel" },
+                    slotResource = feed.resource.takeIf { it.kind == "slot" && it.intent == CatalogIntent.BROADCAST },
                     ownership = if (!replay && feed.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
-                        { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, FailureReporter.NONE))
+                        { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, diagnostics))
                 val created = checkNotNull(session)
                 owned.feed(checkNotNull(run), 0, created, pending = { created.cleanupPending }, knownFailed = { created.cleanupFailed }, confirmed = { created.cleanupConfirmed })
                 created.prepare(budget)
@@ -275,18 +335,59 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val decoded = ready && !failed.get() && frame.await(10, TimeUnit.SECONDS) && !failed.get()
             var moved = false
             if (decoded) {
-                Thread.sleep(1500)
-                instrumentation.runOnMainSync { moved = session?.player?.let { it.playbackState == Player.STATE_READY && it.currentPosition > 500 } == true }
+                var firstPlayer: Player? = null
+                var firstPosition = -1L
+                var firstElapsed = -1L
+                instrumentation.runOnMainSync {
+                    val player = session?.player
+                    if (player != null && Looper.myLooper() == player.applicationLooper &&
+                        !failed.get() && active.get() && surface.get().observationActive.get() &&
+                        owned.current(checkNotNull(run)) && budget.active &&
+                        player.playbackState == Player.STATE_READY) {
+                        val position = player.currentPosition
+                        val elapsed = SystemClock.elapsedRealtime()
+                        if (position >= 0 && budget.remainingMs >= 1500) {
+                            firstPlayer = player; firstPosition = position; firstElapsed = elapsed
+                        }
+                    }
+                }
+                // A nonzero initial position is not movement. Compare two READY
+                // samples after the rendered frame without renewing the budget.
+                if (firstPlayer != null && budget.remainingMs >= 1500) {
+                    Thread.sleep(1500)
+                    instrumentation.runOnMainSync {
+                        val player = session?.player
+                        if (player != null && player === firstPlayer && Looper.myLooper() == player.applicationLooper &&
+                            !failed.get() && active.get() && surface.get().observationActive.get() &&
+                            owned.current(checkNotNull(run)) && budget.active &&
+                            player.playbackState == Player.STATE_READY) {
+                            val position = player.currentPosition
+                            val elapsed = SystemClock.elapsedRealtime()
+                            moved = position >= 0 && position > firstPosition && elapsed >= firstElapsed &&
+                                elapsed - firstElapsed >= 1500 && budget.active
+                        }
+                    }
+                }
+                movementObserved = moved
             }
-            outcome = if (decoded && moved && captured.sameOwnership(readOwner())) mode.acceptedOutcome else "PLAYBACK_REFUSED"
-        } catch (_: Throwable) { outcome = "SAFE_FAILURE" }
+            outcome = if (decoded && moved && captured.sameOwnership(readOwner())) mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
+        } catch (_: Throwable) { outcome = Outcome.SAFE_FAILURE }
         finally {
+            // Preserve the immutable playback evidence before disposal can
+            // replace the final outcome with a cleanup refusal.
+            playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
             try { instrumentation.runOnMainSync {
                 active.set(false)
                 run?.let { coordinator?.prepared(it, routePreparation?.cleanupConfirmed == true); coordinator?.end(it) }
-            } } catch (_: Throwable) { outcome = "CLEANUP_UNCONFIRMED" }
-            if (run != null && !cleanupDone.await(22, TimeUnit.SECONDS)) outcome = "CLEANUP_UNCONFIRMED"
-            try { scenario?.close() } catch (_: Throwable) { outcome = "CLEANUP_UNCONFIRMED" }
+            } } catch (_: Throwable) { cleanupMainFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
+            if (run != null && !cleanupDone.await(22, TimeUnit.SECONDS)) {
+                cleanupWaitExpired = true; outcome = Outcome.CLEANUP_UNCONFIRMED
+            }
+            try { instrumentation.runOnMainSync {
+                cleanupSnapshot = CleanupSnapshot(SnapshotState.AVAILABLE, run?.phase, run?.failureStage,
+                    session?.cleanupPending, session?.cleanupFailed, session?.cleanupConfirmed, webRoute.busy)
+            } } catch (_: Throwable) { cleanupSnapshot = CleanupSnapshot() }
+            try { scenario?.close() } catch (_: Throwable) { scenarioCloseFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
             // Keep a poisoned coordinator/backend reachable for the process.
             if (coordinator?.unavailable == true) retainedPoisoned = coordinator else worker.shutdown()
         }
@@ -294,7 +395,15 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             baseline != null && baseline.keys == after.keys && baseline.all { (name, digest) -> MessageDigest.isEqual(digest, after[name]) }
         } catch (_: Throwable) { false }
         val ownerUnchanged = try { owner?.sameOwnership(readOwner()) == true } catch (_: Throwable) { false }
-        Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} routeMode=$routeMode storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged")
+        Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
+            "routeMode=$routeMode storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
+            "playbackOutcome=${playbackObservation?.outcome} renderedFrame=${playbackObservation?.renderedFrame} " +
+            "movement=${playbackObservation?.moved} cleanupSnapshot=${cleanupSnapshot.state.name} " +
+            "cleanupPhase=${cleanupSnapshot.phase?.name} cleanupStage=${cleanupSnapshot.failureStage?.name} " +
+            "sessionCleanupPending=${cleanupSnapshot.sessionPending} sessionCleanupFailed=${cleanupSnapshot.sessionFailed} " +
+            "sessionCleanupConfirmed=${cleanupSnapshot.sessionConfirmed} webRouteBusy=${cleanupSnapshot.webRouteBusy} " +
+            "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
+            "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)
         assertTrue("Saved route owner must remain unchanged", ownerUnchanged)
         assertEquals(mode.acceptedOutcome, outcome)

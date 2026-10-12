@@ -914,6 +914,66 @@ checks establish response decoding and local admission, while actual eligible
 slot entitlement, manifest/license acceptance and advancing frames remain
 unverified. Issue #193 stays open for that acceptance and broader playback modes.
 
+### Exact-slot playback acceptance harness — 2026-10-12
+
+The opt-in configured-playback harness now accepts one explicit canonical
+`channel/slot` resource as `slot`/`BROADCAST`. It creates only an in-memory
+configured source, resolves the exact resource through the common selection
+contract and supplies only `slotResource` to the production cached session.
+Episode and channel inputs remain empty for this mode. Conflicting episode/slot
+selectors refuse before private access; no historical sample, channel fallback,
+saved Add or provider/account-policy change is introduced.
+
+After a native video frame, acceptance requires two READY samples from the same
+player on its application looper, at least 1,500 ms apart, with increasing
+nonnegative position. Both samples retain foreground, current-run, failure and
+original-budget checks. The earlier fixture checked only one position above
+500 ms, which could accept a stalled player at a nonzero initial position. Its
+historical frame observations remain useful, but do not establish this stronger
+movement proof. No eligible slot has yet passed the new harness; live, Chase and
+account-required slot playback remain unverified.
+
+One explicitly selected muted Morning-episode check on persistent `tachiai-dev`
+executed and failed in 39.788 seconds with zero skips: `CLEANUP_UNCONFIRMED`.
+Context: Android 16/API 36 x86-64, WebView 133.0.6943.137, existing saved Windscribe
+route, unmeasured exit country and a fresh guest without the existing account.
+Closed native event markers reported DRM request/handoff/key loading, READY,
+PLAYING and VIDEO_FRAME. The fixture then overwrote its earlier playback result,
+so neither measured movement nor orderly cleanup acceptance can be inferred.
+The actual cause remains unverified; process exit does not establish orderly
+cleanup. No source substitution or cleanup-gate weakening followed this refusal.
+
+The source test manifest was restored byte-identically, the ordinary shared-signed
+test APK was rebuilt and checked to contain no `targetProcesses` override, and
+normal Main returned. All 20 protected native files/shared preferences matched
+the pre-observation baseline and the saved route owner remained current. The
+production APK was unchanged. Fixture-only diagnostics now preserve the closed
+pre-cleanup outcome, actual frame callback and movement result, plus main-thread
+coordinator phase/stage, session receipt/proxy booleans and distinct disposal
+failure flags; no provider values or raw exceptions enter those fields.
+An in-memory reporter retains at most 16 existing failure-stage enum values;
+it discards timestamps, session IDs and error classifications instead of writing
+a diagnostic journal or protected store.
+
+After the diagnostic-only correction, one disclosed repeat of the same Morning
+episode passed one executed test with zero skips in 25.265 seconds. It used the
+same unchanged production APK and saved owner, without source substitution,
+account use, route changes or relaxed cleanup. The closed pre-cleanup result
+reported a rendered frame and advancing samples; final state was FINISHED,
+session cleanup confirmed, no pending/failed receipt, proxy idle, all disposal
+failure flags false and no recorded failure-stage enums. The earlier cleanup
+refusal was not reproduced, and its cause remains unverified.
+
+The source manifest was again byte-identical to its original, and the rebuilt
+ordinary shared-signed test APK had no `targetProcesses` override. Normal Main
+returned and all 20 protected files/shared preferences still matched the original
+baseline. Full Android verification passed test, lint, release isolation,
+instrumentation compilation, both native ABIs and both signed APK assemblies;
+the unchanged JVM suite remained 2,454 cases with zero failures/errors/skips.
+Targeted queued cleanup-coordinator and worker regressions passed independently.
+This establishes bounded exact-episode movement and cleanup under the stronger
+harness, not eligible-slot, live, Chase, account, audio or physical-device proof.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata
@@ -965,7 +1025,8 @@ series and broader discovery remain [#101](https://github.com/altendky/tachiai/i
 See [the native boundary](native-access-experiments.md#exact-configured-episodes--2026-10-11)
 for static evidence and bounded device observations. On 2026-10-11, persistent
 `tachiai-dev` rendered the distinct ABEMA Morning episode `89-70_s111_p4016`
-and advanced its native position in an explicitly selected 13.051-second run.
+and passed the earlier single-position threshold in an explicitly selected
+13.051-second run. That fixture did not measure two separated advancing samples.
 Separate historical News and replay regressions also passed. An earlier attempt
 for the same Morning episode failed before a guest HTTP status returned; its
 cause remains unverified. All runs confirmed cleanup and unchanged protected

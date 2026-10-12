@@ -1,11 +1,24 @@
 package net.fstab.tachiai.provider.abema
 
 import android.app.Application
+import android.content.Intent
+import android.os.Build
 import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
+import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import java.io.File
+import java.nio.file.Files
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import net.fstab.tachiai.feature.connections.*
+import net.fstab.tachiai.platform.network.connectionProfileStore
+import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 import org.junit.Assert.*
@@ -14,58 +27,140 @@ import org.junit.Test
 
 // Explicit, read-only intended-account acceptance. Default instrumentation skips
 // before reading stores or constructing a service/transport. Run only after the
-// owner finishes Connect, with a separate protected-record baseline. No UI,
-// token polling, configured-item mutation or provider field export occurs here.
+// owner finishes Connect, with a separate protected-record baseline. A normal
+// foreground lifetime gates one My List browse; no History/capability sweep,
+// login, continuation, configured-item mutation or provider field export.
 class AbemaMyListDeviceTest {
     @Test fun optInSavedAccountReadsOneMyListPageWithoutChangingStores() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("abemaReadOnlyMyList") == "true")
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        assumeTrue(Application.getProcessName() == context.packageName)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        assumeTrue(Build.VERSION.SDK_INT >= 28)
+        assumeTrue(Application.getProcessName() == instrumentation.targetContext.packageName)
         val instanceId = args.getString("abemaProviderInstance") ?: error("Explicit provider instance required")
         require(validProviderInstanceId(instanceId))
         check(Looper.myLooper() != Looper.getMainLooper())
-        fun instances() = providerInstanceStore(context).read { legacyProviderSettings(context) }
-        val before = instances()
-        val owner = before.single { it.id == instanceId && it.service == PrototypeService.ABEMA }
-        assertTrue("Selected route must be explicit", owner.setup.route?.mode in
-            setOf(SourceRouteMode.SYSTEM, SourceRouteMode.SAVED_CONNECTION))
-        val setups = sourceSetupStore(context).read()
-        val accountFile = File(context.noBackupFilesDir, "abema-account-$instanceId.enc")
-        assertTrue("Owner-approved protected grant must exist", accountFile.isFile)
-        fun encryptedRecord(): ByteArray {
-            check(accountFile.length() in 1..65536)
-            return accountFile.readBytes().also { check(it.size in 1..65536) }
-        }
-        val protectedBefore = encryptedRecord()
-        try {
-            androidAbemaChannelCatalog(context, instanceId, setups).use { catalog ->
-                val access = catalog.capabilities().collections.single { it.id == "my_list" }.access
-                if (access != CatalogAccess.AVAILABLE) {
-                    Log.i("TachiaiAbemaMyList", "MY_LIST_ACCESS_${access.name}")
-                    fail("Intended-account collection access was not established")
+        val verifiedAvd = try {
+            ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation
+                .executeShellCommand("getprop ro.boot.qemu.avd_name")).use { input ->
+                val bytes = ByteArray(129); var size = 0
+                while (size < bytes.size) {
+                    val count = input.read(bytes, size, bytes.size - size)
+                    if (count < 0) break
+                    size += count
                 }
-                when (val result = catalog.browse(CatalogQuery(collectionId = "my_list"))) {
-                    is CatalogResult.Failure -> {
-                        Log.i("TachiaiAbemaMyList", "MY_LIST_FAILURE_${result.reason.name}")
-                        fail("Intended-account collection request did not succeed")
-                    }
-                    is CatalogResult.Value -> {
-                        val page = result.value
-                        assertTrue(page.entries.size <= 20)
-                        assertTrue(page.entries.all { it.resource.providerId == ProviderId("abema") &&
-                            it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null })
-                        assertTrue(page.entries.map { it.resource }.distinct().size == page.entries.size)
-                        Log.i("TachiaiAbemaMyList", "MY_LIST_PAGE_ACCEPTED count=${page.entries.size} hasNext=${page.nextCursor != null}")
+                size <= 128 && String(bytes, 0, size, Charsets.UTF_8).trim() == "tachiai-dev"
+            }
+        } catch (_: Throwable) { false }
+        assumeTrue("Requires verified tachiai-dev AVD", verifiedAvd)
+        try { observe(instanceId) }
+        catch (_: Throwable) { throw AssertionError("Explicit My List observation did not satisfy its closed safety/result checks") }
+    }
+
+    private fun observe(instanceId: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
+            { providerInstanceStore(context).read { legacyProviderSettings(context) } },
+            { connectionProfileStore(context).selected(it) })
+        val before = encryptedRecords(context.noBackupFilesDir)
+        val owner = readOwner()
+        val grant = File(context.noBackupFilesDir, "abema-account-$instanceId.enc")
+        check(grant.isFile && !Files.isSymbolicLink(grant.toPath()) && grant.length() in 1..65536)
+        var foreground: ActivityScenario<net.fstab.tachiai.MainActivity>? = null
+        val active = AtomicBoolean()
+        val lifecycle = ActivityLifecycleMonitorRegistry.getInstance()
+        val callback = ActivityLifecycleCallback { _, stage ->
+            if (stage in setOf(Stage.PAUSED, Stage.STOPPED, Stage.DESTROYED)) active.set(false)
+        }
+        var registrationStarted = false
+        var catalog: ProviderCatalog? = null
+        var result: CatalogResult<CatalogPage>? = null
+        var closeReturned = false
+        val started = SystemClock.elapsedRealtime()
+        try {
+            foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(
+                Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
+                    action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            instrumentation.runOnMainSync {
+                active.set(lifecycle.getActivitiesInStage(Stage.RESUMED).isNotEmpty())
+                registrationStarted = true
+                lifecycle.addLifecycleCallback(callback)
+            }
+            check(active.get())
+            catalog = androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), active::get)
+            // Its first accepted page is consumed from the private one-use seed.
+            // No unrelated collection access or continuation is requested.
+            result = catalog.browse(CatalogQuery(collectionId = AbemaCollectionKind.MY_LIST.collectionId))
+        } finally {
+            active.set(false)
+            try { catalog?.close(); closeReturned = true }
+            finally {
+                try {
+                    if (registrationStarted) instrumentation.runOnMainSync { lifecycle.removeLifecycleCallback(callback) }
+                } finally {
+                    try { foreground?.close() }
+                    finally {
+                        var after: Map<String, ByteArray>? = null
+                        try {
+                            val verified = encryptedRecords(context.noBackupFilesDir).also { after = it }
+                            assertTrue("My List observation changed protected records", before.keys == verified.keys &&
+                                before.all { (name, digest) -> verified[name]?.let { MessageDigest.isEqual(digest, it) } == true })
+                            assertTrue("My List observation changed its captured owner", owner.sameOwnership(readOwner()))
+                        } finally { before.values.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) } }
                     }
                 }
             }
-        } finally {
-            val protectedAfter = encryptedRecord()
-            try { assertTrue("Protected grant must remain unchanged", protectedBefore.contentEquals(protectedAfter)) }
-            finally { protectedBefore.fill(0); protectedAfter.fill(0) }
-            assertTrue("Provider registry must remain unchanged", before == instances())
-            assertTrue("Source setup must remain unchanged", setups == sourceSetupStore(context).read())
+        }
+        val page = (result as? CatalogResult.Value)?.value
+        val exact = page != null && page.entries.size <= ABEMA_MY_LIST_PAGE_LIMIT &&
+            page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all { entry ->
+                entry.resource.providerId == ProviderId("abema") &&
+                    ((entry.resource.kind == "episode" && entry.resource.intent == CatalogIntent.VIDEO) ||
+                    (entry.resource.kind in setOf("series", "slot_group") && entry.resource.intent == CatalogIntent.COLLECTION) ||
+                    (entry.resource.kind in setOf("slot", "live_event") && entry.resource.intent == CatalogIntent.BROADCAST)) &&
+                    entry.availability == CatalogAvailability.UNKNOWN && entry.scheduledStartEpochMs == null
+            }
+        val failure = result as? CatalogResult.Failure
+        val outcome = when {
+            !closeReturned -> "CLOSE_FAILED"
+            exact -> "MY_LIST_PAGE_ACCEPTED"
+            failure != null -> "CATALOG_${failure.reason.name}"
+            else -> "INVALID_RESPONSE"
+        }
+        Log.i("TachiaiAbemaMyList", "outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
+            "routeMode=${owner.instance.setup.route!!.mode.name} entryCount=${page?.entries?.size ?: 0} " +
+            "hasNext=${page?.nextCursor != null}")
+        assertTrue("My List observation exceeded bounded operation/cleanup budgets",
+            SystemClock.elapsedRealtime() - started in 0 until 70_000)
+        assertTrue("My List observation did not release its local facade", closeReturned)
+        assertTrue("Intended-account My List access was not established", exact)
+    }
+
+    private fun encryptedRecords(directory: File): Map<String, ByteArray> {
+        val started = SystemClock.elapsedRealtime()
+        fun checkTime() = check(SystemClock.elapsedRealtime() - started in 0 until 5_000)
+        check(directory.isDirectory && directory.canRead() && !Files.isSymbolicLink(directory.toPath()))
+        val files = checkNotNull(directory.listFiles()).filter { file ->
+            file.name.endsWith(".enc") || file.name.endsWith(".enc.bak") || file.name.endsWith(".enc.new")
+        }
+        check(files.size in 1..64); checkTime()
+        return files.associate { file ->
+            checkTime()
+            check(file.isFile && file.canRead() && !Files.isSymbolicLink(file.toPath()) &&
+                file.length() in 1..(PRIVATE_SECRET_LIMIT + 29).toLong())
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(8192); var size = 0
+                try { while (true) {
+                    checkTime(); val count = input.read(buffer); if (count < 0) break
+                    checkTime(); size += count; check(size <= PRIVATE_SECRET_LIMIT + 29)
+                    digest.update(buffer, 0, count)
+                } } finally { buffer.fill(0) }
+            }
+            checkTime(); file.name to digest.digest()
         }
     }
 }

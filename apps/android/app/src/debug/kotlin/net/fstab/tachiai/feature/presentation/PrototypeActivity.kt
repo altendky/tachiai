@@ -322,7 +322,8 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema)
+            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema,
+            allowConfiguredAbemaSlots = useCachedAbema)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -524,8 +525,9 @@ open class PrototypeActivity : ComponentActivity() {
                         onHelperCreated = { helper -> cachedCleanup.helper(checkNotNull(ownedRun), helper,
                             helper::destroy) { !helper.cleanupFailed } },
                         onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
-                        episodeResource = source.resource.takeIf { replay },
+                        episodeResource = source.resource.takeIf { replay && it.kind == "episode" },
                         channelResource = source.resource.takeIf { !replay && source.historicalSource == null },
+                        slotResource = source.resource.takeIf { it.kind == "slot" && source.historicalSource == null },
                         ownership = if (!replay && source.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(this,
                             checkNotNull(source.resolve(activeInstances)),
                             checkNotNull(routeProfiles[source.instanceId]).getOrThrow(), feedActive, feedDiagnostics(index)))

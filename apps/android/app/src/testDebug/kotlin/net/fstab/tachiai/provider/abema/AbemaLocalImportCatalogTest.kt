@@ -157,11 +157,12 @@ class AbemaLocalImportCatalogTest {
     @Test fun selectionKeepsImportedIdentitiesAndNeverSubstitutesSamplePlayback() {
         val catalog = AbemaLocalImportCatalog(owner, setups)
         val routeOwner = owner.copy(setup = owner.setup.copy(route = SourceRouteChoice.system))
-        fun selection(url: String, allowEpisodes: Boolean = true, allowChannels: Boolean = true): ConfiguredPrototypeSelectionResult {
+        fun selection(url: String, allowEpisodes: Boolean = true, allowChannels: Boolean = true,
+            allowSlots: Boolean = true): ConfiguredPrototypeSelectionResult {
             val configured = ConfiguredSource(java.util.UUID.randomUUID().toString(), owner.id, entry(catalog, url))
             return resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(configured.choice, configured.choice),
                 listOf(configured), listOf(routeOwner), allowConfiguredAbemaEpisodes = allowEpisodes,
-                allowConfiguredAbemaChannels = allowChannels)
+                allowConfiguredAbemaChannels = allowChannels, allowConfiguredAbemaSlots = allowSlots)
         }
         val channelUrl = "https://abema.tv/channels/sumo"
         val channel = (selection(channelUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
@@ -172,8 +173,16 @@ class AbemaLocalImportCatalogTest {
         }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
             selection(channelUrl, allowChannels = false))
+        val slotUrl = "https://abema.tv/channels/sumo/slots/A63wR6irBEskZM"
+        val slot = (selection(slotUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
+        slot.feeds.forEach {
+            assertEquals(CatalogResource(ProviderId("abema"), "slot", "sumo/A63wR6irBEskZM", CatalogIntent.BROADCAST), it.resource)
+            assertNull(it.historicalSource)
+            assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
+            assertEquals("ABEMA_CONFIGURED_SLOT", it.diagnosticName)
+        }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
-            selection("https://abema.tv/channels/sumo/slots/A63wR6irBEskZM"))
+            selection(slotUrl, allowSlots = false))
         val episodeUrl = "https://abema.tv/video/episode/394-72_s10_p845"
         val episode = (selection(episodeUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
         episode.feeds.forEach {

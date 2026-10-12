@@ -5,6 +5,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaNativeBootstrapPolicyTest {
+    @Test fun `slot policy binds one exact metadata license and public region data without navigation or unrelated APIs`() {
+        val identity = "sumo/fixture-slot"
+        fun allows(value: String, method: String = "GET", main: Boolean = false) =
+            AbemaNativeBootstrapPolicy.allows(URI(value), main, method, slotIdentity = identity)
+        val slot = "https://api.p-c3-e.abema-tv.com/v1/media/slots/fixture-slot?include=payperview"
+        assertTrue(allows(slot)); assertTrue(allows(slot, "OPTIONS")); assertFalse(allows(slot, "POST"))
+        assertTrue(allows(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE))
+        assertTrue(allows(AbemaNativeBootstrapPolicy.SLOT_REGION_URI))
+        assertFalse(allows(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE, main = true))
+        assertFalse(allows(AbemaNativeBootstrapPolicy.SLOT_REGION_URI, "OPTIONS"))
+        for (uri in listOf(slot.replace("fixture-slot", "other-slot"), slot + "&division=0", slot.substringBefore('?'),
+            slot.replace("include=payperview", "include=unknown"), "https://api.abema.io/v1/channels",
+            "https://api.p-c3-e.abema-tv.com/v1/video/programs/fixture-episode",
+            "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/fixture",
+            AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE + "?fakeCountry=JP",
+            AbemaNativeBootstrapPolicy.SLOT_REGION_URI + "?country=JP", "https://abema.tv/auth/login")) assertFalse(uri, allows(uri))
+        val license = "https://license.p-c3-e.abema-tv.com/abematv-dash?t=fixture&ct=slot&cid=fixture-slot"
+        assertTrue(allows(license, "POST")); assertTrue(allows(license, "OPTIONS")); assertFalse(allows(license))
+        for (uri in listOf(license.replace("ct=slot", "ct=channel"), license.replace("ct=slot", "ct=program"),
+            license.replace("fixture-slot", "other-slot"), "$license&tt=unverified", "$license&t=duplicate"))
+            assertFalse(uri, allows(uri, "POST"))
+        assertFalse(AbemaNativeBootstrapPolicy.allows(URI(slot), false, "GET", episodeId = "fixture", slotIdentity = identity))
+        assertFalse(AbemaNativeBootstrapPolicy.allows(URI(slot), false, "GET", slotIdentity = "sumo/fixture-slot/extra"))
+        val csp = AbemaNativeBootstrapPolicy.contentSecurityPolicy(slotIdentity = identity)
+        assertTrue(csp.contains(slot.substringBefore('?')))
+        assertTrue(csp.contains(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE))
+        assertTrue(csp.contains(AbemaNativeBootstrapPolicy.SLOT_REGION_URI))
+        assertFalse(csp.contains("api.abema.io")); assertFalse(csp.contains("playbackResources")); assertFalse(csp.contains("video/programs"))
+        assertTrue(csp.contains("media-src 'none'")); assertTrue(csp.contains("frame-src 'none'"))
+    }
+
     @Test fun `refusal diagnostics disclose only fixed request shape categories`() {
         val base = "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/"
         for ((suffix, category) in listOf("fixture/part" to "GATEWAY_SLASH",

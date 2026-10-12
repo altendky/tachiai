@@ -634,6 +634,70 @@ including 2,390 JVM cases, lint, release isolation, instrumentation compilation
 and shared signing passed. Ordinary instrumentation and Main were restored and
 saved records preserved. This observation does not close #193 or #101.
 
+### Exact broadcast catch-up adapter
+
+The next #193 slice carries the canonical channel/slot BROADCAST identity into
+an independent native replay feed. It does not choose that channel's current
+broadcast, replace the configured UUID, or reuse another feed's guest/token/CDM.
+Future, live/chase, premium and PPV sources remain saved but outside this initial
+free ended-broadcast slice. Saved UNKNOWN availability only starts verification.
+
+The cookie-free runtime reads one fixed public News HTML response as bounded
+data without loading its document or executing its scripts. Its single strict
+`window.__CLIENT_REGION__` JSON assignment must explicitly allow access, report
+Japan and numeric NONE division. Coherent9298/module42770 exposes raw
+`divisionCode`;76599 defines NONE0/GLOBAL1, and7478/module89131 uses that value
+for broadcast-region admission. No country, division, GPS or timezone is invented.
+When returned status is true,32735 requests its region CDN URL:403 vetoes access
+and 200 preserves the original result. This adapter additionally refuses transport
+failure rather than using the provider's fallback. A CDN200 alone proves no
+country or entitlement. The reads are fresh, have finite deadlines and remain
+within the feed's captured route and current ownership. Missing, duplicate,
+malformed or Sorry-page region data refuses before slot source selection.
+
+One exact modern slot GET preserves both raw IDs. Ordinary admission requires
+explicit timeshift/free flags, no pause/unsupported DRM/PPV, supported region,
+an ended valid broadcast interval and an open general window covering the
+bounded session. Absent/zero free-end uses that general window; an explicit
+positive free-end must also cover the session. This is separate from Chase's
+subscription-feature-authority gate. Returned metadata does not itself authorize
+the selected source, manifest or license.
+
+The actual pinned legacy selector receives advertised playlists, the fresh
+media token, truthful Android UA, provider initial ad-cluster0 and absent dtid;
+plain-stream forcing stays false. Its selected DASH must contain the exact slot
+as a complete path segment on the existing approved CDN family, with the closed
+query retaining the same token. No universal slot-directory layout is assumed.
+The runtime-mapped4973/module43132 binds Timeshift Clear Key inputs to ct=slot,
+cid=the same slot and t=the fresh token. Only standard URL fields are composed;
+the unchanged verified helper and one fresh native CDM own the opaque initial
+exchange. Native code rereads the exact channel/slot/source projection, accepts
+bounded standard protected initialization and lets the MPD declare exact media.
+Wrong identities, unsupported protection, changed KIDs, redirects and uncertain
+cleanup refuse without another source, credential or licensing response.
+
+Separate provider Timeshift IMA orchestration is established by8974/module13672,
+8917/module76212 and9361/module42446. It is not a proved server completion gate.
+The user's [removed debug ad-adapter prerequisite](security-and-privacy.md)
+continues to apply: preserve original provider selection without forcing ad-free
+mode or fabricating completion/tracking. This native path does not implement a
+separate ad driver or claim equivalent advertisements or distribution readiness.
+
+Local verification passed 2,413 JVM cases across the debug/diagnostic variants,
+64 owned JavaScript cases, lint, release isolation, instrumentation compilation,
+APK assemblies and the shared debug signing checks. On persistent tachiai-dev
+(Android16/API36/x86-64, WebView133.0.6943.137), six synthetic native source and
+cleanup tests and one network-blocked owned-WebView binding/region test passed
+without skips. The latter exposed Android's solidus escaping in `JSONObject.quote`
+versus JavaScript `JSON.stringify`; strict binding now reconstructs only the
+already-admitted ASCII wire fields, and the actual device rerun passed.
+Ordinary instrumentation/Main were restored and encrypted records unchanged.
+These fixtures establish no actual provider region, account entitlement, license
+acceptance or advancing frames. Real eligible-slot playback remains unverified.
+The current captured route's regional refusal and the observed candidate's
+missing free flag do not provide a positive playback acceptance case. Keep193,
+100 and101 open for remaining access modes and bounded actual acceptance.
+
 ### Exact configured episodes
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata

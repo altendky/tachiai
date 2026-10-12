@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.Locale
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaEpisode
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaChannel
+import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaSlot
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -27,6 +28,7 @@ internal fun resolveConfiguredPrototypeSelection(
     instances: List<ProviderInstance>,
     allowConfiguredAbemaEpisodes: Boolean = true,
     allowConfiguredAbemaChannels: Boolean = true,
+    allowConfiguredAbemaSlots: Boolean = true,
 ): ConfiguredPrototypeSelectionResult {
     fun failure(reason: ConfiguredPrototypeSelectionFailure) = ConfiguredPrototypeSelectionResult.Failure(reason)
     val choices = listOf(assignments.a, assignments.b)
@@ -56,6 +58,9 @@ internal fun resolveConfiguredPrototypeSelection(
         } else if (supportedConfiguredAbemaChannel(source.entry.resource)) {
             if (!allowConfiguredAbemaChannels) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.LIVE)
+        } else if (supportedConfiguredAbemaSlot(source.entry.resource)) {
+            if (!allowConfiguredAbemaSlots) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY)
         } else if (supportedConfiguredTwitchVideo(source.entry.resource)) {
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY)
         } else if (broadcaster) {

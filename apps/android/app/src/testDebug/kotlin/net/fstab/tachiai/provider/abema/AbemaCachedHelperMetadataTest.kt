@@ -5,6 +5,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaCachedHelperMetadataTest {
+    @Test fun slotRefusalPhasesRemainClosedAndCannotPublishPreparation() {
+        for (phase in listOf("SLOT_REGION", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW")) {
+            val value = checkNotNull(parseAbemaCachedHelperMetadata(metadata("UNKNOWN", 200, phase)))
+            assertEquals(phase, value.phase)
+            val evidence = AbemaCachedHelperEvidence()
+            assertTrue(evidence.observe(value))
+            assertFalse(evidence.permitsPreparation("READY", value))
+            assertFalse(evidence.permitsPreparation("READY", checkNotNull(parseAbemaCachedHelperMetadata(metadata()))))
+        }
+    }
+
     private fun metadata(failure: String? = "NONE", http: Int = 200, phase: String = "READY") =
         "{\"phase\":\"$phase\",\"modules\":50,\"lastModule\":24968,\"http\":$http" +
             (failure?.let { ",\"failure\":\"$it\"" } ?: "") + "}"

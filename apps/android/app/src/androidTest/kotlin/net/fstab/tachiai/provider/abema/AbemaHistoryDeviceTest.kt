@@ -13,8 +13,14 @@ import androidx.test.runner.lifecycle.ActivityLifecycleCallback
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import java.io.File
+import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.io.InputStream
+import java.net.URL
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.security.cert.Certificate
+import javax.net.ssl.HttpsURLConnection
 import java.util.concurrent.atomic.AtomicBoolean
 import net.fstab.tachiai.feature.connections.*
 import net.fstab.tachiai.platform.network.connectionProfileStore
@@ -26,7 +32,7 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountStatus
 import net.fstab.tachiai.provider.abema.account.AbemaAccountWorkers
 import net.fstab.tachiai.provider.abema.account.AndroidAbemaAccountStorage
 import net.fstab.tachiai.provider.catalog.*
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
@@ -37,6 +43,7 @@ class AbemaHistoryDeviceTest {
     private enum class Mode(val flag: String) {
         FIRST_PAGE("tachiaiReadOnlyAbemaHistory"),
         CONTINUATION("tachiaiReadOnlyAbemaHistoryContinuation"),
+        CONTINUATION_SHAPE("tachiaiReadOnlyAbemaHistoryShape"),
         LOCAL_ACCOUNT("tachiaiReadOnlyAbemaLocalAccount"),
     }
     private enum class Failure {
@@ -55,6 +62,111 @@ class AbemaHistoryDeviceTest {
 
     @Test fun optInSavedAccountObservesOnlyLocalSessionCandidateWithoutProviderRequests() {
         runObservation(Mode.LOCAL_ACCOUNT)
+    }
+
+    @Test fun optInSavedAccountObservesClosedHistoryContinuationHttpAndBodyShapes() {
+        runObservation(Mode.CONTINUATION_SHAPE)
+    }
+
+    @Test fun syntheticHistoryShapeTeePreservesBytesRequiresEofAndRejectsMalformedJson() {
+        val body = """{"histories":[],"dataSet":{"timeshifts":[],"vods":null},"paging":{"next":null},"ignored":"FIXTURE_PRIVATE_BODY"}""".toByteArray()
+        val complete = AbemaHistoryShapeObservation.observeSyntheticConnection(SyntheticConnection(body))
+        assertArrayEquals(body, complete.forwarded)
+        assertTrue(complete.cleanupConfirmed)
+        val rendered = checkNotNull(complete.rendered)
+        assertTrue(rendered.contains("json=COMPLETE root=OBJECT histories=ARRAY historiesCount=0"))
+        assertTrue(rendered.contains("timeshifts=ARRAY timeshiftsCount=0 vods=NULL vodsCount=-1 liveEvents=ABSENT"))
+        assertTrue(rendered.contains("paging=OBJECT pagingCount=-1 next=NULL"))
+        assertFalse(rendered.contains("FIXTURE_PRIVATE_BODY"))
+
+        val partial = AbemaHistoryShapeObservation.observeSyntheticConnection(SyntheticConnection(body), complete = false)
+        assertArrayEquals(body.copyOfRange(0, 7), partial.forwarded)
+        assertTrue(partial.cleanupConfirmed)
+        assertTrue(checkNotNull(partial.rendered).contains("json=INCOMPLETE shape=UNAVAILABLE"))
+        for ((invalid, category) in listOf(
+            byteArrayOf(0xff.toByte()) to "UTF8_REFUSED",
+            """{"histories":[],"histories":[]}""".toByteArray() to "JSON_REFUSED",
+        )) {
+            val result = AbemaHistoryShapeObservation.observeSyntheticConnection(SyntheticConnection(invalid))
+            assertArrayEquals(invalid, result.forwarded)
+            assertTrue(result.cleanupConfirmed)
+            assertTrue(checkNotNull(result.rendered).contains("json=$category shape=UNAVAILABLE"))
+        }
+        for ((json, expected) in listOf(
+            "{}" to "histories=ABSENT historiesCount=-1 dataSet=ABSENT",
+            """{"histories":null,"dataSet":null,"paging":null}""" to "histories=NULL historiesCount=-1 dataSet=NULL",
+            """{"paging":{"next":""}}""" to "next=EMPTY_STRING",
+            """{"paging":{"next":"FIXTURE_CURSOR"}}""" to "next=NONEMPTY_STRING",
+            """{"histories":{},"dataSet":[],"paging":{"next":7}}""" to "histories=OBJECT historiesCount=-1 dataSet=ARRAY dataSetCount=0",
+            "[]" to "root=ARRAY histories=PARENT_UNAVAILABLE",
+        )) {
+            val result = AbemaHistoryShapeObservation.observeSyntheticConnection(SyntheticConnection(json.toByteArray()))
+            val closed = checkNotNull(result.rendered)
+            assertTrue(closed.contains(expected)); assertFalse(closed.contains("FIXTURE_CURSOR"))
+        }
+        val overLimit = AbemaHistoryShapeObservation.observeSyntheticConnection(SyntheticConnection(
+            ByteArray(ABEMA_MY_LIST_RESPONSE_LIMIT + 1) { ' '.code.toByte() }))
+        assertTrue(overLimit.cleanupConfirmed)
+        assertTrue(overLimit.forwarded.size <= ABEMA_MY_LIST_RESPONSE_LIMIT)
+        assertTrue(checkNotNull(overLimit.rendered).contains("json=LIMIT_REFUSED shape=UNAVAILABLE"))
+    }
+
+    @Test fun syntheticHistoryShapeWrapperNeverReadsRefusalBodiesAndSuppressesFailedCleanup() {
+        val body = """{"histories":[],"dataSet":{},"paging":{}}""".toByteArray()
+        val refused = SyntheticConnection(body, status = 403)
+        val result = AbemaHistoryShapeObservation.observeSyntheticConnection(refused)
+        assertEquals(0, refused.inputRequests); assertEquals(0, refused.errorRequests)
+        assertEquals(1, refused.disconnects)
+        assertTrue(result.forwarded.isEmpty()); assertTrue(result.cleanupConfirmed)
+        assertTrue(checkNotNull(result.rendered).contains("http=403 failure=NONE json=UNREAD shape=UNAVAILABLE"))
+        for (connection in listOf(SyntheticConnection(body, inputCloseFails = true),
+            SyntheticConnection(body, disconnectFails = true))) {
+            val failed = AbemaHistoryShapeObservation.observeSyntheticConnection(connection)
+            assertArrayEquals(body, failed.forwarded)
+            assertFalse(failed.cleanupConfirmed); assertNull(failed.rendered)
+            assertEquals(1, connection.inputCloses); assertEquals(1, connection.disconnects)
+        }
+    }
+
+    @Test fun syntheticHistoryShapeCloseProofNeverRetriesOrLaundersAnUncertainClose() {
+        var calls = 0
+        assertTrue(AbemaHistoryShapeObservation.observeSyntheticCloseTwice(AutoCloseable { calls++ }))
+        assertEquals(1, calls)
+        calls = 0
+        assertFalse(AbemaHistoryShapeObservation.observeSyntheticCloseTwice(AutoCloseable {
+            calls++; throw IOException("Fixture close refusal")
+        }))
+        assertEquals(1, calls)
+        calls = 0
+        assertFalse(AbemaHistoryShapeObservation.observeSyntheticReentrantClose { closeAgain -> AutoCloseable {
+            calls++
+            try { closeAgain() } catch (_: Throwable) { }
+        } })
+        assertEquals(1, calls)
+    }
+
+    private class SyntheticConnection(private val body: ByteArray, private val status: Int = 200,
+        private val inputCloseFails: Boolean = false, private val disconnectFails: Boolean = false) :
+        HttpsURLConnection(URL("https://synthetic.invalid/fixture")) {
+        var inputRequests = 0; var errorRequests = 0; var inputCloses = 0; var disconnects = 0
+        override fun getResponseCode() = status
+        override fun getInputStream(): InputStream {
+            inputRequests++
+            return object : ByteArrayInputStream(body) {
+                override fun close() {
+                    inputCloses++
+                    if (inputCloseFails) throw IOException("Fixture input close refusal")
+                    super.close()
+                }
+            }
+        }
+        override fun getErrorStream(): InputStream? { errorRequests++; throw AssertionError("Refusal body must stay unread") }
+        override fun disconnect() { disconnects++; if (disconnectFails) throw IOException("Fixture disconnect refusal") }
+        override fun connect() { throw AssertionError("Synthetic connection must not connect") }
+        override fun usingProxy() = false
+        override fun getCipherSuite() = "FIXTURE"
+        override fun getLocalCertificates(): Array<Certificate>? = null
+        override fun getServerCertificates(): Array<Certificate> = emptyArray()
     }
 
     private fun runObservation(mode: Mode) {
@@ -85,7 +197,8 @@ class AbemaHistoryDeviceTest {
     }
 
     private fun observe(instanceId: String, mode: Mode) {
-        val continued = mode == Mode.CONTINUATION
+        val continued = mode == Mode.CONTINUATION || mode == Mode.CONTINUATION_SHAPE
+        val observeShapes = mode == Mode.CONTINUATION_SHAPE
         val localOnly = mode == Mode.LOCAL_ACCOUNT
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -134,6 +247,7 @@ class AbemaHistoryDeviceTest {
         }
         var registrationStarted = false
         var catalog: ProviderCatalog? = null
+        var shapeObservation: AbemaHistoryShapeObservation? = null
         var localSession: AbemaAccountSession? = null
         var loadedStatus: AbemaAccountStatus? = null
         var candidateStatus: AbemaAccountStatus? = null
@@ -147,6 +261,7 @@ class AbemaHistoryDeviceTest {
         var callbackRemoved = false
         var foregroundClosed = false
         var observationWithinBudget = false
+        var shapeRequestsStoppedWithinBudget = false
         var cleanupStarted = -1L
         var recordsSame = false
         var ownerSame = false
@@ -187,7 +302,10 @@ class AbemaHistoryDeviceTest {
                 }
                 admitUse()
                 stable()
-                val currentCatalog = androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), ::canUse)
+                val currentCatalog = (if (observeShapes) {
+                    AbemaHistoryShapeObservation(context, instanceId, capturedOwner,
+                        { capturedOwner.sameOwnership(readOwner()) }, ::canUse).also { shapeObservation = it }.catalog
+                } else androidAbemaChannelCatalog(context, instanceId, sourceSetupStore(context).read(), ::canUse))
                     .also { catalog = it }
                 // Direct browse establishes only History's own endpoint proof and
                 // consumes its one-use first positive page. Never sweep capabilities
@@ -228,6 +346,7 @@ class AbemaHistoryDeviceTest {
             if (failure == Failure.NONE) failure = Failure.UNEXPECTED
         } finally {
             cleanupStarted = SystemClock.elapsedRealtime()
+            if (observeShapes) shapeRequestsStoppedWithinBudget = canUse()
             active.set(false)
             try {
                 try {
@@ -273,7 +392,8 @@ class AbemaHistoryDeviceTest {
         val withinBudget = observationWithinBudget && finished - started in 0 until 70_000 &&
             cleanupStarted >= started && finished - cleanupStarted in 0 until 20_000
         val localCleanup = if (localOnly) sessionPaused && catalog == null && foreground == null && !registrationStarted
-            else facadeCloseReturned && callbackRemoved && foregroundClosed
+            else facadeCloseReturned && callbackRemoved && foregroundClosed &&
+                (!observeShapes || shapeObservation?.cleanupConfirmed() == true)
         if (failure == Failure.NONE) failure = when {
             !withinBudget -> Failure.BUDGET
             !localCleanup -> Failure.CLEANUP
@@ -291,6 +411,13 @@ class AbemaHistoryDeviceTest {
         val outcome = if (localObserved) "LOCAL_ACCOUNT_OBSERVED" else if (accepted) {
             if (continued) "HISTORY_CONTINUATION_ACCEPTED" else "HISTORY_PAGE_ACCEPTED"
         } else if (localOnly) "LOCAL_ACCOUNT_OBSERVATION_REFUSED" else "HISTORY_OBSERVATION_REFUSED"
+        // These receipts admit shape output after a strict page refusal, while
+        // the unchanged page checks still make that observation fail acceptance.
+        val shapeReceiptWithinBudget = observeShapes && shapeRequestsStoppedWithinBudget &&
+            finished - started in 0 until 70_000 && cleanupStarted >= started && finished - cleanupStarted in 0 until 20_000
+        val shapes = if (shapeReceiptWithinBudget && localCleanup && recordsSame && ownerSame && noAccountPoison &&
+            failure in setOf(Failure.NONE, Failure.FIRST_PAGE, Failure.SECOND_PAGE, Failure.NEXT_MISSING))
+            shapeObservation?.render() else null
         if (localOnly) Log.i("TachiaiAbemaHistoryProbe", "outcome=$outcome failure=${failure.name} " +
             "loadedStatus=${loadedStatus?.name ?: "UNAVAILABLE"} candidateStatus=${candidateStatus?.name ?: "UNAVAILABLE"} " +
             "candidateChecked=${candidatePresent != null} candidatePresent=${candidatePresent == true} " +
@@ -302,7 +429,9 @@ class AbemaHistoryDeviceTest {
             "entryCount=${firstPage?.entries?.size ?: 0} hasNext=${firstPage?.nextCursor != null} " +
             "secondCount=${secondPage?.entries?.size ?: 0} secondHasNext=${secondPage?.nextCursor != null} " +
             "facadeCloseReturned=$facadeCloseReturned callbackRemoved=$callbackRemoved foregroundClosed=$foregroundClosed " +
-            "noAccountPoison=$noAccountPoison withinBudget=$withinBudget recordsSame=$recordsSame ownerSame=$ownerSame")
+            "noAccountPoison=$noAccountPoison withinBudget=$withinBudget recordsSame=$recordsSame ownerSame=$ownerSame" +
+            if (observeShapes) " shapeReceiptWithinBudget=$shapeReceiptWithinBudget " +
+                "shapeCleanupConfirmed=${shapeObservation?.cleanupConfirmed() == true} ${shapes ?: "shape=UNAVAILABLE"}" else "")
         assertTrue("Explicit account observation did not pass its closed acceptance checks", accepted || localObserved)
     }
 

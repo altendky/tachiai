@@ -13,10 +13,13 @@ Real account/route evidence, anonymous native browsing and selected-resource
 playback remain in [#99](https://github.com/altendky/tachiai/issues/99).
 
 Implementation and synthetic fixture evidence are distinct from provider
-acceptance. A bounded account experiment observed the requested scope and refresh
-credential in a token response, with omitted expiry; validated account access,
+acceptance. Earlier bounded account experiments observed the requested scope and
+refresh credential in a token response, with omitted expiry; validated account access,
 refresh, native playback acceptance, provider revocation and imported-route
-authorization remain unobserved. The access research and
+authorization were not established by those experiments. The later maintained
+account acceptance below establishes normal connection and saved-grant validation
+on one emulator; refresh, playback and revocation still need separate checks.
+The access research and
 official protocol references are in [Twitch catalog access](twitch-catalog-access.md).
 
 ## Consent and routes
@@ -183,4 +186,36 @@ failures, and rendered QR challenge replacement/removal with the new bare-link
 destination. Browser intents were inspected without launching a browser; these
 fixtures made no provider request or account-storage change. Both browser button
 paths and the QR now use the same validated activation destination. Real Twitch
-prefill and consent remain unverified.
+prefill and consent were not established by those synthetic checks.
+
+### Maintained-account acceptance — 2026-10-12
+
+At the owner's request, one normal **Reconnect Twitch** action displayed the
+existing instance's QR code on persistent tachiai-dev. The owner used another
+device to complete Twitch's provider-controlled approval and reported completion.
+Tachiai then displayed **Twitch authorization validated** and **Twitch account
+validated for this foreground session**. Reopening the account screen and one
+explicit normal **Validate Twitch account** action again reported validated
+access. No rejection probe was part of setup.
+
+Context: tachiai-dev, emulator-5580, Android 16/API 36, x86_64, using the same
+configured instance route, subsequently confirmed as **System** by the bounded
+Following check. Approval happened on the owner's separate device;
+its OS, browser engine, region and exact code-prefill behavior were not recorded.
+The emulator's consent browser was not opened for this attempt. Only fixed native
+status categories were observed; no code, activation URL, account identifier,
+cookie, token or exact lifetime value was retained.
+
+Normal reconnection intentionally replaced the owning instance's protected
+authorization record: all 20 protected files remained present and only that
+record's digest changed. ABEMA authorization, route settings, configured items
+and other records were unchanged. The subsequent explicit validation left all
+20 protected-record digests byte-identical. No Forget, reset, route edit,
+configured Add/removal or session copy between devices occurred.
+
+This establishes one owner-approved maintained account and normal saved-grant
+validation on the emulator. A later
+[bounded first Following page](twitch-connected-catalog.md#bounded-following-observation--2026-10-12)
+also passed without changing the saved records. Process-restart retention,
+refresh/revocation, Continue Watching, native playback, physical-device and TV
+acceptance remain separately bounded work under #99 and #102.

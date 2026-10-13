@@ -50,7 +50,7 @@ import net.fstab.tachiai.provider.twitch.catalog.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
-// One explicitly opted-in current configured replay. Real retained catalog
+// One explicitly opted-in current configured replay or canonical broadcaster. Real retained catalog
 // authorization and production preparation/player; no consent, refresh, Add,
 // metadata sweep, checkpoint consumption, legacy grant or stored choice write.
 @UnstableApi
@@ -64,12 +64,13 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             Thread(action, "twitch-configured-fixture-cleanup").apply { isDaemon = true }
         }
     }
-    private enum class Outcome { REFUSED, SAFE_FAILURE, FRAME_AND_MOVEMENT, CLEANUP_UNCONFIRMED, REPLAY_ACCEPTED }
+    private enum class Mode { REPLAY, CHANNEL }
+    private enum class Outcome { REFUSED, SAFE_FAILURE, FRAME_AND_MOVEMENT, CLEANUP_UNCONFIRMED, REPLAY_ACCEPTED, CHANNEL_ACCEPTED }
     private enum class SourceOrigin { CONFIGURED_RECORD, LEGACY_PROJECTION, UNAVAILABLE }
     private enum class SampleState { UNAVAILABLE, IDLE, BUFFERING, READY, ENDED }
     private enum class Failure { NONE, SETUP, ADMISSION, MUTATION, VALIDATION, EXPIRY_TIGHTENING,
-        ACCESS_SCOPE, MEDIA_SCOPE, FRAME, MOVEMENT, CLEANUP, PRESERVATION }
-    private class Refusal : IOException("Configured replay observation refused its closed checks")
+        ELIGIBILITY, IDENTITY_SCOPE, ACCESS_SCOPE, MEDIA_SCOPE, FRAME, MOVEMENT, CLEANUP, PRESERVATION }
+    private class Refusal : IOException("Configured playback observation refused its closed checks")
     private class CloseReceipt<T : Any>(val resource: T, private val close: (T) -> Unit) {
         private val started = AtomicBoolean()
         private val finished = CountDownLatch(1)
@@ -98,6 +99,8 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
     @Test fun optInCurrentConfiguredReplayUsesRetainedCatalogGrantAndPreservesSavedRecords() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("tachiaiBoundedTwitchConfiguredPlayback") == "true")
+        if (args.getString("tachiaiBoundedTwitchConfiguredChannel") == "true")
+            throw AssertionError("Configured playback observation modes must be separately selected")
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == instrumentation.targetContext.packageName)
@@ -120,11 +123,43 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
         assumeTrue("Requires verified tachiai-dev AVD", verifiedAvd)
         if (!synchronized(retained) { retained.isEmpty() })
             throw AssertionError("Configured replay observation retains uncertain cleanup")
-        try { observe(instanceId) }
+        try { observe(instanceId, Mode.REPLAY) }
         catch (_: Throwable) { throw AssertionError("Configured replay observation did not pass its closed acceptance checks") }
     }
 
-    private fun observe(instanceId: String) {
+    @Test fun optInCurrentConfiguredChannelUsesRetainedCatalogGrantAndPreservesSavedRecords() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiBoundedTwitchConfiguredChannel") == "true")
+        if (args.getString("tachiaiBoundedTwitchConfiguredPlayback") == "true")
+            throw AssertionError("Configured playback observation modes must be separately selected")
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        assumeTrue(Build.VERSION.SDK_INT >= 28)
+        assumeTrue(Application.getProcessName() == instrumentation.targetContext.packageName)
+        assumeTrue(Looper.myLooper() != Looper.getMainLooper())
+        val instanceId = args.getString("twitchProviderInstance")
+        val itemId = args.getString("twitchConfiguredItem")
+        if (instanceId == null || !validProviderInstanceId(instanceId) || itemId != null && !validProviderInstanceId(itemId))
+            throw AssertionError("Configured channel requires valid explicit ownership arguments")
+        val verifiedAvd = try {
+            ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation
+                .executeShellCommand("getprop ro.boot.qemu.avd_name")).use { input ->
+                val bytes = ByteArray(129); var size = 0
+                while (size < bytes.size) {
+                    val count = input.read(bytes, size, bytes.size - size)
+                    if (count < 0) break
+                    size += count
+                }
+                size <= 128 && String(bytes, 0, size, Charsets.UTF_8).trim() == "tachiai-dev"
+            }
+        } catch (_: Throwable) { false }
+        assumeTrue("Requires verified tachiai-dev AVD", verifiedAvd)
+        if (!synchronized(retained) { retained.isEmpty() })
+            throw AssertionError("Configured channel observation retains uncertain cleanup")
+        try { observe(instanceId, Mode.CHANNEL, itemId) }
+        catch (_: Throwable) { throw AssertionError("Configured channel observation did not pass its closed acceptance checks") }
+    }
+
+    private fun observe(instanceId: String, mode: Mode, itemId: String? = null) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val directory = context.noBackupFilesDir
@@ -228,6 +263,14 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
         var budget: NativePlaybackBudget? = null
         var basePreparation: CatalogTwitchPreparation? = null
         var catalogSession: TwitchCatalogSession? = null
+        var coordinator: TwitchCatalogMaintenanceCoordinator? = null
+        var channelScope: ConfiguredTwitchChannelScope? = null
+        var identityResolver: TwitchLiveIdentityResolver? = null
+        val catalogSessions = CopyOnWriteArrayList<TwitchCatalogSession>()
+        val helixTransports = CopyOnWriteArrayList<OwnedTwitchHelixTransport>()
+        val helixPreparations = CopyOnWriteArrayList<RoutePreparation>()
+        val helixRouteCloses = CopyOnWriteArrayList<CloseReceipt<RouteSession>>()
+        val helixBackendCloses = CopyOnWriteArrayList<CloseReceipt<RouteBackend>>()
         val transports = CopyOnWriteArrayList<OwnedTwitchCatalogTransport>()
         val connections = CopyOnWriteArrayList<ObservedConnection>()
         val resolveStarted = AtomicBoolean()
@@ -259,6 +302,7 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
         var sourceOrigin = SourceOrigin.UNAVAILABLE
         var sourceCount = -1
         var replayCount = -1
+        var channelCount = -1
         val routePreparation = RoutePreparation(reporter)
         try {
             stable()
@@ -270,19 +314,25 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             val sourceList = sources(owner.instance)
             sourceCount = sourceList.size
             val eligible = sourceList.filter { candidate ->
-                supportedConfiguredTwitchVideo(candidate.entry.resource) &&
+                (if (mode == Mode.REPLAY) supportedConfiguredTwitchVideo(candidate.entry.resource)
+                    else supportedConfiguredTwitchBroadcaster(candidate.entry.resource)) &&
                     resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(candidate.choice, candidate.choice),
                         sourceList, listOf(owner.instance)) is ConfiguredPrototypeSelectionResult.Ready
             }
-            replayCount = eligible.size
-            val source = eligible.firstOrNull() ?: throw Refusal()
+            if (mode == Mode.REPLAY) replayCount = eligible.size else channelCount = eligible.size
+            // Freeze one local item before any requests. An explicit missing or
+            // unsupported item, or this item's later offline state, never picks another.
+            val source = (if (itemId == null) eligible.firstOrNull() else eligible.singleOrNull { it.id == itemId })
+                ?: run { admit(false, Failure.ELIGIBILITY); throw Refusal() }
             selected = source
+            if (mode == Mode.CHANNEL) channelScope = ConfiguredTwitchChannelScope(source.entry.resource)
             val resolved = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(source.choice, source.choice),
                 sourceList, listOf(owner.instance)) as? ConfiguredPrototypeSelectionResult.Ready ?: throw Refusal()
             val feed = resolved.selection.a
             admit(feed.choice == source.choice && resolved.selection.b.choice == source.choice &&
                 feed.resource == source.entry.resource && resolved.selection.b.resource == feed.resource &&
-                feed.service == PrototypeService.TWITCH && feed.kind == PrototypePlaybackKind.REPLAY, Failure.SETUP)
+                feed.service == PrototypeService.TWITCH && feed.kind ==
+                    (if (mode == Mode.REPLAY) PrototypePlaybackKind.REPLAY else PrototypePlaybackKind.LIVE), Failure.SETUP)
             val grantStore = TwitchCatalogGrantStore(readOnly(AndroidPrivateSecretStore.twitchCatalogInstance(context, instanceId),
                 twitchCatalogInstanceBindingName(instanceId)), instanceId, grantLock)
             val grant = grantStore.read() ?: throw Refusal()
@@ -301,7 +351,8 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             // Session canCommit may run under the grant's file lock. Do not
             // recursively enter that lock by rereading the grant here.
             fun ownerCurrent(): Boolean = localCurrent() &&
-                owner.presentation.sameOwnership(readOwner().presentation) && localCurrent()
+                owner.presentation.sameOwnership(readOwner().presentation) &&
+                (mode == Mode.REPLAY || sources(owner.instance).singleOrNull { it.choice == source.choice } == source) && localCurrent()
             foreground = ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -325,59 +376,82 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             })
             routeClose = CloseReceipt(checkNotNull(route), RouteSession::close)
             val ownedRoute = checkNotNull(route)
-            val binding = object : TwitchCatalogConnectionBinding {
-                private val closed = AtomicBoolean()
-                override fun owner(): TwitchCatalogConnectionOwner { admit(current(), Failure.ADMISSION); return readOwner().presentation }
-                override fun canPublishLocally() = !closed.get() && localCurrent()
-                override fun session(): TwitchCatalogSession {
-                    admit(current() && catalogSession == null, Failure.ADMISSION)
-                    return TwitchCatalogSession(grantStore, ::transport, canCommit = ::ownerCurrent).also { catalogSession = it }
+            fun catalogTransport(canRequest: () -> Boolean): TwitchCatalogTransport {
+                admit(current(), Failure.ADMISSION)
+                val remote = OwnedTwitchCatalogTransport(owner.profile, { canRequest() && current() },
+                    onCleanupFailure = { cleanupFailed.set(true) }, diagnostics = reporter).also { transports.add(it) }
+                return object : TwitchCatalogTransport {
+                    override fun device(): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
+                    override fun poll(deviceCode: String): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
+                    override fun refresh(refreshToken: String): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
+                    override fun validate(accessToken: String): DeviceAuthResponse {
+                        admit(current() && validationRequests.incrementAndGet() in
+                            1..(if (mode == Mode.REPLAY) 1 else 2) &&
+                            accessToken == checkNotNull(grant.credentials).accessToken, Failure.VALIDATION)
+                        channelScope?.beginValidation()
+                        val response = try { remote.validate(accessToken) }
+                        catch (_: Throwable) { admit(false, Failure.VALIDATION); throw Refusal() }
+                        validationHttp.set(response.status.takeIf { it in 100..599 } ?: -1)
+                        admit(response.status == 200, Failure.VALIDATION)
+                        val validation = try { parseTwitchCatalogValidation(response, grant.userId, grant.localRetentionUntilMs != null) }
+                        catch (_: Throwable) { admit(false, Failure.VALIDATION); throw Refusal() }
+                        val finite = validation.expiresInMs
+                        if (grant.localRetentionUntilMs != null && finite != null) admit(beganWall >= 0 &&
+                            finite <= Long.MAX_VALUE - beganWall && grant.providerExpiresAtMs != null &&
+                            beganWall + finite - BUDGET_MS >= grant.providerExpiresAtMs, Failure.EXPIRY_TIGHTENING)
+                        admit(current(), Failure.ADMISSION)
+                        channelScope?.validated(response.status)
+                        return response
+                    }
+                    override fun cancelActiveRequest() = remote.cancelActiveRequest()
+                    override fun close() = remote.close()
                 }
-                override fun transport(canRequest: () -> Boolean): TwitchCatalogTransport {
-                    admit(current(), Failure.ADMISSION)
-                    val remote = OwnedTwitchCatalogTransport(owner.profile, { canRequest() && current() },
-                        onCleanupFailure = { cleanupFailed.set(true) }, diagnostics = reporter).also { transports.add(it) }
-                    return object : TwitchCatalogTransport {
-                        override fun device(): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
-                        override fun poll(deviceCode: String): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
-                        override fun refresh(refreshToken: String): DeviceAuthResponse { admit(false, Failure.MUTATION); throw Refusal() }
-                        override fun validate(accessToken: String): DeviceAuthResponse {
-                            admit(current() && validationRequests.incrementAndGet() == 1 &&
-                                accessToken == checkNotNull(grant.credentials).accessToken, Failure.VALIDATION)
-                            val response = try { remote.validate(accessToken) }
-                            catch (_: Throwable) { admit(false, Failure.VALIDATION); throw Refusal() }
-                            validationHttp.set(response.status.takeIf { it in 100..599 } ?: -1)
-                            admit(response.status == 200, Failure.VALIDATION)
-                            val validation = try { parseTwitchCatalogValidation(response, grant.userId, grant.localRetentionUntilMs != null) }
-                            catch (_: Throwable) { admit(false, Failure.VALIDATION); throw Refusal() }
-                            val finite = validation.expiresInMs
-                            if (grant.localRetentionUntilMs != null && finite != null) admit(beganWall >= 0 &&
-                                finite <= Long.MAX_VALUE - beganWall && grant.providerExpiresAtMs != null &&
-                                beganWall + finite - BUDGET_MS >= grant.providerExpiresAtMs, Failure.EXPIRY_TIGHTENING)
-                            admit(current(), Failure.ADMISSION)
-                            return response
-                        }
-                        override fun cancelActiveRequest() = remote.cancelActiveRequest()
-                        override fun close() = remote.close()
+            }
+            if (mode == Mode.CHANNEL) coordinator = TwitchCatalogMaintenanceCoordinator(grantStore,
+                ::catalogTransport, ::ownerCurrent) // No scheduler, renewal or registry retirement in this fixture.
+            fun newBinding(): TwitchCatalogConnectionBinding = object : TwitchCatalogConnectionBinding {
+                private val closed = AtomicBoolean()
+                private val ownedSessions = CopyOnWriteArrayList<TwitchCatalogSession>()
+                private val ownedTransports = CopyOnWriteArrayList<TwitchCatalogTransport>()
+                override fun owner(): TwitchCatalogConnectionOwner { admit(current(), Failure.ADMISSION); return readOwner().presentation }
+                override fun canPublishLocally() = !closed.get() && localCurrent() && coordinator?.canPublishLocally != false
+                override fun session(): TwitchCatalogSession {
+                    admit(current() && ownedSessions.isEmpty() && (mode == Mode.CHANNEL || catalogSession == null), Failure.ADMISSION)
+                    return TwitchCatalogSession(grantStore, ::transport, canCommit = ::ownerCurrent,
+                        maintenance = coordinator, canParticipate = ::canPublishLocally).also {
+                        ownedSessions.add(it); catalogSessions.add(it)
+                        if (mode == Mode.REPLAY) catalogSession = it
                     }
                 }
-                override fun close() { closed.set(true); transports.forEach { it.close() } }
+                override fun transport(canRequest: () -> Boolean): TwitchCatalogTransport =
+                    catalogTransport { canRequest() && canPublishLocally() }.also { ownedTransports.add(it) }
+                override fun close() {
+                    if (!closed.compareAndSet(false, true)) return
+                    var failed = false
+                    ownedSessions.forEach { try { it.close() } catch (_: Throwable) { failed = true } }
+                    ownedTransports.forEach { try { it.close() } catch (_: Throwable) { failed = true } }
+                    if (failed) { cleanupFailed.set(true); throw Refusal() }
+                }
             }
-            val accessBody = twitchAccessProbeBody(TwitchAccessCase.REPLAY, feed.resource.identity)
+            val binding = newBinding()
+            val accessBody = if (mode == Mode.REPLAY) twitchAccessProbeBody(TwitchAccessCase.REPLAY, feed.resource.identity) else null
             fun open(url: URL): HttpsURLConnection {
                 admit(current() && CookieHandler.getDefault() == null, Failure.ADMISSION)
                 val access = url.toExternalForm() == "https://gql.twitch.tv/gql"
-                if (access) admit(accessRequests.incrementAndGet() == 1 && validationRequests.get() == 1 &&
-                    validationHttp.get() == 200, Failure.ACCESS_SCOPE)
+                if (access) admit(accessRequests.incrementAndGet() == 1 && validationRequests.get() in
+                    1..(if (mode == Mode.REPLAY) 1 else 2) && validationHttp.get() == 200, Failure.ACCESS_SCOPE)
                 else {
-                    admit(allowedTwitchMediaUri(url.toURI(), observedReplayCdn = true) &&
+                    admit(allowedTwitchMediaUri(url.toURI(), observedReplayCdn = mode == Mode.REPLAY) &&
                         mediaRequests.incrementAndGet() <= MAX_MEDIA_REQUESTS && selectedUri.get() != null, Failure.MEDIA_SCOPE)
                     if (url.host == "usher.ttvnw.net") admit(url.toURI() == selectedUri.get(), Failure.MEDIA_SCOPE)
+                    channelScope?.admitMedia(url.toURI())
                 }
+                val expectedBody = if (access) channelScope?.beginAccess() ?: accessBody else null
                 return ObservedConnection(ownedRoute.open(url), cleanupFailed, { current() },
-                    expectedBody = if (access) accessBody else null,
+                    expectedBody = expectedBody,
                     expectedAuthorization = if (access) "OAuth ${checkNotNull(grant.credentials).accessToken}" else null,
-                    onStatus = { status -> if (access) accessHttp.set(status) }).also { connections.add(it) }
+                    onStatus = { status -> if (access) { accessHttp.set(status); channelScope?.accessStatus(status) } })
+                    .also { connections.add(it) }
             }
             val preparation = CatalogTwitchPreparation(context, instanceId, owner.profile, checkNotNull(owner.instance.setup.route),
                 ::localCurrent, ::open, bindingFactory = { readOwner() to binding }).also { basePreparation = it }
@@ -386,11 +460,15 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 override fun canContinue() = preparation.canContinue()
                 override fun checkStored(force: Boolean) = preparation.checkStored(force)
                 override fun resolve(replay: Boolean, resource: String, onStatus: (String, Int) -> Unit): TwitchPlaybackSource {
-                    admit(resolveStarted.compareAndSet(false, true) && replay && resource == feed.resource.identity, Failure.ACCESS_SCOPE)
+                    admit(resolveStarted.compareAndSet(false, true) && replay == (mode == Mode.REPLAY), Failure.ACCESS_SCOPE)
                     try {
+                        if (mode == Mode.REPLAY) admit(resource == feed.resource.identity, Failure.ACCESS_SCOPE)
+                        else checkNotNull(channelScope).beginNative(replay, resource)
                         return preparation.resolve(replay, resource, onStatus).also {
-                            admit(it.uri.host == "usher.ttvnw.net" && it.uri.path == "/vod/v2/${feed.resource.identity}.m3u8" &&
-                                current(), Failure.ACCESS_SCOPE)
+                            if (mode == Mode.REPLAY) admit(it.uri.host == "usher.ttvnw.net" &&
+                                it.uri.path == "/vod/v2/${feed.resource.identity}.m3u8", Failure.ACCESS_SCOPE)
+                            else checkNotNull(channelScope).bindSource(it.uri)
+                            admit(current(), Failure.ACCESS_SCOPE)
                             selectedUri.set(it.uri)
                         }
                     } finally { resolveFinished.countDown() }
@@ -405,7 +483,7 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             }, profile = TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
             budget = NativePlaybackBudget(BUDGET_MS, ::localCurrent, maximumDurationMs = BUDGET_MS)
             instrumentation.runOnMainSync {
-                session = PrototypeTwitchSession(checkNotNull(activity.get()), true, feed.resource.identity, ::localCurrent, { event ->
+                val events: (PrototypeFeedEvent) -> Unit = { event ->
                     when (event) {
                         PrototypeFeedEvent.READY -> {
                             try {
@@ -423,8 +501,61 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                         PrototypeFeedEvent.FAILED -> { playbackFailed.set(true); prepared.countDown(); frame.countDown() }
                         else -> Unit
                     }
-                }, openConnection = ::open, authorization = noLegacy, diagnostics = reporter,
+                }
+                session = if (mode == Mode.REPLAY) PrototypeTwitchSession(checkNotNull(activity.get()), true,
+                    feed.resource.identity, ::localCurrent, events, openConnection = ::open, authorization = noLegacy, diagnostics = reporter,
                     initialPositionMs = if (feed.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L,
+                    preparationFactory = { observedPreparation }, onCleanupChanged = { cleanupFailed.set(true) })
+                else configuredTwitchBroadcasterSession(checkNotNull(activity.get()), feed.resource, ::localCurrent, events,
+                    liveIdentityResolverFactory = {
+                        admit(current(), Failure.ADMISSION)
+                        ownedTwitchLiveIdentityResolver(instanceId, owner.profile, owner, newBinding(), ::localCurrent,
+                            transportFactory = { profile, gate, failed ->
+                                admit(current() && (profile?.let(::routeConfigurationKey) ?: "SYSTEM") ==
+                                    (owner.profile?.let(::routeConfigurationKey) ?: "SYSTEM"), Failure.ADMISSION)
+                                val remote = OwnedTwitchHelixTransport(profile, { gate() && current() },
+                                    createRoute = { selectedProfile, preparing ->
+                                        helixPreparations.add(preparing)
+                                        RouteSession.createTwitchCatalog(selectedProfile, preparing) { selectedProfile, security ->
+                                            val backend = selectedProfile.protocol.createBackend(selectedProfile, security, preparing)
+                                            val receipt = CloseReceipt(backend, RouteBackend::close).also { helixBackendCloses.add(it) }
+                                            object : RouteBackend {
+                                                override val proxyPort get() = backend.proxyPort
+                                                override fun close() {
+                                                    // Actual HTTP/input uncertainty must retain this
+                                                    // backend even if the transport cleared its active field.
+                                                    if (cleanupFailed.get()) throw Refusal()
+                                                    if (!receipt.await(SystemClock.elapsedRealtime() + 5000)) throw Refusal()
+                                                }
+                                            }
+                                        }.also { helixRouteCloses.add(CloseReceipt(it, RouteSession::close)) }
+                                    }, createTransport = { routeOpen, allowed ->
+                                        TwitchHelixHttpTransport(open = { url ->
+                                            admit(current() && allowed() && validTwitchHelixUrl(url) &&
+                                                CookieHandler.getDefault() == null, Failure.IDENTITY_SCOPE)
+                                            ObservedConnection(routeOpen(url), cleanupFailed, { current() && allowed() },
+                                                expectedBody = null, expectedAuthorization = null, onStatus = {},
+                                                expectedGetAuthorization = "Bearer ${checkNotNull(grant.credentials).accessToken}",
+                                                expectedGetClientId = SMART_TV_TWITCH_CLIENT_ID).also { connections.add(it) }
+                                        }, canRequest = { current() && allowed() })
+                                    }, onCleanupFailure = { cleanupFailed.set(true); failed() }, diagnostics = reporter)
+                                    .also { helixTransports.add(it) }
+                                object : TwitchHelixTransport {
+                                    override fun execute(accessToken: String, request: TwitchHelixRequest): TwitchHelixResponse {
+                                        admit(current() && accessToken == checkNotNull(grant.credentials).accessToken, Failure.IDENTITY_SCOPE)
+                                        val scope = checkNotNull(channelScope)
+                                        scope.beginHelix(request)
+                                        val response = try { remote.execute(accessToken, request) }
+                                        catch (_: Throwable) { admit(false, Failure.IDENTITY_SCOPE); throw Refusal() }
+                                        admit(current(), Failure.ADMISSION)
+                                        scope.completeHelix(request, response)
+                                        return response // The owned exchange has already confirmed HTTP/route cleanup.
+                                    }
+                                    override fun cancelActiveRequest() = remote.cancelActiveRequest()
+                                    override fun close() = remote.close()
+                                }
+                            }, diagnostics = reporter, expectedRoute = owner.instance.setup.route).also { identityResolver = it }
+                    }, openConnection = ::open, authorization = noLegacy, diagnostics = reporter,
                     preparationFactory = { observedPreparation }, onCleanupChanged = { cleanupFailed.set(true) })
                 sessionWorker = PrototypeTwitchSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
                     .get(checkNotNull(session)) as ExecutorService
@@ -496,8 +627,10 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             var confirmed = mainClose {
                 var failed = false
                 for (close in listOf<() -> Unit>(
-                    { session?.close() }, { basePreparation?.close() }, { catalogSession?.close() }, { view?.player = null },
-                )) try { close() } catch (_: Throwable) { failed = true }
+                    { session?.close() }, { basePreparation?.close() }, { identityResolver?.close() },
+                    { view?.player = null },
+                ) + catalogSessions.map { catalog -> { catalog.close() } })
+                    try { close() } catch (_: Throwable) { failed = true }
                 if (failed) throw Refusal()
             }
             connections.forEach { it.startClose() }
@@ -509,6 +642,15 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             nativeConfirmed = mainClose { admit(session?.cleanupConfirmed != false, Failure.CLEANUP) }
             confirmed = confirmed && preparationSettled && workerTerminated && nativeConfirmed
             transports.forEach { transport -> if (!CloseReceipt(transport, OwnedTwitchCatalogTransport::close).await(cleanupEnd)) confirmed = false }
+            helixTransports.forEach { transport -> if (!CloseReceipt(transport, OwnedTwitchHelixTransport::close).await(cleanupEnd)) confirmed = false }
+            // The resolver's owned exchanges finish on the session worker.
+            // Do not release their route/backends while that worker is uncertain.
+            if (workerTerminated && !cleanupFailed.get() && helixPreparations.all { it.cleanupConfirmed }) {
+                helixRouteCloses.forEach { if (!it.await(cleanupEnd)) confirmed = false }
+                helixBackendCloses.forEach { if (!it.await(cleanupEnd)) confirmed = false }
+            } else if (mode == Mode.CHANNEL) confirmed = false
+            confirmed = confirmed && helixPreparations.all { it.cleanupConfirmed } && coordinator?.isIdle != false &&
+                catalogSessions.none { it.cleanupUncertain }
             httpConfirmed = connections.all { it.closeConfirmed(cleanupEnd) }
             confirmed = confirmed && httpConfirmed && !cleanupFailed.get()
             if (confirmed) {
@@ -544,27 +686,37 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 before?.values?.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) }
                 if (!cleanupConfirmed) synchronized(retained) {
                     retained.add(listOfNotNull(session, sessionWorker, route, backendClose, routeClose, basePreparation,
-                        catalogSession, foreground, foregroundClose, view) + connections.toList() + transports.toList())
+                        catalogSession, coordinator, identityResolver, foreground, foregroundClose, view) + connections.toList() +
+                        transports.toList() + catalogSessions.toList() + helixTransports.toList() + helixPreparations.toList() +
+                        helixRouteCloses.toList() + helixBackendCloses.toList())
                 }
             }
         }
-        val requestScope = validationRequests.get() == 1 && validationHttp.get() == 200 && accessRequests.get() == 1 &&
-            accessHttp.get() == 200 && mediaRequests.get() in 1..MAX_MEDIA_REQUESTS
+        val requestScope = validationRequests.get() in 1..(if (mode == Mode.REPLAY) 1 else 2) &&
+            validationHttp.get() == 200 && accessRequests.get() == 1 && accessHttp.get() == 200 &&
+            mediaRequests.get() in 1..MAX_MEDIA_REQUESTS && (mode == Mode.REPLAY || channelScope?.accepted() == true)
+        channelScope?.clear()
         val accepted = beforeCleanup == Outcome.FRAME_AND_MOVEMENT && frameObserved.get() && moved == true &&
             noFeedFailure && withinPlaybackBudget && SystemClock.elapsedRealtime() - started in 0 until BUDGET_MS &&
             System.currentTimeMillis() - beganWall in 0 until BUDGET_MS &&
             cleanupConfirmed && recordsSame && ownerSame && itemSame &&
             requestScope && qualityApplied.get() && muted.get() && playRequested.get() &&
             !mutationRefused.get() && !cleanupFailed.get()
-        if (accepted) outcome = Outcome.REPLAY_ACCEPTED
+        if (accepted) outcome = if (mode == Mode.REPLAY) Outcome.REPLAY_ACCEPTED else Outcome.CHANNEL_ACCEPTED
         Log.i("TachiaiTwitchConfiguredProbe", "outcome=${outcome.name} playbackOutcome=${beforeCleanup.name} " +
-            "sdk=${Build.VERSION.SDK_INT} routeMode=${captured?.instance?.setup?.route?.mode?.name ?: "UNAVAILABLE"} " +
-            "sourceOrigin=${sourceOrigin.name} sourceCount=$sourceCount replayCount=$replayCount " +
+            "mode=${mode.name} sdk=${Build.VERSION.SDK_INT} routeMode=${captured?.instance?.setup?.route?.mode?.name ?: "UNAVAILABLE"} " +
+            "sourceOrigin=${sourceOrigin.name} sourceCount=$sourceCount replayCount=$replayCount channelCount=$channelCount " +
             "failure=${failure.get().name} frame=${frameObserved.get()} movement=$moved " +
             "firstSampleState=${firstSampleState.name} lastSampleState=${lastSampleState.name} " +
             "noFeedFailure=$noFeedFailure withinBudget=$withinPlaybackBudget " +
             "qualityApplied=${qualityApplied.get()} muted=${muted.get()} playRequested=${playRequested.get()} " +
             "validationRequests=${validationRequests.get()} validationHttp=${validationHttp.get()} " +
+            "channelStage=${channelScope?.stage?.name ?: "UNAVAILABLE"} channelRefusal=${channelScope?.refusal?.name ?: "NONE"} " +
+            "helixRequests=${channelScope?.helixRequests ?: 0} usersIdHttp=${channelScope?.usersIdHttp ?: -1} " +
+            "streamsHttp=${channelScope?.streamsHttp ?: -1} usersLoginHttp=${channelScope?.usersLoginHttp ?: -1} " +
+            "streamsParsed=${channelScope?.streamsParsed ?: false} streamsRawCount=${channelScope?.streamsRawCount ?: -1} " +
+            "streamsTypedCount=${channelScope?.streamsTypedCount ?: -1} streamsHasCursor=${channelScope?.streamsHasCursor ?: false} " +
+            "streamsIdentityMatched=${channelScope?.streamsIdentityMatched} " +
             "accessRequests=${accessRequests.get()} accessHttp=${accessHttp.get()} mediaRequests=${mediaRequests.get()} " +
             "preparationSettled=$preparationSettled workerTerminated=$workerTerminated nativeConfirmed=$nativeConfirmed " +
             "httpConfirmed=$httpConfirmed routeConfirmed=$routeConfirmed cleanupConfirmed=$cleanupConfirmed " +
@@ -576,15 +728,21 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
     // Delegates actual response bytes unchanged. Only the exact access request
     // is buffered/verified before forwarding; inputs and disconnects have their
     // own definite bounded receipts independent of session/worker completion.
-    private class ObservedConnection(private val remote: HttpsURLConnection,
+    internal class ObservedConnection(private val remote: HttpsURLConnection,
         private val cleanupFailed: AtomicBoolean, private val current: () -> Boolean,
-        private val expectedBody: ByteArray?, private val expectedAuthorization: String?,
-        private val onStatus: (Int) -> Unit) : HttpsURLConnection(remote.url) {
+        private var expectedBody: ByteArray?, private var expectedAuthorization: String?,
+        private val onStatus: (Int) -> Unit,
+        private var expectedGetAuthorization: String? = null,
+        private val expectedGetClientId: String? = null) : HttpsURLConnection(remote.url) {
         private val disconnect = CloseReceipt(remote, HttpsURLConnection::disconnect)
         private val inputs = CopyOnWriteArrayList<CloseReceipt<InputStream>>()
         private val outputClosed = AtomicBoolean()
         private fun guard() { if (!current()) throw Refusal() }
-        fun startClose() { disconnect.start(); inputs.forEach { it.start() } }
+        fun startClose() {
+            expectedBody?.fill(0); expectedBody = null; expectedAuthorization = null
+            expectedGetAuthorization = null
+            disconnect.start(); inputs.forEach { it.start() }
+        }
         fun closeConfirmed(deadline: Long) = inputs.all { it.await(deadline) } && disconnect.await(deadline) &&
             inputs.all { it.confirmed } && disconnect.confirmed
         override fun disconnect() {
@@ -615,8 +773,14 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
         override fun getResponseCode(): Int {
             guard()
             if (expectedBody != null && !outputClosed.get()) throw Refusal()
-            if (expectedBody == null && (remote.requestMethod != "GET" || remote.doOutput ||
-                remote.getRequestProperty("Authorization") != null || remote.getRequestProperty("Cookie") != null)) throw Refusal()
+            if (expectedBody == null) {
+                if (remote.requestMethod != "GET" || remote.doOutput || remote.getRequestProperty("Cookie") != null) throw Refusal()
+                if (expectedGetClientId != null) {
+                    if (expectedGetAuthorization == null || remote.instanceFollowRedirects ||
+                        remote.getRequestProperty("Authorization") != expectedGetAuthorization ||
+                        remote.getRequestProperty("Client-Id") != expectedGetClientId) throw Refusal()
+                } else if (remote.getRequestProperty("Authorization") != null) throw Refusal()
+            }
             return remote.responseCode.also { onStatus(it.takeIf { code -> code in 100..599 } ?: -1) }
         }
         private fun own(input: InputStream): InputStream {

@@ -181,9 +181,11 @@ uninterrupted hourly viewing remain unverified. Pause, Forget, reconnect and rou
 changes reject late work. Unconfirmed HTTP cancellation or route cleanup
 retains the actual owners and blocks shared admission for the process. The
 registry releases idle coordinators after their bindings and sessions close.
-Real-provider rotation and sustained-viewer recovery remain unobserved;
-[#212](https://github.com/altendky/tachiai/issues/212) stays open for these and
-ABEMA's separately unverified native renewal path.
+Real-provider rotation and sustained-viewer recovery remain unobserved. These
+are explicit limits in the completion audit for
+[#212](https://github.com/altendky/tachiai/issues/212), closed on 2026-10-13 after
+the supported maintenance paths were delivered. Silent ABEMA native renewal
+remains unsupported by the verified stored-grant protocol.
 
 Initial coordinator verification on 2026-10-13 UTC passed 2,527 JVM cases in 295 reports, with no
 failures, errors or skips; this includes 23 coordinator cases in both debug and
@@ -480,3 +482,38 @@ configured-channel playback acceptance, picker/Add interaction, imported routes,
 refresh/revocation, sustained playback, audible output and physical-device/TV
 behavior remain unverified. [Issue #99](https://github.com/altendky/tachiai/issues/99)
 remains open.
+
+## Metadata HTTP cleanup ownership
+
+A separate production correction keeps the actual Helix connection and response
+input under bounded, sticky first-attempt cleanup receipts. Previously an input
+close or disconnect could fail while the active reference was cleared; a later
+empty close could appear successful. The owned wrapper could then release the
+dependent route/backend. Cancellation also lacked a completion gate before
+release. This is a source and synthetic finding, not an observed real provider
+cleanup failure.
+
+Disconnect and input cleanup now start before either wait, so input close may
+depend on disconnect without an artificial sequential timeout. The owned run
+captures the real backend before port/cancellation/constructor rollback checks.
+Cancellation and HTTP cleanup must settle before route/backend release. A failed
+or timed-out first attempt retains all owners and blocks the exact provider
+instance for the process, including fresh facades. Late completion cannot turn
+uncertain cleanup into acceptance. Lifecycle close only signals work and schedules
+bounded completion observation; parent cleanup pools are separate from their
+children. Successful publication still checks the original 30-second deadline,
+current owner and admission after cleanup.
+
+The initial regression run failed exactly its three new cases, with all 21 old
+cases passing. After correction, 73 targeted ownership/identity/preparation cases
+passed with zero failures, errors or skips. Full verification passed 2,691 JVM
+tests in 299 reports, lint, release isolation, instrumentation compilation, both
+APK assemblies and the shared signing certificate. Scoped hooks and independent
+review passed. Fifteen selected provider-free `tachiai-dev` cases passed with
+zero skips in 0.450 seconds, using fake HTTP and in-memory grants. The ordinary
+test manifest had no process overrides. All 20 saved files were byte-identical
+before installation, after these cases and after launcher restoration.
+
+No real provider failure, consent, grant/source/route mutation or playback probe
+was performed for this correction. The previous channel frame/movement outcome
+remains unchanged; this work does not establish advancing channel playback.

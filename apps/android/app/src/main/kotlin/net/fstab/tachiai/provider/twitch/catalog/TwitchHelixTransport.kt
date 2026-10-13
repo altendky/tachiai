@@ -7,6 +7,8 @@ import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.provider.twitch.*
 
@@ -98,6 +100,7 @@ internal class TwitchHelixResponse(val status: Int, val fields: Map<String, Any?
     override fun toString() = "TwitchHelixResponse(status=$status, redacted)"
 }
 internal interface TwitchHelixTransport : AutoCloseable {
+    val cleanupConfirmed: Boolean get() = true
     fun execute(accessToken: String, request: TwitchHelixRequest): TwitchHelixResponse
     fun cancelActiveRequest() = Unit
 }
@@ -116,38 +119,67 @@ internal class TwitchHelixHttpTransport(
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val canRequest: () -> Boolean = { true },
     private val onFailure: (TwitchHelixHttpFailure) -> Unit = {},
+    private val cleanupWaitMs: Long = 1000,
 ) : TwitchHelixTransport {
+    init { require(cleanupWaitMs in 1..5000) }
+    private class Handle(val connection: HttpsURLConnection, waitMs: Long) {
+        val disconnect = TwitchCollectionCleanupReceipt(connection, HttpsURLConnection::disconnect, waitMs)
+        @Volatile var input: TwitchCollectionCleanupReceipt<java.io.InputStream>? = null
+        fun close(): Boolean {
+            disconnect.start(); input?.start()
+            val read = input?.await() != false
+            val disconnected = disconnect.await()
+            return read && disconnected
+        }
+        override fun toString() = "TwitchHelixHttpHandle(redacted)"
+    }
+    companion object {
+        private val pending = ConcurrentHashMap.newKeySet<TwitchHelixHttpTransport>()
+        private val retained = ConcurrentLinkedQueue<Any>()
+    }
     private val lock = Any()
     private var closed = false
+    private var poisoned = false
     private var reserved = false
-    private var active: HttpsURLConnection? = null
+    private var active: Handle? = null
     private var pauseRevision = 0L
+    override val cleanupConfirmed get() = synchronized(lock) { !poisoned && !reserved && active == null }
+    private fun poison(handle: Handle?) {
+        synchronized(lock) {
+            if (!poisoned) { poisoned = true; closed = true; retained.add(this); handle?.let(retained::add) }
+        }
+    }
     override fun execute(accessToken: String, request: TwitchHelixRequest): TwitchHelixResponse {
         if (!validCatalogAccessToken(accessToken)) throw TwitchHelixException(TwitchHelixFailure.INVALID_INPUT)
         val started = clockMs()
-        var connection: HttpsURLConnection? = null
+        var handle: Handle? = null
         var ownsReservation = false
+        var returning = false
         var revision: Long? = null
         var stage = DeviceRequestStage.OPEN
         fun permitted(): Boolean = try { canRequest() }
             catch (_: Exception) { throw TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE) }
         fun checkActive() {
-            if (synchronized(lock) { closed }) throw InterruptedIOException()
+            if (synchronized(lock) { closed || poisoned }) throw InterruptedIOException()
             if (synchronized(lock) { revision != null && revision != pauseRevision } || !permitted()) throw DeviceRequestPaused()
-            if (clockMs() - started >= 30_000) throw HelixBudgetExceeded()
+            if (synchronized(lock) { closed || poisoned }) throw InterruptedIOException()
+            if (synchronized(lock) { revision != null && revision != pauseRevision }) throw DeviceRequestPaused()
+            val now = clockMs()
+            if (now < started || now - started >= 30_000) throw HelixBudgetExceeded()
         }
         try {
             checkActive()
             revision = synchronized(lock) {
-                if (closed || reserved) throw InterruptedIOException()
-                reserved = true; ownsReservation = true; pauseRevision
+                if (closed || poisoned || reserved) throw InterruptedIOException()
+                reserved = true; ownsReservation = true; pending.add(this); pauseRevision
             }
             checkActive()
-            val http = open(request.url).also { connection = it }
+            val http = open(request.url)
+            val owned = Handle(http, cleanupWaitMs).also { handle = it }
             synchronized(lock) {
+                active = owned // Own a late handle before lifecycle admission can refuse it.
                 if (closed) throw InterruptedIOException()
                 if (revision != pauseRevision) throw DeviceRequestPaused()
-                active = http
             }
             stage = DeviceRequestStage.CONFIGURE
             http.instanceFollowRedirects = false; http.useCaches = false
@@ -160,12 +192,15 @@ internal class TwitchHelixHttpTransport(
             if (status !in 100..599) throw TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE)
             if (status == 429) {
                 val deadline = retryDeadline(http.getHeaderField("Ratelimit-Reset")); checkActive()
-                return TwitchHelixResponse(status, retryAtEpochMs = deadline)
+                returning = true; return TwitchHelixResponse(status, retryAtEpochMs = deadline)
             }
-            if (status != 200) return TwitchHelixResponse(status)
+            if (status != 200) { returning = true; return TwitchHelixResponse(status) }
             stage = DeviceRequestStage.READ
             if (http.contentLengthLong > TWITCH_HELIX_RESPONSE_LIMIT) throw TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE)
-            val body = http.inputStream.use { input ->
+            val input = http.inputStream
+            val inputClose = TwitchCollectionCleanupReceipt(input, java.io.InputStream::close, cleanupWaitMs)
+            owned.input = inputClose
+            val body = try {
                 val bytes = ByteArrayOutputStream(); val buffer = ByteArray(4096)
                 while (true) {
                     checkActive(); val count = input.read(buffer); checkActive()
@@ -174,10 +209,12 @@ internal class TwitchHelixHttpTransport(
                     bytes.write(buffer, 0, count)
                 }
                 bytes.toString("UTF-8")
+            } finally {
+                if (!owned.close()) { poison(owned); throw TwitchHelixNetworkException(DeviceNetworkFailure.IO) }
             }
             stage = DeviceRequestStage.DECODE
             checkActive(); val fields = decode(body); checkActive()
-            return TwitchHelixResponse(status, fields)
+            returning = true; return TwitchHelixResponse(status, fields)
         } catch (error: IOException) {
             val paused = !synchronized(lock) { closed } &&
                 (!permitted() || synchronized(lock) { revision != null && revision != pauseRevision })
@@ -192,9 +229,19 @@ internal class TwitchHelixHttpTransport(
         } catch (error: TwitchHelixException) { throw error }
         catch (_: Exception) { throw TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE) }
         finally {
-            try { connection?.disconnect() }
-            catch (_: Exception) { throw TwitchHelixNetworkException(DeviceNetworkFailure.IO) }
-            finally { synchronized(lock) { if (active === connection) active = null; if (ownsReservation) reserved = false } }
+            val clean = handle?.close() != false
+            if (!clean) poison(handle)
+            synchronized(lock) {
+                if (active === handle) active = null
+                if (ownsReservation) reserved = false
+                if (!poisoned && ownsReservation) pending.remove(this)
+            }
+            if (!clean || synchronized(lock) { poisoned }) throw TwitchHelixNetworkException(DeviceNetworkFailure.IO)
+            if (returning) try { checkActive() }
+            catch (error: DeviceRequestPaused) { throw error }
+            catch (_: HelixBudgetExceeded) { throw TwitchHelixNetworkException(DeviceNetworkFailure.BUDGET) }
+            catch (_: IOException) { throw TwitchHelixNetworkException(DeviceNetworkFailure.IO) }
+            catch (_: Exception) { throw TwitchHelixException(TwitchHelixFailure.INVALID_RESPONSE) }
         }
     }
     private fun retryDeadline(header: String?): Long {
@@ -204,12 +251,14 @@ internal class TwitchHelixHttpTransport(
         return (reset ?: (now + 60_000)).coerceIn(now, now + 86_400_000)
     }
     override fun cancelActiveRequest() {
-        val request = synchronized(lock) { pauseRevision++; active.also { active = null } }
-        try { request?.disconnect() } catch (_: Exception) { throw TwitchHelixNetworkException(DeviceNetworkFailure.IO) }
+        val request = synchronized(lock) { pauseRevision++; active }
+        if (request?.close() == false) poison(request)
+        if (synchronized(lock) { poisoned }) throw TwitchHelixNetworkException(DeviceNetworkFailure.IO)
     }
     override fun close() {
-        val request = synchronized(lock) { closed = true; active.also { active = null } }
-        try { request?.disconnect() } catch (_: Exception) { throw TwitchHelixNetworkException(DeviceNetworkFailure.IO) }
+        val request = synchronized(lock) { closed = true; active }
+        if (request?.close() == false) poison(request)
+        if (synchronized(lock) { poisoned }) throw TwitchHelixNetworkException(DeviceNetworkFailure.IO)
     }
     override fun toString() = "TwitchHelixHttpTransport(redacted)"
 }

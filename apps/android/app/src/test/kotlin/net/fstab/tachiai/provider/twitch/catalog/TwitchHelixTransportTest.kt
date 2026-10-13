@@ -19,11 +19,13 @@ import org.junit.Test
 class TwitchHelixTransportTest {
     private class Connection(url: URL, val status: Int = 200, val body: ByteArray = "fixture".toByteArray(),
         val length: Long = -1, val reset: String? = null, val onStatus: () -> Unit = {},
-        val onDisconnect: () -> Unit = {}) : HttpsURLConnection(url) {
+        val onDisconnect: () -> Unit = {}, val onInputClose: () -> Unit = {}) : HttpsURLConnection(url) {
         var disconnected = false
         var reads = 0
+        var disconnects = 0
+        var inputCloses = 0
         override fun connect() = Unit
-        override fun disconnect() { disconnected = true; onDisconnect() }
+        override fun disconnect() { disconnects++; disconnected = true; onDisconnect() }
         override fun usingProxy() = false
         override fun getCipherSuite() = "fixture"
         override fun getLocalCertificates(): Array<Certificate>? = null
@@ -31,7 +33,12 @@ class TwitchHelixTransportTest {
         override fun getResponseCode(): Int { onStatus(); return status }
         override fun getContentLengthLong() = length
         override fun getHeaderField(name: String): String? = if (name == "Ratelimit-Reset") reset else null
-        override fun getInputStream(): InputStream { reads++; return ByteArrayInputStream(body) }
+        override fun getInputStream(): InputStream {
+            reads++
+            return object : ByteArrayInputStream(body) {
+                override fun close() { inputCloses++; onInputClose(); super.close() }
+            }
+        }
         override fun getErrorStream(): InputStream = error("Error bodies must not be read")
         fun query(): List<Pair<String, String>> = url.query.split('&').map { field ->
             val pair = field.split('=', limit = 2)
@@ -189,6 +196,93 @@ class TwitchHelixTransportTest {
         val error = assertThrows(TwitchHelixNetworkException::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }
         assertEquals(DeviceNetworkFailure.TLS, error.category); assertNull(error.cause)
         assertFalse(error.toString().contains("private")); assertFalse(failures.toString().contains("private"))
+    }
+
+    @Test fun FailedInputClosureCannotBecomeSuccessfulCleanupAfterActiveRequestClears() {
+        var opens = 0
+        val request = Connection(TwitchHelixRequest.streams().url,
+            onInputClose = { throw IOException("fixture-private-input-close") })
+        val http = transport { opens++; request }
+        val failure = assertThrows(TwitchHelixNetworkException::class.java) {
+            http.execute("fixture-access", TwitchHelixRequest.streams())
+        }
+        assertNull(failure.cause)
+        assertFalse(failure.toString().contains("fixture-private"))
+        repeat(2) { assertThrows(IOException::class.java) { http.close() } }
+        assertThrows(IOException::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }
+        assertEquals(1, opens)
+        assertEquals(1, request.inputCloses)
+        assertEquals(1, request.disconnects)
+    }
+
+    @Test fun FailedDisconnectCannotBecomeSuccessfulCleanupOrRetryAfterActiveRequestClears() {
+        var opens = 0
+        val request = Connection(TwitchHelixRequest.streams().url,
+            onDisconnect = { throw IOException("fixture-private-disconnect-close") })
+        val http = transport { opens++; request }
+        val failure = assertThrows(TwitchHelixNetworkException::class.java) {
+            http.execute("fixture-access", TwitchHelixRequest.streams())
+        }
+        assertNull(failure.cause)
+        assertFalse(failure.toString().contains("fixture-private"))
+        repeat(2) { assertThrows(IOException::class.java) { http.close() } }
+        assertThrows(IOException::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }
+        assertEquals(1, opens)
+        assertEquals(1, request.inputCloses)
+        assertEquals(1, request.disconnects)
+    }
+
+    @Test fun TimedOutInputClosureDoesNotBecomeConfirmedAfterItsLateSuccessfulReturn() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val finished = CountDownLatch(1)
+        val request = Connection(TwitchHelixRequest.streams().url, onInputClose = {
+            entered.countDown()
+            try { check(release.await(5, TimeUnit.SECONDS)) } finally { finished.countDown() }
+        })
+        val http = TwitchHelixHttpTransport(open = { request }, decode = { emptyMap() }, cleanupWaitMs = 20)
+        try {
+            assertThrows(TwitchHelixNetworkException::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertFalse(http.cleanupConfirmed)
+            release.countDown(); assertTrue(finished.await(5, TimeUnit.SECONDS))
+            assertThrows(IOException::class.java) { http.close() }
+            assertFalse(http.cleanupConfirmed)
+            assertEquals(1, request.inputCloses)
+            assertEquals(1, request.disconnects)
+        } finally { release.countDown(); assertTrue(finished.await(5, TimeUnit.SECONDS)) }
+    }
+
+    @Test fun HealthyInputClosureMayWaitForDisconnectWithoutPoisoningOrDeadlocking() {
+        val disconnected = CountDownLatch(1); val inputClosed = CountDownLatch(1)
+        val request = Connection(TwitchHelixRequest.streams().url, onDisconnect = { disconnected.countDown() },
+            onInputClose = {
+                try { check(disconnected.await(5, TimeUnit.SECONDS)) } finally { inputClosed.countDown() }
+            })
+        val http = TwitchHelixHttpTransport(open = { request }, decode = { emptyMap() }, cleanupWaitMs = 100)
+        try {
+            assertEquals(200, http.execute("fixture-access", TwitchHelixRequest.streams()).status)
+            assertTrue(http.cleanupConfirmed)
+            assertEquals(1, request.inputCloses)
+            assertEquals(1, request.disconnects)
+            http.close()
+        } finally {
+            disconnected.countDown()
+            assertTrue(inputClosed.await(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun CleanupCannotPublishAResponsePastItsOriginalRequestBudgetOrOwner() {
+        for (loseOwner in listOf(false, true)) {
+            var now = 0L; var owner = true
+            val request = Connection(TwitchHelixRequest.streams().url, onDisconnect = {
+                if (loseOwner) owner = false else now = 30_000L
+            })
+            val http = TwitchHelixHttpTransport(open = { request }, decode = { emptyMap() }, clockMs = { now }, canRequest = { owner })
+            if (loseOwner) assertThrows(DeviceRequestPaused::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }
+            else assertEquals(DeviceNetworkFailure.BUDGET,
+                assertThrows(TwitchHelixNetworkException::class.java) { http.execute("fixture-access", TwitchHelixRequest.streams()) }.category)
+            assertTrue(http.cleanupConfirmed)
+            http.close()
+        }
     }
 
     @Test fun PauseDuringBlockedCreationRejectsLateHandleThenAllowsNewRequest() {

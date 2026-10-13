@@ -214,6 +214,14 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
     // source fallback, stored choice or original provider-page comparison.
     private fun observePlayback(mode: ObservationMode, resourceIdentity: String? = null) {
         val instrumentation = cachedInstrumentation()
+        val observationStarted = SystemClock.elapsedRealtime()
+        val observationWall = System.currentTimeMillis()
+        val args = InstrumentationRegistry.getArguments()
+        val observeSlotInitialization = mode == ObservationMode.CONFIGURED_SLOT &&
+            args.getString("tachiaiObserveAbemaSlotInitialization") == "true" &&
+            args.getString("tachiaiRequireSavedAbemaAccount") == "true"
+        val slotInitialization = AtomicReference<AbemaSlotSourceDiagnostic?>()
+        val slotInitializationCount = AtomicInteger()
         val avd = try { ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation
             .executeShellCommand("getprop ro.boot.qemu.avd_name")).use { input ->
                 val bytes = ByteArray(129); val size = input.read(bytes)
@@ -327,6 +335,11 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     episodeResource = feed.resource.takeIf { replay && it.kind == "episode" },
                     channelResource = feed.resource.takeIf { !replay && feed.historicalSource == null && it.kind == "channel" },
                     slotResource = feed.resource.takeIf { it.kind == "slot" && it.intent == CatalogIntent.BROADCAST },
+                    onSlotSourceDiagnostic = if (observeSlotInitialization) ({ value ->
+                        slotInitializationCount.updateAndGet { (it + 1).coerceAtMost(2) }
+                        slotInitialization.compareAndSet(null, value)
+                        Unit
+                    }) else null,
                     ownership = if (!replay && feed.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
                         { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, diagnostics))
                 val created = checkNotNull(session)
@@ -400,6 +413,25 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             baseline != null && baseline.keys == after.keys && baseline.all { (name, digest) -> MessageDigest.isEqual(digest, after[name]) }
         } catch (_: Throwable) { false }
         val ownerUnchanged = try { owner?.sameOwnership(readOwner()) == true } catch (_: Throwable) { false }
+        // Only the opted-in exact account-backed slot can release the parser's
+        // closed shape. Attempt both independent preservation checks above even
+        // when cleanup failed, and never publish partial/repeated observations.
+        val releaseSlotInitialization = observeSlotInitialization &&
+            accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged &&
+            SystemClock.elapsedRealtime() - observationStarted in 0 until 70_000 &&
+            System.currentTimeMillis() - observationWall in 0 until 70_000 &&
+            !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
+            cleanupSnapshot.state == SnapshotState.AVAILABLE &&
+            cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
+            cleanupSnapshot.sessionPending == false && cleanupSnapshot.sessionFailed == false &&
+            cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
+        val initializationSummary = when {
+            !observeSlotInitialization -> "DISABLED"
+            !releaseSlotInitialization -> "WITHHELD"
+            slotInitializationCount.get() == 0 -> "UNOBSERVED"
+            slotInitializationCount.get() != 1 -> "REPEATED"
+            else -> slotInitialization.get()?.closedSummary() ?: "UNOBSERVED"
+        }
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
             "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
             "playbackOutcome=${playbackObservation?.outcome} renderedFrame=${playbackObservation?.renderedFrame} " +
@@ -408,7 +440,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "sessionCleanupPending=${cleanupSnapshot.sessionPending} sessionCleanupFailed=${cleanupSnapshot.sessionFailed} " +
             "sessionCleanupConfirmed=${cleanupSnapshot.sessionConfirmed} webRouteBusy=${cleanupSnapshot.webRouteBusy} " +
             "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
-            "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed")
+            "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
+            "slotInitialization=$initializationSummary")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)
         assertTrue("Saved route owner must remain unchanged", ownerUnchanged)
         assertEquals(mode.acceptedOutcome, outcome)

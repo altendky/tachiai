@@ -17,7 +17,9 @@ internal object AbemaScheduleCatchupCandidateObservation {
           if (!Number.isSafeInteger(clock) || clock < 0 || clock > 8640000000000000) throw new Error();
           const record = value => !!value && typeof value === 'object' && !Array.isArray(value);
           const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
-          const future = value => seconds(value) && value * 1000 > clock + 300000;
+          // Test-only lead headroom for route/bootstrap preparation. Production
+          // playback independently retains its fresh five-minute window guard.
+          const future = value => seconds(value) && value * 1000 > clock + 600000;
           let eligibleRows = 0, candidate = null;
           for (const row of reply.slots.slice(0, 500)) {
             if (!record(row.flags) || row.flags.timeshift !== true || row.flags.timeshiftFree !== true ||

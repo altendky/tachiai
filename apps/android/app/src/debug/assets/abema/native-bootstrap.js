@@ -695,7 +695,7 @@
     catch { refuseResponse(); }
     if (!region || Array.isArray(region) || region.isAllowed !== true || typeof region.status !== 'boolean' ||
       region.isoCountryCode !== 'JP' || region.divisionCode !== 0 ||
-      region.cdnURL !== 'https://ds-glb-linear-abematv.akamaized.net/region' ||
+      !['https://ds-glb-linear-abematv.akamaized.net/region', 'https://ds-linear-abematv.akamaized.net/region'].includes(region.cdnURL) ||
       (region.timezone !== undefined && (typeof region.timezone !== 'string' || region.timezone.length > 64))) throw new Error();
     if (region.status) {
       // Provider status=true requires this additional CDN check. Requiring200

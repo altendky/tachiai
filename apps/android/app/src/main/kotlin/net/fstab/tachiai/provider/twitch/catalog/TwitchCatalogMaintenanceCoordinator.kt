@@ -250,6 +250,11 @@ internal class TwitchCatalogMaintenanceCoordinator(
     }
 
     private fun publish(result: TwitchCatalogMaintenanceOutcome, value: Flight): TwitchCatalogMaintenanceOutcome {
+        // A failed attempt supplies no replacement evidence and must not erase
+        // another consumer's still-bound grant or previously proved successor.
+        // The initiating/waiting callers receive this failure via flight.outcome.
+        if (result.summary.state == TwitchCatalogSessionState.TEMPORARY_FAILURE &&
+            result.grant == null && result.ownedMarker == null) return result
         if (result.summary.state in setOf(TwitchCatalogSessionState.SUPERSEDED, TwitchCatalogSessionState.PAUSED,
                 TwitchCatalogSessionState.MISSING, TwitchCatalogSessionState.UNVERIFIED)) return result
         val origin = result.origin ?: return result

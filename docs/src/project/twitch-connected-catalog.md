@@ -220,6 +220,22 @@ shared rotation remains fixture evidence. Exit region was unmeasured and no
 browser or new consent flow was used. It does not prove sustained playback,
 preexpiry scheduling or media authorization renewal.
 
+A follow-up regression confirmed that an unrelated completed validation attempt
+could discard another viewer's admissible lease or its unadopted proved successor
+after HTTP 500 or network failure. Markerless temporary outcomes now remain local
+to the maintenance callers instead of overwriting peers' proof. Peers still
+repeat durable identity, owner, expiry and freshness checks; initiating callers
+receive the failure, and cleanup poison or actual recovery markers still reject
+access. Both cases passed with server and network failures after the existing
+lease case first failed. The final full rerun passed 2,552 JVM cases in 295 reports
+with no failures, errors or skips, plus the same Android and signing checks.
+The final APK also passed the same bounded replay check in 29.016 seconds, with
+one validation/access pair (HTTP 200), four media requests, frame/movement,
+confirmed cleanup and all 20 saved files unchanged. Its final diagnostic was
+ADMISSION alongside REPLAY_ACCEPTED and no feed failure. That diagnostic is shared
+with teardown callbacks; the recorded line does not establish when it changed.
+The accepted playback outcome and cleanup receipts are recorded separately.
+
 ## Local exact-video import
 
 When a successful capability assessment reports catalog lookup unavailable, the

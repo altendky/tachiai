@@ -333,6 +333,51 @@ class CatalogTwitchPreparationTest {
         }
     }
 
+    @Test fun temporaryPeerValidationFailureDoesNotDiscardAnAdmissibleUnchangedViewerGrant() {
+        for (failure in listOf("server", "network")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val bytes = fixture.memory.bytes!!.copyOf()
+            val deadline = preparation.acceptanceDeadlineMs
+            if (failure == "server") fixture.validateStatus = 500
+            else fixture.onValidate = { throw IOException("Fixture network") }
+            fixture.peerSession().use { peer ->
+                assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, peer.validate(force = true).summary.state)
+                val requests = fixture.validationCalls + fixture.refreshCalls
+                assertTrue(preparation.checkStored())
+                assertTrue(preparation.canContinue())
+                assertArrayEquals(bytes, fixture.memory.bytes)
+                assertEquals(deadline, preparation.acceptanceDeadlineMs)
+                assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+                assertEquals(0, fixture.refreshCalls); assertEquals(1, fixture.mediaCalls)
+            }
+            preparation.close()
+        }
+    }
+
+    @Test fun temporaryPeerValidationFailurePreservesThePreviouslyProvenUnadoptedSuccessor() {
+        for (failure in listOf("server", "network")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val deadline = preparation.acceptanceDeadlineMs
+            fixture.peerSession().use { peer ->
+                assertNotNull(peer.onUnauthorized(peer.validate().lease!!).lease)
+                val bytes = fixture.memory.bytes!!.copyOf()
+                if (failure == "server") fixture.validateStatus = 500
+                else fixture.onValidate = { throw IOException("Fixture network") }
+                assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, peer.validate(force = true).summary.state)
+                val requests = fixture.validationCalls + fixture.refreshCalls
+                assertTrue(preparation.checkStored())
+                assertTrue(preparation.canContinue())
+                assertArrayEquals(bytes, fixture.memory.bytes)
+                assertEquals(deadline, preparation.acceptanceDeadlineMs)
+                assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+                assertEquals(1, fixture.refreshCalls); assertEquals(1, fixture.mediaCalls)
+            }
+            preparation.close()
+        }
+    }
+
     @Test fun successiveCompletedPeerRotationsKeepOnlyTheLatestProvenViewerLease() {
         val fixture = Fixture(shared = true); fixture.connect()
         val preparation = fixture.preparation(); fixture.resolve(preparation)

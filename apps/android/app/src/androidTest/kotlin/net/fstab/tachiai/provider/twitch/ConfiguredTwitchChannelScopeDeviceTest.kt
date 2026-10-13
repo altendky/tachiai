@@ -338,9 +338,10 @@ class ConfiguredTwitchChannelScopeDeviceTest {
             assertThrows(TwitchHelixNetworkException::class.java) {
                 transport.execute("fixture-access", TwitchHelixRequest.usersById(listOf("123")))
             }
-            // Production's active reference is now empty. Its successful close
-            // must not turn either actual failed receipt into confirmed cleanup.
-            transport.close(); connection.startClose()
+            // Production's active reference is now empty. Later close must
+            // preserve the actual failed receipt rather than report success.
+            assertThrows(IOException::class.java) { transport.close() }
+            connection.startClose()
             assertTrue(failed.get())
             assertFalse(connection.closeConfirmed(SystemClock.elapsedRealtime() + 1000))
             assertEquals(1, remote.inputCloseCalls)

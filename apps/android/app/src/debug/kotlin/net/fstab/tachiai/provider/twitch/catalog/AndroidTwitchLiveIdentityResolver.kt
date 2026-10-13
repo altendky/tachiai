@@ -48,7 +48,7 @@ internal fun androidTwitchLiveIdentityResolver(context: Context, instanceId: Str
     return try {
         ownedTwitchLiveIdentityResolver(instanceId, expectedProfile, route, binding, canUse,
             { profile, gate, cleanup -> OwnedTwitchHelixTransport(profile, gate,
-                onCleanupFailure = cleanup, diagnostics = diagnostics) }, retryGate, diagnostics, expectedRoute)
+                onCleanupFailure = cleanup, diagnostics = diagnostics, instanceId = instanceId) }, retryGate, diagnostics, expectedRoute)
     } catch (error: Throwable) {
         runCatching { binding.close() }.onFailure { diagnostics.report(FailureStage.CATALOG_CLOSE, it) }
         throw error

@@ -483,6 +483,56 @@ refresh/revocation, sustained playback, audible output and physical-device/TV
 behavior remain unverified. [Issue #99](https://github.com/altendky/tachiai/issues/99)
 remains open.
 
+### Configured-channel sampling window
+
+The 26.479-second channel failure above remains the recorded outcome. Its
+movement sampler stopped ten seconds after frame preparation even though time
+remained before the original 50-second observation deadline. A test-only
+measurement correction lets the channel sampler use that remaining window.
+Replay sampling keeps its existing ten-second cutoff. This changes the channel
+measurement duration; it does not establish a production buffering fix.
+
+The test-only sampler keeps the first nonnegative READY position and requires
+another READY position from the same player at least 1.5 seconds later with
+strict advancement. Buffering preserves the baseline. Lost admission or a player
+replacement refuses the observation; later recovery cannot resurrect it. Neither
+polling nor buffering moves the original deadline. The frame, controls, account,
+source, route, foreground and continuation checks remain required. The 70-second
+outer budget still reserves 20 seconds for confirmed cleanup and saved-state
+preservation.
+
+Eight new provider-free sampling guards and the fifteen existing channel scope
+and session guards passed on `tachiai-dev`: 23 tests, zero skips, 0.698 seconds.
+The first guard run had three failures because the fake player's default state
+kept BUFFERING where those scenarios intended a READY sample. Correcting that
+fixture default left the sampler and assertions unchanged. Compilation, lint,
+release isolation, shared-certificate APK verification, scoped hooks and
+independent review passed. Production sources and the app APK stayed unchanged;
+the ordinary test manifest has no process overrides.
+
+One disclosed check used the same saved canonical broadcaster, retained scoped
+Smart TV account and System route on `tachiai-dev`, Android 16/API 36 x86-64.
+No provider browser was used and geographic region was not established. It
+executed one test with zero skips and failed after 39.375 seconds. Both positive
+account validations, all three identity/status/confirmation requests and the
+single playback access request returned HTTP 200. Eight media requests ran, and
+a frame rendered; quality, mute and play requests succeeded. The sampler's first
+and last observations were READY, but no qualifying pair advanced. A player error
+also occurred, so the unchanged no-feed-failure requirement was not met.
+
+The reviewed event/code log from this test process reported PLAYER_FAILED code
+1002. [Media3's PlaybackException reference](https://developer.android.com/reference/androidx/media3/common/PlaybackException#ERROR_CODE_BEHIND_LIVE_WINDOW())
+defines that code as falling behind the available live window. These observations
+do not explain why loading fell behind, prove a buffering fix, or establish
+configured-channel playback acceptance. No repeated probe was made.
+
+Preparation, worker, native player, resolver, HTTP, route and Activity cleanup
+were confirmed. Owner, exact item and protected-record checks passed. Independent
+hashes of all 20 saved-state files remained identical before installation, after
+the guards, after the native check and after normal launcher restoration. No
+provider request retry, alternate source, new authorization, saved-state mutation
+or production timing change was introduced. Issue #99 remains open.
+
 ## Metadata HTTP cleanup ownership
 
 A separate production correction keeps the actual Helix connection and response

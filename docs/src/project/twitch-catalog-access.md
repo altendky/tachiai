@@ -91,7 +91,11 @@ worker-local official validation within 30 seconds of the token request starting
 The separately approved [scoped retention policy](twitch-catalog-authorization.md#maintained-grants)
 accepts literal integer-zero validation expiry as unknown provider expiry, with
 an original local deadline of at most seven days. Known positive expiry also
-bounds access; validation and refresh cannot renew the local deadline.
+bounds access. Validation and unknown-lifetime refresh preserve that deadline.
+A fresh changed credential pair with positive finite official validation can
+transition to the provider-bounded mode, retiring the old cap only after its
+original admission, cleanup and commit guards pass. See
+[finite expiry after refresh](twitch-catalog-authorization.md#finite-expiry-after-refresh).
 Existing provider-only records retain their strict positive-expiry policy.
 Twitch's device-flow examples include token expiry; the observed omission and
 zero validation are compatibility differences, not documented permanent validity.

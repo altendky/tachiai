@@ -392,20 +392,39 @@ internal class TwitchCatalogGrantStore(
         val credentials = checkNotNull(current.credentials)
         writeUnlocked(TwitchCatalogStoredGrant(current.generation, TwitchCatalogGrantState.REFRESHING, grant.revision))
         if (!isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
+        if (!localRetentionCurrent(current)) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
         val replacement = exchange(credentials)
+        if (!localRetentionCurrent(current)) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
         check(replacement.validation.userId == current.userId)
-        check(replacement.localRetentionUntilMs == current.localRetentionUntilMs)
-        if (current.localRetentionUntilMs != null) check(replacement.savedAtMs == current.savedAtMs)
+        if (current.localRetentionUntilMs != null && replacement.localRetentionUntilMs == null) {
+            // Only a changed pair with fresh finite official validation can
+            // leave the unknown-lifetime policy. Its old cap still guards this
+            // entire transaction, including cleanup and durable publication.
+            check(replacement.validation.expiresInMs != null)
+            check(replacement.credentials.accessToken != credentials.accessToken ||
+                replacement.credentials.refreshToken != credentials.refreshToken)
+            val saved = checkNotNull(replacement.savedAtMs)
+            val provider = checkNotNull(replacement.providerExpiresAtMs)
+            check(saved >= checkNotNull(current.savedAtMs) && provider > saved &&
+                provider - saved <= replacement.remainingMs)
+        } else {
+            check(replacement.localRetentionUntilMs == current.localRetentionUntilMs)
+            if (current.localRetentionUntilMs != null) check(replacement.savedAtMs == current.savedAtMs)
+        }
         if (!isRevisionCurrent(grant.revision) || !canCommit()) return@locked null
+        if (!localRetentionCurrent(current)) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
         val ready = ready(UUID.randomUUID().toString(), grant.revision, replacement)
         writeUnlocked(ready)
-        if (wallMs() < checkNotNull(ready.savedAtMs) || wallMs() >= checkNotNull(ready.expiresAtMs)) {
+        if (!localRetentionCurrent(current) || wallMs() < checkNotNull(ready.savedAtMs) ||
+            wallMs() >= checkNotNull(ready.expiresAtMs)) {
             expiredAfterWrite(ready, grant.revision)
         }
         if (!isRevisionCurrent(grant.revision) || !canCommit()) {
-            abandonUnlocked(ready, grant.revision)
+            abandonUnlocked(ready, grant.revision)?.let { throw TwitchCatalogAbandonedGrantException(it) }
             return@locked null
         }
+        if (!localRetentionCurrent(current) || wallMs() < checkNotNull(ready.savedAtMs) ||
+            wallMs() >= checkNotNull(ready.expiresAtMs)) expiredAfterWrite(ready, grant.revision)
         ready
     }
 

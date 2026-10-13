@@ -201,6 +201,76 @@ class TwitchCatalogGrantStoreTest {
         assertFalse(error.toString().contains(error.marker.generation))
     }
 
+    @Test fun finiteRotationPreservesOldCapThroughEveryCommitAdmission() {
+        repeat(5) { seam ->
+            val memory = Memory(); var wall = 1_000_000L; var exchanged = 0; var commits = 0
+            var armed = false
+            val delayed = object : PrivateSecretStore {
+                override fun read() = memory.read()
+                override fun write(plaintext: ByteArray) {
+                    memory.write(plaintext)
+                    if (armed && (seam == 0 || seam == 3 &&
+                            String(plaintext, Charsets.ISO_8859_1).contains("new-access"))) {
+                        armed = false; wall += 1000
+                    }
+                }
+            }
+            val grantStore = TwitchCatalogGrantStore(delayed, UUID.randomUUID().toString(), wallMs = { wall })
+            val original = connect(grantStore, TwitchCatalogReplacement(
+                TwitchCatalogCredentials("fixture-access", "fixture-refresh", 1000),
+                TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 1000,
+                localRetentionUntilMs = wall + 1000, savedAtMs = wall))
+            wall += 100; armed = true
+            val failure = assertThrows(TwitchCatalogAuthException::class.java) {
+                grantStore.refresh(original, {
+                    commits++
+                    if (seam == 2 && commits == 3 || seam == 4 && commits == 4) wall += 1000
+                    true
+                }) {
+                    exchanged++
+                    val candidate = TwitchCatalogReplacement(
+                        TwitchCatalogCredentials("new-access", "new-refresh", 120_000),
+                        TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), 120_000), 120_000,
+                        providerExpiresAtMs = wall + 120_000, savedAtMs = wall)
+                    if (seam == 1) wall += 1000
+                    candidate
+                }
+            }
+            assertEquals(TwitchCatalogAuthFailure.EXPIRED, failure.failure)
+            val marker = grantStore.read()!!
+            assertNotEquals(TwitchCatalogGrantState.READY, marker.state)
+            assertNull(marker.credentials)
+            assertEquals(if (seam == 0) 0 else 1, exchanged)
+            if (seam in 3..4) {
+                assertTrue(failure is TwitchCatalogAbandonedGrantException)
+                assertNotEquals(original.generation, marker.generation)
+            }
+        }
+    }
+
+    @Test fun unchangedPairOrUnboundedFiniteProjectionCannotRemoveLocalRetention() {
+        for (samePair in listOf(false, true)) {
+            val memory = Memory(); var wall = 1_000_000L
+            val grantStore = TwitchCatalogGrantStore(memory, UUID.randomUUID().toString(), wallMs = { wall })
+            val original = connect(grantStore, TwitchCatalogReplacement(
+                TwitchCatalogCredentials("fixture-access", "fixture-refresh", 1000),
+                TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), 1000,
+                localRetentionUntilMs = wall + 1000, savedAtMs = wall))
+            wall += 100
+            assertThrows(IllegalStateException::class.java) {
+                grantStore.refresh(original) {
+                    TwitchCatalogReplacement(
+                        TwitchCatalogCredentials(if (samePair) "fixture-access" else "new-access",
+                            if (samePair) "fixture-refresh" else "new-refresh", 120_000),
+                        TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), 120_000), 120_000,
+                        providerExpiresAtMs = wall + if (samePair) 120_000 else 120_001, savedAtMs = wall)
+                }
+            }
+            assertEquals(TwitchCatalogGrantState.REFRESHING, grantStore.read()!!.state)
+            assertNull(grantStore.read()!!.credentials)
+        }
+    }
+
     @Test fun differentValidClientRequiresExplicitReconnectBeforeAnyCredentialsAreReadOrRecordIsChanged() {
         val memory = Memory(); val id = UUID.randomUUID().toString(); val grantStore = store(memory, id)
         // Only the binding header is present: the different client's token

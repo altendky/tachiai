@@ -119,6 +119,16 @@ and preserves the actual status. CDN navigation, query strings and media paths
 remain refused. The CONNECT boundary now includes these two exact CDN hosts;
 the same Android resource-redirect limitation described above applies to both.
 
+Exact broadcast native preparation also admits these same two reviewed `/region`
+GET resources. Its bootstrap follows the single `cdnURL` returned by the fixed
+public region page; the policy and CSP require an exact selected slot context.
+It still requires returned allowed, Japan and NONE-division proof and performs
+the selected CDN check only when the provider's status flag requires it. Neither
+an HTTP200 alone nor the saved route establishes region eligibility. Other paths,
+queries, redirects, navigation and episode/channel contexts remain refused.
+The initial native policy admitted only the global endpoint despite the second
+endpoint already being verified for account setup.
+
 The approval browser uses its own process and persistent WebView profile,
 provider-controlled pages, normal TLS and the instance's captured route proof
 and original challenge deadline. Device geolocation is disabled and location

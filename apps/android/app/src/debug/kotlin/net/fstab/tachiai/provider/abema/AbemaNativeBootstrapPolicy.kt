@@ -19,13 +19,14 @@ internal object AbemaNativeBootstrapPolicy {
 
     const val SLOT_REGION_PAGE = "$ORIGIN/now-on-air/abema-news"
     const val SLOT_REGION_URI = "https://ds-glb-linear-abematv.akamaized.net/region"
+    val SLOT_REGION_URIS = setOf(SLOT_REGION_URI, "https://ds-linear-abematv.akamaized.net/region")
     fun contentSecurityPolicy(episodeId: String? = null, channelId: String? = null, slotIdentity: String? = null): String {
         require(listOfNotNull(episodeId, channelId, slotIdentity).size <= 1)
         if (slotIdentity != null) {
             require(validAbemaSlotIdentity(slotIdentity))
             return CONTENT_SECURITY_POLICY.replace("https://api.abema.io/v1/channels ", "")
                 .replace("https://api.abema.io/v1/video/programs/394-72_s10_p8529", slotUrl(slotIdentity.substringAfter('/')))
-                .replace("https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/ ", "$SLOT_REGION_PAGE $SLOT_REGION_URI ")
+                .replace("https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/ ", "$SLOT_REGION_PAGE ${SLOT_REGION_URIS.joinToString(" ")} ")
         }
         if (channelId != null) {
             require(validAbemaChannelIdentity(channelId))
@@ -104,7 +105,8 @@ internal object AbemaNativeBootstrapPolicy {
                 method in setOf("GET", "OPTIONS")
             "streaming-api-cf.p-c2-x.abema-tv.com" -> slotIdentity == null && channelId == null && method == "GET" && uri.rawQuery == null &&
                 Regex("/v1/playbackResources/[A-Za-z0-9_:.~-]{1,256}").matches(uri.path)
-            "ds-glb-linear-abematv.akamaized.net" -> slotIdentity != null && method == "GET" && uri.toString() == SLOT_REGION_URI
+            "ds-glb-linear-abematv.akamaized.net", "ds-linear-abematv.akamaized.net" ->
+                slotIdentity != null && method == "GET" && uri.toString() in SLOT_REGION_URIS
             "license.p-c3-e.abema-tv.com" -> uri.path == "/abematv-dash" && method in setOf("POST", "OPTIONS") &&
                 queryNames(uri)?.let { "t" in it && it.all { name -> name in setOf("t", "ct", "cid", "tt", "tk", "dt") } } == true &&
                 uri.rawQuery?.split('&')?.filter { it.startsWith("dt=") }?.all { it == "dt=web_android" } == true &&

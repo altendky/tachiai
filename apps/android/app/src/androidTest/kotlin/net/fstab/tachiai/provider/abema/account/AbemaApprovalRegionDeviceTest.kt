@@ -11,6 +11,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.io.InputStream
 import java.net.URL
+import java.net.CookieHandler
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
@@ -73,7 +74,8 @@ class AbemaApprovalRegionDeviceTest {
     }
     private class ClientRegion(val allowed: Boolean, val status: Boolean, val expectedCdn: Boolean, val publicRegionHost: String?,
         val japan: Boolean, val tokyo: Boolean)
-    private class PageSummary(val status: Int, val region: ClientRegion?, val sorry: Boolean, val size: Int)
+    private class PageSummary(val status: Int, val region: ClientRegion?, val sorry: Boolean, val size: Int,
+        val slotRegion: AbemaSlotRegionPageObservation.Summary? = null)
 
     @Test fun optInSavedRouteChecksOneFixedRegionResourceWithoutSavedWrites() {
         optIn("tachiaiReadOnlyAbemaApprovalRegion", "REGION", ::observe)
@@ -86,6 +88,9 @@ class AbemaApprovalRegionDeviceTest {
     }
     @Test fun optInSavedRouteChecksPublicEmailPageWithDesktopReferenceIdentityWithoutSavedWrites() {
         optIn("tachiaiReadOnlyAbemaEmailPage", "EMAIL_PAGE_DESKTOP") { observePage(it, email = true, desktop = true) }
+    }
+    @Test fun optInSavedRouteChecksOnePublicNativeSlotRegionPageWithoutSavedWrites() {
+        optIn("tachiaiReadOnlyAbemaSlotRegionPage", "SLOT_REGION_PAGE", ::observeSlotRegionPage)
     }
     private fun optIn(gate: String, prefix: String, observation: (String) -> Unit) {
         val args = InstrumentationRegistry.getArguments()
@@ -186,14 +191,83 @@ class AbemaApprovalRegionDeviceTest {
             "$http $flags SORRY_${if (summary.sorry) "TRUE" else "FALSE"} bodyBytes=${summary.size}")
     }
 
+    private fun observeSlotRegionPage(instanceId: String) {
+        val began = SystemClock.elapsedRealtime()
+        val deadline = began + 45_000
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val owned = Owned()
+        var before: Map<String, ByteArray>? = null
+        var owner: net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner? = null
+        var summary: PageSummary? = null
+        var operationFailed = false
+        fun time() { check(SystemClock.elapsedRealtime() - began in 0 until 45_000) }
+        fun stable() {
+            time(); check(CookieHandler.getDefault() == null)
+            check(context.noBackupFilesDir.listFiles()?.none { it.name.endsWith(".bak") || it.name.endsWith(".new") } == true)
+        }
+        fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
+            { providerInstanceStore(context).read { legacyProviderSettings(context) } },
+            { connectionProfileStore(context).selected(it) })
+        var cleaned = false
+        try {
+            check(synchronized(retained) { retained.isEmpty() }); stable()
+            before = encryptedRecords(context.noBackupFilesDir); stable()
+            val captured = readOwner().also { owner = it }; stable()
+            val profile = checkNotNull(captured.profile)
+            owned.route = RouteSession.createAbemaGuest(profile, owned.preparation) { selected, security ->
+                val backend = selected.protocol.createBackend(selected, security, owned.preparation)
+                val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
+                owned.backend = receipt
+                object : RouteBackend {
+                    override val proxyPort get() = backend.proxyPort
+                    override fun close() { check(receipt.await()) }
+                }
+            }
+            val route = checkNotNull(owned.route)
+            owned.routeClose = AbemaAccountCleanupReceipt(route, RouteSession::close)
+            summary = readPage(owned, route, "https://abema.tv/now-on-air/abema-news", WebSettings.getDefaultUserAgent(context),
+                deadline, maximumBytes = 512 * 1024, requestMs = 30_000, slotRegion = true) {
+                stable(); captured.sameOwnership(readOwner()).also { stable() }
+            }
+        } catch (_: Throwable) { operationFailed = true }
+        finally {
+            cleaned = runCatching { owned.closeConfirmed() }.getOrDefault(false)
+            if (!cleaned) synchronized(retained) { retained.add(owned) }
+        }
+        // Both independent postchecks run even after request/cleanup failure.
+        var recordsCurrent = false
+        var ownerCurrent = false
+        try {
+            val after = encryptedRecords(context.noBackupFilesDir)
+            try { recordsCurrent = before?.let { baseline -> baseline.keys == after.keys &&
+                baseline.all { (name, digest) -> after[name]?.let { MessageDigest.isEqual(digest, it) } == true } } == true }
+            finally { after.values.forEach { it.fill(0) } }
+        } catch (_: Throwable) { }
+        try {
+            check(context.noBackupFilesDir.listFiles()?.none { it.name.endsWith(".bak") || it.name.endsWith(".new") } == true)
+            ownerCurrent = owner?.sameOwnership(readOwner()) == true
+        } catch (_: Throwable) { }
+        before?.values?.forEach { it.fill(0) }
+        if (!cleaned) throw ClosedFailure(AbemaApprovalRegionFailure.CLEANUP_FAILED)
+        if (!recordsCurrent || !ownerCurrent) throw ClosedFailure(AbemaApprovalRegionFailure.OWNER_NOT_CURRENT)
+        time()
+        if (operationFailed || summary == null) throw ClosedFailure(AbemaApprovalRegionFailure.TRANSPORT_FAILED)
+        val result = checkNotNull(summary)
+        val http = when (result.status) { 200 -> "HTTP_200"; 403 -> "HTTP_403"; else -> "HTTP_OTHER" }
+        Log.i(LOG_TAG, "SLOT_REGION_PAGE $http ${result.slotRegion ?: AbemaSlotRegionPageObservation.Summary(AbemaSlotRegionPageObservation.Shape.MISSING)} " +
+            "sorry=${result.sorry} cleanupConfirmed=true recordsCurrent=true ownerCurrent=true")
+    }
+
     private fun readPage(owned: Owned, route: RouteSession, uri: String, userAgent: String, deadline: Long,
+        maximumBytes: Int = 128 * 1024, requestMs: Long = 15_000, slotRegion: Boolean = false,
         ownerCurrent: () -> Boolean): PageSummary {
         val began = SystemClock.elapsedRealtime()
-        val end = minOf(deadline, began + 15_000)
+        val end = minOf(deadline, began + requestMs)
         val expired = AtomicBoolean()
         fun current() {
             val now = SystemClock.elapsedRealtime()
             if (expired.get() || now < began || now >= end) throw ClosedFailure(AbemaApprovalRegionFailure.EXPIRED)
+            if (slotRegion && CookieHandler.getDefault() != null) throw ClosedFailure(AbemaApprovalRegionFailure.REFUSED_REQUEST)
             if (!ownerCurrent()) throw ClosedFailure(AbemaApprovalRegionFailure.OWNER_NOT_CURRENT)
             if (expired.get() || SystemClock.elapsedRealtime() >= end) throw ClosedFailure(AbemaApprovalRegionFailure.EXPIRED)
         }
@@ -206,7 +280,7 @@ class AbemaApprovalRegionDeviceTest {
             Thread(task, "abema-approval-page-deadline").apply { isDaemon = true }
         }
         var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
-        val bytes = ByteArray(128 * 1024 + 1)
+        val bytes = ByteArray(maximumBytes + 1)
         try {
             watchdog = scheduler.schedule({ expired.set(true); page.cancel() },
                 (end - SystemClock.elapsedRealtime()).coerceAtLeast(1), TimeUnit.MILLISECONDS)
@@ -223,12 +297,13 @@ class AbemaApprovalRegionDeviceTest {
             if (connection.url.toExternalForm() != uri) throw ClosedFailure(AbemaApprovalRegionFailure.REFUSED_REQUEST)
             if (status in 300..399) throw ClosedFailure(AbemaApprovalRegionFailure.REDIRECT_REFUSED)
             if (status !in 100..599) throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
+            if (slotRegion && status != 200) return PageSummary(status, null, false, 0)
             if (status != 200 && status != 403) return PageSummary(status, null, false, 0)
             val type = connection.contentType
             if (type == null || type.length > 128 || type.substringBefore(';').trim().lowercase() != "text/html")
                 throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             val length = connection.contentLengthLong
-            if (length > 128 * 1024) throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
+            if (length > maximumBytes) throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             val input = if (status >= 400) connection.errorStream else connection.inputStream
             if (input == null) throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             page.input = AbemaAccountCleanupReceipt(input, InputStream::close)
@@ -238,17 +313,18 @@ class AbemaApprovalRegionDeviceTest {
                 if (count < 0) break
                 size += count
             }
-            if (size > 128 * 1024 || length >= 0 && length != size.toLong())
+            if (size > maximumBytes || length >= 0 && length != size.toLong())
                 throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE)
             val text = try {
                 Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes, 0, size)).toString()
             } catch (_: Throwable) { throw ClosedFailure(AbemaApprovalRegionFailure.INVALID_RESPONSE) }
-            val region = parseClientRegion(text)
+            val region = if (slotRegion) null else parseClientRegion(text)
             val sorry = text.contains("com-application-SorryPage") &&
                 text.contains("このサービスはお住まいの地域からはご利用になれません。")
             current()
-            return PageSummary(status, region, sorry, size)
+            return PageSummary(status, region, if (slotRegion) text.contains("com-application-SorryPage") else sorry, size,
+                if (slotRegion) AbemaSlotRegionPageObservation.parse(text) else null)
         } catch (error: ClosedFailure) { throw error }
         catch (_: Throwable) {
             current()

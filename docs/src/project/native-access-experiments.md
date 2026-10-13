@@ -4270,6 +4270,67 @@ actual duplicate-channel playback remain unverified. This adds no renewal,
 account adoption, source fallback, copied provider algorithm, key extraction or
 new media-origin family.
 
+## Exact broadcast region correction — 2026-10-13
+
+The opt-in test APK now selects one deterministic public catch-up lead from a
+fresh Schedule's displayed 500-row prefix. It requires explicit raw timeshift
+and free flags, ordered ended times and general/free windows open beyond a
+five-minute margin. The closed marker contains only a count and one public
+channel/slot identity, and is stripped before the unchanged production metadata
+decoder. Publication requires the original budget, captured owner, unchanged
+encrypted records and confirmed runtime/activity cleanup. No lead is honest
+absence; a lead is not playback entitlement. The production player separately
+re-fetches that exact slot and retains its current rights/source/license gates.
+
+On persistent tachiai-dev, Android 16/API 36 x86-64 with WebView
+133.0.6943.137 and the captured saved Windscribe route, the initial observation
+stopped before Schedule access because the saved native account was EXPIRED.
+Normal email reconnect reused the remembered provider browser session and
+automatically reached CONNECTED after returning, without entering credentials or
+a code. Only the intended ABEMA grant and existing safe diagnostic journal
+changed. This is verified browser reconnect, not silent native renewal or a
+measured token lifetime; #212 still covers automatic maintenance.
+
+The connected Schedule probe passed in 23.735 seconds, with 161 qualifying
+displayed rows and one lead, `abema-anime/CWYADCcWn4VYvs`. All 20 app-private
+files remained unchanged. The first production native attempt used ACCOUNT but
+refused at SLOT_REGION after HTTP200, in 19.012 seconds. A separate one-page,
+cookie-free data probe passed in 3.919 seconds: exactly one strict region object,
+allowed=true, status=true, Japan/NONE division, no Sorry marker and the already
+reviewed exact `ds-linear-abematv.akamaized.net/region` endpoint. It confirmed
+input/HTTP/route/backend cleanup and record/owner preservation; page text and
+field strings were neither exported nor retained.
+
+The old native bootstrap, policy and CSP admitted only the global region
+endpoint. They now admit the same two exact `/region` GET resources already
+verified for account setup and follow only the page-selected resource when its
+status flag requires a check. Returned allowed/Japan/NONE proof, exact slot
+context, redirects, credentials, queries, navigation and all catch-up entitlement
+checks retain their existing restrictions. The new linear-endpoint regression
+failed before the correction and passed afterward; denial and malformed-resource
+cases still refuse before slot metadata.
+
+The corrected same-candidate attempt took 14.347 seconds. It used ACCOUNT,
+passed the region gate and reached provider-helper READY with source ALLOWED and
+manifest HTTP200. Native source preparation subsequently refused; no rendered
+frame, advancing position or license exchange was observed. The remaining
+manifest/read/initialization cause is not distinguished by these closed
+diagnostics. This establishes the region correction and bounded source progress,
+not successful broadcast playback. #193 remains open for native acceptance and
+broader live/Chase/paid modes. No source fallback, missing-rights default, copied
+provider algorithm, key extraction or license reuse was added.
+
+Both native attempts confirmed FINISHED cleanup, no pending/failed cleanup or
+busy WebView route, and unchanged captured owner/protected records. Playback was
+muted; actual exit-country geolocation, acoustic output and physical-device
+behavior were not measured. Final checks passed 2,622 JVM cases in 299 reports,
+lint, release isolation, instrumentation compilation, app/test assemblies and
+the shared signer. Scoped hooks and independent reviews passed, as did the
+JavaScript suites and seven provider-free device marker/parser cases in 1.375
+seconds with zero skips. An existing unreachable-null warning in the historical
+region test was unchanged. The temporary test-process override was restored
+byte-for-byte and ordinary instrumentation and the launcher were restored.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

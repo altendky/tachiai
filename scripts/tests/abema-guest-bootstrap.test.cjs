@@ -801,6 +801,108 @@ async function scheduleShape(schedule, clock) {
   return JSON.parse(value.call(`window['${apiName}'].metadata()`));
 }
 
+function catchupCandidateSource(clock = 1000000) {
+  const helper = fs.readFileSync(path.resolve(__dirname,
+    '../../apps/android/app/src/androidTest/kotlin/net/fstab/tachiai/provider/abema/AbemaScheduleCatchupCandidateObservation.kt'), 'utf8');
+  const match = helper.match(/val TEST_SCHEDULE_PROJECTION = """([\s\S]*?)"""\.trimIndent\(\)/);
+  assert.ok(match, 'test-only candidate decorator must have one named literal');
+  const anchor = 'return Object.freeze({ slots, truncated: reply.slots.length > slots.length });';
+  assert.equal(source.split(anchor).length, 2);
+  assert.equal(match[1].split('__TACHIAI_TEST_CATCHUP_NOW_MS__').length, 2);
+  return source.replace(anchor, match[1].replace('__TACHIAI_TEST_CATCHUP_NOW_MS__', String(clock)));
+}
+const candidateRow = (changes = {}) => ({ startAt: 1, endAt: 1000,
+  timeshiftEndAt: 1400, flags: { timeshift: true, timeshiftFree: true }, ...changes });
+async function catchupCandidate(schedule, options = {}) {
+  const f = fixture({ operation: 'FETCH_SCHEDULE', schedule, controlSource: catchupCandidateSource(options.clock), ...options });
+  f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'SCHEDULE_SNAPSHOT', failure: 'NONE' });
+  assert.equal(f.requests.length, options.accountContext ? 1 : 2);
+  return { f, value: JSON.parse(f.call(`window['${apiName}'].metadata()`)) };
+}
+test('catchup lead selects the first displayed eligible identity and leaves the normal schedule projection unchanged', async () => {
+  const schedule = scheduleReply(4);
+  Object.assign(schedule.slots[1], candidateRow()); Object.assign(schedule.slots[3], candidateRow({ timeshiftFreeEndAt: 1400 }));
+  const { f, value } = await catchupCandidate(schedule);
+  assert.deepEqual(value.tachiaiTestCatchupCandidate, { version: 1, eligibleRows: 2,
+    candidate: { channelId: 'fixture-channel', slotId: 'slot-1' } });
+  assert.deepEqual(Object.keys(value.tachiaiTestCatchupCandidate).sort(), ['candidate', 'eligibleRows', 'version']);
+  assert.doesNotMatch(JSON.stringify(value.tachiaiTestCatchupCandidate), /PRIVATE|startAt|endAt|timeshift|title|https:|Bearer/);
+  delete value.tachiaiTestCatchupCandidate;
+  const normal = fixture({ operation: 'FETCH_SCHEDULE', schedule }); normal.start(); await settle();
+  assert.deepEqual(value, JSON.parse(normal.call(`window['${apiName}'].metadata()`)));
+  assert.equal(f.requests.filter(({ url }) => url.includes('/media/slots/')).length, 0);
+  f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+});
+test('catchup lead honors displayed500 boundary and never selects retained501st or hidden later rows', async () => {
+  for (const [rows, eligibleIndex, expected] of [[0, null, null], [500, 499, 'slot-499'],
+    [501, 500, null], [502, 501, null]]) {
+    const schedule = scheduleReply(rows);
+    if (eligibleIndex !== null) Object.assign(schedule.slots[eligibleIndex], candidateRow());
+    const { value } = await catchupCandidate(schedule);
+    assert.equal(value.tachiaiTestCatchupCandidate.candidate?.slotId ?? null, expected);
+    assert.equal(value.tachiaiTestCatchupCandidate.eligibleRows, expected ? 1 : 0);
+    assert.equal(value.slots.length, Math.min(rows, 501)); assert.equal(value.truncated, rows > 501);
+  }
+  const schedule = scheduleReply(501); schedule.slots.forEach(row => Object.assign(row, candidateRow()));
+  const { value } = await catchupCandidate(schedule);
+  assert.equal(value.tachiaiTestCatchupCandidate.eligibleRows, 500);
+  assert.equal(value.tachiaiTestCatchupCandidate.candidate.slotId, 'slot-0');
+});
+test('catchup lead requires explicit flags ended ordered seconds and strictly open five-minute windows', async () => {
+  const shapes = [
+    [{}, true], [{ timeshiftFreeEndAt: 0 }, true], [{ timeshiftFreeEndAt: 1301 }, true],
+    [{ flags: {} }, false], [{ flags: { timeshiftFree: true } }, false],
+    [{ flags: { timeshift: true, timeshiftFree: 'true' } }, false], [{ flags: [] }, false],
+    [{ flags: null, timeshift: true, timeshiftFree: true }, false],
+    [{ startAt: 1000 }, false], [{ startAt: 1001, endAt: 1002 }, false],
+    [{ startAt: null }, false], [{ startAt: 0 }, false], [{ startAt: 1.5 }, false],
+    [{ endAt: '1000' }, false], [{ endAt: 1001 }, false], [{ endAt: 100000000000 }, false],
+    [{ timeshiftEndAt: 1300 }, false], [{ timeshiftEndAt: 1301 }, true],
+    [{ timeshiftEndAt: null }, false], [{ timeshiftEndAt: 0 }, false], [{ timeshiftEndAt: '1400' }, false],
+    [{ timeshiftFreeEndAt: 1300 }, false], [{ timeshiftFreeEndAt: null }, false],
+    [{ timeshiftFreeEndAt: -1 }, false], [{ timeshiftFreeEndAt: '0' }, false],
+  ];
+  for (const [changes, expected] of shapes) {
+    const schedule = scheduleReply(); Object.assign(schedule.slots[0], candidateRow(changes));
+    const { value } = await catchupCandidate(schedule);
+    assert.equal(value.tachiaiTestCatchupCandidate.eligibleRows, expected ? 1 : 0);
+    assert.deepEqual(value.tachiaiTestCatchupCandidate.candidate,
+      expected ? { channelId: 'fixture-channel', slotId: 'slot-0' } : null);
+  }
+});
+test('catchup candidate rejects malformed schedule identity/duplicates and invalid clock without another endpoint', async () => {
+  const schedule = scheduleReply(); Object.assign(schedule.slots[0], candidateRow());
+  const invalid = [
+    { schedule: { ...schedule, slots: [{ ...schedule.slots[0], id: 'bad/id' }] } },
+    { schedule: { ...schedule, slots: [{ ...schedule.slots[0], channelId: 'bad/id' }] } },
+    { scheduleText: JSON.stringify(schedule).replace('"flags":', '"flags":{},"flags":') },
+    { scheduleText: JSON.stringify(schedule).replace('"slots":', '"slots":[],"slo\\u0074s":') },
+    { scheduleText: JSON.stringify(schedule) + ' trailing' },
+  ];
+  for (const options of invalid) {
+    const f = fixture({ operation: 'FETCH_SCHEDULE', controlSource: catchupCandidateSource(), ...options });
+    f.start(); await settle(); assert.equal(f.state().failure, 'SCHEDULE_RESPONSE');
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  }
+  for (const clock of [-1, 8640000000000001, NaN]) {
+    const f = fixture({ operation: 'FETCH_SCHEDULE', schedule, controlSource: catchupCandidateSource(clock) });
+    f.start(); await settle(); assert.equal(f.state().failure, 'SCHEDULE_RESPONSE');
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null); assert.equal(f.requests.length, 2);
+  }
+});
+test('catchup candidate follows shared account context and discards cancelled late schedule results', async () => {
+  const schedule = scheduleReply(); Object.assign(schedule.slots[0], candidateRow());
+  const { f, value } = await catchupCandidate(schedule, { accountContext: sharedAccount(), wallMs: 1000 });
+  assert.equal(value.tachiaiTestCatchupCandidate.candidate.slotId, 'slot-0');
+  assert.equal(f.requests[0].request.headers.authorization, 'Bearer PRIVATE_ACCOUNT_BEARER');
+  f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  const late = fixture({ operation: 'FETCH_SCHEDULE', schedule, delayedSchedule: true, controlSource: catchupCandidateSource() });
+  late.start(); await settle(); late.stop(); late.release(); await settle();
+  assert.equal(late.call(`window['${apiName}'].metadata()`), null); assert.equal(late.requests.length, 2);
+  assert.deepEqual(late.state(), { state: 'STOPPED', failure: 'NONE' });
+});
+
 test('schedule test decorator retains exact normal projection and separates all,501 and500 rows', async () => {
   for (const count of [0, 500, 501, 502]) {
     const schedule = scheduleReply(count);

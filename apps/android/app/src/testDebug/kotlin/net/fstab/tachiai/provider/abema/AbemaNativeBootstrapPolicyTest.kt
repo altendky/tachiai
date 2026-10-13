@@ -50,6 +50,24 @@ class AbemaNativeBootstrapPolicyTest {
         assertEquals("INVALID_URI", AbemaNativeBootstrapPolicy.refusalCategory(null, false, "GET"))
     }
 
+    @Test fun `slot region uses either reviewed exact endpoint only for its bound preparation`() {
+        for (endpoint in AbemaNativeBootstrapPolicy.SLOT_REGION_URIS) {
+            fun allows(text: String = endpoint, method: String = "GET", main: Boolean = false) =
+                AbemaNativeBootstrapPolicy.allows(URI(text), main, method, slotIdentity = "sumo/fixture-slot")
+            assertTrue(allows())
+            assertTrue(AbemaNativeBootstrapPolicy.contentSecurityPolicy(slotIdentity = "sumo/fixture-slot").contains(endpoint))
+            for (method in listOf("POST", "OPTIONS", "HEAD")) assertFalse(allows(method = method))
+            assertFalse(allows(main = true))
+            for (text in listOf("$endpoint?token=fixture", "$endpoint#fragment", endpoint.replace("/region", "/media"),
+                endpoint.replace("https://", "http://"), endpoint.replace("https://", "https://user@"),
+                endpoint.replace(".net/", ".net.evil/"), endpoint.replace("/region", "/%72egion")))
+                assertFalse(text, allows(text))
+            assertFalse(AbemaNativeBootstrapPolicy.allows(URI(endpoint), false, "GET"))
+            assertFalse(AbemaNativeBootstrapPolicy.allows(URI(endpoint), false, "GET", episodeId = "fixture"))
+            assertFalse(AbemaNativeBootstrapPolicy.allows(URI(endpoint), false, "GET", channelId = "abema-news"))
+        }
+    }
+
     @Test fun `advertised gateway identifiers admit unreserved dot and tilde without opening extra routes`() {
         val base = "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/"
         for (suffix in listOf("fixture.part", "arin:fixture~part", "fixture.part~suffix")) {

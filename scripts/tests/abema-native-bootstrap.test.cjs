@@ -1237,6 +1237,26 @@ test('slot region status true checks exact CDN and failure refuses before metada
   }
 });
 
+test('slot region accepts either reviewed provider-selected endpoint without changing Japan or rights gates', async () => {
+  const cdnURL = 'https://ds-linear-abematv.akamaized.net/region';
+  for (const status of [false, true]) {
+    const value = fixture({ configuredSlot: true, regionPage: slotRegion({ cdnURL, status }) });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    assert.equal(value.requests.some(item => item.uri.href === cdnURL), status);
+    assert.equal(value.requests.some(item => item.uri.pathname === '/v1/media/slots/fixture-slot'), true);
+  }
+  for (const options of [{ regionPage: slotRegion({ cdnURL, isAllowed: false }) },
+    { regionPage: slotRegion({ cdnURL, isoCountryCode: 'US' }) },
+    { regionPage: slotRegion({ cdnURL, status: true }), statuses: { '/region': 403 } },
+    { regionPage: slotRegion({ cdnURL: cdnURL + '?token=fixture' }) },
+    { regionPage: slotRegion({ cdnURL: cdnURL.replace('.net/', '.net.evil/') }) }]) {
+    const value = fixture({ configuredSlot: true, ...options });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'SLOT_REGION');
+    assert.equal(value.requests.some(item => item.uri.pathname === '/v1/media/slots/fixture-slot'), false);
+  }
+});
+
 test('slot admission refuses wrong identities future live expired nonfree paid and unsupported restrictions', async () => {
   const changes = [slot => { slot.id = 'other-slot'; }, slot => { slot.channelId = 'other-channel'; },
     slot => { delete slot.flags.timeshiftFree; }, slot => { slot.flags.timeshiftFree = false; },

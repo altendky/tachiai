@@ -126,6 +126,61 @@ Search and lookup drafts stay in memory and clear on reload, access loss and
 closure. Account changes are detected at the next request or lifecycle boundary;
 there is no immediate idle cross-process account-change observer.
 
+### Shared validation and replacement ownership
+
+Android account, discovery and native-preparation sessions now attach to one
+maintenance coordinator for the exact protected storage, provider instance,
+Smart TV client, Following scope and captured route configuration. Display-name
+changes preserve that owner; another storage binding, client, scope or route does
+not share its work. The coordinator owns each validation/refresh transport
+independently of the consumer that started it. A still-active peer can keep the
+work alive when that first consumer closes; the final consumer's cancellation
+ends admission without moving cleanup onto the UI thread.
+
+[Twitch requires startup and hourly validation](https://dev.twitch.tv/docs/authentication/validate-tokens/)
+and recommends [one refresh worker distributing its result](https://dev.twitch.tv/docs/authentication/refresh-tokens/).
+Its [public device flow describes refresh tokens as single use](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow).
+The coordinator reuses the existing strict validation and atomic rotation
+transactions. One original 30-second flight budget includes waiting, selected
+route setup, HTTP, cleanup and final admission; joining does not restart it.
+Refresh failures that may have consumed the credential retain the existing
+non-replayable recovery marker.
+
+An enrolled foreground consumer can adopt a proven replacement on its worker,
+including a consumer that was not waiting for the refresh. Adoption checks the
+exact predecessor, durable successor, user/client/scope, current owner, clocks
+and original validation timestamp. It does not accept an unrelated newer
+same-user record or restart hourly freshness. Same-pair validation may tighten
+the durable expiry without rotating identity. The original seven-day local
+retention cap for unknown provider expiry remains unchanged. Forced validation
+requires fresh provider evidence; a completed replacement receipt alone does
+not satisfy it. A stale unauthorized callback cannot spend another refresh.
+
+UI admission remains memory-only. The worker adoption seam is implemented, but
+the native viewer's periodic check still needs scheduling and adoption wiring;
+this slice does not establish uninterrupted hourly viewing or change its
+existing five-minute experiment budget. Pause, Forget, reconnect and route
+changes reject late work. Unconfirmed HTTP cancellation or route cleanup
+retains the actual owners and blocks shared admission for the process. The
+registry releases idle coordinators after their bindings and sessions close.
+Real-provider rotation and sustained-viewer recovery remain unobserved;
+[#212](https://github.com/altendky/tachiai/issues/212) stays open for these and
+ABEMA's separately unverified native renewal path.
+
+Verification on 2026-10-13 UTC passed 2,527 JVM cases in 295 reports, with no
+failures, errors or skips; this includes 23 coordinator cases in both debug and
+diagnostic variants, existing session coverage, and registry/owned-route fixtures.
+Three timing regressions first failed on the prior implementation and passed
+after correction. Lint, release isolation, instrumentation compilation, APK
+assemblies and the shared debug signer checks passed. The final build was
+installed on persistent `tachiai-dev`, Android 16/API 36/x86_64. Opening its
+existing Twitch account screen reached CONNECTED automatically with no activation
+prompt or manual Connect/Validate action, through its saved System route. All 20
+files under `no_backup` and `shared_prefs` stayed byte-identical across installation
+and observation, and the ordinary launcher was restored. No browser was used;
+exit region was unmeasured. This establishes one saved-account startup validation,
+not real refresh, concurrent-provider behavior or sustained-playback recovery.
+
 ## Local exact-video import
 
 When a successful capability assessment reports catalog lookup unavailable, the

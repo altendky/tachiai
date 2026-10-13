@@ -208,4 +208,213 @@ class TwitchCatalogRouteOwnerTest {
         assertEquals(1, failures)
         owned.close()
     }
+
+    @Test fun unresolvedCancellationRetainsItsRouteAndPoisonsSharedAdmissionBeforeWorkerReturns() {
+        val instance = UUID.randomUUID().toString()
+        val entered = CountDownLatch(1)
+        val cancelEntered = CountDownLatch(1)
+        val requestRelease = CountDownLatch(1)
+        val cancelRelease = CountDownLatch(1)
+        val cancelFinished = CountDownLatch(1)
+        var routeCloses = 0
+        var failures = 0
+        var failure: Throwable? = null
+        val raw = object : TwitchCatalogTransport {
+            override fun device(): DeviceAuthResponse {
+                entered.countDown(); check(requestRelease.await(5, TimeUnit.SECONDS))
+                return DeviceAuthResponse(200, emptyMap())
+            }
+            override fun poll(deviceCode: String) = device()
+            override fun validate(accessToken: String) = device()
+            override fun refresh(refreshToken: String) = device()
+            override fun cancelActiveRequest() {
+                cancelEntered.countDown()
+                try { check(cancelRelease.await(5, TimeUnit.SECONDS)) }
+                finally { cancelFinished.countDown() }
+            }
+            override fun close() = Unit
+        }
+        lateinit var owned: OwnedTwitchCatalogTransport
+        owned = OwnedTwitchCatalogTransport(profile(), { !TwitchContinueWatchingAdmission.poisoned(instance) },
+            createRoute = { selected, preparation -> RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                override val proxyPort = 12345
+                override fun close() { routeCloses++ }
+            } } }, createTransport = { _, _ -> raw },
+            onCleanupFailure = { failures++; TwitchContinueWatchingAdmission.poison(instance, owned) })
+        val worker = thread { try { owned.device() } catch (error: Throwable) { failure = error } }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            owned.cancelActiveRequest() // Returns while cancellation is blocked.
+            assertTrue(cancelEntered.await(5, TimeUnit.SECONDS))
+            requestRelease.countDown(); worker.join(3000)
+            assertFalse(worker.isAlive)
+            assertTrue(failure is IOException)
+            assertTrue(TwitchContinueWatchingAdmission.poisoned(instance))
+            assertEquals(1, failures)
+            assertEquals(0, routeCloses)
+            assertThrows(IllegalStateException::class.java) { owned.validate("fixture-access") }
+        } finally {
+            requestRelease.countDown(); cancelRelease.countDown(); worker.join(5000)
+            assertTrue(cancelFinished.await(5, TimeUnit.SECONDS)); owned.close()
+        }
+        assertEquals(0, routeCloses) // Late completion cannot erase uncertainty.
+        assertEquals(1, failures)
+    }
+
+    @Test fun failedHttpCloseRetainsTheDependentRouteAndReportsUncertaintyOnce() {
+        var routeCloses = 0
+        var failures = 0
+        val raw = object : TwitchCatalogTransport {
+            override fun device() = DeviceAuthResponse(200, emptyMap())
+            override fun poll(deviceCode: String) = device()
+            override fun validate(accessToken: String) = device()
+            override fun refresh(refreshToken: String) = device()
+            override fun close() { error("fixture HTTP cleanup failure") }
+        }
+        val owned = OwnedTwitchCatalogTransport(profile(), { true },
+            createRoute = { selected, preparation -> RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                override val proxyPort = 12345
+                override fun close() { routeCloses++ }
+            } } }, createTransport = { _, _ -> raw }, onCleanupFailure = { failures++ })
+        assertThrows(IOException::class.java) { owned.validate("fixture-access") }
+        assertEquals(0, routeCloses)
+        assertEquals(1, failures)
+        owned.close(); owned.close()
+        assertEquals(1, failures)
+    }
+
+    @Test fun cancellationAfterWorkerBeginsCleanupDoesNotStartAnotherDisconnectOrReturnSuccess() {
+        val closing = CountDownLatch(1)
+        val closeRelease = CountDownLatch(1)
+        var cancellations = 0
+        var preparationSignals = 0
+        var routeCloses = 0
+        var failure: Throwable? = null
+        val raw = object : TwitchCatalogTransport {
+            override fun device() = DeviceAuthResponse(200, emptyMap())
+            override fun poll(deviceCode: String) = device()
+            override fun validate(accessToken: String) = device()
+            override fun refresh(refreshToken: String) = device()
+            override fun cancelActiveRequest() { cancellations++ }
+            override fun close() { closing.countDown(); check(closeRelease.await(5, TimeUnit.SECONDS)) }
+        }
+        val owned = OwnedTwitchCatalogTransport(profile(), { true },
+            createRoute = { selected, preparation ->
+                preparation.onCancel { preparationSignals++ }
+                RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                    override val proxyPort = 12345
+                    override fun close() { routeCloses++ }
+                } }
+            }, createTransport = { _, _ -> raw })
+        val worker = thread { try { owned.validate("fixture-access") } catch (error: Throwable) { failure = error } }
+        try {
+            assertTrue(closing.await(5, TimeUnit.SECONDS))
+            repeat(10) { owned.cancelActiveRequest() }
+            assertEquals(0, cancellations)
+            assertEquals(0, preparationSignals)
+        } finally { closeRelease.countDown(); worker.join(5000); owned.close() }
+        assertFalse(worker.isAlive)
+        assertTrue(failure is DeviceRequestPaused)
+        assertEquals(1, routeCloses)
+        assertEquals(0, cancellations)
+        assertEquals(0, preparationSignals)
+    }
+
+    @Test fun failedConstructionRollbackAndFatalPostAllocationRetainTheActualBackend() {
+        for (fatal in listOf(false, true)) {
+            var providerCalls = 0
+            var rollbackCalls = 0
+            var failures = 0
+            val owned = OwnedTwitchCatalogTransport(profile(), { true },
+                createTransport = { _, _ -> providerCalls++; FakeTransport() },
+                createBackend = { _, _, _ -> object : RouteBackend {
+                    override val proxyPort: Int get() = if (fatal) throw AssertionError("fixture fatal construction")
+                        else error("fixture port failure")
+                    override fun close() { rollbackCalls++; error("fixture rollback failure") }
+                } }, onCleanupFailure = { failures++ })
+            if (fatal) assertThrows(AssertionError::class.java) { owned.validate("fixture-access") }
+            else assertThrows(IOException::class.java) { owned.validate("fixture-access") }
+            assertEquals(0, providerCalls)
+            assertEquals(if (fatal) 0 else 1, rollbackCalls)
+            assertEquals(1, failures)
+            assertThrows(IllegalStateException::class.java) { owned.validate("fixture-access") }
+            owned.close()
+            assertEquals(if (fatal) 0 else 1, rollbackCalls)
+        }
+    }
+
+    @Test fun uncertainPreparationSignalPreventsDependentRouteReleaseDespiteCompletedHttpClose() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        var routeCloses = 0
+        var failures = 0
+        var failure: Throwable? = null
+        val raw = FakeTransport {
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+            DeviceAuthResponse(200, emptyMap())
+        }
+        val owned = OwnedTwitchCatalogTransport(profile(), { true },
+            createRoute = { selected, preparation ->
+                preparation.onCancel { error("fixture uncertain preparation signal") }
+                RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                    override val proxyPort = 12345
+                    override fun close() { routeCloses++ }
+                } }
+            }, createTransport = { _, _ -> raw }, onCleanupFailure = { failures++ })
+        val worker = thread { try { owned.device() } catch (error: Throwable) { failure = error } }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS)); owned.cancelActiveRequest()
+        } finally { release.countDown(); worker.join(5000); owned.close() }
+        assertFalse(worker.isAlive)
+        assertTrue(failure is IOException)
+        assertTrue(raw.closed)
+        assertEquals(0, routeCloses)
+        assertEquals(1, failures)
+    }
+
+    @Test fun anEarlierUnresolvedPreparationSignalCannotBlockTheWorkerPastItsCleanupWait() {
+        val entered = CountDownLatch(1)
+        val requestRelease = CountDownLatch(1)
+        val signalEntered = CountDownLatch(1)
+        val signalRelease = CountDownLatch(1)
+        var routeCloses = 0
+        var failures = 0
+        var failure: Throwable? = null
+        var cancelFailure: Throwable? = null
+        val raw = FakeTransport {
+            entered.countDown(); check(requestRelease.await(5, TimeUnit.SECONDS))
+            DeviceAuthResponse(200, emptyMap())
+        }
+        val owned = OwnedTwitchCatalogTransport(profile(), { true },
+            createRoute = { selected, preparation ->
+                // Fault injection: production hooks must only signal, but an
+                // unresolved hook must not make cleanup wait on its monitor.
+                preparation.onCancel {
+                    signalEntered.countDown(); check(signalRelease.await(5, TimeUnit.SECONDS))
+                }
+                RouteSession.create(selected, preparation) { _, _ -> object : RouteBackend {
+                    override val proxyPort = 12345
+                    override fun close() { routeCloses++ }
+                } }
+            }, createTransport = { _, _ -> raw }, onCleanupFailure = { failures++ })
+        val worker = thread { try { owned.device() } catch (error: Throwable) { failure = error } }
+        var cancelling: Thread? = null
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            cancelling = thread { try { owned.cancelActiveRequest() } catch (error: Throwable) { cancelFailure = error } }
+            assertTrue(signalEntered.await(5, TimeUnit.SECONDS))
+            requestRelease.countDown(); worker.join(3000)
+            assertFalse(worker.isAlive)
+            assertTrue(failure is IOException)
+            assertEquals(0, routeCloses)
+            assertEquals(1, failures)
+        } finally {
+            requestRelease.countDown(); signalRelease.countDown(); worker.join(5000)
+            cancelling?.join(5000); owned.close()
+        }
+        assertFalse(cancelling.isAlive)
+        assertNull(cancelFailure)
+        assertEquals(0, routeCloses)
+        assertEquals(1, failures)
+    }
 }

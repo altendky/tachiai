@@ -46,6 +46,7 @@ import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.storage.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
+import net.fstab.tachiai.provider.twitch.ConfiguredTwitchMovementSampler.SampleState
 import net.fstab.tachiai.provider.twitch.catalog.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -67,7 +68,6 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
     private enum class Mode { REPLAY, CHANNEL }
     private enum class Outcome { REFUSED, SAFE_FAILURE, FRAME_AND_MOVEMENT, CLEANUP_UNCONFIRMED, REPLAY_ACCEPTED, CHANNEL_ACCEPTED }
     private enum class SourceOrigin { CONFIGURED_RECORD, LEGACY_PROJECTION, UNAVAILABLE }
-    private enum class SampleState { UNAVAILABLE, IDLE, BUFFERING, READY, ENDED }
     private enum class Failure { NONE, SETUP, ADMISSION, MUTATION, VALIDATION, EXPIRY_TIGHTENING,
         ELIGIBILITY, IDENTITY_SCOPE, ACCESS_SCOPE, MEDIA_SCOPE, FRAME, MOVEMENT, CLEANUP, PRESERVATION }
     private class Refusal : IOException("Configured playback observation refused its closed checks")
@@ -565,46 +565,37 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 (BUDGET_MS - CLEANUP_MS - (SystemClock.elapsedRealtime() - started)).coerceIn(0, maximum)
             admit(prepared.await(remaining(55_000), TimeUnit.MILLISECONDS) && !playbackFailed.get(), Failure.FRAME)
             admit(frame.await(remaining(10_000), TimeUnit.MILLISECONDS) && frameObserved.get() && !playbackFailed.get(), Failure.FRAME)
-            var first: Player? = null; var firstPosition = -1L; var firstElapsed = -1L
-            var movement = false
-            var samplingRefused = false
             // Buffering between observations is not movement or a new source
-            // attempt. Keep the original READY baseline and finite run budget.
-            val samplingEnd = minOf(SystemClock.elapsedRealtime() + 10_000, started + BUDGET_MS - CLEANUP_MS)
-            while (!movement && !samplingRefused && SystemClock.elapsedRealtime() < samplingEnd) {
+            // attempt. CHANNEL uses the remaining original observation window;
+            // REPLAY retains its ten-second sampling cap and both reserve cleanup.
+            val sampler = ConfiguredTwitchMovementSampler(started + BUDGET_MS - CLEANUP_MS,
+                SystemClock.elapsedRealtime(), mode == Mode.CHANNEL, SystemClock::elapsedRealtime)
+            while (sampler.result == ConfiguredTwitchMovementSampler.Result.PENDING &&
+                SystemClock.elapsedRealtime() < sampler.deadline) {
                 instrumentation.runOnMainSync {
                     val player = session?.player
-                    val now = SystemClock.elapsedRealtime()
-                    if (player == null || player.applicationLooper != Looper.myLooper() || !localCurrent() ||
-                        playbackFailed.get() || session?.failure != null || session?.canContinue() != true ||
-                        budget?.active != true || now >= samplingEnd || first != null && player !== first) {
-                        samplingRefused = true
-                    } else {
-                        lastSampleState = when (player.playbackState) {
+                    sampler.sample(player, admitted = {
+                        player != null && player.applicationLooper == Looper.myLooper() && localCurrent() &&
+                            !playbackFailed.get() && session.failure == null && session.canContinue() &&
+                            budget.active
+                    }, state = {
+                        when (checkNotNull(player).playbackState) {
                             Player.STATE_IDLE -> SampleState.IDLE
                             Player.STATE_BUFFERING -> SampleState.BUFFERING
                             Player.STATE_READY -> SampleState.READY
                             Player.STATE_ENDED -> SampleState.ENDED
                             else -> SampleState.UNAVAILABLE
                         }
-                        if (lastSampleState == SampleState.READY) {
-                            val position = player.currentPosition
-                            if (position >= 0) {
-                                if (first == null && samplingEnd - now >= 1500) {
-                                    first = player; firstPosition = position; firstElapsed = now
-                                    firstSampleState = lastSampleState
-                                } else if (first === player && now >= firstElapsed && now - firstElapsed >= 1500) {
-                                    movement = position > firstPosition && localCurrent() && budget?.active == true
-                                }
-                            }
-                        }
-                    }
+                    }, position = { checkNotNull(player).currentPosition })
                 }
-                if (!movement && !samplingRefused) {
-                    val pause = (samplingEnd - SystemClock.elapsedRealtime()).coerceIn(0, 100)
+                if (sampler.result == ConfiguredTwitchMovementSampler.Result.PENDING) {
+                    val pause = (sampler.deadline - SystemClock.elapsedRealtime()).coerceIn(0, 100)
                     if (pause > 0) Thread.sleep(pause)
                 }
             }
+            firstSampleState = sampler.firstSampleState
+            lastSampleState = sampler.lastSampleState
+            val movement = sampler.result == ConfiguredTwitchMovementSampler.Result.MOVED
             moved = movement
             admit(movement && current(), Failure.MOVEMENT)
             withinPlaybackBudget = localCurrent()

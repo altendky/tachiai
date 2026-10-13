@@ -66,6 +66,7 @@ import net.fstab.tachiai.provider.abema.account.AndroidAbemaAccountAccessClient
 import net.fstab.tachiai.provider.abema.account.AbemaAccountAccessIpc
 import net.fstab.tachiai.provider.abema.account.AbemaAccountException
 import net.fstab.tachiai.provider.abema.account.AbemaAccountFailure
+import net.fstab.tachiai.provider.abema.account.AbemaSubscriptionProfileResult
 import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
@@ -117,13 +118,18 @@ internal class CachedPrototypeAbemaSession(
     private val transportFinalizing = AtomicBoolean()
     private val transportFinalized = AtomicBoolean()
     private val accountCleanupPending = AtomicBoolean()
+    private val slotProfileCleanupPending = AtomicBoolean()
+    private val slotProfile = AtomicReference<AbemaBorrowedSlotProfile?>()
+    private val slotPremiumScope = AtomicReference<AbemaSlotPremiumScope?>()
+    private val slotPremiumReceipt = AtomicReference<AbemaSlotPremiumReceipt?>()
     private val accountAdmitted = AtomicBoolean()
     private val accountClient = AtomicReference<AndroidAbemaAccountAccessClient?>()
     @Volatile var accountStatus: AbemaAccountAccessIpc.Status? = null
         private set
     private val accountLock = Any()
     private val privateInitialization = AtomicReference<ByteArray?>()
-    val cleanupPending get() = worker.pending || accountCleanupPending.get() || (closed.get() && !transportFinalized.get())
+    val cleanupPending get() = worker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
+        (closed.get() && !transportFinalized.get())
     private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { cleanupFailed = true; onCleanupChanged() }
     @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
     private val closed = AtomicBoolean(false)
@@ -155,7 +161,7 @@ internal class CachedPrototypeAbemaSession(
         private set
 
     val cleanupConfirmed get() = closed.get() && !cleanupFailed && !cleanupPending &&
-        transportCleanup.confirmed && (nativeCleanup?.confirmed != false)
+        transportCleanup.confirmed && (nativeCleanup?.confirmed != false) && slotProfile.get()?.cleanupConfirmed != false
 
     override val providerView: View = WebView(context)
     private val view get() = providerView as WebView
@@ -172,17 +178,26 @@ internal class CachedPrototypeAbemaSession(
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationCurrent(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && SystemClock.elapsedRealtime() < deadline && ownership?.canContinue() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.current() == true)
+        (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true)
+        (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) && slotPremiumCurrent(revision.get())
+    private fun slotPremiumCurrent(run: Long): Boolean {
+        val receipt = slotPremiumReceipt.get() ?: return true
+        val scope = slotPremiumScope.get() ?: return false
+        return scope.client === accountClient.get() && scope.run == run && slotResource != null &&
+            scope.instanceId == ownership?.instanceId && scope.ownerProof == ownership?.ownerProof &&
+            scope.channelId == slotChannelId && scope.slotId == slotId && scope.playbackDeadline == deadline &&
+            receipt.current(scope, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+    }
     private fun openConnection(url: URL): HttpsURLConnection {
         if (!workerOwned()) throw java.io.IOException("Selected playback owner unavailable")
         return route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
     }
     override fun canContinue(): Boolean = current(revision.get())
     override fun checkAuthorization(): Boolean {
-        if (!closed.get() && accountAdmitted.get() && accountClient.get()?.current() != true) {
+        if (!closed.get() && accountAdmitted.get() &&
+            (accountClient.get()?.current() != true || !slotPremiumCurrent(revision.get()))) {
             firstFailure.remember(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
             return false
         }
@@ -192,7 +207,7 @@ internal class CachedPrototypeAbemaSession(
     private fun monitorAccount(run: Long) {
         if (closed.get() || revision.get() != run) return
         if (active() && budget?.active == true && SystemClock.elapsedRealtime() < deadline &&
-            accountAdmitted.get() && accountClient.get()?.current() != true) {
+            accountAdmitted.get() && (accountClient.get()?.current() != true || !slotPremiumCurrent(run))) {
             fail(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)); return
         }
         handler.postDelayed({ monitorAccount(run) }, 200)
@@ -346,8 +361,40 @@ internal class CachedPrototypeAbemaSession(
                     when (access.status) {
                         AbemaAccountAccessIpc.Status.ACCOUNT -> {
                             val grant = checkNotNull(access.grant)
-                            accountArgument = JSONObject().put("userId", grant.userId).put("bearer", grant.bearer)
-                                .put("expiresAtMs", grant.expiresAtMs).put("deviceId", checkNotNull(access.deviceId)).toString()
+                            val argument = JSONObject().put("userId", grant.userId).put("bearer", grant.bearer)
+                                .put("expiresAtMs", grant.expiresAtMs).put("deviceId", checkNotNull(access.deviceId))
+                            if (slotResource != null) {
+                                val beganWall = System.currentTimeMillis()
+                                val beganElapsed = SystemClock.elapsedRealtime()
+                                val profile = AbemaBorrowedSlotProfile(::openConnection,
+                                    { preparationCurrent(run) && client.checkWorker() && selectedOwner.checkWorker() },
+                                    SystemClock::elapsedRealtime, System::currentTimeMillis, readinessDeadline)
+                                synchronized(accountLock) {
+                                    if (closed.get() || revision.get() != run)
+                                        throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                                    slotProfile.set(profile)
+                                }
+                                val subscription = try { profile.read(grant.userId, grant.bearer) }
+                                finally { if (!profile.cleanupConfirmed) cleanupFailed = true }
+                                if (subscription !is AbemaSubscriptionProfileResult.Identity || subscription.id != grant.userId ||
+                                    !preparationCurrent(run) || !client.checkWorker() || !selectedOwner.checkWorker())
+                                    throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
+                                subscription.premiumExpiresAtMs?.let { expiry ->
+                                    val scope = AbemaSlotPremiumScope(client, selectedOwner.instanceId,
+                                        selectedOwner.ownerProof, proof, slotChannelId, slotId, run, deadline)
+                                    val receipt = AbemaSlotPremiumReceipt.publish(scope, expiry, beganWall, beganElapsed,
+                                        readinessDeadline, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                                        ?: throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+                                    synchronized(accountLock) {
+                                        if (closed.get() || revision.get() != run || accountClient.get() !== client)
+                                            throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                                        slotPremiumScope.set(scope); slotPremiumReceipt.set(receipt)
+                                    }
+                                    argument.put("slotPremium", JSONObject().put("channelId", slotChannelId)
+                                        .put("slotId", slotId).put("expiresAtMs", expiry))
+                                }
+                            }
+                            accountArgument = argument.toString()
                         }
                         AbemaAccountAccessIpc.Status.GUEST -> Unit
                         AbemaAccountAccessIpc.Status.FAILURE -> throw AbemaAccountException(checkNotNull(access.failure))
@@ -772,8 +819,10 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun finishTransportCleanup() {
-        if (!closed.get() || worker.pending || accountCleanupPending.get() || !transportFinalizing.compareAndSet(false, true)) return
+        if (!closed.get() || worker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
+            !transportFinalizing.compareAndSet(false, true)) return
         try {
+            if (slotProfile.get()?.cleanupConfirmed == false) cleanupFailed = true
             if (!diagnostics.cleanupAll(FailureStage.SOURCE_REQUESTS_CLOSE) { transportCleanup.close() }) cleanupFailed = true
         } finally { transportFinalized.set(true); onCleanupChanged() }
     }
@@ -781,7 +830,22 @@ internal class CachedPrototypeAbemaSession(
     private fun finish(event: PrototypeFeedEvent) {
         if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { finish(event) }; return }
         if (!closed.compareAndSet(false, true)) return
-        synchronized(accountLock) { accountClient.get()?.close() }
+        synchronized(accountLock) {
+            accountClient.get()?.close()
+            slotPremiumReceipt.set(null); slotPremiumScope.set(null)
+        }
+        slotProfile.get()?.let { profile ->
+            slotProfileCleanupPending.set(true)
+            try {
+                accountCleanup.execute {
+                    try { profile.cancel() }
+                    finally { slotProfileCleanupPending.set(false); finishTransportCleanup(); onCleanupChanged() }
+                }
+            } catch (error: Throwable) {
+                cleanupFailed = true; slotProfileCleanupPending.set(false)
+                diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, error)
+            }
+        }
         accountClient.get()?.let { client ->
             try {
                 accountCleanup.execute {

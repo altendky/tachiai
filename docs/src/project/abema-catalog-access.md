@@ -1409,6 +1409,56 @@ This is two bounded observations with one request each, not an observed lack of
 Premium, token-context equivalence, paid or Chase acceptance. No different
 endpoint, query, credential migration or renewal was introduced.
 
+### Fresh Premium authority for ended broadcasts
+
+The debug native exact-slot path additionally supports ordinary ended catch-up
+when the connected account supplies fresh modern Premium authority. This is
+separate from the shared account owner's cached identity validation. The native
+session makes one additional unchanged profile GET on its already-created route;
+it creates no second route or WireGuard backend and does not reconnect, renew,
+query email or fall back to Guest.
+
+The strict projection requires the requested `profile.userId`, root modern
+`userSubscriptions`, a checked Unix-second expiry and an explicit Boolean true
+`viewingAuthorities.isPremium`. Legacy/partner subscriptions, trial flags and
+nested modern fields grant no authority. An absent modern field, an empty array
+and a valid array without affirmative authority remain distinct. They can retain
+independently verified free eligibility; malformed modern data or a rejected or
+inconclusive profile refuses this account-backed preparation. No raw response or
+subscription authority is persisted or exposed in generic UI.
+
+A private receipt binds any positive Premium expiry to the acquired client,
+captured instance/route owner, source proof, exact channel/slot, native run and
+original playback deadline. Publication consumes the original 45-second readiness
+budget, including blocking durable owner checks and actual HTTP cleanup. Memory
+and clock admission plus worker-side durable checks continue through playback.
+Expiry, clock rollback, Forget/replacement, owner loss or cancellation ends access;
+no receipt moves into the shared cached account identity proof.
+
+The app-owned initializer accepts that closed exact-slot authority only under
+ACCOUNT. Ordinary admission remains verified Free or current Premium. Premium
+uses the general timeshift window independently of an expired free window. Both
+branches still require ended valid broadcast times, the timeshift flag, current
+region, no pause/PPV/unsupported DRM, and unchanged exact source/manifest/license
+binding. Chase and exact live occurrence remain outside this slice. The native
+coordinator retains the existing route whenever the borrowed operation's first
+HTTP/input/disconnect cleanup is unconfirmed; repeated cancellation cannot turn
+uncertainty into confirmation.
+
+The retained account observations above supplied no affirmative modern authority.
+This implementation and synthetic positive fixtures do not establish actual
+Premium playback, account plan status, Chase or exact live acceptance. No purchase
+is implied, and #193 remains open for its unfinished modes and device evidence.
+
+Local verification on 2026-10-13 passed 2,732 JVM cases with zero failures or
+skips, 84 app-owned bootstrap cases, lint, release isolation, instrumentation
+compilation, scoped hooks/docs and independent review. Both APKs matched the
+shared debug signing certificate. Non-destructive updates on verified persistent
+`tachiai-dev`, Android 16/API 36, x86-64, preserved all 20 saved-state files
+byte-for-byte and returned to the normal launcher. This installation check used
+no provider browser or playback operation and does not establish paid frames,
+advancing playback, country or physical-device behavior.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

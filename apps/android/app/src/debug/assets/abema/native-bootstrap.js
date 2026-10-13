@@ -24,6 +24,7 @@
   let user;
   let accountExpiry;
   let accountWall;
+  let slotPremiumExpiry;
   let operation;
   let response;
   const remember = category => { if (failure === 'NONE') failure = category; };
@@ -38,7 +39,7 @@
     controllers.clear();
     response?.fill(0);
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
-    accountExpiry = accountWall = undefined;
+    accountExpiry = accountWall = slotPremiumExpiry = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -46,7 +47,8 @@
   const alive = () => {
     if (accountExpiry !== undefined) {
       const now = Date.now();
-      if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpiry) {
+      if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpiry ||
+        (slotPremiumExpiry !== undefined && now >= slotPremiumExpiry)) {
         remember('TIMER_EXPIRED'); throw new Error();
       }
       accountWall = now;
@@ -309,14 +311,25 @@
         let deviceId;
         if (requestedAccount !== undefined) {
           phase = 'ACCOUNT';
-          if (!requestedAccount || typeof requestedAccount !== 'object' || Array.isArray(requestedAccount) ||
-            Object.keys(requestedAccount).sort().join(',') !== 'bearer,deviceId,expiresAtMs,userId') refuseResponse();
+          if (!requestedAccount || typeof requestedAccount !== 'object' || Array.isArray(requestedAccount)) refuseResponse();
+          const premiumPresent = Object.hasOwn(requestedAccount, 'slotPremium');
+          if (Object.keys(requestedAccount).sort().join(',') !== (premiumPresent ?
+            'bearer,deviceId,expiresAtMs,slotPremium,userId' : 'bearer,deviceId,expiresAtMs,userId')) refuseResponse();
           const { userId, bearer, expiresAtMs, deviceId: boundDevice } = requestedAccount;
           if (typeof userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(userId) ||
             typeof bearer !== 'string' || bearer.length < 1 || bearer.length > 6144 || !/^[\x21-\x7e]+$/.test(bearer) ||
             typeof boundDevice !== 'string' || boundDevice.length < 1 || boundDevice.length > 256 || !/^[\x21-\x7e]+$/.test(boundDevice) ||
             !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now()) refuseResponse();
           accountExpiry = expiresAtMs; accountWall = Date.now();
+          if (premiumPresent) {
+            const premium = requestedAccount.slotPremium;
+            if (!configuredSlot || !premium || typeof premium !== 'object' || Array.isArray(premium) ||
+              Object.keys(premium).sort().join(',') !== 'channelId,expiresAtMs,slotId' ||
+              premium.channelId !== slotRequest[0] || premium.slotId !== slotRequest[1] ||
+              !Number.isSafeInteger(premium.expiresAtMs) || premium.expiresAtMs <= 0 ||
+              premium.expiresAtMs <= accountWall) refuseResponse();
+            slotPremiumExpiry = premium.expiresAtMs;
+          }
           deviceId = boundDevice;
           user = { userId, accessToken: bearer };
           requestedAccount = undefined;
@@ -609,7 +622,8 @@
     const slot = raw.slot;
     if (!record(slot) || slot.id !== slotId || slot.channelId !== channelId) refuseResponse();
     phase = 'SLOT_FREE';
-    if (!record(slot.flags) || slot.flags.timeshift !== true || slot.flags.timeshiftFree !== true) throw new Error();
+    const premium = slotPremiumExpiry !== undefined;
+    if (!record(slot.flags) || slot.flags.timeshift !== true || (!premium && slot.flags.timeshiftFree !== true)) throw new Error();
     phase = 'SLOT_RESTRICTIONS';
     if ((slot.flags.paused !== undefined && slot.flags.paused !== false) ||
       (slot.mark !== undefined && (!record(slot.mark) || (slot.mark.drm !== undefined && slot.mark.drm !== false))) ||
@@ -623,11 +637,12 @@
     phase = 'SLOT_WINDOW';
     const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
     const future = value => seconds(value) && value * 1000 > Date.now() + 300000;
-    // This first guest slice supports ended ordinary catch-up, not live/chase.
-    // Explicit free plus absent/zero free-end uses the separate general window.
+    // Ordinary ended catch-up only. Native supplies a fresh exact-slot Premium
+    // receipt under ACCOUNT; otherwise explicit free plus absent/zero free-end
+    // uses the separate general window. Premium does not use the free window.
     if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt ||
       slot.endAt * 1000 > Date.now() || !future(slot.timeshiftEndAt) ||
-      (slot.timeshiftFreeEndAt !== undefined && slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
+      (!premium && slot.timeshiftFreeEndAt !== undefined && slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
     phase = 'SOURCE';
     if (!record(slot.playback) || !usableSlotPlaylist(slot.playback.dash, slotId) ||
       (slot.playback.yospace !== undefined && (!record(slot.playback.yospace) ||

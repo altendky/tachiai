@@ -43,6 +43,8 @@ const replayStream = (overrides = {}) => ({ streamingTechnology: 'FIXTURE_DASH',
     adInsertion: { mode: 0 } }], ...overrides });
 const savedAccount = () => ({ userId: 'ACCOUNT_USER', bearer: 'ACCOUNT_BEARER',
   deviceId: 'ACCOUNT_DEVICE', expiresAtMs: fixtureNow + 600000 });
+const slotPremiumAccount = (expiresAtMs = fixtureNow + 300000) => ({ ...savedAccount(),
+  slotPremium: { channelId: 'sumo', slotId: 'fixture-slot', expiresAtMs } });
 
 test('configured playback uses one validated account identity through token source and opaque exchange', async () => {
   const value = fixture({ account: savedAccount(), forbidGuest: true });
@@ -1170,6 +1172,157 @@ test('exact free ended slot binds both IDs and preserves provider selector defau
     assert.equal(value.take() !== null, true); assert.equal(value.status(), 'STOPPED');
     assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null);
   }
+});
+
+test('exact ACCOUNT Premium admits ended ordinary slots through the general window with unchanged source and license binding', async () => {
+  for (const freeFlag of [undefined, false, true]) {
+    const slot = freeSlot(); slot.flags.timeshiftFree = freeFlag;
+    slot.timeshiftFreeEndAt = fixtureNow / 1000 - 1;
+    const value = fixture({ configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    assert.deepEqual(value.requests.map(item => item.uri.pathname), [
+      '/v1/media/token', '/now-on-air/abema-news', '/v1/media/slots/fixture-slot',
+    ]);
+    assert.ok(value.requests.every(item => item.request.credentials === 'omit'));
+    assert.equal(value.requests.at(-1).request.headers.Authorization, 'Bearer ACCOUNT_BEARER');
+    assert.equal(value.evaluate('observed.legacy.length'), 1);
+    const selection = JSON.parse(value.evaluate('JSON.stringify(observed.legacy[0])'));
+    assert.equal(selection.sourceParam.contentId, 'fixture-slot');
+    assert.equal(selection.sourceParam.mediaToken, 'TEST_MEDIA');
+    assert.equal(selection.sourceParam.cffId, 0); assert.equal(selection.sourceParam.dtid, null);
+    assert.equal(selection.enforcePlainStream, false); assert.equal(selection.preferDashPlaylist, true);
+    assert.equal(selection.ua.os.name, 'Android');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot');
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const license = value.requests.at(-1).uri;
+    assert.equal(license.searchParams.get('ct'), 'slot'); assert.equal(license.searchParams.get('cid'), 'fixture-slot');
+    assert.equal(license.searchParams.get('t'), 'TEST_MEDIA'); assert.ok(value.take());
+  }
+});
+
+test('account identity without explicit Premium never admits nonfree ordinary slots', async () => {
+  for (const timeshiftFree of [undefined, false, 'true']) {
+    const slot = freeSlot(); slot.flags.timeshiftFree = timeshiftFree;
+    const value = fixture({ configuredSlot: true, account: savedAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.requests.some(item => item.uri.pathname === '/abematv-dash'), false);
+  }
+});
+
+test('ACCOUNT without Premium preserves the existing free-window fallback and refusal', async () => {
+  for (const freeEnd of [undefined, 0, futureSeconds, fixtureNow / 1000 - 1]) {
+    const slot = freeSlot(); slot.timeshiftFreeEndAt = freeEnd;
+    const value = fixture({ configuredSlot: true, account: savedAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot');
+    await waitFor(value, freeEnd === fixtureNow / 1000 - 1 ? 'FAILED' : 'READY');
+    assert.equal(value.evaluate('observed.legacy.length'), freeEnd === fixtureNow / 1000 - 1 ? 0 : 1);
+    assert.equal(value.requests.some(item => item.uri.pathname === '/api/auth/login/guest'), false);
+    value.stop();
+  }
+});
+
+test('Premium context requires exact keys typed future expiry and matching selected slot before any HTTP', async () => {
+  const exact = slotPremiumAccount().slotPremium;
+  for (const slotPremium of [null, false, true, [], {}, { ...exact, extra: true },
+    { ...exact, channelId: 'other-channel' }, { ...exact, slotId: 'other-slot' },
+    { ...exact, channelId: ['sumo'] }, { ...exact, slotId: null },
+    { ...exact, expiresAtMs: fixtureNow }, { ...exact, expiresAtMs: fixtureNow - 1 },
+    { ...exact, expiresAtMs: String(exact.expiresAtMs) }, { ...exact, expiresAtMs: exact.expiresAtMs + 0.5 },
+    { ...exact, expiresAtMs: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const value = fixture({ configuredSlot: true, account: { ...savedAccount(), slotPremium }, forbidGuest: true });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  }
+  for (const launch of [value => value.start(true, 'fixture-episode'), value => value.startChannel('sumo'),
+    value => value.start(false), value => value.start(true)]) {
+    const value = fixture({ account: slotPremiumAccount(), forbidGuest: true });
+    launch(value); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
+test('Premium preserves ended timeshift general-window region pause PPV DRM and identity restrictions before selection', async () => {
+  const changes = [slot => { slot.id = 'other-slot'; }, slot => { slot.channelId = 'other-channel'; },
+    slot => { slot.flags.timeshift = false; }, slot => { slot.flags.timeshift = 'true'; },
+    slot => { slot.flags.paused = true; }, slot => { slot.flags.paused = null; },
+    slot => { slot.mark.drm = true; }, slot => { slot.payperview = {}; },
+    slot => { slot.broadcastRegionPolicies.timeshift = 2; },
+    slot => { slot.endAt = futureSeconds; }, slot => { slot.startAt = slot.endAt; },
+    slot => { slot.timeshiftEndAt = 0; }, slot => { delete slot.timeshiftEndAt; },
+    slot => { slot.timeshiftEndAt = fixtureNow / 1000; },
+    slot => { slot.timeshiftEndAt = fixtureNow / 1000 + 300; }];
+  for (const change of changes) {
+    const slot = freeSlot(); change(slot);
+    const value = fixture({ configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+  for (const options of [{ regionPage: slotRegion({ isAllowed: false }) },
+    { regionPage: slotRegion({ isoCountryCode: 'US' }) }, { slotResponse: { slot: freeSlot(), payPerView: {} } }]) {
+    const value = fixture({ configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, ...options });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+  }
+});
+
+test('Premium and original account expiry independently revoke READY before the license request', async () => {
+  for (const [premiumExpiry, nowMs] of [[fixtureNow + 300000, fixtureNow + 300000],
+    [fixtureNow + 900000, fixtureNow + 600000]]) {
+    const options = { configuredSlot: true, account: slotPremiumAccount(premiumExpiry), forbidGuest: true };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    const count = value.requests.length; options.nowMs = nowMs;
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null);
+    assert.equal(value.begin(challenge), 'REFUSED'); assert.equal(value.requests.length, count);
+    assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  }
+});
+
+test('Premium rollback is sticky against the latest admitted wall clock', async () => {
+  const options = { configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true };
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  options.nowMs = fixtureNow + 1000; assert.equal(value.status(), 'READY');
+  options.nowMs = fixtureNow + 500; assert.equal(value.status(), 'FAILED');
+  options.nowMs = fixtureNow + 1500; assert.equal(value.begin(challenge), 'REFUSED');
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  assert.equal(value.requests.some(item => item.uri.pathname === '/abematv-dash'), false);
+});
+
+test('late region or slot metadata after Premium expiry cannot select a source or start another request', async () => {
+  for (const [deferred, requestCount] of [['deferRegion', 2], ['deferSlot', 3]]) {
+    const options = { configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, [deferred]: true };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot');
+    await waitForRequests(value, requestCount);
+    options.nowMs = fixtureNow + 300000; value.release(); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, requestCount);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED'); assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  }
+});
+
+test('late license after Premium expiry cannot invoke the opaque helper or publish its response', async () => {
+  const options = { configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, deferLicense: true };
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  assert.equal(value.begin(challenge), 'WORKING'); await waitForRequests(value, 4);
+  options.nowMs = fixtureNow + 300000; value.release(); await waitFor(value, 'FAILED');
+  assert.equal(value.evaluate('observed.operation.length'), 0); assert.equal(value.take(), null);
+  assert.equal(value.requests.length, 4); assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+});
+
+test('Premium expiry after response completion clears the unpublished response at take', async () => {
+  const options = { configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true };
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+  options.nowMs = fixtureNow + 300000;
+  assert.equal(value.take(), null); assert.equal(value.status(), 'FAILED');
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
 });
 
 test('slot response requires the object envelope and exact nested identities before source or helper activity', async () => {

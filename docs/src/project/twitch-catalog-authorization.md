@@ -73,8 +73,9 @@ Credentials are absent from intents, UI state, recovery data, logs and exports.
 
 A process-created or resumed session begins unverified. Account access requires
 current-route validation and expires at the earliest provider/local deadline or
-one hour after validation. Backgrounding invalidates leases. Active foreground use
-schedules hourly validation. Temporary network failures suspend access without
+one hour after validation. Backgrounding invalidates leases. The connection-screen
+controller schedules hourly validation while active; shared scheduling across
+other foreground consumers remains work in #212. Temporary network failures suspend access without
 claiming provider revocation. An invalid client, user or scope requires explicit
 reconnection.
 
@@ -99,12 +100,60 @@ interpretation.
 Validation never renews local retention. A positive validation response can
 tighten the same token's durable provider bound while preserving its pair
 generation. Worker checks enforce the latest durable bound for existing leases;
-a zero response does not rewrite storage. Refresh preserves the original local
-deadline even when the replacement token reports positive expiry. Expired local
+a zero response does not rewrite storage. Unknown-lifetime or identical-pair
+refresh preserves the original local deadline. A finite validated replacement
+can use the transition below. Expired local
 retention requires reconnection before any provider request, including refresh
 or a stale unauthorized callback. Gates also run after route preparation.
 Wall-clock persistence rejects rollback before the saved anchor, but is not a
 tamper-proof measure of elapsed time across restarts.
+
+### Finite expiry after refresh
+
+Under [#212](https://github.com/altendky/tachiai/issues/212), a successful
+single-use refresh may retire the original unknown-lifetime cap when at least
+one credential changes and official validation establishes a positive finite
+expiry for the exact client, user and scope set. The atomic replacement uses a
+fresh acceptance clock anchor and the tighter returned token/validation bound.
+The existing finite-grant storage format supports this state; no stored-record
+migration or reinterpretation occurs.
+
+The captured old cap and clock anchor still guard refresh dispatch, validation,
+confirmed transport cleanup and every commit admission, including checks after
+the READY write and final protected reads. The original 30-second operation
+budget also covers queue/lock delay and request admission. An expired old cap,
+rollback, timeout, lost response, uncertain cleanup, persistence failure or
+Forget cannot publish the replacement or revive a consumed credential. Failed
+post-write admission leaves only the operation's secretless marker.
+
+Positive validation of the same saved pair can still tighten provider expiry
+without removing its cap. A positive refresh-response lifetime alone, unknown
+official validation or an unchanged returned pair also preserves the original
+cap and anchor. Existing records are not swept because their fields do not prove
+which earlier operation established the provider bound. The new finite pair
+remains subject to startup/current-route validation, expiry, identity, scope,
+generation, foreground and source-specific access checks.
+
+This transition builds on Twitch's documented
+[device-flow single-use refresh](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow)
+and [official identity/expiry validation](https://dev.twitch.tv/docs/authentication/validate-tokens/).
+Twitch recommends reacting to unauthorized responses rather than preemptively
+refreshing from a guessed expiry; the existing bounded reactive path remains.
+See [refresh guidance](https://dev.twitch.tv/docs/authentication/refresh-tokens/).
+Shared foreground scheduling and cross-process maintenance coverage remain
+separate work in #212. The Twitch registry is process-local; this transition does
+not establish cross-process successor sharing or any ABEMA renewal protocol.
+
+Verification on 2026-10-13 passed 99 targeted session/store/coordinator tests,
+2,640 tests across the Android unit-test variants, lint, release isolation,
+instrumentation compilation and both debug APK signing checks. On the persistent
+`tachiai-dev` emulator (Android 16/API 36, x86_64), the existing configured Twitch
+replay passed the bounded native check in 30.042 seconds through its saved SYSTEM
+route. One official validation and one playback-access request returned HTTP 200;
+native frames and position movement were observed, cleanup was confirmed and all
+20 saved files remained unchanged. Exit region and physical-device behavior were
+not measured. This is a retained-account playback regression observation; no real
+finite refresh rotation or consent exchange was observed for this change.
 
 Debug diagnostics report only closed categories for the authorization phase,
 failure, response endpoint, lifetime shape, scope match and refresh presence.

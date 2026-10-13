@@ -100,6 +100,7 @@ class TwitchCatalogMaintenanceCoordinatorTest {
         try {
             val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
             val old = viewer.adoptSuccessor(initial)!!.lease!!
+            f.advance(100)
             hold = PublicationHold(f)
             val rotation = executor.submit<TwitchCatalogSessionResult> { initiator.onUnauthorized(first) }
             assertTrue(hold.entered.await(2, TimeUnit.SECONDS))
@@ -114,8 +115,9 @@ class TwitchCatalogMaintenanceCoordinatorTest {
             assertNull(rotation.get(5, TimeUnit.SECONDS).lease)
             val adopted = adoption.get(5, TimeUnit.SECONDS)!!.lease!!
             assertEquals(durable.generation, adopted.grant.generation); assertTrue(viewer.isCurrent(adopted))
-            assertEquals(saved.savedAtMs, adopted.grant.savedAtMs)
-            assertEquals(saved.localRetentionUntilMs, adopted.grant.localRetentionUntilMs)
+            assertEquals(f.wall, adopted.grant.savedAtMs)
+            assertNotEquals(saved.savedAtMs, adopted.grant.savedAtMs)
+            assertNull(adopted.grant.localRetentionUntilMs)
             assertEquals(requests, f.validations.get()); assertEquals(1, f.refreshes.get())
         } finally { hold?.release?.countDown(); viewer.close(); initiator.close(); executor.shutdownNow() }
     }

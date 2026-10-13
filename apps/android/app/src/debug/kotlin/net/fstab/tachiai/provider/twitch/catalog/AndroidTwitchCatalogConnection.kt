@@ -6,6 +6,7 @@ import java.net.URL
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.feature.connections.*
@@ -19,6 +20,22 @@ import net.fstab.tachiai.provider.twitch.DeviceRequestPaused
 import net.fstab.tachiai.provider.twitch.SMART_TV_TWITCH_CLIENT_ID
 
 private val twitchCatalogMaintenance = TwitchCatalogMaintenanceRegistry()
+
+// Constructing a competing registry entry allocates no timer or worker. Only
+// admitted proof schedules work; cancelled entries leave no delayed queue item.
+private object TwitchCatalogMaintenanceScheduling {
+    private val timer by lazy { ScheduledThreadPoolExecutor(1, { task ->
+        Thread(task, "twitch-maintenance-timer").apply { isDaemon = true }
+    }).apply { removeOnCancelPolicy = true } }
+    private val workers by lazy { ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(32), { task -> Thread(task, "twitch-maintenance-worker").apply { isDaemon = true } }) }
+    fun schedule(delayMs: Long, callback: () -> Unit): AutoCloseable {
+        val pending = timer.schedule(Runnable { callback() }, delayMs, TimeUnit.MILLISECONDS)
+        return AutoCloseable { pending.cancel(false) }
+    }
+    fun dispatch(work: () -> Unit): Boolean = try { workers.execute(work); true }
+        catch (_: RejectedExecutionException) { false }
+}
 
 // All registry/profile/keystore calls stay on workers. A saved System choice is
 // intentional; an absent, inherited or broken imported choice is never System.
@@ -84,7 +101,8 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
                     onCleanupFailure = { TwitchContinueWatchingAdmission.poison(instanceId, owned) },
                     diagnostics = diagnostics)
                 owned
-            }, canCommit = ::maintenanceOwner, onIdle = onIdle)
+            }, canCommit = ::maintenanceOwner, onIdle = onIdle,
+            schedule = TwitchCatalogMaintenanceScheduling::schedule, dispatch = TwitchCatalogMaintenanceScheduling::dispatch)
     }
     val store = maintenance.coordinator.store
     return object : TwitchCatalogConnectionBinding {

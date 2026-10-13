@@ -73,10 +73,11 @@ Credentials are absent from intents, UI state, recovery data, logs and exports.
 
 A process-created or resumed session begins unverified. Account access requires
 current-route validation and expires at the earliest provider/local deadline or
-one hour after validation. Backgrounding invalidates leases. The connection-screen
-controller schedules hourly validation while active; shared scheduling across
-other foreground consumers remains work in #212. Temporary network failures suspend access without
-claiming provider revocation. An invalid client, user or scope requires explicit
+one hour after validation. Backgrounding invalidates leases. The process-local
+shared coordinator schedules validation for actual foreground consumers, including
+discovery outside the connection screen. Temporary failures deny the failed
+attempt without claiming provider revocation; independently valid shared proof
+retains its original deadline. An invalid client, user or scope requires explicit
 reconnection.
 
 On 2026-10-10 the user approved bounded local retention for the scoped connection
@@ -140,8 +141,8 @@ and [official identity/expiry validation](https://dev.twitch.tv/docs/authenticat
 Twitch recommends reacting to unauthorized responses rather than preemptively
 refreshing from a guessed expiry; the existing bounded reactive path remains.
 See [refresh guidance](https://dev.twitch.tv/docs/authentication/refresh-tokens/).
-Shared foreground scheduling and cross-process maintenance coverage remain
-separate work in #212. The Twitch registry is process-local; this transition does
+Cross-process maintenance coverage remains separate work in #212.
+The Twitch registry is process-local; this transition does
 not establish cross-process successor sharing or any ABEMA renewal protocol.
 
 Verification on 2026-10-13 passed 99 targeted session/store/coordinator tests,
@@ -154,6 +155,65 @@ native frames and position movement were observed, cleanup was confirmed and all
 20 saved files remained unchanged. Exit region and physical-device behavior were
 not measured. This is a retained-account playback regression observation; no real
 finite refresh rotation or consent exchange was observed for this change.
+
+### Shared foreground validation — 2026-10-13
+
+Twitch requires validation at startup and during maintained sessions even when
+the app is idle between API requests; see
+[the validation guidance](https://dev.twitch.tv/docs/authentication/validate-tokens/).
+The shared per-storage/instance/client/scope/route coordinator now schedules a
+check from a successful validation receipt, including normal approved connection
+acceptance. A stored READY record, registry reference or arbitrary enrollment
+cannot create timer authority. Only an actual admitted foreground attachment
+can perform due work.
+
+The check starts up to one minute before the proof deadline, with half the
+verified span used for shorter lifetimes. Its original 30-second budget includes
+dispatcher delay, owner/storage checks, HTTP, cleanup and publication, and is
+also capped by the original proof deadline. Late or rolled-back clocks cannot
+restart either budget. Ordinary expected-origin validation is distinct from an
+unauthorized-response refresh; timer work shares the existing serialized path
+without inventing an auth rejection or consent request.
+
+Positive published proof reschedules the timer. Same-pair validation that cannot
+extend a finite durable deadline gets one predeadline attempt without an
+immediate repeat. Temporary failures preserve the original freshness and allow
+only a 60-second cooldown within its remaining bound; they do not extend access.
+When no retry fits, existing proof remains usable only until its original deadline;
+after expiry, new access needs validation through a normal consumer action.
+Failed ownership or cleanup admission blocks access earlier.
+Foreground withdrawal, Forget, route/owner
+replacement and final detachment cancel stale authority. Uncertain cleanup
+retains the original resources and blocks publication or reuse.
+
+Providers adopts already-published private receipts on its guarded worker and
+updates only the safe summary. A separate exact-origin temporary-status hint
+reports a failed due check without replacing still-valid proof or its deadline.
+Its former independent forced hourly loop is
+removed. Delayed adoption retains the original signal budget and old lease
+admission; it cannot start another validation request. Native preparation keeps
+its existing worker adoption of both session and preparation leases. This adds
+no source/DRM renewal, ABEMA bearer renewal or cross-process sharing, and keeps
+the native viewer's five-minute budget. Manual recovery controls remain.
+
+Verification for this change: all 2,675 JVM tests across 299 reports passed with
+no failures, errors or skips, along with Android lint, release isolation,
+instrumentation compilation, both debug APK signing checks and scoped repository
+hooks. Deterministic fixtures cover due work outside Providers, queue deadlines,
+temporary failures, unchanged finite bounds, cleanup uncertainty, stale signals
+and guarded status adoption.
+
+On persistent `tachiai-dev` (emulator-5580, Android 16/API 36, x86_64,
+WebView 133.0.6943.137), the existing configured native Twitch replay passed in
+31.820 seconds through its saved SYSTEM route and retained account. One official
+validation and one playback-access request returned HTTP 200; native frames and
+position movement were observed, cleanup was confirmed and all 20 saved files
+remained byte-identical. No consent or browser interaction occurred. An initial
+test invocation used the wrong instance ID and refused before any provider
+request; the corrected invocation passed. Exit region, acoustic output and
+physical-device behavior were not measured. This short playback observation does
+not establish a real hourly timer cycle or finite provider refresh rotation;
+those remain distinct from fixture coverage and the broader work in #212.
 
 Debug diagnostics report only closed categories for the authorization phase,
 failure, response endpoint, lifetime shape, scope match and refresh presence.

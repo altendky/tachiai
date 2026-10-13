@@ -1,6 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
@@ -81,24 +82,85 @@ internal class TwitchCatalogConnectionController(
     private val active = AtomicReference<TwitchCatalogTransport?>()
     private var operation: Job? = null
     private var resumeJob: Job? = null
-    private var hourly: Job? = null
+    private val adoptingMaintenance = AtomicBoolean()
+    private val maintenanceObservation: AutoCloseable
+    private data class MaintenanceSignal(val revision: Long, val began: Long)
+    private val pendingMaintenance = AtomicReference<MaintenanceSignal?>()
     @Volatile private var closed = false
     @Volatile private var desiredForeground = initiallyForeground
     @Volatile private var ownerBlocked = false
 
-    init { session.setForeground(false); if (initiallyForeground) setForeground(true) }
+    init {
+        session.setForeground(false)
+        maintenanceObservation = session.observeMaintenance(::maintenanceAvailable)
+        if (initiallyForeground) setForeground(true)
+    }
     private fun publish(change: (TwitchCatalogConnectionState) -> TwitchCatalogConnectionState) = synchronized(lock) {
         if (!closed) mutable.value = change(mutable.value)
     }
     private fun matchesOwner(): Boolean = try { owner.sameOwnership(binding.owner()) }
         catch (error: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, error); throw error }
     private fun current(token: Long) = !closed && revision.get() == token
+    // The signal has no provider values and performs no protected reads. Adopt
+    // published proof on this controller's worker, never start another request.
+    private fun maintenanceAvailable() {
+        if (closed || !desiredForeground || !foreground.isForeground) return
+        pendingMaintenance.set(MaintenanceSignal(revision.get(), clockMs()))
+        dispatchMaintenance()
+    }
+    private fun dispatchMaintenance() {
+        if (closed || !desiredForeground || !foreground.isForeground || state.value.busy ||
+            pendingMaintenance.get() == null || !adoptingMaintenance.compareAndSet(false, true)) return
+        val signal = pendingMaintenance.getAndSet(null)
+        if (signal == null) { adoptingMaintenance.set(false); return }
+        val token = signal.revision
+        fun inBudget(): Boolean = signal.began >= 0 && signal.began <= Long.MAX_VALUE - 30_000 &&
+            clockMs().let { it >= signal.began && it < signal.began + 30_000 }
+        fun unavailable() {
+            if (current(token) && foreground.isForeground && !state.value.busy) summary(
+                TwitchCatalogSessionSummary(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK), token)
+        }
+        scope.launch(io) {
+            try {
+                if (!current(token) || !foreground.isForeground || state.value.busy) return@launch
+                if (!inBudget() || !binding.canPublishLocally()) { unavailable(); return@launch }
+                TwitchCatalogConnectionWrites.await(owner.instanceId)
+                if (!current(token) || !foreground.isForeground || state.value.busy) return@launch
+                if (!inBudget() || !binding.canPublishLocally()) { unavailable(); return@launch }
+                check(matchesOwner())
+                if (!inBudget() || !binding.canPublishLocally()) { unavailable(); return@launch }
+                val adopted = session.adoptAvailableMaintenance(signal.began)
+                if (adopted == null) {
+                    if (!binding.canPublishLocally() || !session.hasLocallyCurrentLease()) unavailable()
+                    return@launch
+                }
+                if (!inBudget() || !binding.canPublishLocally()) { unavailable(); return@launch }
+                if (current(token) && foreground.isForeground && matchesOwner()) {
+                    if (inBudget() && binding.canPublishLocally()) summary(adopted.summary, token) else unavailable()
+                }
+            } catch (_: CancellationException) { }
+            catch (error: Exception) {
+                diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST, error)
+                if (current(token) && foreground.isForeground) {
+                    unavailable()
+                    publish { it.copy(ready = false,
+                        message = "Catalog authorization could not be checked. Check the saved route and reopen or retry.") }
+                }
+            } finally {
+                adoptingMaintenance.set(false)
+                // A newer publication during this adoption retains its captured
+                // budget and receives its own guarded worker admission.
+                dispatchMaintenance()
+            }
+        }
+    }
     private fun summary(value: TwitchCatalogSessionSummary, token: Long? = null) {
         if (token != null && !current(token)) return
         debugLog("state=${value.state.name} failure=${value.failure?.name ?: "NONE"}")
         if (value.state == TwitchCatalogSessionState.STORAGE_FAILURE) diagnostics.report(FailureStage.CATALOG_AUTH_STORAGE)
         val saved = value.state != TwitchCatalogSessionState.MISSING
-        publish { it.copy(ready = owner.routeUsable && foreground.isForeground && value.state != TwitchCatalogSessionState.STORAGE_FAILURE &&
+        publish { it.copy(ready = owner.routeUsable && foreground.isForeground && binding.canPublishLocally() &&
+                value.state != TwitchCatalogSessionState.STORAGE_FAILURE &&
                 !TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             hasSavedGrant = saved, canForget = saved || TwitchCatalogConnectionWrites.isFailed(owner.instanceId),
             status = if (!owner.routeUsable) "Saved route unavailable. Catalog access is blocked; local Forget remains available." else when (value.state) {
@@ -114,10 +176,11 @@ internal class TwitchCatalogConnectionController(
     fun setForeground(value: Boolean) {
         if (closed) return
         desiredForeground = value
+        pendingMaintenance.set(null)
         foreground.setForeground(false)
         session.setForeground(false)
         active.get()?.cancelActiveRequest()
-        resumeJob?.cancel(); hourly?.cancel()
+        resumeJob?.cancel()
         publish { it.copy(ready = false, activation = if (it.operation == TwitchCatalogConnectionOperation.CONNECT) it.activation else null) }
         if (!value || ownerBlocked) {
             if (state.value.operation != TwitchCatalogConnectionOperation.CONNECT) {
@@ -141,9 +204,6 @@ internal class TwitchCatalogConnectionController(
                     val saved = withContext(io) { session.readSummary() }
                     summary(saved)
                 } else if (state.value.operation != TwitchCatalogConnectionOperation.CONNECT) revalidate()
-                hourly = scope.launch {
-                    while (isActive) { delay(60 * 60 * 1000L); if (foreground.isForeground && !state.value.busy) revalidate() }
-                }
             } catch (_: CancellationException) { }
             catch (error: Exception) {
                 diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, error)
@@ -211,7 +271,10 @@ internal class TwitchCatalogConnectionController(
                 diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST, error)
                 if (current(token)) publish { it.copy(message = "Catalog action could not complete. Check the saved route and reopen or retry.") }
             }
-            finally { if (current(token)) publish { it.copy(operation = null, activation = null) } }
+            finally {
+                if (current(token)) publish { it.copy(operation = null, activation = null) }
+                dispatchMaintenance()
+            }
         }
     }
     fun forget() {
@@ -252,7 +315,9 @@ internal class TwitchCatalogConnectionController(
     override fun close() {
         if (closed) return
         closed = true; desiredForeground = false; foreground.setForeground(false); session.setForeground(false)
-        resumeJob?.cancel(); hourly?.cancel(); cancelOperation()
+        pendingMaintenance.set(null)
+        maintenanceObservation.close()
+        resumeJob?.cancel(); cancelOperation()
         CoroutineScope(SupervisorJob() + io).launch {
             TwitchCatalogConnectionWrites.await(owner.instanceId)
             runCatching { session.close() }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_CLEANUP, it) }

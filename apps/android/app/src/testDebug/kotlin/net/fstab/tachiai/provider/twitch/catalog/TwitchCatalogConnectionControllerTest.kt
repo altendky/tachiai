@@ -4,6 +4,7 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
@@ -16,8 +17,9 @@ class TwitchCatalogConnectionControllerTest {
     private class Storage : PrivateSecretStore {
         var bytes: ByteArray? = null
         var failWrites = false
+        var reads = 0
         var beforeWrite: () -> Unit = {}
-        override fun read() = bytes?.copyOf()
+        override fun read(): ByteArray? { reads++; return bytes?.copyOf() }
         override fun write(plaintext: ByteArray) {
             beforeWrite()
             if (failWrites) throw java.io.IOException()
@@ -32,19 +34,54 @@ class TwitchCatalogConnectionControllerTest {
         val store = TwitchCatalogGrantStore(storage, id, wallMs = { 1_000_000L + clock })
         val polls = AtomicInteger()
         val devices = AtomicInteger()
+        val validations = AtomicInteger()
+        val ownerReads = AtomicInteger()
+        var closeFailure = false
+        var sharedMaintenance = false
+        lateinit var createdSession: TwitchCatalogSession
+        private class Scheduled(val due: Long, val callback: () -> Unit) { var cancelled = false }
+        private val scheduled = mutableListOf<Scheduled>()
+        private val maintenanceWork = ArrayDeque<() -> Unit>()
+        private val maintenance by lazy { TwitchCatalogMaintenanceCoordinator(store,
+            transportFactory = { gate -> transport(gate) }, canCommit = { !closed && !ownerFailure },
+            wallMs = { 1_000_000L + clock }, monotonicMs = { clock },
+            schedule = { delay, callback ->
+                Scheduled(clock + delay, callback).also(scheduled::add).let { pending ->
+                    AutoCloseable { pending.cancelled = true }
+                }
+            }, dispatch = { work -> maintenanceWork.addLast(work); true }) }
+        fun runNextMaintenance() {
+            val next = checkNotNull(scheduled.filter { !it.cancelled }.minByOrNull { it.due })
+            clock = next.due; next.cancelled = true; next.callback()
+        }
+        fun drainMaintenance() { while (maintenanceWork.isNotEmpty()) maintenanceWork.removeFirst().invoke() }
+        fun runOneMaintenance() { maintenanceWork.removeFirst().invoke() }
+        fun saveLocallyRetained() {
+            val wall = 1_000_000L + clock
+            checkNotNull(store.commitConnection(store.beginConnection(), TwitchCatalogReplacement(
+                TwitchCatalogCredentials("fixture-access", "fixture-refresh", 7_200_000),
+                TwitchCatalogValidation("fixture-user", setOf(TWITCH_CATALOG_SCOPE), null), 120_000,
+                localRetentionUntilMs = wall + 120_000, savedAtMs = wall)))
+        }
         var pollStatus = 200
         var pollOverrides: Map<String, Any?> = emptyMap()
         var validationOverrides: Map<String, Any?> = emptyMap()
         var validationNetworkFailure = false
+        var validationStatus = 200
         var onValidation: () -> Unit = {}
         var closed = false
         var ownerFailure = false
+        // Legacy recreation cases reuse this fixture after close; that flag
+        // records teardown, not the admission of a newly created binding.
+        override fun canPublishLocally() = !sharedMaintenance || maintenance.canPublishLocally
         override fun owner(): TwitchCatalogConnectionOwner {
+            ownerReads.incrementAndGet()
             if (ownerFailure) throw java.io.IOException("fixture-access")
             return selected
         }
         override fun session() = TwitchCatalogSession(store, { transport { true } },
-            wallMs = { 1_000_000L + clock }, monotonicMs = { clock })
+            wallMs = { 1_000_000L + clock }, monotonicMs = { clock },
+            maintenance = if (sharedMaintenance) maintenance else null).also { createdSession = it }
         override fun transport(canRequest: () -> Boolean) = object : TwitchCatalogTransport {
             override fun device(): DeviceAuthResponse {
                 check(canRequest()); devices.incrementAndGet()
@@ -57,14 +94,14 @@ class TwitchCatalogConnectionControllerTest {
                     "token_type" to "bearer", "scope" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600) + pollOverrides)
             }
             override fun validate(accessToken: String): DeviceAuthResponse {
-                check(canRequest())
+                check(canRequest()); validations.incrementAndGet()
                 onValidation()
                 if (validationNetworkFailure) throw java.io.IOException("fixture-private-response")
-                return DeviceAuthResponse(200, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
+                return DeviceAuthResponse(validationStatus, mapOf("client_id" to SMART_TV_TWITCH_CLIENT_ID, "user_id" to "fixture-user",
                     "scopes" to listOf(TWITCH_CATALOG_SCOPE), "expires_in" to 3600) + validationOverrides)
             }
             override fun refresh(refreshToken: String): DeviceAuthResponse = error("No refresh in this fixture")
-            override fun close() = Unit
+            override fun close() { if (closeFailure) throw java.io.IOException("fixture-cleanup") }
         }
         override fun close() { closed = true }
         fun controller(scope: CoroutineScope, io: CoroutineDispatcher = Dispatchers.Unconfined,
@@ -75,6 +112,139 @@ class TwitchCatalogConnectionControllerTest {
     }
     private suspend fun idle(controller: TwitchCatalogConnectionController) = withTimeout(5_000) {
         controller.state.first { !it.busy && it.ready }
+    }
+
+    private class QueuedDispatcher : CoroutineDispatcher() {
+        var hold = false
+        private val pending = ArrayDeque<Runnable>()
+        override fun isDispatchNeeded(context: CoroutineContext) = hold
+        override fun dispatch(context: CoroutineContext, block: Runnable) { pending.addLast(block) }
+        fun drain() { hold = false; while (pending.isNotEmpty()) pending.removeFirst().run() }
+    }
+
+    @Test fun sharedTimerUpdatesTheControllerLeaseWithoutConsentOrAnotherValidationRequest() = runBlocking {
+        val fixture = Fixture().apply {
+            sharedMaintenance = true
+            pollOverrides = mapOf("expires_in" to 7200)
+            validationOverrides = mapOf("expires_in" to 7200)
+        }
+        val controller = fixture.controller(this)
+        try {
+            idle(controller); controller.connect(); idle(controller)
+            val previous = checkNotNull(fixture.createdSession.validate().lease)
+            assertEquals(1, fixture.validations.get())
+            fixture.runNextMaintenance()
+            assertEquals(1, fixture.validations.get())
+            fixture.drainMaintenance()
+            val current = checkNotNull(fixture.createdSession.validate().lease)
+            assertTrue(current.deadlineMs > previous.deadlineMs)
+            assertFalse(fixture.createdSession.isCurrent(previous))
+            assertTrue(fixture.createdSession.isCurrent(current))
+            assertTrue(controller.state.value.ready)
+            assertEquals("Twitch account validated for this foreground session.", controller.state.value.status)
+            assertEquals(2, fixture.validations.get())
+            assertEquals(1, fixture.devices.get()); assertEquals(1, fixture.polls.get())
+        } finally { controller.close() }
+    }
+
+    @Test fun queuedControllerAdoptionRetainsItsOriginalSignalBudgetAndDoesNotRevalidate() = runBlocking {
+        val fixture = Fixture().apply {
+            sharedMaintenance = true
+            pollOverrides = mapOf("expires_in" to 7200)
+            validationOverrides = mapOf("expires_in" to 7200)
+        }
+        val dispatcher = QueuedDispatcher()
+        val controller = fixture.controller(this, io = dispatcher)
+        try {
+            idle(controller); controller.connect(); idle(controller)
+            val previous = checkNotNull(fixture.createdSession.validate().lease)
+            dispatcher.hold = true
+            fixture.runNextMaintenance()
+            assertEquals(1, fixture.validations.get())
+            fixture.drainMaintenance()
+            assertEquals(2, fixture.validations.get())
+            fixture.clock += 30_000
+            assertTrue(fixture.clock < previous.deadlineMs)
+            val ownerReads = fixture.ownerReads.get(); val storageReads = fixture.storage.reads
+            dispatcher.drain()
+            assertEquals(ownerReads, fixture.ownerReads.get()); assertEquals(storageReads, fixture.storage.reads)
+            assertEquals(2, fixture.validations.get())
+            assertEquals(1, fixture.devices.get()); assertEquals(1, fixture.polls.get())
+            assertTrue(fixture.createdSession.isCurrent(previous))
+            assertTrue(controller.state.value.status.contains("temporarily"))
+            fixture.clock = previous.deadlineMs
+            assertFalse(fixture.createdSession.isCurrent(previous))
+        } finally { dispatcher.drain(); controller.close() }
+    }
+
+    @Test fun failedDueValidationUpdatesTheControllerWithoutRevokingStillValidProof() = runBlocking {
+        val fixture = Fixture().apply {
+            sharedMaintenance = true
+            pollOverrides = mapOf("expires_in" to 7200)
+            validationOverrides = mapOf("expires_in" to 7200)
+        }
+        val controller = fixture.controller(this)
+        try {
+            idle(controller); controller.connect(); idle(controller)
+            val previous = checkNotNull(fixture.createdSession.validate().lease)
+            val durable = fixture.storage.bytes!!.copyOf()
+            fixture.validationStatus = 503
+            fixture.runNextMaintenance(); fixture.drainMaintenance()
+            assertTrue(controller.state.value.status.contains("temporarily"))
+            assertTrue(fixture.createdSession.isCurrent(previous))
+            assertArrayEquals(durable, fixture.storage.bytes)
+            assertEquals(2, fixture.validations.get())
+            assertEquals(1, fixture.devices.get()); assertEquals(1, fixture.polls.get())
+            fixture.clock = previous.deadlineMs
+            assertFalse(fixture.createdSession.isCurrent(previous))
+            assertFalse(controller.state.value.status.contains("validated for"))
+            assertEquals(2, fixture.validations.get())
+        } finally { controller.close() }
+    }
+
+    @Test fun uncertainDueCleanupReportsTemporaryBlockedAccessWithoutAdoptingProof() = runBlocking {
+        val fixture = Fixture().apply {
+            sharedMaintenance = true
+            pollOverrides = mapOf("expires_in" to 7200)
+            validationOverrides = mapOf("expires_in" to 7200)
+        }
+        val controller = fixture.controller(this)
+        try {
+            idle(controller); controller.connect(); idle(controller)
+            val previous = checkNotNull(fixture.createdSession.validate().lease)
+            val durable = fixture.storage.bytes!!.copyOf()
+            fixture.closeFailure = true
+            fixture.runNextMaintenance(); fixture.drainMaintenance()
+            assertFalse(controller.state.value.ready)
+            assertTrue(controller.state.value.status.contains("temporarily"))
+            assertFalse(fixture.createdSession.isCurrent(previous))
+            assertArrayEquals(durable, fixture.storage.bytes)
+            assertEquals(2, fixture.validations.get())
+            assertEquals(1, fixture.devices.get()); assertEquals(1, fixture.polls.get())
+        } finally { controller.close() }
+    }
+
+    @Test fun delayedFailureSignalCannotLeaveValidatedStatusPastTheOriginalLocalExpiry() = runBlocking {
+        val fixture = Fixture().apply {
+            sharedMaintenance = true
+            validationOverrides = mapOf("expires_in" to 0)
+            saveLocallyRetained()
+        }
+        val controller = fixture.controller(this)
+        try {
+            idle(controller)
+            val previous = checkNotNull(fixture.createdSession.validate().lease)
+            val durable = fixture.storage.bytes!!.copyOf()
+            fixture.validationStatus = 503
+            fixture.runNextMaintenance(); fixture.runOneMaintenance()
+            fixture.clock = previous.deadlineMs
+            fixture.drainMaintenance()
+            assertTrue(controller.state.value.status.contains("temporarily"))
+            assertFalse(fixture.createdSession.isCurrent(previous))
+            assertArrayEquals(durable, fixture.storage.bytes)
+            assertEquals(2, fixture.validations.get())
+            assertEquals(0, fixture.devices.get()); assertEquals(0, fixture.polls.get())
+        } finally { controller.close() }
     }
 
     @Test fun connectUsesCatalogGrantAndPublishesNoCredentialsOrUserIdentity() = runBlocking {

@@ -160,15 +160,18 @@ The native viewer's existing worker checks now adopt a proven successor before
 checking durable currentness. They may wait once for an already active flight
 bound to the exact predecessor or its privately proved successor chain. This
 never starts maintenance, joins an unrelated account, retries a refresh or treats
-a newer stored record as proof. Waiting, session-lock contention and final
-protected admission share one original 30-second caller deadline. The old local
+a newer stored record as proof. Preparation-lock contention, owner reads, waiting,
+session-lock contention and final protected admission share one original
+30-second caller deadline. The old local
 lease must remain admissible throughout; expiry or lifecycle loss ends waiting.
+A healthy completed attempt that supplies no proof leaves the original lease
+subject to its strict durable check; failed waiting never takes that fallback.
 
 UI admission remains memory-only. An exact predecessor can remain locally
 admissible during the successful worker handoff, bounded by its unchanged expiry,
 retention and lifecycle, so the UI cannot falsely close the viewer between the
-session update and preparation update. This does not authorize HTTP with that
-old token; worker checks still require the exact durable successor. The selected
+session update and preparation update. Worker requests still require the exact
+current durable lease. The selected
 live/replay source, original source-acceptance deadline and five-minute native
 experiment budget remain unchanged. A source-access exchange stays bound to the
 exact lease whose token it captured; a rotation during that exchange refuses its
@@ -229,12 +232,23 @@ receive the failure, and cleanup poison or actual recovery markers still reject
 access. Both cases passed with server and network failures after the existing
 lease case first failed. The final full rerun passed 2,552 JVM cases in 295 reports
 with no failures, errors or skips, plus the same Android and signing checks.
-The final APK also passed the same bounded replay check in 29.016 seconds, with
+The receipt-preservation APK also passed the same bounded replay check in 29.016 seconds, with
 one validation/access pair (HTTP 200), four media requests, frame/movement,
 confirmed cleanup and all 20 saved files unchanged. Its final diagnostic was
 ADMISSION alongside REPLAY_ACCEPTED and no feed failure. That diagnostic is shared
 with teardown callbacks; the recorded line does not establish when it changed.
 The accepted playback outcome and cleanup receipts are recorded separately.
+
+The overlapping no-proof case first failed, then passed with both HTTP 500 and
+network failure while the viewer was deterministically waiting on the peer's
+active attempt. Healthy completion now leaves strict original-grant admission
+available; REFRESHING, recovery markers, changed generations, expiry and failed
+waiting remain refused. Owner or protected-read delays cannot restart the original
+preparation deadline. The complete final verification passed 2,554 JVM cases in
+295 reports, with no failures, errors or skips, and the Android/signing checks.
+One replay check on that exact final APK passed in 26.176 seconds with the same
+one validation/access pair, four media requests, READY movement, confirmed cleanup,
+diagnostic NONE and all 20 saved files unchanged. The normal launcher was restored.
 
 ## Local exact-video import
 

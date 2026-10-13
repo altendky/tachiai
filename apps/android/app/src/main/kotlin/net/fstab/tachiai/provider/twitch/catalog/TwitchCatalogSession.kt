@@ -393,8 +393,9 @@ internal class TwitchCatalogSession(
 
     // Continuity is explicit and worker-only. A newer record alone is never a
     // successor proof, and a stale unauthorized callback never uses this seam.
-    fun adoptSuccessor(expectedLease: TwitchCatalogLease, waitForExistingFlight: Boolean = false): TwitchCatalogSessionResult? {
-        val began = monotonicMs()
+    fun adoptSuccessor(expectedLease: TwitchCatalogLease, waitForExistingFlight: Boolean = false,
+        admissionStartedMs: Long = monotonicMs()): TwitchCatalogSessionResult? {
+        val began = admissionStartedMs
         return synchronized(operationLock) {
             if (lease !== expectedLease || closed || !foreground || localRevision.get() != expectedLease.localRevision)
                 return@synchronized if (waitForExistingFlight) stopped() else null

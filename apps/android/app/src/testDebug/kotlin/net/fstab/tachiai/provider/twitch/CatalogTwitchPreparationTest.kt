@@ -10,6 +10,7 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.Job
 import net.fstab.tachiai.platform.network.*
@@ -374,6 +375,61 @@ class CatalogTwitchPreparationTest {
                 assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
                 assertEquals(1, fixture.refreshCalls); assertEquals(1, fixture.mediaCalls)
             }
+            preparation.close()
+        }
+    }
+
+    @Test fun completedConcurrentTemporaryAttemptRetainsOriginalDurableViewerAdmission() {
+        for (failure in listOf("server", "network")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val bytes = fixture.memory.bytes!!.copyOf()
+            val peer = fixture.peerSession()
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val admissionThread = AtomicReference<Thread>()
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                fixture.validateStatus = 500
+                fixture.onValidate = {
+                    entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                    if (failure == "network") throw IOException("Fixture network")
+                }
+                val validation = executor.submit<TwitchCatalogSessionResult> { peer.validate(force = true) }
+                assertTrue(entered.await(2, TimeUnit.SECONDS))
+                val admission = executor.submit<Boolean> {
+                    admissionThread.set(Thread.currentThread()); preparation.checkStored()
+                }
+                val waiting = setOf(Thread.State.WAITING, Thread.State.TIMED_WAITING)
+                val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (admissionThread.get()?.state !in waiting && System.nanoTime() < until) Thread.yield()
+                assertTrue(admissionThread.get()?.state in waiting); assertFalse(admission.isDone)
+                assertTrue(preparation.canContinue())
+                release.countDown()
+                assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, validation.get(5, TimeUnit.SECONDS).summary.state)
+                assertTrue(admission.get(5, TimeUnit.SECONDS))
+                assertTrue(preparation.canContinue()); assertArrayEquals(bytes, fixture.memory.bytes)
+                assertEquals(2, fixture.validationCalls); assertEquals(0, fixture.refreshCalls)
+                assertEquals(1, fixture.mediaCalls); assertEquals(40_000L, preparation.acceptanceDeadlineMs)
+            } finally {
+                release.countDown(); fixture.onValidate = {}
+                preparation.close(); peer.close(); executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test fun unchangedGrantFallbackCannotRestartBudgetAfterOwnerOrProtectedReadDelay() {
+        for (stage in listOf("owner", "record")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val requests = fixture.validationCalls + fixture.refreshCalls
+            val reads = fixture.memory.reads
+            if (stage == "owner") fixture.onOwner = { fixture.advance(30_000) }
+            else fixture.memory.onRead = { fixture.advance(30_000) }
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue())
+            assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+            assertEquals(1, fixture.mediaCalls); assertEquals(40_000L, preparation.acceptanceDeadlineMs)
+            if (stage == "owner") assertEquals(reads, fixture.memory.reads)
+            fixture.onOwner = {}; fixture.memory.onRead = {}
             preparation.close()
         }
     }

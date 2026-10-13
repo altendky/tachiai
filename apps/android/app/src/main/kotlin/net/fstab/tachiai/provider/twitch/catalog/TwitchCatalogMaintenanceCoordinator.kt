@@ -205,7 +205,10 @@ internal class TwitchCatalogMaintenanceCoordinator(
                 catch (_: InterruptedException) { Thread.currentThread().interrupt(); return failed() }
             }
             if (!admitted()) return failed()
-            return attached.successor(expected)?.forAdmission(began) ?: failed()
+            // Completed healthy work may provide no replacement at all. Only
+            // strict currentness of the caller's original grant can then admit
+            // it; a failed wait above must never take that fallback.
+            return attached.successor(expected)?.forAdmission(began)
         }
         val receipt = attached.successor(expected) ?: return null
         return if (admitted()) receipt.forAdmission(began) else failed()

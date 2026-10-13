@@ -59,20 +59,26 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     // rotating the pair generation. UI publication remains memory-only above.
     // Adopt only shared proof, optionally waiting for work already underway;
     // these checks never start validation or refresh and do not renew the source.
-    override fun checkStored(force: Boolean): Boolean = synchronized(storedLock) {
-        if (!canContinue()) return false
-        val current = runCatching {
-            if (owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } != true) false
-            else {
-                val connection = checkNotNull(session.get())
-                val previous = checkNotNull(lease)
-                val successor = connection.adoptSuccessor(previous, waitForExistingFlight = true)
-                if (successor != null) lease = successor.lease
-                lease?.let(connection::isCurrent) == true
-            }
-        }.getOrDefault(false)
-        if (!current) valid.set(false)
-        current && canContinue()
+    override fun checkStored(force: Boolean): Boolean {
+        val began = monotonicMs()
+        fun inBudget(): Boolean = began >= 0 && monotonicMs().let { it >= began && it - began < 30_000L }
+        return synchronized(storedLock) {
+            if (!canContinue()) return false
+            val current = runCatching {
+                if (!inBudget() || owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } != true ||
+                    !inBudget()) false
+                else {
+                    val connection = checkNotNull(session.get())
+                    val previous = checkNotNull(lease)
+                    val successor = connection.adoptSuccessor(previous, waitForExistingFlight = true, admissionStartedMs = began)
+                    if (successor != null) lease = successor.lease
+                    inBudget() && lease?.let(connection::isCurrent) == true && inBudget()
+                }
+            }.getOrDefault(false)
+            val admitted = current && canContinue() && inBudget()
+            if (!admitted) valid.set(false)
+            admitted
+        }
     }
 
     override fun resolve(replay: Boolean, resource: String, onStatus: (String, Int) -> Unit): TwitchPlaybackSource {

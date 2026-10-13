@@ -397,6 +397,64 @@ conditionally restores the exact prior record, never a newer replacement or
 Forget state. Uncertain HTTP/browser/route cleanup prevents publication and
 retains the still-owned resources until process restart.
 
+### Automatic saved-account validation — 2026-10-12
+
+The account controller automatically validates an eligible saved grant after
+loading and on a genuine return to the foreground. Both identity and registered
+email are checked through the freshly captured selected owner; loading a saved
+record alone is not Connected. Repeated foreground notifications and overlapping
+manual actions do not start duplicate work. Pending email/QR approval, browser
+handoff and Forget retain their own lifecycle and controls. Manual validation
+remains available for bounded recovery.
+
+The two read-only requests share one original thirty-second validation deadline.
+Request-operation time limits and inconclusive provider responses are temporary
+failures, distinct from decoded grant expiry, consent expiry or an actual
+authorization refusal. Pausing, Forget, replacement, owner changes and stale
+callbacks still revoke publication. Successful validation preserves the grant,
+its generation and its provider expiry; it performs no challenge, token polling,
+credential rotation, rejection probe or browser navigation.
+
+This is a bounded controller slice of
+[#212](https://github.com/altendky/tachiai/issues/212), not completed automatic
+authorization maintenance. My List and History retain their independent
+automatic on-use validation and collection proofs. Shared cross-consumer
+coalescing and recovery remain further work. The guest native viewer does not
+consume this saved account; account-entitled playback is separate integration.
+Native renewal remains unverified. Retained first-party browser code renews
+through cookie-backed `/api/auth/accessToken`; it does not establish a native
+bearer-only refresh protocol, and browser cookies are not read back or imported.
+
+Full local Android verification passed 2,470 JVM cases in 292 reports with zero
+failures, errors or skips, including the new controller and timeout cases.
+Lint, release isolation, instrumentation compilation, both APK assemblies,
+shared debug certificate verification, scoped hooks/docs and independent review
+passed. The existing History parser's compiler warnings remain; native libraries
+were unchanged. Six provider-free account-screen cases passed in 11.446 seconds.
+
+On persistent tachiai-dev, Android16/API36/x86-64 with the saved native email
+grant and selected Windscribe route (exit country unmeasured), opening the native
+account screen reached
+Checking and then Connected without pressing Validate or Connect. Covering it
+with the native launcher and returning to the same Activity triggered another
+Checking-to-Connected validation. No provider browser or handoff was opened.
+The observation stripped native UI snapshots to fixed status categories and
+retained no raw UI. All twenty saved files were byte-identical after installation,
+the six synthetic cases and both observations; the ordinary launcher was
+restored. The phone was not used. This establishes two bounded controller
+validations, not renewal, switching, full #212 acceptance or playback.
+
+After removing a compiler-reported redundant cast, fifty focused account
+controller/HTTP cases and the remaining Android build, lint, isolation and
+signing checks passed again. On 2026-10-13 UTC the exact final APK also passed
+one further automatic native startup validation. All twenty saved files stayed
+unchanged, and the ordinary launcher was verified in the foreground afterward.
+
+One installation attempt lost its ADB connection. Read-only verification found
+the old APK and unchanged saved files; a subsequent bounded normal update
+succeeded. No reset, uninstall, route fallback or saved-state restoration was
+used.
+
 ### Explicit System approval bridge — 2026-10-12
 
 The approval-only System bridge reuses the existing authenticated CONNECT

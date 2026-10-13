@@ -133,8 +133,19 @@ class AbemaAccountHttpTransportTest {
         try { t.token(fixtureAccountChallenge()); fail() } catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.EXPIRED, error.category) }
         assertEquals(0, c.opened); assertEquals(0, c.disconnected)
         val slow = Connection(profile); var elapsed = 1000L; slow.responseHook = { elapsed += 15000 }
-        try { transport(slow, elapsed = { elapsed }).profile("guest", "guest-bearer"); fail() } catch (_: AbemaAccountException) { }
+        try { transport(slow, elapsed = { elapsed }).profile("guest", "guest-bearer"); fail() }
+        catch (error: AbemaAccountException) { assertEquals(AbemaAccountFailure.TIME_LIMIT_REACHED, error.category) }
         assertEquals(0, slow.opened); assertEquals(1, slow.disconnected)
+    }
+    @Test fun invalidOperationClockIsTemporaryAndNeverDiagnosesGrantExpiry() {
+        val negative = Connection(profile)
+        val error = assertThrows(AbemaAccountException::class.java) { transport(negative, elapsed = { -1 }).profile("guest", "private-bearer") }
+        assertEquals(AbemaAccountFailure.TIME_LIMIT_REACHED, error.category)
+        assertEquals(0, negative.opened); assertEquals(0, negative.disconnected)
+        var now = 1000L; val rollback = Connection(profile).apply { responseHook = { now-- } }
+        val refused = assertThrows(AbemaAccountException::class.java) { transport(rollback, elapsed = { now }).profile("guest", "private-bearer") }
+        assertEquals(AbemaAccountFailure.TIME_LIMIT_REACHED, refused.category)
+        assertEquals(0, rollback.opened); assertEquals(1, rollback.disconnected)
     }
     @Test fun globalCookieHandlerRefusesBeforeOpeningAndAfterStatusWithoutMutatingHandler() {
         val previous = CookieHandler.getDefault(); val handler = CookieManager()

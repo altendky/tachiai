@@ -124,8 +124,10 @@ internal class AbemaAccountHttpTransport(
             if (!synchronized(lock) { !closed && !poisoned && this.revision == revision } || !canRequest())
                 throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             val now = elapsedMs()
-            if (now < began || now - began >= 15_000 || deadline != null && now >= deadline)
+            if (deadline != null && now >= deadline)
                 throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+            if (began < 0 || now < began || now - began >= 15_000)
+                throw AbemaAccountException(AbemaAccountFailure.TIME_LIMIT_REACHED)
         }
         var handle: Handle? = null
         var input: java.io.InputStream? = null

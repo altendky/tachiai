@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
+import net.fstab.tachiai.platform.network.parseConnectionProfile
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -21,13 +22,18 @@ class AbemaAccountConnectionControllerTest {
         val storage = MemoryAbemaAccountStorage()
         val id = UUID.randomUUID().toString()
         val store = AbemaAccountGrantStore(id, storage)
-        val owner = AbemaCatalogRouteOwner(ProviderInstance(id, PrototypeService.ABEMA, "Fixture"), null)
+        var owner = AbemaCatalogRouteOwner(ProviderInstance(id, PrototypeService.ABEMA, "Fixture"), null)
         var matching = true; var now = 1000L; var wall = 1000000L; var negativeAccepted = false
         var profileMismatch = false; var profileRejected = false; var preparations = 0; var tokens = 0; var closed = 0; var closeThrows = false
         var onToken: () -> Unit = {}
         var onProfile: () -> Unit = {}
         var onEmail: () -> Unit = {}
         var onElapsed: () -> Unit = {}
+        var onOwner: () -> Unit = {}
+        var onMatch: () -> Unit = {}
+        var onClose: () -> Unit = {}
+        var profileInconclusive = false
+        var profileFailure: AbemaAccountFailure? = null
         var emailResult = AbemaAccountEmailResult.REGISTERED
         var emailChecks = 0
         var ownerReads = 0
@@ -39,8 +45,8 @@ class AbemaAccountConnectionControllerTest {
         private val later = mutableListOf<Pair<Long, () -> Unit>>()
         val binding = object : AbemaAccountConnectionBinding {
             override val store = this@Fixture.store
-            override fun owner(): AbemaCatalogRouteOwner { ownerReads++; return this@Fixture.owner }
-            override fun sameOwner(owner: AbemaCatalogRouteOwner): Boolean { ownerReads++; return matching && owner === this@Fixture.owner }
+            override fun owner(): AbemaCatalogRouteOwner { ownerReads++; onOwner(); return this@Fixture.owner }
+            override fun sameOwner(owner: AbemaCatalogRouteOwner): Boolean { ownerReads++; onMatch(); return matching && owner === this@Fixture.owner }
             override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean) = object : AbemaAccountBootstrap {
                 override fun prepare(): AbemaAccountChallenge? { preparations++; return fixtureAccountChallenge(1000000).takeIf { gate() && foreground() } }
                 override fun cancel() = Unit
@@ -51,6 +57,8 @@ class AbemaAccountConnectionControllerTest {
                     if (!gate()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                     profileIds.add(id)
                     profileBearers.add(bearer); onProfile()
+                    profileFailure?.let { throw AbemaAccountException(it) }
+                    if (profileInconclusive) return AbemaAccountProfileResult.Inconclusive
                     if (profileRejected) return AbemaAccountProfileResult.Rejected
                     if (bearer == "tachiai-invalid-bearer" && !negativeAccepted) return AbemaAccountProfileResult.Rejected
                     return AbemaAccountProfileResult.Identity(if (profileMismatch && id != "guest") "other" else id)
@@ -64,7 +72,7 @@ class AbemaAccountConnectionControllerTest {
                     assertEquals(fixtureAccountToken(), bearer); emailChecks++; onEmail(); return emailResult
                 }
                 override fun cancelActiveRequest() = Unit
-                override fun close() { closed++; if (closeThrows) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
+                override fun close() { closed++; onClose(); if (closeThrows) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
             }
         }
         val controller = AbemaAccountConnectionController(binding, worker, cancel, { main.add(it) },
@@ -84,6 +92,9 @@ class AbemaAccountConnectionControllerTest {
         fun prepared() { controller.load(); pump(); controller.connect(); pump(); assertTrue(controller.state.value.canApprove) }
         fun handedOff() { prepared(); var launched = false; controller.handoff { launched = true; assertTrue(validAbemaVerificationUri(it)); true }; pump(); assertTrue(launched) }
         fun granted(id: String = "intended-account") = AbemaAccountTokenResult.Granted(decodedAbemaGrant(fixtureAccountToken(id), id, wall))
+        fun save() {
+            store.replace(granted().grant, wall, store.revision()) { true }
+        }
         fun emailOpened(): AbemaApprovalBrowserRequest {
             controller.load(); pump()
             var request: AbemaApprovalBrowserRequest? = null
@@ -265,9 +276,9 @@ class AbemaAccountConnectionControllerTest {
     }
     @Test fun resumeValidatesTheSavedAccountDirectlyWithoutAnotherChallengeOrRejectionProbe() {
         val f = Fixture(); f.handedOff(); f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
+        val preparations = f.preparations; val profiles = f.profileIds.size
         f.controller.setForeground(false); f.controller.setForeground(true)
         assertEquals(AbemaAccountStatus.UNVERIFIED, f.controller.state.value.status)
-        val preparations = f.preparations; val profiles = f.profileIds.size
         f.negativeAccepted = true; f.controller.revalidate(); f.pump(); assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
         assertEquals(preparations, f.preparations)
         assertEquals(listOf("intended-account"), f.profileIds.drop(profiles))
@@ -298,8 +309,153 @@ class AbemaAccountConnectionControllerTest {
         assertTrue(f.worker.queued.isEmpty()); assertEquals(reads, f.ownerReads)
         f.controller.setForeground(true); f.controller.connect()
         assertEquals(reads, f.ownerReads); assertEquals(1, f.worker.queued.size)
-        f.controller.connect(); assertEquals(1, f.worker.queued.size); assertEquals(reads, f.ownerReads)
+        f.pump() // Automatic missing-account read is separate from explicit Connect.
+        val resumedReads = f.ownerReads
+        f.controller.connect()
+        assertEquals(resumedReads, f.ownerReads); assertEquals(1, f.worker.queued.size)
+        f.controller.connect(); assertEquals(1, f.worker.queued.size); assertEquals(resumedReads, f.ownerReads)
         f.pump(); assertTrue(f.controller.state.value.canApprove); assertNull(f.storage.bytes)
+    }
+    @Test fun startupAndResumeValidateAutomaticallyWithoutChangingProtectedGrantOrRequestingConsent() {
+        val f = Fixture(); f.save(); val before = f.storage.bytes!!.copyOf(); val revision = f.store.revision()
+        f.controller.load(); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+        f.controller.setForeground(false); f.controller.setForeground(true); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals(2, f.profileIds.size); assertEquals(2, f.emailChecks)
+        assertEquals(0, f.preparations); assertEquals(0, f.tokens)
+        assertFalse(f.profileBearers.contains("tachiai-invalid-bearer"))
+        assertEquals(revision, f.store.revision()); assertArrayEquals(before, f.storage.bytes)
+    }
+    @Test fun duplicateForegroundAndBusyManualValidationCoalesceWithoutRevokingTheCompletedSession() {
+        val f = Fixture(); f.save(); f.controller.load()
+        f.controller.load(); f.controller.revalidate(); f.controller.setForeground(true)
+        assertEquals(1, f.worker.queued.size); assertEquals(0, f.ownerReads)
+        f.pump(); assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        f.controller.setForeground(true); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+    }
+    @Test fun automaticValidationSkipsMissingExpiredAndPendingForgetRecordsBeforeRequests() {
+        for (kind in 0..2) {
+            val f = Fixture()
+            if (kind != 0) f.save()
+            if (kind == 1) f.wall = f.store.read()!!.grant.expiresAtMs
+            if (kind == 2) f.storage.pending = true
+            val before = f.storage.bytes?.copyOf()
+            f.controller.load(); f.pump()
+            assertTrue(f.profileIds.isEmpty()); assertEquals(0, f.emailChecks)
+            assertEquals(if (kind == 1) AbemaAccountStatus.RECONNECT_REQUIRED else AbemaAccountStatus.MISSING,
+                f.controller.state.value.status)
+            assertArrayEquals(before, f.storage.bytes)
+        }
+    }
+    @Test fun automaticMaintenancePreservesReadyEmailAndPendingQrApproval() {
+        val email = Fixture(); email.save(); val request = email.emailOpened()
+        val profiles = email.profileIds.size; val checks = email.emailChecks
+        email.emailReturned(request)
+        email.controller.load(); email.controller.revalidate(); email.pump()
+        assertEquals(profiles, email.profileIds.size); assertEquals(checks, email.emailChecks)
+        assertTrue(email.controller.state.value.canContinue)
+        email.controller.finishEmailConnection(); email.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, email.controller.state.value.status)
+        val qr = Fixture(); qr.save(); qr.handedOff(); val qrProfiles = qr.profileIds.size
+        qr.controller.setForeground(false); qr.controller.setForeground(true)
+        qr.controller.load(); qr.controller.revalidate(); qr.pump()
+        assertEquals(qrProfiles, qr.profileIds.size); assertTrue(qr.controller.state.value.canContinue)
+        assertEquals(0, qr.tokens)
+    }
+    @Test fun savedValidationRecapturesChangedRouteBeforeCandidateAdmissionAndReadsOnlyOnWorker() {
+        val f = Fixture(); f.save(); f.controller.load(); f.pump()
+        val original = f.storage.bytes!!.copyOf()
+        f.controller.setForeground(false)
+        f.owner = AbemaCatalogRouteOwner(f.owner.instance.copy(setup = ProviderSetup(SourceRouteChoice(
+            SourceRouteMode.SAVED_CONNECTION, UUID.randomUUID().toString(), "New route"))),
+            parseConnectionProfile("http://proxy.example.test:3128".toByteArray()))
+        val reads = f.ownerReads
+        f.controller.setForeground(true); assertEquals(reads, f.ownerReads)
+        f.pump(); assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals(2, f.profileIds.size); assertArrayEquals(original, f.storage.bytes)
+    }
+    @Test fun transientValidationFailuresPreserveSavedGrantAndRecoverOnTheNextResumeWithoutRetryLoop() {
+        for (kind in 0..2) {
+            val f = Fixture(); f.save(); val original = f.storage.bytes!!.copyOf()
+            when (kind) {
+                0 -> f.profileInconclusive = true
+                1 -> f.emailResult = AbemaAccountEmailResult.INCONCLUSIVE
+                2 -> f.profileFailure = AbemaAccountFailure.TIME_LIMIT_REACHED
+            }
+            f.controller.load(); f.pump()
+            assertEquals(AbemaAccountStatus.TEMPORARY, f.controller.state.value.status)
+            assertEquals(1, f.profileIds.size); assertArrayEquals(original, f.storage.bytes)
+            f.profileInconclusive = false; f.emailResult = AbemaAccountEmailResult.REGISTERED; f.profileFailure = null
+            f.controller.setForeground(false); f.controller.setForeground(true); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            assertEquals(2, f.profileIds.size); assertArrayEquals(original, f.storage.bytes)
+        }
+    }
+    @Test fun oneValidationDeadlineIncludesBothRequestsOwnerReadsAndCleanupWithoutPublishingLateSuccess() {
+        for (kind in 0..5) {
+            val f = Fixture(); f.save(); val original = f.storage.bytes!!.copyOf()
+            when (kind) {
+                0 -> f.onProfile = { f.now += 30_000 }
+                1 -> { f.onProfile = { f.now += 20_000 }; f.onEmail = { f.now += 10_000 } }
+                2 -> f.onOwner = { f.now += 30_000 }
+                3 -> { f.profileRejected = true; f.onClose = { f.now += 30_000 } }
+                4 -> f.onMatch = {
+                    val session = AbemaAccountConnectionController::class.java.getDeclaredField("session")
+                        .apply { isAccessible = true }.get(f.controller) as AbemaAccountSession
+                    if (session.status() == AbemaAccountStatus.CONNECTED) f.now += 30_000
+                }
+                5 -> f.onProfile = { f.now-- }
+            }
+            f.controller.load(); f.pump()
+            assertEquals(AbemaAccountStatus.TEMPORARY, f.controller.state.value.status)
+            assertArrayEquals(original, f.storage.bytes); assertTrue(f.worker.queued.isEmpty())
+            if (kind in setOf(0, 2, 3, 5)) assertEquals(0, f.emailChecks)
+        }
+        for (invalid in listOf(-1L, Long.MAX_VALUE - 29_999)) {
+            val f = Fixture(); f.save(); f.now = invalid; f.controller.load(); f.pump()
+            assertEquals(AbemaAccountStatus.TEMPORARY, f.controller.state.value.status)
+            assertTrue(f.profileIds.isEmpty())
+        }
+    }
+    @Test fun automaticValidationCannotPublishAfterPauseForgetReplacementOrCleanupFailure() {
+        for (kind in 0..3) {
+            val f = Fixture(); f.save(); val original = f.storage.bytes!!.copyOf()
+            f.onProfile = { when (kind) {
+                0 -> f.controller.setForeground(false)
+                1 -> f.controller.forget()
+                2 -> f.store.replace(f.granted("other").grant, f.wall, f.store.revision()) { true }
+                3 -> f.closeThrows = true
+            } }
+            f.controller.load(); f.pump()
+            assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            assertEquals(0, f.emailChecks)
+            if (kind in setOf(0, 3)) assertArrayEquals(original, f.storage.bytes)
+            if (kind == 1) assertNull(f.store.read())
+            if (kind == 2) assertEquals("other", f.store.read()!!.grant.userId)
+        }
+    }
+    @Test fun actualGrantExpiryDuringValidationRequiresReconnectWithoutErasingTheRecord() {
+        val f = Fixture(); f.save(); val original = f.storage.bytes!!.copyOf()
+        val expiry = f.store.read()!!.grant.expiresAtMs
+        f.onProfile = { f.wall = expiry }
+        f.controller.load(); f.pump()
+        assertEquals(AbemaAccountStatus.RECONNECT_REQUIRED, f.controller.state.value.status)
+        assertEquals(1, f.profileIds.size); assertEquals(0, f.emailChecks)
+        assertArrayEquals(original, f.storage.bytes)
+    }
+    @Test fun queuedCheckingAndSuccessCannotOverwriteALaterPause() {
+        val f = Fixture(); f.save(); f.controller.load()
+        assertTrue(f.worker.one()) // CHECKING and final publication remain queued.
+        f.controller.setForeground(false); f.pump()
+        assertEquals(AbemaAccountStatus.PAUSED, f.controller.state.value.status)
+        assertEquals(AbemaAccountProgress.IDLE, f.controller.state.value.progress)
+        assertFalse(f.controller.state.value.busy)
+        f.controller.setForeground(true); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
     }
     @Test fun providerApprovedAccountDefinesTheSavedIdentityWithoutManualInput() {
         val f = Fixture(); f.controller.load(); f.pump()
@@ -376,8 +532,12 @@ class AbemaAccountConnectionControllerTest {
                 if (forget) { assertNull(f.store.read()); assertTrue(f.store.usable(f.store.revision())) }
                 else {
                     assertArrayEquals(previous, f.storage.bytes)
+                    val profiles = f.profileIds.size
                     f.controller.setForeground(true); f.pump()
+                    // The replacement's retained provider handoff is still
+                    // pending; automatic maintenance must not displace it.
                     assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+                    assertEquals(profiles, f.profileIds.size)
                 }
             } finally { release.countDown(); worker.shutdownNow(); ui.shutdownNow() }
         }

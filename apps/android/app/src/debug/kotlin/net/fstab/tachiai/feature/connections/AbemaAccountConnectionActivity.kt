@@ -69,10 +69,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume(); resumed = true
-        controller?.let {
-            val unread = it.state.value.progress == AbemaAccountProgress.READING
-            it.setForeground(true); if (unread) it.load()
-        }
+        controller?.setForeground(true)
     }
     override fun onPause() { resumed = false; controller?.setForeground(false); super.onPause() }
     override fun onDestroy() { revision++; controller?.close(); main.removeCallbacksAndMessages(null); super.onDestroy() }

@@ -366,7 +366,8 @@ internal class TwitchProviderCatalog(
                 ?: throw Abort(CatalogFailure.NOT_FOUND)
             if (!validTwitchPlaybackResource(TwitchAccessCase.LIVE, user.login)) throw Abort(CatalogFailure.UNSUPPORTED)
             val streams = parseTwitchStreams(execute(context, TwitchHelixRequest.streams(listOf(user.id))))
-            if (streams.nextCursor != null || streams.items.size > 1 || streams.items.any {
+            // One exact live row proves presence; an empty page with a cursor cannot prove absence.
+            if ((streams.items.isEmpty() && streams.nextCursor != null) || streams.items.size > 1 || streams.items.any {
                     it.broadcaster.id != user.id || it.broadcaster.login != user.login
                 }) throw Abort(CatalogFailure.TEMPORARY)
             if (streams.items.isEmpty()) throw Abort(CatalogFailure.NOT_FOUND)

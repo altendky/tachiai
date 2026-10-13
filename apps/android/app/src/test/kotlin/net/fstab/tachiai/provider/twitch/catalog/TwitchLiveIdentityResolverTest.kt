@@ -91,6 +91,28 @@ class TwitchLiveIdentityResolverTest {
         assertEquals(3, f.calls.size)
     }
 
+    @Test fun exactMatchingLiveRowWithCursorRequiresConfirmationWithoutFetchingAnotherPage() {
+        val f = Fixture()
+        f.response = { request ->
+            if (request.operation == TwitchHelixOperation.STREAMS) page(listOf(stream()), "status-next")
+            else page(listOf(user()))
+        }
+        val bytes = checkNotNull(f.memory.bytes).copyOf()
+        val mapped = f.resolver.begin(resource())
+        assertTrue("A matching live row proves presence even when its response has a cursor", mapped is CatalogResult.Value)
+        val identity = value(mapped)
+        assertEquals(resource(), identity.resource)
+        assertEquals("newlogin", identity.login)
+        assertFalse(f.resolver.canPublish(identity))
+        assertEquals(2, f.calls.size)
+        value(f.resolver.confirm(identity))
+        assertTrue(f.resolver.canPublish(identity))
+        assertEquals(3, f.calls.size)
+        assertTrue(f.calls.none { it.url.query.contains("after=") })
+        assertEquals(0, f.refreshes)
+        assertArrayEquals(bytes, f.memory.bytes)
+    }
+
     @Test fun nativeLoginIntersectionDoesNotWidenExistingLiveGrammar() {
         listOf("ab", "x".repeat(26)).forEach { login ->
             val f = Fixture(); f.response = { page(listOf(user(login = login))) }
@@ -122,7 +144,9 @@ class TwitchLiveIdentityResolverTest {
             failure(f.resolver.begin(resource()), CatalogFailure.TEMPORARY)
         }
         listOf(page(listOf(stream("456"))), page(listOf(stream(login = "oldlogin"))),
-            page(listOf(stream(), stream())), page(listOf(stream()), "next")).forEach { response ->
+            page(listOf(stream(), stream())), page(cursor = "next"),
+            page(listOf(stream("456")), "next"), page(listOf(stream(login = "oldlogin")), "next"),
+            page(listOf(stream(), stream()), "next")).forEach { response ->
             val f = Fixture(); f.response = { request -> if (request.operation == TwitchHelixOperation.USERS) page(listOf(user())) else response }
             failure(f.resolver.begin(resource()), CatalogFailure.TEMPORARY)
         }

@@ -398,3 +398,85 @@ definite cleanup. It does not establish the full picker/Add interaction, live
 playback, other replays, imported routes, refresh/revocation, sustained playback,
 audible output or physical-device/TV behavior.
 [Issue #99](https://github.com/altendky/tachiai/issues/99) remains open.
+
+## Bounded configured broadcaster acceptance harness
+
+A separate explicitly opted-in method exercises one existing canonical Twitch
+broadcaster through the production identity resolver, catalog preparation and
+native session. It requires the provider instance and accepts an optional exact
+configured-item UUID. Without that item argument, it freezes the first locally
+eligible canonical broadcaster before any provider request. Legacy login-based
+channel entries are excluded. A missing or offline item is a refusal; the check
+does not scan other channels or substitute a sample.
+
+The retained grant, captured route, exact configured item and saved quality remain
+bound throughout the run. Its narrow request sequence validates the account,
+looks up the frozen broadcaster ID and current live status, requests playback for
+the verified login, then confirms that login still belongs to the original ID
+before player publication. It allows at most two positive validations because
+native preparation can require newer proof. Negative responses are refused before
+refresh or retry handling. The fixture's read-only sessions share a private
+coordinator; this tests the production provider/session components without
+claiming the Android registry's complete lifecycle.
+
+The existing 70-second outer budget reserves 20 seconds for cleanup. Acceptance
+requires an actual frame, two READY position samples at least 1.5 seconds apart
+with increasing position, applied quality/mute/play controls, no feed failure,
+unchanged owner/item/protected records and confirmed native, worker, resolver,
+HTTP, route and Activity cleanup. Uncertain owners remain retained. Diagnostics
+contain only closed categories, counts, HTTP statuses and booleans. The replay
+method retains its independent criteria. No consent, configured Add, source
+replacement, clock forcing or media-policy expansion is part of this check.
+
+Two bounded checks of the same saved broadcaster refused before any playback
+access or media request: one test each, zero skips, 7.353 and 9.213 seconds. The
+second check's closed diagnostics established one strictly parsed live row
+matching the saved broadcaster ID and current login, with a pagination cursor.
+Both positive account validation and the two identity/status requests returned
+HTTP 200. Cleanup and protected-record preservation passed in both refusals.
+
+The production resolver had rejected every stream-status response containing a
+cursor. [Twitch's Get Streams reference](https://dev.twitch.tv/docs/api/reference/#get-streams)
+describes the user-ID filter and cursor navigation. One exact live row establishes
+that broadcaster's presence even when navigation metadata is present. The
+resolver now accepts that row while retaining strict parsing and the final
+login-to-ID confirmation. An empty page with a cursor remains indeterminate;
+terminal empty pages remain offline, and duplicate or mismatched rows remain
+refused. No continuation request is introduced and collection completeness is
+not inferred. A new JVM regression failed on the previous predicate and passed
+after this correction; it also checks confirmation, no continuation or refresh,
+and unchanged grant bytes.
+
+Full local verification passed: 2,677 JVM tests across 299 reports, zero failures,
+errors or skips; Android lint, release isolation, instrumentation compilation,
+both APK assemblies and the shared debug signing certificate. Fifteen selected
+provider-free emulator cases passed with zero skips, including the nine new
+sequence, cursor, request-header and actual HTTP cleanup guards and six existing
+configured-broadcaster session cases. Scoped hooks and an independent review
+passed. The ordinary test manifest has no process overrides.
+
+One disclosed corrected check used the same saved broadcaster on persistent
+`tachiai-dev`, Android 16/API 36 x86-64, retained scoped Smart TV account and saved
+System network route. WebView was 133.0.6943.137; geographic region was not
+established. It executed one test with zero skips and failed after 26.479 seconds.
+Two account validations, all three identity/status/confirmation requests and the
+single exact playback access request returned HTTP 200. The same matching live
+row still contained a cursor. Six production media requests ran, and an actual
+frame rendered. Saved quality, mute and play requests succeeded without a feed
+failure, but buffering prevented a second advancing READY sample within the
+unchanged sampling bound. This verifies removal of the cursor refusal and frame
+delivery; it does not establish native channel playback acceptance or explain
+the buffering cause. No sampling or acceptance gate was weakened.
+
+Preparation settled, the worker terminated, and native player, resolver, HTTP,
+route and Activity cleanup were confirmed. Owner, exact item and protected-record
+checks passed. All 20 files under `no_backup` and `shared_prefs` were independently
+byte-identical before installation, after the provider-free cases and after the
+native check. No consent, grant refresh, source/profile/route mutation, fallback
+or media-policy expansion occurred. The normal launcher was restored.
+
+This observation is separate from the successful replay check above. Full
+configured-channel playback acceptance, picker/Add interaction, imported routes,
+refresh/revocation, sustained playback, audible output and physical-device/TV
+behavior remain unverified. [Issue #99](https://github.com/altendky/tachiai/issues/99)
+remains open.

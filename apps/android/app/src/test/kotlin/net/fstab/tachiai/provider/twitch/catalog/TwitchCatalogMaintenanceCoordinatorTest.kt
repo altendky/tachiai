@@ -67,6 +67,222 @@ class TwitchCatalogMaintenanceCoordinatorTest {
         fun advance(ms: Long) { wall += ms; mono += ms }
     }
 
+    // Hold only the already-cleaned worker's final owner admission. At this
+    // point the durable rotation exists but no successor receipt is published.
+    private class PublicationHold(f: Fixture) {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        private val held = java.util.concurrent.atomic.AtomicBoolean()
+        init {
+            val field = TwitchCatalogMaintenanceCoordinator::class.java.getDeclaredField("flight").apply { isAccessible = true }
+            f.onScopeOwner = {
+                val flight = field.get(f.coordinator)
+                val worker = flight?.javaClass?.getDeclaredField("worker")?.apply { isAccessible = true }
+                    ?.get(flight) as? AtomicReference<*>
+                if (flight != null && worker?.get() == null && held.compareAndSet(false, true)) {
+                    entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                }
+            }
+        }
+    }
+
+    private fun assertAwaiting(thread: AtomicReference<Thread>) {
+        val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (thread.get()?.state !in setOf(Thread.State.WAITING, Thread.State.TIMED_WAITING) && System.nanoTime() < end)
+            Thread.yield()
+        assertTrue(thread.get()?.state in setOf(Thread.State.WAITING, Thread.State.TIMED_WAITING))
+    }
+
+    @Test fun viewerWaitsForDurableRotationReceiptWithoutStartingMaintenanceAndInitiatorMayClose() {
+        val f = Fixture(); val saved = f.save(local = true); val viewer = f.session(); val initiator = f.session()
+        val executor = Executors.newFixedThreadPool(2)
+        var hold: PublicationHold? = null
+        try {
+            val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
+            val old = viewer.adoptSuccessor(initial)!!.lease!!
+            hold = PublicationHold(f)
+            val rotation = executor.submit<TwitchCatalogSessionResult> { initiator.onUnauthorized(first) }
+            assertTrue(hold.entered.await(2, TimeUnit.SECONDS))
+            val durable = f.store.read()!!
+            assertNotEquals(old.grant.generation, durable.generation)
+            val requests = f.validations.get(); val thread = AtomicReference<Thread>()
+            val adoption = executor.submit<TwitchCatalogSessionResult?> {
+                thread.set(Thread.currentThread()); viewer.adoptSuccessor(old, waitForExistingFlight = true)
+            }
+            assertAwaiting(thread); assertFalse(adoption.isDone)
+            initiator.close(); hold.release.countDown()
+            assertNull(rotation.get(5, TimeUnit.SECONDS).lease)
+            val adopted = adoption.get(5, TimeUnit.SECONDS)!!.lease!!
+            assertEquals(durable.generation, adopted.grant.generation); assertTrue(viewer.isCurrent(adopted))
+            assertEquals(saved.savedAtMs, adopted.grant.savedAtMs)
+            assertEquals(saved.localRetentionUntilMs, adopted.grant.localRetentionUntilMs)
+            assertEquals(requests, f.validations.get()); assertEquals(1, f.refreshes.get())
+        } finally { hold?.release?.countDown(); viewer.close(); initiator.close(); executor.shutdownNow() }
+    }
+
+    @Test fun viewerPrefersActiveProvenTipFlightToAlreadySupersededIntermediateReceipt() {
+        val f = Fixture(); f.save(); val viewer = f.session(); val initiator = f.session()
+        val executor = Executors.newFixedThreadPool(2); var hold: PublicationHold? = null
+        try {
+            val old = viewer.validate().lease!!; val first = initiator.validate().lease!!
+            val intermediate = initiator.onUnauthorized(first).lease!!
+            hold = PublicationHold(f)
+            val rotation = executor.submit<TwitchCatalogSessionResult> { initiator.onUnauthorized(intermediate) }
+            assertTrue(hold.entered.await(2, TimeUnit.SECONDS))
+            val thread = AtomicReference<Thread>()
+            val adoption = executor.submit<TwitchCatalogSessionResult?> {
+                thread.set(Thread.currentThread()); viewer.adoptSuccessor(old, waitForExistingFlight = true)
+            }
+            assertAwaiting(thread); hold.release.countDown()
+            val latest = rotation.get(5, TimeUnit.SECONDS).lease!!
+            val adopted = adoption.get(5, TimeUnit.SECONDS)!!.lease!!
+            assertEquals(latest.grant.generation, adopted.grant.generation)
+            assertNotEquals(intermediate.grant.generation, adopted.grant.generation)
+            assertEquals(2, f.refreshes.get()); assertEquals(4, f.validations.get())
+        } finally { hold?.release?.countDown(); viewer.close(); initiator.close(); executor.shutdownNow() }
+    }
+
+    @Test fun capturedViewerWaitRefusesTimeoutRollbackExpiryPauseCloseAndForgetWithoutDurableFallback() {
+        for (failure in listOf("timeout", "rollback", "expiry", "pause", "close", "forget")) {
+            val f = Fixture(); f.save(); if (failure == "expiry") f.seconds = 1
+            val viewer = f.session(); val initiator = f.session(); val executor = Executors.newFixedThreadPool(2)
+            var hold: PublicationHold? = null
+            try {
+                val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
+                val old = viewer.adoptSuccessor(initial)!!.lease!!
+                f.seconds = 7200; hold = PublicationHold(f)
+                val rotation = executor.submit<TwitchCatalogSessionResult> { initiator.onUnauthorized(first) }
+                assertTrue(hold.entered.await(2, TimeUnit.SECONDS))
+                val thread = AtomicReference<Thread>()
+                val adoption = executor.submit<TwitchCatalogSessionResult?> {
+                    thread.set(Thread.currentThread()); viewer.adoptSuccessor(old, waitForExistingFlight = true)
+                }
+                assertAwaiting(thread)
+                when (failure) {
+                    "timeout" -> f.advance(30_000)
+                    "rollback" -> f.mono--
+                    "expiry" -> f.advance(1_000)
+                    "pause" -> viewer.setForeground(false)
+                    "close" -> viewer.close()
+                    "forget" -> {
+                        assertTrue(f.store.forget())
+                        val cleared = f.store.read()!!
+                        assertEquals(TwitchCatalogGrantState.CLEARED, cleared.state); assertNull(cleared.credentials)
+                    }
+                }
+                val refused = adoption.get(2, TimeUnit.SECONDS)
+                assertNotNull("Captured wait must fail explicitly: $failure", refused)
+                assertNull(refused!!.lease); assertFalse(viewer.isLocallyCurrent(old))
+                hold.release.countDown(); rotation.get(5, TimeUnit.SECONDS)
+                assertEquals(1, f.refreshes.get()); assertEquals(3, f.validations.get())
+                if (failure == "forget") {
+                    val cleared = f.store.read()!!
+                    assertEquals(TwitchCatalogGrantState.CLEARED, cleared.state); assertNull(cleared.credentials)
+                }
+            } finally { hold?.release?.countDown(); viewer.close(); initiator.close(); executor.shutdownNow() }
+        }
+    }
+
+    @Test fun viewerAdoptionKeepsOldExpiryThroughLateProtectedAdmissionButDefaultAdoptionIsUnchanged() {
+        for (viewerMode in listOf(false, true)) {
+            val f = Fixture(); f.save(); f.seconds = 1
+            var trigger = false
+            val viewer = f.session(consumerOwner = { if (trigger) { trigger = false; f.advance(1_000) }; true })
+            val initiator = f.session()
+            try {
+                val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
+                val old = viewer.adoptSuccessor(initial)!!.lease!!
+                f.seconds = 7200; initiator.onUnauthorized(first)
+                trigger = true
+                val result = viewer.adoptSuccessor(old, waitForExistingFlight = viewerMode)
+                if (viewerMode) { assertNotNull(result); assertNull(result!!.lease) }
+                else assertNotNull(result!!.lease)
+                assertEquals(1, f.refreshes.get()); assertEquals(3, f.validations.get())
+            } finally { viewer.close(); initiator.close() }
+        }
+    }
+
+    @Test fun viewerLocalPredecessorBridgesFinalProtectedReadsWithoutExtendingItsExpiryOrWorkerAdmission() {
+        for (expire in listOf(false, true)) {
+            val f = Fixture(); f.save(); f.seconds = 1
+            val viewer = f.session(); val initiator = f.session(); val swappedReads = AtomicInteger()
+            try {
+                val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
+                val old = viewer.adoptSuccessor(initial)!!.lease!!
+                f.seconds = 7200; initiator.onUnauthorized(first)
+                f.memory.onRead = {
+                    if (!viewer.isLocallyCurrent(old)) {
+                        assertTrue(viewer.isLocallyCurrentForViewer(old))
+                        if (swappedReads.incrementAndGet() == 1 && expire) {
+                            f.advance(1_000)
+                            assertFalse(viewer.isLocallyCurrentForViewer(old))
+                        }
+                    }
+                }
+                val adopted = viewer.adoptSuccessor(old, waitForExistingFlight = true)!!
+                assertTrue(swappedReads.get() > 0)
+                assertFalse(viewer.isLocallyCurrent(old))
+                f.memory.onRead = {}
+                if (expire) {
+                    assertNull(adopted.lease); assertFalse(viewer.isLocallyCurrentForViewer(old))
+                } else {
+                    assertNotNull(adopted.lease); assertFalse(viewer.isCurrent(old))
+                    f.memory.forbid = true
+                    assertTrue(viewer.isLocallyCurrentForViewer(old))
+                    assertTrue(viewer.isLocallyCurrentForViewer(adopted.lease!!))
+                    f.advance(1_000); assertFalse(viewer.isLocallyCurrentForViewer(old))
+                    assertTrue(viewer.isLocallyCurrentForViewer(adopted.lease))
+                    viewer.close(); assertFalse(viewer.isLocallyCurrentForViewer(adopted.lease))
+                }
+            } finally { f.memory.forbid = false; f.memory.onRead = {}; viewer.close(); initiator.close() }
+        }
+    }
+
+    @Test fun viewerWaitDoesNotJoinAnUnrelatedFlightOrInventProofForReplacement() {
+        val f = Fixture(); f.save(); val viewer = f.session(); val unrelated = f.session()
+        val executor = Executors.newSingleThreadExecutor(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        try {
+            val old = viewer.validate().lease!!
+            // A rotation outside this coordinator preserves the revision but
+            // supplies no successor proof to the viewer's attachment.
+            f.store.refresh(old.grant, { true }) {
+                TwitchCatalogReplacement(TwitchCatalogCredentials("unrelated", "unrelated-refresh", 7_200_000),
+                    TwitchCatalogValidation("fixture-user", setOf(TWITCH_CATALOG_SCOPE), 7_200_000), 7_200_000)
+            }
+            f.onValidate = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val running = executor.submit<TwitchCatalogSessionResult> { unrelated.validate() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertNull(viewer.adoptSuccessor(old, waitForExistingFlight = true))
+            assertFalse(viewer.isCurrent(old)); assertEquals(0, f.refreshes.get())
+            release.countDown(); running.get(5, TimeUnit.SECONDS)
+            assertNull(viewer.adoptSuccessor(old, waitForExistingFlight = true)?.lease)
+            assertEquals(2, f.validations.get())
+        } finally { release.countDown(); viewer.close(); unrelated.close(); executor.shutdownNow() }
+    }
+
+    @Test fun capturedViewerWaitRejectsCleanupPoisonWithoutNewTransportOrReceipt() {
+        val f = Fixture(); f.save(); val viewer = f.session(); val initiator = f.session()
+        val executor = Executors.newFixedThreadPool(2); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        try {
+            val initial = viewer.validate().lease!!; val first = initiator.validate().lease!!
+            val old = viewer.adoptSuccessor(initial)!!.lease!!
+            f.onRefresh = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            f.onClose = { throw IOException("Synthetic cleanup uncertainty") }
+            val rotation = executor.submit<TwitchCatalogSessionResult> { initiator.onUnauthorized(first) }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            val thread = AtomicReference<Thread>()
+            val adoption = executor.submit<TwitchCatalogSessionResult?> {
+                thread.set(Thread.currentThread()); viewer.adoptSuccessor(old, waitForExistingFlight = true)
+            }
+            assertAwaiting(thread); release.countDown()
+            rotation.get(5, TimeUnit.SECONDS)
+            val refused = adoption.get(5, TimeUnit.SECONDS)
+            assertNotNull(refused); assertNull(refused!!.lease)
+            assertFalse(f.coordinator.canPublishLocally); assertFalse(viewer.isLocallyCurrent(old))
+            assertEquals(1, f.refreshes.get()); assertEquals(3, f.validations.get())
+        } finally { release.countDown(); viewer.close(); initiator.close(); executor.shutdownNow() }
+    }
+
     @Test fun eagerAttachmentAndLifecycleRetirementUseOnlyMemoryBeforeAnyGrantAdmission() {
         val f = Fixture(); val session = f.session(); f.memory.forbid = true
         try {

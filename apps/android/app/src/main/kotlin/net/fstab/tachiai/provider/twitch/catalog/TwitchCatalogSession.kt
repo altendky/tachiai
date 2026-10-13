@@ -62,6 +62,8 @@ internal class TwitchCatalogSession(
     @Volatile private var foreground = true
     @Volatile private var closed = false
     @Volatile private var lease: TwitchCatalogLease? = null
+    @Volatile private var viewerPredecessor: TwitchCatalogLease? = null
+    @Volatile private var viewerAdoptionStartedMs = 0L
     @Volatile private var lastSummary = TwitchCatalogSessionSummary(TwitchCatalogSessionState.UNVERIFIED)
     @Volatile private var observedGeneration: String? = null
     @Volatile private var clearRevision: Long? = null
@@ -69,6 +71,7 @@ internal class TwitchCatalogSession(
 
     private fun endLocalLease() {
         localRevision.incrementAndGet()
+        viewerPredecessor = null
         lease = null
         attachment.getAndSet(null)?.close()
         active.getAndSet(null)?.let {
@@ -243,6 +246,17 @@ internal class TwitchCatalogSession(
             value.localRevision == localRevision.get() &&
             monotonicMs() < value.deadlineMs && !retentionExpired(value.grant) && store.isRevisionCurrent(value.grant.revision)
 
+    // Viewer publication can overlap the worker's final successor admission.
+    // Its exact predecessor remains a local UI gate only, bounded by the old
+    // deadline; worker/token admission above still requires the current lease.
+    fun isLocallyCurrentForViewer(value: TwitchCatalogLease): Boolean =
+        (lease === value || (lease != null && viewerPredecessor === value)) &&
+            !closed && foreground && canParticipate() && maintenance?.canPublishLocally != false &&
+            value.localRevision == localRevision.get() && monotonicMs().let {
+                it < value.deadlineMs && (viewerPredecessor !== value || it >= viewerAdoptionStartedMs)
+            } &&
+            !retentionExpired(value.grant) && store.isRevisionCurrent(value.grant.revision)
+
     private fun <T> withTransport(local: Long, grant: TwitchCatalogStoredGrant, action: (TwitchCatalogTransport) -> T): T {
         requireRetention(grant)
         check(allowed(local, grant.revision))
@@ -307,8 +321,10 @@ internal class TwitchCatalogSession(
     fun attach() { if (!closed && foreground) consumerAttachment(localRevision.get()) }
 
     private fun applyMaintenance(outcome: TwitchCatalogMaintenanceOutcome, local: Long,
-        attached: TwitchCatalogMaintenanceCoordinator.Attachment): TwitchCatalogSessionResult {
+        attached: TwitchCatalogMaintenanceCoordinator.Attachment,
+        admission: () -> Boolean = { true }): TwitchCatalogSessionResult {
         fun inBudget(): Boolean {
+            if (!admission()) return false
             val now = monotonicMs()
             if (outcome.grant != null) {
                 val validated = outcome.validationStartedMs ?: return false
@@ -377,11 +393,35 @@ internal class TwitchCatalogSession(
 
     // Continuity is explicit and worker-only. A newer record alone is never a
     // successor proof, and a stale unauthorized callback never uses this seam.
-    fun adoptSuccessor(expectedLease: TwitchCatalogLease): TwitchCatalogSessionResult? {
-        val began = monotonicMs()
+    fun adoptSuccessor(expectedLease: TwitchCatalogLease, waitForExistingFlight: Boolean = false,
+        admissionStartedMs: Long = monotonicMs()): TwitchCatalogSessionResult? {
+        val began = admissionStartedMs
         return synchronized(operationLock) {
-            if (lease !== expectedLease || closed || !foreground || localRevision.get() != expectedLease.localRevision) return@synchronized null
-            val attached = attachment.get() ?: return@synchronized null
+            if (lease !== expectedLease || closed || !foreground || localRevision.get() != expectedLease.localRevision)
+                return@synchronized if (waitForExistingFlight) stopped() else null
+            if (waitForExistingFlight && maintenance == null) return@synchronized null
+            val attached = attachment.get() ?: return@synchronized if (waitForExistingFlight) stopped() else null
+            if (waitForExistingFlight) {
+                val coordinator = maintenance ?: return@synchronized null
+                // After connected() constructs the target lease, identity has
+                // changed intentionally. The old epoch/time/retention admission
+                // must nevertheless survive every protected read and return.
+                fun oldAdmission(): Boolean = !closed && foreground &&
+                    localRevision.get() == expectedLease.localRevision && canParticipate() &&
+                    coordinator.canPublishLocally && !retentionExpired(expectedLease.grant) &&
+                    store.isRevisionCurrent(expectedLease.grant.revision) &&
+                    monotonicMs().let { it >= began && it < expectedLease.deadlineMs }
+                viewerAdoptionStartedMs = began
+                viewerPredecessor = expectedLease
+                var admitted = false
+                try {
+                    val successor = coordinator.awaitSuccessor(attached, expectedLease.grant, began, ::oldAdmission)
+                        ?: return@synchronized null
+                    val result = applyMaintenance(successor, expectedLease.localRevision, attached, ::oldAdmission)
+                    admitted = result.lease != null
+                    return@synchronized result
+                } finally { if (!admitted) viewerPredecessor = null }
+            }
             val successor = attached.successor(expectedLease.grant) ?: return@synchronized null
             applyMaintenance(successor.forAdmission(began), expectedLease.localRevision, attached)
         }

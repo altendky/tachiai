@@ -156,10 +156,28 @@ retention cap for unknown provider expiry remains unchanged. Forced validation
 requires fresh provider evidence; a completed replacement receipt alone does
 not satisfy it. A stale unauthorized callback cannot spend another refresh.
 
-UI admission remains memory-only. The worker adoption seam is implemented, but
-the native viewer's periodic check still needs scheduling and adoption wiring;
-this slice does not establish uninterrupted hourly viewing or change its
-existing five-minute experiment budget. Pause, Forget, reconnect and route
+The native viewer's existing worker checks now adopt a proven successor before
+checking durable currentness. They may wait once for an already active flight
+bound to the exact predecessor or its privately proved successor chain. This
+never starts maintenance, joins an unrelated account, retries a refresh or treats
+a newer stored record as proof. Preparation-lock contention, owner reads, waiting,
+session-lock contention and final protected admission share one original
+30-second caller deadline. The old local
+lease must remain admissible throughout; expiry or lifecycle loss ends waiting.
+A healthy completed attempt that supplies no proof leaves the original lease
+subject to its strict durable check; failed waiting never takes that fallback.
+
+UI admission remains memory-only. An exact predecessor can remain locally
+admissible during the successful worker handoff, bounded by its unchanged expiry,
+retention and lifecycle, so the UI cannot falsely close the viewer between the
+session update and preparation update. Worker requests still require the exact
+current durable lease. The selected
+live/replay source, original source-acceptance deadline and five-minute native
+experiment budget remain unchanged. A source-access exchange stays bound to the
+exact lease whose token it captured; a rotation during that exchange refuses its
+result rather than admitting the predecessor token or repeating the request.
+Preexpiry maintenance scheduling and
+uninterrupted hourly viewing remain unverified. Pause, Forget, reconnect and route
 changes reject late work. Unconfirmed HTTP cancellation or route cleanup
 retains the actual owners and blocks shared admission for the process. The
 registry releases idle coordinators after their bindings and sessions close.
@@ -167,7 +185,7 @@ Real-provider rotation and sustained-viewer recovery remain unobserved;
 [#212](https://github.com/altendky/tachiai/issues/212) stays open for these and
 ABEMA's separately unverified native renewal path.
 
-Verification on 2026-10-13 UTC passed 2,527 JVM cases in 295 reports, with no
+Initial coordinator verification on 2026-10-13 UTC passed 2,527 JVM cases in 295 reports, with no
 failures, errors or skips; this includes 23 coordinator cases in both debug and
 diagnostic variants, existing session coverage, and registry/owned-route fixtures.
 Three timing regressions first failed on the prior implementation and passed
@@ -180,6 +198,57 @@ files under `no_backup` and `shared_prefs` stayed byte-identical across installa
 and observation, and the ordinary launcher was restored. No browser was used;
 exit region was unmeasured. This establishes one saved-account startup validation,
 not real refresh, concurrent-provider behavior or sustained-playback recovery.
+
+Viewer adoption verification on the same date passed all 2,550 JVM cases in 295
+reports with no failures, errors or skips, including 30 coordinator cases in both
+variants and 20 preparation cases. Fixtures cover completed and in-flight peer
+rotation, consecutive proved successors, UI handoff, old expiry, caller deadline,
+rollback, owner/lifecycle loss, Forget, unrelated replacement and cleanup poison.
+The source-access binding regression first accepted an invalidated predecessor
+exchange with its guards removed, then refused it with the guards restored.
+Lint, release isolation, instrumentation compilation, APK assemblies, both shared
+signers, scoped hooks and independent review passed. Compilation reported six
+existing safe-call warnings in the unchanged replay instrumentation fixture.
+
+The updated build on persistent `tachiai-dev` passed one existing configured
+replay check in 31.317 seconds through the saved System route. Its retained account
+made one official validation and one exact replay-access request, both HTTP 200,
+followed by four admitted media requests. The native player rendered a frame and
+advanced between READY observations; the muted quality, owner/source preservation,
+original budget and actual native/HTTP/route cleanup checks passed. All 20 saved
+files stayed byte-identical across installation, playback and launcher restoration.
+The ordinary test manifest was retained. This check uses the harness's read-only
+grant binding and establishes normal source preparation/playback compatibility;
+shared rotation remains fixture evidence. Exit region was unmeasured and no
+browser or new consent flow was used. It does not prove sustained playback,
+preexpiry scheduling or media authorization renewal.
+
+A follow-up regression confirmed that an unrelated completed validation attempt
+could discard another viewer's admissible lease or its unadopted proved successor
+after HTTP 500 or network failure. Markerless temporary outcomes now remain local
+to the maintenance callers instead of overwriting peers' proof. Peers still
+repeat durable identity, owner, expiry and freshness checks; initiating callers
+receive the failure, and cleanup poison or actual recovery markers still reject
+access. Both cases passed with server and network failures after the existing
+lease case first failed. The final full rerun passed 2,552 JVM cases in 295 reports
+with no failures, errors or skips, plus the same Android and signing checks.
+The receipt-preservation APK also passed the same bounded replay check in 29.016 seconds, with
+one validation/access pair (HTTP 200), four media requests, frame/movement,
+confirmed cleanup and all 20 saved files unchanged. Its final diagnostic was
+ADMISSION alongside REPLAY_ACCEPTED and no feed failure. That diagnostic is shared
+with teardown callbacks; the recorded line does not establish when it changed.
+The accepted playback outcome and cleanup receipts are recorded separately.
+
+The overlapping no-proof case first failed, then passed with both HTTP 500 and
+network failure while the viewer was deterministically waiting on the peer's
+active attempt. Healthy completion now leaves strict original-grant admission
+available; REFRESHING, recovery markers, changed generations, expiry and failed
+waiting remain refused. Owner or protected-read delays cannot restart the original
+preparation deadline. The complete final verification passed 2,554 JVM cases in
+295 reports, with no failures, errors or skips, and the Android/signing checks.
+One replay check on that exact final APK passed in 26.176 seconds with the same
+one validation/access pair, four media requests, READY movement, confirmed cleanup,
+diagnostic NONE and all 20 saved files unchanged. The normal launcher was restored.
 
 ## Local exact-video import
 

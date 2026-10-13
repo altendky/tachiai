@@ -51,17 +51,25 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     override fun canContinue(): Boolean = valid.get() && active() &&
         !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
         binding.get()?.canPublishLocally() == true &&
-        lease?.let { session.get()?.isLocallyCurrent(it) } == true
+        lease?.let { session.get()?.isLocallyCurrentForViewer(it) } == true
 
     // Worker/Media3 checks retain the catalog grant expiry, not the short source
     // preparation deadline. The native playback budget owns source acceptance.
     // Always read the durable bound: another consumer can tighten expiry without
     // rotating the pair generation. UI publication remains memory-only above.
+    // Adopt only shared proof, optionally waiting for work already underway;
+    // these checks never start validation or refresh and do not renew the source.
     override fun checkStored(force: Boolean): Boolean = synchronized(storedLock) {
         if (!canContinue()) return false
         val current = runCatching {
-            owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } == true &&
-                lease?.let { session.get()?.isCurrent(it) } == true
+            if (owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } != true) false
+            else {
+                val connection = checkNotNull(session.get())
+                val previous = checkNotNull(lease)
+                val successor = connection.adoptSuccessor(previous, waitForExistingFlight = true)
+                if (successor != null) lease = successor.lease
+                lease?.let(connection::isCurrent) == true
+            }
         }.getOrDefault(false)
         if (!current) valid.set(false)
         current && canContinue()
@@ -95,14 +103,15 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
             acceptanceDeadlineMs = minOf(checkNotNull(lease).deadlineMs, sourceDeadline)
             if (!checkStored(force = true) || monotonicMs() >= acceptanceDeadlineMs)
                 throw IOException("Playback connection ended")
+            val requestLease = checkNotNull(lease)
             val request = AccessProbeHttp(open = openConnection, canRequest = {
-                checkStored(force = true) && monotonicMs() < acceptanceDeadlineMs
+                checkStored(force = true) && lease === requestLease && monotonicMs() < acceptanceDeadlineMs
             }, clockMs = monotonicMs)
             check(access.compareAndSet(null, request))
             try {
                 val selected = resolveTwitchPlayback(request, if (replay) TwitchAccessCase.REPLAY else TwitchAccessCase.LIVE,
-                    resource, checkNotNull(lease).accessToken, onHttpStatus = { onStatus("ACCESS", it) })
-                if (!checkStored(force = true) || monotonicMs() >= acceptanceDeadlineMs)
+                    resource, requestLease.accessToken, onHttpStatus = { onStatus("ACCESS", it) })
+                if (!checkStored(force = true) || lease !== requestLease || monotonicMs() >= acceptanceDeadlineMs)
                     throw IOException("Playback connection ended")
                 return selected
             } finally { access.compareAndSet(request, null); request.close() }

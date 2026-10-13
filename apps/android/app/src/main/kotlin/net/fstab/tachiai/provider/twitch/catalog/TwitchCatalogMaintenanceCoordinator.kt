@@ -178,6 +178,39 @@ internal class TwitchCatalogMaintenanceCoordinator(
         return value.done.count == 0L && attached.live() && timeCurrent(began, deadline)
     }
 
+    // A viewer may wait for one already owned flight, never start or join work.
+    // Only its attachment's published proof is an adoption receipt; the flight's
+    // result is deliberately not consulted, even after its cleanup has ended.
+    internal fun awaitSuccessor(attached: Attachment, expected: TwitchCatalogStoredGrant,
+        began: Long, canWait: () -> Boolean): TwitchCatalogMaintenanceOutcome? {
+        fun failed() = temporary().forAdmission(began)
+        if (began < 0 || began > Long.MAX_VALUE - 30_000) return failed()
+        val deadline = began + 30_000
+        fun admitted(): Boolean = attached.admitted() && canPublishLocally &&
+            runCatching(canWait).getOrDefault(false) && timeCurrent(began, deadline)
+        if (!admitted()) return failed()
+        val captured = synchronized(lock) {
+            if (poisoned || attached !in attachments || !attached.isOpen || attached.origin?.matches(expected) != true)
+                return failed()
+            flight?.takeIf { active ->
+                active.origin?.let { origin -> origin.matches(expected) ||
+                    attached.pending?.takeIf { it.origin?.matches(expected) == true }?.grant?.let(origin::matches) == true
+                } == true
+            }
+        }
+        if (captured != null) {
+            while (captured.done.count != 0L) {
+                if (!admitted()) return failed()
+                try { captured.done.await(25, TimeUnit.MILLISECONDS) }
+                catch (_: InterruptedException) { Thread.currentThread().interrupt(); return failed() }
+            }
+            if (!admitted()) return failed()
+            return attached.successor(expected)?.forAdmission(began) ?: failed()
+        }
+        val receipt = attached.successor(expected) ?: return null
+        return if (admitted()) receipt.forAdmission(began) else failed()
+    }
+
     private fun perform(value: Flight) {
         fun allowed(): Boolean {
             if (!timeCurrent(value.began, value.deadline) || !canPublishLocally || !interested(value)) return false

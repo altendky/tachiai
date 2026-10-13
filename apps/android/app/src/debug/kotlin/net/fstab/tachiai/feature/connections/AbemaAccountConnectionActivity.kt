@@ -25,7 +25,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
     private var resumed = false
     private var revision = 0L
     private val approval = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode != RESULT_OK) controller?.cancelAction()
+        if (result.resultCode == RESULT_OK) controller?.emailBrowserReturned() else controller?.cancelAction()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,7 +38,8 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
             val state = if (current == null) initial else current.state.collectAsState().value
             AbemaAccountConnectionScreen(state, { current?.connectEmail(::openApproval) },
                 { current?.finishEmailConnection() }, { current?.revalidate() },
-                { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null)
+                { current?.forget() }, { current?.cancelAction() }, ::finish, ready = current != null,
+                onSignInAgain = { current?.signInAgain(::openApproval) })
         } }
         val id = intent.getStringExtra(INSTANCE_ID)
         if (id == null || !validProviderInstanceId(id)) { initial = initial.copy(status = AbemaAccountStatus.NOT_VERIFIED, progress = AbemaAccountProgress.IDLE); return }
@@ -63,7 +64,8 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
                 .putExtra(AbemaApprovalBrowserActivity.OWNER_PROOF, request.ownerProof)
                 .putExtra(AbemaApprovalBrowserActivity.VERIFICATION_URI, request.verificationUri)
                 .putExtra(AbemaApprovalBrowserActivity.DEADLINE, request.deadlineElapsedMs)
-                .putExtra(AbemaApprovalBrowserActivity.EMAIL_NONCE, request.emailNonce))
+                .putExtra(AbemaApprovalBrowserActivity.EMAIL_NONCE, request.emailNonce)
+                .putExtra(AbemaApprovalBrowserActivity.RESET_BROWSER_SESSION, request.resetBrowserSession))
             true
         } catch (_: Exception) { false }
     }

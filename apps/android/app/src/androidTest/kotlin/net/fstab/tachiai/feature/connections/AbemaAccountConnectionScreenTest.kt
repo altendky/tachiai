@@ -88,4 +88,22 @@ class AbemaAccountConnectionScreenTest {
         compose.onNodeWithText("Check ABEMA authorization").assertDoesNotExist()
         compose.onNodeWithText("Check profile authorization enforcement").assertDoesNotExist()
     }
+
+    @Test fun rememberedLoginAndFreshSignInAreSeparateExplicitActionsWithBusyGuards() {
+        var connects = 0; var resets = 0
+        var ready by androidx.compose.runtime.mutableStateOf(true)
+        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, {}, ready = ready,
+                onSignInAgain = { resets++ })
+        } }
+        compose.onNodeWithText("Connect ABEMA by email").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, connects); assertEquals(0, resets); ready = false }
+        compose.onNodeWithText("Sign in again").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle { ready = true; state = state.copy(busy = true) }
+        compose.onNodeWithText("Sign in again").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle { state = state.copy(busy = false) }
+        compose.onNodeWithText("Sign in again").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, connects); assertEquals(1, resets) }
+    }
 }

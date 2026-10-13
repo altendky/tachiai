@@ -50,6 +50,7 @@ internal class AbemaAccountConnectionController(
         val deadline: Long, val storeRevision: Long) {
         var handedOff = false
         var candidate: AbemaAccountGrant? = null
+        var browserReturned = false
         override fun toString() = "AbemaEmailConnectionLink(redacted)"
     }
     @Volatile private var emailLink: EmailLink? = null
@@ -99,7 +100,9 @@ internal class AbemaAccountConnectionController(
         if (!maintenanceAllowed()) return
         run(AbemaAccountProgress.READING, ::validateSaved)
     }
-    fun connectEmail(launch: (AbemaApprovalBrowserRequest) -> Boolean) = run(AbemaAccountProgress.PREPARING) { run ->
+    fun connectEmail(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(false, launch)
+    fun signInAgain(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(true, launch)
+    private fun beginEmail(resetBrowserSession: Boolean, launch: (AbemaApprovalBrowserRequest) -> Boolean) = run(AbemaAccountProgress.PREPARING) { run ->
         val inbox = emailInbox ?: throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
         val owner = binding.owner()
         if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
@@ -126,16 +129,23 @@ internal class AbemaAccountConnectionController(
             capturedOwner = owner; prepared.handedOff = true; busy = false
             publish(AbemaAccountProgress.WAITING_APPROVAL)
             val request = AbemaApprovalBrowserRequest(owner.instance.id, owner.proof(), "https://abema.tv/account",
-                prepared.deadline, prepared.nonce)
+                prepared.deadline, prepared.nonce, resetBrowserSession)
             if (!launch(request)) failEmail(prepared, AbemaAccountFailure.TEMPORARY)
         } else inbox.unregister(prepared.nonce) }
         delay(prepared.deadline - elapsedMs()) {
             if (elapsedMs() >= prepared.deadline) failEmail(prepared, AbemaAccountFailure.EXPIRED)
         }
     }
+    fun emailBrowserReturned() {
+        val prepared = synchronized(lock) {
+            emailLink?.takeIf { !closed && it.handedOff && it.candidate != null }?.also { it.browserReturned = true }
+        } ?: return
+        if (foreground && emailLink === prepared) finishEmailConnection()
+    }
     fun finishEmailConnection() {
         val prepared = synchronized(lock) { emailLink?.takeIf { it.handedOff && it.candidate != null } } ?: return
         run(AbemaAccountProgress.CHECKING) { run ->
+            synchronized(lock) { prepared.browserReturned = false }
             val grant = checkNotNull(prepared.candidate)
             val beganWall = wallMs()
             if (decodedAbemaGrant(grant.bearer, grant.userId, beganWall).expiresAtMs != grant.expiresAtMs)
@@ -399,6 +409,7 @@ internal class AbemaAccountConnectionController(
         }
         cancellation?.let(::cancelResources)
         if (value && current(run)) {
+            if (emailLink?.browserReturned == true) finishEmailConnection()
             val prepared = link
             if (prepared != null && prepared.nextPollAt > elapsedMs()) {
                 delay(prepared.nextPollAt - elapsedMs()) { if (current(run) && link === prepared) publish() }

@@ -414,12 +414,55 @@ remain unverified; the broader #100/#101 issues remain open.
 
 The debug Providers screen offers an instance-owned **ABEMA account** screen.
 **Connect ABEMA by email** opens ABEMA's account page in the isolated routed
-browser. The user chooses **Switch account → Email address**, enters the email
-address and emailed six-character code on provider-controlled pages, then opens
-Account management and returns to Tachiai. **Finish email connection** performs
-native validation and saves the grant. Tachiai has no email/password/code form.
+browser. A remembered login can be reused by staying on Account management and
+returning to Tachiai. If sign-in is needed, the user chooses **Switch account →
+Email address**, enters the email address and emailed six-character code on
+provider-controlled pages, then opens Account management and returns. A confirmed
+private browser handoff automatically starts native identity/email validation
+on foreground return and saves only an admitted grant. **Finish email connection**
+remains a recovery control if verification is interrupted. Tachiai has no
+email/password/code form. Switching accounts is not a same-account reauthentication
+step; ABEMA can reject that operation when the intended account is already active.
 The other authentication methods are deferred to the human-led
 [issue #196](https://github.com/altendky/tachiai/issues/196), without the agent label.
+
+Normal Connect retains the dedicated browser login. **Sign in again** is an
+explicit recovery action for a remembered session that prevents same-account
+sign-in. It clears only the shared ABEMA approval-browser profile on this device,
+including cookies, site storage, cache and service workers, using the supported
+AndroidX complete-deletion API. Other native account records, routes and configured
+items remain unchanged until a new connection passes native acceptance. Other
+ABEMA instances share this browser profile, so their remembered browser login is
+also cleared; their native grants remain separately owned.
+
+Deletion must complete before route preparation or provider page loading.
+Unsupported WebViews report that fresh sign-in is unavailable. A receipt is
+retained before dispatch and independently gates cleanup and profile reuse,
+including cancellation before route creation. Exceptions or uncertain deletion
+completion keep the process poisoned and owned; late callbacks cannot load a
+page or race a replacement session. Reused browser login and automatic return
+validation implement a bounded reconnect slice of #103/#212. They do not yet
+implement automatic native renewal or shared-account native playback.
+
+On 2026-10-13 UTC this reconnect slice passed 2,566 JVM cases across 296 reports
+with no failures, errors or skips, Android lint/isolation/instrumentation/APK
+assembly/shared signing, scoped hooks/documentation and independent review.
+Seven provider-free account-screen cases passed with zero skips in 16.552
+seconds on persistent `tachiai-dev`. Installation and those tests preserved
+all 20 protected files. The device used Android 16/API 36 x86-64 and the same
+WebView 133.0.6943.137; no physical-device acceptance follows.
+
+One real normal Connect then reused the remembered browser login through the
+saved route. The provider page loaded and the route's region check returned 200.
+No account switch, email/code entry, browser reset or manual Finish occurred.
+Return to Tachiai produced MISSING → CHECKING → CONNECTED after the protected
+handoff and native identity/registered-email checks. Exactly the intended ABEMA
+grant record changed; the other 19 protected files and file set remained
+unchanged. The normal launcher was restored and post-connection hashes still
+matched. This verifies browser reuse after a missing local grant, not a longer
+provider token lifetime or silent renewal of an expired native grant. The fresh
+sign-in deletion action was covered by fixtures but not exercised on the real
+signed-in profile.
 
 The browser passively observes only the Authorization header on the exact
 first-party GET to the modern user's email-setting endpoint. It forwards the

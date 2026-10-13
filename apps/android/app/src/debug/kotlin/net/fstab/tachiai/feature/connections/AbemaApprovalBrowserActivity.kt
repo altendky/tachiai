@@ -17,6 +17,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.WebStorageCompat
+import androidx.webkit.WebViewFeature
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.web.configureSecureSettings
@@ -38,6 +40,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         internal const val VERIFICATION_URI = "VERIFICATION_URI"
         internal const val DEADLINE = "DEADLINE_ELAPSED_MS"
         internal const val EMAIL_NONCE = "EMAIL_CONNECTION_NONCE"
+        internal const val RESET_BROWSER_SESSION = "RESET_BROWSER_SESSION"
         private const val LOG_TAG = "TachiaiAbemaApproval"
         private val occupied = AtomicBoolean()
         private val poisoned = AtomicBoolean()
@@ -66,6 +69,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
     private lateinit var status: TextView
     private var view: WebView? = null
     private var owned: Owned? = null
+    private var sessionReset: AbemaApprovalSessionReset? = null
     @Volatile private var resumed = false
     @Volatile private var ready = false
     @Volatile private var ending = false
@@ -88,7 +92,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         val parsed = runCatching { AbemaApprovalBrowserRequest(
             checkNotNull(intent.getStringExtra(INSTANCE_ID)), checkNotNull(intent.getStringExtra(OWNER_PROOF)),
             checkNotNull(intent.getStringExtra(VERIFICATION_URI)), intent.getLongExtra(DEADLINE, -1),
-            intent.getStringExtra(EMAIL_NONCE)) }.getOrNull()
+            intent.getStringExtra(EMAIL_NONCE), intent.getBooleanExtra(RESET_BROWSER_SESSION, false)) }.getOrNull()
         intent.removeExtra(VERIFICATION_URI)
         if (parsed == null || !parsed.current(SystemClock.elapsedRealtime()) || !occupied.compareAndSet(false, true)) {
             finishDirect(); return
@@ -159,7 +163,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             })
             column.addView(browser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             setContentView(column)
-            prepareRoute()
+            if (request.resetBrowserSession) prepareFreshSession() else prepareRoute()
             watchOwner()
         } catch (_: Throwable) { closeBrowser(false) }
     }
@@ -175,6 +179,46 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         val matches = runCatching(::sameOwner).getOrDefault(false)
         if (!matches) main.post { closeBrowser(false) }
         return matches && current()
+    }
+    private fun prepareFreshSession() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+            status.text = "Fresh sign-in is unavailable with this WebView. Return to Tachiai."
+            return
+        }
+        status.text = "Clearing ABEMA’s remembered browser login…"
+        val began = SystemClock.elapsedRealtime()
+        fun eligible() = !ending && request.current(SystemClock.elapsedRealtime()) &&
+            SystemClock.elapsedRealtime() - began in 0 until 5000
+        val timeout = Runnable { if (!ending) closeBrowser(false) }
+        val reset = AbemaApprovalSessionReset(
+            supported = { true },
+            deleteBrowsingData = { done -> WebStorageCompat.deleteBrowsingData(WebStorage.getInstance(), Runnable(done)) },
+            canContinue = ::eligible,
+            completed = { cleared -> main.post completion@{
+                main.removeCallbacks(timeout)
+                if (ending) return@completion
+                if (!cleared || !eligible()) { closeBrowser(false); return@completion }
+                workers.execute {
+                    val matches = runCatching(::sameOwner).getOrDefault(false)
+                    main.post ownership@{
+                        if (ending) return@ownership
+                        if (!matches || !eligible() || sessionReset?.completionConfirmed != true) { closeBrowser(false); return@ownership }
+                        Log.i(LOG_TAG, "BROWSER_SESSION_RESET_CONFIRMED")
+                        prepareRoute()
+                    }
+                }
+            } }, cleanupWaitMs = 5000,
+        )
+        sessionReset = reset // Retain before dispatch or any owner-check callback.
+        main.postDelayed(timeout, 5000)
+        workers.execute {
+            val matches = runCatching(::sameOwner).getOrDefault(false)
+            main.post {
+                if (ending) return@post
+                if (!matches || !eligible()) { closeBrowser(false); return@post }
+                reset.begin()
+            }
+        }
     }
     private fun prepareRoute() {
         val handle = Owned(); owned = handle
@@ -214,7 +258,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                         Log.i(LOG_TAG, "APPROVAL_ROUTE_PROXY_APPLIED")
                         if (resumed) resumeBrowser()
                         status.text = if (request.emailNonce != null)
-                            "In ABEMA, choose Switch account → Email address. After signing in, open Account management, then return to Tachiai."
+                            "If already signed in, stay on Account management and return to Tachiai. Otherwise choose Switch account → Email address and sign in, then return."
                             else "Complete approval on ABEMA’s pages, then return to Tachiai."
                     })
                 }
@@ -365,6 +409,8 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         trustedEmailPage = false
         main.removeCallbacksAndMessages(null)
         val handle = owned
+        val reset = sessionReset
+        reset?.cancel()
         val browser = view
         var destroyed = true
         try {
@@ -382,7 +428,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         } catch (_: Throwable) { destroyed = false }
         fun unconfirmed() {
             poisoned.set(true)
-            synchronized(retained) { retained.addAll(listOfNotNull(handle, browser)) }
+            synchronized(retained) { retained.addAll(listOfNotNull(handle, browser, reset)) }
             finishDirect()
         }
         if (!destroyed) { unconfirmed(); return }
@@ -390,7 +436,9 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         main.postDelayed(clearDeadline, 5000)
         proxy.clear {
             cleanup.execute {
-                val confirmed = runCatching { handle?.closeConfirmed() != false }.getOrDefault(false)
+                val resetConfirmed = runCatching { reset?.awaitCleanup() != false }.getOrDefault(false)
+                val routeConfirmed = runCatching { handle?.closeConfirmed() != false }.getOrDefault(false)
+                val confirmed = resetConfirmed && routeConfirmed
                 main.post {
                     if (finishedAfterCleanup) return@post
                     main.removeCallbacks(clearDeadline)

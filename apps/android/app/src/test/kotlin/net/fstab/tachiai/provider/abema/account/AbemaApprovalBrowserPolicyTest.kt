@@ -29,6 +29,17 @@ class AbemaApprovalBrowserPolicyTest {
         assertThrows(IllegalArgumentException::class.java) { AbemaApprovalBrowserRequest(instanceId, proof, verification, -1) }
     }
 
+    @Test fun freshSignInIsExplicitAndOnlyAllowedForTheEmailAccountFlow() {
+        assertFalse(AbemaApprovalBrowserRequest(instanceId, proof, verification, 1000).resetBrowserSession)
+        val nonce = "0123456789abcdef".repeat(2)
+        val request = AbemaApprovalBrowserRequest(instanceId, proof, "https://abema.tv/account", 1000, nonce, true)
+        assertTrue(request.resetBrowserSession)
+        assertThrows(IllegalArgumentException::class.java) {
+            AbemaApprovalBrowserRequest(instanceId, proof, verification, 1000, resetBrowserSession = true)
+        }
+        assertEquals("AbemaApprovalBrowserRequest(redacted)", request.toString())
+    }
+
     @Test fun providerPagesAllowNormalQueriesAndFragmentsAtExactStandardHttpsOrigins() {
         for (host in listOf("abema.tv", "auth.abema.tv")) for (port in listOf("", ":443")) {
             for (path in listOf("", "/", "/account?email=fixture%40example.test&next=%2Faccount#step",

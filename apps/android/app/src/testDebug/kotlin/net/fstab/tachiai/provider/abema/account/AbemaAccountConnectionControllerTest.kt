@@ -112,6 +112,7 @@ class AbemaAccountConnectionControllerTest {
     @Test fun emailSetupUsesTheProviderBrowserAndSavesOnlyAfterNativeIdentityAndRegistrationChecks() {
         val f = Fixture(); val request = f.emailOpened()
         assertEquals("https://abema.tv/account", request.verificationUri)
+        assertFalse(request.resetBrowserSession)
         assertEquals(0, f.preparations); assertEquals(0, f.tokens); assertTrue(f.profileIds.isEmpty())
         assertNull(f.storage.bytes); assertFalse(f.controller.state.value.canApprove)
         f.emailReturned(request); assertNull(f.storage.bytes)
@@ -120,6 +121,51 @@ class AbemaAccountConnectionControllerTest {
         assertEquals("intended-account", f.store.read()!!.grant.userId)
         assertEquals(listOf("intended-account"), f.profileIds); assertEquals(1, f.emailChecks)
         assertFalse(f.controller.state.value.canContinue); assertEquals(0, f.tokens)
+    }
+
+    @Test fun returnedRememberedLoginCompletesOnceAfterForegroundWithoutAnotherChallengeOrManualFinish() {
+        val f = Fixture(); val request = f.emailOpened()
+        f.controller.setForeground(false)
+        assertTrue(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId, request.ownerProof,
+            request.deadlineElapsedMs, f.granted().grant))
+        f.controller.emailBrowserReturned(); f.controller.emailBrowserReturned(); f.pump()
+        assertNull(f.storage.bytes); assertTrue(f.profileIds.isEmpty()); assertEquals(0, f.emailChecks)
+        f.controller.setForeground(true); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        assertEquals(listOf("intended-account"), f.profileIds); assertEquals(1, f.emailChecks)
+        assertEquals(0, f.preparations); assertEquals(0, f.tokens)
+        f.controller.emailBrowserReturned(); f.controller.setForeground(true); f.pump()
+        assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+    }
+
+    @Test fun browserReturnDoesNotBypassForgetOwnerDeadlineOrRegistrationAdmission() {
+        for (failure in 0..3) {
+            val f = Fixture(); val request = f.emailOpened(); f.controller.setForeground(false)
+            assertTrue(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId, request.ownerProof,
+                request.deadlineElapsedMs, f.granted().grant))
+            when (failure) {
+                0 -> f.store.forget()
+                1 -> f.matching = false
+                2 -> f.now = request.deadlineElapsedMs
+                3 -> f.emailResult = AbemaAccountEmailResult.UNREGISTERED
+            }
+            f.controller.emailBrowserReturned(); f.controller.setForeground(true); f.pump()
+            assertNull(f.store.read()); assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            assertEquals(0, f.preparations); assertEquals(0, f.tokens)
+        }
+    }
+
+    @Test fun explicitFreshSignInRequestsOnlyBrowserResetAndPreservesThePriorNativeGrantBeforeReplacement() {
+        val f = Fixture(); f.save(); val original = f.storage.bytes!!.copyOf()
+        f.controller.load(); f.pump()
+        var request: AbemaApprovalBrowserRequest? = null
+        f.controller.signInAgain { request = it; true }; f.pump()
+        assertTrue(checkNotNull(request).resetBrowserSession)
+        assertNotNull(checkNotNull(request).emailNonce)
+        assertArrayEquals(original, f.storage.bytes)
+        f.controller.cancelAction(); f.pump()
+        assertArrayEquals(original, f.storage.bytes)
+        assertEquals(0, f.preparations); assertEquals(0, f.tokens)
     }
     @Test fun emailRegistrationRefusalAndOwnerOrForegroundLossCannotSaveTheBrowserCandidate() {
         for (failure in 0..4) {

@@ -52,6 +52,80 @@ class AbemaAccountHttpTransportTest {
     private val profile = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest")
     private val token = URL("https://abema.tv/api/auth/oauth/device/token")
     private val email = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest/email")
+    @Test fun subscriptionProfileMakesOneUnchangedProfileGetAndCleansBeforeMatchingTypedResult() {
+        val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[{"expire":2000,"viewingAuthorities":[{"isPremium":true}]}]}""".toByteArray())
+        var allocations = 0
+        val t = AbemaAccountHttpTransport({ url -> allocations++; assertEquals(profile, url); c }, { true }, { 1000 }, { 1000000 })
+        val result = t.subscriptionProfile("guest", "private-bearer") as AbemaSubscriptionProfileResult.Identity
+        assertEquals("guest", result.id); assertEquals(AbemaSubscriptionFieldState.PREMIUM, result.fieldState)
+        assertEquals(2_000_000L, result.premiumExpiresAtMs)
+        assertEquals(1, allocations); assertEquals("GET", c.requestMethod)
+        assertEquals("Bearer private-bearer", c.getRequestProperty("Authorization")); assertEquals("application/json", c.getRequestProperty("Accept"))
+        assertNull(c.getRequestProperty("Cookie")); assertEquals(0, c.sent.size()); assertFalse(c.doOutput)
+        assertFalse(c.instanceFollowRedirects); assertFalse(c.useCaches)
+        assertEquals(10000, c.connectTimeout); assertEquals(10000, c.readTimeout)
+        assertEquals(1, c.opened); assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
+        assertTrue(t.cleanupConfirmed); t.close(); assertEquals(1, c.disconnected)
+    }
+    @Test fun subscriptionRefusalsAndUnexpectedStatusDoNotReadAnyResponseBody() {
+        for (status in listOf(401, 403, 400, 404, 302, 429, 500, 201)) {
+            val c = Connection(profile, status)
+            assertSame(if (status in listOf(401, 403)) AbemaSubscriptionProfileResult.Rejected else AbemaSubscriptionProfileResult.Inconclusive,
+                transport(c).subscriptionProfile("guest", "private-bearer"))
+            assertEquals(0, c.opened); assertEquals(1, c.disconnected)
+        }
+    }
+    @Test fun subscriptionAbsentEmptyMalformedAndMismatchedProfileNeverBecomePositiveAuthority() {
+        for ((body, state) in listOf("""{"profile":{"userId":"guest"}}""" to AbemaSubscriptionFieldState.ABSENT,
+            """{"profile":{"userId":"guest"},"userSubscriptions":[]}""" to AbemaSubscriptionFieldState.EMPTY)) {
+            val c = Connection(profile, bytes = body.toByteArray())
+            val result = transport(c).subscriptionProfile("guest", "private-bearer") as AbemaSubscriptionProfileResult.Identity
+            assertEquals(state, result.fieldState); assertNull(result.premiumExpiresAtMs)
+            assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
+        }
+        for (body in listOf("""{"profile":{"userId":"other"}}""", """{"profile":{"userId":"guest"},"userSubscriptions":null}""",
+            """{"profile":{"userId":"guest"},"userSubscriptions":[],"ignored":{"x":1,"x":2}}""")) {
+            val c = Connection(profile, bytes = body.toByteArray())
+            val t = transport(c)
+            assertSame(AbemaSubscriptionProfileResult.Inconclusive, t.subscriptionProfile("guest", "private-bearer"))
+            assertTrue(t.cleanupConfirmed); assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
+        }
+    }
+    @Test fun subscriptionReadKeepsOwnerAndOriginalHttpBudgetGatesBeforePublication() {
+        for (phase in 0..2) {
+            val c = Connection(profile); var allowed = true; var elapsed = 1000L
+            when (phase) {
+                0 -> c.responseHook = { allowed = false }
+                1 -> c.disconnectHook = { allowed = false }
+                else -> c.responseHook = { elapsed += 15000 }
+            }
+            val error = assertThrows(AbemaAccountException::class.java) {
+                transport(c, { allowed }, { elapsed }).subscriptionProfile("guest", "private-bearer")
+            }
+            assertEquals(if (phase == 2) AbemaAccountFailure.TIME_LIMIT_REACHED else AbemaAccountFailure.CANCELLED, error.category)
+            assertEquals(if (phase == 1) 1 else 0, c.opened); assertEquals(1, c.disconnected)
+        }
+    }
+    @Test fun subscriptionCleanupFailureRetainsActualResourcesAndNeverReturnsAnIdentity() {
+        for (stream in listOf(true, false)) {
+            val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[]}""".toByteArray())
+            if (stream) c.streamError = AssertionError("PRIVATE") else c.disconnectError = AssertionError("PRIVATE")
+            val t = transport(c)
+            cleanupFailure { t.subscriptionProfile("guest", "private-bearer") }; retained(t, c)
+            c.streamError = null; c.disconnectError = null
+            cleanupFailure { t.close() }; assertFalse(t.cleanupConfirmed)
+            assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
+        }
+    }
+    @Test fun unrelatedTransportFixturesDefaultToInconclusiveWithoutAnotherOperation() {
+        val fixture = object : AbemaAccountTransport {
+            override fun profile(id: String, bearer: String): AbemaAccountProfileResult = error("No operation")
+            override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult = error("No operation")
+            override fun cancelActiveRequest() = Unit
+            override fun close() = Unit
+        }
+        assertSame(AbemaSubscriptionProfileResult.Inconclusive, fixture.subscriptionProfile("guest", "private-bearer"))
+    }
     @Test fun emailRegistrationUsesExactGetAndSavedBearerWithConfirmedCleanup() {
         val c = Connection(email, bytes = """{"email":"fixture@example.test","hasPassword":false}""".toByteArray())
         val t = transport(c)

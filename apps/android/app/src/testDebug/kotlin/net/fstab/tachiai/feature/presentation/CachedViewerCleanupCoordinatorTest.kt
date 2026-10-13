@@ -13,6 +13,7 @@ import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.provider.abema.CachedAbemaHelperCleanup
 import net.fstab.tachiai.provider.abema.CachedCleanupWorker
 import net.fstab.tachiai.provider.abema.AbemaPublicBundleHttp
+import net.fstab.tachiai.provider.abema.AbemaBorrowedSlotProfile
 import net.fstab.tachiai.platform.media.NativeCleanupReceipt
 import org.junit.Assert.*
 import org.junit.Test
@@ -301,6 +302,52 @@ class CachedViewerCleanupCoordinatorTest {
             f.finish(); f.assertPoisoned()
             assertFalse(f.events.any { it.startsWith("close:") })
             assertEquals(1, run.feeds.size)
+        }
+    }
+
+    @Test fun borrowedProfileMustSettleAndConfirmBeforeTheNativeRouteCanClose() {
+        for (disconnectFails in listOf(false, true)) {
+            val f = Fixture(); val run = f.begin(); val route = f.route(run); f.helper(run)
+            val entered = CountDownLatch(1); val release = CountDownLatch(1); val settled = CountDownLatch(1)
+            val operation = AbemaBorrowedSlotProfile({ url -> object : HttpsURLConnection(url) {
+                override fun getResponseCode(): Int {
+                    entered.countDown()
+                    while (true) {
+                        try { check(release.await(5, TimeUnit.SECONDS)); break }
+                        catch (_: InterruptedException) { /* Wait for actual transport completion. */ }
+                    }
+                    return 200
+                }
+                override fun disconnect() { if (disconnectFails) throw IOException("Synthetic profile close refusal") }
+                override fun connect() = error("No network permitted")
+                override fun usingProxy() = false
+                override fun getCipherSuite() = "fixture"
+                override fun getLocalCertificates(): Array<Certificate>? = null
+                override fun getServerCertificates(): Array<Certificate> = emptyArray()
+            } }, { true }, { 1000 }, { 2000 }, 45000)
+            val executor = Executors.newSingleThreadExecutor()
+            val worker = CachedCleanupWorker(executor) {
+                f.main.execute { f.owner.feedCleanupChanged(run) }; settled.countDown()
+            }
+            f.owner.feed(run, 0, AutoCloseable { operation.cancel(); worker.shutdownNow() },
+                pending = { worker.pending }) { operation.cleanupConfirmed }
+            f.owner.proxyWillChange(run)
+            worker.execute { try { operation.read("fixture", "private-bearer") } catch (_: Throwable) { } }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                f.owner.end(run); f.finish()
+                assertFalse("clear" in f.events); assertFalse("close:route" in f.events)
+                release.countDown(); assertTrue(settled.await(5, TimeUnit.SECONDS)); f.finish()
+                if (disconnectFails) {
+                    f.assertPoisoned(); assertSame(route, run.routes.single())
+                    assertFalse("clear" in f.events); assertFalse("close:route" in f.events)
+                } else {
+                    assertTrue(operation.cleanupConfirmed)
+                    f.acknowledgments.single()(); f.finish()
+                    assertEquals(1, f.events.count { it == "close:route" })
+                    assertFalse(f.owner.unavailable)
+                }
+            } finally { release.countDown(); executor.shutdownNow() }
         }
     }
 

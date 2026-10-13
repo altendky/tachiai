@@ -12,7 +12,8 @@ import net.fstab.tachiai.provider.abema.account.*
 @Composable
 internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, onConnect: () -> Unit,
     onContinue: () -> Unit, onValidate: () -> Unit,
-    onForget: () -> Unit, onCancel: () -> Unit, onBack: () -> Unit, ready: Boolean = true) {
+    onForget: () -> Unit, onCancel: () -> Unit, onBack: () -> Unit, ready: Boolean = true,
+    onSignInAgain: (() -> Unit)? = null) {
     val reading = state.progress == AbemaAccountProgress.READING
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -24,7 +25,11 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
         if (state.busy && state.progress == AbemaAccountProgress.IDLE) Text("Wait for the current ABEMA action to finish.")
         Button(onConnect, enabled = ready && !reading && !state.busy) { Text("Connect ABEMA by email") }
         if (ready && state.canContinue) Button(onContinue) { Text("Finish email connection") }
-        Text("ABEMA opens in an in-app browser through this instance’s selected connection. Choose Switch account → Email address, complete sign-in, and open Account management. Return here to finish the connection. This browser login is separate from Chrome.")
+        Text("ABEMA opens through this instance’s selected connection. If you are already signed in, stay on Account management and return to Tachiai. Otherwise choose Switch account → Email address and complete sign-in. Tachiai verifies the account when you return.")
+        onSignInAgain?.let { action ->
+            TextButton(action, enabled = ready && !reading && !state.busy) { Text("Sign in again") }
+            Text("Use Sign in again if the remembered browser login prevents signing into the same account. It clears only ABEMA’s sign-in browser session; saved accounts, routes and streams are retained until you complete a new connection.")
+        }
         Text("Account collections and account playback remain separate integrations.")
         Button(onValidate, enabled = ready && !reading && !state.busy) { Text("Validate saved ABEMA account") }
         TextButton(onForget, enabled = ready && state.progress != AbemaAccountProgress.FORGETTING) { Text("Forget ABEMA account on this device") }

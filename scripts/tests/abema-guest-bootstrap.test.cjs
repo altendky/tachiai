@@ -200,7 +200,7 @@ function fixture(options = {}) {
     },
   }, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = []; challengeSerialized = []; tokenSerialized = [];', context);
-  vm.runInContext(source, context, { timeout: 1000 });
+  vm.runInContext(options.controlSource ?? source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     2833(module, exports, require) { loaded.push(2833); require(32746); module.exports = {
       B9: () => 42, b2: async (device, time) => {
@@ -718,6 +718,131 @@ test('schedule closed failures never open refusal bodies, retry, expose details 
   for (const delay of ['delayedSchedule', 'delayedScheduleRead']) for (const action of ['stop', 'timeout', 'budget']) {
     const options = { operation: 'FETCH_SCHEDULE', [delay]: true }; const value = fixture(options); value.start(); await settle();
     assert.deepEqual(value.state(), { state: 'SCHEDULE', failure: 'NONE' });
+    if (action === 'stop') value.stop(); else if (action === 'timeout') for (const callback of value.timers.values()) callback();
+    else options.elapsedMs = 45000;
+    value.release(); await settle();
+    assert.deepEqual(value.state(), action === 'stop' ? { state: 'STOPPED', failure: 'NONE' } : { state: 'REFUSED', failure: 'SCHEDULE_TIMEOUT' });
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null); assert.equal(value.requests.length, 2);
+    if (action !== 'budget') assert.equal(value.requests[1].request.signal.aborted, true);
+  }
+});
+
+// Execute the exact test-APK decorator so the device and Node observations cannot drift.
+function scheduleShapeSource(clock = Date.parse('2026-10-12T00:00:00Z')) {
+  const helper = fs.readFileSync(path.resolve(__dirname,
+    '../../apps/android/app/src/androidTest/kotlin/net/fstab/tachiai/provider/abema/AbemaScheduleShapeObservation.kt'), 'utf8');
+  const match = helper.match(/val TEST_SCHEDULE_PROJECTION = """([\s\S]*?)"""\.trimIndent\(\)/);
+  assert.ok(match, 'test-only decorator must have one named literal');
+  const anchor = 'return Object.freeze({ slots, truncated: reply.slots.length > slots.length });';
+  assert.equal(source.split(anchor).length, 2, 'production anchor must occur exactly once');
+  assert.equal(match[1].split('__TACHIAI_TEST_SCHEDULE_NOW_MS__').length, 2);
+  return source.replace(anchor, match[1].replace('__TACHIAI_TEST_SCHEDULE_NOW_MS__', String(clock)));
+}
+
+async function scheduleShape(schedule, clock) {
+  const value = fixture({ operation: 'FETCH_SCHEDULE', schedule, controlSource: scheduleShapeSource(clock) });
+  value.start(); await settle();
+  assert.deepEqual(value.state(), { state: 'SCHEDULE_SNAPSHOT', failure: 'NONE' });
+  assert.deepEqual(value.requests.map(({ url }) => url), ['https://abema.tv/api/auth/login/guest',
+    'https://api.p-c3-e.abema-tv.com/v1/timetable/dataSet']);
+  assert.equal(value.timers.size, 0);
+  return JSON.parse(value.call(`window['${apiName}'].metadata()`));
+}
+
+test('schedule test decorator retains exact normal projection and separates all,501 and500 rows', async () => {
+  for (const count of [0, 500, 501, 502]) {
+    const schedule = scheduleReply(count);
+    if (count) Object.assign(schedule.slots[count - 1], { startAt: 1, endAt: 2, flags: { timeshiftFree: true } });
+    const decorated = await scheduleShape(schedule);
+    const marker = decorated.tachiaiTestScheduleShape; delete decorated.tachiaiTestScheduleShape;
+    const normal = fixture({ operation: 'FETCH_SCHEDULE', schedule }); normal.start(); await settle();
+    assert.deepEqual(decorated, JSON.parse(normal.call(`window['${apiName}'].metadata()`)));
+    assert.deepEqual(Object.keys(marker).sort(), ['version', 'rawRows', 'projectedRows', 'displayedRows',
+      'channelCount', 'dateCount', 'truncated', 'displayTruncated', 'all', 'projected', 'displayed', 'horizon'].sort());
+    assert.equal(marker.version, 1); assert.equal(marker.rawRows, count);
+    assert.equal(marker.projectedRows, Math.min(count, 501)); assert.equal(marker.displayedRows, Math.min(count, 500));
+    assert.equal(marker.truncated, count > 501); assert.equal(marker.displayTruncated, count > 500);
+    assert.equal(marker.all.endedExplicitFree, count ? 1 : 0);
+    assert.equal(marker.projected.endedExplicitFree, count && count <= 501 ? 1 : 0);
+    assert.equal(marker.displayed.endedExplicitFree, count && count <= 500 ? 1 : 0);
+    for (const [scope, rows] of [['all', count], ['projected', Math.min(count, 501)], ['displayed', Math.min(count, 500)]]) {
+      assert.equal(marker[scope].rows, rows);
+      for (const field of ['startAt', 'endAt', 'timeshiftEndAt', 'timeshiftFreeEndAt', 'timeshift', 'timeshiftFree', 'interval'])
+        assert.equal(Object.values(marker[scope][field]).reduce((a, b) => a + b, 0), rows);
+    }
+    assert.doesNotMatch(JSON.stringify(marker), /PRIVATE_|slot-|fixture-channel|Future|https:|Bearer|202610/);
+  }
+});
+
+test('schedule test observation keeps absent,null,zero,seconds and invalid times distinct and reads only flags', async () => {
+  const schedule = scheduleReply(7);
+  const clock = 1_000_000;
+  const shapes = [
+    {}, { startAt: null, endAt: null, flags: {} },
+    { startAt: 0, endAt: 0, flags: { timeshift: null, timeshiftFree: null } },
+    { startAt: 100, endAt: 1000, flags: { timeshift: true, timeshiftFree: true } },
+    { startAt: 1001, endAt: 1002, flags: { timeshift: false, timeshiftFree: false } },
+    { startAt: 999, endAt: 1001, flags: { timeshift: 'true', timeshiftFree: 1 } },
+    { startAt: 1_700_000_000_000, endAt: -1, flags: [] },
+  ];
+  schedule.slots.forEach((slot, index) => {
+    delete slot.startAt; delete slot.endAt;
+    Object.assign(slot, shapes[index], { timeshift: { free: true }, timeshiftFree: true });
+    // This legacy-looking sibling must not substitute for the verified raw flags object.
+  });
+  const counts = (await scheduleShape(schedule, clock)).tachiaiTestScheduleShape.all;
+  assert.deepEqual(counts.startAt, { ABSENT: 1, NULL: 1, ZERO: 1, POSITIVE_SECONDS: 3, INVALID: 1 });
+  assert.deepEqual(counts.endAt, counts.startAt);
+  assert.deepEqual(counts.timeshiftEndAt, { ABSENT: 7, NULL: 0, ZERO: 0, POSITIVE_SECONDS: 0, INVALID: 0 });
+  assert.deepEqual(counts.timeshiftFreeEndAt, counts.timeshiftEndAt);
+  assert.deepEqual(counts.timeshift, { PARENT_UNAVAILABLE: 2, ABSENT: 1, NULL: 1, TRUE: 1, FALSE: 1, INVALID: 1 });
+  assert.deepEqual(counts.timeshiftFree, counts.timeshift);
+  assert.deepEqual(counts.interval, { UNAVAILABLE: 4, INVALID_ORDER: 0, ENDED: 1, FUTURE: 1, CONTAINS_DEVICE_CLOCK: 1 });
+  assert.equal(counts.endedExplicitFree, 1);
+  const windows = scheduleReply(7);
+  const endValues = [undefined, null, 0, 1, -1, '1', 1_700_000_000_000];
+  windows.slots.forEach((slot, index) => {
+    if (index) slot.timeshiftEndAt = endValues[index];
+    slot.timeshiftFreeEndAt = [[], {}, false, 1.5, 253402300800, 253402300799, null][index];
+  });
+  const windowCounts = (await scheduleShape(windows, clock)).tachiaiTestScheduleShape.all;
+  assert.deepEqual(windowCounts.timeshiftEndAt, { ABSENT: 1, NULL: 1, ZERO: 1, POSITIVE_SECONDS: 1, INVALID: 3 });
+  assert.deepEqual(windowCounts.timeshiftFreeEndAt, { ABSENT: 0, NULL: 1, ZERO: 0, POSITIVE_SECONDS: 1, INVALID: 5 });
+  const boundary = scheduleReply(3);
+  boundary.slots.forEach((slot, index) => Object.assign(slot, { startAt: 1000, endAt: [999, 1000, 1001][index],
+    flags: { timeshiftFree: true } }));
+  const intervals = (await scheduleShape(boundary, clock)).tachiaiTestScheduleShape.all;
+  assert.deepEqual(intervals.interval, { UNAVAILABLE: 0, INVALID_ORDER: 2, ENDED: 0, FUTURE: 0, CONTAINS_DEVICE_CLOCK: 1 });
+  assert.equal(intervals.endedExplicitFree, 0);
+});
+
+test('schedule test horizon uses one captured Tokyo day including midnight and Gregorian years below100', async () => {
+  const schedule = scheduleReply(0); schedule.availableDates = ['20261011', '20261012', '20261013'];
+  const before = Date.parse('2026-10-12T14:59:59.999Z');
+  assert.deepEqual((await scheduleShape(schedule, before)).tachiaiTestScheduleShape.horizon,
+    { past: 1, today: 1, future: 1, minOffset: -1, maxOffset: 1 });
+  assert.deepEqual((await scheduleShape(schedule, before + 1)).tachiaiTestScheduleShape.horizon,
+    { past: 2, today: 1, future: 0, minOffset: -2, maxOffset: 0 });
+  schedule.availableDates = [];
+  assert.deepEqual((await scheduleShape(schedule, 0)).tachiaiTestScheduleShape.horizon,
+    { past: 0, today: 0, future: 0, minOffset: null, maxOffset: null });
+  schedule.availableDates = ['00000101', '00000229', '00990101', '20000229', '99991231'];
+  const horizon = (await scheduleShape(schedule, 0)).tachiaiTestScheduleShape.horizon;
+  assert.deepEqual(horizon, { past: 3, today: 0, future: 2, minOffset: -719528, maxOffset: 2932896 });
+});
+
+test('schedule test marker follows whole-response refusal and delayed cancellation without further requests', async () => {
+  const controlSource = scheduleShapeSource();
+  const invalid = scheduleReply(502); invalid.slots[501].id = invalid.slots[0].id;
+  for (const options of [{ schedule: invalid }, { scheduleText: '{"slots":[],"slots":[],"channels":[],"availableDates":[]}' },
+    { scheduleStatus: 403 }, { scheduleRedirected: true }]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', controlSource, ...options }); value.start(); await settle();
+    assert.equal(value.state().state, 'REFUSED'); assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+    assert.equal(value.requests.length, 2);
+  }
+  for (const delay of ['delayedSchedule', 'delayedScheduleRead']) for (const action of ['stop', 'timeout', 'budget']) {
+    const options = { operation: 'FETCH_SCHEDULE', controlSource, [delay]: true };
+    const value = fixture(options); value.start(); await settle();
     if (action === 'stop') value.stop(); else if (action === 'timeout') for (const callback of value.timers.values()) callback();
     else options.elapsedMs = 45000;
     value.release(); await settle();

@@ -10,8 +10,9 @@ This document combines the bounded 2026-10-09 research for
 [issue #100](https://github.com/altendky/tachiai/issues/100) with dated
 implementation and device evidence below. Public discovery, one saved email
 account and first-page account collections have bounded native acceptance;
-they do not establish a supported external catalog or account API. Broader
-coverage, identity and lifecycle gates keep #100 and #101 open.
+they do not establish a supported external catalog or account API. The stated
+initial criteria for #100 and #101 were audited and closed on 2026-10-13;
+broader coverage, identity and lifecycle behavior remain unverified.
 
 ## Current authorization — 2026-10-10
 
@@ -1330,6 +1331,84 @@ connect an account or retrieve My List/history. Static review and fixtures do no
 establish actual playback; bounded device evidence is recorded separately in
 [native experiments](native-access-experiments.md#exact-configured-linear-channels--2026-10-11).
 
+### Account subscription profile observation
+
+The next bounded #193 experiment observes one existing-account profile through
+the production owned account transport and the instance's captured saved route.
+Default invocation skips before protected reads. An explicit invocation requires
+the persistent `tachiai-dev` AVD, ordinary app process and a retained grant whose
+decoded expiry exactly matches protected storage. Missing, expired or inconsistent
+authorization makes no provider request and reports a separate local-unavailable
+outcome. It does not reconnect, bootstrap a guest, check email registration,
+probe an invalid bearer, renew credentials or change saved records.
+
+The test-only forwarding stream observes the production GET's existing reads;
+it does not read ahead, alter bytes or persist the response. The unchanged strict
+profile decoder must return the requested identity. A second strict projection
+reports only fixed shapes, bounded counts, Boolean categories and subscription
+expiry categories relative to the request's captured wall time. Root
+`userSubscriptions` is distinct from a similarly named field under `profile`.
+The pinned public caller requests the same profile without a subscription
+expansion parameter. Its mapper separately consumes root legacy `subscriptions`,
+modern `userSubscriptions` and `partnerServiceSubscriptions`; the observer keeps
+their shapes and counts separate. Known legacy/partner fields and authority-ID
+lists are classified only by fixed types, Boolean/expiry categories and bounded
+counts. Legacy or partner entries alone do not establish the modern Premium
+viewing-authority predicate, Chase access or an exact playable source.
+IDs, plan and authority strings, expiry values, account headers, URLs and raw
+bodies remain private. Capture buffers and private comparison digests are wiped.
+
+The original 45-second observation budget starts before protected reads.
+Publication follows current owner, stored grant/revision, foreground, clock and
+unchanged-record checks plus confirmed actual HTTP/input/disconnect, route/backend,
+worker and lifecycle cleanup. Cleanup has one sticky 20-second bound capped by
+the original 65-second limit; uncertain original owners remain retained. Parent
+fixture cleanup has a separate executor, leaving the production native input and
+disconnect workers available. The experiment establishes observed profile shape,
+not Premium entitlement, paid playback, Chase or exact live occurrence.
+
+On 2026-10-13, a first explicitly opted-in modern-field check passed, zero skips,
+in 5.154 seconds
+on persistent `tachiai-dev`, Android 16/API 36, x86-64, using the retained email
+account and captured saved Windscribe route. No provider browser was used by the
+experiment; exit country was not independently measured. The owner had separately
+returned from the remembered ABEMA browser session, and Tachiai confirmed the
+connection before a requested emulator restart. Post-restart local admission
+passed without a provider request. The actual experiment then made one production
+profile GET, returned HTTP 200 and the matching identity, and accepted complete
+strict JSON after all ownership, cleanup and preservation gates.
+
+Both root and nested modern subscription fields were **absent** in that response.
+The first projection did not observe legacy or partner fields. The
+zero projected row count is not an observed empty array or evidence that the
+account lacks Premium. No authority rows, Boolean values or expiry values were
+available to verify. The precise remaining gap is the provider's subscription
+response/caller semantics and positive entitlement evidence; the public DTO's
+defaulting behavior cannot fill that gap. #193 remains open for broader broadcast
+access modes.
+
+All 20 provider-free observation/admission/cleanup guards passed, zero skips, in
+2.258 seconds. Compilation, lint, release isolation, ordinary instrumentation
+manifest, shared signing, scoped hooks/docs and independent source review passed.
+Production code and the app APK were unchanged. All 20 saved-state files stayed
+byte-identical across the test APK update, guards, actual observation and normal
+launcher restoration. No purchase, guest fallback, credential renewal, invalid
+authorization probe, playback or saved account/route/source mutation occurred.
+
+After verifying the public caller's separate legacy and partner families, the
+same unpublished fixture was extended with fixed categories for those fields.
+All 22 provider-free guards then passed, zero skips, in 2.277 seconds; compilation,
+lint, isolation, ordinary manifest, shared signing, scoped checks and independent
+delta review passed again. One separately disclosed follow-up execution passed,
+zero skips, in 5.236 seconds. It made exactly one GET through the same retained
+grant and route, with matching identity, strict JSON and confirmed cleanup.
+The legacy root field was an explicitly empty array. Modern root/nested and
+partner root fields were absent, with no projected authority or expiry rows.
+All 20 saved files remained byte-identical and the normal launcher was restored.
+This is two bounded observations with one request each, not an observed lack of
+Premium, token-context equivalence, paid or Chase acceptance. No different
+endpoint, query, credential migration or renewal was introduced.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention
@@ -1339,7 +1418,9 @@ with fresh validation after process restart, one My List entry and two History
 entries. These account observations used the owning Windscribe route on
 tachiai-dev and preserved protected records and configured items. They establish
 bounded access, not complete catalog/account or playback acceptance.
-Keep #100 and #101 open for:
+The stated initial criteria for #100 and #101 were independently audited and
+the issues closed on 2026-10-13. The wider behavior below remains unverified;
+those closures do not establish full provider coverage:
 
 - Broader structured discovery and collection coverage, real continuation
   consumption and every supported My List/History resource kind. Genres and
@@ -1364,7 +1445,8 @@ The dated email, My List and [History evidence](provider-history-access.md#inten
 satisfy their respective bounded account/endpoint observations; each retains its
 separate ownership, route, foreground, expiry and cleanup admission. Connection
 alone, public import or fixture success does not establish an unobserved collection
-or playback capability. Broader History work remains in
-[issue #102](https://github.com/altendky/tachiai/issues/102). Public discovery/import
+or playback capability. The stated initial History criteria in
+[issue #102](https://github.com/altendky/tachiai/issues/102) were also audited and
+closed; wider History coverage remains unverified. Public discovery/import
 and guest playback remain independent of those account-backed gates; outstanding
 work must remain tracked.

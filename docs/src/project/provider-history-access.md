@@ -620,5 +620,7 @@ Before retrieval, verify access, identities, metadata semantics, ownership and
 retention. Investigate direct account history first; any user-selected export
 fallback needs its own format/privacy and UX decision. Browser launch, public
 URL import and
-fixtures do not satisfy account-history acceptance. Keep #102 and account-backed
-work open until completed or an evidenced capability limit is explicitly resolved.
+fixtures do not satisfy account-history acceptance. The stated initial criteria
+for #102 were audited and closed on 2026-10-13 using the dated endpoint and
+configured-playback evidence above. Wider account-history coverage and lifecycle
+behavior remain unverified; closure does not establish those capabilities.

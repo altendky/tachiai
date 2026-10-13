@@ -28,6 +28,7 @@ class AbemaAccountAccessOwnerTest {
         var cleanup = true
         var closeThrows = false
         var closeAction: () -> Unit = {}
+        var cleanupAction: () -> Unit = {}
         var profileAction: () -> Unit = {}
         val owner: AbemaAccountAccessOwner
         fun awaitCleanup() {
@@ -48,7 +49,7 @@ class AbemaAccountAccessOwnerTest {
                     override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult = error("NO TOKEN EXCHANGE")
                     override fun cancelActiveRequest() { cancels.incrementAndGet() }
                     override fun close() { closes.incrementAndGet(); closeAction(); if (closeThrows) error("PRIVATE CLOSE ERROR") }
-                } }, { cleanup })
+                } }, { cleanupAction(); cleanup })
         }
     }
     @Test fun sameRecordProofIsSharedUntilLastForegroundAttachmentClosesWithoutWrites() {
@@ -158,11 +159,49 @@ class AbemaAccountAccessOwnerTest {
             assertFalse(failed.toString().contains("PRIVATE"))
         }
     }
-    @Test fun cleanupUncertaintyIsReportedEvenWhenCleanupCrossesOriginalOperationDeadline() {
-        val f = Fixture(); f.cleanup = false; f.closeAction = { f.elapsed = 30000 }
+    @Test fun knownCleanupFailureSurvivesExpiredFinalPublicationSample() {
+        val f = Fixture(); f.cleanup = false
+        val monitor = checkNotNull(AbemaAccountAccessOwner::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(f.owner))
+        val sampled = CountDownLatch(1)
+        // Expire only the final worker sample, after cleanup has been classified.
+        // The waiter must not time out before that failure is known.
+        f.elapsedHook = {
+            if (f.closes.get() > 0 && Thread.holdsLock(monitor)) {
+                sampled.countDown(); 30000L
+            } else f.elapsed
+        }
         val attachment = f.owner.attach()
-        assertEquals(AbemaAccountFailure.CLEANUP_FAILED, (attachment.acquire() as AbemaAccountAccessResult.Failed).category)
-        assertFalse(f.owner.cleanupConfirmed); attachment.close()
+        try {
+            assertEquals(AbemaAccountFailure.CLEANUP_FAILED, (attachment.acquire() as AbemaAccountAccessResult.Failed).category)
+            assertTrue(sampled.await(3, TimeUnit.SECONDS))
+            assertFalse(f.owner.cleanupConfirmed)
+            assertEquals(AbemaAccountFailure.CLEANUP_FAILED,
+                assertThrows(AbemaAccountException::class.java) { f.owner.attach() }.category)
+        } finally { attachment.close(); f.owner.close() }
+    }
+    @Test fun cleanupCrossingDeadlineTimesOutBeforeLaterStickyFailure() {
+        val f = Fixture(); f.cleanup = false
+        val monitor = checkNotNull(AbemaAccountAccessOwner::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(f.owner))
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val sampled = CountDownLatch(1)
+        f.elapsedHook = {
+            if (f.closes.get() > 0 && Thread.holdsLock(monitor)) sampled.countDown()
+            f.elapsed
+        }
+        // Hold confirmation after close so the receipt's real timeout cannot
+        // classify cleanup before the waiter observes its operation deadline.
+        f.cleanupAction = { f.elapsed = 30000; entered.countDown(); assertTrue(release.await(10, TimeUnit.SECONDS)) }
+        val attachment = f.owner.attach(); val executor = Executors.newSingleThreadExecutor()
+        try {
+            val result = executor.submit<AbemaAccountAccessResult> { attachment.acquire(0, 30000) }
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            assertEquals(AbemaAccountFailure.TIME_LIMIT_REACHED,
+                (result.get(3, TimeUnit.SECONDS) as AbemaAccountAccessResult.Failed).category)
+            assertFalse(f.owner.cleanupConfirmed)
+            release.countDown(); assertTrue(sampled.await(3, TimeUnit.SECONDS))
+            assertFalse(f.owner.cleanupConfirmed)
+            assertEquals(AbemaAccountFailure.CLEANUP_FAILED,
+                assertThrows(AbemaAccountException::class.java) { f.owner.attach() }.category)
+        } finally { release.countDown(); attachment.close(); f.owner.close(); executor.shutdownNow() }
     }
     @Test fun overlappingConsumersCoalesceAndClosingInitiatorDoesNotCancelRemainingConsumer() {
         val f = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)

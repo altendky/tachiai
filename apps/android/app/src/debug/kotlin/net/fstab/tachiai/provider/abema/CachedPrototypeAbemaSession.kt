@@ -67,6 +67,8 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountAccessIpc
 import net.fstab.tachiai.provider.abema.account.AbemaAccountException
 import net.fstab.tachiai.provider.abema.account.AbemaAccountFailure
 import net.fstab.tachiai.provider.abema.account.AbemaSubscriptionProfileResult
+import net.fstab.tachiai.provider.abema.account.AbemaChaseFieldState
+import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import javax.net.ssl.HttpsURLConnection
@@ -120,8 +122,12 @@ internal class CachedPrototypeAbemaSession(
     private val accountCleanupPending = AtomicBoolean()
     private val slotProfileCleanupPending = AtomicBoolean()
     private val slotProfile = AtomicReference<AbemaBorrowedSlotProfile?>()
-    private val slotPremiumScope = AtomicReference<AbemaSlotPremiumScope?>()
-    private val slotPremiumReceipt = AtomicReference<AbemaSlotPremiumReceipt?>()
+    private val slotPremiumScope = AtomicReference<AbemaSlotAuthorityScope?>()
+    private val slotPremiumReceipt = AtomicReference<AbemaSlotAuthorityReceipt?>()
+    private val slotChaseScope = AtomicReference<AbemaSlotAuthorityScope?>()
+    private val slotChaseReceipt = AtomicReference<AbemaSlotAuthorityReceipt?>()
+    private val slotChaseAdmission = AbemaSlotChaseAdmission { slotChaseCandidateCurrent(revision.get()) }
+    private val slotChaseTimelineAccepted = AtomicBoolean()
     private val accountAdmitted = AtomicBoolean()
     private val accountClient = AtomicReference<AndroidAbemaAccountAccessClient?>()
     @Volatile var accountStatus: AbemaAccountAccessIpc.Status? = null
@@ -178,15 +184,26 @@ internal class CachedPrototypeAbemaSession(
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationCurrent(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && SystemClock.elapsedRealtime() < deadline && ownership?.canContinue() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run)
+        (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run) && slotChaseCurrent(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) && slotPremiumCurrent(revision.get())
+        (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
+        slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
     private fun slotPremiumCurrent(run: Long): Boolean {
         val receipt = slotPremiumReceipt.get() ?: return true
         val scope = slotPremiumScope.get() ?: return false
+        return slotAuthorityCurrent(run, receipt, scope)
+    }
+    private fun slotChaseCurrent(run: Long): Boolean = revision.get() == run && slotChaseAdmission.current()
+    private fun slotChaseCandidateCurrent(run: Long): Boolean {
+        val receipt = slotChaseReceipt.get() ?: return false
+        val scope = slotChaseScope.get() ?: return false
+        return slotAuthorityCurrent(run, receipt, scope)
+    }
+    private fun slotAuthorityCurrent(run: Long, receipt: AbemaSlotAuthorityReceipt,
+        scope: AbemaSlotAuthorityScope): Boolean {
         return scope.client === accountClient.get() && scope.run == run && slotResource != null &&
-            scope.instanceId == ownership?.instanceId && scope.ownerProof == ownership?.ownerProof &&
+            scope.instanceId == ownership?.instanceId && scope.ownerProof == ownership.ownerProof &&
             scope.channelId == slotChannelId && scope.slotId == slotId && scope.playbackDeadline == deadline &&
             receipt.current(scope, System.currentTimeMillis(), SystemClock.elapsedRealtime())
     }
@@ -197,7 +214,7 @@ internal class CachedPrototypeAbemaSession(
     override fun canContinue(): Boolean = current(revision.get())
     override fun checkAuthorization(): Boolean {
         if (!closed.get() && accountAdmitted.get() &&
-            (accountClient.get()?.current() != true || !slotPremiumCurrent(revision.get()))) {
+            (accountClient.get()?.current() != true || !slotPremiumCurrent(revision.get()) || !slotChaseCurrent(revision.get()))) {
             firstFailure.remember(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
             return false
         }
@@ -207,7 +224,7 @@ internal class CachedPrototypeAbemaSession(
     private fun monitorAccount(run: Long) {
         if (closed.get() || revision.get() != run) return
         if (active() && budget?.active == true && SystemClock.elapsedRealtime() < deadline &&
-            accountAdmitted.get() && (accountClient.get()?.current() != true || !slotPremiumCurrent(run))) {
+            accountAdmitted.get() && (accountClient.get()?.current() != true || !slotPremiumCurrent(run) || !slotChaseCurrent(run))) {
             fail(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)); return
         }
         handler.postDelayed({ monitorAccount(run) }, 200)
@@ -380,9 +397,9 @@ internal class CachedPrototypeAbemaSession(
                                     !preparationCurrent(run) || !client.checkWorker() || !selectedOwner.checkWorker())
                                     throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
                                 subscription.premiumExpiresAtMs?.let { expiry ->
-                                    val scope = AbemaSlotPremiumScope(client, selectedOwner.instanceId,
+                                    val scope = AbemaSlotAuthorityScope(client, selectedOwner.instanceId,
                                         selectedOwner.ownerProof, proof, slotChannelId, slotId, run, deadline)
-                                    val receipt = AbemaSlotPremiumReceipt.publish(scope, expiry, beganWall, beganElapsed,
+                                    val receipt = AbemaSlotAuthorityReceipt.publish(scope, expiry, beganWall, beganElapsed,
                                         readinessDeadline, System.currentTimeMillis(), SystemClock.elapsedRealtime())
                                         ?: throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
                                     synchronized(accountLock) {
@@ -392,6 +409,26 @@ internal class CachedPrototypeAbemaSession(
                                     }
                                     argument.put("slotPremium", JSONObject().put("channelId", slotChannelId)
                                         .put("slotId", slotId).put("expiresAtMs", expiry))
+                                }
+                                val chase = subscription.chase
+                                if (chase.state == AbemaChaseFieldState.VERIFIED && chase.claims.isNotEmpty()) {
+                                    val expiry = chase.claims.minOf { it.expiresAtMs }
+                                    val scope = AbemaSlotAuthorityScope(client, selectedOwner.instanceId,
+                                        selectedOwner.ownerProof, proof, slotChannelId, slotId, run, deadline)
+                                    val receipt = AbemaSlotAuthorityReceipt.publish(scope, expiry, beganWall, beganElapsed,
+                                        readinessDeadline, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                                    // An expired unused candidate cannot truncate an ordinary
+                                    // broadcast. Only a fresh Chase source binding activates it.
+                                    if (receipt != null) {
+                                        synchronized(accountLock) {
+                                            if (closed.get() || revision.get() != run || accountClient.get() !== client)
+                                                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                                            slotChaseScope.set(scope); slotChaseReceipt.set(receipt)
+                                        }
+                                        argument.put("slotChase", JSONObject().put("channelId", slotChannelId)
+                                            .put("slotId", slotId).put("expiresAtMs", expiry)
+                                            .put("authorityIds", JSONArray(chase.claims.map { it.id }.distinct())))
+                                    }
                                 }
                             }
                             accountArgument = argument.toString()
@@ -622,7 +659,15 @@ internal class CachedPrototypeAbemaSession(
                         if (closed.get() || revision.get() != run || !active()) return@post
                         record("native=${event.name}")
                         when (event) {
-                            NativeDashEvent.READY -> emit(PrototypeFeedEvent.READY)
+                            NativeDashEvent.READY -> {
+                                if (slotChaseAdmission.chaseSelected && !slotChaseTimelineAccepted.get()) {
+                                    if (!slotChaseAdmission.initialLiveStartAllowed(nativeHost?.timingSnapshot())) {
+                                        fail(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA)); return@post
+                                    }
+                                    slotChaseTimelineAccepted.set(true)
+                                }
+                                emit(PrototypeFeedEvent.READY)
+                            }
                             NativeDashEvent.DRM_REQUESTED -> emit(PrototypeFeedEvent.LICENSE_REQUESTED)
                             NativeDashEvent.DRM_KEYS_LOADED -> emit(PrototypeFeedEvent.LICENSE_READY)
                             NativeDashEvent.VIDEO_FRAME -> emit(PrototypeFeedEvent.VIDEO_FRAME)
@@ -660,8 +705,10 @@ internal class CachedPrototypeAbemaSession(
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
                     val selected = quoted(raw, 12_000)
+                    val slotBinding = if (slotResource != null)
+                        parseAbemaSlotPlaybackBinding(selected, slotChannelId, slotId) else null
                     val uri = when {
-                        slotResource != null -> parseAbemaSlotSourceBinding(selected, slotChannelId, slotId)
+                        slotResource != null -> slotBinding?.uri
                         episodeResource != null -> parseAbemaEpisodeSourceBinding(selected, episodeId)
                         channelResource != null -> parseAbemaChannelSourceBinding(selected, channelId)
                         else -> runCatching { URI(selected ?: "") }.getOrNull()
@@ -676,6 +723,13 @@ internal class CachedPrototypeAbemaSession(
                     else if (replay)
                         abemaReplaySelectedSourcePolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId) == AbemaReplayUriPolicy.ALLOWED
                     else AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId)
+                    if (allowed && slotBinding != null) {
+                        if ((slotBinding.chase && accountStatus != AbemaAccountAccessIpc.Status.ACCOUNT) ||
+                            !slotChaseAdmission.select(slotBinding.chase)) {
+                            remember(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+                            completion.complete(null); return@evaluateJavascript
+                        }
+                    }
                     record("source=${if (allowed) "ALLOWED" else "REFUSED"}")
                     if (!allowed && uri != null) remember(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
                     if (!allowed && replay && slotResource == null) {
@@ -833,6 +887,7 @@ internal class CachedPrototypeAbemaSession(
         synchronized(accountLock) {
             accountClient.get()?.close()
             slotPremiumReceipt.set(null); slotPremiumScope.set(null)
+            slotChaseReceipt.set(null); slotChaseScope.set(null)
         }
         slotProfile.get()?.let { profile ->
             slotProfileCleanupPending.set(true)

@@ -83,4 +83,76 @@ class AbemaSubscriptionEntitlementTest {
         assertThrows(IllegalArgumentException::class.java) { AbemaSubscriptionProfileResult.Identity("fixture", AbemaSubscriptionFieldState.PREMIUM, null) }
         assertThrows(IllegalArgumentException::class.java) { AbemaSubscriptionProfileResult.Identity("fixture", AbemaSubscriptionFieldState.ABSENT, 1) }
     }
+    @Test fun chaseMissingEmptyAndValidNonAuthorityFieldsStayDistinctFromPremium() {
+        assertEquals(AbemaChaseFieldState.ABSENT, identity(body(), AbemaSubscriptionFieldState.ABSENT).chase.state)
+        assertEquals(AbemaChaseFieldState.EMPTY, identity(body("[]"), AbemaSubscriptionFieldState.EMPTY).chase.state)
+        assertEquals(AbemaChaseFieldState.ABSENT, identity(body("""[{"expire":2000}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY).chase.state)
+        assertEquals(AbemaChaseFieldState.EMPTY, identity(body("""[{"expire":2000,"featureAuthorities":[]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY).chase.state)
+        for (expiry in listOf(0, 500, 1000)) {
+            val result = identity(body("""[{"expire":$expiry,"featureAuthorities":[{"id":"authority","type":2}]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY)
+            assertEquals(AbemaChaseFieldState.NO_AFFIRMATIVE_AUTHORITY, result.chase.state); assertTrue(result.chase.claims.isEmpty())
+        }
+    }
+    @Test fun chaseAcceptsOnlyExactActiveChaseTypesAndKeepsEachClaimExpiry() {
+        val result = identity(body("""[{"expire":2000,"featureAuthorities":[{"id":"first","type":2}]},{"expire":3000,"featureAuthorities":[{"id":"second","type":"FEATURE_AUTHORITY_TYPE_CHASE_PLAY"},{"id":"first","type":2}]},{"expire":500,"featureAuthorities":[{"id":"expired","type":2}]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY)
+        assertEquals(AbemaChaseFieldState.VERIFIED, result.chase.state)
+        assertEquals(listOf("first", "second", "first"), result.chase.claims.map { it.id })
+        assertEquals(listOf(2_000_000L, 3_000_000L, 3_000_000L), result.chase.claims.map { it.expiresAtMs })
+        assertNull(result.premiumExpiresAtMs)
+        val names = listOf("UNSPECIFIED", "SIMULTANEOUS_VIEWING", "CHASE_PLAY", "NO_ADS", "DOWNLOAD", "OPENING_SKIP", "LIMITED_PPV")
+        for (type in listOf(0, 1, 3, 4, 5, 6)) for (raw in listOf(type.toString(), "\"FEATURE_AUTHORITY_TYPE_${names[type]}\"")) {
+            val other = identity(body("""[{"expire":2000,"featureAuthorities":[{"id":"other","type":$raw}]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY)
+            assertEquals(AbemaChaseFieldState.NO_AFFIRMATIVE_AUTHORITY, other.chase.state); assertTrue(other.chase.claims.isEmpty())
+        }
+    }
+    @Test fun malformedChaseFieldsIndependentlyDiscardAllClaimsWithoutChangingPremium() {
+        val malformed = listOf("null", "{}", "1", "[null]", "[{}]", "[[]]", "[true]",
+            """[{"id":1,"type":2}]""", """[{"id":"","type":2}]""", """[{"id":null,"type":2}]""",
+            """[{"type":2}]""", """[{"id":"id"}]""", """[{"id":"${"x".repeat(257)}","type":2}]""")
+        for (features in malformed) {
+            val result = identity(body("""[{"expire":2000,"viewingAuthorities":[{"isPremium":true}],"featureAuthorities":[{"id":"first","type":2}]},{"expire":0,"featureAuthorities":$features}]"""), AbemaSubscriptionFieldState.PREMIUM, 2_000_000L)
+            assertEquals(AbemaChaseFieldState.UNVERIFIED, result.chase.state); assertTrue(result.chase.claims.isEmpty())
+        }
+        for (type in listOf("null", "true", "2.0", "\"2\"", "-1", "7", "\"FEATURE_AUTHORITY_TYPE_chase_PLAY\"", "\"UNRECOGNIZED\"")) {
+            val result = identity(body("""[{"expire":2000,"viewingAuthorities":[{"isPremium":true}],"featureAuthorities":[{"id":"id","type":$type}]}]"""), AbemaSubscriptionFieldState.PREMIUM, 2_000_000L)
+            assertEquals(AbemaChaseFieldState.UNVERIFIED, result.chase.state); assertTrue(result.chase.claims.isEmpty())
+        }
+    }
+    @Test fun chaseIdsAreRawBoundedStringsWithoutTrimmingCoercionOrInventedGrammar() {
+        val result = identity(body("""[{"expire":2000,"featureAuthorities":[{"id":" \n\t\u2603 / ","type":2},{"id":"${"x".repeat(256)}","type":2}]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY)
+        assertEquals(AbemaChaseFieldState.VERIFIED, result.chase.state)
+        assertEquals(" \n\t☃ / ", result.chase.claims.first().id)
+        assertEquals(256, result.chase.claims.last().id.length)
+    }
+    @Test fun chaseCannotBypassGlobalSubscriptionExpiryIdentityOrStrictJsonRefusal() {
+        for (expire in listOf("null", "-1", "2000.0", "\"2000\"", "9223372036854775807", "9007199254741"))
+            refused(body("""[{"expire":$expire,"featureAuthorities":[{"id":"id","type":2}]}]"""))
+        refused(body("""[{"featureAuthorities":[{"id":"id","type":2}]}]"""))
+        refused(body("""[{"expire":2000,"featureAuthorities":[{"id":"a","id":"b","type":2}]}]"""))
+        refused(body("""[{"expire":2000,"featureAuthorities":[{"id":"a","type":1,"type":2}]}]"""))
+        assertSame(AbemaSubscriptionProfileResult.Inconclusive, parse(body("""[{"expire":2000,"featureAuthorities":[{"id":"id","type":2}]}]"""), expected = "other"))
+        val nested = identity("""{"profile":{"userId":"fixture","userSubscriptions":[{"expire":2000,"featureAuthorities":[{"id":"id","type":2}]}]},"partnerServiceSubscriptions":[{"expire":2000,"featureAuthorities":[{"id":"id","type":2}]}]}""", AbemaSubscriptionFieldState.ABSENT)
+        assertEquals(AbemaChaseFieldState.ABSENT, nested.chase.state); assertTrue(nested.chase.claims.isEmpty())
+    }
+    @Test fun chaseClaimsAreImmutableAndAllTextFormsRemainRedacted() {
+        val claim = AbemaChaseClaim("private-authority", 2_000_000)
+        val source = mutableListOf(claim)
+        val projection = AbemaChaseProjection(AbemaChaseFieldState.VERIFIED, source)
+        source.clear(); assertEquals(1, projection.claims.size)
+        assertThrows(UnsupportedOperationException::class.java) { (projection.claims as MutableList<AbemaChaseClaim>).clear() }
+        for (text in listOf(claim.toString(), projection.toString(), projection.claims.toString())) {
+            assertFalse(text.contains("private-authority")); assertFalse(text.contains("2000000"))
+        }
+        assertThrows(IllegalArgumentException::class.java) { AbemaChaseProjection(AbemaChaseFieldState.UNVERIFIED, listOf(claim)) }
+        assertThrows(IllegalArgumentException::class.java) { AbemaChaseProjection(AbemaChaseFieldState.VERIFIED, emptyList()) }
+    }
+    @Test fun chaseArrayAndAggregateDistinctIdBoundsDoNotBlockOrdinaryPremium() {
+        fun features(start: Int, size: Int) = List(size) { "{\"id\":\"authority${start + it}\",\"type\":2}" }.joinToString(",")
+        val first = features(0, 1000)
+        val exact = identity(body("""[{"expire":2000,"featureAuthorities":[$first]}]"""), AbemaSubscriptionFieldState.NO_AFFIRMATIVE_AUTHORITY)
+        assertEquals(AbemaChaseFieldState.VERIFIED, exact.chase.state); assertEquals(1000, exact.chase.claims.size)
+        refused(body("""[{"expire":2000,"featureAuthorities":[$first,{"id":"overflow","type":2}]}]"""))
+        val aggregate = identity(body("""[{"expire":2000,"viewingAuthorities":[{"isPremium":true}],"featureAuthorities":[${features(0, 600)}]},{"expire":3000,"featureAuthorities":[${features(600, 401)}]}]"""), AbemaSubscriptionFieldState.PREMIUM, 2_000_000L)
+        assertEquals(AbemaChaseFieldState.UNVERIFIED, aggregate.chase.state); assertTrue(aggregate.chase.claims.isEmpty())
+    }
 }

@@ -1459,6 +1459,56 @@ byte-for-byte and returned to the normal launcher. This installation check used
 no provider browser or playback operation and does not establish paid frames,
 advancing playback, country or physical-device behavior.
 
+### Exact ongoing Chase source
+
+The next debug-native slice resolves an ongoing configured broadcast through its
+own `chasePlayback`, using fresh raw slot identity and the existing profile GET.
+It requires an active modern CHASE_PLAY feature authority whose raw ID matches
+the selected slot's authority list. Numeric enum 2 and the verified exact string
+form are accepted without coercion. Malformed feature data makes Chase unverified
+independently of Premium; it cannot grant access or invalidate an otherwise valid
+ordinary Premium projection. Legacy/partner/trial data supplies no Chase authority.
+
+The private candidate list is bounded, immutable and request-local. Its earliest
+active claim expiry conservatively bounds every possible matching authority.
+An unrelated short claim can therefore end selected Chase playback early. That
+lifetime activates only when the canonical app-owned source binding selects
+Chase; an unused or expired candidate never shortens ordinary catch-up. Native
+and app-owned runtime checks retain the original client/owner/source/run,
+readiness/playback budgets, expiry and rollback protection. No new endpoint,
+profile operation, route/backend, stored grant or credential renewal is added.
+
+Fresh slot times select one source arm: an ended slot keeps ordinary playback;
+an ongoing slot additionally requires the explicit Chase flag, matching feature
+authority, both linear and timeshift region policies, no pause/PPV/unsupported
+DRM, and the appropriate Premium/general or non-Premium/free window. The same
+verified selector receives the exact advertised Chase playlist. The slot license
+tuple, token binding and advertisement selection are unchanged. There is no
+channel fallback, source reclassification or automatic transition at the end of
+the broadcast. The Chase source remains that occurrence after its broadcast ends.
+
+The user chose live-edge startup for ongoing broadcasts on 2026-10-13. This uses
+the existing native viewer's once-only SDK live-default seek, rather than the
+provider UI's beginning-position default. Before native READY is exposed, selected
+Chase requires an actual SDK live timeline with a usable default-position command;
+unsupported or static initial timelines refuse. Subsequent Back to live controls
+are tracked separately in [#233](https://github.com/altendky/tachiai/issues/233).
+
+These implementation and synthetic checks do not establish actual positive Chase
+authority, a growing protected manifest, CDM exchange, rendered frames or movement.
+Channel-backed exact live occurrence still needs verified media-timed PG coverage
+and a pre-presentation transition boundary; schedule times or metadata arrival
+alone do not establish it. #193 remains open for those modes and device evidence.
+
+Local verification on 2026-10-13 passed 2,756 JVM cases with zero failures or
+skips, 95 app-owned bootstrap cases, lint, release isolation, instrumentation
+compilation, scoped hooks/docs and independent review. Both APKs matched the
+shared debug signer. The ordinary instrumentation APK was unchanged from the
+installed previous build. A non-destructive app update on verified persistent
+`tachiai-dev`, Android 16/API 36, x86-64, preserved all 20 saved-state files
+byte-for-byte and restored the normal launcher. This check used no provider
+browser or playback operation; positive Chase playback remains unobserved.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

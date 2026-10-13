@@ -45,6 +45,12 @@ const savedAccount = () => ({ userId: 'ACCOUNT_USER', bearer: 'ACCOUNT_BEARER',
   deviceId: 'ACCOUNT_DEVICE', expiresAtMs: fixtureNow + 600000 });
 const slotPremiumAccount = (expiresAtMs = fixtureNow + 300000) => ({ ...savedAccount(),
   slotPremium: { channelId: 'sumo', slotId: 'fixture-slot', expiresAtMs } });
+const slotChaseAccount = (expiresAtMs = fixtureNow + 300000, authorityIds = ['CHASE_AUTHORITY']) => ({ ...savedAccount(),
+  slotChase: { channelId: 'sumo', slotId: 'fixture-slot', expiresAtMs, authorityIds } });
+const chaseSlot = () => ({ ...freeSlot(), endAt: futureSeconds,
+  flags: { chasePlay: true }, timeshiftFreeEndAt: futureSeconds,
+  broadcastRegionPolicies: { linear: 1, timeshift: 1 }, chasePlayFeatureAuthorityIds: ['CHASE_AUTHORITY'],
+  chasePlayback: { dash: 'https://ds-vod-abematv.akamaized.net/growing/fixture-slot/manifest.mpd' } });
 
 test('configured playback uses one validated account identity through token source and opaque exchange', async () => {
   const value = fixture({ account: savedAccount(), forbidGuest: true });
@@ -1323,6 +1329,180 @@ test('Premium expiry after response completion clears the unpublished response a
   options.nowMs = fixtureNow + 300000;
   assert.equal(value.take(), null); assert.equal(value.status(), 'FAILED');
   assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+});
+
+test('ongoing exact Chase selects only returned chasePlayback and binds the same account token slot and license', async () => {
+  for (const premium of [false, true]) {
+    const slot = chaseSlot(); if (premium) delete slot.timeshiftFreeEndAt;
+    const account = slotChaseAccount(); if (premium) account.slotPremium = slotPremiumAccount().slotPremium;
+    const value = fixture({ configuredSlot: true, account, forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    assert.deepEqual(value.requests.map(item => item.uri.pathname), [
+      '/v1/media/token', '/now-on-air/abema-news', '/v1/media/slots/fixture-slot',
+    ]);
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.deepEqual(Object.keys(binding), ['channelId', 'slotId', 'uri', 'chase']);
+    assert.equal(binding.chase, true); assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot');
+    assert.equal(new URL(binding.uri).pathname, '/growing/fixture-slot/manifest.mpd');
+    assert.equal(value.evaluate('observed.legacy.length'), 1);
+    const selection = JSON.parse(value.evaluate('JSON.stringify(observed.legacy[0])'));
+    assert.equal(selection.sourceParam.playlists.dash, slot.chasePlayback.dash);
+    assert.equal(selection.sourceParam.contentId, 'fixture-slot'); assert.equal(selection.sourceParam.mediaToken, 'TEST_MEDIA');
+    assert.equal(selection.enforcePlainStream, false); assert.equal(selection.sourceParam.cffId, 0);
+    assert.equal(selection.sourceParam.dtid, null); assert.equal(selection.ua.os.name, 'Android');
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    const license = value.requests.at(-1).uri;
+    assert.equal(license.searchParams.get('ct'), 'slot'); assert.equal(license.searchParams.get('cid'), 'fixture-slot');
+    assert.equal(license.searchParams.get('t'), 'TEST_MEDIA'); assert.ok(value.take());
+  }
+});
+
+test('Chase context validates exact selected scope bounded raw IDs and positive integer candidate expiry before HTTP', async () => {
+  const exact = slotChaseAccount().slotChase;
+  const tooMany = Array.from({ length: 1001 }, (_, index) => String(index));
+  const tooLarge = Array.from({ length: 300 }, (_, index) => String(index).padStart(256, 'a'));
+  for (const slotChase of [null, false, true, [], {}, { ...exact, extra: true },
+    { ...exact, channelId: 'other-channel' }, { ...exact, slotId: 'other-slot' },
+    { ...exact, channelId: ['sumo'] }, { ...exact, authorityIds: null }, { ...exact, authorityIds: [] },
+    { ...exact, authorityIds: [0] }, { ...exact, authorityIds: [''] }, { ...exact, authorityIds: ['x'.repeat(257)] },
+    { ...exact, authorityIds: ['same', 'same'] }, { ...exact, authorityIds: tooMany }, { ...exact, authorityIds: tooLarge },
+    { ...exact, expiresAtMs: 0 }, { ...exact, expiresAtMs: -1 }, { ...exact, expiresAtMs: String(exact.expiresAtMs) },
+    { ...exact, expiresAtMs: exact.expiresAtMs + 0.5 }, { ...exact, expiresAtMs: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const value = fixture({ configuredSlot: true, account: { ...savedAccount(), slotChase }, forbidGuest: true });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  }
+  for (const launch of [value => value.start(true, 'fixture-episode'), value => value.startChannel('sumo'),
+    value => value.start(false), value => value.start(true)]) {
+    const value = fixture({ account: slotChaseAccount(), forbidGuest: true });
+    launch(value); await waitFor(value, 'FAILED'); assert.equal(value.requests.length, 0);
+  }
+});
+
+test('Chase authority IDs preserve raw identity without trimming coercing or a guessed ID grammar', async () => {
+  for (const id of ['opaque authority /:日本語', ' padded ', 'x'.repeat(256)]) {
+    const slot = chaseSlot(); slot.chasePlayFeatureAuthorityIds = [id];
+    const value = fixture({ configuredSlot: true, account: slotChaseAccount(undefined, [id]), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY'); value.stop();
+  }
+  for (const ids of [['CHASE_AUTHORITY '], [String(123)], ['other'], [], [null], [123], [''], ['same', 'same']]) {
+    const slot = chaseSlot(); slot.chasePlayFeatureAuthorityIds = ids;
+    const value = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+  }
+});
+
+test('Chase admits the native thousand-ID bound without an invented smaller limit', async () => {
+  const ids = Array.from({ length: 1000 }, (_, index) => 'authority-' + index);
+  const slot = chaseSlot(); slot.chasePlayFeatureAuthorityIds = ids;
+  const value = fixture({ configuredSlot: true, account: slotChaseAccount(undefined, ids), forbidGuest: true, slot });
+  value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY'); value.stop();
+});
+
+test('no absent guest expired or unmatched account authority may start Chase or fall back to ordinary source', async () => {
+  for (const account of [undefined, savedAccount(), slotChaseAccount(fixtureNow - 1), slotChaseAccount(fixtureNow),
+    slotChaseAccount(undefined, ['UNRELATED'])]) {
+    const options = { configuredSlot: true, slot: chaseSlot() };
+    if (account !== undefined) { options.account = account; options.forbidGuest = true; }
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.requests.some(item => item.uri.pathname === '/abematv-dash' || item.uri.pathname === '/v1/channels'), false);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
+test('expired unused Chase candidates neither alter nor revoke ended ordinary binding and exchange', async () => {
+  for (const expiry of [fixtureNow - 1, fixtureNow + 1000]) {
+    const options = { configuredSlot: true, account: slotChaseAccount(expiry), forbidGuest: true, slot: freeSlot() };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    options.nowMs = fixtureNow + 2000;
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.deepEqual(Object.keys(binding), ['channelId', 'slotId', 'uri']);
+    assert.equal(new URL(binding.uri).pathname, '/occurrence/fixture-slot/manifest.mpd');
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
+  }
+});
+
+test('Chase retains independent rights windows linear and timeshift regions pause PPV DRM and initial ongoing bounds', async () => {
+  const changes = [slot => { slot.flags.chasePlay = false; }, slot => { slot.flags.chasePlay = 'true'; },
+    slot => { slot.flags.paused = true; }, slot => { slot.mark.drm = true; }, slot => { slot.payperview = {}; },
+    slot => { slot.broadcastRegionPolicies.linear = 2; }, slot => { delete slot.broadcastRegionPolicies.linear; },
+    slot => { slot.broadcastRegionPolicies.timeshift = 2; }, slot => { slot.startAt = futureSeconds; },
+    slot => { slot.startAt = slot.endAt; }, slot => { slot.timeshiftFreeEndAt = 0; },
+    slot => { delete slot.timeshiftFreeEndAt; }, slot => { slot.timeshiftFreeEndAt = String(futureSeconds); },
+    slot => { slot.timeshiftFreeEndAt = fixtureNow / 1000 + 300; }];
+  for (const change of changes) {
+    const slot = chaseSlot(); change(slot);
+    const value = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+  }
+  const free = chaseSlot(); delete free.timeshiftEndAt;
+  const withoutPremium = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot: free });
+  withoutPremium.startSlot('sumo/fixture-slot'); await waitFor(withoutPremium, 'READY'); withoutPremium.stop();
+  for (const end of [undefined, 0, fixtureNow / 1000, String(futureSeconds)]) {
+    const slot = chaseSlot(); slot.timeshiftEndAt = end;
+    const account = { ...slotChaseAccount(), slotPremium: slotPremiumAccount().slotPremium };
+    const value = fixture({ configuredSlot: true, account, forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('Chase keeps exact selected occurrence URI and advertised alternate without ordinary or ARIN fallback', async () => {
+  for (const change of [slot => { delete slot.chasePlayback; }, slot => { slot.chasePlayback = null; },
+    slot => { slot.chasePlayback = { arin: 'UNSUPPORTED_ALTERNATE' }; },
+    slot => { slot.chasePlayback.dash = slot.chasePlayback.dash.replace('/fixture-slot/', '/other-slot/'); }]) {
+    const slot = chaseSlot(); change(slot);
+    const value = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot });
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED'); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+  const slot = chaseSlot(); slot.chasePlayback.yospace = {
+    dash: 'https://ds-vod-abematv.akamaized.net/selected-ad/fixture-slot/manifest.mpd' };
+  const advertised = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot, selectYospace: true });
+  advertised.startSlot('sumo/fixture-slot'); await waitFor(advertised, 'READY');
+  assert.equal(new URL(JSON.parse(advertised.evaluate(`window['${name}'].slotBinding()`)).uri).pathname,
+    '/selected-ad/fixture-slot/manifest.mpd'); advertised.stop();
+});
+
+test('late metadata after Chase candidate expiry refuses before selection but leaves ended ordinary available', async () => {
+  for (const ongoing of [false, true]) {
+    const options = { configuredSlot: true, account: slotChaseAccount(fixtureNow + 1000), forbidGuest: true,
+      slot: ongoing ? chaseSlot() : freeSlot(), deferSlot: true };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitForRequests(value, 3);
+    options.nowMs = fixtureNow + 2000; value.release(); await waitFor(value, ongoing ? 'FAILED' : 'READY');
+    assert.equal(value.evaluate('observed.legacy.length'), ongoing ? 0 : 1);
+    assert.equal(value.requests.length, 3); value.stop();
+  }
+});
+
+test('selected Chase expiry revokes READY late license and take without a second source or exchange', async () => {
+  for (const point of ['READY', 'LICENSE', 'TAKE']) {
+    const options = { configuredSlot: true, account: slotChaseAccount(fixtureNow + 1000), forbidGuest: true,
+      slot: chaseSlot(), deferLicense: point === 'LICENSE' };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    if (point !== 'READY') {
+      assert.equal(value.begin(challenge), 'WORKING');
+      if (point === 'LICENSE') await waitForRequests(value, 4); else await waitFor(value, 'RESPONSE');
+    }
+    options.nowMs = fixtureNow + 1000;
+    if (point === 'LICENSE') { value.release(); await waitFor(value, 'FAILED'); assert.equal(value.evaluate('observed.operation.length'), 0); }
+    assert.equal(value.take(), null); assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null);
+    assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.evaluate('observed.legacy.length'), 1);
+  }
+});
+
+test('Chase retains one selected occurrence after its broadcast ends without automatic mode or channel transition', async () => {
+  const slot = chaseSlot(); slot.endAt = fixtureNow / 1000 + 1;
+  const options = { configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot };
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  const count = value.requests.length; options.nowMs = fixtureNow + 2000;
+  const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+  assert.equal(binding.chase, true); assert.equal(new URL(binding.uri).pathname, '/growing/fixture-slot/manifest.mpd');
+  assert.equal(value.requests.length, count); value.stop();
 });
 
 test('slot response requires the object envelope and exact nested identities before source or helper activity', async () => {

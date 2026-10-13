@@ -34,7 +34,8 @@ internal class TwitchCatalogLease internal constructor(
 }
 
 // Blocking worker methods use only the owner's currently selected route. The
-// Android owner supplies hourly foreground scheduling and canCommit rereads.
+// The shared coordinator schedules admitted foreground validation; Android
+// supplies scheduling/worker adapters and canCommit owner rereads.
 // Lifecycle invalidation is immediate and does not wait for HTTP or file locks.
 internal class TwitchCatalogSession(
     private val store: TwitchCatalogGrantStore,
@@ -51,6 +52,8 @@ internal class TwitchCatalogSession(
     private val localRevision = AtomicLong()
     private val active = AtomicReference<TwitchCatalogTransport?>()
     private val attachment = AtomicReference<TwitchCatalogMaintenanceCoordinator.Attachment?>()
+    private val observerLock = Any()
+    private val observers = mutableSetOf<() -> Unit>()
     private var ownedMarker: TwitchCatalogStoredGrant? = null
     @Volatile internal var cleanupUncertain = false
         private set
@@ -96,6 +99,7 @@ internal class TwitchCatalogSession(
 
     override fun close() {
         closed = true
+        synchronized(observerLock) { observers.clear() }
         endLocalLease()
         lastSummary = TwitchCatalogSessionSummary(TwitchCatalogSessionState.SUPERSEDED)
     }
@@ -246,6 +250,8 @@ internal class TwitchCatalogSession(
             value.localRevision == localRevision.get() &&
             monotonicMs() < value.deadlineMs && !retentionExpired(value.grant) && store.isRevisionCurrent(value.grant.revision)
 
+    fun hasLocallyCurrentLease(): Boolean = lease?.let(::isLocallyCurrent) == true
+
     // Viewer publication can overlap the worker's final successor admission.
     // Its exact predecessor remains a local UI gate only, bounded by the old
     // deadline; worker/token admission above still requires the current lease.
@@ -296,10 +302,14 @@ internal class TwitchCatalogSession(
         if (deadline <= now) return result(TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogAuthFailure.EXPIRED)
         val value = TwitchCatalogLease(grant, local, deadline)
         observedGeneration = grant.generation
-        if (enroll) consumerAttachment(local)?.enroll(grant)
         if (!admission()) return result(TwitchCatalogSessionState.RECONNECT_REQUIRED, TwitchCatalogAuthFailure.EXPIRED)
-        return result(TwitchCatalogSessionState.CONNECTED, expiresAtMs = grant.expiresAtMs, value = value,
+        val connected = result(TwitchCatalogSessionState.CONNECTED, expiresAtMs = grant.expiresAtMs, value = value,
             validationStartedMs = validationStartedMs)
+        if (enroll) consumerAttachment(local)?.let { attached ->
+            attached.enroll(grant)
+            if (validationStartedMs != null) attached.seedValidated(grant, validationStartedMs, deadline)
+        }
+        return connected
     }
 
     private fun consumerAttachment(local: Long): TwitchCatalogMaintenanceCoordinator.Attachment? {
@@ -312,6 +322,10 @@ internal class TwitchCatalogSession(
             val created = coordinator.attach(
                 live = { !closed && foreground && localRevision.get() == local && canParticipate() },
                 revisionCurrent = { store.isRevisionCurrent(revision) },
+                onMaintenance = {
+                    val snapshot = synchronized(observerLock) { if (closed) emptyList() else observers.toList() }
+                    snapshot.forEach { runCatching(it) }
+                },
             )
             if (attachment.compareAndSet(previous, created)) {
                 previous?.close()
@@ -327,6 +341,61 @@ internal class TwitchCatalogSession(
 
     // Optional eager foreground registration: process-local signals only.
     fun attach() { if (!closed && foreground) consumerAttachment(localRevision.get()) }
+
+    // Registration and signals contain no grant values or protected reads.
+    // The coordinator's injected dispatcher enqueues signals outside producers.
+    fun observeMaintenance(callback: () -> Unit): AutoCloseable {
+        synchronized(observerLock) { if (!closed) observers.add(callback) }
+        return AutoCloseable { synchronized(observerLock) { observers.remove(callback) } }
+    }
+
+    // Worker-only: consume published proof or a separate temporary status hint,
+    // without starting/waiting for maintenance. Positive adoption retains the
+    // old lease's bounds; status alone never changes authenticated freshness.
+    fun adoptAvailableMaintenance(admissionStartedMs: Long = monotonicMs()): TwitchCatalogSessionResult? = synchronized(operationLock) {
+        val previous = lease ?: return@synchronized null
+        val attached = attachment.get() ?: return@synchronized null
+        val coordinator = maintenance ?: return@synchronized null
+        val outcome = attached.successor(previous.grant)
+        fun admitted(): Boolean = !closed && foreground && previous.localRevision == localRevision.get() &&
+            canParticipate() && coordinator.canPublishLocally &&
+            (outcome?.grant == null || !retentionExpired(previous.grant) && store.isRevisionCurrent(previous.grant.revision) &&
+                monotonicMs() < previous.deadlineMs)
+        var adopted: TwitchCatalogSessionResult? = null
+        if (outcome != null) {
+            if (!admitted()) return@synchronized stopped()
+            val applied = applyMaintenance(outcome.forAdmission(admissionStartedMs), previous.localRevision, attached, ::admitted)
+            adopted = applied
+            if (applied.lease == null) return@synchronized applied
+        }
+        val value = lease ?: return@synchronized adopted
+        val hint = attached.temporary(value.grant) ?: return@synchronized adopted
+        fun inBudget(): Boolean = admissionStartedMs >= 0 && admissionStartedMs <= Long.MAX_VALUE - 30_000 &&
+            monotonicMs().let { it >= admissionStartedMs && it < admissionStartedMs + 30_000 }
+        fun late(): TwitchCatalogSessionResult? {
+            if (adopted == null) return null
+            lease = null; attachment.compareAndSet(attached, null); attached.close()
+            return result(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
+        }
+        fun current(): Boolean = !closed && foreground && value.localRevision == localRevision.get() &&
+            canParticipate() && coordinator.canPublishLocally && !retentionExpired(value.grant) &&
+            allowed(value.localRevision, value.grant.revision)
+        if (!inBudget()) return@synchronized late()
+        if (!current() || !inBudget()) return@synchronized if (inBudget()) null else late()
+        // A positive receipt just performed these protected checks. A hint on
+        // its own must independently match the current durable pair and owner.
+        if (adopted == null) {
+            try { if (!store.isStoredPairCurrent(value.grant)) return@synchronized null }
+            catch (error: TwitchCatalogStoreException) { return@synchronized storeFailure(error) }
+            if (!inBudget()) return@synchronized late()
+            if (!current() || !inBudget()) return@synchronized if (inBudget()) null else late()
+        }
+        if (!attached.consumeTemporary(hint)) return@synchronized adopted
+        if (!inBudget()) return@synchronized late()
+        // Status alone is not a grant/lease replacement. Keep the still-valid
+        // positive proof and its unchanged deadline for every other consumer.
+        TwitchCatalogSessionResult(hint.summary)
+    }
 
     private fun applyMaintenance(outcome: TwitchCatalogMaintenanceOutcome, local: Long,
         attached: TwitchCatalogMaintenanceCoordinator.Attachment,

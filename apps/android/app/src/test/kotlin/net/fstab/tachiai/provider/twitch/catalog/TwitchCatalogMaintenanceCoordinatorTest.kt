@@ -14,6 +14,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TwitchCatalogMaintenanceCoordinatorTest {
+    private class Tasks(private val now: () -> Long) {
+        private class Scheduled(val due: Long, val callback: () -> Unit) { var closed = false }
+        private val timers = mutableListOf<Scheduled>()
+        private val workers = ArrayDeque<() -> Unit>()
+        var reject = false
+        val scheduled get() = timers.count { !it.closed }
+        val queued get() = workers.size
+        fun schedule(delay: Long, callback: () -> Unit): AutoCloseable {
+            val task = Scheduled(now() + delay, callback); timers.add(task)
+            return AutoCloseable { task.closed = true }
+        }
+        fun dispatch(work: () -> Unit): Boolean {
+            if (reject) return false
+            workers.addLast(work); return true
+        }
+        fun fire() {
+            timers.filter { !it.closed && it.due <= now() }.forEach { it.closed = true; it.callback() }
+        }
+        fun fireEarly() { timers.first { !it.closed }.also { it.closed = true; it.callback() } }
+        fun drain() { var count = 0; while (workers.isNotEmpty()) { check(++count < 100); workers.removeFirst().invoke() } }
+    }
     private class Memory : PrivateSecretStore {
         var bytes: ByteArray? = null
         var failWrite = false
@@ -23,10 +44,11 @@ class TwitchCatalogMaintenanceCoordinatorTest {
         override fun read(): ByteArray? { check(!forbid); reads++; onRead(); return bytes?.copyOf() }
         override fun write(plaintext: ByteArray) { check(!forbid); if (failWrite) throw IOException(); bytes = plaintext.copyOf() }
     }
-    private class Fixture {
+    private class Fixture(timer: Boolean = false) {
         val memory = Memory()
         @Volatile var wall = 1_000_000L
         @Volatile var mono = 10_000L
+        val tasks = Tasks { mono }
         val store = TwitchCatalogGrantStore(memory, UUID.randomUUID().toString(), wallMs = { wall })
         val validations = AtomicInteger()
         val refreshes = AtomicInteger()
@@ -56,7 +78,8 @@ class TwitchCatalogMaintenanceCoordinatorTest {
                 }
                 override fun close() { closes.incrementAndGet(); onClose() }
             }
-        }, { onScopeOwner(); owner }, { wall }, { mono }, { idle++ })
+        }, { onScopeOwner(); owner }, { wall }, { mono }, { idle++ },
+            schedule = if (timer) tasks::schedule else null, dispatch = if (timer) tasks::dispatch else null)
         fun session(consumerOwner: () -> Boolean = { owner }, participates: () -> Boolean = { true }) = TwitchCatalogSession(store,
             { error("Consumer binding must not own maintenance transport") }, { wall }, { mono }, consumerOwner, coordinator, participates)
         fun save(local: Boolean = false): TwitchCatalogStoredGrant = store.commitConnection(store.beginConnection(),
@@ -65,6 +88,254 @@ class TwitchCatalogMaintenanceCoordinatorTest {
                 localRetentionUntilMs = if (local) wall + TWITCH_CATALOG_LOCAL_RETENTION_MS else null,
                 savedAtMs = wall))!!
         fun advance(ms: Long) { wall += ms; mono += ms }
+    }
+
+    @Test fun actualForegroundPeersReceiveOneDueValidationAndAdoptWithoutAnotherRequest() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val first = f.session(); val second = f.session()
+        try {
+            val old = first.validate().lease!!; second.validate()
+            f.tasks.drain()
+            var firstSignals = 0; var secondSignals = 0
+            first.observeMaintenance { firstSignals++ }; second.observeMaintenance { secondSignals++ }
+            val count = f.validations.get(); assertEquals(1, f.tasks.scheduled)
+            f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000 - 1); f.tasks.fire()
+            assertEquals(0, f.tasks.queued); assertEquals(count, f.validations.get())
+            f.advance(1); val reads = f.memory.reads
+            f.memory.forbid = true
+            try { f.tasks.fire(); assertEquals(reads, f.memory.reads) } finally { f.memory.forbid = false }
+            assertEquals(1, f.tasks.queued); assertEquals(count, f.validations.get())
+            f.tasks.drain()
+            assertEquals(count + 1, f.validations.get()); assertEquals(0, f.refreshes.get())
+            assertEquals(1, firstSignals); assertEquals(1, secondSignals)
+            val adopted = first.adoptAvailableMaintenance()!!.lease!!
+            assertEquals(old.grant.generation, adopted.grant.generation)
+            assertTrue(adopted.deadlineMs > old.deadlineMs); assertTrue(first.isCurrent(adopted))
+            assertNotNull(second.adoptAvailableMaintenance()!!.lease)
+            assertEquals(count + 1, f.validations.get()); assertEquals(1, f.tasks.scheduled)
+        } finally { first.close(); second.close(); f.tasks.drain() }
+        assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun unvalidatedEnrollmentDisabledSchedulerAndDetachedConsumersCannotCreateMaintenanceInterest() {
+        val disabled = Fixture(); disabled.save(); disabled.session().use { it.validate() }
+        assertEquals(0, disabled.tasks.scheduled)
+        val f = Fixture(timer = true); val saved = f.save()
+        val bare = f.coordinator.attach({ true }, { true })
+        bare.enroll(saved); assertEquals(0, f.tasks.scheduled); bare.close()
+        val session = f.session(); session.validate(); assertEquals(1, f.tasks.scheduled)
+        session.setForeground(false); assertEquals(0, f.tasks.scheduled)
+        val count = f.validations.get(); f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS); f.tasks.fire(); f.tasks.drain()
+        assertEquals(count, f.validations.get()); session.close(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun shortFiniteExpiryGetsOneClampedAttemptWithoutZeroDelayLoopOrLifetimeExtension() {
+        val f = Fixture(timer = true); f.save(); f.seconds = 10
+        val session = f.session()
+        try {
+            val old = session.validate().lease!!
+            f.advance(4_999); f.tasks.fire(); assertEquals(0, f.tasks.queued)
+            f.advance(1); f.tasks.fire(); f.tasks.drain()
+            assertEquals(2, f.validations.get()); assertEquals(1, f.tasks.scheduled)
+            // This provider-bound record is long-lived; positive validation can
+            // supply a later short freshness deadline, forming the next cycle.
+            val adopted = session.adoptAvailableMaintenance()!!.lease!!
+            assertTrue(adopted.deadlineMs > old.deadlineMs)
+        } finally { session.close(); f.tasks.drain() }
+        val fixed = Fixture(timer = true)
+        fixed.store.commitConnection(fixed.store.beginConnection(), TwitchCatalogReplacement(
+            TwitchCatalogCredentials("initial", "initial-refresh", 10_000),
+            TwitchCatalogValidation("fixture-user", setOf(TWITCH_CATALOG_SCOPE), 10_000), 10_000))
+        fixed.seconds = 10
+        fixed.session().use { held ->
+            val old = held.validate().lease!!
+            fixed.advance(5_000); fixed.tasks.fire(); fixed.tasks.drain()
+            val adopted = held.adoptAvailableMaintenance()!!.lease!!
+            assertEquals(old.deadlineMs, adopted.deadlineMs); assertEquals(0, fixed.tasks.scheduled)
+            fixed.advance(5_000); fixed.tasks.fire(); fixed.tasks.drain()
+            assertFalse(held.isCurrent(adopted)); assertEquals(2, fixed.validations.get())
+            assertEquals(0, fixed.refreshes.get())
+        }
+    }
+
+    @Test fun lateEarlyRolledBackAndQueueExpiredTimersNeverRestartProofOrOperationBudgets() {
+        for (failure in 0..4) {
+            val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+            val session = f.session(); val old = session.validate().lease!!
+            val count = f.validations.get()
+            when (failure) {
+                0 -> { f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS); f.tasks.fire() }
+                1 -> { f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS + 1); f.tasks.fire() }
+                2 -> { f.mono--; f.tasks.fireEarly() }
+                3 -> { f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000); f.tasks.fire(); f.advance(30_000) }
+                else -> { f.tasks.fireEarly(); assertEquals(1, f.tasks.scheduled) }
+            }
+            f.tasks.drain(); assertEquals(count, f.validations.get()); assertEquals(0, f.refreshes.get())
+            if (failure == 3) assertTrue(session.isCurrent(old))
+            session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+        }
+    }
+
+    @Test fun temporaryFailureDoesNotResetFreshnessOrRetryAtTheOriginalHourlyBound() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val session = f.session(); val old = session.validate().lease!!
+        f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000)
+        f.tasks.fire(); f.tasks.drain()
+        assertEquals(2, f.validations.get()); assertNull(session.adoptSuccessor(old))
+        val hint = session.adoptAvailableMaintenance()!!
+        assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, hint.summary.state); assertNull(hint.lease)
+        assertTrue(session.isCurrent(old)); assertEquals(0, f.tasks.scheduled)
+        f.advance(60_000); f.tasks.fire(); f.tasks.drain()
+        assertFalse(session.isCurrent(old)); assertEquals(2, f.validations.get())
+        session.close(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun queuedWorkAndReceiptSignalsRespectOwnerForgetForegroundAndOriginalAdoptionBudget() {
+        for (failure in 0..4) {
+            val f = Fixture(timer = true); f.save(); val session = f.session()
+            val old = session.validate().lease!!; var signals = 0
+            val listener = session.observeMaintenance { signals++ }
+            f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000); f.tasks.fire()
+            when (failure) {
+                0 -> f.owner = false
+                1 -> { session.invalidate(); session.forget() }
+                2 -> session.setForeground(false)
+                3 -> f.memory.onRead = { f.memory.onRead = {}; f.advance(60_000) }
+                else -> f.onScopeOwner = { f.onScopeOwner = {}; f.advance(60_000) }
+            }
+            f.tasks.drain(); assertEquals(1, f.validations.get()); assertEquals(0, signals)
+            assertNull(session.adoptAvailableMaintenance())
+            listener.close(); session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+        }
+        val f = Fixture(timer = true); f.save(); val session = f.session(); session.validate()
+        var signals = 0; val listener = session.observeMaintenance { signals++ }
+        session.setForeground(false); session.setForeground(true); session.validate(); f.tasks.drain()
+        f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000); f.tasks.fire(); f.tasks.drain()
+        assertEquals(1, signals)
+        val began = f.mono; f.advance(30_000)
+        assertNull(session.adoptAvailableMaintenance(began)!!.lease)
+        listener.close(); session.close(); f.tasks.drain()
+    }
+
+    @Test fun explicitApprovedAcceptanceSeedsFromValidationReceiptWithoutAnExtraStartupRequest() {
+        val f = Fixture(timer = true); val session = f.session()
+        val attempt = session.beginConnection()
+        val approved = TwitchCatalogAuthorizationResult.Approved(
+            TwitchCatalogCredentials("approved", "approved-refresh", 7_200_000),
+            TwitchCatalogValidation("fixture-user", setOf(TWITCH_CATALOG_SCOPE), 7_200_000),
+            f.mono + 7_200_000, validatedAtMs = f.mono)
+        assertNotNull(session.accept(approved, attempt).lease)
+        assertEquals(0, f.validations.get()); assertEquals(1, f.tasks.scheduled)
+        f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000); f.tasks.fire(); f.tasks.drain()
+        assertEquals(1, f.validations.get()); assertNotNull(session.adoptAvailableMaintenance()!!.lease)
+        session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+        val unverified = Fixture(timer = true); val other = unverified.session()
+        val noReceipt = TwitchCatalogAuthorizationResult.Approved(approved.credentials, approved.validation,
+            unverified.mono + 7_200_000)
+        assertNull(other.accept(noReceipt, other.beginConnection()).lease)
+        assertEquals(0, unverified.tasks.scheduled); other.close()
+    }
+
+    @Test fun actualHealthyPeerKeepsDueWorkWhenSelectedConsumerClosesAndSignalsAreOutsideMonitors() {
+        val f = Fixture(timer = true); f.save(); val first = f.session(); val second = f.session()
+        first.validate(); second.validate(); f.tasks.drain()
+        val ownerLock = TwitchCatalogMaintenanceCoordinator::class.java.getDeclaredField("lock").apply { isAccessible = true }
+            .get(f.coordinator).let(::checkNotNull)
+        val sessionLock = checkNotNull(TwitchCatalogSession::class.java.getDeclaredField("operationLock")
+            .apply { isAccessible = true }.get(second))
+        var signals = 0
+        second.observeMaintenance {
+            assertFalse(Thread.holdsLock(ownerLock)); assertFalse(Thread.holdsLock(sessionLock)); signals++
+        }
+        f.onValidate = { first.close() }
+        f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000); f.tasks.fire(); f.tasks.drain()
+        assertEquals(3, f.validations.get()); assertEquals(1, signals)
+        assertNotNull(second.adoptAvailableMaintenance()!!.lease)
+        assertTrue(f.coordinator.canPublishLocally); assertEquals(1, f.tasks.scheduled)
+        second.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun proofExpiryDuringHttpOrUncertainCleanupCannotPublishAReplacementOrRearm() {
+        for (uncertain in listOf(false, true)) {
+            val f = Fixture(timer = true); f.save(); f.seconds = 10
+            val session = f.session(); val old = session.validate().lease!!; var signals = 0
+            session.observeMaintenance { signals++ }
+            if (uncertain) f.onClose = { throw IOException("fixture cleanup") }
+            else f.onValidate = { f.advance(5_000) }
+            f.advance(5_000); f.tasks.fire(); f.tasks.drain()
+            assertEquals(2, f.validations.get()); assertEquals(1, signals)
+            assertNull(session.adoptSuccessor(old)); assertFalse(session.isCurrent(old))
+            val status = session.adoptAvailableMaintenance()
+            if (uncertain) assertNull(status)
+            else assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, status!!.summary.state)
+            assertEquals(0, f.tasks.scheduled)
+            assertEquals(!uncertain, f.coordinator.canPublishLocally)
+            session.close(); f.tasks.drain()
+            assertEquals(!uncertain, f.coordinator.isIdle)
+        }
+    }
+
+    @Test fun boundedDispatcherRefusalDoesNotPerformHttpOrGrantAnotherTimerBudget() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val session = f.session(); val old = session.validate().lease!!
+        f.tasks.reject = true; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000)
+        f.tasks.fire(); f.tasks.drain()
+        assertEquals(1, f.validations.get()); assertEquals(0, f.tasks.queued); assertEquals(0, f.tasks.scheduled)
+        assertTrue(session.isCurrent(old)); assertTrue(f.coordinator.canPublishLocally)
+        f.advance(60_000); f.tasks.reject = false; f.tasks.fire(); f.tasks.drain()
+        assertEquals(1, f.validations.get()); assertFalse(session.isCurrent(old))
+        session.close(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun temporaryStatusPreservesPositiveProofAndNativeReceiptAndLatestSuccessClearsTheHint() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val first = f.session(); val second = f.session()
+        try {
+            val old = first.validate().lease!!
+            f.advance(100); second.validate(); f.tasks.drain()
+            val bytes = f.memory.bytes!!.copyOf(); val count = f.validations.get(); var signals = 0
+            first.observeMaintenance { signals++ }
+            f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000)
+            f.tasks.fire(); f.tasks.drain()
+            assertEquals(count + 1, f.validations.get()); assertEquals(1, signals)
+            // The temporary notice did not erase the previously proved real
+            // receipt, which the native adoption seam continues to ignore it.
+            val proved = first.adoptSuccessor(old)!!.lease!!
+            assertTrue(first.isCurrent(proved))
+            val hint = first.adoptAvailableMaintenance()!!
+            assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, hint.summary.state); assertNull(hint.lease)
+            assertTrue(first.isCurrent(proved)); assertArrayEquals(bytes, f.memory.bytes)
+            assertEquals(TwitchCatalogSessionState.CONNECTED, first.validate().summary.state)
+            assertEquals(count + 1, f.validations.get()); assertEquals(0, f.refreshes.get())
+            assertNull(first.adoptAvailableMaintenance())
+            f.status = 200; f.advance(1); second.validate(force = true); f.tasks.drain()
+            val recovered = first.adoptAvailableMaintenance()!!
+            assertEquals(TwitchCatalogSessionState.CONNECTED, recovered.summary.state)
+            assertNotNull(recovered.lease); assertTrue(first.isCurrent(recovered.lease!!))
+            assertArrayEquals(bytes, f.memory.bytes)
+        } finally { first.close(); second.close(); f.tasks.drain() }
+    }
+
+    @Test fun temporaryStatusCannotCrossReplacementForgetRouteLifecycleCapOrItsQueuedWorkerBudget() {
+        for (failure in 0..5) {
+            val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+            val session = f.session(); val old = session.validate().lease!!
+            f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000)
+            f.tasks.fire(); f.tasks.drain(); val began = f.mono
+            when (failure) {
+                0 -> f.save(local = true)
+                1 -> { session.invalidate(); session.forget() }
+                2 -> f.owner = false
+                3 -> session.setForeground(false)
+                4 -> f.wall = old.grant.localRetentionUntilMs!!
+                else -> f.advance(30_000)
+            }
+            val bytes = f.memory.bytes!!.copyOf(); val count = f.validations.get()
+            assertNull(session.adoptAvailableMaintenance(began))
+            assertArrayEquals(bytes, f.memory.bytes); assertEquals(count, f.validations.get())
+            if (failure == 5) assertTrue(session.isCurrent(old))
+            session.close(); f.tasks.drain()
+        }
     }
 
     // Hold only the already-cleaned worker's final owner admission. At this

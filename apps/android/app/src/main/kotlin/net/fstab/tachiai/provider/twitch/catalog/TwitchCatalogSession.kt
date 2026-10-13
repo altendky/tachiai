@@ -17,6 +17,8 @@ internal data class TwitchCatalogSessionSummary(
 internal class TwitchCatalogSessionResult(
     val summary: TwitchCatalogSessionSummary,
     val lease: TwitchCatalogLease? = null,
+    internal val validationStartedMs: Long? = null,
+    internal val ownedMarker: TwitchCatalogStoredGrant? = null,
 ) {
     override fun toString() = "TwitchCatalogSessionResult($summary, redacted)"
 }
@@ -40,11 +42,23 @@ internal class TwitchCatalogSession(
     private val wallMs: () -> Long = System::currentTimeMillis,
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val canCommit: () -> Boolean = { true },
+    private val maintenance: TwitchCatalogMaintenanceCoordinator? = null,
+    private val canParticipate: () -> Boolean = { true },
 ) : AutoCloseable {
+    init { require(maintenance == null || maintenance.store === store) }
     val instanceId: String get() = store.instanceId
     private val operationLock = Any()
     private val localRevision = AtomicLong()
     private val active = AtomicReference<TwitchCatalogTransport?>()
+    private val attachment = AtomicReference<TwitchCatalogMaintenanceCoordinator.Attachment?>()
+    private var ownedMarker: TwitchCatalogStoredGrant? = null
+    @Volatile internal var cleanupUncertain = false
+        private set
+    private val retainedTransports = mutableListOf<TwitchCatalogTransport>()
+    private fun retainUncertain(transport: TwitchCatalogTransport) {
+        cleanupUncertain = true
+        synchronized(retainedTransports) { if (retainedTransports.none { it === transport }) retainedTransports.add(transport) }
+    }
     @Volatile private var foreground = true
     @Volatile private var closed = false
     @Volatile private var lease: TwitchCatalogLease? = null
@@ -56,13 +70,17 @@ internal class TwitchCatalogSession(
     private fun endLocalLease() {
         localRevision.incrementAndGet()
         lease = null
-        active.getAndSet(null)?.close()
+        attachment.getAndSet(null)?.close()
+        active.getAndSet(null)?.let {
+            try { it.close() } catch (error: Throwable) { retainUncertain(it); throw error }
+        }
     }
 
     fun setForeground(value: Boolean) {
         if (foreground == value) return
         foreground = value
         endLocalLease()
+        if (value) attach()
         lastSummary = TwitchCatalogSessionSummary(if (value) TwitchCatalogSessionState.UNVERIFIED else TwitchCatalogSessionState.PAUSED)
     }
 
@@ -80,7 +98,8 @@ internal class TwitchCatalogSession(
     }
 
     private fun allowed(local: Long, revision: Long): Boolean =
-        !closed && foreground && local == localRevision.get() && store.isRevisionCurrent(revision) && canCommit()
+        !closed && foreground && local == localRevision.get() && store.isRevisionCurrent(revision) &&
+            maintenance?.canPublishLocally != false && canCommit()
 
     private fun retentionExpired(grant: TwitchCatalogStoredGrant): Boolean =
         grant.localRetentionUntilMs != null && !store.localRetentionCurrent(grant)
@@ -99,20 +118,24 @@ internal class TwitchCatalogSession(
     private fun requireReconnect(grant: TwitchCatalogStoredGrant) {
         // Adopt only the marker atomically returned by our own mutation. A
         // superseding account keeps its generation and the Forget guard intact.
-        store.requireReconnect(grant)?.let { observedGeneration = it.generation }
+        store.requireReconnect(grant)?.let { observedGeneration = it.generation; ownedMarker = it }
     }
 
     private fun observeAbandonment(error: TwitchCatalogAuthException) {
-        if (error is TwitchCatalogAbandonedGrantException) observedGeneration = error.marker.generation
+        if (error is TwitchCatalogAbandonedGrantException) {
+            observedGeneration = error.marker.generation; ownedMarker = error.marker
+        }
     }
 
     private fun stopped(): TwitchCatalogSessionResult = TwitchCatalogSessionResult(TwitchCatalogSessionSummary(
         if (!foreground && !closed) TwitchCatalogSessionState.PAUSED else TwitchCatalogSessionState.SUPERSEDED))
 
     private fun result(state: TwitchCatalogSessionState, failure: TwitchCatalogAuthFailure? = null,
-        expiresAtMs: Long? = null, value: TwitchCatalogLease? = null): TwitchCatalogSessionResult {
+        expiresAtMs: Long? = null, value: TwitchCatalogLease? = null,
+        validationStartedMs: Long? = null): TwitchCatalogSessionResult {
         lease = value
-        return TwitchCatalogSessionResult(TwitchCatalogSessionSummary(state, failure, expiresAtMs).also { lastSummary = it }, value)
+        return TwitchCatalogSessionResult(TwitchCatalogSessionSummary(state, failure, expiresAtMs).also { lastSummary = it },
+            value, validationStartedMs, if (value == null) ownedMarker else null)
     }
 
     private fun storeFailure(error: TwitchCatalogStoreException): TwitchCatalogSessionResult =
@@ -186,7 +209,7 @@ internal class TwitchCatalogSession(
                 if (!allowed(local, grant.revision)) return@synchronized stopped()
                 val validatedAt = approved.validatedAtMs ?: return@synchronized result(TwitchCatalogSessionState.UNVERIFIED)
                 connected(grant, local, minOf(approved.deadlineMs,
-                    Math.addExact(validatedAt, TWITCH_CATALOG_VALIDATION_INTERVAL_MS)))
+                    Math.addExact(validatedAt, TWITCH_CATALOG_VALIDATION_INTERVAL_MS)), validatedAt)
             } catch (error: TwitchCatalogStoreException) {
                 storeFailure(error)
             } catch (error: TwitchCatalogAuthException) {
@@ -216,7 +239,8 @@ internal class TwitchCatalogSession(
     // Queued UI publication only: no owner callback, protected store or HTTP.
     // This supplements, never replaces, worker-side durable ownership checks.
     fun isLocallyCurrent(value: TwitchCatalogLease): Boolean =
-        lease === value && !closed && foreground && value.localRevision == localRevision.get() &&
+        lease === value && !closed && foreground && canParticipate() && maintenance?.canPublishLocally != false &&
+            value.localRevision == localRevision.get() &&
             monotonicMs() < value.deadlineMs && !retentionExpired(value.grant) && store.isRevisionCurrent(value.grant.revision)
 
     private fun <T> withTransport(local: Long, grant: TwitchCatalogStoredGrant, action: (TwitchCatalogTransport) -> T): T {
@@ -230,11 +254,12 @@ internal class TwitchCatalogSession(
             return action(transport)
         } finally {
             active.compareAndSet(transport, null)
-            transport.close()
+            try { transport.close() } catch (error: Throwable) { retainUncertain(transport); throw error }
         }
     }
 
-    private fun connected(grant: TwitchCatalogStoredGrant, local: Long, validationDeadline: Long): TwitchCatalogSessionResult {
+    private fun connected(grant: TwitchCatalogStoredGrant, local: Long, validationDeadline: Long,
+        validationStartedMs: Long? = null, enroll: Boolean = true): TwitchCatalogSessionResult {
         if (retentionExpired(grant)) return expired(grant)
         if (!allowed(local, grant.revision)) return stopped()
         if (!store.isStoredCurrent(grant)) {
@@ -250,17 +275,155 @@ internal class TwitchCatalogSession(
         if (deadline <= now) return result(TwitchCatalogSessionState.UNVERIFIED, TwitchCatalogAuthFailure.EXPIRED)
         val value = TwitchCatalogLease(grant, local, deadline)
         observedGeneration = grant.generation
-        return result(TwitchCatalogSessionState.CONNECTED, expiresAtMs = grant.expiresAtMs, value = value)
+        if (enroll) consumerAttachment(local)?.enroll(grant)
+        return result(TwitchCatalogSessionState.CONNECTED, expiresAtMs = grant.expiresAtMs, value = value,
+            validationStartedMs = validationStartedMs)
     }
 
-    fun validate(force: Boolean = false): TwitchCatalogSessionResult = synchronized(operationLock) {
+    private fun consumerAttachment(local: Long): TwitchCatalogMaintenanceCoordinator.Attachment? {
+        val coordinator = maintenance ?: return null
+        repeat(2) {
+            if (closed || !foreground || localRevision.get() != local) return null
+            val previous = attachment.get()
+            previous?.takeIf { it.isOpen && it.live() }?.let { return it }
+            val revision = store.revision()
+            val created = coordinator.attach(
+                live = { !closed && foreground && localRevision.get() == local && canParticipate() },
+                revisionCurrent = { store.isRevisionCurrent(revision) },
+            )
+            if (attachment.compareAndSet(previous, created)) {
+                previous?.close()
+                if (!closed && foreground && localRevision.get() == local) return created
+                attachment.compareAndSet(created, null)
+                created.close()
+                return null
+            }
+            created.close()
+        }
+        return null
+    }
+
+    // Optional eager foreground registration: process-local signals only.
+    fun attach() { if (!closed && foreground) consumerAttachment(localRevision.get()) }
+
+    private fun applyMaintenance(outcome: TwitchCatalogMaintenanceOutcome, local: Long,
+        attached: TwitchCatalogMaintenanceCoordinator.Attachment): TwitchCatalogSessionResult {
+        fun inBudget(): Boolean {
+            val now = monotonicMs()
+            if (outcome.grant != null) {
+                val validated = outcome.validationStartedMs ?: return false
+                val deadline = outcome.validationDeadlineMs ?: return false
+                if (validated < 0 || validated > now || validated > Long.MAX_VALUE - TWITCH_CATALOG_VALIDATION_INTERVAL_MS ||
+                    deadline <= validated || deadline > validated + TWITCH_CATALOG_VALIDATION_INTERVAL_MS) return false
+            }
+            return outcome.admissionDeadlineMs?.let { deadline ->
+                now >= checkNotNull(outcome.admissionStartedMs) && now < deadline
+            } ?: true
+        }
+        fun reject(state: TwitchCatalogSessionState = TwitchCatalogSessionState.SUPERSEDED,
+            failure: TwitchCatalogAuthFailure? = null): TwitchCatalogSessionResult {
+            lease = null
+            attachment.compareAndSet(attached, null)
+            attached.close()
+            return result(state, failure)
+        }
+        fun timedOut(): TwitchCatalogSessionResult = reject(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
+        if (closed || !foreground || local != localRevision.get() || !canParticipate()) return stopped()
+        if (!inBudget()) return timedOut()
+        if (outcome.summary.state in setOf(TwitchCatalogSessionState.SUPERSEDED, TwitchCatalogSessionState.PAUSED))
+            return stopped()
+        val target = outcome.grant
+        if (target != null) {
+            try {
+                if (!allowed(local, target.revision)) return reject()
+                if (!inBudget()) return timedOut()
+                val current = store.read() ?: return reject()
+                if (!inBudget()) return timedOut()
+                if (!TwitchCatalogMaintenanceOrigin(target).matches(current)) return reject()
+                val result = connected(current, local, checkNotNull(outcome.validationDeadlineMs),
+                    checkNotNull(outcome.validationStartedMs), enroll = false)
+                if (!inBudget()) return timedOut()
+                if (result.lease != null) {
+                    if (!allowed(local, current.revision) || !canParticipate()) return reject()
+                    if (!inBudget()) return timedOut()
+                    if (!store.isStoredCurrent(current)) return reject()
+                    if (!inBudget()) return timedOut()
+                    if (!allowed(local, current.revision) || !canParticipate()) return reject()
+                    if (!inBudget()) return timedOut()
+                    attached.enroll(current, outcome)
+                }
+                attached.consume(outcome)
+                if (!inBudget()) return timedOut()
+                return result
+            } catch (error: TwitchCatalogStoreException) {
+                attachment.compareAndSet(attached, null)
+                attached.close()
+                return storeFailure(error)
+            }
+        }
+        val marker = outcome.ownedMarker
+        try {
+            if (marker != null) {
+                val current = store.read() ?: return stopped()
+                if (current.generation != marker.generation || current.state != marker.state ||
+                    !allowed(local, current.revision)) return stopped()
+                observedGeneration = marker.generation
+            } else if (outcome.origin?.let { !store.isRevisionCurrent(it.revision) } == true || !canCommit()) return stopped()
+        } catch (error: TwitchCatalogStoreException) { return storeFailure(error) }
+        if (!inBudget()) return timedOut()
+        attached.consume(outcome)
+        return result(outcome.summary.state, outcome.summary.failure, outcome.summary.expiresAtMs)
+    }
+
+    // Continuity is explicit and worker-only. A newer record alone is never a
+    // successor proof, and a stale unauthorized callback never uses this seam.
+    fun adoptSuccessor(expectedLease: TwitchCatalogLease): TwitchCatalogSessionResult? {
+        val began = monotonicMs()
+        return synchronized(operationLock) {
+            if (lease !== expectedLease || closed || !foreground || localRevision.get() != expectedLease.localRevision) return@synchronized null
+            val attached = attachment.get() ?: return@synchronized null
+            val successor = attached.successor(expectedLease.grant) ?: return@synchronized null
+            applyMaintenance(successor.forAdmission(began), expectedLease.localRevision, attached)
+        }
+    }
+
+    fun validate(force: Boolean = false): TwitchCatalogSessionResult {
+        val coordinator = maintenance ?: return validateInternal(force)
+        val began = monotonicMs()
+        return synchronized(operationLock) {
+            val local = localRevision.get()
+            if (closed || !foreground) return@synchronized stopped()
+            if (!force) lease?.let {
+                if (isCurrent(it)) return@synchronized TwitchCatalogSessionResult(lastSummary, it)
+                val attached = attachment.get()
+                if (attached != null) attached.successor(it.grant)?.let { receipt ->
+                    return@synchronized applyMaintenance(receipt.forAdmission(began), local, attached)
+                }
+            }
+            val attached = consumerAttachment(local) ?: return@synchronized stopped()
+            lease = null
+            applyMaintenance(coordinator.maintain(attached, force = force, began = began), local, attached)
+        }
+    }
+
+    internal fun maintainExpected(expected: TwitchCatalogMaintenanceOrigin?, unauthorized: Boolean,
+        onOrigin: (TwitchCatalogStoredGrant?) -> Unit, onValidation: (Long) -> Unit,
+        onRefresh: () -> Unit): TwitchCatalogSessionResult =
+        validateInternal(true, expected, unauthorized, onOrigin, onValidation, onRefresh)
+
+    private fun validateInternal(force: Boolean = false, expected: TwitchCatalogMaintenanceOrigin? = null,
+        unauthorized: Boolean = false, onOrigin: (TwitchCatalogStoredGrant?) -> Unit = {},
+        onValidation: (Long) -> Unit = {}, onRefresh: () -> Unit = {}): TwitchCatalogSessionResult = synchronized(operationLock) {
         val local = localRevision.get()
         var observed: TwitchCatalogStoredGrant? = null
+        ownedMarker = null
         if (closed || !foreground) return@synchronized stopped()
         try {
             if (!force) lease?.let { if (isCurrent(it)) return@synchronized TwitchCatalogSessionResult(lastSummary, it) }
             lease = null
             val grant = store.read()
+            if (expected != null && (grant == null || !expected.matches(grant))) return@synchronized stopped()
+            onOrigin(grant)
             observed = grant
             observedGeneration = grant?.generation
             if (grant?.state != TwitchCatalogGrantState.READY) return@synchronized result(summary(grant).state)
@@ -270,12 +433,14 @@ internal class TwitchCatalogSession(
                 requireReconnect(grant)
                 return@synchronized result(TwitchCatalogSessionState.RECONNECT_REQUIRED, TwitchCatalogAuthFailure.EXPIRED)
             }
-            if (wallMs() >= checkNotNull(grant.expiresAtMs)) return@synchronized refreshed(grant, local)
+            if (unauthorized || wallMs() >= checkNotNull(grant.expiresAtMs))
+                return@synchronized refreshed(grant, local, onValidation, onRefresh)
             val started = monotonicMs()
+            onValidation(started)
             val response = withTransport(local, grant) { it.validate(checkNotNull(grant.credentials).accessToken) }
             if (!allowed(local, grant.revision)) return@synchronized stopped()
             if (retentionExpired(grant)) return@synchronized expired(grant)
-            if (response.status == 401) return@synchronized refreshed(grant, local)
+            if (response.status == 401) return@synchronized refreshed(grant, local, onValidation, onRefresh)
             if (response.status >= 500) return@synchronized result(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
             val validation = parseTwitchCatalogValidation(response, grant.userId, grant.localRetentionUntilMs != null)
             val providerDeadline = validation.expiresInMs?.let { Math.addExact(started, it) }
@@ -294,7 +459,7 @@ internal class TwitchCatalogSession(
                 }
             } else grant
             connected(validatedGrant, local, minOf(providerDeadline ?: Long.MAX_VALUE,
-                Math.addExact(started, TWITCH_CATALOG_VALIDATION_INTERVAL_MS)))
+                Math.addExact(started, TWITCH_CATALOG_VALIDATION_INTERVAL_MS)), started)
         } catch (error: TwitchCatalogAuthException) {
             validationFailure(error.failure, local, observed)
         } catch (_: IOException) {
@@ -329,23 +494,35 @@ internal class TwitchCatalogSession(
         return result(TwitchCatalogSessionState.TEMPORARY_FAILURE, failure)
     }
 
-    fun onUnauthorized(value: TwitchCatalogLease): TwitchCatalogSessionResult = synchronized(operationLock) {
-        val local = localRevision.get()
-        if (lease !== value || !allowed(local, value.grant.revision)) return@synchronized stopped()
-        try {
-            if (retentionExpired(value.grant)) return@synchronized expired(value.grant)
-            val current = store.isStoredPairCurrent(value.grant)
-            if (retentionExpired(value.grant)) return@synchronized expired(value.grant)
-            if (!current) return@synchronized stopped()
-        } catch (error: TwitchCatalogStoreException) { return@synchronized storeFailure(error) }
-        lease = null
-        refreshed(value.grant, local)
+    fun onUnauthorized(value: TwitchCatalogLease): TwitchCatalogSessionResult {
+        val began = if (maintenance != null) monotonicMs() else 0L
+        return synchronized(operationLock) {
+            val local = localRevision.get()
+            if (lease !== value || !allowed(local, value.grant.revision)) return@synchronized stopped()
+            maintenance?.let { coordinator ->
+                val attached = consumerAttachment(local) ?: return@synchronized stopped()
+                val outcome = coordinator.maintain(attached, unauthorized = TwitchCatalogMaintenanceOrigin(value.grant), began = began)
+                return@synchronized applyMaintenance(outcome, local, attached)
+            }
+            ownedMarker = null
+            try {
+                if (retentionExpired(value.grant)) return@synchronized expired(value.grant)
+                val current = store.isStoredPairCurrent(value.grant)
+                if (retentionExpired(value.grant)) return@synchronized expired(value.grant)
+                if (!current) return@synchronized stopped()
+            } catch (error: TwitchCatalogStoreException) { return@synchronized storeFailure(error) }
+            lease = null
+            refreshed(value.grant, local)
+        }
     }
 
-    private fun refreshed(grant: TwitchCatalogStoredGrant, local: Long): TwitchCatalogSessionResult {
+    private fun refreshed(grant: TwitchCatalogStoredGrant, local: Long,
+        onValidation: (Long) -> Unit = {}, onRefresh: () -> Unit = {}): TwitchCatalogSessionResult {
         var validationDeadline = 0L
+        var validationStarted = 0L
         try {
             requireRetention(grant)
+            onRefresh()
             val replacement = store.refresh(grant, { allowed(local, grant.revision) }) { old ->
                 withTransport(local, grant) { transport ->
                     val started = monotonicMs()
@@ -357,6 +534,7 @@ internal class TwitchCatalogSession(
                         minOf(tokenDeadline ?: Long.MAX_VALUE, Math.addExact(started, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS))
                     else tokenDeadline ?: Math.addExact(started, TWITCH_CATALOG_UNKNOWN_GRANT_VALIDATION_MS)
                     val validating = monotonicMs()
+                    onValidation(validating)
                     if (validating >= acceptanceDeadline) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
                     val validation = parseTwitchCatalogValidation(transport.validate(token.accessToken), grant.userId,
                         grant.localRetentionUntilMs != null)
@@ -374,13 +552,14 @@ internal class TwitchCatalogSession(
                     if (remaining <= 0) throw TwitchCatalogAuthException(TwitchCatalogAuthFailure.EXPIRED)
                     val credentials = token.validatedCredentials(validation, localRemaining)
                     validationDeadline = minOf(deadline, Math.addExact(validating, TWITCH_CATALOG_VALIDATION_INTERVAL_MS))
+                    validationStarted = validating
                     TwitchCatalogReplacement(credentials, validation,
                         minOf(remaining, credentials.expiresInMs, validation.expiresInMs ?: Long.MAX_VALUE),
                         providerDeadline?.let { Math.addExact(wall, it - now) }, grant.localRetentionUntilMs,
                         if (grant.localRetentionUntilMs != null) grant.savedAtMs else wall)
                 }
             } ?: return if (retentionExpired(grant)) expired(grant) else stopped()
-            return connected(replacement, local, validationDeadline)
+            return connected(replacement, local, validationDeadline, validationStarted)
         } catch (error: TwitchCatalogStoreException) {
             return storeFailure(error)
         } catch (error: java.util.concurrent.CancellationException) {

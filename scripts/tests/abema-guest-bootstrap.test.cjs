@@ -812,7 +812,7 @@ function catchupCandidateSource(clock = 1000000) {
   return source.replace(anchor, match[1].replace('__TACHIAI_TEST_CATCHUP_NOW_MS__', String(clock)));
 }
 const candidateRow = (changes = {}) => ({ startAt: 1, endAt: 1000,
-  timeshiftEndAt: 1400, flags: { timeshift: true, timeshiftFree: true }, ...changes });
+  timeshiftEndAt: 1800, flags: { timeshift: true, timeshiftFree: true }, ...changes });
 async function catchupCandidate(schedule, options = {}) {
   const f = fixture({ operation: 'FETCH_SCHEDULE', schedule, controlSource: catchupCandidateSource(options.clock), ...options });
   f.start(); await settle();
@@ -822,7 +822,7 @@ async function catchupCandidate(schedule, options = {}) {
 }
 test('catchup lead selects the first displayed eligible identity and leaves the normal schedule projection unchanged', async () => {
   const schedule = scheduleReply(4);
-  Object.assign(schedule.slots[1], candidateRow()); Object.assign(schedule.slots[3], candidateRow({ timeshiftFreeEndAt: 1400 }));
+  Object.assign(schedule.slots[1], candidateRow()); Object.assign(schedule.slots[3], candidateRow({ timeshiftFreeEndAt: 1800 }));
   const { f, value } = await catchupCandidate(schedule);
   assert.deepEqual(value.tachiaiTestCatchupCandidate, { version: 1, eligibleRows: 2,
     candidate: { channelId: 'fixture-channel', slotId: 'slot-1' } });
@@ -849,18 +849,18 @@ test('catchup lead honors displayed500 boundary and never selects retained501st 
   assert.equal(value.tachiaiTestCatchupCandidate.eligibleRows, 500);
   assert.equal(value.tachiaiTestCatchupCandidate.candidate.slotId, 'slot-0');
 });
-test('catchup lead requires explicit flags ended ordered seconds and strictly open five-minute windows', async () => {
+test('catchup lead requires explicit flags ended ordered seconds and strictly open ten-minute headroom', async () => {
   const shapes = [
-    [{}, true], [{ timeshiftFreeEndAt: 0 }, true], [{ timeshiftFreeEndAt: 1301 }, true],
+    [{}, true], [{ timeshiftFreeEndAt: 0 }, true], [{ timeshiftFreeEndAt: 1601 }, true],
     [{ flags: {} }, false], [{ flags: { timeshiftFree: true } }, false],
     [{ flags: { timeshift: true, timeshiftFree: 'true' } }, false], [{ flags: [] }, false],
     [{ flags: null, timeshift: true, timeshiftFree: true }, false],
     [{ startAt: 1000 }, false], [{ startAt: 1001, endAt: 1002 }, false],
     [{ startAt: null }, false], [{ startAt: 0 }, false], [{ startAt: 1.5 }, false],
     [{ endAt: '1000' }, false], [{ endAt: 1001 }, false], [{ endAt: 100000000000 }, false],
-    [{ timeshiftEndAt: 1300 }, false], [{ timeshiftEndAt: 1301 }, true],
-    [{ timeshiftEndAt: null }, false], [{ timeshiftEndAt: 0 }, false], [{ timeshiftEndAt: '1400' }, false],
-    [{ timeshiftFreeEndAt: 1300 }, false], [{ timeshiftFreeEndAt: null }, false],
+    [{ timeshiftEndAt: 1301 }, false], [{ timeshiftEndAt: 1600 }, false], [{ timeshiftEndAt: 1601 }, true],
+    [{ timeshiftEndAt: null }, false], [{ timeshiftEndAt: 0 }, false], [{ timeshiftEndAt: '1800' }, false],
+    [{ timeshiftFreeEndAt: 1301 }, false], [{ timeshiftFreeEndAt: 1600 }, false], [{ timeshiftFreeEndAt: null }, false],
     [{ timeshiftFreeEndAt: -1 }, false], [{ timeshiftFreeEndAt: '0' }, false],
   ];
   for (const [changes, expected] of shapes) {
@@ -869,6 +869,19 @@ test('catchup lead requires explicit flags ended ordered seconds and strictly op
     assert.equal(value.tachiaiTestCatchupCandidate.eligibleRows, expected ? 1 : 0);
     assert.deepEqual(value.tachiaiTestCatchupCandidate.candidate,
       expected ? { channelId: 'fixture-channel', slotId: 'slot-0' } : null);
+  }
+});
+test('catchup lead skips first rows between five and ten minutes and chooses only a later row with both windows safe', async () => {
+  for (const freeEnd of [undefined, 0, 1601]) {
+    const schedule = scheduleReply(4);
+    Object.assign(schedule.slots[0], candidateRow({ timeshiftEndAt: 1450 }));
+    Object.assign(schedule.slots[1], candidateRow({ timeshiftEndAt: 1800, timeshiftFreeEndAt: 1450 }));
+    Object.assign(schedule.slots[2], candidateRow({ timeshiftEndAt: 1600, timeshiftFreeEndAt: 1800 }));
+    Object.assign(schedule.slots[3], candidateRow({ timeshiftEndAt: 1601 }));
+    if (freeEnd !== undefined) schedule.slots[3].timeshiftFreeEndAt = freeEnd;
+    const { value } = await catchupCandidate(schedule);
+    assert.deepEqual(value.tachiaiTestCatchupCandidate, { version: 1, eligibleRows: 1,
+      candidate: { channelId: 'fixture-channel', slotId: 'slot-3' } });
   }
 });
 test('catchup candidate rejects malformed schedule identity/duplicates and invalid clock without another endpoint', async () => {

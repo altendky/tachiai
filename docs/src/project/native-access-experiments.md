@@ -4331,6 +4331,70 @@ seconds with zero skips. An existing unreachable-null warning in the historical
 region test was unchanged. The temporary test-process override was restored
 byte-for-byte and ordinary instrumentation and the launcher were restored.
 
+## Exact broadcast source diagnostics and native acceptance — 2026-10-13
+
+The exact-slot resolver now has an optional closed diagnostic for the last
+source phase, a bounded byte count and the existing initialization parser's
+enum/structural counts. One immutable snapshot follows the actual manifest-close
+attempt; observer failures do not change acceptance or cleanup. The opt-in
+account-backed device fixture releases it only after both independent
+record/owner checks, the original observation budget and confirmed cleanup.
+The same single manifest request, strict UTF-8, 256 KiB limit, initialization
+parser, source binding, entitlement and licensing checks remain authoritative.
+No manifest, URI, key ID or error payload is exported.
+
+On persistent tachiai-dev, Android 16/API 36 x86-64, WebView 133.0.6943.137,
+saved Windscribe route and native ACCOUNT state, a fresh Schedule probe passed
+in 24.832 seconds and selected `abema-anime/CWYADCZeFfQPc3`. The initial
+parser-observer build played that exact catch-up slot in 23.677 seconds, with
+a rendered frame and two advancing position samples. Initialization was ACCEPTED:
+one period, two adaptations, four protection elements, two default-ID
+declarations, two cenc, zero cbcs and two other cipher observations. Cleanup,
+owner and encrypted-record checks passed. Of 20 private files, only the existing
+sanitized CDN review journal changed: it gained already-approved VOD manifest/media
+patterns; strict review found six approved rows and no pending origins. Grants,
+routes, configured records and preferences were unchanged.
+
+Separately recorded retries of the earlier `CWYADCcWn4VYvs` candidate refused
+in 15.210 and 12.937 seconds. A later fresh Schedule selected `CWYADCZeFfQPc3`
+again, but its native attempt refused in 12.813 seconds. Closed helper diagnostics
+for the latter two refusals identify SLOT_WINDOW after HTTP200, before native
+manifest resolution; the source diagnostic was UNOBSERVED. This does not identify
+which time/window field failed or prove expiration. The original region-corrected
+manifest-preparation failure remains unexplained.
+
+The test-only Schedule lead now requires ten minutes of headroom because its
+captured clock precedes route/bootstrap preparation; production playback still
+independently requires five minutes against its fresh clock. This reduces the
+known selection/preparation gap without asserting entitlement or diagnosing the
+earlier refusals. On the final build, the first Schedule observation failed its
+closed response checks in 30.141 seconds, with no released candidate; its cause
+was not distinguished. A separate request passed in 16.246 seconds, with 159
+eligible displayed rows and lead `abema-anime/9CHRBmdWsEyars`. Immediate native
+playback passed in 19.709 seconds with frame and movement, READY/8,743 bytes and
+the same accepted initialization counts. Cleanup and record/owner checks passed;
+all 20 private-file digests matched the updated baseline throughout these final
+observations and restoration. No configured source was added or replaced.
+
+Final source checks passed 2,644 JVM cases in 299 reports with zero failures,
+errors or skips, lint, release isolation, instrumentation compilation, assemblies
+and the shared debug certificate. Twelve resolver cases cover phase distinctions,
+observer failure neutrality, one request and actual cleanup. The final test-only
+headroom change passed 98 Node cases, scoped hooks and instrumented APK compilation,
+assembly and certificate checks. Independent source and headroom reviews passed.
+Temporary process overrides were restored byte-for-byte, the certified ordinary
+test APK reinstalled and MainActivity restored. App SHA-256 is
+`d42625f7f4f298e1216cd31216ee9c80fb74f19fbb26ba01c7313977e8d82d0f`;
+ordinary test APK SHA-256 is
+`56492a44ae27ca19f96c37e93edc02dc2aa9ae34b06a925f70cfff3999f81dae`.
+
+These are bounded, muted one-feed emulator catch-up observations through the
+normal configured-selection/feed/session path. They do not establish sustained,
+live, Chase, paid, advertisement-transition, duplicate-feed, acoustic or physical
+device behavior. Exit-country geolocation was not remeasured. No renewal,
+fallback, copied provider algorithm, key extraction or new origin policy was
+added; #193 remains open for broader modes and unresolved failures.
+
 ## Unresolved gates
 
 - Twitch GraphQL is not the supported Helix playback API. Own-client OAuth

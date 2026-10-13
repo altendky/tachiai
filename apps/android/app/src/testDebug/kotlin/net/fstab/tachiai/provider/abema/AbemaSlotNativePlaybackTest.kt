@@ -57,6 +57,113 @@ class AbemaSlotNativePlaybackTest {
             assertThrows(UnsupportedOperationException::class.java) { (source.kids as MutableList<UUID>).add(otherKid) }
         } finally { requests.close() }
     }
+    @Test fun initializationObservationReportsTheSameAcceptedOrRefusedParseWithOneGetAndClosedResources() {
+        for ((body, reason) in listOf(mpd() to AbemaInitializationReason.ACCEPTED,
+            mpd("<AdaptationSet/>") to AbemaInitializationReason.NO_DEFAULT_ID,
+            mpd("<AdaptationSet>${protection(cipher = "cbcs")}</AdaptationSet>") to AbemaInitializationReason.SCHEME_OR_CIPHER)) {
+            var inputClosed = false; var calls = 0
+            val input = object : ByteArrayInputStream(body.toByteArray()) {
+                override fun close() { inputClosed = true; super.close() }
+            }
+            val connection = Connection(uri.toURL(), byteArrayOf(), input = input)
+            val requests = requests(connection, dispatched = { calls++ })
+            val observed = mutableListOf<AbemaSlotSourceDiagnostic>()
+            val observer: (AbemaSlotSourceDiagnostic) -> Unit = {
+                assertTrue(inputClosed); assertTrue(connection.disconnected); observed.add(it)
+            }
+            try {
+                if (reason == AbemaInitializationReason.ACCEPTED) {
+                    val source = resolveAbemaSlotNativeSource(uri, requests, channel, slot, observer)
+                    assertEquals(listOf(kid), source.kids); assertEquals(uri, source.uri)
+                } else {
+                    val error = assertThrows(IOException::class.java) {
+                        resolveAbemaSlotNativeSource(uri, requests, channel, slot, observer)
+                    }
+                    assertEquals("Slot source unavailable", error.message); assertNull(error.cause)
+                }
+                assertEquals(1, calls); assertTrue(inputClosed); assertTrue(connection.disconnected)
+                val diagnostic = observed.single()
+                assertEquals(if (reason == AbemaInitializationReason.ACCEPTED) AbemaSlotSourcePhase.READY else
+                    AbemaSlotSourcePhase.INITIALIZATION, diagnostic.phase)
+                assertEquals(body.toByteArray().size, diagnostic.bytes)
+                val initialization = checkNotNull(diagnostic.initialization)
+                assertEquals(reason, initialization.reason)
+                assertEquals(1, initialization.periods); assertEquals(1, initialization.adaptationSets)
+                assertEquals(if (reason == AbemaInitializationReason.NO_DEFAULT_ID) 0 else 1, initialization.defaultIdDeclarations)
+                for (privateValue in listOf(kid.toString(), body, uri.toString(), "fixture-token"))
+                    assertFalse(diagnostic.closedSummary().contains(privateValue))
+                for (header in listOf("Authorization", "Cookie", "Client-ID")) assertNull(connection.getRequestProperty(header))
+            } finally { requests.close() }
+        }
+    }
+    @Test fun initializationObserverExceptionsAndErrorsCannotChangeAcceptanceRefusalOrRequestCount() {
+        for (accepted in listOf(true, false)) for (fatal in listOf(true, false)) {
+            val body = if (accepted) mpd() else mpd("<AdaptationSet/>")
+            val connection = Connection(uri.toURL(), body.toByteArray()); var calls = 0; var observations = 0
+            val requests = requests(connection, dispatched = { calls++ })
+            val observer: (AbemaSlotSourceDiagnostic) -> Unit = {
+                observations++
+                if (fatal) throw AssertionError("PRIVATE_OBSERVER_DETAIL") else throw IllegalStateException("PRIVATE_OBSERVER_DETAIL")
+            }
+            try {
+                if (accepted) assertEquals(listOf(kid), resolveAbemaSlotNativeSource(uri, requests, channel, slot, observer).kids)
+                else {
+                    val error = assertThrows(IOException::class.java) { resolveAbemaSlotNativeSource(uri, requests, channel, slot, observer) }
+                    assertEquals("Slot source unavailable", error.message); assertNull(error.cause)
+                }
+                assertEquals(1, calls); assertEquals(1, observations); assertTrue(connection.disconnected)
+            } finally { requests.close() }
+        }
+    }
+    @Test fun acceptedDiagnosticDoesNotOverrideActualManifestCleanupFailure() {
+        val connection = Connection(uri.toURL(), mpd().toByteArray()).apply { disconnectFailure = true }
+        var calls = 0
+        val requests = requests(connection, dispatched = { calls++ })
+        val observed = mutableListOf<AbemaSlotSourceDiagnostic>()
+        try {
+            val error = assertThrows(IOException::class.java) { resolveAbemaSlotNativeSource(uri, requests, channel, slot, observed::add) }
+            assertEquals(AbemaSlotSourcePhase.CLEANUP, observed.single().phase)
+            assertEquals(AbemaInitializationReason.ACCEPTED, observed.single().initialization?.reason)
+            assertEquals("Slot manifest cleanup unconfirmed", error.message); assertNull(error.cause)
+            assertEquals(1, calls); assertTrue(connection.disconnected)
+        } finally { connection.disconnectFailure = false; requests.close() }
+    }
+    @Test fun sourceObservationDistinguishesOpenReadByteLimitAndUtf8WithoutParsingOrAnotherGet() {
+        for (phase in listOf(AbemaSlotSourcePhase.OPEN, AbemaSlotSourcePhase.READ, AbemaSlotSourcePhase.BYTE_LIMIT,
+            AbemaSlotSourcePhase.UTF8)) {
+            val bytes = when (phase) {
+                AbemaSlotSourcePhase.BYTE_LIMIT -> ByteArray(256 * 1024 + 1) { 32 }
+                AbemaSlotSourcePhase.UTF8 -> byteArrayOf(0xff.toByte())
+                else -> mpd().toByteArray()
+            }
+            var inputClosed = false
+            var reads = 0
+            val input = object : ByteArrayInputStream(bytes) {
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    if (phase == AbemaSlotSourcePhase.READ && reads++ > 0) throw IOException("PRIVATE_READ_DETAIL")
+                    return super.read(buffer, offset, if (phase == AbemaSlotSourcePhase.READ) minOf(length, 8) else length)
+                }
+                override fun close() { inputClosed = true; super.close() }
+            }
+            val connection = Connection(uri.toURL(), bytes, if (phase == AbemaSlotSourcePhase.OPEN) 403 else 200, input)
+            var calls = 0
+            val requests = requests(connection, dispatched = { calls++ })
+            val observations = mutableListOf<AbemaSlotSourceDiagnostic>()
+            try {
+                val error = assertThrows(IOException::class.java) {
+                    resolveAbemaSlotNativeSource(uri, requests, channel, slot) {
+                        assertTrue(connection.disconnected); observations.add(it)
+                    }
+                }
+                assertEquals("Slot source unavailable", error.message); assertNull(error.cause)
+                val observed = observations.single(); assertEquals(phase, observed.phase); assertNull(observed.initialization)
+                assertEquals(when (phase) { AbemaSlotSourcePhase.OPEN -> 0; AbemaSlotSourcePhase.READ -> 8
+                    AbemaSlotSourcePhase.BYTE_LIMIT -> 256 * 1024 + 1; else -> 1 }, observed.bytes)
+                assertEquals(1, calls); assertTrue(connection.disconnected)
+                if (phase == AbemaSlotSourcePhase.OPEN) assertFalse(connection.bodyRead) else assertTrue(inputClosed)
+            } finally { requests.close() }
+        }
+    }
     @Test fun clearWidevineWrongCipherNamespaceAndInvalidKidManifestsNeverBecomeSources() {
         val excessive = (1..17).map { UUID(0, it.toLong()).toString() }.joinToString(" ")
         for (body in listOf(mpd("<AdaptationSet/>"), mpd("<AdaptationSet>${protection(cipher = "cbcs")}</AdaptationSet>"),

@@ -91,6 +91,7 @@ internal class CachedPrototypeAbemaSession(
     private val ownership: AbemaEpisodePlaybackOwnership? = null,
     private val channelResource: CatalogResource? = null,
     private val slotResource: CatalogResource? = null,
+    private val onSlotSourceDiagnostic: ((AbemaSlotSourceDiagnostic) -> Unit)? = null,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -520,7 +521,8 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun readSource(uri: URI, requests: BoundedMediaRequests): AbemaNativeDashSource {
-        if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId)
+        if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId,
+            onSlotSourceDiagnostic)
         if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
         if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))

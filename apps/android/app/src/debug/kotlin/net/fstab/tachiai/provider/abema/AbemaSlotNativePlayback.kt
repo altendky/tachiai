@@ -76,32 +76,61 @@ internal class AbemaSlotNativeSource(override val uri: URI, kids: List<UUID>, va
 // disposal. The existing requests/session cleanup admission remains authoritative.
 private val retainedSlotManifestSources = ConcurrentLinkedQueue<Any>()
 
+internal enum class AbemaSlotSourcePhase { OPEN, READ, BYTE_LIMIT, UTF8, INITIALIZATION, READY, CLEANUP }
+// Structural observation only: no manifest, source URI, IDs or error objects.
+internal data class AbemaSlotSourceDiagnostic(val phase: AbemaSlotSourcePhase, val bytes: Int,
+    val initialization: AbemaInitializationDiagnostic? = null) {
+    fun closedSummary() = "phase=${phase.name} bytes=$bytes " +
+        (initialization?.closedSummary() ?: "initialization=UNOBSERVED")
+}
+
 @UnstableApi
-internal fun resolveAbemaSlotNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String, slotId: String): AbemaSlotNativeSource {
+internal fun resolveAbemaSlotNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String, slotId: String,
+    onSourceDiagnostic: ((AbemaSlotSourceDiagnostic) -> Unit)? = null): AbemaSlotNativeSource {
     if (!allowsAbemaSlotSource(uri, channelId, slotId)) throw IOException("Slot source refused")
     val source = requests.create(C.DATA_TYPE_MANIFEST)
     val buffer = ByteArray(4096)
+    var phase = AbemaSlotSourcePhase.OPEN
+    var bytes = 0
+    var initializationDiagnostic: AbemaInitializationDiagnostic? = null
     try {
         source.openUri(uri)
+        phase = AbemaSlotSourcePhase.READ
         val body = ByteArrayOutputStream()
         while (true) {
             val count = source.read(buffer, 0, buffer.size)
             if (count < 0) break
-            if (body.size() + count > 256 * 1024) throw IOException("Slot manifest refused")
+            bytes = (body.size() + count).coerceAtMost(256 * 1024 + 1)
+            if (body.size() + count > 256 * 1024) {
+                phase = AbemaSlotSourcePhase.BYTE_LIMIT
+                throw IOException("Slot manifest refused")
+            }
             body.write(buffer, 0, count)
         }
         val raw = body.toByteArray()
+        phase = AbemaSlotSourcePhase.UTF8
         val text = try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString() }
         finally { raw.fill(0) }
-        val initialization = parseAbemaRequestInitialization(text) ?: throw IOException("Slot initialization refused")
-        return AbemaSlotNativeSource(uri, initialization.kids, channelId, slotId)
+        phase = AbemaSlotSourcePhase.INITIALIZATION
+        val initialization = parseAbemaRequestInitialization(text, onSourceDiagnostic?.let {
+            { value -> initializationDiagnostic = value }
+        }) ?: throw IOException("Slot initialization refused")
+        val result = AbemaSlotNativeSource(uri, initialization.kids, channelId, slotId)
+        phase = AbemaSlotSourcePhase.READY
+        return result
     } catch (_: Exception) { throw IOException("Slot source unavailable") }
     finally {
         buffer.fill(0)
         try { source.close() } catch (_: Throwable) {
+            phase = AbemaSlotSourcePhase.CLEANUP
             retainedSlotManifestSources.add(source)
             throw IOException("Slot manifest cleanup unconfirmed")
+        } finally {
+            // Exactly one immutable snapshot follows the original close attempt.
+            // Observer failures cannot change source acceptance or refusal.
+            try { onSourceDiagnostic?.invoke(AbemaSlotSourceDiagnostic(phase, bytes, initializationDiagnostic)) }
+            catch (_: Throwable) { }
         }
     }
 }

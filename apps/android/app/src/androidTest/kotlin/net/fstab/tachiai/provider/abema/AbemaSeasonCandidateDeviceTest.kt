@@ -36,7 +36,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 // Test APK only. The opt-in gate precedes saved state, UI and all WebView APIs.
-// One known unfiltered Series page or exact Slot; no guessed identities, continuation,
+// One known unfiltered Series page, exact Slot or public Schedule; no guessed identities, continuation,
 // account capability, Add, playback, provider mutation or production DTO change.
 class AbemaSeasonCandidateDeviceTest {
     @Test fun optInOneKnownSeriesPageObservesOnlyAnExplicitReturnedSeasonParent() {
@@ -49,6 +49,12 @@ class AbemaSeasonCandidateDeviceTest {
         verifiedProbeInstrumentation("tachiaiReadOnlyAbemaSlotShape")
         val phases = HarnessPhases()
         try { observe(phases, Observation.SLOT_SHAPE) } catch (_: Throwable) { failHarness(phases, Observation.SLOT_SHAPE) }
+    }
+
+    @Test fun optInOneScheduleObservesOnlyClosedRawTimeAndFreeFlagCounts() {
+        verifiedProbeInstrumentation("tachiaiReadOnlyAbemaScheduleShape")
+        val phases = HarnessPhases()
+        try { observe(phases, Observation.SCHEDULE_SHAPE) } catch (_: Throwable) { failHarness(phases, Observation.SCHEDULE_SHAPE) }
     }
 
     @Test fun optInOnlyAdoptsAndDestroysTheIdleGuestActivity() {
@@ -233,20 +239,25 @@ class AbemaSeasonCandidateDeviceTest {
     private fun observe(phases: HarnessPhases, observation: Observation = Observation.SERIES_CANDIDATE) {
         val instrumentation = InstrumentationRegistry.getInstrumentation(); val context = instrumentation.targetContext
         val instanceId = defaultProviderInstanceId(PrototypeService.ABEMA)
-        fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
-            { providerInstanceStore(context).read { legacyProviderSettings(context) } },
-            { connectionProfileStore(context).selected(it) })
-        val before = phases.at(HarnessPhase.PROTECTED_CAPTURE) { encryptedRecords(context.noBackupFilesDir) }
+        val schedule = observation == Observation.SCHEDULE_SHAPE
+        fun stableRecords() { if (schedule) requireStableRecords(context.noBackupFilesDir) }
+        fun readOwner(): AbemaCatalogRouteOwner {
+            stableRecords()
+            return readAbemaCatalogRouteOwner(instanceId,
+                { providerInstanceStore(context).read { legacyProviderSettings(context) } },
+                { connectionProfileStore(context).selected(it) }).also { stableRecords() }
+        }
+        val before = phases.at(HarnessPhase.PROTECTED_CAPTURE) { encryptedRecords(context.noBackupFilesDir, schedule) }
         val owner = phases.at(HarnessPhase.OWNER_CHECK) {
             readOwner().also { check(it.profile != null && it.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION) }
         }
         phases.at(HarnessPhase.PROFILE_SETUP) { instrumentation.runOnMainSync { configureAbemaGuestBootstrapProfile(context) } }
         val active = AtomicBoolean(); val foreground = IdleForeground(instrumentation, active)
-        val environment = CandidateEnvironment(AndroidAbemaGuestEnvironment(context), observation)
+        val environment = CandidateEnvironment(AndroidAbemaGuestEnvironment(context), observation, ::stableRecords)
         val probe = Probe(environment)
         val nonce = UUID.randomUUID().toString().replace("-", "")
         val result = AtomicReference<AbemaGuestRuntimeResult?>(); val completed = CountDownLatch(1)
-        var admitted = false; val started = SystemClock.elapsedRealtime()
+        var admitted = false; var activityFinished = false; val started = SystemClock.elapsedRealtime()
         try {
             phases.at(HarnessPhase.ACTIVITY_LAUNCH) { foreground.launch(context) }
             val activity = phases.at(HarnessPhase.ACTIVITY_ADOPTION) { foreground.adopt() }
@@ -276,21 +287,64 @@ class AbemaSeasonCandidateDeviceTest {
                     if (admitted && completed.count != 0L) completed.await(5, TimeUnit.SECONDS)
                 }
             } finally {
-                try { phases.at(HarnessPhase.ACTIVITY_DESTRUCTION) { foreground.finishConfirmed() } } finally {
+                try { phases.at(HarnessPhase.ACTIVITY_DESTRUCTION) { foreground.finishConfirmed(); activityFinished = true } } finally {
                     // A failed/held teardown keeps the actual coordinator, route,
                     // view and cleanup executors strongly owned for this process.
-                    if (!probe.runtime.unavailable) {
+                    if (!probe.runtime.unavailable && (!schedule || activityFinished)) {
                         probe.worker.shutdown(); probe.cleanup.shutdown()
                         retained.compareAndSet(probe, null)
+                    } else if (schedule) {
+                        retained.compareAndSet(null, probe)
                     }
                 }
             }
         }
-        val after = phases.at(HarnessPhase.PROTECTED_POSTCHECK) { encryptedRecords(context.noBackupFilesDir) }
-        val unchanged = before.keys == after.keys && before.all { (name, digest) -> after[name]?.let { MessageDigest.isEqual(digest, it) } == true }
-        val current = phases.at(HarnessPhase.OWNER_POSTCHECK) { owner.sameOwnership(readOwner()) }
+        // The new Schedule observation attempts both postchecks even when one
+        // fails. It assumes an idle device; preflight is not an external-writer lock.
+        val after = if (schedule) runCatching { phases.at(HarnessPhase.PROTECTED_POSTCHECK) {
+            encryptedRecords(context.noBackupFilesDir, true)
+        } }.getOrNull() else phases.at(HarnessPhase.PROTECTED_POSTCHECK) { encryptedRecords(context.noBackupFilesDir) }
+        val current = if (schedule) runCatching { phases.at(HarnessPhase.OWNER_POSTCHECK) {
+            owner.sameOwnership(readOwner())
+        } }.getOrDefault(false) else phases.at(HarnessPhase.OWNER_POSTCHECK) { owner.sameOwnership(readOwner()) }
+        val unchanged = after != null && before.keys == after.keys && before.all { (name, digest) -> after[name]?.let { MessageDigest.isEqual(digest, it) } == true }
+        if (schedule) { before.values.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) } }
         val value = result.get()
-        val cleanupConfirmed = admitted && completed.count == 0L && !probe.runtime.unavailable
+        val cleanupConfirmed = admitted && completed.count == 0L && !probe.runtime.unavailable && (!schedule || activityFinished)
+        if (schedule) {
+            val snapshot = value?.scheduleSnapshot
+            val success = value?.category == "SCHEDULE_SNAPSHOT" && snapshot != null && snapshot.entries.size <= 501 &&
+                snapshot.entries.all { AbemaSlotRequest.from(it.resource) != null &&
+                    it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null }
+            val bounded = SystemClock.elapsedRealtime() - started in 0 until 70_000
+            val counts = environment.scheduleShapes.getAndSet(null).takeIf {
+                cleanupConfirmed && unchanged && current && success && bounded && it != null && it.projectedRows == snapshot.entries.size &&
+                    it.truncated == snapshot.truncated
+            }
+            val outcome = when {
+                !cleanupConfirmed -> "CLEANUP_FAILED"; !unchanged -> "STORES_CHANGED"; !current -> "OWNER_CHANGED"
+                !bounded -> "BUDGET_REFUSED"; success && counts != null -> "SCHEDULE_SHAPES"; else -> "INVALID_RESPONSE"
+            }
+            Log.i(observation.tag, "outcome=$outcome sdk=${Build.VERSION.SDK_INT} routeMode=${owner.instance.setup.route!!.mode.name}" +
+                (counts?.let { " ${it.header()}" } ?: " shape=NONE"))
+            counts?.let {
+                // Fixed labels and validated counts only; bounded separate lines
+                // avoid Android truncating a combined category report.
+                Log.i(observation.tag, "scope=ALL ${it.all.render()}")
+                Log.i(observation.tag, "scope=PROJECTED ${it.projected.render()}")
+                Log.i(observation.tag, "scope=DISPLAYED ${it.displayed.render()}")
+            }
+            phases.at(HarnessPhase.RESULT_CHECK) {
+                assertTrue("Schedule shape observation exceeded bounded budgets", bounded)
+                assertTrue("Schedule shape observation changed protected records", unchanged)
+                assertTrue("Schedule shape observation changed captured owner", current)
+                assertTrue("Schedule shape observation did not confirm cleanup", cleanupConfirmed)
+                assertTrue("Schedule shape observation did not return normal metadata", success)
+                assertNotNull("Schedule shape observation did not return closed coherent counts", counts)
+            }
+            phases.current.set(HarnessPhase.COMPLETE)
+            return
+        }
         if (observation == Observation.SLOT_SHAPE) {
             val entry = value?.entry
             val success = value?.category == "EXACT_SLOT_METADATA" && entry != null &&
@@ -359,6 +413,7 @@ class AbemaSeasonCandidateDeviceTest {
     private enum class Observation(val operation: AbemaGuestBootstrapOperation, val tag: String) {
         SERIES_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SERIES, "TachiaiAbemaSeasonCandidateProbe"),
         SLOT_SHAPE(AbemaGuestBootstrapOperation.FETCH_SLOT, "TachiaiAbemaSlotShapeProbe"),
+        SCHEDULE_SHAPE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaScheduleShapeProbe"),
     }
 
     private enum class HarnessPhase {
@@ -454,11 +509,20 @@ class AbemaSeasonCandidateDeviceTest {
         val runtime = AbemaGuestRuntimeCoordinator(environment, AndroidAbemaGuestMain(), worker, cleanup, SystemClock::elapsedRealtime)
     }
 
-    private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment, private val observation: Observation) : AbemaGuestRuntimeEnvironment by base {
+    private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment, private val observation: Observation,
+        private val stableRecords: () -> Unit = {}) : AbemaGuestRuntimeEnvironment by base {
         val candidate = AtomicReference<PublicSeasonProof?>()
         val absentCandidate = AtomicReference<PublicSeasonProof?>()
         val shapes = AtomicReference<ShapeCounts?>()
         val slotShapes = AtomicReference<SlotShapes?>()
+        val scheduleShapes = AtomicReference<AbemaScheduleShapeObservation.Counts?>()
+        private val scheduleWallMs = if (observation == Observation.SCHEDULE_SHAPE) System.currentTimeMillis() else null
+        override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner {
+            stableRecords(); return base.readOwner(instanceId).also { stableRecords() }
+        }
+        override fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean {
+            stableRecords(); return base.sameOwner(owner).also { stableRecords() }
+        }
         override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
             preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
             check(request.operation == observation.operation && when (observation) {
@@ -466,11 +530,18 @@ class AbemaSeasonCandidateDeviceTest {
                     it.seriesId == SERIES && it.offset == 0 && it.version == null && it.seasonId == null
                 } == true
                 Observation.SLOT_SHAPE -> request.slotRequest?.let { it.channelId == SLOT_CHANNEL && it.slotId == SLOT_ID } == true
+                Observation.SCHEDULE_SHAPE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
             })
             val files = base.prepare(owner, request, preparation, canRequest)
             val source = files.getValue(CONTROL_PATH).toString(Charsets.UTF_8)
-            val anchor = if (observation == Observation.SERIES_CANDIDATE) PROJECTION else SLOT_PROJECTION
-            val projection = if (observation == Observation.SERIES_CANDIDATE) TEST_PROJECTION else TEST_SLOT_PROJECTION
+            val anchor = when (observation) {
+                Observation.SERIES_CANDIDATE -> PROJECTION; Observation.SLOT_SHAPE -> SLOT_PROJECTION
+                Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.ANCHOR
+            }
+            val projection = when (observation) {
+                Observation.SERIES_CANDIDATE -> TEST_PROJECTION; Observation.SLOT_SHAPE -> TEST_SLOT_PROJECTION
+                Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.projection(checkNotNull(scheduleWallMs))
+            }
             check(source.length <= 128 * 1024 && source.split(anchor).size == 2)
             return files + (CONTROL_PATH to source.replace(anchor, projection).toByteArray(Charsets.UTF_8))
         }
@@ -488,9 +559,13 @@ class AbemaSeasonCandidateDeviceTest {
                         absentCandidate.set(stripped?.absentProof)
                         shapes.set(stripped?.shapes)
                         callback(stripped?.raw)
-                    } else {
+                    } else if (observation == Observation.SLOT_SHAPE) {
                         val stripped = stripSlotProjection(raw)
                         slotShapes.set(stripped?.shapes)
+                        callback(stripped?.raw)
+                    } else {
+                        val stripped = AbemaScheduleShapeObservation.strip(raw)
+                        scheduleShapes.set(stripped?.counts)
                         callback(stripped?.raw)
                     }
                 }
@@ -515,23 +590,37 @@ class AbemaSeasonCandidateDeviceTest {
     }
     private class StrippedSlotProjection(val raw: String, val shapes: SlotShapes)
 
-    private fun encryptedRecords(directory: File): Map<String, ByteArray> {
+    private fun requireStableRecords(directory: File) {
+        check(directory.isDirectory && directory.canRead() && !Files.isSymbolicLink(directory.toPath()))
+        check(checkNotNull(directory.listFiles()).none { it.name.endsWith(".enc.bak") || it.name.endsWith(".enc.new") })
+    }
+
+    private fun encryptedRecords(directory: File, stable: Boolean = false): Map<String, ByteArray> {
         val started = SystemClock.elapsedRealtime()
         fun checkTime() = check(SystemClock.elapsedRealtime() - started in 0 until 5000)
         check(directory.isDirectory && directory.canRead() && !Files.isSymbolicLink(directory.toPath()))
+        if (stable) requireStableRecords(directory)
         val files = checkNotNull(directory.listFiles()).filter { it.name.endsWith(".enc") || it.name.endsWith(".enc.bak") || it.name.endsWith(".enc.new") }
         check(files.size in 1..64); checkTime()
-        return files.associate { file ->
-            checkTime(); check(file.isFile && file.canRead() && !Files.isSymbolicLink(file.toPath()) && file.length() in 1..(PRIVATE_SECRET_LIMIT + 29).toLong())
-            val digest = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val buffer = ByteArray(8192); var size = 0
-                try { while (true) {
-                    checkTime(); val count = input.read(buffer); if (count < 0) break
-                    checkTime(); size += count; check(size <= PRIVATE_SECRET_LIMIT + 29); digest.update(buffer, 0, count)
-                } } finally { buffer.fill(0) }
+        val captured = linkedMapOf<String, ByteArray>()
+        try {
+            for (file in files) {
+                checkTime(); check(file.isFile && file.canRead() && !Files.isSymbolicLink(file.toPath()) && file.length() in 1..(PRIVATE_SECRET_LIMIT + 29).toLong())
+                val digest = MessageDigest.getInstance("SHA-256")
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(8192); var size = 0
+                    try { while (true) {
+                        checkTime(); val count = input.read(buffer); if (count < 0) break
+                        checkTime(); size += count; check(size <= PRIVATE_SECRET_LIMIT + 29); digest.update(buffer, 0, count)
+                    } } finally { buffer.fill(0) }
+                }
+                checkTime(); captured[file.name] = digest.digest()
             }
-            checkTime(); file.name to digest.digest()
+            if (stable) requireStableRecords(directory)
+            return captured
+        } catch (error: Throwable) {
+            if (stable) captured.values.forEach { it.fill(0) }
+            throw error
         }
     }
 

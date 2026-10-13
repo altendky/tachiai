@@ -333,6 +333,76 @@ shared certificate and reinstalled, and the normal launcher restored. Protected
 records remained unchanged. This completes bounded metadata acceptance for the
 focused slot issue, not slot playback.
 
+### Test-only raw Schedule observation
+
+Issue #100 has a separate opt-in observation in the guest-process test APK:
+`tachiaiReadOnlyAbemaScheduleShape=true`. It decorates the one app-owned Schedule
+projection after whole-response validation, using one captured wall clock. The
+production asset, metadata contract and catalog entries retain their existing
+behavior. One fresh guest setup and one canonical timetable GET supply this
+case; it performs no account validation, exact-slot lookup, Add or playback.
+
+The closed marker counts the full admitted response, the retained 501-row
+prefix and the displayed 500-row prefix separately. It classifies four time
+fields as absent, null, zero, bounded positive integer seconds or invalid, and
+the raw `flags.timeshift` / `flags.timeshiftFree` fields as unavailable parent,
+absent, null, true, false or invalid. The positive-number ceiling through year
+9999 is a local diagnostic bound; the category does not prove provider units.
+Intervals are unavailable, invalid order, ended, future or containing the
+captured device clock. A separate count intersects ended intervals with an
+explicit true free flag. None of these counts establishes live state,
+entitlement or an exact playable source. Tokyo calendar-day offsets summarize
+the distinct available dates without emitting date values or identifiers.
+
+The marker is size bounded, rejects duplicate and unknown fields, and checks
+count sums, prefix subsets, interval/flag consistency and horizon consistency.
+It is stripped before the unchanged Schedule decoder. Counts are logged only
+after normal snapshot decoding, the original runtime and outer case budgets,
+confirmed runtime and Activity cleanup, unchanged captured ownership and
+encrypted records. Pending AtomicFile backup/new files refuse this case before
+owner reads. This preflight assumes an idle device and is not an external-writer
+lock. No raw rows, titles, dates, URLs, token values or private identifiers are
+logged. Paired Node fixtures execute the exact test-APK decorator rather than a
+duplicate implementation; Android synthetic cases exercise marker stripping.
+
+On 2026-10-13 UTC, one saved-route guest observation on persistent `tachiai-dev`
+passed with zero skips in 13.335 seconds. The device was Android 16/API 36,
+x86-64 with WebView 133.0.6943.137. The response admitted within the unchanged
+local raw bounds contained 5,727 slots, 55 channels and 15 distinct dates:
+seven past, one current and seven future Tokyo days, with offsets -7 through +7.
+Region was not separately measured; the case used a fresh guest and did not
+validate or consume the saved native account grant.
+
+| Observation | All admitted rows | Retained prefix | Displayed prefix |
+| --- | ---: | ---: | ---: |
+| Rows | 5,727 | 501 | 500 |
+| Ended intervals | 3,251 | 317 | 317 |
+| Future intervals | 2,428 | 180 | 179 |
+| Intervals containing captured clock | 48 | 4 | 4 |
+| Explicit true free flag | 3,953 | 347 | 346 |
+| Ended interval and explicit true free flag | 2,232 | 226 | 226 |
+
+All admitted rows had positive-number start/end fields and valid interval order.
+The general timeshift-end field and true timeshift flag were present on 4,558
+rows and absent on 1,169; the free-end field and true free flag were present on
+3,953 and absent on 1,774. No null, false, zero or invalid category occurred in
+those fields. Both prefix truncation indicators were true. This establishes
+that this response includes ended/free-flag candidates even in the displayed
+prefix; it neither identifies one nor verifies its current free window, source,
+region, rights, license or rendered playback.
+
+All 89 owned guest JavaScript cases passed, including the shared decorator;
+2,554 unchanged JVM cases across 295 reports had no failures, errors or skips.
+Android lint, release isolation, instrumentation compilation, both APK
+assemblies, shared signing checks, scoped hooks/documentation and independent
+review passed. Four provider-free Android marker cases passed with zero skips
+in 2.181 seconds. The real case confirmed owner, runtime/Activity cleanup and
+encrypted-record preservation; the external comparison of all 20 protected
+files also matched. The test manifest was restored byte-identically, ordinary
+instrumentation rebuilt and reinstalled with the shared signer and no process
+override, and the normal launcher restored. All 20 protected files still
+matched afterward. The production APK remains unchanged.
+
 Both observations used Android 16/API 36, x86-64, WebView 133.0.6943.137,
 the instance's captured saved route, unknown exit country and a fresh guest
 without the existing ABEMA account. They establish compatibility with these

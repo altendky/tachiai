@@ -20,11 +20,15 @@ real-provider acceptance and made no account or provider requests. The later
 establishes one maintained account's first page through System network on
 tachiai-dev. A later [bounded configured replay observation](#bounded-configured-replay-observation--2026-10-12)
 establishes native playback of one existing saved replay with that shared scoped
-connection. Other discovery operations, live playback, other replays, provider
-refresh/revocation and imported-route behavior still need separate observations. Anonymous
-native browsing still needs its access architecture; no client secret or app-token
-backend is assumed. These limits remain in
-[#99](https://github.com/altendky/tachiai/issues/99).
+connection. The later [channel startup and movement observation](#channel-startup-and-continuous-playback-time)
+establishes bounded playback of one saved canonical broadcaster. Other discovery
+operations, other replays, real refresh/revocation, imported routes, sustained
+playback, audible output and physical-device/TV behavior remain unverified.
+These wider limits remain recorded here; the stated initial
+[#99](https://github.com/altendky/tachiai/issues/99) criteria have supporting
+fixtures and bounded account/device evidence. Anonymous native browsing
+remains independent [#144](https://github.com/altendky/tachiai/issues/144); no
+client secret or app-token backend is assumed.
 
 ## Identity and availability
 
@@ -49,14 +53,16 @@ uses guarded transient current-login mapping and checks that login's ownership
 again before publication. Catalog and native preparation bind the same validated
 user and durable grant generation. This shared scoped-grant use is newly selected
 by the user; the later [bounded observation](#bounded-configured-replay-observation--2026-10-12)
-verifies one existing configured replay. Live and newly discovered playback remain
-unverified. Adding an item does not
+verifies one existing configured replay. The later channel observation verifies
+one saved canonical broadcaster; newly discovered playback remains unverified.
+Adding an item does not
 select a sample under the new label. Earlier token-only LOCAL grants are not
 copied into the shared connection or selected as an automatic fallback.
 
-**History** is also listed, with access explicitly **not verified** regardless of
-Following/account connection. Selecting it cannot retrieve history or trigger a
-new authorization exchange. See [history access](provider-history-access.md#shipped-capability-reporting).
+The original **History** capability was listed as **not verified**. Its later
+implementation and bounded provider-backed observations are recorded separately
+in [history access](provider-history-access.md). Following/account connection
+alone does not establish history access or authorize another exchange.
 
 ## Known schedule context
 
@@ -532,6 +538,81 @@ hashes of all 20 saved-state files remained identical before installation, after
 the guards, after the native check and after normal launcher restoration. No
 provider request retry, alternate source, new authorization, saved-state mutation
 or production timing change was introduced. Issue #99 remains open.
+
+### Channel startup and continuous playback time
+
+The normal viewer initially prepares live media while paused, requests its current
+live-default position once, and allows at most eight seconds for that request to
+settle before binding the surface and applying quality. The channel harness had
+instead configured and played the source immediately on each READY event. Its
+test-only startup now follows that existing initial-position sequence, bounded
+by the original observation deadline, and configures and plays once after
+settlement. Replay startup is unchanged. This establishes parity for initial
+positioning, not the viewer's complete audio and play-barrier behavior.
+
+The channel movement check also accounts for the SDK's sliding live window.
+[Media3's live-streaming documentation](https://developer.android.com/media/media3/exoplayer/live-streaming)
+explains that window-relative position can decrease when that window moves.
+Channel observations use playback time within the same SDK period, recovered
+from window-relative position and that period's microsecond window offset.
+Checked intervals account for the SDK's conversion to milliseconds; the later
+interval must lie strictly beyond the first, with at least 1.5 seconds between
+observations. This avoids treating a rounding change as playback advancement.
+
+Both qualifying samples must be READY and actually playing, with Play requested
+and no ad. Private window and period identities, the player, selected source and
+continuity generation must remain bound. Discontinuity, source transition,
+explicit pause or ad transition after the baseline refuses the observation.
+Buffering can preserve the baseline but cannot supply a qualifying sample.
+Unknown values, arithmetic overflow and deadline or admission loss refuse;
+there is no wall-clock, provider-timestamp or guessed-offset fallback. Replay
+keeps its existing position comparison. A temporary listener is removed on main
+before the fixture's explicit native close. Production budget/error shutdown
+continues independently; uncertain listener/player owners remain retained.
+
+The actual frame, controls, no-feed-failure, account/source/route ownership and
+confirmed cleanup and preservation requirements remain in place, with the same
+50-second observation, 70-second total and 20-second cleanup bounds. Both failed
+channel observations above remain recorded. Neither the startup omission nor
+the general position-comparison defect explains their underlying failures.
+
+Local validation passed: compilation, lint, release isolation, shared debug
+certificate, ordinary test manifest, scoped hooks and independent review.
+Forty-three provider-free device cases passed with zero skips in 0.493 seconds,
+including eleven startup/continuity cases and nine new continuous-time cases.
+The production app and JVM sources/tests remain unchanged from the verified
+2,691-test baseline; no production playback policy was changed.
+
+One disclosed check of the same saved canonical broadcaster passed: one test,
+zero skips, 22.647 seconds on persistent `tachiai-dev`, Android 16/API 36 x86-64,
+retained scoped Smart TV account and saved System route. No provider browser was
+used; geographic region was not established. The initial live-default call
+returned NO_CHANGE, known-window preparation completed, saved quality/mute/Play
+controls succeeded, and an actual frame rendered. Two READY, actually playing
+samples on the same SDK period established strict continuous-time advancement
+at least 1.5 seconds apart. No discontinuity, transition, pause or ad interruption
+was recorded after the baseline, and no feed failure was recorded in the
+pre-cleanup snapshot. SDK playback time advanced and a frame rendered;
+continuing decoded frames were not measured independently.
+
+Both positive account validations, all three exact identity/status/confirmation
+requests and the single playback access request returned HTTP 200. Five media
+requests ran. Listener removal, preparation, worker, native player, resolver,
+HTTP, route and Activity cleanup were confirmed. Owner, exact item and
+protected-record checks passed. All 20 saved-state files stayed independently
+byte-identical before test installation, after guards, after playback and after
+normal launcher restoration. No new consent, refresh, source/profile/route
+mutation, fallback or media-policy expansion occurred.
+
+The final mutable diagnostics included ADMISSION and REQUEST_FAILED followed
+by STOPPED, with no PLAYER_FAILED event. Source tracing permits deliberate
+teardown revocation to produce those diagnostics after the pre-cleanup snapshot;
+their exact timing relative to that snapshot was not captured. The passed
+acceptance requires its pre-cleanup frame/movement/failure proof and confirmed
+cleanup/preservation, and is not a claim of zero diagnostic refusals. This
+observation does not resolve the two earlier failures or establish sustained
+playback. Whole-issue review finds the stated initial #99 criteria satisfied
+once this correction completes verified delivery.
 
 ## Metadata HTTP cleanup ownership
 

@@ -9,7 +9,10 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import android.view.ViewGroup
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
@@ -257,6 +260,16 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
         var view: PlayerView? = null
         var session: PrototypeTwitchSession? = null
         var sessionWorker: ExecutorService? = null
+        var initialPlayback: ConfiguredTwitchInitialPlayback? = null
+        val startupHandler = Handler(Looper.getMainLooper())
+        var startupPoll: Runnable? = null
+        val channelControlsApplied = AtomicBoolean()
+        val continuity = ConfiguredTwitchPlaybackContinuity()
+        var continuityPlayer: Player? = null
+        var continuityListener: Player.Listener? = null
+        var listenerAttached = false
+        var listenerRemoved = false
+        var livePeriodObserved = false
         var route: RouteSession? = null
         var backendClose: CloseReceipt<RouteBackend>? = null
         var routeClose: CloseReceipt<RouteSession>? = null
@@ -483,9 +496,10 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             }, profile = TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
             budget = NativePlaybackBudget(BUDGET_MS, ::localCurrent, maximumDurationMs = BUDGET_MS)
             instrumentation.runOnMainSync {
-                val events: (PrototypeFeedEvent) -> Unit = { event ->
+                val events: (PrototypeFeedEvent) -> Unit = events@ { event ->
                     when (event) {
                         PrototypeFeedEvent.READY -> {
+                            if (mode == Mode.CHANNEL) return@events
                             try {
                                 view?.player = session?.player
                                 qualityApplied.set(session?.member?.setQualityPreferences(source.quality) == true)
@@ -497,7 +511,11 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                             } catch (_: Throwable) { playbackFailed.set(true); frame.countDown() }
                             prepared.countDown()
                         }
-                        PrototypeFeedEvent.VIDEO_FRAME -> { frameObserved.set(true); frame.countDown() }
+                        PrototypeFeedEvent.VIDEO_FRAME -> {
+                            if (mode == Mode.REPLAY || initialPlayback?.preparedFor(session?.member, session?.player) == true) {
+                                frameObserved.set(true); frame.countDown()
+                            }
+                        }
                         PrototypeFeedEvent.FAILED -> { playbackFailed.set(true); prepared.countDown(); frame.countDown() }
                         else -> Unit
                     }
@@ -560,6 +578,69 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 sessionWorker = PrototypeTwitchSession::class.java.getDeclaredField("worker").apply { isAccessible = true }
                     .get(checkNotNull(session)) as ExecutorService
                 checkNotNull(session).prepare(checkNotNull(budget))
+                if (mode == Mode.CHANNEL) {
+                    val initial = ConfiguredTwitchInitialPlayback(started, started + BUDGET_MS - CLEANUP_MS,
+                        SystemClock::elapsedRealtime).also { initialPlayback = it }
+                    fun failStartup() { playbackFailed.set(true); prepared.countDown(); frame.countDown() }
+                    val poll = object : Runnable {
+                        override fun run() {
+                            try {
+                                val host = session
+                                val member = host?.member
+                                val player = host?.player
+                                fun admitted() = localCurrent() && !playbackFailed.get() && host?.failure == null &&
+                                    budget?.active == true && !continuity.overflowed &&
+                                    (player == null || player.applicationLooper == Looper.myLooper()) &&
+                                    (member == null || host?.canContinue() == true) &&
+                                    session === host && session?.member === member && session?.player === player
+                                if (player != null && admitted()) {
+                                    if (continuityPlayer == null) {
+                                        continuityPlayer = player
+                                        continuity.advertisement(player.isPlayingAd)
+                                        val listener = object : Player.Listener {
+                                            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,
+                                                newPosition: Player.PositionInfo, reason: Int) { continuity.discontinuity() }
+                                            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { continuity.transition() }
+                                            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                                                continuity.playWhenReady(playWhenReady)
+                                            }
+                                            override fun onEvents(player: Player, events: Player.Events) {
+                                                if (player === continuityPlayer) continuity.advertisement(player.isPlayingAd)
+                                            }
+                                        }
+                                        // Retain the actual listener/player before dispatch; an
+                                        // uncertain add/remove cannot lose the resource identity.
+                                        continuityListener = listener
+                                        player.addListener(listener)
+                                        listenerAttached = true
+                                    } else if (continuityPlayer !== player) { failStartup(); return }
+                                }
+                                val stage = initial.poll(member, player, ::admitted) {
+                                    if (!admitted() || !channelControlsApplied.compareAndSet(false, true)) false
+                                    else {
+                                        qualityApplied.set(member?.setQualityPreferences(source.quality) == true)
+                                        muted.set(member?.setVolume(0f) == true)
+                                        if (!qualityApplied.get() || !muted.get() || !admitted() || view == null) false
+                                        else {
+                                            // Match normal startup: initial settlement, saved
+                                            // quality, surface attachment, then one Play request.
+                                            view?.player = player
+                                            playRequested.set(member?.setTimingPlaying(true) == true)
+                                            playRequested.get() && admitted()
+                                        }
+                                    }
+                                }
+                                when (stage) {
+                                    ConfiguredTwitchInitialPlayback.Stage.PREPARED -> prepared.countDown()
+                                    ConfiguredTwitchInitialPlayback.Stage.REFUSED -> failStartup()
+                                    else -> if (!startupHandler.postDelayed(this, 100)) failStartup()
+                                }
+                            } catch (_: Throwable) { failStartup() }
+                        }
+                    }
+                    startupPoll = poll
+                    if (!startupHandler.post(poll)) failStartup()
+                }
             }
             fun remaining(maximum: Long): Long =
                 (BUDGET_MS - CLEANUP_MS - (SystemClock.elapsedRealtime() - started)).coerceIn(0, maximum)
@@ -574,11 +655,42 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 SystemClock.elapsedRealtime() < sampler.deadline) {
                 instrumentation.runOnMainSync {
                     val player = session?.player
-                    sampler.sample(player, admitted = {
+                    fun admitted() =
                         player != null && player.applicationLooper == Looper.myLooper() && localCurrent() &&
-                            !playbackFailed.get() && session.failure == null && session.canContinue() &&
-                            budget.active
-                    }, state = {
+                            !playbackFailed.get() && session?.failure == null && session?.canContinue() == true &&
+                            budget?.active == true && (mode == Mode.REPLAY || !continuity.overflowed &&
+                                player === continuityPlayer && initialPlayback?.preparedFor(session?.member, player) == true)
+                    if (mode == Mode.CHANNEL) {
+                        sampler.sampleLive(player, ::admitted) {
+                            val member = session?.member ?: return@sampleLive null
+                            val currentPlayer = checkNotNull(player)
+                            val timing = member.timingSnapshot() ?: return@sampleLive null
+                            val timeline = currentPlayer.currentTimeline
+                            val windowIndex = currentPlayer.currentMediaItemIndex
+                            val periodIndex = currentPlayer.currentPeriodIndex
+                            if (timeline.isEmpty || windowIndex !in 0 until timeline.windowCount ||
+                                periodIndex !in 0 until timeline.periodCount) return@sampleLive null
+                            val window = timeline.getWindow(windowIndex, Timeline.Window())
+                            val period = timeline.getPeriod(periodIndex, Timeline.Period(), true)
+                            if (window.isPlaceholder || period.isPlaceholder || period.windowIndex != windowIndex ||
+                                period.uid == null || period.positionInWindowUs == C.TIME_UNSET ||
+                                timing.state != currentPlayer.playbackState) return@sampleLive null
+                            livePeriodObserved = true
+                            ConfiguredTwitchLiveMovementSample(
+                                state = when (timing.state) {
+                                    Player.STATE_IDLE -> SampleState.IDLE
+                                    Player.STATE_BUFFERING -> SampleState.BUFFERING
+                                    Player.STATE_READY -> SampleState.READY
+                                    Player.STATE_ENDED -> SampleState.ENDED
+                                    else -> SampleState.UNAVAILABLE
+                                }, positionMs = timing.positionMs, durationMs = timing.durationMs,
+                                periodOffsetUs = period.positionInWindowUs, windowIdentity = window.uid,
+                                periodIdentity = period.uid, continuityGeneration = continuity.generation,
+                                playing = timing.playing, playWhenReady = timing.playWhenReady,
+                                playingAd = timing.playingAd, live = timing.live)
+                        }
+                        if (sampler.firstSampleState == SampleState.READY) continuity.markBaseline()
+                    } else sampler.sample(player, admitted = ::admitted, state = {
                         when (checkNotNull(player).playbackState) {
                             Player.STATE_IDLE -> SampleState.IDLE
                             Player.STATE_BUFFERING -> SampleState.BUFFERING
@@ -615,7 +727,17 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 return try { posted && done.await((cleanupEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0),
                     TimeUnit.MILLISECONDS) && success.get() } catch (_: Throwable) { false }
             }
-            var confirmed = mainClose {
+            // Stop the test-only poll/listener before explicitly closing its
+            // player. Uncertain removal retains the actual binding and refuses
+            // that close path rather than treating timeout as successful removal.
+            val startupRemoved = mainClose {
+                startupPoll?.let(startupHandler::removeCallbacks)
+                continuityListener?.let { listener ->
+                    checkNotNull(continuityPlayer).removeListener(listener)
+                }
+            }
+            listenerRemoved = startupRemoved
+            var confirmed = startupRemoved && mainClose {
                 var failed = false
                 for (close in listOf<() -> Unit>(
                     { session?.close() }, { basePreparation?.close() }, { identityResolver?.close() },
@@ -677,7 +799,8 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 before?.values?.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) }
                 if (!cleanupConfirmed) synchronized(retained) {
                     retained.add(listOfNotNull(session, sessionWorker, route, backendClose, routeClose, basePreparation,
-                        catalogSession, coordinator, identityResolver, foreground, foregroundClose, view) + connections.toList() +
+                        catalogSession, coordinator, identityResolver, foreground, foregroundClose, view,
+                        initialPlayback, startupPoll, continuityPlayer, continuityListener, continuity) + connections.toList() +
                         transports.toList() + catalogSessions.toList() + helixTransports.toList() + helixPreparations.toList() +
                         helixRouteCloses.toList() + helixBackendCloses.toList())
                 }
@@ -699,6 +822,13 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             "sourceOrigin=${sourceOrigin.name} sourceCount=$sourceCount replayCount=$replayCount channelCount=$channelCount " +
             "failure=${failure.get().name} frame=${frameObserved.get()} movement=$moved " +
             "firstSampleState=${firstSampleState.name} lastSampleState=${lastSampleState.name} " +
+            "initialStage=${initialPlayback?.stage?.name ?: "UNOBSERVED"} initialSeekCount=${initialPlayback?.seekCount ?: 0} " +
+            "initialSeekOutcome=${initialPlayback?.seekOutcome?.name ?: "UNOBSERVED"} " +
+            "initialWindowKnown=${initialPlayback?.windowKnown ?: false} initialPositionInWindow=${initialPlayback?.positionInWindow ?: false} " +
+            "initialDefaultInWindow=${initialPlayback?.defaultInWindow ?: false} livePeriodObserved=$livePeriodObserved " +
+            "listenerAttached=$listenerAttached listenerRemoved=$listenerRemoved continuityOverflowed=${continuity.overflowed} " +
+            "discontinuityAfterBaseline=${continuity.discontinuityAfterBaseline} transitionAfterBaseline=${continuity.transitionAfterBaseline} " +
+            "pauseAfterBaseline=${continuity.pauseAfterBaseline} adAfterBaseline=${continuity.adAfterBaseline} " +
             "noFeedFailure=$noFeedFailure withinBudget=$withinPlaybackBudget " +
             "qualityApplied=${qualityApplied.get()} muted=${muted.get()} playRequested=${playRequested.get()} " +
             "validationRequests=${validationRequests.get()} validationHttp=${validationHttp.get()} " +

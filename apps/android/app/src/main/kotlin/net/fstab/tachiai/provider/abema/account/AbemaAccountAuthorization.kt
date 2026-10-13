@@ -111,6 +111,20 @@ internal fun decodedAbemaGrant(token: String, expectedId: String, nowMs: Long): 
     return AbemaAccountGrant(expectedId, token, expiry * 1000)
 }
 
+// The verified first-party runtime projects JWT dev into clientInformation's
+// device.id (modules 58557/91970/59090). This is required only for playback;
+// ordinary account/catalog acceptance and the protected storage codec stay
+// unchanged. Acceptance still comes from TLS issuance and matching profile.
+internal fun abemaPlaybackDeviceId(grant: AbemaAccountGrant, nowMs: Long): String {
+    if (decodedAbemaGrant(grant.bearer, grant.userId, nowMs).expiresAtMs != grant.expiresAtMs) accountRefused()
+    val claims = try {
+        AbemaAccountJson.objectValue(strictAccountUtf8(Base64.getUrlDecoder().decode(grant.bearer.split('.')[1])), 8192)
+    } catch (_: Exception) { accountRefused() }
+    val device = claims["dev"] as? String ?: accountRefused()
+    if (device.length !in 1..256 || device.any { it.code !in 33..126 }) accountRefused()
+    return device
+}
+
 internal fun parseAbemaAccountProfile(body: String): String {
     val value = AbemaAccountJson.objectValue(body, 65536)
     val profile = value["profile"] as? Map<*, *> ?: accountRefused()

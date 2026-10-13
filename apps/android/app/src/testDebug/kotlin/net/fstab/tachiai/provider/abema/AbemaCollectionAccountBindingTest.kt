@@ -26,7 +26,7 @@ class AbemaCollectionAccountBindingTest {
     }
     private class Fixture(present: Boolean = true, cleanupWaitMs: Long = 1000,
         cancellation: Executor? = null, val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
-        shared: Fixture? = null) {
+        shared: Fixture? = null, sharedAccess: Boolean = false) {
         val id: String = shared?.id ?: UUID.randomUUID().toString()
         val storage: MemoryAbemaAccountStorage = shared?.storage ?: MemoryAbemaAccountStorage()
         val store: AbemaAccountGrantStore = shared?.store ?: AbemaAccountGrantStore(id, storage)
@@ -45,6 +45,7 @@ class AbemaCollectionAccountBindingTest {
         val forbiddenConnection = AtomicInteger()
         val forbiddenToken = AtomicInteger()
         val profileCalls = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+        val emailCalls = AtomicInteger()
         val collectionCalls = Collections.synchronizedList(mutableListOf<Pair<String, String?>>())
         val resources = Collections.synchronizedList(mutableListOf<AutoCloseable>())
         val order = Collections.synchronizedList(mutableListOf<String>())
@@ -59,12 +60,30 @@ class AbemaCollectionAccountBindingTest {
         var bootstrapCancelHook: () -> Unit = {}
         var profileHook: (String, String) -> AbemaAccountProfileResult = { id, _ -> AbemaAccountProfileResult.Identity(id) }
         var profileCloseHook: () -> Unit = {}
+        var emailHook: () -> AbemaAccountEmailResult = { AbemaAccountEmailResult.REGISTERED }
         var collectionHook: (String, String?) -> AbemaMyListResponse = { _, _ -> page }
         var collectionCloseHook: () -> Unit = {}
         var collectionCancelHook: () -> Unit = {}
         val binding: AbemaCollectionAccountBinding
+        val accountOwner: AbemaAccountAccessOwner?
         init {
             if (present && shared == null) store.replace(grant, wall.get(), store.revision()) { true }
+            accountOwner = if (!sharedAccess) null else shared?.accountOwner ?: AbemaAccountAccessOwner(id, "a".repeat(64),
+                store, wall::get, elapsed::get, { ownerHook(); owner.get() }, { gate ->
+                    object : AbemaAccountTransport {
+                        override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
+                            assertTrue(gate()); profileCalls.add(id to bearer); order.add("profile"); return profileHook(id, bearer)
+                        }
+                        override fun emailRegistration(id: String, bearer: String): AbemaAccountEmailResult {
+                            assertTrue(gate()); emailCalls.incrementAndGet(); order.add("email"); return emailHook()
+                        }
+                        override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult {
+                            forbiddenToken.incrementAndGet(); throw AssertionError("No token request from browsing")
+                        }
+                        override fun cancelActiveRequest() { profileCancels.incrementAndGet() }
+                        override fun close() { profileCloses.incrementAndGet(); order.add("profile-close"); profileCloseHook() }
+                    }.also(resources::add)
+                }, { true })
             val arguments = cancellation ?: Executors.newFixedThreadPool(2) {
                 Thread(it, "binding-fixture-cancel").apply { isDaemon = true }
             }
@@ -112,7 +131,8 @@ class AbemaCollectionAccountBindingTest {
                         override fun close() { collectionCloses.incrementAndGet(); order.add("list-close"); collectionCloseHook() }
                     }.also(resources::add)
                 }, elapsedMs = elapsed::get, wallMs = wall::get, onCleanupFailure = { poison.incrementAndGet() },
-                cancellation = arguments, cleanupWaitMs = cleanupWaitMs, kind = kind)
+                cancellation = arguments, cleanupWaitMs = cleanupWaitMs, kind = kind,
+                sharedAccountFactory = accountOwner?.let { access -> { access.attach() } })
         }
         fun bytes() = storage.bytes?.copyOf()
         fun assertNoNetwork() {
@@ -138,6 +158,85 @@ class AbemaCollectionAccountBindingTest {
         assertNull(error.cause); assertEquals(0, error.suppressed.size); assertEquals(0, error.stackTrace.size)
     }
 
+    @Test fun sharedNativeAccountProofSkipsGuestAndSeedsOnlyTheRequestedCollectionWithoutWrites() {
+        val f = Fixture(sharedAccess = true); val before = f.bytes(); val revision = f.store.revision()
+        assertEquals(CatalogAccess.AVAILABLE, f.binding.access())
+        assertEquals(listOf("intended-account" to f.grant.bearer), f.profileCalls)
+        assertEquals(1, f.emailCalls.get()); assertEquals(0, f.bootstrapCount.get())
+        assertEquals(listOf("profile", "email", "profile-close", "list", "list-close"), f.order)
+        val lease = f.binding.lease()!!
+        assertTrue(lease.current())
+        val transport = lease.createTransport { true }
+        assertEquals(f.page, transport.fetch(null)); transport.close()
+        assertEquals(1, f.collectionCalls.size); assertArrayEquals(before, f.bytes()); assertEquals(revision, f.store.revision())
+        f.assertNoConnection(); f.binding.close(); assertFalse(lease.current())
+    }
+    @Test fun sharedMyListAndHistoryReuseOneAccountValidationButKeepTheirOwnProofAndPrivateSeeds() {
+        val lists = Fixture(sharedAccess = true)
+        val history = Fixture(kind = AbemaCollectionKind.HISTORY, shared = lists, sharedAccess = true)
+        assertEquals(CatalogAccess.AVAILABLE, lists.binding.access())
+        assertEquals(CatalogAccess.AVAILABLE, history.binding.access())
+        assertEquals(1, lists.profileCalls.size); assertTrue(history.profileCalls.isEmpty())
+        assertEquals(1, lists.emailCalls.get()); assertEquals(0, history.emailCalls.get())
+        assertEquals(1, lists.collectionCalls.size); assertEquals(1, history.collectionCalls.size)
+        val a = lists.binding.lease()!!; val b = history.binding.lease()!!
+        assertNotEquals(a.contextKey, b.contextKey)
+        history.binding.close(); assertFalse(b.current()); assertTrue(a.current())
+        lists.binding.close(); assertFalse(a.current())
+        assertEquals(0, lists.bootstrapCount.get()); assertEquals(0, history.bootstrapCount.get())
+    }
+    @Test fun sharedMissingBlockedExpiredAndUnregisteredAccountsNeverFallbackToGuestValidation() {
+        for (failure in 0..4) {
+            val f = Fixture(present = failure != 0, sharedAccess = true)
+            when (failure) {
+                1 -> f.store.invalidateForget()
+                2 -> f.wall.set(f.grant.expiresAtMs)
+                3 -> f.emailHook = { AbemaAccountEmailResult.UNREGISTERED }
+                4 -> f.storage.bytes = byteArrayOf(1, 2, 3)
+            }
+            val expected = when (failure) { 0 -> CatalogAccess.AUTHORIZATION_REQUIRED; 2 -> CatalogAccess.RECONNECT_REQUIRED; else -> CatalogAccess.NOT_VERIFIED }
+            assertEquals(expected, f.binding.access()); assertNull(f.binding.lease())
+            assertEquals(0, f.bootstrapCount.get()); assertTrue(f.collectionCalls.isEmpty()); f.assertNoConnection(); f.binding.close()
+        }
+    }
+    @Test fun sharedCollectionRefusalDoesNotRevokeAnotherCollectionOrChangeProtectedAuthorization() {
+        val lists = Fixture(sharedAccess = true); val before = lists.bytes()
+        assertEquals(CatalogAccess.AVAILABLE, lists.binding.access()); val lease = lists.binding.lease()!!
+        val history = Fixture(kind = AbemaCollectionKind.HISTORY, shared = lists, sharedAccess = true)
+        history.collectionHook = { _, _ -> AbemaMyListResponse(403, kind = AbemaCollectionKind.HISTORY) }
+        assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, history.binding.access())
+        assertTrue(lease.current()); assertArrayEquals(before, lists.bytes()); assertEquals(1, lists.profileCalls.size)
+        history.binding.close(); lists.binding.close()
+    }
+    @Test fun sharedForegroundForgetAndExpiryLossRevokeSeedsAndExistingCollectionLeases() {
+        for (loss in 0..2) {
+            val f = Fixture(sharedAccess = true); val before = f.bytes()
+            assertEquals(CatalogAccess.AVAILABLE, f.binding.access()); val lease = f.binding.lease()!!
+            when (loss) { 0 -> f.foreground.set(false); 1 -> f.store.invalidateForget(); 2 -> f.wall.set(f.grant.expiresAtMs) }
+            assertFalse(lease.current()); assertNull(f.binding.lease()); assertEquals(1, f.collectionCalls.size)
+            assertArrayEquals(before, f.bytes()); f.binding.close()
+        }
+    }
+    @Test fun sharedCloseCancelsHeldProfileWithoutWaitingOrPublishingALateCollectionSeed() {
+        val f = Fixture(sharedAccess = true, cleanupWaitMs = 100)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        f.profileHook = { id, _ -> entered.countDown(); assertTrue(release.await(3, TimeUnit.SECONDS)); AbemaAccountProfileResult.Identity(id) }
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val access = executor.submit<CatalogAccess> { f.binding.access() }
+            assertTrue(entered.await(3, TimeUnit.SECONDS)); f.binding.close()
+            release.countDown(); assertEquals(CatalogAccess.NOT_VERIFIED, access.get(3, TimeUnit.SECONDS))
+            assertNull(f.binding.lease()); assertTrue(f.collectionCalls.isEmpty()); assertEquals(0, f.bootstrapCount.get())
+            assertEquals(1, f.profileCloses.get())
+        } finally { release.countDown(); f.binding.close(); executor.shutdownNow() }
+    }
+    @Test fun sharedAccountCleanupUncertaintyPoisonsCollectionAndCannotPublishAvailability() {
+        val f = Fixture(sharedAccess = true, cleanupWaitMs = 20)
+        f.profileCloseHook = { throw Hostile() }
+        assertEquals(CatalogAccess.NOT_VERIFIED, f.binding.access()); assertNull(f.binding.lease())
+        assertEquals(1, f.poison.get()); assertTrue(f.collectionCalls.isEmpty()); assertEquals(0, f.bootstrapCount.get())
+        f.binding.close()
+    }
     @Test fun missingCorruptAndExpiredGrantsNeverStartGuestOrAccountRequests() {
         val missing = Fixture(present = false)
         assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, missing.binding.access()); assertNull(missing.binding.lease()); missing.assertNoNetwork()

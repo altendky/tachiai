@@ -11,6 +11,23 @@ internal fun fixtureAccountChallenge(deadline: Long = 300000) = AbemaAccountChal
     "https://abema.tv/account/transfer?code=private-code", deadline)
 
 class AbemaAccountAuthorizationTest {
+    @Test fun playbackDeviceComesFromSameAcceptedBearerWithoutChangingCatalogAcceptance() {
+        fun token(dev: String) = "e30." + Base64.getUrlEncoder().withoutPadding().encodeToString(
+            "{\"sub\":\"intended-account\",\"exp\":2000,\"dev\":$dev}".toByteArray()) + ".c2ln"
+        val grant = decodedAbemaGrant(token("\"fixture-device\""), "intended-account", 1000000)
+        assertEquals("fixture-device", abemaPlaybackDeviceId(grant, 1000000))
+        assertFalse(grant.toString().contains("fixture"))
+        val withoutDevice = decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000)
+        assertThrows(AbemaAccountException::class.java) { abemaPlaybackDeviceId(withoutDevice, 1000000) }
+        for (device in listOf("null", "1", "true", "{}", "[]", "\"\"", "\" fixture\"", "\"fixture\\n\"",
+            "\"fixture\\u200e\"", "\"${"a".repeat(257)}\"")) {
+            val value = decodedAbemaGrant(token(device), "intended-account", 1000000)
+            assertThrows(AbemaAccountException::class.java) { abemaPlaybackDeviceId(value, 1000000) }
+        }
+        assertThrows(AbemaAccountException::class.java) { abemaPlaybackDeviceId(grant, 2000000) }
+        assertThrows(AbemaAccountException::class.java) { abemaPlaybackDeviceId(
+            AbemaAccountGrant(grant.userId, grant.bearer, grant.expiresAtMs + 1), 1000000) }
+    }
     @Test fun emailCandidateRequiresExactTrustedGetAndOneMatchingBearerWithFutureExpiry() {
         val url = "https://api.p-c3-e.abema-tv.com/v1/users/intended-account/email"
         val token = fixtureAccountToken()

@@ -33,6 +33,7 @@ internal class AbemaCollectionAccountBinding(
     private val cancellation: Executor = cancellationWorkers,
     private val cleanupWaitMs: Long = 1000,
     override val kind: AbemaCollectionKind = AbemaCollectionKind.MY_LIST,
+    private val sharedAccountFactory: (() -> AbemaAccountAccessOwner.Attachment)? = null,
 ) : AbemaCollectionAccountAccess, AutoCloseable {
     companion object {
         private val cancellationWorkers = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
@@ -42,6 +43,7 @@ internal class AbemaCollectionAccountBinding(
         private val cleanupWorkers = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue<Runnable>(32), { action -> Thread(action, "abema-collection-close").apply { isDaemon = true } })
         private val retained = ConcurrentHashMap.newKeySet<Pending>()
+        private val retainedShared = ConcurrentHashMap.newKeySet<AbemaCollectionAccountBinding>()
     }
     init {
         require(validProviderInstanceId(instanceId) && ownerProof.matches(Regex("[a-f0-9]{64}")))
@@ -52,7 +54,8 @@ internal class AbemaCollectionAccountBinding(
     // or reentrant await is sticky; a late return never confirms uncertainty.
     // Each receipt keeps the actual resource alive, including queued actions.
     private class Receipt(val resource: AutoCloseable, private val action: () -> Unit,
-        private val executor: Executor, private val wait: Long, private val onFailure: () -> Unit = {}) {
+        private val executor: Executor, private val wait: Long, private val onFailure: () -> Unit = {},
+        private val onSuccess: () -> Unit = {}) {
         private val started = AtomicBoolean()
         private val finished = CountDownLatch(1)
         private val failed = AtomicBoolean()
@@ -65,6 +68,7 @@ internal class AbemaCollectionAccountBinding(
                 try { action(); successful = true } catch (_: Throwable) { failed.set(true) }
                 finally { finished.countDown() }
                 if (failed.get()) try { onFailure() } catch (_: Throwable) { }
+                else try { onSuccess() } catch (_: Throwable) { }
             } } catch (_: Throwable) {
                 failed.set(true); finished.countDown()
                 try { onFailure() } catch (_: Throwable) { }
@@ -114,7 +118,8 @@ internal class AbemaCollectionAccountBinding(
         override fun toString() = "AbemaCollectionPending(redacted)"
     }
     private class Verified(val run: Long, val revision: Long, val record: AbemaStoredAccount,
-        val lease: AbemaAccountLease, val contextKey: String) { val revoked = AtomicBoolean() }
+        val accountCurrent: () -> Boolean, val contextKey: String) { val revoked = AtomicBoolean() }
+    private class Shared(val attachment: AbemaAccountAccessOwner.Attachment, val close: Receipt)
     private val operations = Any()
     private val state = Any()
     private val revision = AtomicLong()
@@ -122,6 +127,7 @@ internal class AbemaCollectionAccountBinding(
     private val poisoned = AtomicBoolean()
     private val cleanupNotified = AtomicBoolean()
     private val active = ConcurrentHashMap.newKeySet<Pending>()
+    private val sharedAccount = AtomicReference<Shared?>()
     private var attempted = false
     private var selectedAccess = CatalogAccess.NOT_VERIFIED
     private var verified: Verified? = null
@@ -146,6 +152,7 @@ internal class AbemaCollectionAccountBinding(
         poisoned.set(true); revision.incrementAndGet()
         synchronized(state) { seed = null; verified = null; selectedAccess = CatalogAccess.NOT_VERIFIED }
         session.setForeground(false)
+        releaseShared()
         if (cleanupNotified.compareAndSet(false, true)) try { onCleanupFailure() } catch (_: Throwable) { }
     }
     private fun scheduleCancel(pending: Pending) {
@@ -188,6 +195,7 @@ internal class AbemaCollectionAccountBinding(
         synchronized(state) { selectedAccess }
     }
     private fun validate() {
+        if (sharedAccountFactory != null) { validateShared(sharedAccountFactory); return }
         val run = revision.get()
         if (!workerOwnerCurrent(run)) throw Denied()
         val savedRevision = store.revision()
@@ -233,15 +241,91 @@ internal class AbemaCollectionAccountBinding(
         requireCurrent(::listGate)
         val key = MessageDigest.getInstance("SHA-256").digest("${kind.collectionId}:$ownerProof:${record.generation}:$savedRevision".toByteArray(Charsets.US_ASCII))
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        val value = Verified(run, savedRevision, record, accountLease, key)
+        val value = Verified(run, savedRevision, record, accountLease::usable, key)
         synchronized(state) {
             if (!cheapCurrent(run) || !store.usable(savedRevision)) throw Denied()
             verified = value; seed = positive; selectedAccess = CatalogAccess.AVAILABLE
         }
         if (!listGate()) { invalidate(value); throw Denied() }
     }
+    // Production uses the ordinary-process shared owner. The constructor's
+    // legacy factories remain for explicit historical/synthetic observations;
+    // failure of this path never invokes them or creates a guest account.
+    private fun validateShared(factory: () -> AbemaAccountAccessOwner.Attachment) {
+        val run = revision.get()
+        if (!workerOwnerCurrent(run)) throw Denied()
+        val began = elapsedMs()
+        if (began < 0 || began > Long.MAX_VALUE - 45000) throw Denied()
+        val deadline = began + 45000
+        fun initialGate() = workerOwnerCurrent(run) && elapsedMs() >= began && elapsedMs() < deadline
+        retainedShared.add(this)
+        var published = false
+        try {
+            requireCurrent(::initialGate)
+            val attachment = factory()
+            val receipt = Receipt(attachment, {
+                attachment.close()
+                val end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(cleanupWaitMs)
+                while (!attachment.cleanupConfirmed) {
+                    if (System.nanoTime() >= end) throw Denied()
+                    try { Thread.sleep(5) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw Denied() }
+                }
+            }, cleanupWorkers, cleanupWaitMs, ::poison, {
+                sharedAccount.get()?.takeIf { it.attachment === attachment }?.let { sharedAccount.compareAndSet(it, null) }
+                retainedShared.remove(this)
+            })
+            val shared = Shared(attachment, receipt)
+            if (!sharedAccount.compareAndSet(null, shared)) { attachment.close(); throw Denied() }
+            requireCurrent(::initialGate)
+            val lease = when (val access = attachment.acquire()) {
+                is AbemaAccountAccessResult.Account -> access.lease
+                is AbemaAccountAccessResult.Guest -> throw Denied(CatalogAccess.AUTHORIZATION_REQUIRED)
+                is AbemaAccountAccessResult.Failed -> throw Denied(if (access.category == AbemaAccountFailure.EXPIRED)
+                    CatalogAccess.RECONNECT_REQUIRED else CatalogAccess.NOT_VERIFIED)
+            }
+            if (!attachment.cleanupConfirmed) { poison(); throw Denied() }
+            requireCurrent(::initialGate)
+            val snapshot = store.readSnapshot()
+            val record = snapshot.record ?: throw Denied()
+            val grant = lease.grant ?: throw Denied()
+            if (!store.usable(snapshot.revision) || record.grant.userId != grant.userId || record.grant.bearer != grant.bearer ||
+                record.grant.expiresAtMs != grant.expiresAtMs) throw Denied()
+            fun gate() = initialGate() && store.usable(snapshot.revision) && wallMs() >= record.acceptedWallMs &&
+                wallMs() < record.grant.expiresAtMs && lease.current() && lease.checkWorker() && initialGate()
+            val positive = owned({ collectionTransportFactory({ grant.bearer.takeIf { gate() } }, ::gate) },
+                AbemaCollectionTransport::cancelActiveRequest, ::gate) {
+                if (it.kind != kind) throw Denied()
+                it.fetch(null)
+            }
+            if (positive.kind != kind) throw Denied()
+            if (positive.status in setOf(401, 403)) throw Denied(CatalogAccess.AUTHORIZATION_REQUIRED)
+            if (positive.status != 200 || positive.page?.let(::validPage) != true) throw Denied()
+            requireCurrent(::gate)
+            val key = MessageDigest.getInstance("SHA-256").digest("${kind.collectionId}:$ownerProof:${record.generation}:${snapshot.revision}"
+                .toByteArray(Charsets.US_ASCII)).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            val value = Verified(run, snapshot.revision, record, { lease.current() && lease.checkWorker() }, key)
+            synchronized(state) {
+                if (!cheapCurrent(run) || !store.usable(snapshot.revision)) throw Denied()
+                verified = value; seed = positive; selectedAccess = CatalogAccess.AVAILABLE
+            }
+            if (!gate()) { invalidate(value); throw Denied() }
+            published = true
+        } finally {
+            if (!published) {
+                releaseShared()
+                val shared = sharedAccount.get()
+                if (shared != null && !shared.close.await()) poison()
+                if (shared == null) retainedShared.remove(this)
+            }
+        }
+    }
+    private fun releaseShared() {
+        val shared = sharedAccount.get() ?: return
+        shared.attachment.close()
+        shared.close.start()
+    }
     private fun current(value: Verified): Boolean {
-        val valid = try { !value.revoked.get() && cheapCurrent(value.run) && store.usable(value.revision) && clockCurrent() && value.lease.usable() &&
+        val valid = try { !value.revoked.get() && cheapCurrent(value.run) && store.usable(value.revision) && clockCurrent() && value.accountCurrent() &&
             cheapCurrent(value.run) && store.usable(value.revision) && clockCurrent()
         } catch (_: Throwable) { false }
         if (!valid) invalidate(value)
@@ -250,16 +334,20 @@ internal class AbemaCollectionAccountBinding(
     private fun invalidate(value: Verified) {
         value.revoked.set(true)
         val expired = try { wallMs() < value.record.acceptedWallMs || wallMs() >= value.record.grant.expiresAtMs } catch (_: Throwable) { false }
-        synchronized(state) { if (verified === value) {
+        val released = synchronized(state) { if (verified === value) {
             seed = null; verified = null
             selectedAccess = if (expired) CatalogAccess.RECONNECT_REQUIRED else CatalogAccess.NOT_VERIFIED
-        } }
+            true
+        } else false }
+        if (released) releaseShared()
     }
     private fun collectionRefused(value: Verified) {
         value.revoked.set(true)
-        synchronized(state) { if (verified === value) {
+        val released = synchronized(state) { if (verified === value) {
             seed = null; verified = null; selectedAccess = CatalogAccess.AUTHORIZATION_REQUIRED
-        } }
+            true
+        } else false }
+        if (released) releaseShared()
     }
     override fun lease(): AbemaCollectionLease? {
         if (access() != CatalogAccess.AVAILABLE) return null
@@ -322,6 +410,7 @@ internal class AbemaCollectionAccountBinding(
         revision.incrementAndGet()
         synchronized(state) { seed = null; verified = null; selectedAccess = CatalogAccess.NOT_VERIFIED }
         session.setForeground(false)
+        releaseShared()
         active.forEach(::scheduleCancel)
     }
     override fun toString() = "AbemaCollectionAccountBinding(redacted)"

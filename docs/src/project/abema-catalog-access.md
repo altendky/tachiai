@@ -464,6 +464,81 @@ provider token lifetime or silent renewal of an expired native grant. The fresh
 sign-in deletion action was covered by fixtures but not exercised on the real
 signed-in profile.
 
+### Shared instance account access — 2026-10-13
+
+The shared-account implementation builds on
+[issue #212](https://github.com/altendky/tachiai/issues/212) and the account lifecycle
+requirements in [issue #103](https://github.com/altendky/tachiai/issues/103).
+The unit of ownership is one ABEMA provider instance and its captured route.
+Independent provider instances retain separate native grants; the approval browser
+still has its separately remembered provider login.
+
+Episode, series, slot, schedule and search discovery, My List, History and
+configured native playback acquire the same protected native account through an
+ordinary-process owner. The credential-free public channel list creates no
+additional identity.
+Overlapping consumers share bounded positive identity and registered-email
+validation. Detached consumers cannot publish late results. The final consumer
+must confirm cleanup before the owner can be reused. Uncertain cleanup remains
+retained and blocks replacement. Main-thread admission uses memory and clocks;
+protected-record and route checks run on workers before provider requests.
+
+A genuinely missing local account permits a pinned guest lease for public
+discovery/playback. An expired, refused, unreadable or pending-Forget account does
+not become a guest. Account replacement, Forget, route changes and expiry revoke
+the old lease. My List and History always require an admitted account.
+
+The playback adapter supplies the admitted user and bearer plus the bounded
+device identity projected from the same token's `dev` claim. This follows the
+reviewed identity/device interfaces in the pinned public bundle, rather than
+generating an unrelated guest device. Each feed still obtains its own fresh media
+token, exact source and one-exchange native CDM. Existing explicit free-content,
+region, source, manifest and license gates remain. Reusing an account does not
+enable paid content or establish a license-renewal protocol.
+
+Credentials cross only a private, same-UID Binder channel bound to a nonce,
+instance, route proof, source proof and original deadline. They enter only the
+app-owned bootstrap initialization in RAM; they do not enter Intents, saved state,
+generic UI, provider login scripts or diagnostics. The private initialization
+bytes are cleared during teardown. Historical explicitly selected guest
+observations remain separate from configured account-consuming paths.
+
+This change does not renew the native bearer or extend the provider JWT expiry.
+Browser reuse is the verified reconnect path; silent native renewal still needs
+verified provider behavior and remains part of #212. A remembered browser login
+and a usable native account are distinct states.
+
+Verification passed 2,621 JVM cases across 299 reports with no failures, errors or
+skips, Android lint, release isolation, instrumentation compilation, both APK
+assemblies and the shared debug signing checks. The paired app-owned JavaScript
+fixtures passed 92 discovery and 73 native cases. Scoped hooks/documentation and
+independent reviews passed. Fixtures cover overlap/detach, late publication,
+original deadlines, expiry/rollback, account/route changes, Forget, refusal,
+uncertain cleanup and replacement without an Activity pause.
+
+On persistent `tachiai-dev`, Android 16/API 36 x86-64, WebView 133.0.6943.137,
+one exact configured Morning episode `89-70_s111_p4016` passed the production
+playback harness in 22.405 seconds through the captured saved Windscribe route.
+The harness required ACCOUNT, observed a decoded frame and advancing READY
+positions, and confirmed cleanup, no route failure and unchanged protected
+records. No guest fallback, sign-in or saved-grant write occurred. Playback was
+muted; exit country, acoustic behavior and phone fidelity were not measured.
+
+The native account screen automatically reached CONNECTED without a Validate or
+Connect action and preserved the same grant. Three ordinary-process checks then
+passed in 47.416 seconds with zero skips:
+production My List returned one entry, History returned two entries with a next
+handle, and exact episode metadata refreshed through the actual Android catalog.
+No continuation or saved Add was performed. The metadata harness retains the
+historical GUEST_CATALOG log label; the current production path uses the shared
+account when the protected grant is present. Across installation, playback and
+catalog checks, all 20 `no_backup`/`shared_prefs` files and captured ownership
+remained unchanged. The temporary cached-player test manifest was restored
+byte-for-byte, the ordinary test APK was rebuilt/signed without a process override,
+and the normal launcher was restored. These observations establish bounded
+same-account access; automatic native renewal, real concurrent consumer recovery,
+paid content, live/slot/Chase and sustained playback remain unverified.
+
 The browser passively observes only the Authorization header on the exact
 first-party GET to the modern user's email-setting endpoint. It forwards the
 original request unchanged. A candidate needs matching request identity and JWT
@@ -1193,8 +1268,10 @@ The historical full-page comparison explicitly refuses newly supported episodes.
 Only an explicit historical constructor may omit the requested resource and use
 its retained fixed comparison; an invalid explicit selection cannot fall back.
 
-Each selected feed creates its own fresh guest, helper, media token and native
-CDM. Its owned policy admits only the exact modern episode metadata URL, validates
+Configured feeds now acquire the shared instance account described above; a
+genuinely missing account permits a pinned guest. Each feed retains its own helper,
+fresh media token and native CDM. Its owned policy admits only the exact modern
+episode metadata URL, validates
 bounded duplicate-free raw metadata and unchanged converted DTO identity/ARIN,
 and uses unchanged provider filtering, gateway, URL and DRM configuration modules.
 The selected source, MPD, declared media and initial license remain bound to that
@@ -1207,8 +1284,9 @@ terms covering the bounded session, alongside existing trial, restriction and
 source/DRM-mode refusals. Current first-party consumers establish epoch-second
 term/free-window comparisons; standalone program end dates and broadcast dates
 are not guessed entitlement clocks. Unavailable, future, premium or unsupported
-items remain configured while playback returns a safe refusal. This guest slice
-does not add My List, history, account adoption or renewal. Channels, exact slots,
+items remain configured while playback returns a safe refusal. The original guest
+slice did not add My List, history, account adoption or renewal. Channels, exact
+slots,
 series and broader discovery remain [#101](https://github.com/altendky/tachiai/issues/101).
 See [the native boundary](native-access-experiments.md#exact-configured-episodes--2026-10-11)
 for static evidence and bounded device observations. On 2026-10-11, persistent
@@ -1229,7 +1307,8 @@ cached session receives the immutable requested channel, with its instance,
 route, configured UUID, quality and recovery identity retained. The historical
 full-page comparison refuses new channel selections rather than substituting News.
 
-A fresh owning guest retrieves one bounded, duplicate-free channel snapshot.
+The owning account or pinned guest retrieves one bounded, duplicate-free channel
+snapshot.
 Admission requires exactly one matching raw ID, explicit `viewingOpened`, usable
 advertised playback and a supported DRM mode. Saved UNKNOWN availability only
 permits this verification. Missing or ambiguous metadata and Widevine-only

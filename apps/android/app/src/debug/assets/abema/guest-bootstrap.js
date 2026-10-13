@@ -11,6 +11,8 @@
   let started = false;
   let stopped = false;
   let guest;
+  let accountExpires;
+  let accountWall;
   let episode;
   let series;
   let slot;
@@ -27,6 +29,8 @@
     failure = category;
     state = category === 'NONE' ? 'STOPPED' : 'REFUSED';
     guest = undefined;
+    accountExpires = undefined;
+    accountWall = undefined;
     episode = undefined;
     series = undefined;
     slot = undefined;
@@ -40,12 +44,23 @@
   };
   const alive = () => {
     if (stopped) throw new Error();
+    if (accountExpires !== undefined) {
+      const now = Date.now();
+      if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpires) {
+        failure = 'RUNTIME'; throw new Error();
+      }
+      accountWall = now;
+    }
     if (challengeStarted !== undefined) {
       const elapsed = performance.now() - challengeStarted;
       if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 45000) {
         failure = budgetFailure; throw new Error();
       }
     }
+  };
+  const metadataText = value => {
+    try { alive(); return stringify(value); }
+    catch { stop(failure === 'NONE' ? 'RUNTIME' : failure); return null; }
   };
   window.addEventListener('error', event => { event.preventDefault(); stop('RUNTIME'); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop('RUNTIME'); });
@@ -300,7 +315,7 @@
       try { return project(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
       finally { bytes.fill(0); }
     } catch {
-      if (!stopped && failure !== budgetFailure) failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
+      if (!stopped && failure !== budgetFailure && failure !== 'RUNTIME') failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
       throw new Error();
     } finally {
       for (const part of parts) part.fill(0);
@@ -506,7 +521,7 @@
     }
     return Object.freeze({ slots, truncated: reply.slots.length > slots.length });
   }
-  window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId) => {
+  window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId, accountContext) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
       !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
@@ -515,6 +530,20 @@
         operation === 'FETCH_SEARCH' ? !validSearchRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
+    const accountBound = accountContext !== undefined;
+    if (accountBound) try {
+      const now = Date.now();
+      if (!['FETCH_EPISODE', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH'].includes(operation) ||
+        !accountContext || Array.isArray(accountContext) || typeof accountContext !== 'object' ||
+        Object.keys(accountContext).sort().join(',') !== 'bearer,expiresAtMs,userId' ||
+        typeof accountContext.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(accountContext.userId) ||
+        typeof accountContext.bearer !== 'string' || !/^[\x21-\x7e]{1,6144}$/.test(accountContext.bearer) ||
+        !Number.isSafeInteger(accountContext.expiresAtMs) || !Number.isSafeInteger(now) || now < 0 ||
+        accountContext.expiresAtMs <= now) throw new Error();
+      guest = Object.freeze({ userId: accountContext.userId, accessToken: accountContext.bearer });
+      accountExpires = accountContext.expiresAtMs; accountWall = now;
+      accountContext = undefined;
+    } catch { stop('RUNTIME'); return; }
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
@@ -523,15 +552,15 @@
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
-        stringify(episode) : null } : {}),
+        metadataText(episode) : null } : {}),
       ...(operation === 'FETCH_SERIES' ? { metadata: () => !stopped && state === 'EXACT_SERIES_PAGE' && failure === 'NONE' ?
-        stringify(series) : null } : {}),
+        metadataText(series) : null } : {}),
       ...(operation === 'FETCH_SLOT' ? { metadata: () => !stopped && state === 'EXACT_SLOT_METADATA' && failure === 'NONE' ?
-        stringify(slot) : null } : {}),
+        metadataText(slot) : null } : {}),
       ...(operation === 'FETCH_SCHEDULE' ? { metadata: () => !stopped && state === 'SCHEDULE_SNAPSHOT' && failure === 'NONE' ?
-        stringify(schedule) : null } : {}),
+        metadataText(schedule) : null } : {}),
       ...(operation === 'FETCH_SEARCH' ? { metadata: () => !stopped && state === 'SEARCH_PAGE' && failure === 'NONE' ?
-        stringify(search) : null } : {}),
+        metadataText(search) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -573,30 +602,32 @@
             if (tokenEndpoint !== 'https://abema.tv/api/auth/oauth/device/token') { failure = 'TOKEN_POLICY'; throw new Error(); }
           }
         }
-        const deviceId = crypto.randomUUID();
-        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(deviceId)) throw new Error();
-        const helper = load(2833);
-        const applicationKeySecret = await helper.b2(deviceId, helper.B9());
-        alive();
-        if (typeof applicationKeySecret !== 'string' || !applicationKeySecret || applicationKeySecret.length > 8192) throw new Error();
-        const endpoint = new URL(load(24968).T.LOGIN_GUEST, location.origin);
-        if (endpoint.href !== 'https://abema.tv/api/auth/login/guest') { failure = 'POLICY'; throw new Error(); }
-        const body = stringify(load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
-          applicationKeySecret, deviceId }));
-        if (typeof body !== 'string' || new TextEncoder().encode(body).byteLength > 16384) throw new Error();
-        state = 'GUEST';
-        const reply = await boundedReply(endpoint.href, { method: 'POST',
-          headers: { accept: 'application/json', 'content-type': 'application/json' }, body }, parseGuestText);
-        alive();
-        failure = 'RESPONSE';
-        if (!reply || typeof reply !== 'object' || Array.isArray(reply) ||
-          typeof reply.user_id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.user_id) ||
-          typeof reply.access_token !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(reply.access_token) ||
-          (reply.refresh_token !== undefined && !/^[\x21-\x7e]{0,8192}$/.test(reply.refresh_token))) throw new Error();
-        const user = load(5304).V8.fromJSON(reply);
-        if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
-        guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
-        failure = 'NONE';
+        if (!accountBound) {
+          const deviceId = crypto.randomUUID();
+          if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(deviceId)) throw new Error();
+          const helper = load(2833);
+          const applicationKeySecret = await helper.b2(deviceId, helper.B9());
+          alive();
+          if (typeof applicationKeySecret !== 'string' || !applicationKeySecret || applicationKeySecret.length > 8192) throw new Error();
+          const endpoint = new URL(load(24968).T.LOGIN_GUEST, location.origin);
+          if (endpoint.href !== 'https://abema.tv/api/auth/login/guest') { failure = 'POLICY'; throw new Error(); }
+          const body = stringify(load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
+            applicationKeySecret, deviceId }));
+          if (typeof body !== 'string' || new TextEncoder().encode(body).byteLength > 16384) throw new Error();
+          state = 'GUEST';
+          const reply = await boundedReply(endpoint.href, { method: 'POST',
+            headers: { accept: 'application/json', 'content-type': 'application/json' }, body }, parseGuestText);
+          alive();
+          failure = 'RESPONSE';
+          if (!reply || typeof reply !== 'object' || Array.isArray(reply) ||
+            typeof reply.user_id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(reply.user_id) ||
+            typeof reply.access_token !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(reply.access_token) ||
+            (reply.refresh_token !== undefined && !/^[\x21-\x7e]{0,8192}$/.test(reply.refresh_token))) throw new Error();
+          const user = load(5304).V8.fromJSON(reply);
+          if (user.userId !== reply.user_id || user.accessToken !== reply.access_token) throw new Error();
+          guest = Object.freeze({ userId: user.userId, accessToken: user.accessToken, deviceId });
+          failure = 'NONE';
+        }
         if (operation === 'VERIFY_PROFILE' || deviceAuthorization || prepareValidation) {
           state = 'PROFILE';
           const profileId = await boundedReply(apiOrigin + '/v1/users/' + guest.userId,
@@ -727,10 +758,11 @@
             parseEpisodeText, 'EPISODE_', 512 * 1024);
           alive(); failure = 'NONE'; state = 'EXACT_EPISODE_METADATA';
         } else state = 'PREPARED';
-        // Identity/grant remain closure-owned until stop discards them. A native
-        // policy URI transiently includes the profile ID. No account connection,
-        // durable account access, refresh or playback is implied; immutable
-        // strings are not wipeable. Challenge responses are never projected.
+        // Identity/grant remain closure-owned until stop discards them. Account
+        // context is supplied by the native owner only for configured discovery;
+        // this helper does not read storage, connect or renew an account. Metadata
+        // is not playback/entitlement proof. Immutable strings are not wipeable;
+        // challenge responses and identities are never projected.
       } catch { if (!stopped) stop(failure === 'NONE' ? 'RUNTIME' : failure); }
     })();
   };

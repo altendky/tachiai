@@ -39,6 +39,8 @@ class AbemaGuestRuntimeCoordinatorTest {
         var holdClear = false
         var onClear: () -> Unit = {}
         var onClose: () -> Unit = {}
+        var accessCurrent = true
+        var onProjection: () -> Unit = {}
         var clearCallback: (() -> Unit)? = null
         var reads = 0
         var metadataTitle = "Exact episode"
@@ -86,6 +88,7 @@ class AbemaGuestRuntimeCoordinatorTest {
             }
             override fun metadata(callback: (String?) -> Unit) {
                 events += "projection"
+                onProjection()
                 callback(JSONObject.quote(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
                     slotProjection ?: JSONObject().put("id", slotRequest.slotId).put("channelId", slotRequest.channelId)
                         .put("title", "Future slot").toString()
@@ -123,6 +126,7 @@ class AbemaGuestRuntimeCoordinatorTest {
                 override fun cancel() { events += "cancel" }
                 override fun cancelTransport() { events += "cancel-download" }
                 override val cleanupConfirmed = true
+                override fun checkAccess(): Boolean { events += "check-access"; return accessCurrent }
                 override fun close() { events += "close-backend"; onClose() }
             }
             override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
@@ -161,6 +165,16 @@ class AbemaGuestRuntimeCoordinatorTest {
             }
             error("Fixture did not settle")
         }
+    }
+
+    @Test fun authoritativeAccountLossBeforeProjectionPublicationSuppressesRowsAndStillCleansUp() {
+        val f = Fixture().apply { onProjection = { accessCurrent = false } }
+        assertTrue(f.start()); f.pump()
+        val result = f.results.single()
+        assertEquals("OWNER_CHANGED", result.category); assertNull(result.entry)
+        assertNull(result.seriesPage); assertNull(result.scheduleSnapshot); assertNull(result.searchReply)
+        assertTrue(f.events.indexOf("check-access") < f.events.indexOf("cancel"))
+        assertTrue(f.events.containsAll(listOf("destroy", "clear-confirmed", "close-backend")))
     }
 
     @Test fun searchPublishesOnlyAfterConfirmedCleanupAndFinalCapturedOwnerCheck() {

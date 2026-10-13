@@ -11,12 +11,16 @@ import android.webkit.*
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.URI
+import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.connections.*
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.platform.network.*
+import net.fstab.tachiai.provider.abema.account.*
 import org.json.JSONObject
 
 internal class AndroidAbemaGuestMain(private val handler: Handler = Handler(Looper.getMainLooper())) : AbemaGuestRuntimeMain {
@@ -74,14 +78,56 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         private val routeReceipt = AbemaGuestRouteReceipt()
         val route get() = routeReceipt.route
         val download = AtomicReference<AbemaPublicBundleHttp?>()
-        override fun cancel() { preparing.cancel() }
-        override fun cancelTransport() { download.get()?.close() }
+        val account = AtomicReference<AndroidAbemaAccountAccessClient?>()
+        val accountBound = AtomicBoolean()
+        private val accountClosed = AtomicBoolean(true)
+        private val initializeLock = Any()
+        private var initialize: ByteArray? = null
+        private var initializeSealed = false
+        val projectionStarted = AtomicBoolean()
+        val projectionDone = CountDownLatch(1)
+        fun ownAccount(client: AndroidAbemaAccountAccessClient) {
+            accountClosed.set(false); check(account.compareAndSet(null, client))
+            if (preparing.isCancelled) client.close()
+        }
+        private fun sealInitialize() {
+            val bytes = synchronized(initializeLock) {
+                initializeSealed = true
+                initialize.also { initialize = null }
+            }
+            bytes?.fill(0)
+        }
+        fun ownInitialize(bytes: ByteArray) {
+            val admitted = synchronized(initializeLock) {
+                if (initializeSealed || initialize != null || preparing.isCancelled) false
+                else { initialize = bytes; true }
+            }
+            if (!admitted) { bytes.fill(0); throw AbemaAccountException(AbemaAccountFailure.CANCELLED) }
+            // Cancellation after ownership seals/wipes the same buffer; a late
+            // prepare cannot repopulate it or hand private bytes to a new view.
+            if (synchronized(initializeLock) { initializeSealed || initialize !== bytes } || preparing.isCancelled) {
+                sealInitialize(); throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            }
+        }
+        override fun cancel() { sealInitialize(); preparing.cancel(); account.get()?.close() }
+        override fun cancelTransport() { download.get()?.close(); account.get()?.close() }
+        override fun checkAccess() = account.get()?.checkWorker() != false
         override val cleanupConfirmed get() = preparing.cleanupConfirmed && routeReceipt.cleanupConfirmed &&
-            download.get()?.cleanupConfirmed != false
+            download.get()?.cleanupConfirmed != false && accountClosed.get()
         // Late preparation after the cleanup seal closes its route through the
         // same receipt. Busy/failed close keeps the actual route retained.
         fun own(route: RouteSession) = routeReceipt.own(route)
-        override fun close() = routeReceipt.close()
+        override fun close() {
+            check(Looper.myLooper() != Looper.getMainLooper())
+            sealInitialize()
+            try {
+                if (projectionStarted.get() && !projectionDone.await(5, TimeUnit.SECONDS))
+                    throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+                if (account.get()?.awaitCleanup() == false) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+                accountClosed.set(true)
+                routeReceipt.close()
+            } finally { sealInitialize() }
+        }
     }
     private fun savedInstances() = providerInstanceStore(context).read { legacyProviderSettings(context) }
     private fun readSavedOwner(id: String) = readAbemaCatalogRouteOwner(id, ::savedInstances,
@@ -98,6 +144,38 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val prepared = preparation as Preparation
         val saved = (owner as Owner).saved
         check(canRequest())
+        val discovery = request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE,
+            AbemaGuestBootstrapOperation.FETCH_SERIES, AbemaGuestBootstrapOperation.FETCH_SLOT,
+            AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH)
+        val accountContext = if (discovery) {
+            val resource = when (request.operation) {
+                AbemaGuestBootstrapOperation.FETCH_EPISODE -> AbemaGuestBootstrapPolicy.episodeUrl(checkNotNull(request.episodeId))
+                AbemaGuestBootstrapOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).url()
+                AbemaGuestBootstrapOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
+                AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> AbemaGuestBootstrapPolicy.SCHEDULE
+                AbemaGuestBootstrapOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
+                else -> error("Discovery operation refused")
+            }
+            val source = MessageDigest.getInstance("SHA-256").digest(
+                "${request.instanceId}|${owner.proof}|${request.operation.name}|$resource".toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 255) }
+            val client = AndroidAbemaAccountAccessClient(context, request.instanceId, owner.proof, source,
+                request.deadlineElapsedMs, false) { !prepared.preparing.isCancelled && request.canRemainActive() }
+            prepared.ownAccount(client)
+            val access = client.acquire()
+            if (access.status == AbemaAccountAccessIpc.Status.FAILURE)
+                throw AbemaAccountException(access.failure ?: AbemaAccountFailure.REFUSED)
+            check(canRequest() && client.current())
+            when (access.status) {
+                AbemaAccountAccessIpc.Status.ACCOUNT -> {
+                    val grant = checkNotNull(access.grant)
+                    prepared.accountBound.set(true)
+                    JSONObject().put("userId", grant.userId).put("bearer", grant.bearer).put("expiresAtMs", grant.expiresAtMs).toString()
+                }
+                AbemaAccountAccessIpc.Status.GUEST -> null
+                AbemaAccountAccessIpc.Status.FAILURE -> throw AbemaAccountException(access.failure ?: AbemaAccountFailure.REFUSED)
+            }
+        } else null
         val route = when (request.operation) {
             AbemaGuestBootstrapOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(saved.profile, prepared.preparing)
             AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION ->
@@ -118,7 +196,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         for ((name, identity) in listOf("bundle" to AbemaPublicBundleIdentity(),
             "support" to AbemaPublicBundleIdentity.bootstrapSupport(), "legacy" to AbemaPublicBundleIdentity.legacySource(),
             "utilities" to AbemaPublicBundleIdentity.sourceUtilities())) {
-            val http = AbemaPublicBundleHttp(canRun = canRequest, identity = identity, open = route::open,
+            val http = AbemaPublicBundleHttp(canRun = { canRequest() && prepared.account.get()?.current() != false },
+                identity = identity, open = { url -> check(prepared.checkAccess()); route.open(url) },
                 onFailure = { diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) })
             prepared.download.set(http)
             try { files["/_tachiai/guest/$name.js"] = AbemaPublicBundleCache(File(context.cacheDir, "abema-helper-bundle"),
@@ -127,10 +206,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         }
         files["/_tachiai/guest/index.html"] = context.assets.open("abema/guest-bootstrap.html").use { it.readBytes() }
         files["/_tachiai/guest/control.js"] = context.assets.open("abema/guest-bootstrap.js").use { it.readBytes() }
-        files["/_tachiai/guest/initialize.js"] = context.assets.open("abema/guest-bootstrap-initialize.js")
-            .bufferedReader().use { it.readText() }.replace("__NONCE__", request.nonce)
-            .replace("__OPERATION__", request.operation.name)
-            .replace("__RESOURCE_ARGUMENT__", if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
+        val resourceArgument = if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
                 ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                 ", " + checkNotNull(request.seriesRequest).let { JSONObject().put("seriesId", it.seriesId).put("offset", it.offset)
                     .put("version", it.version ?: JSONObject.NULL).apply { it.seasonId?.let { season -> put("seasonId", season) } }.toString() }
@@ -139,7 +215,14 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
                     ", " + checkNotNull(request.searchRequest).let { JSONObject().put("query", it.query).put("moduleId", it.moduleId ?: JSONObject.NULL)
                         .put("offset", it.offset).toString() }
-                else "").toByteArray(Charsets.UTF_8)
+                else if (accountContext != null) ", undefined" else ""
+        val initialization = context.assets.open("abema/guest-bootstrap-initialize.js")
+            .bufferedReader().use { it.readText() }.replace("__NONCE__", request.nonce)
+            .replace("__OPERATION__", request.operation.name)
+            .replace("__RESOURCE_ARGUMENT__", resourceArgument + if (accountContext != null) ", $accountContext" else "")
+            .toByteArray(Charsets.UTF_8)
+        if (accountContext != null) prepared.ownInitialize(initialization)
+        files["/_tachiai/guest/initialize.js"] = initialization
         check(canRequest())
         return files
     }
@@ -157,8 +240,11 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         private val preparation: Preparation, private val files: Map<String, ByteArray>,
         private val canRequest: () -> Boolean, private val current: (AbemaGuestRuntimeView) -> Boolean,
         private val failed: (AbemaGuestRuntimeView, String) -> Unit, private val diagnostics: FailureReporter) : AbemaGuestRuntimeView {
+        companion object { private val projectionWorker = Executors.newSingleThreadExecutor() }
+        private val main = Handler(Looper.getMainLooper())
         private val view = WebView(context)
-        private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest, request.slotRequest, request.searchRequest)
+        private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest,
+            request.slotRequest, request.searchRequest, preparation.accountBound.get())
         private var documentStarted = false
         private var cleanupFailed = false
         override val cleanupConfirmed get() = !cleanupFailed
@@ -182,6 +268,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 override fun shouldInterceptRequest(view: WebView, resource: WebResourceRequest): WebResourceResponse? {
                     val uri = runCatching { URI(resource.url.toString()) }.getOrNull()
                     val allowed = current(this@OwnedGuestView) && uri != null && runCatching(canRequest).getOrDefault(false) &&
+                        runCatching { preparation.checkAccess() }.getOrDefault(false) && current(this@OwnedGuestView) &&
                         admission.admit(uri, resource.isForMainFrame, resource.method,
                             AbemaGuestBootstrapPolicy.corsHeaders(resource.method) { resource.requestHeaders })
                     if (!allowed) { failed(this@OwnedGuestView, "RESOURCE_REFUSED"); return refused() }
@@ -194,7 +281,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                         200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(request.operation,
-                            request.policyEpisodeId, request.seriesRequest, request.slotRequest, request.searchRequest), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
+                            request.policyEpisodeId, request.seriesRequest, request.slotRequest, request.searchRequest,
+                            preparation.accountBound.get()), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     if (!current(this@OwnedGuestView)) return
@@ -220,13 +308,26 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         private fun refused() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(byteArrayOf()))
         override fun open() { configure(); view.loadUrl(AbemaGuestBootstrapPolicy.PAGE) }
         override fun status(callback: (String?) -> Unit) {
-            if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
+            if (view.url != AbemaGuestBootstrapPolicy.PAGE || preparation.account.get()?.current() == false) { callback(null); return }
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.status() || null", callback)
         }
         override fun metadata(callback: (String?) -> Unit) {
             check(request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE, AbemaGuestBootstrapOperation.FETCH_SERIES,
                 AbemaGuestBootstrapOperation.FETCH_SLOT, AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH))
-            view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback)
+            if (preparation.account.get() == null) {
+                view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback); return
+            }
+            if (!preparation.projectionStarted.compareAndSet(false, true)) { callback(null); return }
+            try { projectionWorker.execute {
+                try {
+                    val admitted = runCatching { preparation.checkAccess() && canRequest() &&
+                        preparation.account.get()?.current() == true }.getOrDefault(false)
+                    main.post {
+                        if (!admitted || !current(this) || preparation.account.get()?.current() != true) { callback(null); return@post }
+                        view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback)
+                    }
+                } finally { preparation.projectionDone.countDown() }
+            } } catch (_: Throwable) { preparation.projectionDone.countDown(); callback(null) }
         }
         override fun accountLink(callback: (String?) -> Unit) {
             check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)

@@ -6,7 +6,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
 
-internal enum class AbemaAccountFailure { REFUSED, NOT_VERIFIED, TEMPORARY, EXPIRED, CANCELLED, CLEANUP_FAILED, STORAGE_FAILED }
+internal enum class AbemaAccountFailure { REFUSED, NOT_VERIFIED, TEMPORARY, TIME_LIMIT_REACHED, EXPIRED, CANCELLED, CLEANUP_FAILED, STORAGE_FAILED }
 internal class AbemaAccountException(val category: AbemaAccountFailure) : Exception(category.name, null, false, false)
 internal fun accountRefused(): Nothing = throw AbemaAccountException(AbemaAccountFailure.REFUSED)
 internal fun accountId(value: String) = value.matches(Regex("[A-Za-z0-9_-]{1,256}"))

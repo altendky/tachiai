@@ -22,7 +22,7 @@ internal data class AbemaCachedHelperMetadata(val phase: String, val modules: In
     fun closedSummary() = "phase=$phase modules=$modules lastModule=$lastModule http=$http failure=${failure.name}"
 }
 
-private val helperPhases = setOf("MODULES", "GUEST", "MEDIA_TOKEN", "DEVICE", "CONTENT",
+private val helperPhases = setOf("MODULES", "GUEST", "ACCOUNT", "MEDIA_TOKEN", "DEVICE", "CONTENT",
     "REPLAY_FREE", "REPLAY_WINDOW", "REPLAY_RESTRICTIONS", "REPLAY_TERMS", "REPLAY_RENTAL",
     "REPLAY_PRECEDENCE", "REPLAY_DEVICE", "REPLAY_TRIAL", "REPLAY_PARTNER", "REPLAY_EXTERNAL_CONTENT",
     "REPLAY_EXTERNAL_PROVIDER", "REPLAY_AUTHORITIES", "SOURCE_SESSION_REQUIRED", "SOURCE_MODE_UNSUPPORTED",

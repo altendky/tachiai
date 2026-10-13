@@ -119,6 +119,9 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
             wallMs = System::currentTimeMillis,
             onCleanupFailure = { accountPoisoned.set(true) },
             kind = kind,
+            sharedAccountFactory = {
+                AndroidAbemaAccountAccessOwners.attach(application, instanceId, owner.proof())
+            },
         )
     }
     val account = accountBinding(AbemaCollectionKind.MY_LIST)

@@ -52,7 +52,9 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
                 controller = AbemaAccountConnectionController(binding, AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
                     { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
                     android.os.SystemClock::elapsedRealtime, System::currentTimeMillis, resumed,
-                    FailureDiagnostics.create(applicationContext), AndroidAbemaEmailGrantHandoff.inbox).also { if (resumed) it.load() }
+                    FailureDiagnostics.create(applicationContext), AndroidAbemaEmailGrantHandoff.inbox,
+                    { owner -> AndroidAbemaAccountAccessOwners.attach(applicationContext, owner.instance.id, owner.proof()) }
+                ).also { if (resumed) it.load() }
             }
         }
     }

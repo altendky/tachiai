@@ -18,6 +18,7 @@ function fixture(options = {}) {
   const delayed = new Promise(resolve => { release = resolve; });
   const device = `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`;
   const context = vm.createContext({ URL, Response, TextEncoder, TextDecoder, AbortController, Uint8Array,
+    Date: class extends Date { static now() { return options.wallMs ?? Date.now(); } },
     performance: { now: () => options.elapsedMs ?? 0 },
     location: { origin: options.origin || 'https://abema.tv' },
     crypto: { randomUUID: () => device },
@@ -259,7 +260,8 @@ function fixture(options = {}) {
   const call = script => vm.runInContext(script, context, { timeout: 1000 });
   return { context, requests, timers, device, release, call,
     start: () => call(`window.__tachiaiStartGuestBootstrap('${nonce}', fake.operation || 'GUEST_ONLY'${
-      Object.hasOwn(options, 'resourceId') ? ', fake.resourceId' : ''})`),
+      Object.hasOwn(options, 'resourceId') || Object.hasOwn(options, 'accountContext') ? ', fake.resourceId' : ''}${
+      Object.hasOwn(options, 'accountContext') ? ', fake.accountContext' : ''})`),
     stop: () => call(`window['${apiName}'].stop()`),
     state: () => JSON.parse(call(`window['${apiName}'].status()`)),
   };
@@ -275,6 +277,56 @@ function searchModule(items = [searchItem()], id = 'episode', total = items.leng
   return { id, displayName: 'Provider results', moduleType: 1, totalItemCount: total, items: { content: { results: items } } };
 }
 function searchReply() { return { modules: [searchModule()] }; }
+const sharedAccount = () => ({ userId: 'PRIVATE_ACCOUNT', bearer: 'PRIVATE_ACCOUNT_BEARER', expiresAtMs: 2000000 });
+test('all five configured discovery operations use shared account bearer without creating another identity', async () => {
+  for (const [operation, resourceId, state] of [
+    ['FETCH_EPISODE', 'fixture-episode', 'EXACT_EPISODE_METADATA'],
+    ['FETCH_SERIES', { seriesId: 'series-A', offset: 0, version: null }, 'EXACT_SERIES_PAGE'],
+    ['FETCH_SLOT', { channelId: 'channel-A', slotId: 'slot-A' }, 'EXACT_SLOT_METADATA'],
+    ['FETCH_SCHEDULE', undefined, 'SCHEDULE_SNAPSHOT'],
+    ['FETCH_SEARCH', searchRequest(), 'SEARCH_PAGE'],
+  ]) {
+    const f = fixture({ operation, resourceId, accountContext: sharedAccount(), wallMs: 1000 });
+    f.start(); await settle();
+    assert.deepEqual(f.state(), { state, failure: 'NONE' });
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests[0].request.method, 'GET');
+    assert.equal(f.requests[0].request.headers.authorization, 'Bearer PRIVATE_ACCOUNT_BEARER');
+    assert.equal(f.requests[0].request.credentials, 'omit');
+    assert.equal(f.context.generated.length, 0); assert.equal(f.context.serialized.length, 0);
+    assert.equal(f.context.loaded.includes(2833), false); assert.equal(f.context.loaded.includes(5304), false);
+    assert.doesNotMatch(f.call(`window['${apiName}'].metadata()`), /PRIVATE_ACCOUNT|bearer|expiresAtMs/);
+    f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  }
+});
+test('malformed or expired supplied account and diagnostic misuse refuse before helper or network without guest fallback', async () => {
+  for (const accountContext of [null, {}, sharedAccount().bearer, { ...sharedAccount(), extra: true },
+    { ...sharedAccount(), userId: 'bad/id' }, { ...sharedAccount(), bearer: 'private\nsecret' },
+    { ...sharedAccount(), expiresAtMs: 1000 }, { ...sharedAccount(), expiresAtMs: '2000000' }]) {
+    const f = fixture({ operation: 'FETCH_EPISODE', resourceId: 'fixture-episode', accountContext, wallMs: 1000 });
+    f.start(); await settle();
+    assert.equal(f.call(`typeof window['${apiName}']`), 'undefined');
+    assert.equal(f.requests.length, 0); assert.equal(f.context.generated.length, 0);
+  }
+  const diagnostic = fixture({ accountContext: sharedAccount(), wallMs: 1000 });
+  diagnostic.start(); await settle(); assert.equal(diagnostic.requests.length, 0);
+  assert.equal(diagnostic.call(`typeof window['${apiName}']`), 'undefined');
+});
+test('account metadata rejection and expiry during response or projection never retry anonymously', async () => {
+  const refusal = fixture({ operation: 'FETCH_EPISODE', resourceId: 'fixture-episode', accountContext: sharedAccount(),
+    wallMs: 1000, episodeStatus: 403 });
+  refusal.start(); await settle(); assert.equal(refusal.requests.length, 1);
+  assert.deepEqual(refusal.state(), { state: 'REFUSED', failure: 'EPISODE_HTTP_403' });
+  for (const duringResponse of [true, false]) {
+    const options = { operation: 'FETCH_EPISODE', resourceId: 'fixture-episode', accountContext: sharedAccount(),
+      wallMs: 1000, delayedEpisode: duringResponse };
+    const f = fixture(options); f.start(); await settle(); options.wallMs = 2000000;
+    if (duringResponse) { f.release(); await settle(); }
+    assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+    assert.deepEqual(f.state(), { state: 'REFUSED', failure: 'RUNTIME' });
+    assert.equal(f.requests.length, 1);
+  }
+});
 test('global search summary binds one exact encoded GET and preserves all five distinct resource kinds without account or playback data', async () => {
   const module = searchModule([searchItem(1), searchItem(2, 'season-A'), searchItem(3, 'series-A'),
     searchItem(4, 'slot-A'), searchItem(5, 'event-A')], 'package', 100);

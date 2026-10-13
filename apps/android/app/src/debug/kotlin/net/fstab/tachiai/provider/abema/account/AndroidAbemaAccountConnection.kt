@@ -121,6 +121,7 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
     private var revision = 0L
     private var preparing: RoutePreparation? = null
     private var active: AbemaAccountTransport? = null
+    val cleanupConfirmed: Boolean get() = synchronized(lock) { !poisoned && preparing == null && active == null }
     private fun <T> request(action: (AbemaAccountTransport) -> T): T {
         val preparation = RoutePreparation()
         val run = synchronized(lock) {

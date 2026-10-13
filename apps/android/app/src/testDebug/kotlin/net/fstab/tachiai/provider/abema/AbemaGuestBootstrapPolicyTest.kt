@@ -10,6 +10,35 @@ class AbemaGuestBootstrapPolicyTest {
     private val preflight = mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET",
         "Access-Control-Request-Headers" to "authorization")
 
+    @Test fun sharedAccountAdmissionSkipsGuestAndRetainsExactOneMetadataRequestAndPreflight() {
+        val cases = listOf(
+            AbemaGuestBootstrapOperation.FETCH_EPISODE to AbemaGuestBootstrapPolicy.episodeUrl("episode-A"),
+            AbemaGuestBootstrapOperation.FETCH_SERIES to AbemaSeriesPageRequest("series-A").url(),
+            AbemaGuestBootstrapOperation.FETCH_SLOT to AbemaSlotRequest("channel-A", "slot-A").url(),
+            AbemaGuestBootstrapOperation.FETCH_SCHEDULE to AbemaGuestBootstrapPolicy.SCHEDULE,
+            AbemaGuestBootstrapOperation.FETCH_SEARCH to AbemaSearchRequest("Public query").url())
+        for ((operation, url) in cases) {
+            val admitted = AbemaGuestRequestAdmission(operation,
+                requestedEpisodeId = if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "episode-A" else null,
+                series = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest("series-A") else null,
+                slot = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) AbemaSlotRequest("channel-A", "slot-A") else null,
+                search = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) AbemaSearchRequest("Public query") else null,
+                accountBound = true)
+            assertFalse(admitted.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+            assertFalse(admitted.admit(URI(AbemaGuestBootstrapPolicy.CHALLENGE), false, "POST"))
+            assertFalse(admitted.admit(profile, false, "GET"))
+            assertFalse(admitted.admit(URI("$url&other=true"), false, "GET"))
+            assertTrue(admitted.admit(URI(url), false, "OPTIONS", preflight))
+            assertFalse(admitted.admit(URI(url), false, "OPTIONS", preflight))
+            assertTrue(admitted.admit(URI(url), false, "GET")); assertFalse(admitted.admit(URI(url), false, "GET"))
+        }
+        try { AbemaGuestRequestAdmission(profileOperation, accountBound = true); fail("Diagnostic mode accepted account context") }
+        catch (_: IllegalArgumentException) { }
+        val policy = AbemaGuestBootstrapPolicy.contentSecurityPolicy(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, accountBound = true)
+        assertFalse(policy.contains(AbemaGuestBootstrapPolicy.GUEST))
+        assertTrue(policy.contains("connect-src ${AbemaGuestBootstrapPolicy.SCHEDULE};"))
+    }
+
     @Test fun scheduleModeAdmitsOnlyCanonicalOneGuestOneGETWithBoundedPreflightAndNoResourceArgument() {
         val operation = AbemaGuestBootstrapOperation.FETCH_SCHEDULE
         val uri = URI(AbemaGuestBootstrapPolicy.SCHEDULE)

@@ -7,6 +7,7 @@ internal enum class PrototypeFailureReason(val message: String) {
     LOGIN_EXPIRED("The saved Twitch login expired. Reconnect in Providers → Twitch."),
     LOGIN_UNAVAILABLE("The saved Twitch login could not be read. Reconnect in Providers → Twitch."),
     LOGIN_REJECTED("Twitch rejected the saved login. Reconnect in Providers → Twitch."),
+    ABEMA_ACCOUNT_UNAVAILABLE("The saved ABEMA account is unavailable. Check its connection in Providers → ABEMA."),
     CATALOG_CONNECTION_REQUIRED("Connect or reconnect the Twitch account in Providers."),
     CATALOG_UNAVAILABLE("Twitch channel discovery is unavailable. Check its connection in Providers."),
     CATALOG_RATE_LIMITED("Twitch channel discovery is rate limited. Try again later."),

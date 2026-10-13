@@ -17,6 +17,8 @@ internal class AbemaEpisodePlaybackOwnership(private val captured: AbemaCatalogR
     private val readOwner: () -> AbemaCatalogRouteOwner, private val canUse: () -> Boolean,
     private val diagnostics: FailureReporter = FailureReporter.NONE) {
     private val refused = AtomicBoolean()
+    val instanceId get() = captured.instance.id
+    val ownerProof get() = captured.proof()
     fun canContinue(): Boolean = !refused.get() && canUse()
     fun checkWorker(): Boolean {
         if (!canContinue()) return false

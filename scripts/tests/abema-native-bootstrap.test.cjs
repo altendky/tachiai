@@ -41,6 +41,81 @@ const replayStream = (overrides = {}) => ({ streamingTechnology: 'FIXTURE_DASH',
   drm: { systemId: 'FIXTURE_CUSTOM' }, rawKey: false,
   manifestChain: [{ url: 'https://linear-abematv.akamaized.net/synthetic-replay/manifest.mpd',
     adInsertion: { mode: 0 } }], ...overrides });
+const savedAccount = () => ({ userId: 'ACCOUNT_USER', bearer: 'ACCOUNT_BEARER',
+  deviceId: 'ACCOUNT_DEVICE', expiresAtMs: fixtureNow + 600000 });
+
+test('configured playback uses one validated account identity through token source and opaque exchange', async () => {
+  const value = fixture({ account: savedAccount(), forbidGuest: true });
+  value.start(true, '89-70_s111_p4016'); await waitFor(value, 'READY');
+  assert.equal(value.requests.some(({ uri }) => uri.pathname === '/api/auth/login/guest'), false);
+  const token = value.requests.find(({ uri }) => uri.pathname === '/v1/media/token');
+  const program = value.requests.find(({ uri }) => uri.pathname.startsWith('/v1/video/programs/'));
+  assert.equal(token.request.headers.Authorization, 'Bearer ACCOUNT_BEARER');
+  assert.equal(program.request.headers.Authorization, 'Bearer ACCOUNT_BEARER');
+  assert.equal(value.evaluate('observed.clients[0].device.id'), 'ACCOUNT_DEVICE');
+  assert.equal(value.evaluate('observed.clients[0].user.id'), 'ACCOUNT_USER');
+  assert.equal(value.evaluate('observed.clients[0].user.mediaToken'), 'TEST_MEDIA');
+  assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+  assert.equal(value.evaluate('observed.operation[0].user'), 'ACCOUNT_USER');
+  const license = value.requests.find(({ uri }) => uri.pathname === '/abematv-dash');
+  assert.equal(license.uri.searchParams.get('t'), 'TEST_MEDIA');
+  assert.equal(license.uri.searchParams.get('cid'), '89-70_s111_p4016');
+  assert.ok(value.take()); assert.equal(value.status(), 'STOPPED');
+});
+
+test('malformed or expired explicit account never falls back to guest', async () => {
+  for (const account of [null, false, [], {}, { ...savedAccount(), extra: true },
+    { ...savedAccount(), bearer: '' }, { ...savedAccount(), userId: 'bad user' },
+    { ...savedAccount(), deviceId: '' }, { ...savedAccount(), deviceId: 'bad\n' },
+    { ...savedAccount(), expiresAtMs: fixtureNow }, { ...savedAccount(), expiresAtMs: fixtureNow + 0.5 }]) {
+    const value = fixture({ account }); value.start(true, '89-70_s111_p4016'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  }
+});
+
+test('account expiry and rollback revoke a ready source before license admission', async () => {
+  for (const nowMs of [fixtureNow + 600000, fixtureNow - 1]) {
+    const options = { account: savedAccount(), forbidGuest: true };
+    const value = fixture(options); value.start(true, '89-70_s111_p4016'); await waitFor(value, 'READY');
+    const count = value.requests.length; options.nowMs = nowMs;
+    assert.equal(value.evaluate(`window['${name}'].sourceBinding()`), null);
+    assert.equal(value.begin(challenge), 'REFUSED'); assert.equal(value.requests.length, count);
+    assert.equal(value.status(), 'FAILED'); assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  }
+});
+
+test('late token after account expiry cannot start source preparation', async () => {
+  const options = { account: savedAccount(), forbidGuest: true, deferToken: true };
+  const value = fixture(options); value.start(true, '89-70_s111_p4016'); await waitForRequests(value, 1);
+  options.nowMs = fixtureNow + 600000; value.release(); await waitFor(value, 'FAILED');
+  assert.equal(value.requests.length, 1); assert.equal(value.evaluate('observed.sources.length'), 0);
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+});
+
+test('late license after expiry never invokes opaque helper or publishes a response', async () => {
+  const options = { account: savedAccount(), forbidGuest: true, deferLicense: true };
+  const value = fixture(options); value.start(true, '89-70_s111_p4016'); await waitFor(value, 'READY');
+  value.begin(challenge); await waitForRequests(value, 4);
+  options.nowMs = fixtureNow + 600000; value.release(); await waitFor(value, 'FAILED');
+  assert.equal(value.evaluate('observed.operation.length'), 0); assert.equal(value.take(), null);
+});
+
+test('account expiry between response completion and take clears unpublished response', async () => {
+  const options = { account: savedAccount(), forbidGuest: true };
+  const value = fixture(options); value.start(true, '89-70_s111_p4016'); await waitFor(value, 'READY');
+  value.begin(challenge); await waitFor(value, 'RESPONSE'); options.nowMs = fixtureNow + 600000;
+  assert.equal(value.take(), null); assert.equal(value.status(), 'FAILED');
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+});
+
+test('connected account does not relax explicit free content admission', async () => {
+  const value = fixture({ account: savedAccount(), forbidGuest: true,
+    program: { ...freeProgram('89-70_s111_p4016'), label: { free: false } } });
+  value.start(true, '89-70_s111_p4016'); await waitFor(value, 'FAILED');
+  assert.equal(value.requests.length, 2); assert.equal(value.evaluate('observed.sources.length'), 0);
+  assert.equal(value.begin(challenge), 'REFUSED');
+});
 
 function fixture(options = {}) {
   const requests = [];
@@ -51,8 +126,9 @@ function fixture(options = {}) {
   const deferred = new Promise(resolve => { release = resolve; });
   const context = vm.createContext({
     URL, Response, TextEncoder, TextDecoder, AbortController,
-    Date: class extends Date { static now() { return fixtureNow; } },
-    crypto: { randomUUID: () => '00000000-0000-0000-0000-000000000001' },
+    Date: class extends Date { static now() { return options.nowMs ?? fixtureNow; } },
+    crypto: { randomUUID: () => { if (options.forbidGuest) throw new Error('GUEST_IDENTITY_REFUSED');
+      return '00000000-0000-0000-0000-000000000001'; } },
     navigator: { language: 'en-US' }, location: { origin: 'https://abema.tv' },
     atob: value => Buffer.from(value, 'base64').toString('binary'),
     btoa: value => Buffer.from(value, 'binary').toString('base64'),
@@ -66,6 +142,7 @@ function fixture(options = {}) {
       if (Object.hasOwn(options.rejections || {}, uri.pathname)) throw options.rejections[uri.pathname];
       if (options.reply && options.replyPath === uri.pathname) return options.reply;
       if (options.deferGuest && uri.pathname === '/api/auth/login/guest') await deferred;
+      if (options.deferToken && uri.pathname === '/v1/media/token') await deferred;
       if (options.deferLicense && uri.pathname === '/abematv-dash') await deferred;
       if (options.deferRegion && uri.pathname === '/now-on-air/abema-news') await deferred;
       if (options.deferSlot && uri.pathname.startsWith('/v1/media/slots/')) await deferred;
@@ -93,7 +170,7 @@ function fixture(options = {}) {
       return new Response(text, { status });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext('window = globalThis; window.addEventListener = register; observed = { operation: [], sources: [], flags: [], legacy: [], providerStreams: [], manifests: [], media: [], configurations: [], comparators: [] };', context);
+  vm.runInContext('window = globalThis; window.addEventListener = register; observed = { operation: [], sources: [], flags: [], legacy: [], providerStreams: [], manifests: [], media: [], configurations: [], comparators: [], clients: [] };', context);
   vm.runInContext(source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     27594(module, exports, require) { require.nmd(module); module.exports = {}; },
@@ -123,6 +200,7 @@ function fixture(options = {}) {
     91060(module) { module.exports = { OW: { fromJSON: value => fake.convertedProgram || value } }; },
     18278(module) { module.exports = { WebStreamFilter: class {
       constructor(clientInfo, source, flags) {
+        observed.clients.push(clientInfo);
         if (flags.getValue('SYNTHETIC_PROVIDER_FLAG', 'preserved-default') !== 'preserved-default') throw new Error();
       }
       async isAvailableStream(raw, useCase) {
@@ -226,9 +304,9 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}${id === undefined ? '' : ', ' + JSON.stringify(id)})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),

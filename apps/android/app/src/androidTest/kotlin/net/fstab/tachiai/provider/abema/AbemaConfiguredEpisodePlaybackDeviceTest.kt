@@ -37,6 +37,7 @@ import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
+import net.fstab.tachiai.provider.abema.account.AbemaAccountAccessIpc
 import org.json.JSONObject
 import org.json.JSONTokener
 import org.junit.Assert.*
@@ -243,6 +244,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         var routePreparation: RoutePreparation? = null
         var outcome = Outcome.REFUSED
         var movementObserved: Boolean? = null
+        var accountStatus: AbemaAccountAccessIpc.Status? = null
         var playbackObservation: PlaybackObservation? = null
         var cleanupSnapshot = CleanupSnapshot()
         var cleanupMainFailed = false
@@ -370,7 +372,10 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 }
                 movementObserved = moved
             }
-            outcome = if (decoded && moved && captured.sameOwnership(readOwner())) mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
+            instrumentation.runOnMainSync { accountStatus = session?.accountStatus }
+            val accountAccepted = InstrumentationRegistry.getArguments().getString("tachiaiRequireSavedAbemaAccount") != "true" ||
+                accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT
+            outcome = if (decoded && moved && accountAccepted && captured.sameOwnership(readOwner())) mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
         } catch (_: Throwable) { outcome = Outcome.SAFE_FAILURE }
         finally {
             // Preserve the immutable playback evidence before disposal can
@@ -396,7 +401,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         } catch (_: Throwable) { false }
         val ownerUnchanged = try { owner?.sameOwnership(readOwner()) == true } catch (_: Throwable) { false }
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
-            "routeMode=$routeMode storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
+            "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
             "playbackOutcome=${playbackObservation?.outcome} renderedFrame=${playbackObservation?.renderedFrame} " +
             "movement=${playbackObservation?.moved} cleanupSnapshot=${cleanupSnapshot.state.name} " +
             "cleanupPhase=${cleanupSnapshot.phase?.name} cleanupStage=${cleanupSnapshot.failureStage?.name} " +

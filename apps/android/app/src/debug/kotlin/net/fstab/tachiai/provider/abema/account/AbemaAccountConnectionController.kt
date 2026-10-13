@@ -31,6 +31,7 @@ internal class AbemaAccountConnectionController(
     initiallyForeground: Boolean = true,
     private val diagnostics: FailureReporter = FailureReporter.NONE,
     private val emailInbox: AbemaEmailGrantInbox? = null,
+    private val accountAccess: ((AbemaCatalogRouteOwner) -> AbemaAccountAccessOwner.Attachment)? = null,
 ) : AutoCloseable {
     private val lock = Any()
     @Volatile private var foreground = initiallyForeground
@@ -40,6 +41,10 @@ internal class AbemaAccountConnectionController(
     private val forgetting = AtomicBoolean()
     private val transport = AtomicReference<AbemaAccountTransport?>()
     private val bootstrap = AtomicReference<AbemaAccountBootstrap?>()
+    private class SharedAccess(val attachment: AbemaAccountAccessOwner.Attachment) {
+        @Volatile var lease: AbemaAccountAccessLease? = null
+    }
+    private val sharedAccess = AtomicReference<SharedAccess?>()
     private class Link(val challenge: AbemaAccountChallenge, val owner: AbemaCatalogRouteOwner,
         val storeRevision: Long) {
         var handedOff = false; var polls = 0; var pollingBegan: Long? = null; var nextPollAt = 0L
@@ -66,6 +71,7 @@ internal class AbemaAccountConnectionController(
         return minOf(prepared.challenge.deadlineElapsedMs, bounded)
     }
     private fun publish(progress: AbemaAccountProgress = AbemaAccountProgress.IDLE) {
+        if (sharedAccess.get()?.lease?.current() == false) session.invalidateValidation()
         mutable.value = AbemaAccountConnectionState(session.status(), progress, busy || forgetting.get(),
             !busy && foreground && link?.let { !it.handedOff && elapsedMs() < it.challenge.deadlineElapsedMs } == true,
             !busy && foreground && (emailLink?.let { it.handedOff && it.candidate != null && elapsedMs() < it.deadline } == true ||
@@ -87,9 +93,9 @@ internal class AbemaAccountConnectionController(
                     AbemaAccountFailure.CLEANUP_FAILED -> FailureStage.CATALOG_AUTH_CLEANUP
                     else -> FailureStage.CATALOG_AUTH_REQUEST
                 })
-                if (current(run)) { link = null; clearEmailLink(); session.failed(error.category) }
+                if (current(run)) { detachAccess(run); link = null; clearEmailLink(); session.failed(error.category) }
             }
-            catch (_: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST); if (current(run)) { link = null; clearEmailLink(); session.failed(AbemaAccountFailure.TEMPORARY) } }
+            catch (_: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST); if (current(run)) { detachAccess(run); link = null; clearEmailLink(); session.failed(AbemaAccountFailure.TEMPORARY) } }
             finally { post { synchronized(lock) {
                 if (revision == run && busy) { busy = false; if (!closed) publish() }
             } } }
@@ -103,6 +109,7 @@ internal class AbemaAccountConnectionController(
     fun connectEmail(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(false, launch)
     fun signInAgain(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(true, launch)
     private fun beginEmail(resetBrowserSession: Boolean, launch: (AbemaApprovalBrowserRequest) -> Boolean) = run(AbemaAccountProgress.PREPARING) { run ->
+        detachAccess(run)
         val inbox = emailInbox ?: throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
         val owner = binding.owner()
         if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
@@ -233,6 +240,7 @@ internal class AbemaAccountConnectionController(
     }
     fun connect() {
         run(AbemaAccountProgress.PREPARING) { run ->
+            detachAccess(run)
             val owner = binding.owner(); val storeRevision = binding.store.revision()
             val challenge = prepare(run, owner)
             if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
@@ -342,7 +350,7 @@ internal class AbemaAccountConnectionController(
         checkTime()
         val candidate = session.candidate()
         checkTime()
-        val value = candidate ?: return
+        val value = candidate ?: run { detachAccess(run); return }
         fun grantCurrent(): Boolean {
             checkTime()
             val matchedOwner = same(run, owner)
@@ -356,6 +364,44 @@ internal class AbemaAccountConnectionController(
             return matched
         }
         post { synchronized(lock) { if (current(run) && busy) publish(AbemaAccountProgress.CHECKING) } }
+        accountAccess?.let { factory ->
+            val attached = factory(owner)
+            val access = SharedAccess(attached)
+            var installed = false
+            val prior = synchronized(lock) {
+                if (current(run)) { installed = true; sharedAccess.getAndSet(access) } else null
+            }
+            prior?.attachment?.close()
+            if (!installed) { attached.close(); throw AbemaAccountException(AbemaAccountFailure.CANCELLED) }
+            val acquired = attached.acquire(began, deadline)
+            if (acquired is AbemaAccountAccessResult.Failed && acquired.category in
+                setOf(AbemaAccountFailure.CLEANUP_FAILED, AbemaAccountFailure.EXPIRED))
+                throw AbemaAccountException(acquired.category)
+            checkTime()
+            val lease = when (acquired) {
+                is AbemaAccountAccessResult.Account -> acquired.lease
+                is AbemaAccountAccessResult.Failed -> throw AbemaAccountException(acquired.category)
+                is AbemaAccountAccessResult.Guest -> throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            }
+            val grant = lease.grant ?: throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            if (grant.userId != value.grant.userId || grant.bearer != value.grant.bearer ||
+                grant.expiresAtMs != value.grant.expiresAtMs || !lease.checkWorker())
+                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            checkTime()
+            if (!attached.cleanupConfirmed) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+            if (!grantCurrent() || !lease.current() || sharedAccess.get() !== access)
+                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            if (!session.acceptExisting(value, grant.userId)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            try {
+                if (!grantCurrent() || !lease.current() || sharedAccess.get() !== access)
+                    throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                access.lease = lease
+            } catch (error: Throwable) {
+                session.invalidateValidation()
+                throw error
+            }
+            return
+        }
         val profile = request(run, owner, additionalGate = ::grantCurrent, checkOperationTime = ::checkTime) {
             it.profile(value.grant.userId, value.grant.bearer)
         }
@@ -417,14 +463,23 @@ internal class AbemaAccountConnectionController(
             if (current(run) && maintenanceAllowed()) load()
         }
     }
-    private class Cancellation(val bootstrap: AbemaAccountBootstrap?, val transport: AbemaAccountTransport?, val email: EmailLink?)
+    private fun detachAccess(run: Long? = null) {
+        val prior = synchronized(lock) {
+            if (run != null && !current(run)) return
+            sharedAccess.getAndSet(null)
+        }
+        prior?.attachment?.close()
+    }
+    private class Cancellation(val bootstrap: AbemaAccountBootstrap?, val transport: AbemaAccountTransport?, val email: EmailLink?,
+        val access: SharedAccess?)
     private fun revokeAction(retainHandoff: Boolean): Cancellation = synchronized(lock) {
         revision++; busy = false
         if (!retainHandoff || link?.handedOff != true) link = null
         val removedEmail = emailLink?.takeUnless { retainHandoff && it.handedOff }?.also { emailLink = null }
-        Cancellation(bootstrap.get(), transport.get(), removedEmail)
+        Cancellation(bootstrap.get(), transport.get(), removedEmail, sharedAccess.getAndSet(null))
     }
     private fun cancelResources(pending: Cancellation) {
+        pending.access?.attachment?.close()
         pending.email?.let { emailInbox?.unregister(it.nonce); it.candidate = null }
         pending.bootstrap?.cancel()
         pending.transport?.let { active -> cancellation.execute { runCatching { active.cancelActiveRequest() } } }

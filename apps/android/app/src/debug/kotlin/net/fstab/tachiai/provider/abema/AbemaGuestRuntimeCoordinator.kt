@@ -61,6 +61,8 @@ internal interface AbemaGuestRuntimePreparation : AutoCloseable {
     fun cancel()
     fun cancelTransport()
     val cleanupConfirmed: Boolean
+    // Worker-only access proof, checked before projection publication/closure.
+    fun checkAccess(): Boolean = true
 }
 internal interface AbemaGuestRuntimeView {
     fun open()
@@ -188,7 +190,8 @@ internal class AbemaGuestRuntimeCoordinator(
 
     private fun verifyThen(active: Attempt, next: () -> Unit) {
         worker.execute {
-            val valid = runCatching { sameOwner(active) }.onFailure(environment::report).getOrDefault(false)
+            val valid = runCatching { sameOwner(active) && active.preparation.checkAccess() && sameOwner(active) }
+                .onFailure(environment::report).getOrDefault(false)
             main.post(active) { if (current(active)) { if (valid) guarded(active, next) else stop(active, "OWNER_CHANGED") } }
         }
     }

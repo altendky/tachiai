@@ -97,6 +97,9 @@
         <service
             android:name=".provider.abema.account.AbemaEmailGrantHandoffService"
             android:exported="false" />
+        <service
+            android:name=".provider.abema.account.AbemaAccountAccessService"
+            android:exported="false" />
         <activity
             android:name=".feature.presentation.PrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

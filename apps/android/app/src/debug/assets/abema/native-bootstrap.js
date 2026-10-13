@@ -22,6 +22,8 @@
   let expectedGateway;
   let license;
   let user;
+  let accountExpiry;
+  let accountWall;
   let operation;
   let response;
   const remember = category => { if (failure === 'NONE') failure = category; };
@@ -36,12 +38,26 @@
     controllers.clear();
     response?.fill(0);
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
+    accountExpiry = accountWall = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
   window.__LOADABLE_LOADED_CHUNKS__ = [];
-  const alive = () => { if (stopped || failure !== 'NONE') throw new Error(); };
+  const alive = () => {
+    if (accountExpiry !== undefined) {
+      const now = Date.now();
+      if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpiry) {
+        remember('TIMER_EXPIRED'); throw new Error();
+      }
+      accountWall = now;
+    }
+    if (stopped || failure !== 'NONE') throw new Error();
+  };
   const refuseResponse = () => { remember('RESPONSE_VALIDATION_REFUSED'); throw new Error(); };
+  const usable = () => {
+    if (stopped) return false;
+    try { alive(); return true; } catch { stop(true); return false; }
+  };
   const boundedReply = async (reply, maximum) => {
     if (reply.status !== 200) { remember('HTTP_REFUSED'); throw new Error(); }
     if (!reply.body) refuseResponse();
@@ -205,7 +221,7 @@
     return btoa(value);
   };
   const begin = encoded => {
-    if (stopped || state !== 'READY' || used || typeof encoded !== 'string' ||
+    if (!usable() || state !== 'READY' || used || typeof encoded !== 'string' ||
       encoded.length > 22000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return 'REFUSED';
     used = true;
     state = 'WORKING'; phase = 'LICENSE';
@@ -253,7 +269,7 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
@@ -270,15 +286,15 @@
     initialized = true;
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
-      status: () => state,
+      status: () => { usable(); return state; },
       metadata: () => stringify({ phase, modules: count, lastModule, http, failure }),
-      selectedSource: () => !stopped && state === 'READY' ? selected : null,
-      sourceBinding: () => !stopped && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
-      channelBinding: () => !stopped && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
-      slotBinding: () => !stopped && state === 'READY' && configuredSlot ?
+      selectedSource: () => usable() && state === 'READY' ? selected : null,
+      sourceBinding: () => usable() && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
+      channelBinding: () => usable() && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
+      slotBinding: () => usable() && state === 'READY' && configuredSlot ?
         stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected }) : null,
       begin,
-      take: () => { if (stopped || state !== 'RESPONSE' || !response) return null;
+      take: () => { if (!usable() || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
       stop: () => stop(false, true),
     }) });
@@ -290,20 +306,37 @@
         const helper = load(14405);
         operation = (helper.__esModule ? helper.default : helper)(utilities.__esModule ? utilities.default : utilities);
         if (typeof operation !== 'function') throw new Error();
-        const deviceId = crypto.randomUUID();
-        phase = 'GUEST';
-        const guest = load(2833);
-        const applicationKeySecret = await guest.b2(deviceId, guest.B9());
-        alive();
-        const request = load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
-          applicationKeySecret, deviceId });
-        const guestReply = await json(new URL(load(24968).T.LOGIN_GUEST, location.origin), {
-          method: 'POST', credentials: configured || configuredChannel || configuredSlot ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
-          body: stringify(request),
-        }, 65536);
-        if ((configured || configuredChannel || configuredSlot) && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
-          !guestReply.user_id || guestReply.user_id.length > 256 || !guestReply.access_token || guestReply.access_token.length > 8192)) throw new Error();
-        user = load(5304).V8.fromJSON(guestReply);
+        let deviceId;
+        if (requestedAccount !== undefined) {
+          phase = 'ACCOUNT';
+          if (!requestedAccount || typeof requestedAccount !== 'object' || Array.isArray(requestedAccount) ||
+            Object.keys(requestedAccount).sort().join(',') !== 'bearer,deviceId,expiresAtMs,userId') refuseResponse();
+          const { userId, bearer, expiresAtMs, deviceId: boundDevice } = requestedAccount;
+          if (typeof userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(userId) ||
+            typeof bearer !== 'string' || bearer.length < 1 || bearer.length > 6144 || !/^[\x21-\x7e]+$/.test(bearer) ||
+            typeof boundDevice !== 'string' || boundDevice.length < 1 || boundDevice.length > 256 || !/^[\x21-\x7e]+$/.test(boundDevice) ||
+            !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now()) refuseResponse();
+          accountExpiry = expiresAtMs; accountWall = Date.now();
+          deviceId = boundDevice;
+          user = { userId, accessToken: bearer };
+          requestedAccount = undefined;
+          alive();
+        } else {
+          deviceId = crypto.randomUUID();
+          phase = 'GUEST';
+          const guest = load(2833);
+          const applicationKeySecret = await guest.b2(deviceId, guest.B9());
+          alive();
+          const request = load(5304).rM.toJSON({ deviceType: load(50052).bq.DEVICE_TYPE_WEB,
+            applicationKeySecret, deviceId });
+          const guestReply = await json(new URL(load(24968).T.LOGIN_GUEST, location.origin), {
+            method: 'POST', credentials: configured || configuredChannel || configuredSlot ? 'omit' : 'include', headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: stringify(request),
+          }, 65536);
+          if ((configured || configuredChannel || configuredSlot) && (typeof guestReply?.user_id !== 'string' || typeof guestReply?.access_token !== 'string' ||
+            !guestReply.user_id || guestReply.user_id.length > 256 || !guestReply.access_token || guestReply.access_token.length > 8192)) throw new Error();
+          user = load(5304).V8.fromJSON(guestReply);
+        }
         if (typeof user.userId !== 'string' || typeof user.accessToken !== 'string' ||
           !user.userId || user.userId.length > 256 || !user.accessToken || user.accessToken.length > 8192) throw new Error();
         // No refresh is attempted; only this foreground bootstrap owns the grant.

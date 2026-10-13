@@ -6,7 +6,7 @@ import org.junit.Test
 
 class AbemaCachedHelperMetadataTest {
     @Test fun slotRefusalPhasesRemainClosedAndCannotPublishPreparation() {
-        for (phase in listOf("SLOT_REGION", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW")) {
+        for (phase in listOf("ACCOUNT", "SLOT_REGION", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW")) {
             val value = checkNotNull(parseAbemaCachedHelperMetadata(metadata("UNKNOWN", 200, phase)))
             assertEquals(phase, value.phase)
             val evidence = AbemaCachedHelperEvidence()

@@ -18,7 +18,7 @@ class AbemaAccountConnectionControllerTest {
         override fun execute(command: Runnable) { queued.add(command) }
         fun one() = queued.removeFirstOrNull()?.let { it.run(); true } ?: false
     }
-    private class Fixture {
+    private class Fixture(shared: Boolean = false) {
         val storage = MemoryAbemaAccountStorage()
         val id = UUID.randomUUID().toString()
         val store = AbemaAccountGrantStore(id, storage)
@@ -75,8 +75,17 @@ class AbemaAccountConnectionControllerTest {
                 override fun close() { closed++; onClose(); if (closeThrows) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
             }
         }
+        val sharedOwner by lazy {
+            val captured = owner
+            AbemaAccountAccessOwner(id, captured.proof(), store, { wall }, { onElapsed(); now },
+                { binding.sameOwner(captured) }, { gate -> binding.transport(captured, gate) }, { !closeThrows })
+        }
         val controller = AbemaAccountConnectionController(binding, worker, cancel, { main.add(it) },
-            { delay, action -> later.add(now + delay to action) }, { onElapsed(); now }, { wall }, emailInbox = inbox)
+            { delay, action -> later.add(now + delay to action) }, { onElapsed(); now }, { wall }, emailInbox = inbox,
+            accountAccess = if (shared) { captured ->
+                assertEquals(captured.proof(), sharedOwner.ownerProof)
+                sharedOwner.attach()
+            } else null)
         fun due(): Boolean {
             val task = later.firstOrNull { it.first <= now } ?: return false
             later.remove(task); task.second(); return true
@@ -107,6 +116,123 @@ class AbemaAccountConnectionControllerTest {
                 request.deadlineElapsedMs, decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall)))
             assertFalse(controller.state.value.canContinue)
             controller.setForeground(true); pump(); assertTrue(controller.state.value.canContinue)
+        }
+    }
+    @Test fun sharedSavedValidationKeepsForegroundProofForPeersAndReusesItWithoutMutatingTheGrant() {
+        val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+        f.controller.load(); f.pump()
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        val peer = f.sharedOwner.attach()
+        try {
+            val lease = (peer.acquire() as AbemaAccountAccessResult.Account).lease
+            assertTrue(lease.current()); assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+            f.controller.revalidate(); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            f.controller.setForeground(false); f.pump()
+            assertEquals(AbemaAccountStatus.PAUSED, f.controller.state.value.status)
+            assertTrue(lease.current())
+            f.controller.setForeground(true); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            assertTrue(lease.checkWorker()); assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+            assertArrayEquals(bytes, f.storage.bytes); assertEquals(0, f.tokens); assertEquals(0, f.preparations)
+        } finally { f.controller.close(); peer.close() }
+        assertTrue(f.sharedOwner.cleanupConfirmed)
+    }
+
+    @Test fun sharedControllerLastPauseReleasesProofAndResumePerformsOneFreshValidation() {
+        val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+        try {
+            f.controller.load(); f.pump(); assertEquals(1, f.profileIds.size)
+            f.controller.setForeground(false); f.pump(); assertTrue(f.sharedOwner.cleanupConfirmed)
+            f.controller.setForeground(true); f.controller.setForeground(true); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            assertEquals(2, f.profileIds.size); assertEquals(2, f.emailChecks); assertArrayEquals(bytes, f.storage.bytes)
+        } finally { f.controller.close() }
+    }
+
+    @Test fun pausingSharedValidationReleasesControllerWorkerWhileTheHealthyPeerKeepsItsFlight() {
+        val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        f.onProfile = { entered.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
+        val peer = f.sharedOwner.attach(); val executor = Executors.newFixedThreadPool(2)
+        try {
+            f.controller.load()
+            val controllerJob = executor.submit<Boolean> { f.worker.one() }
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            val peerJob = executor.submit<AbemaAccountAccessResult> { peer.acquire() }
+            f.controller.setForeground(false)
+            assertTrue(controllerJob.get(1, TimeUnit.SECONDS))
+            f.pump(); assertEquals(AbemaAccountStatus.PAUSED, f.controller.state.value.status)
+            assertFalse(f.sharedOwner.cleanupConfirmed)
+            release.countDown()
+            val lease = (peerJob.get(3, TimeUnit.SECONDS) as AbemaAccountAccessResult.Account).lease
+            assertTrue(lease.current()); assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+            f.pump(); assertEquals(AbemaAccountStatus.PAUSED, f.controller.state.value.status)
+            assertArrayEquals(bytes, f.storage.bytes)
+        } finally { release.countDown(); f.controller.close(); peer.close(); executor.shutdownNow() }
+    }
+
+    @Test fun sharedSavedValidationRefusesProviderFailuresForgetAndLateAdmissionWithoutGuestFallback() {
+        for (failure in listOf("profile", "email", "cleanup", "timeout", "forget", "pause")) {
+            val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+            when (failure) {
+                "profile" -> f.profileRejected = true
+                "email" -> f.emailResult = AbemaAccountEmailResult.UNREGISTERED
+                "cleanup" -> f.closeThrows = true
+                "timeout" -> f.onProfile = { f.now += 30_000 }
+                "forget" -> f.onProfile = { f.store.forget() }
+                "pause" -> f.onProfile = { f.controller.setForeground(false) }
+            }
+            try {
+                f.controller.load(); f.pump()
+                assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+                assertEquals(1, f.profileIds.size); assertEquals(if (failure in listOf("email", "cleanup")) 1 else 0, f.emailChecks)
+                if (failure == "forget") assertNull(f.store.read()) else assertArrayEquals(bytes, f.storage.bytes)
+                assertEquals(0, f.tokens); assertEquals(0, f.preparations)
+            } finally { f.controller.close() }
+        }
+    }
+
+    @Test fun sharedSavedValidationCannotRestartItsBudgetAfterTheCapturedOwnerRead() {
+        val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+        f.onOwner = { f.now += 30_000 }
+        try {
+            f.controller.load(); f.pump()
+            assertEquals(AbemaAccountStatus.TEMPORARY, f.controller.state.value.status)
+            assertTrue(f.profileIds.isEmpty()); assertEquals(0, f.emailChecks); assertArrayEquals(bytes, f.storage.bytes)
+        } finally { f.controller.close() }
+    }
+
+    @Test fun explicitEmailOrQrReplacementWithoutPauseDoesNotReuseThePriorSharedLeaseAtPublication() {
+        for (method in listOf("email", "qr")) {
+            val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
+            f.controller.load(); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            val prior = checkNotNull(f.store.read())
+            try {
+                if (method == "email") {
+                    var request: AbemaApprovalBrowserRequest? = null
+                    f.controller.connectEmail { request = it; true }; f.pump()
+                    assertArrayEquals(bytes, f.storage.bytes)
+                    val returned = checkNotNull(request)
+                    assertTrue(f.inbox.deliver(checkNotNull(returned.emailNonce), returned.instanceId, returned.ownerProof,
+                        returned.deadlineElapsedMs, f.granted().grant))
+                    f.controller.emailBrowserReturned(); f.pump()
+                } else {
+                    f.controller.connect(); f.pump(); f.controller.handoff { true }; f.pump()
+                    assertArrayEquals(bytes, f.storage.bytes)
+                    f.results.add(f.granted()); f.controller.continueApproval(); f.pump()
+                }
+                assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+                val current = checkNotNull(f.store.read())
+                assertEquals(prior.generation + 1, current.generation)
+                assertEquals(prior.grant.userId, current.grant.userId)
+                assertFalse(bytes.contentEquals(f.storage.bytes))
+                assertFalse(f.controller.state.value.canContinue)
+                assertEquals(2, f.profileIds.size)
+                assertEquals(if (method == "email") 2 else 1, f.emailChecks)
+                assertEquals(if (method == "qr") 1 else 0, f.tokens)
+            } finally { f.controller.close() }
         }
     }
     @Test fun emailSetupUsesTheProviderBrowserAndSavesOnlyAfterNativeIdentityAndRegistrationChecks() {

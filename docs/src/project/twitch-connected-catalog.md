@@ -463,8 +463,8 @@ Two account validations, all three identity/status/confirmation requests and the
 single exact playback access request returned HTTP 200. The same matching live
 row still contained a cursor. Six production media requests ran, and an actual
 frame rendered. Saved quality, mute and play requests succeeded without a feed
-failure, but buffering prevented a second advancing READY sample within the
-unchanged sampling bound. This verifies removal of the cursor refusal and frame
+failure, but sampling began READY and ended BUFFERING without obtaining a second
+advancing READY sample within the unchanged bound. This verifies removal of the cursor refusal and frame
 delivery; it does not establish native channel playback acceptance or explain
 the buffering cause. No sampling or acceptance gate was weakened.
 

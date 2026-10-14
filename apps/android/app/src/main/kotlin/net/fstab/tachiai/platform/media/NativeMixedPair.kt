@@ -11,6 +11,7 @@ internal class NativeMixedPair(
     private val releaseFocus: () -> Unit,
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val requireCurrentLiveWindowOnPlay: Boolean = false,
+    private val admission: (NativePairMember) -> Boolean = { true },
 ) : AutoCloseable {
     var status = "Prepared paused; press Play."
         private set
@@ -33,8 +34,10 @@ internal class NativeMixedPair(
         val settlementToleranceMs: Long,
     )
     private var pending: Pending? = null
-    private data class Recovery(val side: NativeMixedSide, val startedMs: Long)
-    private var recovery: Recovery? = null
+    private val recovery = NativeLiveRecovery(listOf(a, b), clockMs, { !closed && admission(it) }) {
+        requestedAdjustmentValid = false
+        lastRelativePlan = null
+    }
     var lastRelativePlan: NativeRelativeNudgePlan? = null
         private set
 
@@ -47,7 +50,7 @@ internal class NativeMixedPair(
     fun pause(): Boolean {
         if (closed) return false
         pending = null
-        recovery = null
+        recovery.cancel()
         busy = false
         val pa = playing(a, false)
         val pb = playing(b, false)
@@ -185,64 +188,47 @@ internal class NativeMixedPair(
 
     // Explicit recovery, never a fallback for an ordinary timing nudge. The
     // SDK chooses its current live default, not an exact or future live edge.
+    fun catchUpPlan(side: NativeMixedSide): NativeSeekPlan =
+        if (closed || busy) NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) else recovery.plan(member(side))
+
     fun catchUp(side: NativeMixedSide): NativeSeekPlan {
         if (closed || busy) {
             if (!closed) status = "Catch-up refused: wait for the current seek check."
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         }
-        val sa = snapshot(a)
-        val sb = snapshot(b)
-        val plan = when {
-            sa == null || sb == null || sa.state != 3 || sb.state != 3 -> NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
-            sa.playingAd || sb.playingAd -> NativeSeekPlan(NativeSeekOutcome.AD_BLOCKED)
-            else -> nativeLiveDefaultPlan(if (side == NativeMixedSide.A) sa else sb)
-        }
-        if (plan.outcome != NativeSeekOutcome.REQUESTED) {
-            status = "Catch-up not dispatched: ${plan.outcome}."
-            return plan
-        }
-        if (!pause()) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
-        // Even an ambiguous dispatch failure could have moved the player. Keep
-        // the old number as history only; later nudges cannot restore its anchor.
-        requestedAdjustmentValid = false
-        lastRelativePlan = null
-        val accepted = try { member(side).seekLiveDefault() }
-            catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
-        if (accepted.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE)) {
-            val held = pause()
-            status = if (held) "Catch-up refused; both paused; timing anchor invalid."
+        val result = recovery.start(member(side))
+        if (closed) return result.plan
+        when (result.state) {
+            NativeLiveRecoveryStartState.PREFLIGHT_REFUSED, NativeLiveRecoveryStartState.RECHECK_REFUSED ->
+                status = "Catch-up not dispatched: ${result.plan.outcome}."
+            NativeLiveRecoveryStartState.HOLD_REFUSED -> status = "Pause refused; Stop required."
+            NativeLiveRecoveryStartState.DISPATCH_REFUSED -> status = if (result.held == true) "Catch-up refused; both paused; timing anchor invalid."
                 else "Catch-up refused; pause refused; Stop required; timing anchor invalid."
-            return accepted
+            NativeLiveRecoveryStartState.STARTED -> {
+                busy = true
+                status = "Catch-up requested; waiting for held live window (8 s maximum)."
+            }
         }
-        recovery = Recovery(side, clockMs())
-        busy = true
-        status = "Catch-up requested; waiting for held live window (8 s maximum)."
-        return accepted
+        return result.plan
     }
 
     fun poll() {
         if (closed) return
-        recovery?.let { transaction ->
-            val elapsed = clockMs() - transaction.startedMs
-            if (elapsed < 0 || elapsed >= 8_000) {
-                val held = pause()
-                status = if (held) "Catch-up check timed out; both paused; timing anchor invalid."
+        if (recovery.busy) {
+            val result = recovery.poll()
+            if (closed) return
+            busy = recovery.busy
+            when (result.state) {
+                NativeLiveRecoveryPollState.TIMED_OUT -> status = if (result.held == true) "Catch-up check timed out; both paused; timing anchor invalid."
                     else "Catch-up check timed out; pause refused; Stop required; timing anchor invalid."
-                return
+                NativeLiveRecoveryPollState.ADMISSION_LOST -> status = if (result.held == true) "Catch-up authorization lost; both paused; timing anchor invalid."
+                    else "Catch-up authorization lost; pause refused; Stop required; timing anchor invalid."
+                NativeLiveRecoveryPollState.SETTLED -> {
+                    busy = false
+                    status = "SDK READY in current live window; both paused. Explicit Play required; not exact live edge."
+                }
+                else -> Unit
             }
-            val sa = snapshot(a)
-            val sb = snapshot(b)
-            fun heldReady(value: NativeTimingSnapshot?) = value != null && value.state == 3 &&
-                !value.playing && !value.playWhenReady && !value.playingAd
-            if (!heldReady(sa) || !heldReady(sb)) return
-            val selected = checkNotNull(if (transaction.side == NativeMixedSide.A) sa else sb)
-            val position = selected.positionMs
-            val duration = selected.durationMs
-            if (!selected.live || position == null || duration == null || duration <= 0 ||
-                position < 0 || position > duration) return
-            recovery = null
-            busy = false
-            status = "SDK READY in current live window; both paused. Explicit Play required; not exact live edge."
             return
         }
         val transaction = pending ?: return
@@ -273,7 +259,7 @@ internal class NativeMixedPair(
     fun detach() {
         if (closed) return
         pending = null
-        recovery = null
+        recovery.cancel()
         busy = false
         closed = true
         requestedAdjustmentValid = false

@@ -208,6 +208,34 @@ not measured synchronization. Compact layouts retain scrollable controls and
 48 dp button targets. Cancelling More preserves the open controls and panel;
 Hide and video/background taps retain their explicit dismissal behavior.
 
+The visible **Back to live A / B** controls target the named live feed, including
+a single surviving feed. Completed replay and missing feeds have no live action;
+current readiness, advertisement, SDK default-position capability, ownership and
+busy checks determine whether the action is enabled. The same checks run again
+before dispatch. An expired position can recover when the SDK still advertises
+a valid live default in its current window.
+
+Returning to live pauses every available feed and requests the selected feed's
+SDK live default once. It waits at most eight seconds for the selected player to
+be held READY within its current live window; **Play** is explicit afterward.
+With two feeds, the attempted seek invalidates the timing anchor. Returning to
+live does not restore alignment or establish an exact live-edge timestamp.
+Pause, focus loss, member replacement/removal and session disposal cancel the
+check. This reuses the guarded catch-up transaction without reloading a source,
+renewing authorization or seeking the other feed as a fallback.
+
+October 14 verification passed 2,782 JVM tests, lint, release isolation,
+instrumentation compilation and APK assembly, with the shared debug signer.
+All 29 affected viewer UI cases passed on persistent `tachiai-dev`, Android
+16/API 36 x86-64, using fake members and blank player views. The checks cover
+paired and surviving-feed recovery, changed capabilities/ownership, cancellation,
+menu aliases, D-pad focus, compact large-font layouts and gesture ownership.
+Popup cancellation injects one DOWN/UP pair at current window coordinates,
+retaining every dismissal and no-tap-through assertion. Owned fixture inspection
+confirmed the visible A/B controls and pause/resume guidance. Saved records stayed
+byte-for-byte unchanged and the normal launcher was restored. Actual provider
+live seeking, physical-device behavior and Android TV remain separate observations.
+
 The product terms are **route / provider / stream / feed**. The picker assigns
 streams to A/B feeds; its separate **Routes** and **Providers** buttons open
 network configuration management and provider configuration respectively.

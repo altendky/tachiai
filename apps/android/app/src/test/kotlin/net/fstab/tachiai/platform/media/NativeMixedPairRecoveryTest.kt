@@ -17,9 +17,14 @@ class NativeMixedPairRecoveryTest {
         var defaultResult: NativeSeekPlan? = null
         var refusePauseAfterDefault = false
         var closed = false
-        override fun timingSnapshot() = if (closed) null else sample
+        var pauseHook: () -> Unit = {}
+        var defaultHook: () -> Unit = {}
+        var snapshotHook: () -> Unit = {}
+        var pauses = 0
+        override fun timingSnapshot(): NativeTimingSnapshot? { snapshotHook(); return if (closed) null else sample }
         override fun seekLiveDefault(): NativeSeekPlan {
             defaults++
+            defaultHook()
             if (refusePauseAfterDefault) refusePause = true
             if (throwDefault) throw IllegalStateException()
             if (failDefault) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
@@ -35,6 +40,7 @@ class NativeMixedPairRecoveryTest {
             return plan
         }
         override fun setTimingPlaying(playing: Boolean): Boolean {
+            if (!playing) { pauses++; pauseHook() }
             if (!playing && refusePause) return false
             sample = sample.copy(playing = playing, playWhenReady = playing)
             return true
@@ -237,5 +243,78 @@ class NativeMixedPairRecoveryTest {
         now = 8_000; timed.poll()
         assertTrue(timed.status.contains("Stop required")); assertFalse(timed.busy)
         assertTrue(b.sample.playing); assertFalse(timed.requestedAdjustmentValid)
+    }
+
+    @Test fun `catch up capability is side effect free and dispatch rechecks stale ownership`() {
+        val a = Member(live); val b = Member(live)
+        var admitted = true
+        val pair = NativeMixedPair(a, b, { true }, {}, admission = { admitted })
+        val status = pair.status
+        assertEquals(NativeSeekOutcome.REQUESTED, pair.catchUpPlan(NativeMixedSide.A).outcome)
+        assertEquals(0, a.pauses + b.pauses); assertEquals(0, a.defaults + b.defaults)
+        assertEquals(status, pair.status); assertTrue(pair.requestedAdjustmentValid)
+        admitted = false
+        assertEquals(NativeSeekOutcome.UNAVAILABLE, pair.catchUp(NativeMixedSide.A).outcome)
+        assertEquals(0, a.pauses + b.pauses); assertEquals(0, a.defaults + b.defaults)
+        assertTrue(pair.requestedAdjustmentValid)
+    }
+
+    @Test fun `ownership and source capabilities changed by hold refuse before dispatch`() {
+        for (change in 0..3) {
+            val a = Member(live); val b = Member(live)
+            var admitted = true
+            val pair = NativeMixedPair(a, b, { true }, {}, admission = { admitted })
+            b.pauseHook = {
+                when (change) {
+                    0 -> admitted = false
+                    1 -> a.sample = a.sample.copy(playingAd = true)
+                    2 -> a.sample = a.sample.copy(canSeekDefault = false)
+                    else -> a.sample = a.sample.copy(defaultPositionMs = 70_000)
+                }
+            }
+            assertEquals(NativeSeekOutcome.REQUESTED, pair.catchUpPlan(NativeMixedSide.A).outcome)
+            assertTrue(pair.catchUp(NativeMixedSide.A).outcome != NativeSeekOutcome.REQUESTED)
+            assertEquals(1, a.pauses); assertEquals(1, b.pauses)
+            assertEquals(0, a.defaults + b.defaults); assertFalse(pair.busy); assertTrue(pair.requestedAdjustmentValid)
+        }
+    }
+
+    @Test fun `settlement refuses lost ownership and does not restart either member`() {
+        val a = Member(live); val b = Member(live)
+        var admitted = true
+        val pair = NativeMixedPair(a, b, { true }, {}, admission = { admitted })
+        assertEquals(NativeSeekOutcome.REQUESTED, pair.catchUp(NativeMixedSide.A).outcome)
+        admitted = false
+        pair.poll()
+        assertFalse(pair.busy); assertTrue(pair.status.contains("authorization lost"))
+        assertEquals(1, a.defaults); assertEquals(0, b.defaults)
+        assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+        assertFalse(pair.requestedAdjustmentValid)
+    }
+
+    @Test fun `reentrant detach during hold or dispatch cannot resurrect old recovery`() {
+        for (duringHold in listOf(true, false)) {
+            val a = Member(live); val b = Member(live)
+            val pair = pair(a, b)
+            if (duringHold) b.pauseHook = { pair.detach() } else a.defaultHook = { pair.detach() }
+            assertEquals(NativeSeekOutcome.UNAVAILABLE, pair.catchUp(NativeMixedSide.A).outcome)
+            assertFalse(pair.busy); assertEquals("Pair coordination ended.", pair.status)
+            assertEquals(if (duringHold) 0 else 1, a.defaults); assertEquals(0, b.defaults)
+            pair.poll(); assertFalse(pair.busy); assertFalse(a.closed); assertFalse(b.closed)
+        }
+    }
+
+    @Test fun `settlement snapshot cannot cross eight second deadline or clock rollback`() {
+        for (afterRead in listOf(8_000L, -1L)) {
+            var now = 0L
+            val a = Member(live); val b = Member(live)
+            val pair = pair(a, b) { now }
+            pair.catchUp(NativeMixedSide.A)
+            b.snapshotHook = { now = afterRead }
+            pair.poll()
+            assertFalse(pair.busy); assertTrue(pair.status.contains("timed out"))
+            assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(1, a.defaults + b.defaults)
+        }
     }
 }

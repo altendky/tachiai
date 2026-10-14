@@ -3,20 +3,20 @@ package net.fstab.tachiai.provider.abema
 import org.junit.Assert.*
 import org.junit.Test
 
-class AbemaSlotPremiumReceiptTest {
+class AbemaSlotAuthorityReceiptTest {
     private fun scope(client: Any = Any(), run: Long = 1, deadline: Long = 5000) =
-        AbemaSlotPremiumScope(client, "instance", "route-owner", "exact-source", "channel", "slot", run, deadline)
-    private fun receipt(scope: AbemaSlotPremiumScope, expiry: Long = 10000) = checkNotNull(
-        AbemaSlotPremiumReceipt.publish(scope, expiry, 1000, 100, 1000, 1200, 200))
+        AbemaSlotAuthorityScope(client, "instance", "route-owner", "exact-source", "channel", "slot", run, deadline)
+    private fun receipt(scope: AbemaSlotAuthorityScope, expiry: Long = 10000) = checkNotNull(
+        AbemaSlotAuthorityReceipt.publish(scope, expiry, 1000, 100, 1000, 1200, 200))
 
     @Test fun freshPublicationUsesOriginalReadinessAndPlaybackBudgets() {
         val owner = scope()
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, 10000, 1000, 100, 1000, 1200, 1000))
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, 10000, 1000, 100, 6000, 1200, 200))
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, 10000, 1000, 100, 1000, 999, 200))
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, 10000, 1000, 100, 1000, 1200, 99))
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, 1200, 1000, 100, 1000, 1200, 200))
-        assertNull(AbemaSlotPremiumReceipt.publish(owner, Long.MAX_VALUE, 1000, 100, 1000, 1200, 200))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, 10000, 1000, 100, 1000, 1200, 1000))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, 10000, 1000, 100, 6000, 1200, 200))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, 10000, 1000, 100, 1000, 999, 200))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, 10000, 1000, 100, 1000, 1200, 99))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, 1200, 1000, 100, 1000, 1200, 200))
+        assertNull(AbemaSlotAuthorityReceipt.publish(owner, Long.MAX_VALUE, 1000, 100, 1000, 1200, 200))
         assertTrue(receipt(owner).current(owner, 1300, 300))
     }
 
@@ -45,9 +45,9 @@ class AbemaSlotPremiumReceiptTest {
     @Test fun authorityCannotMoveToAnotherClientSourceRouteSlotOrRun() {
         val owner = scope()
         val replacements = listOf(scope(), scope(owner.client, run = 2),
-            AbemaSlotPremiumScope(owner.client, owner.instanceId, "replacement-route", owner.sourceProof,
+            AbemaSlotAuthorityScope(owner.client, owner.instanceId, "replacement-route", owner.sourceProof,
                 owner.channelId, owner.slotId, owner.run, owner.playbackDeadline),
-            AbemaSlotPremiumScope(owner.client, owner.instanceId, owner.ownerProof, "replacement-source",
+            AbemaSlotAuthorityScope(owner.client, owner.instanceId, owner.ownerProof, "replacement-source",
                 owner.channelId, "other-slot", owner.run, owner.playbackDeadline),
             scope(owner.client))
         for (replacement in replacements) {

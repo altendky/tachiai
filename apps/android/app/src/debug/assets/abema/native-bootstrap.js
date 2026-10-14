@@ -25,6 +25,9 @@
   let accountExpiry;
   let accountWall;
   let slotPremiumExpiry;
+  let slotChaseCandidate;
+  let slotChaseExpiry;
+  let selectedChase = false;
   let operation;
   let response;
   const remember = category => { if (failure === 'NONE') failure = category; };
@@ -39,7 +42,8 @@
     controllers.clear();
     response?.fill(0);
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
-    accountExpiry = accountWall = slotPremiumExpiry = undefined;
+    accountExpiry = accountWall = slotPremiumExpiry = slotChaseCandidate = slotChaseExpiry = undefined;
+    selectedChase = false;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -48,7 +52,8 @@
     if (accountExpiry !== undefined) {
       const now = Date.now();
       if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpiry ||
-        (slotPremiumExpiry !== undefined && now >= slotPremiumExpiry)) {
+        (slotPremiumExpiry !== undefined && now >= slotPremiumExpiry) ||
+        (slotChaseExpiry !== undefined && now >= slotChaseExpiry)) {
         remember('TIMER_EXPIRED'); throw new Error();
       }
       accountWall = now;
@@ -294,7 +299,8 @@
       sourceBinding: () => usable() && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       channelBinding: () => usable() && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
       slotBinding: () => usable() && state === 'READY' && configuredSlot ?
-        stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected }) : null,
+        stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected,
+          ...(selectedChase ? { chase: true } : {}) }) : null,
       begin,
       take: () => { if (!usable() || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -313,8 +319,11 @@
           phase = 'ACCOUNT';
           if (!requestedAccount || typeof requestedAccount !== 'object' || Array.isArray(requestedAccount)) refuseResponse();
           const premiumPresent = Object.hasOwn(requestedAccount, 'slotPremium');
-          if (Object.keys(requestedAccount).sort().join(',') !== (premiumPresent ?
-            'bearer,deviceId,expiresAtMs,slotPremium,userId' : 'bearer,deviceId,expiresAtMs,userId')) refuseResponse();
+          const chasePresent = Object.hasOwn(requestedAccount, 'slotChase');
+          const accountKeys = ['bearer', 'deviceId', 'expiresAtMs', 'userId'];
+          if (premiumPresent) accountKeys.push('slotPremium');
+          if (chasePresent) accountKeys.push('slotChase');
+          if (Object.keys(requestedAccount).sort().join(',') !== accountKeys.sort().join(',')) refuseResponse();
           const { userId, bearer, expiresAtMs, deviceId: boundDevice } = requestedAccount;
           if (typeof userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(userId) ||
             typeof bearer !== 'string' || bearer.length < 1 || bearer.length > 6144 || !/^[\x21-\x7e]+$/.test(bearer) ||
@@ -329,6 +338,17 @@
               !Number.isSafeInteger(premium.expiresAtMs) || premium.expiresAtMs <= 0 ||
               premium.expiresAtMs <= accountWall) refuseResponse();
             slotPremiumExpiry = premium.expiresAtMs;
+          }
+          if (chasePresent) {
+            const chase = requestedAccount.slotChase;
+            if (!configuredSlot || !chase || typeof chase !== 'object' || Array.isArray(chase) ||
+              Object.keys(chase).sort().join(',') !== 'authorityIds,channelId,expiresAtMs,slotId' ||
+              chase.channelId !== slotRequest[0] || chase.slotId !== slotRequest[1] ||
+              !Number.isSafeInteger(chase.expiresAtMs) || chase.expiresAtMs <= 0 ||
+              !boundedAuthorityIds(chase.authorityIds)) refuseResponse();
+            // An unused candidate may expire without revoking ordinary ended
+            // playback. Only the selected Chase arm activates its lifetime.
+            slotChaseCandidate = { expiresAtMs: chase.expiresAtMs, authorityIds: [...chase.authorityIds] };
           }
           deviceId = boundDevice;
           user = { userId, accessToken: bearer };
@@ -621,9 +641,16 @@
     if (!record(raw)) refuseResponse();
     const slot = raw.slot;
     if (!record(slot) || slot.id !== slotId || slot.channelId !== channelId) refuseResponse();
+    const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
+    const future = value => seconds(value) && value * 1000 > Date.now() + 300000;
+    if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt) throw new Error();
+    const now = Date.now();
+    const chase = slot.startAt * 1000 <= now && now < slot.endAt * 1000;
+    if (slot.startAt * 1000 > now) throw new Error();
     phase = 'SLOT_FREE';
     const premium = slotPremiumExpiry !== undefined;
-    if (!record(slot.flags) || slot.flags.timeshift !== true || (!premium && slot.flags.timeshiftFree !== true)) throw new Error();
+    if (!record(slot.flags) || (chase ? slot.flags.chasePlay !== true :
+      slot.flags.timeshift !== true || (!premium && slot.flags.timeshiftFree !== true))) throw new Error();
     phase = 'SLOT_RESTRICTIONS';
     if ((slot.flags.paused !== undefined && slot.flags.paused !== false) ||
       (slot.mark !== undefined && (!record(slot.mark) || (slot.mark.drm !== undefined && slot.mark.drm !== false))) ||
@@ -633,27 +660,34 @@
       (raw.payperview !== undefined && raw.payperview !== null) ||
       (raw.payPerView !== undefined && raw.payPerView !== null) ||
       !record(slot.broadcastRegionPolicies) ||
-      ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.timeshift)) throw new Error();
+      ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.timeshift) ||
+      (chase && ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.linear))) throw new Error();
     phase = 'SLOT_WINDOW';
-    const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
-    const future = value => seconds(value) && value * 1000 > Date.now() + 300000;
-    // Ordinary ended catch-up only. Native supplies a fresh exact-slot Premium
-    // receipt under ACCOUNT; otherwise explicit free plus absent/zero free-end
-    // uses the separate general window. Premium does not use the free window.
-    if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt ||
-      slot.endAt * 1000 > Date.now() || !future(slot.timeshiftEndAt) ||
-      (!premium && slot.timeshiftFreeEndAt !== undefined && slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
+    if (chase) {
+      if (!slotChaseCandidate || slotChaseCandidate.expiresAtMs <= Date.now() ||
+        !boundedAuthorityIds(slot.chasePlayFeatureAuthorityIds) ||
+        !slot.chasePlayFeatureAuthorityIds.some(id => slotChaseCandidate.authorityIds.includes(id)) ||
+        !(premium ? future(slot.timeshiftEndAt) : future(slot.timeshiftFreeEndAt))) throw new Error();
+      slotChaseExpiry = slotChaseCandidate.expiresAtMs;
+      alive();
+    } else {
+      // Ended ordinary catch-up keeps its existing independent Free/Premium
+      // windows. Unused Chase candidates never grant or truncate this arm.
+      if (!future(slot.timeshiftEndAt) || (!premium && slot.timeshiftFreeEndAt !== undefined &&
+        slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
+    }
+    const playlists = chase ? slot.chasePlayback : slot.playback;
     phase = 'SOURCE';
-    if (!record(slot.playback) || !usableSlotPlaylist(slot.playback.dash, slotId) ||
-      (slot.playback.yospace !== undefined && (!record(slot.playback.yospace) ||
-        (slot.playback.yospace.dash !== undefined && (typeof slot.playback.yospace.dash !== 'string' ||
-          slot.playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(slot.playback.yospace.dash)))))) throw new Error();
+    if (!record(playlists) || !usableSlotPlaylist(playlists.dash, slotId) ||
+      (playlists.yospace !== undefined && (!record(playlists.yospace) ||
+        (playlists.yospace.dash !== undefined && (typeof playlists.yospace.dash !== 'string' ||
+          playlists.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playlists.yospace.dash)))))) throw new Error();
     // Provider initial ad-cluster0 and absent device classification are verified
     // defaults. Keep truthful Android UA, unchanged ad selection, and no forced
     // plain mode or invented completion/tracking. Separate IMA remains outside
     // the user-approved debug native path, as for existing configured episodes.
     selected = load(21470).tw({ sourceParam: { type: load(68610).Y1.Streaming,
-      playlists: slot.playback, isDrm: slot.mark?.drm === true, contentId: slotId,
+      playlists, isDrm: slot.mark?.drm === true, contentId: slotId,
       mediaToken: identity.mediaToken, cffId: 0, dtid: null },
       preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
     if (!usableSlotPlaylist(selected, slotId)) throw new Error();
@@ -670,6 +704,12 @@
     await prepareLegacyLicense(load, identity, slotId, 'slot');
     selectedChannel = channelId;
     selectedSlot = slotId;
+    selectedChase = chase;
+  }
+  function boundedAuthorityIds(value) {
+    return Array.isArray(value) && value.length >= 1 && value.length <= 1000 &&
+      value.every(id => typeof id === 'string' && id.length >= 1 && id.length <= 256) &&
+      new Set(value).size === value.length && value.reduce((size, id) => size + id.length, 0) <= 65536;
   }
   function usableSlotPlaylist(value, slotId) {
     if (typeof value !== 'string' || value.length < 1 || value.length > 2048 ||

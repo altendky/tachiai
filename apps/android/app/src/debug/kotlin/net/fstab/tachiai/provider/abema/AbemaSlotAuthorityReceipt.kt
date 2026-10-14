@@ -2,7 +2,7 @@ package net.fstab.tachiai.provider.abema
 
 // This immutable scope belongs to one native run, not to the shared account's
 // cached identity proof. The client supplies durable grant/owner checks.
-internal class AbemaSlotPremiumScope(
+internal class AbemaSlotAuthorityScope(
     val client: Any,
     val instanceId: String,
     val ownerProof: String,
@@ -12,23 +12,23 @@ internal class AbemaSlotPremiumScope(
     val run: Long,
     val playbackDeadline: Long,
 ) {
-    override fun toString() = "AbemaSlotPremiumScope(redacted)"
+    override fun toString() = "AbemaSlotAuthorityScope(redacted)"
 }
 
-internal class AbemaSlotPremiumReceipt private constructor(
-    private val scope: AbemaSlotPremiumScope,
+internal class AbemaSlotAuthorityReceipt private constructor(
+    private val scope: AbemaSlotAuthorityScope,
     val expiresAtMs: Long,
     private val beganWall: Long,
     private val beganElapsed: Long,
 ) {
     companion object {
-        fun publish(scope: AbemaSlotPremiumScope, expiresAtMs: Long, beganWall: Long,
-            beganElapsed: Long, readinessDeadline: Long, wall: Long, elapsed: Long): AbemaSlotPremiumReceipt? {
+        fun publish(scope: AbemaSlotAuthorityScope, expiresAtMs: Long, beganWall: Long,
+            beganElapsed: Long, readinessDeadline: Long, wall: Long, elapsed: Long): AbemaSlotAuthorityReceipt? {
             if (beganWall <= 0 || beganElapsed < 0 || scope.run <= 0 ||
                 readinessDeadline <= beganElapsed || readinessDeadline > scope.playbackDeadline ||
                 wall < beganWall || elapsed < beganElapsed || elapsed >= readinessDeadline ||
                 expiresAtMs <= wall || expiresAtMs > 9_007_199_254_740_991L) return null
-            return AbemaSlotPremiumReceipt(scope, expiresAtMs, beganWall, beganElapsed).takeIf {
+            return AbemaSlotAuthorityReceipt(scope, expiresAtMs, beganWall, beganElapsed).takeIf {
                 it.current(scope, wall, elapsed)
             }
         }
@@ -40,7 +40,7 @@ internal class AbemaSlotPremiumReceipt private constructor(
 
     // RAM/clock only: safe for native presentation admission and the main
     // monitor. A lost scope or clock rollback permanently ends authority.
-    fun current(expected: AbemaSlotPremiumScope, wall: Long, elapsed: Long): Boolean = synchronized(lock) {
+    fun current(expected: AbemaSlotAuthorityScope, wall: Long, elapsed: Long): Boolean = synchronized(lock) {
         val okay = !refused && expected === scope && wall >= minimumWall && elapsed >= minimumElapsed &&
             wall < expiresAtMs && elapsed < scope.playbackDeadline
         if (!okay) refused = true
@@ -48,5 +48,5 @@ internal class AbemaSlotPremiumReceipt private constructor(
         minimumElapsed = maxOf(minimumElapsed, elapsed)
         okay
     }
-    override fun toString() = "AbemaSlotPremiumReceipt(redacted)"
+    override fun toString() = "AbemaSlotAuthorityReceipt(redacted)"
 }

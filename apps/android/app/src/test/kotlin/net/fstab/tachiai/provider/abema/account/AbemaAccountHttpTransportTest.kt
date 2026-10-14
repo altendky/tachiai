@@ -53,12 +53,15 @@ class AbemaAccountHttpTransportTest {
     private val token = URL("https://abema.tv/api/auth/oauth/device/token")
     private val email = URL("https://api.p-c3-e.abema-tv.com/v1/users/guest/email")
     @Test fun subscriptionProfileMakesOneUnchangedProfileGetAndCleansBeforeMatchingTypedResult() {
-        val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[{"expire":2000,"viewingAuthorities":[{"isPremium":true}]}]}""".toByteArray())
+        val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[{"expire":2000,"viewingAuthorities":[{"isPremium":true}],"featureAuthorities":[{"id":"fixture-authority","type":2}]}]}""".toByteArray())
         var allocations = 0
         val t = AbemaAccountHttpTransport({ url -> allocations++; assertEquals(profile, url); c }, { true }, { 1000 }, { 1000000 })
         val result = t.subscriptionProfile("guest", "private-bearer") as AbemaSubscriptionProfileResult.Identity
         assertEquals("guest", result.id); assertEquals(AbemaSubscriptionFieldState.PREMIUM, result.fieldState)
         assertEquals(2_000_000L, result.premiumExpiresAtMs)
+        assertEquals(AbemaChaseFieldState.VERIFIED, result.chase.state)
+        assertEquals("fixture-authority", result.chase.claims.single().id)
+        assertEquals(2_000_000L, result.chase.claims.single().expiresAtMs)
         assertEquals(1, allocations); assertEquals("GET", c.requestMethod)
         assertEquals("Bearer private-bearer", c.getRequestProperty("Authorization")); assertEquals("application/json", c.getRequestProperty("Accept"))
         assertNull(c.getRequestProperty("Cookie")); assertEquals(0, c.sent.size()); assertFalse(c.doOutput)
@@ -66,6 +69,23 @@ class AbemaAccountHttpTransportTest {
         assertEquals(10000, c.connectTimeout); assertEquals(10000, c.readTimeout)
         assertEquals(1, c.opened); assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected)
         assertTrue(t.cleanupConfirmed); t.close(); assertEquals(1, c.disconnected)
+    }
+    @Test fun subscriptionChaseRefusalStaysIndependentOfPremiumWithOneGetAndActualCleanup() {
+        for (features in listOf("null", """[{"id":"fixture-authority","type":"2"}]""", """[{"id":"","type":2}]""")) {
+            val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[{"expire":2000,"viewingAuthorities":[{"isPremium":true}],"featureAuthorities":$features}]}""".toByteArray())
+            var allocations = 0
+            val t = AbemaAccountHttpTransport({ url -> allocations++; assertEquals(profile, url); c }, { true }, { 1000 }, { 1000000 })
+            val result = t.subscriptionProfile("guest", "private-bearer") as AbemaSubscriptionProfileResult.Identity
+            assertEquals(2_000_000L, result.premiumExpiresAtMs)
+            assertEquals(AbemaChaseFieldState.UNVERIFIED, result.chase.state); assertTrue(result.chase.claims.isEmpty())
+            assertEquals(1, allocations); assertEquals(1, c.opened)
+            assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected); assertTrue(t.cleanupConfirmed)
+            t.close(); assertEquals(1, c.disconnected)
+        }
+        val c = Connection(profile, bytes = """{"profile":{"userId":"guest"},"userSubscriptions":[{"expire":"2000","featureAuthorities":[{"id":"fixture-authority","type":2}]}]}""".toByteArray())
+        val t = transport(c)
+        assertSame(AbemaSubscriptionProfileResult.Inconclusive, t.subscriptionProfile("guest", "private-bearer"))
+        assertEquals(1, c.opened); assertEquals(1, c.streamCloses); assertEquals(1, c.disconnected); assertTrue(t.cleanupConfirmed)
     }
     @Test fun subscriptionRefusalsAndUnexpectedStatusDoNotReadAnyResponseBody() {
         for (status in listOf(401, 403, 400, 404, 302, 429, 500, 201)) {

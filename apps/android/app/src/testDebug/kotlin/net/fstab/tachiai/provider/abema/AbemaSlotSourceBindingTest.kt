@@ -79,4 +79,60 @@ class AbemaSlotSourceBindingTest {
             "bad/id" to slot, channel to "-slot", "" to slot))
             assertFalse(allowsAbemaSlotSource(URI(source()), channelId, slotId))
     }
+
+    @Test fun canonicalModeIsExplicitAndOldEntryPointRemainsOrdinaryOnly() {
+        for ((channelId, slotId) in listOf(channel to slot, "other-channel" to "other-slot")) {
+            val ordinary = binding(channelId, slotId)
+            val chase = ordinary.dropLast(1) + ",\"chase\":true}"
+            val normalResult = checkNotNull(parseAbemaSlotPlaybackBinding(ordinary, channelId, slotId))
+            val chaseResult = checkNotNull(parseAbemaSlotPlaybackBinding(chase, channelId, slotId))
+            assertEquals(URI(source(slotId)), normalResult.uri); assertFalse(normalResult.chase)
+            assertEquals(normalResult.uri, chaseResult.uri); assertTrue(chaseResult.chase)
+            assertEquals(normalResult.uri, parseAbemaSlotSourceBinding(ordinary, channelId, slotId))
+            assertNull(parseAbemaSlotSourceBinding(chase, channelId, slotId))
+            // The same URI parses under both explicit modes. This projection
+            // carries no account, subscription or content-authority receipt.
+            assertEquals("AbemaSlotPlaybackBinding(redacted)", chaseResult.toString())
+            assertFalse(chaseResult.toString().contains("fixture-token"))
+        }
+    }
+
+    @Test fun chaseModeRejectsCoercionsFalseDuplicateExtraAndReorderedFields() {
+        val ordinary = binding()
+        val chase = ordinary.dropLast(1) + ",\"chase\":true}"
+        val invalid = listOf("false", "null", "1", "\"true\"", "[]", "{}")
+            .map { ordinary.dropLast(1) + ",\"chase\":$it}" } + listOf(
+                chase + " ", " $chase", chase + "{}",
+                chase.replace(",\"chase\":true", ", \"chase\":true"),
+                chase.dropLast(1) + ",\"chase\":true}",
+                chase.dropLast(1) + ",\"authority\":true}",
+                chase.replace("\"chase\"", "\"cha\\u0073e\""),
+                chase.replace(",\"chase\":true", "").replace("{", "{\"chase\":true,"),
+                chase.replace("\"channelId\":", "\"channelId\":\"$channel\",\"channelId\":"),
+                chase.replace("fixture-token", "\\ud800"), chase.replace("https://", "https:\\/\\/"),
+                "x".repeat(4097))
+        for (value in invalid) {
+            assertNull(parseAbemaSlotPlaybackBinding(value, channel, slot))
+            assertNull(parseAbemaSlotSourceBinding(value, channel, slot))
+        }
+        assertNull(parseAbemaSlotPlaybackBinding(null, channel, slot))
+    }
+
+    @Test fun chaseBindingRetainsExactOwnersAndExistingSourceQueryPolicy() {
+        fun chase(uri: String = source()) = binding(uri = uri).dropLast(1) + ",\"chase\":true}"
+        assertNull(parseAbemaSlotPlaybackBinding(chase(), "other-channel", slot))
+        assertNull(parseAbemaSlotPlaybackBinding(chase(), channel, "other-slot"))
+        for (candidate in listOf(source("other-slot"), source().replace("https:", "http:"),
+            source().replace(".net/", ".net:443/"), source().replace("https://", "https://@"),
+            source().replace("ds-vod-abematv.akamaized.net", "ds-vod-abematv.akamaized.net.evil.invalid"),
+            source().replace("/manifest", "/../manifest"), source().replace("/manifest", "/%2e%2e/manifest"),
+            source() + "#", source().replace(".mpd", ".m3u8"),
+            source(query = "t=fixture-token&enc=wv&dt=pc_chrome&ut=1&ccf=0"),
+            source(query = "t=fixture-token&enc=clear&dt=pc_chrome&ut=1&ccf=0&chase=true"),
+            source(query = "t=fixture-token&enc=clear&dt=pc_chrome&ut=1&ccf=0&t=other"),
+            source(query = "t=" + "a".repeat(2049))))
+            assertNull(parseAbemaSlotPlaybackBinding(chase(candidate), channel, slot))
+        val ordinaryWithModeLikePath = binding(uri = source().replace("/provider-declared/", "/chase/"))
+        assertFalse(checkNotNull(parseAbemaSlotPlaybackBinding(ordinaryWithModeLikePath, channel, slot)).chase)
+    }
 }

@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
@@ -46,6 +47,15 @@ internal class AbemaAccountProfileObservation(
         override fun toString() = render()
         internal fun count(name: String) = counts[name] ?: 0
     }
+    class ClosedChaseObservation internal constructor(val state: AbemaChaseFieldState,
+        val activeClaims: Int, val headroom70s: Boolean) {
+        fun render() = "chaseState=${state.name} activeClaims=$activeClaims headroom70s=$headroom70s"
+        override fun toString() = render()
+    }
+    private class ChaseEvidence(val state: AbemaChaseFieldState, val activeClaims: Int,
+        val minimumExpiry: Long?, val readWall: Long) {
+        override fun toString() = "AbemaChaseEvidence(redacted)"
+    }
     private val began = AtomicBoolean()
     private val closed = AtomicBoolean()
     private val closeFinished = AtomicBoolean()
@@ -73,6 +83,9 @@ internal class AbemaAccountProfileObservation(
     private val owned = AtomicReference<FirstClose?>()
     private val connections = CopyOnWriteArrayList<ObservedConnection>()
     private val projection = AtomicReference<ClosedObservation?>()
+    private val chaseEvidence = AtomicReference<ChaseEvidence?>()
+    private val chaseStale = AtomicBoolean()
+    private val chaseWall = AtomicLong(-1)
     private val json = AtomicReference(JsonState.UNREAD)
     private var expectedBearer: String? = null
     private var observedWall = -1L
@@ -83,7 +96,7 @@ internal class AbemaAccountProfileObservation(
             try { onCleanupFailure() } catch (_: Throwable) { }
         }
     }
-    fun observe(userId: String, bearer: String): AbemaAccountProfileResult {
+    private fun begin(bearer: String): AbemaAccountTransport {
         if (!live() || !began.compareAndSet(false, true)) refused()
         expectedBearer = bearer; observedWall = wallMs()
         if (observedWall < 0) refused()
@@ -99,9 +112,27 @@ internal class AbemaAccountProfileObservation(
             if (!receipt.close()) poison()
             refused()
         }
-        val result = actual.profile(userId, bearer)
+        return actual
+    }
+    fun observe(userId: String, bearer: String): AbemaAccountProfileResult {
+        val result = begin(bearer).profile(userId, bearer)
         if (!live()) refused()
         matched.set(result is AbemaAccountProfileResult.Identity && result.id == userId)
+        return result
+    }
+    fun observeSubscriptions(userId: String, bearer: String): AbemaSubscriptionProfileResult {
+        val result = begin(bearer).subscriptionProfile(userId, bearer)
+        if (!live()) refused()
+        if (result is AbemaSubscriptionProfileResult.Identity && result.id == userId) {
+            val now = wallMs()
+            if (now < observedWall) refused()
+            // Keep no authority IDs or profile identity in the closed evidence.
+            // The count is saturated at the existing authority-list bound.
+            val chase = result.chase
+            chaseEvidence.set(ChaseEvidence(chase.state, chase.claims.size.coerceAtMost(COUNT_LIMIT),
+                chase.claims.minOfOrNull { it.expiresAtMs }, now))
+            matched.set(true)
+        }
         return result
     }
     override fun close() {
@@ -127,6 +158,25 @@ internal class AbemaAccountProfileObservation(
     val requestCount: Int get() = opened.get().coerceIn(0, 2)
     fun publish(proof: Proof): ClosedObservation? = if (proof.confirmed() && cleanupConfirmed && matched.get() &&
         opened.get() == 1 && status.get() == 200 && json.get() == JsonState.COMPLETE) projection.get() else null
+    fun publishChase(proof: Proof): ClosedChaseObservation? {
+        if (chaseStale.get() || !proof.confirmed() || !cleanupConfirmed || !matched.get() || opened.get() != 1 ||
+            status.get() != 200 || json.get() != JsonState.COMPLETE) return null
+        val evidence = chaseEvidence.get() ?: return null
+        val now = wallMs()
+        while (true) {
+            val previous = chaseWall.get()
+            if (now < evidence.readWall || now < observedWall || now < previous) { chaseStale.set(true); return null }
+            if (chaseWall.compareAndSet(previous, now)) break
+        }
+        val expiry = evidence.minimumExpiry
+        if (evidence.state == AbemaChaseFieldState.VERIFIED && (expiry == null || expiry <= now)) {
+            chaseStale.set(true); return null
+        }
+        // Observation only: actual playback must acquire a fresh source-bound
+        // receipt. This does not retain authority for a later Schedule/run.
+        val headroom = expiry != null && expiry > now && expiry - now >= 70_000
+        return ClosedChaseObservation(evidence.state, evidence.activeClaims, headroom)
+    }
     override fun toString() = "AbemaAccountProfileObservation(redacted)"
 
     private inner class Capture {
@@ -377,19 +427,39 @@ class AbemaAccountProfileObservationGuardDeviceTest {
         override fun getLocalCertificates(): Array<Certificate>? = null
         override fun getServerCertificates(): Array<Certificate> = emptyArray()
     }
-    private class Fixture(bytes: ByteArray = body().toByteArray(), address: String = ADDRESS) {
+    private class Fixture(bytes: ByteArray = body().toByteArray(), address: String = ADDRESS, owned: Boolean = false) {
         val remote = Fake(bytes, address)
         var allowed = true
+        var wall = WALL
         var allocations = 0
         var onOpen: () -> Unit = {}
         val poisoned = AtomicInteger()
         lateinit var http: AbemaAccountHttpTransport
+        var ownedTransport: OwnedAbemaAccountTransport? = null
+        var httpFactories = 0
         val helper = AbemaAccountProfileObservation({ allowed }, { wrap ->
-            AbemaAccountHttpTransport({ allocations++; onOpen(); wrap(remote) }, { allowed }, { 0 }, { WALL })
-                .also { http = it }
-        }, { (it as AbemaAccountHttpTransport).cleanupConfirmed }, { poisoned.incrementAndGet() }, { WALL })
+            fun makeHttp(gate: () -> Boolean): AbemaAccountHttpTransport {
+                httpFactories++
+                return AbemaAccountHttpTransport({ url ->
+                    assertEquals(ADDRESS, url.toExternalForm())
+                    allocations++; onOpen(); wrap(remote)
+                }, gate, { 0 }, { wall }).also { http = it }
+            }
+            if (owned) OwnedAbemaAccountTransport(null, { allowed }, { poisoned.incrementAndGet() },
+                createBackend = { _, _, _ -> error("Synthetic System fixture must not allocate a backend") },
+                // The actual owner creates/closes its System route; replace only
+                // connection allocation and never invoke its network opener.
+                makeHttpTransport = { _, gate -> makeHttp(gate) }).also { ownedTransport = it }
+            else makeHttp { allowed }
+        }, { when (it) {
+            is OwnedAbemaAccountTransport -> it.cleanupConfirmed
+            is AbemaAccountHttpTransport -> it.cleanupConfirmed
+            else -> false
+        } }, { poisoned.incrementAndGet() }, { wall })
         fun observe(): AbemaAccountProfileResult = helper.observe(ID, BEARER)
+        fun subscriptions(): AbemaSubscriptionProfileResult = helper.observeSubscriptions(ID, BEARER)
         fun finish(): AbemaAccountProfileObservation.ClosedObservation? { helper.close(); return helper.publish(PROOF) }
+        fun finishChase(): AbemaAccountProfileObservation.ClosedChaseObservation? { helper.close(); return helper.publishChase(PROOF) }
         fun refuse(): Boolean = try { observe(); false } catch (_: AbemaAccountException) { true }
     }
     @Test fun oneProductionGetUsesUnchangedHeadersAndStrictRootSubscriptionShapes() {
@@ -570,12 +640,144 @@ class AbemaAccountProfileObservationGuardDeviceTest {
         helper.observe(ID, BEARER); helper.close()
         assertArrayEquals(bytes, forwarded.toByteArray()); assertNotNull(helper.publish(PROOF)); assertTrue(helper.capturesWiped())
     }
+    @Test fun chaseEligibilityUsesOneUnchangedProductionSubscriptionGetAndOnlyClosedOutput() {
+        val f = Fixture(chaseBody().toByteArray())
+        val result = f.subscriptions() as AbemaSubscriptionProfileResult.Identity
+        assertEquals(AbemaChaseFieldState.VERIFIED, result.chase.state)
+        assertNull(f.helper.publishChase(PROOF))
+        val observed = checkNotNull(f.finishChase())
+        assertEquals(AbemaChaseFieldState.VERIFIED, observed.state); assertEquals(1, observed.activeClaims)
+        assertTrue(observed.headroom70s)
+        assertEquals(1, f.allocations); assertEquals(1, f.helper.requestCount)
+        assertEquals("GET", f.remote.requestMethod); assertEquals("Bearer $BEARER", f.remote.getRequestProperty("Authorization"))
+        assertEquals("application/json", f.remote.getRequestProperty("Accept")); assertNull(f.remote.getRequestProperty("Cookie"))
+        assertFalse(f.remote.doOutput); assertFalse(f.remote.instanceFollowRedirects); assertFalse(f.remote.useCaches)
+        assertEquals(10_000, f.remote.connectTimeout); assertEquals(10_000, f.remote.readTimeout)
+        assertEquals(1, f.remote.inputOpens.get()); assertEquals(1, f.remote.closes.get()); assertEquals(1, f.remote.disconnects.get())
+        assertTrue(f.helper.cleanupConfirmed); assertTrue(f.helper.capturesWiped())
+        for (privateValue in listOf(ID, BEARER, "synthetic_authority", "2000", "https:")) assertFalse(observed.render().contains(privateValue))
+        assertThrows(AbemaAccountException::class.java) { f.subscriptions() }
+        assertThrows(AbemaAccountException::class.java) { f.observe() }
+        assertEquals(1, f.allocations)
+        val shape = Fixture().also { it.observe() }
+        assertThrows(AbemaAccountException::class.java) { shape.subscriptions() }
+        assertEquals(1, shape.allocations); shape.finish()
+    }
+    @Test fun actualOwnedSystemWrapperDelegatesSubscriptionGetThroughObserverAndTypedParserWithoutSocket() {
+        val f = Fixture(chaseBody().toByteArray(), owned = true)
+        assertNull(f.ownedTransport); assertEquals(0, f.httpFactories)
+        val result = f.subscriptions() as AbemaSubscriptionProfileResult.Identity
+        assertEquals(ID, result.id); assertEquals(AbemaChaseFieldState.VERIFIED, result.chase.state)
+        assertEquals(1, f.httpFactories); assertEquals(1, f.allocations); assertEquals(1, f.helper.requestCount)
+        assertNotNull(f.ownedTransport); assertTrue(checkNotNull(f.ownedTransport).cleanupConfirmed)
+        assertTrue(f.http.cleanupConfirmed); assertNull(f.helper.publishChase(PROOF))
+        val observed = checkNotNull(f.finishChase())
+        assertEquals(AbemaChaseFieldState.VERIFIED, observed.state); assertEquals(1, observed.activeClaims)
+        assertTrue(observed.headroom70s); assertTrue(f.helper.cleanupConfirmed); assertTrue(f.helper.capturesWiped())
+        assertEquals("GET", f.remote.requestMethod); assertEquals("Bearer $BEARER", f.remote.getRequestProperty("Authorization"))
+        assertEquals("application/json", f.remote.getRequestProperty("Accept")); assertNull(f.remote.getRequestProperty("Cookie"))
+        assertFalse(f.remote.doOutput); assertFalse(f.remote.instanceFollowRedirects); assertFalse(f.remote.useCaches)
+        assertEquals(1, f.remote.inputOpens.get()); assertEquals(1, f.remote.closes.get()); assertEquals(1, f.remote.disconnects.get())
+        assertEquals(0, f.poisoned.get())
+        assertThrows(AbemaAccountException::class.java) { f.subscriptions() }
+        assertEquals(1, f.httpFactories); assertEquals(1, f.allocations)
+        val negative = Fixture(chaseBody().replace("\"expire\":2000", "\"expire\":\"2000\"").toByteArray(), owned = true)
+        assertSame(AbemaSubscriptionProfileResult.Inconclusive, negative.subscriptions())
+        assertNull(negative.finishChase()); assertEquals(1, negative.httpFactories); assertEquals(1, negative.allocations)
+        assertTrue(checkNotNull(negative.ownedTransport).cleanupConfirmed); assertTrue(negative.helper.cleanupConfirmed)
+        assertEquals(1, negative.remote.inputOpens.get()); assertEquals(1, negative.remote.closes.get())
+        assertEquals(1, negative.remote.disconnects.get()); assertEquals(0, negative.poisoned.get())
+    }
+    @Test fun chaseNegativeCapabilitiesRemainDistinctAndNeverInferPlanOrPlayback() {
+        val cases = listOf(
+            """{"profile":{"userId":"$ID"}}""" to AbemaChaseFieldState.ABSENT,
+            """{"profile":{"userId":"$ID"},"userSubscriptions":[]}""" to AbemaChaseFieldState.EMPTY,
+            chaseBody(500) to AbemaChaseFieldState.NO_AFFIRMATIVE_AUTHORITY,
+            chaseBody(features = "[]") to AbemaChaseFieldState.EMPTY,
+            chaseBody(features = """[{"id":"synthetic_authority","type":3}]""") to AbemaChaseFieldState.NO_AFFIRMATIVE_AUTHORITY,
+            chaseBody(features = "null") to AbemaChaseFieldState.UNVERIFIED,
+            chaseBody(features = """[{"id":"synthetic_authority","type":"2"}]""") to AbemaChaseFieldState.UNVERIFIED,
+            """{"profile":{"userId":"$ID","userSubscriptions":[{"expire":2000,"featureAuthorities":[{"id":"synthetic_authority","type":2}]}]}}""" to AbemaChaseFieldState.ABSENT,
+        )
+        for ((body, state) in cases) {
+            val f = Fixture(body.toByteArray())
+            assertTrue(f.subscriptions() is AbemaSubscriptionProfileResult.Identity)
+            val observed = checkNotNull(f.finishChase())
+            assertEquals(state, observed.state); assertEquals(0, observed.activeClaims); assertFalse(observed.headroom70s)
+            assertEquals(1, f.allocations); assertTrue(f.helper.cleanupConfirmed)
+        }
+    }
+    @Test fun inconclusiveRejectedAndMismatchedSubscriptionResultsCannotPublishNegativeEligibility() {
+        for (body in listOf(chaseBody().replace("\"expire\":2000", "\"expire\":\"2000\""),
+            chaseBody().replace(ID, "synthetic_other"),
+            """{"profile":{"userId":"$ID"},"userSubscriptions":null}""",
+            """{"profile":{"userId":"$ID"},"userSubscriptions":[],"userSubscriptions":[]}""")) {
+            val f = Fixture(body.toByteArray())
+            assertSame(AbemaSubscriptionProfileResult.Inconclusive, f.subscriptions())
+            assertNull(f.finishChase()); assertTrue(f.helper.cleanupConfirmed); assertTrue(f.helper.capturesWiped())
+        }
+        for (status in listOf(401, 403, 404, 302, 503)) {
+            val f = Fixture(chaseBody().toByteArray()).also { it.remote.response = status }
+            assertSame(if (status in listOf(401, 403)) AbemaSubscriptionProfileResult.Rejected else AbemaSubscriptionProfileResult.Inconclusive,
+                f.subscriptions())
+            assertNull(f.finishChase()); assertEquals(0, f.remote.inputOpens.get()); assertEquals(1, f.remote.disconnects.get())
+        }
+    }
+    @Test fun chaseFreshnessAndEarliestClaimExpiryAreRecheckedAtPublicationWithoutAnotherRequest() {
+        val short = Fixture(chaseBody(1069).toByteArray())
+        short.subscriptions(); assertFalse(checkNotNull(short.finishChase()).headroom70s)
+        val boundary = Fixture(chaseBody(1070).toByteArray())
+        boundary.subscriptions(); assertTrue(checkNotNull(boundary.finishChase()).headroom70s)
+        boundary.wall++
+        assertFalse(checkNotNull(boundary.helper.publishChase(PROOF)).headroom70s)
+        boundary.wall = 1_070_000
+        assertNull(boundary.helper.publishChase(PROOF)); assertEquals(1, boundary.allocations)
+        boundary.wall = WALL; assertNull(boundary.helper.publishChase(PROOF))
+        val rollback = Fixture(chaseBody().toByteArray())
+        rollback.subscriptions(); rollback.finishChase(); rollback.wall--
+        assertNull(rollback.helper.publishChase(PROOF)); assertEquals(1, rollback.allocations)
+        rollback.wall = WALL; assertNull(rollback.helper.publishChase(PROOF))
+        val aboveAnchor = Fixture(chaseBody().toByteArray())
+        aboveAnchor.subscriptions(); aboveAnchor.finishChase()
+        aboveAnchor.wall = WALL + 2; assertNotNull(aboveAnchor.helper.publishChase(PROOF))
+        aboveAnchor.wall = WALL + 1; assertNull(aboveAnchor.helper.publishChase(PROOF))
+        aboveAnchor.wall = WALL + 3; assertNull(aboveAnchor.helper.publishChase(PROOF))
+        assertEquals(1, aboveAnchor.allocations)
+        val mixed = Fixture("""{"profile":{"userId":"$ID"},"userSubscriptions":[{"expire":1069,"featureAuthorities":[{"id":"a","type":2}]},{"expire":2000,"featureAuthorities":[{"id":"b","type":"FEATURE_AUTHORITY_TYPE_CHASE_PLAY"}]}]}""".toByteArray())
+        mixed.subscriptions(); val observed = checkNotNull(mixed.finishChase())
+        assertEquals(2, observed.activeClaims); assertFalse(observed.headroom70s)
+    }
+    @Test fun chaseCountSaturatesAndEveryIndependentReceiptStillGatesPublication() {
+        val features = List(600) { "{\"id\":\"synthetic_authority\",\"type\":2}" }.joinToString(",")
+        val body = """{"profile":{"userId":"$ID"},"userSubscriptions":[{"expire":2000,"featureAuthorities":[$features]},{"expire":2000,"featureAuthorities":[$features]}]}"""
+        val f = Fixture(body.toByteArray())
+        f.subscriptions(); assertEquals(1000, checkNotNull(f.finishChase()).activeClaims)
+        for (mask in 0 until 31) assertNull(f.helper.publishChase(AbemaAccountProfileObservation.Proof(
+            mask and 1 != 0, mask and 2 != 0, mask and 4 != 0, mask and 8 != 0, mask and 16 != 0)))
+        f.allowed = false // Expected teardown; only independent final proofs publish.
+        assertNotNull(f.helper.publishChase(PROOF)); assertEquals(1, f.allocations)
+    }
+    @Test fun failedSubscriptionInputOrDisconnectCannotLaunderEligibilityThroughClose() {
+        for (input in listOf(true, false)) {
+            val f = Fixture(chaseBody().toByteArray()).also { if (input) it.remote.failInputClose = true else it.remote.failDisconnect = true }
+            assertThrows(AbemaAccountException::class.java) { f.subscriptions() }
+            assertNull(f.finishChase()); f.helper.close()
+            assertFalse(f.helper.cleanupConfirmed); assertTrue(f.helper.capturesWiped())
+            assertEquals(1, f.remote.closes.get()); assertEquals(1, f.remote.disconnects.get()); assertEquals(1, f.poisoned.get())
+            assertNull(f.helper.publishChase(PROOF))
+        }
+        val canceled = Fixture(chaseBody().toByteArray()).also { f -> f.remote.onInput = { f.allowed = false } }
+        assertThrows(AbemaAccountException::class.java) { canceled.subscriptions() }
+        assertNull(canceled.finishChase()); assertTrue(canceled.helper.cleanupConfirmed)
+    }
     companion object {
         private const val ID = "synthetic_user"
         private const val BEARER = "synthetic-bearer"
         private const val ADDRESS = "https://api.p-c3-e.abema-tv.com/v1/users/$ID"
         private const val WALL = 1_000_000L
         private val PROOF = AbemaAccountProfileObservation.Proof(true, true, true, true, true)
+        private fun chaseBody(expire: Long = 2000, features: String = """[{"id":"synthetic_authority","type":2}]""") =
+            """{"profile":{"userId":"$ID"},"userSubscriptions":[{"expire":$expire,"featureAuthorities":$features}]}"""
         private fun body() = """{"profile":{"userId":"$ID"},"userSubscriptions":[{"expire":2000,"viewingAuthorities":[{"id":"synthetic_authority","isPremium":true,"partnerServiceId":"synthetic_partner"}],"featureAuthorities":[{"id":"synthetic_feature","type":2}]},{"expire":500,"viewingAuthorities":[{"isPremium":false}],"featureAuthorities":[{"type":"synthetic_type"}]},{"expire":0,"viewingAuthorities":[],"featureAuthorities":[]}]}"""
     }
 }

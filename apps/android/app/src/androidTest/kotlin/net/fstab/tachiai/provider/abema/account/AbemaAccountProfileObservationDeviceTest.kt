@@ -53,8 +53,18 @@ class AbemaAccountProfileObservationDeviceTest {
     }
 
     @Test fun optInSavedAccountObservesOneProductionProfileWithoutChangingStores() {
+        optIn(chase = false)
+    }
+
+    @Test fun optInSavedAccountObservesProductionChaseEligibility() {
+        optIn(chase = true)
+    }
+
+    private fun optIn(chase: Boolean) {
         val args = InstrumentationRegistry.getArguments()
-        assumeTrue(args.getString("abemaReadOnlyProfileShape") == "true")
+        val gate = if (chase) "abemaReadOnlyChaseEligibility" else "abemaReadOnlyProfileShape"
+        assumeTrue(args.getString(gate) == "true")
+        check(args.getString(if (chase) "abemaReadOnlyProfileShape" else "abemaReadOnlyChaseEligibility") != "true")
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == instrumentation.targetContext.packageName)
@@ -77,11 +87,11 @@ class AbemaAccountProfileObservationDeviceTest {
             }
         } catch (_: Throwable) { false }
         assumeTrue("Requires verified tachiai-dev AVD", avd)
-        try { observe(instanceId) }
+        try { observe(instanceId, chase) }
         catch (_: Throwable) { throw AssertionError("Profile observation failed its closed admission/result/cleanup checks") }
     }
 
-    private fun observe(instanceId: String) {
+    private fun observe(instanceId: String, chase: Boolean) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         // These clocks precede the first protected record/owner/grant read.
@@ -99,6 +109,7 @@ class AbemaAccountProfileObservationDeviceTest {
         val foregroundReceipt = AtomicBoolean()
         val finished = CountDownLatch(1)
         val output = AtomicReference<String?>()
+        val chaseProof = AtomicReference<AbemaAccountProfileObservation.Proof?>()
         val publicationGate = AtomicReference<(() -> Boolean)?>(null)
         val failure = AtomicBoolean()
         val observation = AtomicReference<AbemaAccountProfileObservation?>()
@@ -125,6 +136,7 @@ class AbemaAccountProfileObservationDeviceTest {
             var candidate: AbemaStoredAccount? = null
             var store: AbemaAccountGrantStore? = null
             var localUnavailable = false
+            var localReason = ProfileObservationLocalReason.SNAPSHOT_UNAVAILABLE
             var ownerUnchanged = false
             var storeUnchanged = false
             var recordsUnchanged = false
@@ -204,8 +216,13 @@ class AbemaAccountProfileObservationDeviceTest {
                 // observation factory. In particular it cannot become a guest.
                 snapshot = try { savedStore.readSnapshot() } catch (_: Throwable) { null }
                 candidate = snapshot?.record
-                localUnavailable = snapshot == null || !savedStore.usable(snapshot!!.revision) || poison.get() ||
-                    !profileObservationGrantAdmitted(candidate, beganWall, System.currentTimeMillis())
+                val original = snapshot
+                val revisionUsable = original != null && savedStore.usable(original.revision)
+                val accountPoisoned = poison.get()
+                val admissionWall = System.currentTimeMillis()
+                localReason = profileObservationLocalReason(original != null, revisionUsable, accountPoisoned,
+                    candidate, beganWall, admissionWall)
+                localUnavailable = localReason != ProfileObservationLocalReason.ADMITTED
                 check(clockCurrent() && sameOwner())
                 if (!localUnavailable) {
                     holder.scenario = ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java).apply {
@@ -240,7 +257,8 @@ class AbemaAccountProfileObservationDeviceTest {
                     closeReceipt.set(AbemaProfileFixtureCleanup(helper, { it.close() }))
                     check(current())
                     val saved = checkNotNull(candidate).grant
-                    helper.observe(saved.userId, saved.bearer)
+                    if (chase) helper.observeSubscriptions(saved.userId, saved.bearer)
+                    else helper.observe(saved.userId, saved.bearer)
                     check(current())
                 }
             } catch (_: Throwable) { failure.set(true) }
@@ -282,7 +300,8 @@ class AbemaAccountProfileObservationDeviceTest {
                     if (localUnavailable && helper == null) {
                         publicationGate.set { clockCurrent() && !revoked.get() && !mutation.get() &&
                             ownerUnchanged && recordsUnchanged && cleanupConfirmed }
-                        output.set("outcome=LOCAL_UNAVAILABLE httpCount=0 recordsUnchanged=true cleanupConfirmed=true")
+                        output.set("outcome=LOCAL_UNAVAILABLE httpCount=0 recordsUnchanged=true cleanupConfirmed=true" +
+                            if (chase) " localReason=${localReason.name}" else "")
                     } else if (foregroundReceipt.get()) {
                         // No potentially blocking disk/owner reads outside the
                         // bounded worker. Its independent final proofs are
@@ -293,8 +312,14 @@ class AbemaAccountProfileObservationDeviceTest {
                         publicationGate.set { localCurrent() && !poison.get() && ownerUnchanged && recordsUnchanged &&
                             cleanupConfirmed && admittedStore.usable(admittedSnapshot.revision) &&
                             profileObservationGrantAdmitted(admittedCandidate, beganWall, System.currentTimeMillis()) && localCurrent() }
-                        output.set(helper?.publish(AbemaAccountProfileObservation.Proof(ownerUnchanged,
-                            storeUnchanged, clockCurrent(), foregroundReceipt.get(), recordsUnchanged))?.render()?.let {
+                        val proof = AbemaAccountProfileObservation.Proof(ownerUnchanged,
+                            storeUnchanged, clockCurrent(), foregroundReceipt.get(), recordsUnchanged)
+                        if (chase) {
+                            chaseProof.set(proof)
+                            output.set(helper?.publishChase(proof)?.render()?.let {
+                                "outcome=CHASE_ELIGIBILITY_OBSERVED httpCount=${checkNotNull(helper).requestCount} $it"
+                            })
+                        } else output.set(helper?.publish(proof)?.render()?.let {
                             "outcome=PROFILE_ACCEPTED httpCount=${checkNotNull(helper).requestCount} $it"
                         })
                     }
@@ -323,7 +348,20 @@ class AbemaAccountProfileObservationDeviceTest {
         val finalAdmission = try { publicationGate.get()?.invoke() == true } catch (_: Throwable) { false }
         val summary = output.get().takeIf { completed && terminated && !revoked.get() && clockCurrent() && finalAdmission }
         assertNotNull("No profile summary may escape incomplete admission, observation or cleanup", summary)
-        Log.i("TachiaiAbemaProfile", checkNotNull(summary))
+        // Recompute the closed headroom at emission, without protected reads or
+        // another request; a VERIFIED claim that expired during joining is lost.
+        val emitted = if (chase && chaseProof.get() != null) observation.get()?.let { helper ->
+            helper.publishChase(checkNotNull(chaseProof.get()))?.render()?.let {
+                "outcome=CHASE_ELIGIBILITY_OBSERVED httpCount=${helper.requestCount} $it"
+            }
+        } else summary
+        assertNotNull("No stale Chase evidence may escape final publication", emitted)
+        if (chase) {
+            val stillAdmitted = try { completed && terminated && !revoked.get() && clockCurrent() &&
+                publicationGate.get()?.invoke() == true } catch (_: Throwable) { false }
+            assertTrue("No Chase summary may escape lost final memory/clock admission", stillAdmitted)
+        }
+        Log.i(if (chase) "TachiaiAbemaChaseEligibility" else "TachiaiAbemaProfile", checkNotNull(emitted))
     }
 
     private class ProfileOwners(val worker: Any, val observation: AtomicReference<AbemaAccountProfileObservation?>,
@@ -428,13 +466,34 @@ internal fun profileObservationClockCurrent(startElapsed: Long, startWall: Long,
     budget: Long): Boolean = startElapsed >= 0 && startWall >= 0 && budget > 0 &&
     elapsed >= startElapsed && wall >= startWall && elapsed - startElapsed < budget && wall - startWall < budget
 
-internal fun profileObservationGrantAdmitted(record: AbemaStoredAccount?, startWall: Long, nowWall: Long): Boolean {
-    if (record == null || record.generation < 1 || record.acceptedWallMs < 0 || startWall < record.acceptedWallMs ||
-        nowWall < startWall || record.grant.expiresAtMs <= nowWall) return false
-    return try {
-        decodedAbemaGrant(record.grant.bearer, record.grant.userId, nowWall).expiresAtMs == record.grant.expiresAtMs
-    } catch (_: Throwable) { false }
+internal enum class ProfileObservationLocalReason {
+    ADMITTED, SNAPSHOT_UNAVAILABLE, REVISION_UNUSABLE, ACCOUNT_POISONED, MISSING_RECORD,
+    INVALID_ACCEPTANCE_OR_GENERATION, CLOCK_BEFORE_ACCEPTANCE, CLOCK_ROLLBACK, SAVED_EXPIRY_ELAPSED,
+    DECODED_BEARER_REJECTED, STORED_DECODED_EXPIRY_MISMATCH,
 }
+
+internal fun profileObservationLocalReason(snapshotAvailable: Boolean, revisionUsable: Boolean, poisoned: Boolean,
+    record: AbemaStoredAccount?, startWall: Long, nowWall: Long): ProfileObservationLocalReason = when {
+    !snapshotAvailable -> ProfileObservationLocalReason.SNAPSHOT_UNAVAILABLE
+    !revisionUsable -> ProfileObservationLocalReason.REVISION_UNUSABLE
+    poisoned -> ProfileObservationLocalReason.ACCOUNT_POISONED
+    else -> profileObservationGrantReason(record, startWall, nowWall)
+}
+
+private fun profileObservationGrantReason(record: AbemaStoredAccount?, startWall: Long, nowWall: Long): ProfileObservationLocalReason {
+    if (record == null) return ProfileObservationLocalReason.MISSING_RECORD
+    if (record.generation < 1 || record.acceptedWallMs < 0) return ProfileObservationLocalReason.INVALID_ACCEPTANCE_OR_GENERATION
+    if (startWall < record.acceptedWallMs) return ProfileObservationLocalReason.CLOCK_BEFORE_ACCEPTANCE
+    if (nowWall < startWall) return ProfileObservationLocalReason.CLOCK_ROLLBACK
+    if (record.grant.expiresAtMs <= nowWall) return ProfileObservationLocalReason.SAVED_EXPIRY_ELAPSED
+    val decoded = try { decodedAbemaGrant(record.grant.bearer, record.grant.userId, nowWall) }
+        catch (_: Throwable) { return ProfileObservationLocalReason.DECODED_BEARER_REJECTED }
+    return if (decoded.expiresAtMs == record.grant.expiresAtMs) ProfileObservationLocalReason.ADMITTED
+        else ProfileObservationLocalReason.STORED_DECODED_EXPIRY_MISMATCH
+}
+
+internal fun profileObservationGrantAdmitted(record: AbemaStoredAccount?, startWall: Long, nowWall: Long): Boolean =
+    profileObservationGrantReason(record, startWall, nowWall) == ProfileObservationLocalReason.ADMITTED
 
 internal fun profileObservationSameRecord(a: AbemaStoredAccount?, b: AbemaStoredAccount?): Boolean = a != null && b != null &&
     a.generation == b.generation && a.acceptedWallMs == b.acceptedWallMs && a.grant.userId == b.grant.userId &&
@@ -484,6 +543,41 @@ class AbemaAccountProfileAdmissionDeviceTest {
         assertFalse(profileObservationClockCurrent(10, 1000, 11, 46_000, 45_000))
         assertFalse(profileObservationClockCurrent(10, 1000, 9, 1000, 45_000))
         assertFalse(profileObservationClockCurrent(10, 1000, 10, 999, 45_000))
+    }
+    @Test fun closedLocalAdmissionReasonsPreserveSnapshotRevisionAndPoisonShortCircuitOrder() {
+        fun reason(snapshot: Boolean, usable: Boolean, poison: Boolean, value: AbemaStoredAccount? = record()) =
+            profileObservationLocalReason(snapshot, usable, poison, value, 2000, 3000)
+        assertEquals(ProfileObservationLocalReason.SNAPSHOT_UNAVAILABLE, reason(false, false, true, null))
+        assertEquals(ProfileObservationLocalReason.REVISION_UNUSABLE, reason(true, false, true, null))
+        assertEquals(ProfileObservationLocalReason.ACCOUNT_POISONED, reason(true, true, true, null))
+        assertEquals(ProfileObservationLocalReason.MISSING_RECORD, reason(true, true, false, null))
+        assertEquals(ProfileObservationLocalReason.ADMITTED, reason(true, true, false))
+        for (reason in ProfileObservationLocalReason.entries) {
+            assertFalse(reason.name.contains("synthetic")); assertFalse(reason.name.contains("100000"))
+        }
+    }
+    @Test fun closedGrantReasonMatrixMatchesOriginalBooleanAndSeparatesStoredFromDecodedExpiry() {
+        class Case(val value: AbemaStoredAccount?, val start: Long = 2000, val now: Long = 3000,
+            val reason: ProfileObservationLocalReason)
+        val malformed = AbemaStoredAccount(AbemaAccountGrant("synthetic", "invalid", 100_000), 1000, 1)
+        val cases = listOf(
+            Case(record(), reason = ProfileObservationLocalReason.ADMITTED),
+            Case(null, reason = ProfileObservationLocalReason.MISSING_RECORD),
+            Case(record(generation = 0), reason = ProfileObservationLocalReason.INVALID_ACCEPTANCE_OR_GENERATION),
+            Case(record(accepted = -1), reason = ProfileObservationLocalReason.INVALID_ACCEPTANCE_OR_GENERATION),
+            Case(record(accepted = 2001), reason = ProfileObservationLocalReason.CLOCK_BEFORE_ACCEPTANCE),
+            Case(record(), now = 1999, reason = ProfileObservationLocalReason.CLOCK_ROLLBACK),
+            Case(record(), now = 100_000, reason = ProfileObservationLocalReason.SAVED_EXPIRY_ELAPSED),
+            Case(malformed, reason = ProfileObservationLocalReason.DECODED_BEARER_REJECTED),
+            Case(record(claim = "other"), reason = ProfileObservationLocalReason.DECODED_BEARER_REJECTED),
+            Case(record(tokenExpiry = 3), reason = ProfileObservationLocalReason.DECODED_BEARER_REJECTED),
+            Case(record(expiry = 100_001), reason = ProfileObservationLocalReason.STORED_DECODED_EXPIRY_MISMATCH),
+        )
+        for (case in cases) {
+            assertEquals(case.reason, profileObservationLocalReason(true, true, false, case.value, case.start, case.now))
+            assertEquals(case.reason == ProfileObservationLocalReason.ADMITTED,
+                profileObservationGrantAdmitted(case.value, case.start, case.now))
+        }
     }
     @Test fun revokedRevisionRefusesBeforeASecondProtectedRead() {
         val instance = java.util.UUID.randomUUID().toString()

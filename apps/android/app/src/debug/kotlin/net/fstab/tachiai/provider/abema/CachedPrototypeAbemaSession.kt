@@ -98,6 +98,7 @@ internal class CachedPrototypeAbemaSession(
     private val manifestOnlySlot: AbemaSlotRequest? = null,
     private val onManifestOnlyPrepared: ((AbemaInitialManifestSnapshot) -> Unit)? = null,
     private val observeChannelPreparation: Boolean = false,
+    private val observeModernChannelContext: Boolean = false,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -114,6 +115,7 @@ internal class CachedPrototypeAbemaSession(
         require(manifestOnlySlot == null || channelResource != null && !replay &&
             episodeResource == null && slotResource == null && channelResource.identity == manifestOnlySlot.channelId)
         require(!observeChannelPreparation || manifestOnlySlot != null)
+        require(!observeModernChannelContext || observeChannelPreparation && manifestOnlySlot != null)
     }
     private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
     private val channelPreparationEvidence = if (observeChannelPreparation) AbemaChannelPreparationEvidence() else null
@@ -285,7 +287,8 @@ internal class CachedPrototypeAbemaSession(
                 val uri = runCatching { URI(request.url.toString()) }.getOrNull()
                 val live = preparationCurrent(revision.get()) && workerOwned()
                 val allowed = uri != null && live &&
-                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity, channelResource?.identity, slotResource?.identity)
+                    AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity,
+                        channelResource?.identity, slotResource?.identity, modernChannelContext = observeModernChannelContext)
                 if (!allowed) {
                     val category = if (!live) "LIFECYCLE" else
                         AbemaNativeBootstrapPolicy.refusalCategory(uri, request.isForMainFrame, request.method)
@@ -302,7 +305,8 @@ internal class CachedPrototypeAbemaSession(
                         return refusedResource()
                     }
                     return WebResourceResponse(if (request.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
-                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.contentSecurityPolicy(episodeResource?.identity, channelResource?.identity, slotResource?.identity),
+                        200, "OK", mapOf("Content-Security-Policy" to AbemaNativeBootstrapPolicy.contentSecurityPolicy(episodeResource?.identity,
+                            channelResource?.identity, slotResource?.identity, modernChannelContext = observeModernChannelContext),
                             "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(local))
                 }
                 return null // Only exact policy-approved provider API endpoints.
@@ -463,7 +467,8 @@ internal class CachedPrototypeAbemaSession(
                     "__CHANNEL_ARGUMENT__" to (channelResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
                     "__SLOT_ARGUMENT__" to (slotResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
                     "__ACCOUNT_ARGUMENT__" to accountArgument,
-                    "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString())
+                    "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString(),
+                    "__MODERN_CHANNEL_CONTEXT__" to observeModernChannelContext.toString())
                 val template = view.context.assets.open("abema/native-bootstrap-initialize.js")
                     .bufferedReader().use { it.readText() }
                 val initialization = Regex("__[A-Z_]+__").replace(template) { checkNotNull(arguments[it.value]) }
@@ -636,7 +641,8 @@ internal class CachedPrototypeAbemaSession(
         if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId,
             onSlotSourceDiagnostic)
         if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
-        if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId, initialManifest)
+        if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId, initialManifest,
+            modernChannelContext = observeModernChannelContext)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))
         val source = requests.create(C.DATA_TYPE_MANIFEST)
         return try {
@@ -739,7 +745,8 @@ internal class CachedPrototypeAbemaSession(
                     val uri = when {
                         slotResource != null -> slotBinding?.uri
                         episodeResource != null -> parseAbemaEpisodeSourceBinding(selected, episodeId)
-                        channelResource != null -> parseAbemaChannelSourceBinding(selected, channelId)
+                        channelResource != null -> parseAbemaChannelSourceBinding(selected, channelId,
+                            modernChannelContext = observeModernChannelContext)
                         else -> runCatching { URI(selected ?: "") }.getOrNull()
                     }
                     if (uri != null) {
@@ -751,7 +758,8 @@ internal class CachedPrototypeAbemaSession(
                     val allowed = uri != null && if (slotResource != null) allowsAbemaSlotSource(uri, slotChannelId, slotId)
                     else if (replay)
                         abemaReplaySelectedSourcePolicy(uri, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId) == AbemaReplayUriPolicy.ALLOWED
-                    else AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId)
+                    else AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId,
+                        modernChannelContext = observeModernChannelContext)
                     if (allowed && slotBinding != null) {
                         if ((slotBinding.chase && accountStatus != AbemaAccountAccessIpc.Status.ACCOUNT) ||
                             !slotChaseAdmission.select(slotBinding.chase)) {

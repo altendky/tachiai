@@ -132,8 +132,9 @@ function fixture(options = {}) {
   let timer = 0;
   let release;
   const deferred = new Promise(resolve => { release = resolve; });
+  let persistentStorageTouches = 0;
   const context = vm.createContext({
-    URL, Response, TextEncoder, TextDecoder, AbortController,
+    URL, Request, Response, Headers, TextEncoder, TextDecoder, AbortController,
     Date: class extends Date { static now() { return options.nowMs ?? fixtureNow; } },
     crypto: { randomUUID: () => { if (options.forbidGuest) throw new Error('GUEST_IDENTITY_REFUSED');
       return '00000000-0000-0000-0000-000000000001'; } },
@@ -144,10 +145,18 @@ function fixture(options = {}) {
     clearTimeout: id => timers.delete(id),
     register: (event, callback) => events.set(event, callback),
     fake: options,
+    offlineDeviceEme: deferred,
     fetch: async (url, request) => {
+      if (url instanceof Request) {
+        const effective = new Request(url, request);
+        url = effective.url;
+        request = { method: effective.method, credentials: effective.credentials,
+          headers: Object.fromEntries(effective.headers), redirect: effective.redirect, signal: effective.signal };
+      }
       const uri = new URL(String(url));
       requests.push({ uri, request });
       if (Object.hasOwn(options.rejections || {}, uri.pathname)) throw options.rejections[uri.pathname];
+      if (options.deferDevice && uri.pathname === '/v1/media/deviceTypeId') await deferred;
       if (options.reply && options.replyPath === uri.pathname) return options.reply;
       if (options.deferGuest && uri.pathname === '/api/auth/login/guest') await deferred;
       if (options.deferToken && uri.pathname === '/v1/media/token') await deferred;
@@ -157,6 +166,9 @@ function fixture(options = {}) {
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
       else if (uri.pathname === '/v1/media/token') body = options.token || { token: 'TEST_MEDIA' };
+      else if (uri.pathname === '/v1/media/deviceTypeId') {
+        body = Object.hasOwn(options, 'deviceResponse') ? options.deviceResponse : { deviceTypeId: 'SYNTHETIC_DEVICE' };
+      }
       else if (uri.pathname === '/v1/channels') {
         if (options.deferChannels) await deferred;
         body = options.channels || { channels: [liveChannel()] };
@@ -178,7 +190,10 @@ function fixture(options = {}) {
       return new Response(text, { status });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext('window = globalThis; window.addEventListener = register; observed = { operation: [], sources: [], flags: [], legacy: [], providerStreams: [], manifests: [], media: [], configurations: [], comparators: [], clients: [] };', context);
+  for (const name of ['localStorage', 'sessionStorage']) Object.defineProperty(context, name, {
+    configurable: true, get() { persistentStorageTouches++; throw new Error('PERSISTENT_STORAGE_MUST_NOT_RUN'); },
+  });
+  vm.runInContext('window = globalThis; window.addEventListener = register; observed = { operation: [], sources: [], flags: [], legacy: [], providerStreams: [], manifests: [], media: [], configurations: [], comparators: [], clients: [], deviceCalls: 0, deviceReplies: [], refresh: 0 };', context);
   vm.runInContext(source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     27594(module, exports, require) { require.nmd(module); module.exports = {}; },
@@ -204,6 +219,37 @@ function fixture(options = {}) {
       module.exports = { N: { browser: { name: 'Chrome', version: '1' }, os: { name: 'Android', version: '1' } } };
     },
     87328(module) { module.exports = { xl: () => false }; },
+    29441(module) { module.exports = { Z: { ABEMA_ACCESS_TOKEN: 'SYNTHETIC_TOKEN_KEY' } }; },
+    42561(module) { module.exports = { w: () => fake.divisionResult ??
+      (window.__CLIENT_REGION__.divisionCode === 0 ? {} : { division: window.__CLIENT_REGION__.divisionCode }) }; },
+    44680(module) {
+      let pending;
+      module.exports = { L: () => ({ getDeviceTypeId: () => pending ||= (async () => {
+        observed.deviceCalls++;
+        if (fake.deferEme) await window.offlineDeviceEme;
+        const url = new URL(fake.deviceURL || 'https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId');
+        if (!fake.deviceURL) {
+          url.searchParams.set('os', fake.deviceOs || 'unknown');
+          url.searchParams.set('osVersion', fake.deviceVersion ?? '16');
+          url.searchParams.set('drm', fake.deviceDrm || 'unknown');
+        }
+        const request = new Request(url, { method: fake.deviceMethod || 'GET',
+          credentials: fake.deviceCredentials || 'same-origin', headers: { Authorization:
+            'Bearer ' + (fake.deviceBearer || localStorage.getItem('SYNTHETIC_TOKEN_KEY')) } });
+        const reply = await window.fetch(request);
+        observed.deviceReplies.push(reply.status);
+        if (reply.status === 401) { observed.refresh++; await window.fetch('https://auth.abema.tv/accessToken'); }
+        if (reply.status === 200) return { ok: true, val: await reply.json() };
+        if (reply.status === 400 || reply.status === 500) return { ok: false, err: 'SYNTHETIC_GENERIC_ERROR' };
+        throw new Error('UNEXPECTED_DEVICE_STATUS');
+      })() }) };
+    },
+    40579(module) { module.exports = { c: { fromObject: raw => ({
+      id: fake.channelModelId || raw.id, name: raw.name, status: { drm: raw.status?.drm ?? false },
+      viewingOpened: raw.viewingOpened, playlists: { hls: raw.playback?.hls ?? '', hlsPreview: raw.playback?.hlsPreview ?? '',
+        dash: raw.playback?.dash ?? '', ...(raw.playback?.yospace !== undefined ? { yospace: {
+          hlsFPS: raw.playback.yospace.hlsFPS ?? '', dash: raw.playback.yospace.dash ?? '' } } : {}) },
+    }) } }; },
     44602() { throw new Error('UNRELATED_MANAGER_MUST_NOT_RUN'); },
     91966(module, exports, require) { require.d(exports, { sD: () => () => ({
       stringVariation(name, fallback) { observed.flags.push({ name, fallback }); return fallback; }
@@ -305,6 +351,7 @@ function fixture(options = {}) {
         url.searchParams.set('enc', 'clear'); url.searchParams.set('dt', 'pc_chrome'); url.searchParams.set('ut', '1');
       }
       if (fake.configuredSlot && config.sourceParam.cffId != null) url.searchParams.set('ccf', config.sourceParam.cffId);
+      if (config.sourceParam.dtid != null) url.searchParams.set('dtid', config.sourceParam.dtid);
       return url.href;
     } }); },
     78307(module, exports, require) { require.d(exports, {}, { rC: {
@@ -314,11 +361,11 @@ function fixture(options = {}) {
   window.__LOADABLE_LOADED_CHUNKS__.push([[4], {}, () => { throw new Error('UTILITIES_RUNTIME_MUST_NOT_RUN'); }]);`, context, { timeout: 1000 });
   const evaluate = expression => vm.runInContext(expression, context, { timeout: 1000 });
   return {
-    requests, events, release, context, evaluate,
+    requests, events, release, context, evaluate, persistentStorageTouches: () => persistentStorageTouches,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -444,6 +491,225 @@ test('successful opaque take and later cleanup stop do not manufacture owner can
   const value = fixture(); value.start(); await waitFor(value, 'READY');
   value.begin(challenge); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
   assert.equal(value.metadata().failure, 'NONE'); value.stop(); assert.equal(value.metadata().failure, 'NONE');
+});
+
+const modernChannelOptions = extra => ({ account: savedAccount(), forbidGuest: true, configuredLinear: true,
+  channelDiagnostic: true, modernChannelContext: true,
+  channels: { channels: [configuredLinearChannel('fixture-one')] }, ...extra });
+
+test('modern source-only context binds fresh region device bearer anonymous channel and exact selected dtid', async () => {
+  for (const viewingOpened of [true, false, undefined]) {
+    const channel = configuredLinearChannel('fixture-one');
+    if (viewingOpened === undefined) delete channel.viewingOpened; else channel.viewingOpened = viewingOpened;
+    const value = fixture(modernChannelOptions({ channels: { channels: [channel] } }));
+    value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    assert.deepEqual(value.requests.map(({ uri }) => uri.pathname), ['/v1/media/token', '/now-on-air/abema-news',
+      '/v1/media/deviceTypeId', '/v1/channels']);
+    const device = value.requests[2]; const channels = value.requests[3];
+    assert.equal(new Headers(device.request.headers).get('Authorization'), 'Bearer ' + savedAccount().bearer);
+    assert.equal(device.request.credentials, 'same-origin'); assert.equal(device.request.redirect, 'error');
+    assert.deepEqual([...device.uri.searchParams], [['os', 'unknown'], ['osVersion', '16'], ['drm', 'unknown']]);
+    assert.equal(channels.uri.origin, 'https://api.p-c3-e.abema-tv.com');
+    assert.deepEqual([...channels.uri.searchParams], [['dtid', 'SYNTHETIC_DEVICE']]);
+    assert.equal(channels.request.credentials, 'omit'); assert.equal(new Headers(channels.request.headers).has('Authorization'), false);
+    assert.equal(value.requests[1].request.credentials, 'omit');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].channelBinding()`));
+    assert.equal(binding.channelId, 'fixture-one'); assert.equal(new URL(binding.uri).searchParams.get('dtid'), 'SYNTHETIC_DEVICE');
+    assert.equal(value.evaluate('observed.legacy[0].sourceParam.playlists.dash'), channel.playback.dash);
+    assert.equal(value.evaluate('observed.legacy[0].sourceParam.dtid'), 'SYNTHETIC_DEVICE');
+    assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(value.persistentStorageTouches(), 0); assert.equal(value.evaluate('observed.operation.length'), 0);
+    assert.equal(value.begin(challenge), 'REFUSED'); assert.equal(value.take(), null); assert.equal(value.requests.length, 4);
+    assert.equal(value.requests.some(({ uri }) => uri.pathname.includes('accessToken') || uri.pathname.includes('abematv-dash')), false);
+    for (const secret of ['ACCOUNT_', 'fixture-one', 'SYNTHETIC_DEVICE', 'https://', 'divisionCode', 'deviceTypeId'])
+      assert.equal(JSON.stringify(value.metadata()).includes(secret), false);
+    value.stop();
+    assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+    assert.equal(value.evaluate("localStorage.getItem('SYNTHETIC_TOKEN_KEY')"), null);
+    assert.equal(value.evaluate("Object.hasOwn(window, '__CLIENT_REGION__')"), false);
+    assert.throws(() => value.evaluate("localStorage.setItem('late', 'value')"));
+  }
+});
+
+test('modern device ID accepts bounded raw numeric or opaque string scalars without changing source identity', async () => {
+  for (const deviceTypeId of [0, 123, Number.MAX_SAFE_INTEGER, 'opaque+id&value', 'x'.repeat(256)]) {
+    const value = fixture(modernChannelOptions({ deviceResponse: { deviceTypeId } }));
+    value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    assert.equal(value.requests[3].uri.searchParams.get('dtid'), String(deviceTypeId));
+    const binding = JSON.parse(value.evaluate(`window['${name}'].channelBinding()`));
+    assert.equal(new URL(binding.uri).searchParams.get('dtid'), String(deviceTypeId));
+    assert.equal(value.requests.length, 4); value.stop();
+  }
+});
+
+test('modern device undefined success and genuine400/500 omit dtid and never read error bodies', async () => {
+  for (const status of [200, 400, 500]) {
+    let reads = 0, cancels = 0;
+    const extra = status === 200 ? { deviceResponse: {} } : { replyPath: '/v1/media/deviceTypeId',
+      reply: { status, body: { getReader: () => ({ read() { reads++; throw new Error('NO_ERROR_BODY_READ'); },
+        async cancel() { cancels++; } }) } } };
+    const value = fixture(modernChannelOptions(extra));
+    value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    assert.equal(reads, 0); assert.equal(cancels, status === 200 ? 0 : 1);
+    assert.equal(value.requests[3].uri.search, '');
+    assert.equal(new URL(JSON.parse(value.evaluate(`window['${name}'].channelBinding()`)).uri).searchParams.has('dtid'), false);
+    assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.deviceCalls'), 1);
+    assert.equal(value.metadata().failure, 'NONE'); assert.equal(value.persistentStorageTouches(), 0); value.stop();
+  }
+});
+
+test('modern device optional error status keeps metadata coherent during cancellation before channels', async () => {
+  let releaseCancel;
+  const cancelled = new Promise(resolve => { releaseCancel = resolve; });
+  const value = fixture(modernChannelOptions({ replyPath: '/v1/media/deviceTypeId', reply: { status: 500,
+    body: { getReader: () => ({ read() { throw new Error('NO_BODY_READ'); }, cancel: () => cancelled }) } } }));
+  value.startChannel('fixture-one'); await waitForRequests(value, 3);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().phase, 'CHANNEL_DEVICE'); assert.equal(value.metadata().http, 0);
+  assert.equal(value.metadata().failure, 'NONE'); value.stop(); releaseCancel(); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().failure, 'OWNED_CANCELLED'); assert.equal(value.requests.length, 3);
+});
+
+test('modern malformed device responses and IDs refuse before channels with no source or persistent writes', async () => {
+  for (const deviceResponse of [null, [], false, { deviceTypeId: null }, { deviceTypeId: true },
+    { deviceTypeId: -1 }, { deviceTypeId: 1.5 }, { deviceTypeId: Number.MAX_SAFE_INTEGER + 1 },
+    { deviceTypeId: '' }, { deviceTypeId: 'x'.repeat(257) }, { deviceTypeId: 'bad id' }, { deviceTypeId: {} }]) {
+    const value = fixture(modernChannelOptions({ deviceResponse })); value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'CHANNEL_CONTEXT_REFUSED'); assert.equal(value.requests.length, 3);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.persistentStorageTouches(), 0);
+    assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+  }
+  for (const text of ['{bad', '{"deviceTypeId":1,"deviceTypeId":2}', ' '.repeat(65537)]) {
+    const value = fixture(modernChannelOptions({ responseTexts: { '/v1/media/deviceTypeId': text } }));
+    value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.requests.length, 3);
+  }
+});
+
+test('modern unexpected401 and other statuses cannot reach provider refresh or another request', async () => {
+  for (const status of [401, 403, 404, 429, 503]) {
+    const value = fixture(modernChannelOptions({ statuses: { '/v1/media/deviceTypeId': status } }));
+    value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'CHANNEL_CONTEXT_REFUSED'); assert.equal(value.metadata().failure, 'HTTP_REFUSED');
+    assert.equal(value.metadata().http, status); assert.equal(value.evaluate('observed.refresh'), 0);
+    assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate('localStorage.length'), 0);
+  }
+});
+
+test('modern strict device Request scope rejects changed bearer endpoints queries methods or credentials before HTTP', async () => {
+  for (const extra of [{ deviceBearer: 'WRONG' }, { deviceMethod: 'POST' }, { deviceCredentials: 'include' },
+    { deviceOs: 'Android' }, { deviceDrm: 'clear' }, { deviceVersion: 'x'.repeat(65) },
+    { deviceURL: 'https://unapproved.invalid/v1/media/deviceTypeId?os=unknown&osVersion=16&drm=unknown' },
+    { deviceURL: 'https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId?os=unknown&osVersion=16&drm=unknown&extra=1' },
+    { deviceURL: 'https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId?os=unknown&os=unknown&osVersion=16&drm=unknown' }]) {
+    const value = fixture(modernChannelOptions(extra)); value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'CHANNEL_CONTEXT_REFUSED'); assert.equal(value.requests.length, 2);
+    assert.equal(value.evaluate('observed.refresh'), 0); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('modern unexpected401 ignoring abort cancels unread body exactly once before helper can see a status', async () => {
+  let reads = 0, cancels = 0, completed = false, releaseCancel;
+  const pending = new Promise(resolve => { releaseCancel = () => { completed = true; resolve(); }; });
+  const value = fixture(modernChannelOptions({ replyPath: '/v1/media/deviceTypeId', reply: { status: 401,
+    body: { getReader: () => ({ read() { reads++; throw new Error('NO_ERROR_BODY_READ'); },
+      cancel() { cancels++; return pending; } }) } } }));
+  value.startChannel('fixture-one'); await waitForRequests(value, 3);
+  for (let attempt = 0; cancels === 0 && attempt < 10; attempt++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancels, 1); assert.equal(reads, 0); assert.equal(completed, false);
+  assert.equal(value.requests[2].request.signal.aborted, true);
+  assert.equal(value.evaluate('observed.deviceReplies.length'), 0); assert.equal(value.evaluate('observed.refresh'), 0);
+  releaseCancel(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, true); assert.equal(cancels, 1); assert.equal(reads, 0);
+  assert.equal(value.metadata().failure, 'HTTP_REFUSED'); assert.equal(value.metadata().http, 401);
+  assert.equal(value.evaluate('observed.deviceReplies.length'), 0); assert.equal(value.evaluate('observed.refresh'), 0);
+  assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
+});
+
+test('modern late fetch after owned stop still closes unread response before completion without new work', async () => {
+  let reads = 0, cancels = 0, completed = false;
+  const value = fixture(modernChannelOptions({ deferDevice: true, replyPath: '/v1/media/deviceTypeId', reply: { status: 200,
+    body: { getReader: () => ({ read() { reads++; throw new Error('NO_LATE_BODY_READ'); },
+      async cancel() { cancels++; completed = true; } }) } } }));
+  value.startChannel('fixture-one'); await waitForRequests(value, 3);
+  value.stop(); assert.equal(value.requests[2].request.signal.aborted, true); value.release();
+  for (let attempt = 0; !completed && attempt < 10; attempt++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancels, 1); assert.equal(reads, 0); assert.equal(completed, true);
+  assert.equal(value.metadata().failure, 'OWNED_CANCELLED'); assert.equal(value.evaluate('observed.deviceReplies.length'), 0);
+  assert.equal(value.evaluate('observed.refresh'), 0); assert.equal(value.requests.length, 3);
+  assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+});
+
+test('modern uncertain device body cancellation cannot outlive original timer or become a late helper success', async () => {
+  let cancels = 0, releaseCancel;
+  const pending = new Promise(resolve => { releaseCancel = resolve; });
+  const value = fixture(modernChannelOptions({ replyPath: '/v1/media/deviceTypeId', reply: { status: 500,
+    body: { getReader: () => ({ read() { throw new Error('NO_ERROR_BODY_READ'); }, cancel() { cancels++; return pending; } }) } } }));
+  value.startChannel('fixture-one'); await waitForRequests(value, 3);
+  for (let attempt = 0; cancels === 0 && attempt < 10; attempt++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancels, 1); value.expireTimers();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.evaluate('observed.deviceReplies.length'), 0);
+  assert.equal(value.requests.length, 3); releaseCancel(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(cancels, 1);
+  assert.equal(value.evaluate('observed.deviceReplies.length'), 0); assert.equal(value.requests.length, 3);
+});
+
+test('modern context cannot manufacture region division or continue after fresh region refusal', async () => {
+  for (const extra of [{ regionPage: slotRegion({ isAllowed: false }) }, { regionPage: slotRegion({ divisionCode: 1 }) },
+    { regionPage: slotRegion({ isoCountryCode: 'US' }) }, { divisionResult: { division: 1 } }, { divisionResult: { extra: 1 } }]) {
+    const value = fixture(modernChannelOptions(extra)); value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.some(({ uri }) => uri.pathname === '/v1/channels'), false);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.persistentStorageTouches(), 0);
+  }
+});
+
+test('modern delayed EME device or channel completions cannot revive cancelled expired or rolled-back ownership', async () => {
+  for (const deferred of ['deferEme', 'deferDevice', 'deferChannels']) for (const ending of ['cancel', 'timer', 'expiry', 'rollback']) {
+    const options = modernChannelOptions({ [deferred]: true }); const value = fixture(options);
+    value.startChannel('fixture-one'); await waitForRequests(value, deferred === 'deferEme' ? 2 : deferred === 'deferDevice' ? 3 : 4);
+    if (ending === 'cancel') value.stop(); else if (ending === 'timer') value.expireTimers();
+    else options.nowMs = ending === 'expiry' ? fixtureNow + 600000 : fixtureNow - 1;
+    value.release(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().failure, ending === 'cancel' ? 'OWNED_CANCELLED' : 'TIMER_EXPIRED');
+    assert.equal(value.requests.length, deferred === 'deferEme' ? 2 : deferred === 'deferDevice' ? 3 : 4);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.evaluate('observed.refresh'), 0);
+    assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null);
+    assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+  }
+});
+
+test('modern normalized member and selected source must retain exact raw identity and returned dtid', async () => {
+  const ordinary = configuredLinearChannel('fixture-one').playback.dash + '?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1';
+  for (const extra of [{ channelModelId: 'other' }, { selectedURL: ordinary },
+    { selectedURL: ordinary + '&dtid=OTHER' }, { selectedURL: ordinary + '&dtid=SYNTHETIC_DEVICE&dtid=SYNTHETIC_DEVICE' }]) {
+    const value = fixture(modernChannelOptions(extra)); value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 4); assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null);
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+  }
+});
+
+test('modern eighth flag scope malformed types and opt-out preserve all original paths', async () => {
+  for (const modernChannelContext of [null, 'true', 1, {}, []]) {
+    const value = fixture(modernChannelOptions({ modernChannelContext })); value.startChannel('fixture-one');
+    assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+  for (const [extra, start] of [
+    [{ channelDiagnostic: false }, v => v.startChannel('fixture-one')],
+    [{ account: undefined }, v => v.startChannel('fixture-one')],
+    [{}, v => v.start()], [{}, v => v.start(true, 'fixture-episode')], [{}, v => v.startSlot('sumo/fixture-slot')],
+  ]) {
+    const value = fixture(modernChannelOptions(extra)); start(value); assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+  const results = [];
+  for (const modernChannelContext of [undefined, false]) {
+    const value = fixture(modernChannelOptions({ modernChannelContext })); value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    assert.deepEqual(value.requests.map(({ uri }) => uri.pathname), ['/v1/media/token', '/v1/channels']);
+    assert.equal(value.requests[1].uri.origin, 'https://api.abema.io'); assert.equal(value.persistentStorageTouches(), 0);
+    results.push({ metadata: value.metadata(), binding: value.evaluate(`window['${name}'].channelBinding()`) });
+  }
+  assert.deepEqual(results[0], results[1]);
 });
 
 test('channel diagnostics distinguish pre-request runtime failure from the preceding token HTTP status', async () => {

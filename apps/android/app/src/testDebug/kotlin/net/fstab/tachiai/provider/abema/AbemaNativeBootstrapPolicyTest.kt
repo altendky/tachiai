@@ -1,10 +1,117 @@
 package net.fstab.tachiai.provider.abema
 
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaNativeBootstrapPolicyTest {
+    private val modernApi = "https://api.p-c3-e.abema-tv.com/v1"
+    private fun encoded(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+    private fun modernAllows(value: String, method: String = "GET", mainFrame: Boolean = false) =
+        AbemaNativeBootstrapPolicy.allows(URI(value), mainFrame, method, channelId = "abema-news", modernChannelContext = true)
+
+    @Test fun `modern context is explicit configured channel scope with no legacy fallback or navigation`() {
+        val channel = "$modernApi/channels"
+        assertTrue(modernAllows(channel)); assertTrue(modernAllows(channel, "OPTIONS"))
+        assertTrue(modernAllows(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE))
+        for (endpoint in AbemaNativeBootstrapPolicy.SLOT_REGION_URIS) {
+            assertTrue(modernAllows(endpoint))
+            assertFalse(modernAllows(endpoint, "OPTIONS"))
+            assertFalse(modernAllows("$endpoint?division=1"))
+        }
+        for (method in listOf("POST", "HEAD", "DELETE")) assertFalse(modernAllows(channel, method))
+        assertFalse(modernAllows(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE, mainFrame = true))
+        assertTrue(modernAllows(AbemaNativeBootstrapPolicy.PAGE, mainFrame = true))
+        for (uri in listOf("https://api.abema.io/v1/channels", "https://api.abema.io/v1/video/programs/394-72_s10_p8529",
+            "$modernApi/video/programs/fixture", "$modernApi/media/slots/fixture?include=payperview",
+            "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/fixture")) assertFalse(modernAllows(uri))
+        for ((episode, configuredChannel, slot) in listOf(Triple(null, null, null), Triple("fixture", null, null),
+            Triple(null, null, "sumo/fixture"), Triple("fixture", "abema-news", null),
+            Triple(null, "abema-news", "sumo/fixture"), Triple(null, "bad/channel", null))) {
+            assertFalse(AbemaNativeBootstrapPolicy.allows(URI(channel), false, "GET", episode, configuredChannel, slot, true))
+            assertTrue(runCatching { AbemaNativeBootstrapPolicy.contentSecurityPolicy(episode, configuredChannel, slot, true) }.isFailure)
+        }
+        val csp = AbemaNativeBootstrapPolicy.contentSecurityPolicy(channelId = "abema-news", modernChannelContext = true)
+        for (url in listOf(channel, "$modernApi/media/deviceTypeId", AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE) +
+            AbemaNativeBootstrapPolicy.SLOT_REGION_URIS) assertTrue(csp.contains(url))
+        assertFalse(csp.contains("api.abema.io")); assertFalse(csp.contains("playbackResources"))
+        assertFalse(csp.contains("/api/auth/login/guest")); assertFalse(csp.contains("license.p-c3-e.abema-tv.com"))
+        val guest = "https://abema.tv/api/auth/login/guest"
+        val license = "https://license.p-c3-e.abema-tv.com/abematv-dash?t=fixture&ct=channel&cid=abema-news"
+        assertFalse(modernAllows(guest, "POST")); assertFalse(modernAllows(license, "POST"))
+        assertFalse(modernAllows(license, "OPTIONS"))
+        assertTrue(AbemaNativeBootstrapPolicy.allows(URI(guest), false, "POST", channelId = "abema-news"))
+        assertTrue(AbemaNativeBootstrapPolicy.allows(URI(license), false, "POST", channelId = "abema-news"))
+        assertTrue(AbemaNativeBootstrapPolicy.contentSecurityPolicy(channelId = "abema-news").contains("/api/auth/login/guest"))
+        assertTrue(AbemaNativeBootstrapPolicy.contentSecurityPolicy(channelId = "abema-news").contains("license.p-c3-e.abema-tv.com"))
+        assertTrue(csp.contains("media-src 'none'")); assertTrue(csp.contains("frame-src 'none'"))
+        for ((episode, configuredChannel, slot) in listOf(Triple(null, null, null), Triple("fixture", null, null),
+            Triple(null, "abema-news", null), Triple(null, null, "sumo/fixture"))) {
+            assertEquals(AbemaNativeBootstrapPolicy.contentSecurityPolicy(episode, configuredChannel, slot),
+                AbemaNativeBootstrapPolicy.contentSecurityPolicy(episode, configuredChannel, slot, false))
+            for (url in listOf(channel, "https://api.abema.io/v1/channels", AbemaNativeBootstrapPolicy.PAGE,
+                AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE, AbemaNativeBootstrapPolicy.SLOT_REGION_URI))
+                assertEquals(AbemaNativeBootstrapPolicy.allows(URI(url), false, "GET", episode, configuredChannel, slot),
+                    AbemaNativeBootstrapPolicy.allows(URI(url), false, "GET", episode, configuredChannel, slot, false))
+        }
+    }
+
+    @Test fun `modern device request preserves closed provider enums and canonical bounded version`() {
+        val base = "$modernApi/media/deviceTypeId"
+        for (os in listOf("MacOS", "Windows", "unknown")) for (drm in listOf("Widevine", "FairPlay", "PlayReady", "unknown"))
+            for (version in listOf("", "16", "x".repeat(64), "fixture version/+~=")) {
+                val request = "$base?os=$os&osVersion=${encoded(version)}&drm=$drm"
+                assertTrue(request, modernAllows(request)); assertTrue(modernAllows(request, "OPTIONS"))
+                assertFalse(AbemaNativeBootstrapPolicy.allows(URI(request), false, "GET", channelId = "abema-news"))
+            }
+        val valid = "$base?os=unknown&osVersion=16&drm=unknown"
+        for (request in listOf(base, "$base?", valid.replace("os=unknown", "os=Android"),
+            valid.replace("drm=unknown", "drm=ClearKey"), valid.replace("os=unknown", "os="),
+            valid.replace("osVersion=16", "osVersion=${"x".repeat(65)}"),
+            valid.replace("osVersion=16", "osVersion=%00"), valid.replace("osVersion=16", "osVersion=%C3%A9"),
+            valid.replace("osVersion=16", "osVersion=%31%36"), valid.replace("osVersion=16", "osVersion=a%20b"),
+            valid.replace("osVersion=16", "osVersion=a%2fb"), valid.replace("os=unknown", "%6Fs=unknown"),
+            valid.substringBefore("&drm="), "$valid&os=unknown", "$valid&extra=1", "$valid&", "$valid#fragment",
+            valid.replace(".com/", ".com:443/"), valid.replace("https://", "https://user@"),
+            valid.replace("https://", "http://"), valid.replace("/media/", "/media/../media/"),
+            valid.replace("deviceTypeId?", "deviceTypeId/?"), valid.replace("deviceTypeId", "%64eviceTypeId")))
+            assertFalse(request, modernAllows(request))
+        assertFalse(modernAllows(valid, "POST")); assertFalse(modernAllows(valid, mainFrame = true))
+    }
+
+    @Test fun `modern channels admit only actual division and canonical bounded opaque device ID`() {
+        val base = "$modernApi/channels"
+        for (query in listOf("", "?division=1", "?dtid=0", "?dtid=${encoded("opaque:/+~=")}",
+            "?division=1&dtid=${"x".repeat(256)}", "?dtid=fixture&division=1")) assertTrue(modernAllows(base + query))
+        for (query in listOf("?", "?division=0", "?division=2", "?division=01", "?division=%31", "?dtid=",
+            "?dtid=${"x".repeat(257)}", "?dtid=a+b", "?dtid=%00", "?dtid=%7F", "?dtid=%C3%A9",
+            "?dtid=%66ixture", "?dtid=a%2fb", "?dtid=a=b", "?dtid=fixture&dtid=other",
+            "?division=1&division=1", "?%64tid=fixture", "?os=unknown", "?division=1&", "?division=1&&dtid=fixture"))
+            assertFalse(query, modernAllows(base + query))
+        for (uri in listOf(base.replace(".com/", ".com.evil/"), base.replace(".com/", ".com:443/"),
+            "$base/", "$base#fragment", base.replace("https://", "https://user@"))) assertFalse(modernAllows(uri))
+    }
+
+    @Test fun `modern source device ID is opt in and retains every existing source constraint`() {
+        val base = "https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=fixture&enc=clear&dt=pc_chrome&ut=1&sw=0"
+        fun allows(uri: String) = AbemaNativeBootstrapPolicy.allowsNewsSource(URI(uri), modernChannelContext = true)
+        assertTrue(allows(base))
+        for (id in listOf("0", "fixture", "opaque:/+~=", "x".repeat(256))) {
+            val uri = "$base&dtid=${encoded(id)}"
+            assertTrue(allows(uri)); assertFalse(AbemaNativeBootstrapPolicy.allowsNewsSource(URI(uri)))
+            assertFalse(AbemaNativeBootstrapPolicy.allowsNewsCdn(URI(uri)))
+        }
+        for (uri in listOf("$base&dtid=", "$base&dtid=${"x".repeat(257)}", "$base&dtid=a+b", "$base&dtid=%00",
+            "$base&dtid=%7F", "$base&dtid=%C3%A9", "$base&dtid=%66ixture", "$base&dtid=a%2fb",
+            "$base&dtid=fixture&dtid=other", "$base&%64tid=fixture", "$base&dtid=a=b", "$base&dtid=fixture&extra=1",
+            base.replace("abema-news", "other") + "&dtid=fixture", base.replace("enc=clear", "enc=wv") + "&dtid=fixture",
+            base.replace("dt=pc_chrome", "dt=other") + "&dtid=fixture", base.replace("ut=1", "ut=0") + "&dtid=fixture",
+            base.replace("sw=0", "sw=1") + "&dtid=fixture", base.replace("manifest.mpd", "segment.m4s") + "&dtid=fixture"))
+            assertFalse(uri, allows(uri))
+    }
+
     @Test fun `slot policy binds one exact metadata license and public region data without navigation or unrelated APIs`() {
         val identity = "sumo/fixture-slot"
         fun allows(value: String, method: String = "GET", main: Boolean = false) =

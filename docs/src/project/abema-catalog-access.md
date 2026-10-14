@@ -1700,6 +1700,112 @@ manifest was restored byte-identically before rebuilding and reinstalling the
 shared-signed ordinary test APK and returning to the normal launcher. #193 remains
 open; these diagnostics neither enable nor establish exact live playback.
 
+### Provider-derived modern channel context observation
+
+The pinned current channel caller (5206/module 40724) fetches
+`api.p-c3-e.abema-tv.com/v1/channels` anonymously after obtaining provider region
+and device context. The older `api.abema.io` request has neither context and is
+not contract-equivalent. The current model (40579) preserves raw `viewingOpened`
+without a default; the coherent viewer activates playlists, DRM status, channel
+identity and returned device type without that legacy availability predicate.
+An observed CHANNEL_UNAVAILABLE therefore does not establish a closed channel.
+
+A new, separate source-only opt-in reads the existing fixed public region page
+as data, retains its strict returned Japan/NONE and selected CDN checks, and
+supplies that fresh context to unchanged provider 42561. It obtains device
+context from unchanged 44680 after awaiting the original browser capability
+detector. A fresh in-memory local/session Storage facade contains only this
+runtime's admitted bearer and helper cache; it is cleared on stop and refuses
+late writes. The real device ID is not invented or copied from another session.
+The device GET retains its exact bearer and same-origin credential mode. Only
+its actual 200, 400 and 500 statuses are supported; 400/500 error bodies are
+cancelled without reads before exposing status to the unchanged helper. Unexpected
+statuses, including 401, stop before automatic refresh. Device, capability and
+body-cancellation waits retain bounded ownership and cannot turn late completion
+into another request or successful preparation.
+
+One modern channel GET then uses the provider-derived division and returned
+device ID, with anonymous/omit credentials and no legacy endpoint fallback.
+Only successful undefined ID or the unchanged helper's real 400/500 outcome
+permits omission. The selected canonical raw record, playlists, DRM and alternate
+shapes are checked before the unchanged model and source selector run. A supplied
+device ID must match the selected manifest query exactly. Closed diagnostics add
+CHANNEL_REGION, CHANNEL_DEVICE and CHANNEL_CONTEXT_REFUSED; no raw context,
+device ID, response, source URI or exception is exported.
+
+This option requires the existing account-backed, configured-channel,
+manifest-only diagnostic mode. Native policy and CSP allow only the bounded
+modern context/channel resources and refuse guest login and licensing in this
+mode. The existing manifest policy admits a returned device-ID query only in
+this mode, with the same selected channel, protected initialization and transport
+close checks. A source resolver cannot use the option without an initial-manifest
+observer. The helper refuses license begin, and the session still stops before
+creating a player, native CDM, license exchange or media-segment request. Default
+channel, historical, episode, slot and catalog behavior is unchanged.
+
+The new gate is `tachiaiReadOnlyAbemaModernChannelContext=true`, with retained
+ACCOUNT required and a canonical previously returned public tuple in
+`tachiaiAbemaManifestSlotIdentity`. It is exclusive with the other actual
+playback/source-only gates. The separate provider-free gate
+`tachiaiReadOnlyAbemaModernContextHarness=true` checks the actual four verified
+public bundles in fresh synthetic WebViews with network blocked, synthetic
+account input and no protected-store access. Normal instrumentation skips both
+before WebView/cookie APIs. These fixtures and the opt-in do not enable normal
+playback or prove media-occurrence coverage, entitlement, native acceptance or
+physical-device behavior.
+
+Bounded offline composition established that the device helper loads within the
+four current pins, uses one authenticated request and memoizes its outcome. Six
+model cases preserve playlist fields and true/false/absent viewingOpened; fresh
+region fixtures omit division for NONE and return GLOBAL's actual division.
+Successful device 200 with no ID returns undefined, while four 400/500 null/empty
+body cases retain genuine failure outcomes with zero body reads or clones.
+These are synthetic interface observations; they do not establish a real
+device-ID response or provider acceptance.
+
+On 2026-10-14, the actual four pinned public bundles passed the provider-free
+WebView fixture's three fresh cases in 1.471 seconds, one JUnit test and zero
+skips: device 200 with exact returned-ID/source binding, real helper 500 behavior
+with one cancellation and zero error-body reads, and the default-off legacy
+availability refusal. Network loads stayed blocked, all persistent-storage and
+MediaKeys counters stayed zero, RAM storage cleared on stop, and each owned view
+was destroyed. Initial fixture attempts loaded an error document instead of the
+fixture; closed startup counters and a passing small existing WebView control
+isolated the loading problem. The corrected interceptor serves exactly one owned
+main page and refuses every other request. Its nonce-authorized inline scripts
+preserve strictly decoded, hash-verified public bytes without escaping or
+rewriting them. Independent review and Android lint/compilation passed afterward.
+
+One subsequent real source-only check on persistent `tachiai-dev` passed in
+18.105 seconds, one test and zero skips. The device was Android 16/API 36 x86-64,
+software rendering and WebView 133.0.6943.137. It used the saved email ACCOUNT and
+owning Windscribe SAVED_CONNECTION route. The previously returned public tuple
+`abema-anime/9QLZ7gHeTghZFd` was reused solely for channel-source preparation;
+this was not a fresh assertion that the selected broadcast was still airing.
+Preparation reached READY with 275 modules, last module 78307, final HTTP 200
+and failure NONE. The underlying source-only outcome was INITIAL_MANIFEST_OBSERVED.
+Returned device context and source queries remained private; the final HTTP
+status does not disclose the separate device response status or establish that
+an ID was supplied.
+
+The initial manifest matched the channel and had one period, one explicit valid
+finite start, no explicit duration or finite explicit interval, no EventStream,
+and one InbandEventStream. Its one period ID did not match the requested slot;
+there were no slot-ID attributes. This shape supplies neither finite requested
+PG/media-occurrence coverage nor a boundary that prevents presentation of another
+broadcast. No native player, native CDM, license exchange or media-segment request was
+created. Publication followed completed cleanup with no pending/failed session
+or busy web route; owning route and all 20 protected files stayed unchanged.
+
+Verification also passed 117 Node cases, 2,793 JVM tests with zero failures,
+errors or skips, Android lint and release isolation, instrumentation compilation,
+and 19 provider-free source/binding/cleanup emulator tests in 2.172 seconds.
+Every built APK matched the shared debug signing certificate. The ordinary test
+manifest was restored byte-identically; the shared-signed ordinary test APK was
+rebuilt and reinstalled, and the normal launcher was restored with all 20
+protected files still unchanged.
+Issue #193 remains open; this source-only option does not enable normal live playback.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

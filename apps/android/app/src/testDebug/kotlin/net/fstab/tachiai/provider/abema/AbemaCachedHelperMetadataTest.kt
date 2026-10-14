@@ -101,7 +101,7 @@ class AbemaCachedHelperMetadataTest {
 
     private val channelPhases = listOf("CHANNEL_REQUEST", "CHANNEL_RESPONSE", "CHANNEL_ENVELOPE_REFUSED",
         "CHANNEL_SELECTION_REFUSED", "CHANNEL_UNAVAILABLE", "CHANNEL_DRM_REFUSED", "CHANNEL_PLAYLIST_REFUSED",
-        "CHANNEL_ALTERNATE_REFUSED")
+        "CHANNEL_ALTERNATE_REFUSED", "CHANNEL_REGION", "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED")
 
     @Test fun channelPhasesParseCanonicalAndLegacyShapesWithoutChangingPreparationOrHttpGates() {
         for (phase in channelPhases) {

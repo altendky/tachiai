@@ -8,7 +8,10 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import android.webkit.WebView
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
@@ -39,6 +42,11 @@ import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 import net.fstab.tachiai.provider.abema.account.AbemaAccountAccessIpc
+import net.fstab.tachiai.provider.abema.account.AbemaProfileFixtureCleanup
+import net.fstab.tachiai.provider.twitch.ConfiguredTwitchInitialPlayback
+import net.fstab.tachiai.provider.twitch.ConfiguredTwitchLiveMovementSample
+import net.fstab.tachiai.provider.twitch.ConfiguredTwitchMovementSampler
+import net.fstab.tachiai.provider.twitch.ConfiguredTwitchPlaybackContinuity
 import org.json.JSONObject
 import org.json.JSONTokener
 import org.junit.Assert.*
@@ -54,11 +62,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         EXACT_EPISODE_FRAME_AND_POSITION, EXACT_CHANNEL_FRAME_AND_POSITION, EXACT_SLOT_FRAME_AND_POSITION,
         HISTORICAL_NEWS_FRAME_AND_POSITION, HISTORICAL_REPLAY_FRAME_AND_POSITION,
         INITIAL_MANIFEST_OBSERVED, CHANNEL_PREPARATION_OBSERVED,
+        CONTINUOUS_SLOT_CHANNEL_FRAME_AND_POSITION,
     }
     private enum class ObservationMode(val acceptedOutcome: Outcome) {
         CONFIGURED_EPISODE(Outcome.EXACT_EPISODE_FRAME_AND_POSITION),
         CONFIGURED_CHANNEL(Outcome.EXACT_CHANNEL_FRAME_AND_POSITION),
         CONFIGURED_SLOT(Outcome.EXACT_SLOT_FRAME_AND_POSITION),
+        CONTINUOUS_SLOT(Outcome.CONTINUOUS_SLOT_CHANNEL_FRAME_AND_POSITION),
         HISTORICAL_NEWS(Outcome.HISTORICAL_NEWS_FRAME_AND_POSITION),
         HISTORICAL_REPLAY(Outcome.HISTORICAL_REPLAY_FRAME_AND_POSITION),
         CONFIGURED_MANIFEST(Outcome.INITIAL_MANIFEST_OBSERVED),
@@ -201,6 +211,23 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         observePlayback(ObservationMode.HISTORICAL_NEWS)
     }
 
+    @Test fun optInContinuousConfiguredSlotUsesProductionSessionAndPreservesSavedRecords() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaContinuousSlot") == "true")
+        val identity = args.getString("tachiaiAbemaConfiguredSlotIdentity")
+        assertTrue("Canonical slot, saved account and exclusive continuous-slot opt-in required",
+            identity != null && validAbemaSlotIdentity(identity) &&
+                args.getString("tachiaiRequireSavedAbemaAccount") == "true" &&
+                listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
+                    "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
+                    "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaManifestOnly",
+                    "tachiaiReadOnlyAbemaChannelPreparation", "tachiaiReadOnlyAbemaModernChannelContext")
+                    .none { args.getString(it) == "true" } &&
+                listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredChannelId", "tachiaiAbemaManifestSlotIdentity")
+                    .all { args.getString(it) == null })
+        observePlayback(ObservationMode.CONTINUOUS_SLOT, checkNotNull(identity))
+    }
+
     @Test fun optInExactConfiguredChannelUsesProductionSessionAndPreservesSavedRecords() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiReadOnlyAbemaConfiguredChannel") == "true")
         val id = InstrumentationRegistry.getArguments().getString("tachiaiAbemaConfiguredChannelId")
@@ -223,7 +250,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
                     "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
                     "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaChannelPreparation",
-                    "tachiaiReadOnlyAbemaModernChannelContext").none { args.getString(it) == "true" } &&
+                    "tachiaiReadOnlyAbemaModernChannelContext", "tachiaiReadOnlyAbemaContinuousSlot").none { args.getString(it) == "true" } &&
                 listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
                     "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
         observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity))
@@ -239,7 +266,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
                     "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
                     "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaManifestOnly",
-                    "tachiaiReadOnlyAbemaModernChannelContext").none { args.getString(it) == "true" } &&
+                    "tachiaiReadOnlyAbemaModernChannelContext", "tachiaiReadOnlyAbemaContinuousSlot").none { args.getString(it) == "true" } &&
                 listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
                     "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
         observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity), channelPreparationOnly = true)
@@ -255,7 +282,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
                     "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
                     "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaManifestOnly",
-                    "tachiaiReadOnlyAbemaChannelPreparation").none { args.getString(it) == "true" } &&
+                    "tachiaiReadOnlyAbemaChannelPreparation", "tachiaiReadOnlyAbemaContinuousSlot").none { args.getString(it) == "true" } &&
                 listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
                     "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
         observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity), channelPreparationOnly = true,
@@ -271,6 +298,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val observationWall = System.currentTimeMillis()
         val args = InstrumentationRegistry.getArguments()
         val manifestOnly = mode == ObservationMode.CONFIGURED_MANIFEST
+        val continuousSlot = mode == ObservationMode.CONTINUOUS_SLOT
+        val boundedObservation = manifestOnly || continuousSlot
         check(!channelPreparationOnly || manifestOnly)
         check(!modernChannelContextOnly || manifestOnly && channelPreparationOnly)
         val manifestSlot = if (manifestOnly) AbemaSlotRequest.from(CatalogResource(ProviderId("abema"),
@@ -278,13 +307,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val manifestSnapshot = AtomicReference<AbemaInitialManifestSnapshot?>()
         val manifestCount = AtomicInteger()
         val nativeObserved = AtomicBoolean()
-        val observationEnd = observationStarted + if (manifestOnly) 50_000 else 70_000
+        val observationEnd = observationStarted + if (boundedObservation) 50_000 else 70_000
         fun remainingObservation() = (observationEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
         val wallHigh = AtomicLong(observationWall)
         val clockRefused = AtomicBoolean()
         val clockLock = Any()
         fun manifestClockCurrent(): Boolean {
-            if (!manifestOnly) return true
+            if (!boundedObservation) return true
             return synchronized(clockLock) {
                 val wall = System.currentTimeMillis()
                 val elapsed = SystemClock.elapsedRealtime()
@@ -338,13 +367,26 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         var cleanupWaitExpired = false
         var scenarioCloseFailed = false
         var routeMode = "UNAVAILABLE"
+        val continuity = ConfiguredTwitchPlaybackContinuity()
+        var continuityPlayer: Player? = null
+        var continuityListener: Player.Listener? = null
+        var listenerRemoved = false
+        var startupPoll: Runnable? = null
+        var initialPlayback: ConfiguredTwitchInitialPlayback? = null
+        var continuousCleanup: AbemaContinuousObservationCleanup? = null
+        var closeWorkerTerminated = false
+        var resolvedLinear: Boolean? = null
+        var liveTimeline = false
+        var movementWindow: Any? = null
+        var movementPeriod: Any? = null
+        var movementGeneration = -1L
         fun readOwner() = readAbemaCatalogRouteOwner(defaultProviderInstanceId(PrototypeService.ABEMA),
             { providerInstanceStore(context).read { legacyProviderSettings(context) } }, { connectionProfileStore(context).selected(it) })
         try {
-            check(retainedPoisoned == null)
+            check(retainedPoisoned == null && retainedContinuousListener == null && retainedContinuousScenario == null)
             check(CookieHandler.getDefault() == null)
-            before = encryptedRecords(context.noBackupFilesDir, includeControlRecords = manifestOnly)
-            if (manifestOnly) check(listOf("provider-instances.lock", "provider-setup.lock", "source-setup.lock",
+            before = encryptedRecords(context.noBackupFilesDir, includeControlRecords = boundedObservation)
+            if (boundedObservation) check(listOf("provider-instances.lock", "provider-setup.lock", "source-setup.lock",
                 "connection-profiles.lock").all { checkNotNull(before).containsKey(it) })
             owner = readOwner(); routeMode = owner.instance.setup.route!!.mode.name
             val source = when (mode) {
@@ -355,7 +397,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 ObservationMode.CONFIGURED_MANIFEST -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(manifestSlot).channelId,
                         CatalogIntent.CHANNEL), "Temporary manifest observation"))
-                ObservationMode.CONFIGURED_SLOT -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
+                ObservationMode.CONFIGURED_SLOT, ObservationMode.CONTINUOUS_SLOT -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(checkNotNull(AbemaSlotRequest.from(CatalogResource(ProviderId("abema"), "slot",
                         checkNotNull(resourceIdentity), CatalogIntent.BROADCAST))).resource, "Temporary observation"))
                 ObservationMode.HISTORICAL_NEWS, ObservationMode.HISTORICAL_REPLAY -> {
@@ -369,13 +411,13 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val feed = selected.selection.a
             check(feed.resource == resource && selected.selection.b.choice == feed.choice)
             val replay = feed.kind == PrototypePlaybackKind.REPLAY
-            if (mode == ObservationMode.CONFIGURED_SLOT) check(replay && feed.historicalSource == null &&
+            if (mode in setOf(ObservationMode.CONFIGURED_SLOT, ObservationMode.CONTINUOUS_SLOT)) check(replay && feed.historicalSource == null &&
                 selected.selection.b.resource == resource && AbemaSlotRequest.from(feed.resource)?.resource == resource)
             scenario = ActivityScenario.launch(AbemaEpisodeObservationActivity::class.java)
             val surface = AtomicReference<AbemaEpisodeObservationActivity>()
             scenario.onActivity { surface.set(it) }
-            check(!manifestOnly || remainingObservation() > 0)
-            val duration = if (manifestOnly) remainingObservation() else 70_000L
+            check(!boundedObservation || remainingObservation() > 0)
+            val duration = if (boundedObservation) remainingObservation() else 70_000L
             val budget = NativePlaybackBudget(duration, { active.get() && surface.get().observationActive.get() &&
                 manifestClockCurrent() }, maximumDurationMs = 70_000)
             val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
@@ -403,7 +445,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 owned.proxyWillChange(checkNotNull(run))
                 webRoute.install(route, { routeAccepted.set(it); installed.countDown() })
             }
-            check(installed.await(if (manifestOnly) minOf(5_000, remainingObservation()) else 5_000, TimeUnit.MILLISECONDS) &&
+            check(installed.await(if (boundedObservation) minOf(5_000, remainingObservation()) else 5_000, TimeUnit.MILLISECONDS) &&
                 routeAccepted.get() && captured.sameOwnership(readOwner()))
             instrumentation.runOnMainSync {
                 session = CachedPrototypeAbemaSession(surface.get(), replay,
@@ -414,10 +456,16 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                             nativeObserved.set(true); failed.set(true); prepared.countDown()
                         } else when (event) {
                             PrototypeFeedEvent.READY -> {
-                                session?.player?.let { surface.get().attachPlayer(it) }
-                                session?.member?.setVolume(0f); session?.member?.setTimingPlaying(true); prepared.countDown()
+                                if (!continuousSlot) {
+                                    session?.player?.let { surface.get().attachPlayer(it) }
+                                    session?.member?.setVolume(0f); session?.member?.setTimingPlaying(true); prepared.countDown()
+                                }
                             }
-                            PrototypeFeedEvent.VIDEO_FRAME -> { renderedFrame.set(true); frame.countDown() }
+                            PrototypeFeedEvent.VIDEO_FRAME -> {
+                                if (!continuousSlot || initialPlayback?.stage == ConfiguredTwitchInitialPlayback.Stage.PREPARED) {
+                                    renderedFrame.set(true); frame.countDown()
+                                }
+                            }
                             PrototypeFeedEvent.FAILED -> { failed.set(true); prepared.countDown(); frame.countDown() }
                             else -> Unit
                         }
@@ -435,6 +483,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     manifestOnlySlot = manifestSlot,
                     observeChannelPreparation = channelPreparationOnly,
                     observeModernChannelContext = modernChannelContextOnly,
+                    continuousSlotPlayback = continuousSlot,
+                    requireSavedAccount = continuousSlot,
                     onManifestOnlyPrepared = if (manifestOnly) ({ value ->
                         manifestCount.updateAndGet { (it + 1).coerceAtMost(2) }
                         manifestSnapshot.compareAndSet(null, value)
@@ -445,13 +495,147 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) &&
                             manifestClockCurrent() }, diagnostics))
                 val created = checkNotNull(session)
-                owned.feed(checkNotNull(run), 0, created, pending = { created.cleanupPending }, knownFailed = { created.cleanupFailed }, confirmed = { created.cleanupConfirmed })
+                if (continuousSlot) {
+                    val close = AbemaContinuousObservationCleanup(removeObservation = {
+                        check(Looper.myLooper() == Looper.getMainLooper())
+                        var removed = true
+                        try { startupPoll?.let(main::removeCallbacks) } catch (_: Throwable) { removed = false }
+                        try {
+                            val player = continuityPlayer
+                            val listener = continuityListener
+                            if (player != null && listener != null) player.removeListener(listener)
+                            else if (player != null || listener != null) removed = false
+                        } catch (_: Throwable) { removed = false }
+                        listenerRemoved = removed
+                        if (!removed) {
+                            cleanupMainFailed = true
+                            retainedContinuousListener = arrayOf(continuityPlayer, continuityListener, startupPoll)
+                        }
+                        removed
+                    }, closeNative = created::close, nativePending = { created.cleanupPending },
+                        nativeFailed = { created.cleanupFailed }, nativeConfirmed = { created.cleanupConfirmed })
+                    continuousCleanup = close
+                    owned.feed(checkNotNull(run), 0, close, pending = { close.pending }, knownFailed = { close.failed },
+                        confirmed = { close.confirmed })
+                } else owned.feed(checkNotNull(run), 0, created, pending = { created.cleanupPending },
+                    knownFailed = { created.cleanupFailed }, confirmed = { created.cleanupConfirmed })
                 created.prepare(budget)
+                if (continuousSlot) {
+                    val initial = ConfiguredTwitchInitialPlayback(observationStarted, observationEnd,
+                        SystemClock::elapsedRealtime).also { initialPlayback = it }
+                    fun startupFailed() { failed.set(true); prepared.countDown(); frame.countDown() }
+                    val poll = object : Runnable {
+                        override fun run() {
+                            try {
+                                val host = session
+                                val member = host?.member
+                                val player = host?.player
+                                fun admitted() = active.get() && surface.get().observationActive.get() &&
+                                    owned.current(checkNotNull(run)) && budget.active && remainingObservation() > 0 &&
+                                    manifestClockCurrent() && !failed.get() && host?.failure == null &&
+                                    continuousCleanup?.closed == false &&
+                                    session === host && session?.member === member && session?.player === player &&
+                                    !continuity.overflowed && (player == null || player.applicationLooper == Looper.myLooper()) &&
+                                    (member == null || host != null && host.canContinue() && host.resolvedSlotLinear)
+                                if (player != null && admitted()) {
+                                    if (continuityPlayer == null) {
+                                        continuityPlayer = player
+                                        continuity.advertisement(player.isPlayingAd)
+                                        val listener = object : Player.Listener {
+                                            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,
+                                                newPosition: Player.PositionInfo, reason: Int) { continuity.discontinuity() }
+                                            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { continuity.transition() }
+                                            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                                                continuity.playWhenReady(playWhenReady)
+                                            }
+                                            override fun onEvents(player: Player, events: Player.Events) {
+                                                if (player === continuityPlayer) continuity.advertisement(player.isPlayingAd)
+                                            }
+                                        }
+                                        continuityListener = listener // Retain before any uncertain listener dispatch.
+                                        player.addListener(listener)
+                                    } else if (player !== continuityPlayer) { startupFailed(); return }
+                                }
+                                val stage = initial.poll(member, player, ::admitted) {
+                                    val timing = member?.timingSnapshot()
+                                    if (!admitted() || member == null || initial.seekCount != 1 || timing == null || !timing.live || !timing.dynamic ||
+                                        !member.setQualityPreferences(source.quality) || !member.setVolume(0f)) false
+                                    else {
+                                        surface.get().attachPlayer(checkNotNull(player))
+                                        member.setTimingPlaying(true) && admitted()
+                                    }
+                                }
+                                when (stage) {
+                                    ConfiguredTwitchInitialPlayback.Stage.PREPARED -> prepared.countDown()
+                                    ConfiguredTwitchInitialPlayback.Stage.REFUSED -> startupFailed()
+                                    else -> if (!main.postDelayed(this, 100)) startupFailed()
+                                }
+                            } catch (_: Throwable) { startupFailed() }
+                        }
+                    }
+                    startupPoll = poll
+                    if (continuousCleanup?.closed != false || !main.post(poll)) startupFailed()
+                }
             }
-            val ready = prepared.await(if (manifestOnly) remainingObservation() else 55_000, TimeUnit.MILLISECONDS)
-            val decoded = !manifestOnly && ready && !failed.get() && frame.await(10, TimeUnit.SECONDS) && !failed.get()
+            val ready = prepared.await(if (boundedObservation) remainingObservation() else 55_000, TimeUnit.MILLISECONDS)
+            val decoded = !manifestOnly && ready && !failed.get() &&
+                (if (continuousSlot) frame.await(minOf(10_000, remainingObservation()), TimeUnit.MILLISECONDS)
+                else frame.await(10, TimeUnit.SECONDS)) && !failed.get()
             var moved = false
-            if (decoded) {
+            if (decoded && continuousSlot) {
+                val sampler = ConfiguredTwitchMovementSampler(observationEnd, SystemClock.elapsedRealtime(), true,
+                    SystemClock::elapsedRealtime)
+                while (sampler.result == ConfiguredTwitchMovementSampler.Result.PENDING &&
+                    SystemClock.elapsedRealtime() < sampler.deadline) {
+                    instrumentation.runOnMainSync {
+                        val host = session
+                        val player = host?.player
+                        val member = host?.member
+                        fun admitted() = host != null && player != null && player === continuityPlayer &&
+                            player.applicationLooper == Looper.myLooper() && active.get() && surface.get().observationActive.get() &&
+                            owned.current(checkNotNull(run)) && budget.active && manifestClockCurrent() &&
+                            !failed.get() && host.failure == null && host.canContinue() && host.resolvedSlotLinear &&
+                            continuousCleanup?.closed == false &&
+                            session === host && session?.member === member && session?.player === player &&
+                            !continuity.overflowed && initialPlayback?.preparedFor(member, player) == true
+                        sampler.sampleLive(player, ::admitted) {
+                            val timing = member?.timingSnapshot() ?: return@sampleLive null
+                            val currentPlayer = checkNotNull(player)
+                            val timeline = currentPlayer.currentTimeline
+                            val windowIndex = currentPlayer.currentMediaItemIndex
+                            val periodIndex = currentPlayer.currentPeriodIndex
+                            if (timeline.isEmpty || windowIndex !in 0 until timeline.windowCount ||
+                                periodIndex !in 0 until timeline.periodCount || !timing.dynamic) return@sampleLive null
+                            val window = timeline.getWindow(windowIndex, Timeline.Window())
+                            val period = timeline.getPeriod(periodIndex, Timeline.Period(), true)
+                            if (window.isPlaceholder || period.isPlaceholder || period.windowIndex != windowIndex ||
+                                period.uid == null || period.positionInWindowUs == C.TIME_UNSET ||
+                                timing.state != currentPlayer.playbackState) return@sampleLive null
+                            liveTimeline = timing.live && timing.dynamic
+                            movementWindow = window.uid; movementPeriod = period.uid; movementGeneration = continuity.generation
+                            ConfiguredTwitchLiveMovementSample(
+                                state = when (timing.state) {
+                                    Player.STATE_IDLE -> ConfiguredTwitchMovementSampler.SampleState.IDLE
+                                    Player.STATE_BUFFERING -> ConfiguredTwitchMovementSampler.SampleState.BUFFERING
+                                    Player.STATE_READY -> ConfiguredTwitchMovementSampler.SampleState.READY
+                                    Player.STATE_ENDED -> ConfiguredTwitchMovementSampler.SampleState.ENDED
+                                    else -> ConfiguredTwitchMovementSampler.SampleState.UNAVAILABLE
+                                }, positionMs = timing.positionMs, durationMs = timing.durationMs,
+                                periodOffsetUs = period.positionInWindowUs, windowIdentity = window.uid,
+                                periodIdentity = period.uid, continuityGeneration = continuity.generation,
+                                playing = timing.playing, playWhenReady = timing.playWhenReady,
+                                playingAd = timing.playingAd, live = timing.live)
+                        }
+                        if (sampler.firstSampleState == ConfiguredTwitchMovementSampler.SampleState.READY) continuity.markBaseline()
+                    }
+                    if (sampler.result == ConfiguredTwitchMovementSampler.Result.PENDING) {
+                        val pause = (sampler.deadline - SystemClock.elapsedRealtime()).coerceIn(0, 100)
+                        if (pause > 0) Thread.sleep(pause)
+                    }
+                }
+                moved = sampler.result == ConfiguredTwitchMovementSampler.Result.MOVED
+                movementObserved = moved
+            } else if (decoded) {
                 var firstPlayer: Player? = null
                 var firstPosition = -1L
                 var firstElapsed = -1L
@@ -489,6 +673,27 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             }
             instrumentation.runOnMainSync {
                 accountStatus = session?.accountStatus
+                if (continuousSlot) {
+                    resolvedLinear = session?.resolvedSlotLinear
+                    val timing = session?.member?.timingSnapshot()
+                    val player = session?.player
+                    val timeline = player?.currentTimeline
+                    val windowIndex = player?.currentMediaItemIndex ?: -1
+                    val periodIndex = player?.currentPeriodIndex ?: -1
+                    val window = timeline?.takeIf { !it.isEmpty && windowIndex in 0 until it.windowCount }
+                        ?.getWindow(windowIndex, Timeline.Window())
+                    val period = timeline?.takeIf { !it.isEmpty && periodIndex in 0 until it.periodCount }
+                        ?.getPeriod(periodIndex, Timeline.Period(), true)
+                    val sameTimeline = window != null && period != null && !window.isPlaceholder && !period.isPlaceholder &&
+                        period.windowIndex == windowIndex && window.uid == movementWindow && period.uid == movementPeriod &&
+                        continuity.generation == movementGeneration
+                    moved = moved && liveTimeline && sameTimeline && timing != null && timing.live && timing.dynamic &&
+                        !timing.playingAd && timing.playing && timing.playWhenReady && timing.state == Player.STATE_READY &&
+                        session?.failure == null && session?.canContinue() == true && session?.player === continuityPlayer &&
+                        !continuity.overflowed && initialPlayback?.preparedFor(session?.member, session?.player) == true &&
+                        budget.active && remainingObservation() > 0 && manifestClockCurrent()
+                    movementObserved = moved
+                }
                 if (channelPreparationOnly) {
                     channelPreparation = session?.channelPreparationDiagnostic
                     channelPreparationInTime = remainingObservation() > 0 && manifestClockCurrent()
@@ -500,19 +705,30 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val manifestObserved = manifestOnly && ready && !failed.get() && !nativeObserved.get() &&
                 manifestCount.get() == 1 && manifestSnapshot.get()?.reason == AbemaInitialManifestReason.OBSERVED &&
                 remainingObservation() > 0 && manifestClockCurrent()
-            outcome = if ((manifestObserved || decoded && moved) && accountAccepted && captured.sameOwnership(readOwner()))
+            outcome = if ((manifestObserved || decoded && moved) && accountAccepted &&
+                (!continuousSlot || resolvedLinear == true) && captured.sameOwnership(readOwner()))
                 mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
         } catch (_: Throwable) { outcome = Outcome.SAFE_FAILURE }
         finally {
+            val continuousCleanupEnd = minOf(observationStarted + 70_000, SystemClock.elapsedRealtime() + 20_000)
             // Preserve the immutable playback evidence before disposal can
             // replace the final outcome with a cleanup refusal.
             playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
             try { instrumentation.runOnMainSync {
                 if (manifestOnly && (session?.player != null || session?.member != null)) nativeObserved.set(true)
+                if (continuousSlot) {
+                    if (outcome == mode.acceptedOutcome && (session?.failure != null || session?.canContinue() != true ||
+                        session?.resolvedSlotLinear != true || session?.player !== continuityPlayer ||
+                        continuity.generation != movementGeneration || remainingObservation() <= 0 || !manifestClockCurrent()))
+                        outcome = Outcome.PLAYBACK_REFUSED
+                    playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
+                    if (continuousCleanup == null) listenerRemoved = true // No feed/listener was allocated.
+                }
                 active.set(false)
                 run?.let { coordinator?.prepared(it, routePreparation?.cleanupConfirmed == true); coordinator?.end(it) }
             } } catch (_: Throwable) { cleanupMainFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
-            val cleanupWait = if (manifestOnly) (observationStarted + 70_000 - SystemClock.elapsedRealtime()).coerceIn(0, 20_000) else 22_000
+            val cleanupWait = if (continuousSlot) (continuousCleanupEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+                else if (manifestOnly) (observationStarted + 70_000 - SystemClock.elapsedRealtime()).coerceIn(0, 20_000) else 22_000
             if (run != null && !cleanupDone.await(cleanupWait, TimeUnit.MILLISECONDS)) {
                 cleanupWaitExpired = true; outcome = Outcome.CLEANUP_UNCONFIRMED
             }
@@ -520,14 +736,50 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 cleanupSnapshot = CleanupSnapshot(SnapshotState.AVAILABLE, run?.phase, run?.failureStage,
                     session?.cleanupPending, session?.cleanupFailed, session?.cleanupConfirmed, webRoute.busy)
             } } catch (_: Throwable) { cleanupSnapshot = CleanupSnapshot() }
-            try { scenario?.close() } catch (_: Throwable) { scenarioCloseFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
+            try {
+                if (continuousSlot) {
+                    scenario?.let { value ->
+                        val receipt = AbemaProfileFixtureCleanup(value, { it.close() })
+                        retainedContinuousScenario = receipt
+                        if (!receipt.await(continuousCleanupEnd)) {
+                            scenarioCloseFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED
+                        } else retainedContinuousScenario = null
+                    }
+                } else scenario?.close()
+            } catch (_: Throwable) { scenarioCloseFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
             // Keep a poisoned coordinator/backend reachable for the process.
-            if (coordinator?.unavailable == true) retainedPoisoned = coordinator else worker.shutdown()
+            if (continuousSlot) {
+                worker.shutdown()
+                closeWorkerTerminated = try {
+                    worker.awaitTermination((continuousCleanupEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0), TimeUnit.MILLISECONDS) &&
+                        SystemClock.elapsedRealtime() < continuousCleanupEnd
+                } catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
+                catch (_: Throwable) { false }
+                if (!closeWorkerTerminated) {
+                    cleanupWaitExpired = true; outcome = Outcome.CLEANUP_UNCONFIRMED
+                }
+                if (coordinator?.unavailable == true || !listenerRemoved || !closeWorkerTerminated) {
+                    retainedPoisoned = coordinator
+                    retainedContinuousListener = arrayOf(worker, coordinator, run, continuousCleanup,
+                        continuityPlayer, continuityListener, startupPoll)
+                }
+            } else if (coordinator?.unavailable == true) retainedPoisoned = coordinator else worker.shutdown()
         }
-        val storesUnchanged = try { val after = encryptedRecords(context.noBackupFilesDir, includeControlRecords = manifestOnly); val baseline = before
+        val storesUnchanged = try { val after = encryptedRecords(context.noBackupFilesDir, includeControlRecords = boundedObservation); val baseline = before
             baseline != null && baseline.keys == after.keys && baseline.all { (name, digest) -> MessageDigest.isEqual(digest, after[name]) }
         } catch (_: Throwable) { false }
         val ownerUnchanged = try { owner?.sameOwnership(readOwner()) == true } catch (_: Throwable) { false }
+        val continuousAccepted = !continuousSlot || resolvedLinear == true && liveTimeline && listenerRemoved && closeWorkerTerminated &&
+            continuousCleanup?.confirmed == true &&
+            initialPlayback?.stage == ConfiguredTwitchInitialPlayback.Stage.PREPARED &&
+            initialPlayback?.seekCount == 1 && playbackObservation?.outcome == mode.acceptedOutcome &&
+            playbackObservation?.renderedFrame == true && playbackObservation?.moved == true &&
+            accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged && manifestClockCurrent() &&
+            !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
+            cleanupSnapshot.state == SnapshotState.AVAILABLE && cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
+            cleanupSnapshot.sessionPending == false && cleanupSnapshot.sessionFailed == false &&
+            cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
+        if (!continuousAccepted && continuousSlot && outcome == mode.acceptedOutcome) outcome = Outcome.CLEANUP_UNCONFIRMED
         // Only the opted-in exact account-backed slot can release the parser's
         // closed shape. Attempt both independent preservation checks above even
         // when cleanup failed, and never publish partial/repeated observations.
@@ -585,7 +837,9 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
             "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
             "slotInitialization=$initializationSummary manifestOnly=$manifestOnly nativeObserved=${nativeObserved.get()} " +
-            "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary modernChannelContext=$modernChannelContextOnly")
+            "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary modernChannelContext=$modernChannelContextOnly" +
+            if (continuousSlot) " continuousSlot=true resolvedLinear=$resolvedLinear liveTimeline=$liveTimeline " +
+                "initialLiveStart=${initialPlayback?.stage?.name} listenerRemoved=$listenerRemoved closeWorkerTerminated=$closeWorkerTerminated" else "")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)
         assertTrue("Saved route owner must remain unchanged", ownerUnchanged)
         if (channelPreparationOnly) {
@@ -593,6 +847,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             assertEquals(Outcome.CHANNEL_PREPARATION_OBSERVED, outcome)
         } else {
             if (manifestOnly) assertTrue("Only final clean source-only observations can be released", releaseManifest)
+            if (continuousSlot) assertTrue("Continuous slot needs bounded live movement and definite cleanup", continuousAccepted)
             assertEquals(mode.acceptedOutcome, outcome)
         }
     }
@@ -617,5 +872,9 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             bounded(); file.name to digest.digest()
         }
     }
-    companion object { private var retainedPoisoned: CachedViewerCleanupCoordinator? = null }
+    companion object {
+        private var retainedPoisoned: CachedViewerCleanupCoordinator? = null
+        private var retainedContinuousListener: Any? = null
+        private var retainedContinuousScenario: Any? = null
+    }
 }

@@ -13,8 +13,10 @@ import net.fstab.tachiai.platform.media.BoundedMediaRequests
 // metadata request here; the fresh owning JS runtime chose this signed URI.
 @UnstableApi
 internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String,
-    onInitialManifest: AbemaInitialManifestObservation? = null, modernChannelContext: Boolean = false): AbemaChannelNativeSource {
-    if (modernChannelContext && onInitialManifest == null ||
+    onInitialManifest: AbemaInitialManifestObservation? = null, modernChannelContext: Boolean = false,
+    allowModernPlayback: Boolean = false): AbemaChannelNativeSource {
+    if (allowModernPlayback && !modernChannelContext ||
+        modernChannelContext && onInitialManifest == null && !allowModernPlayback ||
         !AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId,
             modernChannelContext = modernChannelContext))
         throw IOException("Channel source refused")

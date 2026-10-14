@@ -529,6 +529,7 @@ open class PrototypeActivity : ComponentActivity() {
                         episodeResource = source.resource.takeIf { replay && it.kind == "episode" },
                         channelResource = source.resource.takeIf { !replay && source.historicalSource == null },
                         slotResource = source.resource.takeIf { it.kind == "slot" && source.historicalSource == null },
+                        continuousSlotPlayback = source.resource.kind == "slot" && source.historicalSource == null,
                         ownership = if (!replay && source.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(this,
                             checkNotNull(source.resolve(activeInstances)),
                             checkNotNull(routeProfiles[source.instanceId]).getOrThrow(), feedActive, feedDiagnostics(index)))

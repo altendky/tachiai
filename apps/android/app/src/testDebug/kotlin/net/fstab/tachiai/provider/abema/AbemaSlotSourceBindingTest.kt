@@ -135,4 +135,46 @@ class AbemaSlotSourceBindingTest {
         val ordinaryWithModeLikePath = binding(uri = source().replace("/provider-declared/", "/chase/"))
         assertFalse(checkNotNull(parseAbemaSlotPlaybackBinding(ordinaryWithModeLikePath, channel, slot)).chase)
     }
+
+    @Test fun continuingLinearBindingRequiresExplicitPermissionAndRetainsOriginalTuple() {
+        val uri = "https://linear-abematv.akamaized.net/channel/$channel/manifest.mpd?t=fixture-token&enc=clear&dt=pc_chrome&ut=1"
+        val linear = binding(uri = uri).dropLast(1) + ",\"linear\":true}"
+        assertNull(parseAbemaSlotPlaybackBinding(linear, channel, slot))
+        assertNull(parseAbemaSlotSourceBinding(linear, channel, slot))
+        val parsed = checkNotNull(parseAbemaSlotPlaybackBinding(linear, channel, slot, allowLinear = true))
+        assertTrue(parsed.linear); assertFalse(parsed.chase); assertEquals(URI(uri), parsed.uri)
+        assertEquals("AbemaSlotPlaybackBinding(redacted)", parsed.toString())
+        assertNull(parseAbemaSlotPlaybackBinding(linear, "other-channel", slot, allowLinear = true))
+        assertNull(parseAbemaSlotPlaybackBinding(linear, channel, "other-slot", allowLinear = true))
+        assertNull(parseAbemaSlotPlaybackBinding(linear.replace("/channel/$channel/", "/channel/other/"),
+            channel, slot, allowLinear = true))
+        val modern = linear.replace("&ut=1", "&ut=1&dtid=999")
+        assertNull(parseAbemaSlotPlaybackBinding(modern, channel, slot, allowLinear = true))
+        assertEquals(URI(uri + "&dtid=999"), checkNotNull(parseAbemaSlotPlaybackBinding(modern,
+            channel, slot, allowLinear = true, modernChannelContext = true)).uri)
+        // Explicit permission does not reclassify ordinary or Chase sources.
+        for (suffix in listOf("}", ",\"chase\":true}")) {
+            val result = checkNotNull(parseAbemaSlotPlaybackBinding(binding().dropLast(1) + suffix,
+                channel, slot, allowLinear = true, modernChannelContext = true))
+            assertFalse(result.linear); assertEquals(URI(source()), result.uri)
+        }
+    }
+
+    @Test fun linearModeRejectsMixedModesCoercionsNoncanonicalAndWrongSourceArms() {
+        val uri = "https://linear-abematv.akamaized.net/channel/$channel/manifest.mpd?t=fixture-token&enc=clear&dt=pc_chrome&ut=1"
+        val ordinary = binding(uri = uri)
+        val linear = ordinary.dropLast(1) + ",\"linear\":true}"
+        for (value in listOf("false", "null", "1", "\"true\"", "[]", "{}"))
+            assertNull(parseAbemaSlotPlaybackBinding(ordinary.dropLast(1) + ",\"linear\":$value}",
+                channel, slot, allowLinear = true))
+        for (value in listOf(linear.dropLast(1) + ",\"chase\":true}", linear.dropLast(1) + ",\"linear\":true}",
+            linear.replace("\"linear\"", "\"li\\u006eear\""), linear + " ",
+            linear.replace(",\"linear\":true", "").replace("{", "{\"linear\":true,"),
+            binding().dropLast(1) + ",\"linear\":true}", ordinary,
+            linear.replace("&ut=1", "&ut=1&ccf=0"), linear.replace("enc=clear", "enc=wv"),
+            linear.replace("&ut=1", "&ut=1&t=other"), linear.replace("https:", "http:"),
+            linear.replace(".net/", ".net:443/"), linear.replace("manifest.mpd", "../manifest.mpd"),
+            linear.replace("manifest.mpd", "%6danifest.mpd"), linear.replace("&ut=1", "&ut=1&dtid=%0A")))
+            assertNull(parseAbemaSlotPlaybackBinding(value, channel, slot, allowLinear = true, modernChannelContext = true))
+    }
 }

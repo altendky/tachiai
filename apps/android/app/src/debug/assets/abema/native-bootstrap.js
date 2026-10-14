@@ -25,9 +25,12 @@
   let accountExpiry;
   let accountWall;
   let slotPremiumExpiry;
+  let slotPremiumCandidate;
   let slotChaseCandidate;
   let slotChaseExpiry;
   let selectedChase = false;
+  let selectedLinear = false;
+  let continuousSlotPlayback = false;
   let operation;
   let response;
   let modernContext = false;
@@ -48,8 +51,8 @@
     controllers.clear();
     response?.fill(0);
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
-    accountExpiry = accountWall = slotPremiumExpiry = slotChaseCandidate = slotChaseExpiry = undefined;
-    selectedChase = false;
+    accountExpiry = accountWall = slotPremiumExpiry = slotPremiumCandidate = slotChaseCandidate = slotChaseExpiry = undefined;
+    selectedChase = selectedLinear = false;
     ramClear?.(); ramClear = undefined;
     if (modernContext) delete window.__CLIENT_REGION__;
     deviceStatus = deviceResponseId = undefined;
@@ -343,7 +346,7 @@
     return btoa(value);
   };
   const begin = encoded => {
-    if (!usable() || modernContext || state !== 'READY' || used || typeof encoded !== 'string' ||
+    if (!usable() || modernContext && !selectedLinear || state !== 'READY' || used || typeof encoded !== 'string' ||
       encoded.length > 22000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return 'REFUSED';
     used = true;
     state = 'WORKING'; phase = 'LICENSE';
@@ -391,10 +394,13 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext, requestedContinuousSlotPlayback) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
+    if (requestedContinuousSlotPlayback !== undefined && typeof requestedContinuousSlotPlayback !== 'boolean') return;
+    const continuous = requestedContinuousSlotPlayback === true;
+    if (continuous && (!configuredSlot || !replay || requestedChannelDiagnostic === true || requestedModernChannelContext === true)) return;
     if (requestedChannelDiagnostic !== undefined && typeof requestedChannelDiagnostic !== 'boolean') return;
     const channelDiagnostic = requestedChannelDiagnostic === true;
     if (channelDiagnostic && (!configuredChannel || replay || requestedAccount == null)) return;
@@ -411,6 +417,7 @@
     const slotRequest = configuredSlot ? requestedSlot.split('/') : undefined;
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
+    continuousSlotPlayback = continuous;
     modernContext = requestedModernChannelContext === true;
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
@@ -421,7 +428,7 @@
       channelBinding: () => usable() && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
       slotBinding: () => usable() && state === 'READY' && configuredSlot ?
         stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected,
-          ...(selectedChase ? { chase: true } : {}) }) : null,
+          ...(selectedChase ? { chase: true } : selectedLinear ? { linear: true } : {}) }) : null,
       begin,
       take: () => { if (!usable() || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -457,8 +464,9 @@
               Object.keys(premium).sort().join(',') !== 'channelId,expiresAtMs,slotId' ||
               premium.channelId !== slotRequest[0] || premium.slotId !== slotRequest[1] ||
               !Number.isSafeInteger(premium.expiresAtMs) || premium.expiresAtMs <= 0 ||
-              premium.expiresAtMs <= accountWall) refuseResponse();
-            slotPremiumExpiry = premium.expiresAtMs;
+              (!continuous && premium.expiresAtMs <= accountWall)) refuseResponse();
+            if (continuous) slotPremiumCandidate = premium.expiresAtMs;
+            else slotPremiumExpiry = premium.expiresAtMs;
           }
           if (chasePresent) {
             const chase = requestedAccount.slotChase;
@@ -527,89 +535,7 @@
       return;
     }
     if (!replay) {
-      const refuseChannel = category => { if (channelDiagnostic) phase = category; throw new Error(); };
-      let channelURL = 'https://api.abema.io/v1/channels';
-      let deviceTypeId;
-      if (modernChannelContext) {
-        phase = 'CHANNEL_REGION';
-        const region = await requireSlotRegion(); alive();
-        window.__CLIENT_REGION__ = region;
-        installRamContext(load, identity);
-        phase = 'CHANNEL_DEVICE';
-        const timer = setTimeout(() => { if (!stopped) { remember('TIMER_EXPIRED'); stop(true); } }, 15000);
-        let result;
-        try { result = await load(44680).L().getDeviceTypeId(); }
-        finally { clearTimeout(timer); }
-        alive();
-        if (!result || deviceRequests !== 1 || (result.ok !== true && result.ok !== false)) refuseContext();
-        if (result.ok) {
-          deviceTypeId = result.val?.deviceTypeId;
-          if (deviceStatus !== 200 || deviceTypeId !== deviceResponseId ||
-            deviceTypeId !== undefined && !validDeviceId(deviceTypeId)) refuseContext();
-        } else if (![400, 500].includes(deviceStatus)) refuseContext();
-        const division = load(42561).w();
-        if (!division || typeof division !== 'object' || Array.isArray(division) ||
-          (region.divisionCode === 0 ? Object.keys(division).length !== 0 :
-            Object.keys(division).join(',') !== 'division' || division.division !== region.divisionCode)) refuseContext();
-        channelURL = new URL('/v1/channels', load(74284).kt.api);
-        for (const [key, value] of Object.entries(division)) channelURL.searchParams.set(key, value);
-        if (deviceTypeId !== undefined) channelURL.searchParams.set('dtid', deviceTypeId);
-      }
-      if (channelDiagnostic) phase = 'CHANNEL_REQUEST';
-      const metadata = await json(channelURL, { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
-      if (channelDiagnostic) phase = 'CHANNEL_RESPONSE';
-      if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
-        metadata.channels.some(channel => !channel || typeof channel !== 'object' || Array.isArray(channel) ||
-          typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) refuseChannel('CHANNEL_ENVELOPE_REFUSED');
-      const channels = metadata.channels?.filter(channel => channel.id === channelId);
-      if (!Array.isArray(channels) || channels.length !== 1) refuseChannel('CHANNEL_SELECTION_REFUSED');
-      if (!modernChannelContext && channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
-      if (typeof channels[0].playback?.dash !== 'string') refuseChannel('CHANNEL_PLAYLIST_REFUSED');
-      if (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean') refuseChannel('CHANNEL_DRM_REFUSED');
-      const channel = channels[0];
-      if (configuredChannel) {
-        const playback = channel.playback;
-        if (!playback || typeof playback !== 'object' || Array.isArray(playback)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
-        if ((channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
-          channel.status?.drm === true) refuseChannel('CHANNEL_DRM_REFUSED');
-        if (!usableChannelPlaylist(playback.dash, channelId)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
-        if (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
-            (playback.yospace.dash !== undefined && (typeof playback.yospace.dash !== 'string' ||
-              playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash))))) refuseChannel('CHANNEL_ALTERNATE_REFUSED');
-      }
-      phase = 'SOURCE';
-      const model = modernChannelContext ? load(40579).c.fromObject(channel) : null;
-      if (modernChannelContext && (model.id !== channelId || model.playlists?.dash !== channel.playback.dash ||
-        model.status?.drm !== (channel.status?.drm ?? false) ||
-        model.playlists?.yospace?.dash !== (channel.playback.yospace?.dash ?? (channel.playback.yospace !== undefined ? '' : undefined)))) refuseContext();
-      // Fresh owned identity + advertised playlists, not the full player's
-      // global token store. Only the source-only context supplies the verified
-      // device ID. No ad cluster is invented or plain/ad-free selection forced.
-      selected = load(21470).tw({ sourceParam: { type: load(68610).Y1.Streaming,
-        playlists: modernChannelContext ? model.playlists : channel.playback, isDrm: channel.status?.drm === true,
-        contentId: channel.id, mediaToken: identity.mediaToken,
-        ...(modernChannelContext ? { dtid: deviceTypeId ?? null } : {}) },
-        preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
-      if (typeof selected !== 'string' || !selected) throw new Error();
-      if (configuredChannel) {
-        // The provider may leave an advertised alternate unused. Its selector
-        // performs no I/O; bind the returned choice before any native request,
-        // preserving its advertisement decision without a second selection.
-        const source = new URL(selected);
-        const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
-        if (modernChannelContext && deviceTypeId !== undefined) allowed.add('dtid');
-        if (!usableChannelPlaylist(selected, channelId) || source.href.length > 2048 ||
-          [...source.searchParams.keys()].some(key => !allowed.has(key)) ||
-          source.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
-          new Set(source.searchParams.keys()).size !== [...source.searchParams.keys()].length ||
-          source.searchParams.get('t') !== identity.mediaToken || source.searchParams.get('enc') !== 'clear' ||
-          source.searchParams.get('ut') !== '1' || !['pc_chrome', 'pc_unknown'].includes(source.searchParams.get('dt')) ||
-          (modernChannelContext && source.searchParams.get('dtid') !== (deviceTypeId === undefined ? null : String(deviceTypeId))) ||
-          (source.searchParams.has('sw') && source.searchParams.get('sw') !== '0')) throw new Error();
-      }
-      phase = 'CONFIG';
-      await prepareLegacyLicense(load, identity, channelId);
-      selectedChannel = channelId;
+      await prepareChannelSource(load, identity, browser, configuredChannel, channelId, channelDiagnostic, modernChannelContext);
       return;
     }
     let content;
@@ -763,6 +689,91 @@
     selectedEpisode = episodeId;
     license = licenseURL.href;
   }
+  async function prepareChannelSource(load, identity, browser, configuredChannel, channelId, channelDiagnostic, modernChannelContext, freshRegion) {
+    const refuseChannel = category => { if (channelDiagnostic) phase = category; throw new Error(); };
+    let channelURL = 'https://api.abema.io/v1/channels';
+    let deviceTypeId;
+    if (modernChannelContext) {
+      phase = 'CHANNEL_REGION';
+      const region = freshRegion ?? await requireSlotRegion(); alive();
+      window.__CLIENT_REGION__ = region;
+      installRamContext(load, identity);
+      phase = 'CHANNEL_DEVICE';
+      const timer = setTimeout(() => { if (!stopped) { remember('TIMER_EXPIRED'); stop(true); } }, 15000);
+      let result;
+      try { result = await load(44680).L().getDeviceTypeId(); }
+      finally { clearTimeout(timer); }
+      alive();
+      if (!result || deviceRequests !== 1 || (result.ok !== true && result.ok !== false)) refuseContext();
+      if (result.ok) {
+        deviceTypeId = result.val?.deviceTypeId;
+        if (deviceStatus !== 200 || deviceTypeId !== deviceResponseId ||
+          deviceTypeId !== undefined && !validDeviceId(deviceTypeId)) refuseContext();
+      } else if (![400, 500].includes(deviceStatus)) refuseContext();
+      const division = load(42561).w();
+      if (!division || typeof division !== 'object' || Array.isArray(division) ||
+        (region.divisionCode === 0 ? Object.keys(division).length !== 0 :
+          Object.keys(division).join(',') !== 'division' || division.division !== region.divisionCode)) refuseContext();
+      channelURL = new URL('/v1/channels', load(74284).kt.api);
+      for (const [key, value] of Object.entries(division)) channelURL.searchParams.set(key, value);
+      if (deviceTypeId !== undefined) channelURL.searchParams.set('dtid', deviceTypeId);
+    }
+    if (channelDiagnostic) phase = 'CHANNEL_REQUEST';
+    const metadata = await json(channelURL, { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
+    if (channelDiagnostic) phase = 'CHANNEL_RESPONSE';
+    if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
+      metadata.channels.some(channel => !channel || typeof channel !== 'object' || Array.isArray(channel) ||
+        typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) refuseChannel('CHANNEL_ENVELOPE_REFUSED');
+    const channels = metadata.channels?.filter(channel => channel.id === channelId);
+    if (!Array.isArray(channels) || channels.length !== 1) refuseChannel('CHANNEL_SELECTION_REFUSED');
+    if (!modernChannelContext && channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
+    if (typeof channels[0].playback?.dash !== 'string') refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+    if (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean') refuseChannel('CHANNEL_DRM_REFUSED');
+    const channel = channels[0];
+    if (configuredChannel) {
+      const playback = channel.playback;
+      if (!playback || typeof playback !== 'object' || Array.isArray(playback)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+      if ((channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
+        channel.status?.drm === true) refuseChannel('CHANNEL_DRM_REFUSED');
+      if (!usableChannelPlaylist(playback.dash, channelId)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+      if (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
+          (playback.yospace.dash !== undefined && (typeof playback.yospace.dash !== 'string' ||
+            playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash))))) refuseChannel('CHANNEL_ALTERNATE_REFUSED');
+    }
+    phase = 'SOURCE';
+    const model = modernChannelContext ? load(40579).c.fromObject(channel) : null;
+    if (modernChannelContext && (model.id !== channelId || model.playlists?.dash !== channel.playback.dash ||
+      model.status?.drm !== (channel.status?.drm ?? false) ||
+      model.playlists?.yospace?.dash !== (channel.playback.yospace?.dash ?? (channel.playback.yospace !== undefined ? '' : undefined)))) refuseContext();
+    // Fresh owned identity + advertised playlists, not the full player's
+    // global token store. Only the modern context supplies the verified
+    // device ID. No ad cluster is invented or plain/ad-free selection forced.
+    selected = load(21470).tw({ sourceParam: { type: load(68610).Y1.Streaming,
+      playlists: modernChannelContext ? model.playlists : channel.playback, isDrm: channel.status?.drm === true,
+      contentId: channel.id, mediaToken: identity.mediaToken,
+      ...(modernChannelContext ? { dtid: deviceTypeId ?? null } : {}) },
+      preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
+    if (typeof selected !== 'string' || !selected) throw new Error();
+    if (configuredChannel) {
+      // The provider may leave an advertised alternate unused. Its selector
+      // performs no I/O; bind the returned choice before any native request,
+      // preserving its advertisement decision without a second selection.
+      const source = new URL(selected);
+      const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
+      if (modernChannelContext && deviceTypeId !== undefined) allowed.add('dtid');
+      if (!usableChannelPlaylist(selected, channelId) || source.href.length > 2048 ||
+        [...source.searchParams.keys()].some(key => !allowed.has(key)) ||
+        source.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
+        new Set(source.searchParams.keys()).size !== [...source.searchParams.keys()].length ||
+        source.searchParams.get('t') !== identity.mediaToken || source.searchParams.get('enc') !== 'clear' ||
+        source.searchParams.get('ut') !== '1' || !['pc_chrome', 'pc_unknown'].includes(source.searchParams.get('dt')) ||
+        (modernChannelContext && source.searchParams.get('dtid') !== (deviceTypeId === undefined ? null : String(deviceTypeId))) ||
+        (source.searchParams.has('sw') && source.searchParams.get('sw') !== '0')) throw new Error();
+    }
+    phase = 'CONFIG';
+    await prepareLegacyLicense(load, identity, channelId);
+    selectedChannel = channelId;
+  }
   function usableChannelPlaylist(value, channelId) {
     if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || /[\u0000-\u0020\\]/.test(value)) return false;
     const raw = value.split('?')[0];
@@ -791,7 +802,7 @@
     // Never load/execute the page or fabricate GPS/country/timezone. A CDN200,
     // saved route, returned playlist or Japan-only policy is not positive region proof.
     phase = 'SLOT_REGION';
-    await requireSlotRegion();
+    const region = await requireSlotRegion();
     alive();
     phase = 'CONTENT';
     const raw = await json('https://api.p-c3-e.abema-tv.com/v1/media/slots/' + slotId + '?include=payperview', {
@@ -807,6 +818,31 @@
     const now = Date.now();
     const chase = slot.startAt * 1000 <= now && now < slot.endAt * 1000;
     if (slot.startAt * 1000 > now) throw new Error();
+    if (chase && continuousSlotPlayback) {
+      phase = 'SLOT_RESTRICTIONS';
+      if ((slot.flags !== undefined && (!record(slot.flags) ||
+          (slot.flags.paused !== undefined && slot.flags.paused !== false))) ||
+        (slot.payperview !== undefined && slot.payperview !== null) ||
+        (raw.payperview !== undefined && raw.payperview !== null) ||
+        (raw.payPerView !== undefined && raw.payPerView !== null) ||
+        !record(slot.broadcastRegionPolicies) ||
+        ![0, 1, 'BROADCAST_REGION_ALLOW_ALL', 'BROADCAST_REGION_ALLOW_ONLY_JAPAN'].includes(slot.broadcastRegionPolicies.linear)) throw new Error();
+      // Linear viewing is a deliberate mode chosen from the fresh occurrence,
+      // not Chase entitlement or a fallback from a refused source. Its original
+      // account lifetime remains active across subsequent channel broadcasts.
+      slotPremiumExpiry = slotPremiumCandidate = slotChaseCandidate = slotChaseExpiry = undefined;
+      modernContext = accountExpiry !== undefined;
+      await prepareChannelSource(load, identity, browser, true, channelId, false, modernContext, region);
+      alive();
+      selectedSlot = slotId;
+      selectedLinear = true;
+      return;
+    }
+    if (continuousSlotPlayback && slotPremiumCandidate !== undefined) {
+      slotPremiumExpiry = slotPremiumCandidate;
+      slotPremiumCandidate = undefined;
+      alive();
+    }
     phase = 'SLOT_FREE';
     const premium = slotPremiumExpiry !== undefined;
     if (!record(slot.flags) || (chase ? slot.flags.chasePlay !== true :

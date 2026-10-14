@@ -7,6 +7,71 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaNativeBootstrapPolicyTest {
+    @Test fun `continuous slot permission keeps exact slot and channel license tuples separate`() {
+        val identity = "channel-A/slot-A"
+        fun allows(url: String, method: String = "GET", modern: Boolean = false) =
+            AbemaNativeBootstrapPolicy.allows(URI(url), false, method, slotIdentity = identity,
+                modernChannelContext = modern, continuousSlotPlayback = true)
+        val license = "https://license.p-c3-e.abema-tv.com/abematv-dash?t=fixture&ct=slot&cid=slot-A"
+        val channelLicense = license.replace("ct=slot&cid=slot-A", "ct=channel&cid=channel-A")
+        for (modern in listOf(false, true)) {
+            for (method in listOf("POST", "OPTIONS")) {
+                assertTrue(allows(license, method, modern)); assertTrue(allows(channelLicense, method, modern))
+                for (wrong in listOf(license.replace("cid=slot-A", "cid=channel-A"),
+                    channelLicense.replace("cid=channel-A", "cid=slot-A"), license.replace("ct=slot", "ct=program"),
+                    license + "&dt=web_android", channelLicense + "&dtid=999", license + "&t=duplicate",
+                    channelLicense + "&other=fixture", license.replace("ct=slot", "%63t=slot")))
+                    assertFalse(allows(wrong, method, modern))
+            }
+            assertFalse(allows(license)); assertFalse(allows(channelLicense, "PUT", modern))
+            assertTrue(allows("https://api.p-c3-e.abema-tv.com/v1/media/slots/slot-A?include=payperview", modern = modern))
+            assertFalse(allows("https://api.p-c3-e.abema-tv.com/v1/media/slots/other?include=payperview", modern = modern))
+        }
+        assertFalse(AbemaNativeBootstrapPolicy.allows(URI(channelLicense), false, "POST", slotIdentity = identity))
+        assertFalse(AbemaNativeBootstrapPolicy.allows(URI(channelLicense), false, "POST", channelId = "channel-A",
+            modernChannelContext = true))
+    }
+
+    @Test fun `continuous production endpoints retain guest legacy and account modern distinction`() {
+        val identity = "channel-A/slot-A"
+        fun allows(url: String, modern: Boolean = false, method: String = "GET") =
+            AbemaNativeBootstrapPolicy.allows(URI(url), false, method, slotIdentity = identity,
+                modernChannelContext = modern, continuousSlotPlayback = true)
+        val legacy = "https://api.abema.io/v1/channels"
+        val modern = "https://api.p-c3-e.abema-tv.com/v1/channels?dtid=999"
+        val device = "https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId?os=unknown&osVersion=16&drm=unknown"
+        val guest = "https://abema.tv/api/auth/login/guest"
+        assertTrue(allows(legacy)); assertFalse(allows(legacy, true))
+        assertTrue(allows(guest, method = "POST")); assertFalse(allows(guest, true, "POST"))
+        assertFalse(allows(modern)); assertTrue(allows(modern, true))
+        assertFalse(allows(device)); assertTrue(allows(device, true))
+        for (url in listOf(AbemaNativeBootstrapPolicy.SLOT_REGION_PAGE) + AbemaNativeBootstrapPolicy.SLOT_REGION_URIS) {
+            assertTrue(allows(url)); assertTrue(allows(url, true)); assertFalse(allows(url, true, "POST"))
+        }
+        for (url in listOf(modern + "&dtid=duplicate", modern + "&division=2", device + "&other=fixture",
+            "https://api.abema.io/v1/video/programs/394-72_s10_p8529",
+            "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/fixture"))
+            assertFalse(allows(url, true))
+        val csp = AbemaNativeBootstrapPolicy.contentSecurityPolicy(slotIdentity = identity,
+            modernChannelContext = true, continuousSlotPlayback = true)
+        assertTrue(csp.contains("license.p-c3-e.abema-tv.com/abematv-dash"))
+        assertTrue(csp.contains("api.p-c3-e.abema-tv.com/v1/media/deviceTypeId"))
+        assertFalse(csp.contains("/api/auth/login/guest")); assertFalse(csp.contains("api.abema.io"))
+        val source = URI("https://linear-abematv.akamaized.net/channel/channel-A/manifest.mpd?t=fixture&enc=clear&dt=pc_chrome&ut=1&dtid=999")
+        assertFalse(AbemaNativeBootstrapPolicy.allowsNewsCdn(source, true, "channel-A"))
+        assertTrue(AbemaNativeBootstrapPolicy.allowsNewsCdn(source, true, "channel-A", modernChannelContext = true))
+        assertTrue(AbemaNativeBootstrapPolicy.allowsNewsCdn(URI("https://linear-abematv.akamaized.net/channel/channel-A/segment.m4s"),
+            true, "channel-A", modernChannelContext = true))
+        for ((episode, channel, slot) in listOf(Triple(null, null, null), Triple("episode", null, null),
+            Triple(null, "channel-A", null), Triple(null, null, "invalid"))) {
+            assertFalse(AbemaNativeBootstrapPolicy.allows(URI(modern), false, "GET", episode, channel, slot,
+                modernChannelContext = true, continuousSlotPlayback = true))
+            assertThrows(IllegalArgumentException::class.java) {
+                AbemaNativeBootstrapPolicy.contentSecurityPolicy(episode, channel, slot, true, true)
+            }
+        }
+    }
+
     private val modernApi = "https://api.p-c3-e.abema-tv.com/v1"
     private fun encoded(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
     private fun modernAllows(value: String, method: String = "GET", mainFrame: Boolean = false) =

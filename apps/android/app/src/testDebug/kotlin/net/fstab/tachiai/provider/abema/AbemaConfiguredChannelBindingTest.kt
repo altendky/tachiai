@@ -9,6 +9,23 @@ class AbemaConfiguredChannelBindingTest {
     private fun source(id: String) = "https://linear-abematv.akamaized.net/channel/$id/manifest.mpd?t=fixture&enc=clear&dt=pc_chrome&ut=1"
     private fun binding(id: String, uri: String = source(id)) = "{\"channelId\":${JSONObject.quote(id)},\"uri\":${JSONObject.quote(uri)}}"
 
+    @Test fun modernObservationRetainsReturnedDeviceQueryOnlyForExactClosedChannelBinding() {
+        for (id in listOf("fixture-one", "fixture-two")) {
+            for (query in listOf("", "&dtid=999", "&dtid=fixture-type%3A01")) {
+                val uri = source(id) + query
+                assertEquals(URI(uri), parseAbemaChannelSourceBinding(binding(id, uri), id, modernChannelContext = true))
+                if (query.isNotEmpty()) assertNull(parseAbemaChannelSourceBinding(binding(id, uri), id))
+                assertNull(parseAbemaChannelSourceBinding(binding(id, uri), "other", modernChannelContext = true))
+            }
+            for (query in listOf("&dtid=", "&dtid=first&dtid=second", "&dtid=secret%0Avalue", "&dtid=" + "x".repeat(257),
+                "&%64tid=999", "&dtid=999&division=1", "&dtid=999#fragment"))
+                assertNull(parseAbemaChannelSourceBinding(binding(id, source(id) + query), id, modernChannelContext = true))
+            assertNull(parseAbemaChannelSourceBinding(binding(id, source("other") + "&dtid=999"), id, modernChannelContext = true))
+            val extra = binding(id, source(id) + "&dtid=999").dropLast(1) + ",\"deviceTypeId\":999}"
+            assertNull(parseAbemaChannelSourceBinding(extra, id, modernChannelContext = true))
+        }
+    }
+
     @Test fun exactChannelProjectionRootAndLicenseAdmitTwoIdsWithoutUnrelatedApis() {
         for (id in listOf("fixture-one", "fixture-two")) {
             assertEquals(URI(source(id)), parseAbemaChannelSourceBinding(binding(id), id))

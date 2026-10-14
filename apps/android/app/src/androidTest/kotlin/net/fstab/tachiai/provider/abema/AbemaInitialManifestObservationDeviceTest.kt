@@ -66,6 +66,28 @@ class AbemaInitialManifestObservationDeviceTest {
         } finally { requests.close() }
     }
 
+    @Test fun returnedModernDeviceQueryRequiresObservationAndKeepsOriginalProtectedSourceChecks() {
+        val uri = URI(selected.toString() + "&dtid=999")
+        val observer = AbemaInitialManifestObservation(expected)
+        val connection = Connection(uri.toURL(), mpd().toByteArray())
+        var opens = 0
+        val requests = BoundedMediaRequests(NativePlaybackBudget(60_000, { true }), { it == uri }, { _, _ -> },
+            { true }, openConnection = { opens++; connection })
+        try {
+            assertThrows(IOException::class.java) { resolveAbemaChannelNativeSource(uri, requests, expected.channelId) }
+            assertThrows(IOException::class.java) {
+                resolveAbemaChannelNativeSource(uri, requests, expected.channelId, modernChannelContext = true)
+            }
+            assertEquals(0, opens)
+            val source = resolveAbemaChannelNativeSource(uri, requests, expected.channelId, observer,
+                modernChannelContext = true)
+            assertEquals(uri, source.uri); assertEquals(expected.channelId, source.channelId)
+            assertEquals(1, source.kids.size); assertEquals(1, opens); assertTrue(connection.disconnected)
+            assertEquals(AbemaInitialManifestReason.OBSERVED, observer.snapshot.reason)
+            assertTrue(observer.snapshot.channelMatches)
+        } finally { requests.close() }
+    }
+
     @Test fun absentUnknownAndMalformedTimingNeverBecomeFiniteIntervalsOrIdentityProof() {
         for (attributes in listOf("", "id='other' start='PT0S' duration='P1Y'",
             "id='other' start='PT-1S' duration='PT60S'", "start='PT0S' duration='PT0S'",

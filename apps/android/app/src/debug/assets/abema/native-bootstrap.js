@@ -30,6 +30,12 @@
   let selectedChase = false;
   let operation;
   let response;
+  let modernContext = false;
+  let ramClear;
+  let deviceRequests = 0;
+  let deviceStatus;
+  let deviceResponseId;
+  const deviceCleanupOwners = new Set();
   const remember = category => { if (failure === 'NONE') failure = category; };
   const stop = (failed = false, cancelled = false) => {
     if (!stopped) {
@@ -44,6 +50,9 @@
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
     accountExpiry = accountWall = slotPremiumExpiry = slotChaseCandidate = slotChaseExpiry = undefined;
     selectedChase = false;
+    ramClear?.(); ramClear = undefined;
+    if (modernContext) delete window.__CLIENT_REGION__;
+    deviceStatus = deviceResponseId = undefined;
   };
   window.addEventListener('error', event => { event.preventDefault(); stop(true); }, true);
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
@@ -61,6 +70,9 @@
     if (stopped || failure !== 'NONE') throw new Error();
   };
   const refuseResponse = () => { remember('RESPONSE_VALIDATION_REFUSED'); throw new Error(); };
+  const refuseContext = () => { phase = 'CHANNEL_CONTEXT_REFUSED'; stop(true); throw new Error(); };
+  const validDeviceId = value => Number.isSafeInteger(value) && value >= 0 ||
+    typeof value === 'string' && value.length >= 1 && value.length <= 256 && /^[\x21-\x7e]+$/.test(value);
   const usable = () => {
     if (stopped) return false;
     try { alive(); return true; } catch { stop(true); return false; }
@@ -176,9 +188,112 @@
   // Original gateway uses fetch. Bound its response and disallow redirects while
   // leaving its selection logic and request contents unchanged. Native policy
   // and CSP separately admit only reviewed endpoints.
-  window.fetch = async (url, options = {}) => new Response(await fetchBytes(url, options), {
-    status: 200, headers: { 'content-type': 'application/json' },
-  });
+  window.fetch = async (url, options = {}) => {
+    if (modernContext) return fetchDeviceContext(url, options);
+    return new Response(await fetchBytes(url, options), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  };
+  async function fetchDeviceContext(input, options) {
+    alive();
+    const request = new Request(input, options);
+    const url = new URL(request.url);
+    const keys = [...url.searchParams.keys()];
+    if (request.method !== 'GET' || url.origin !== 'https://api.p-c3-e.abema-tv.com' || url.username || url.password ||
+      url.hash || url.pathname !== '/v1/media/deviceTypeId' || url.pathname !== decodeURIComponent(url.pathname) ||
+      keys.length !== 3 || [...keys].sort().join(',') !== 'drm,os,osVersion' ||
+      !['MacOS', 'Windows', 'unknown'].includes(url.searchParams.get('os')) ||
+      !['Widevine', 'FairPlay', 'PlayReady', 'unknown'].includes(url.searchParams.get('drm')) ||
+      url.searchParams.get('osVersion').length > 64 || !/^[\x20-\x7e]*$/.test(url.searchParams.get('osVersion')) ||
+      url.search !== '?' + url.searchParams.toString() || request.credentials !== 'same-origin' ||
+      request.headers.get('Authorization') !== 'Bearer ' + user.accessToken || ++deviceRequests !== 1) refuseContext();
+    const controller = new AbortController(); controllers.add(controller);
+    http = 0;
+    let received = false;
+    let reply, bodyOwned = false, expireCleanup;
+    const cleanupDeadline = new Promise(resolve => { expireCleanup = resolve; });
+    const timer = setTimeout(() => {
+      if (!stopped) { remember('TIMER_EXPIRED'); stop(true); }
+      expireCleanup(false);
+    }, 15000);
+    const cancelBody = async () => {
+      const owner = { reply, reader: null }; deviceCleanupOwners.add(owner);
+      let pending;
+      try {
+        owner.reader = reply.body?.getReader();
+        pending = Promise.resolve(owner.reader?.cancel()).then(() => {
+          deviceCleanupOwners.delete(owner); return true;
+        }, () => false);
+      } catch { return false; }
+      // An uncertain first close retains its private owner. A late completion
+      // cannot turn the original timeout into a helper success or another request.
+      return Promise.race([pending, cleanupDeadline]);
+    };
+    try {
+      reply = await nativeFetch(request, { redirect: 'error', signal: controller.signal });
+      alive(); received = true;
+      if (!Number.isInteger(reply.status) || ![200, 400, 500].includes(reply.status)) {
+        if (Number.isInteger(reply.status) && reply.status >= 100 && reply.status <= 599) {
+          http = reply.status; remember('HTTP_REFUSED');
+        } else remember('UNKNOWN');
+        refuseContext();
+      }
+      http = deviceStatus = reply.status;
+      if (reply.status !== 200) {
+        // The unchanged helper branches on status without reading this body.
+        // Complete cancellation before exposing that status; never pass401
+        // to the provider's automatic access-token refresh machinery.
+        // These optional-context statuses are consumed by the provider helper,
+        // not global HTTP failures. Keep the existing metadata schema coherent.
+        http = 0;
+        bodyOwned = true;
+        if (!await cancelBody()) refuseContext();
+        alive();
+        return new Response(null, { status: reply.status });
+      }
+      bodyOwned = true;
+      const bytes = await boundedReply(reply, 65536);
+      try {
+        let value;
+        try { value = parseBoundedJsonText(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+        catch { refuseResponse(); }
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+          value.deviceTypeId !== undefined && !validDeviceId(value.deviceTypeId)) refuseContext();
+        deviceResponseId = value.deviceTypeId;
+        alive();
+        return new Response(bytes, { status: 200, headers: { 'content-type': 'application/json' } });
+      } finally { bytes.fill(0); }
+    } catch {
+      remember(received ? 'UNKNOWN' : 'FETCH_REJECTED_BEFORE_HTTP');
+      throw new Error();
+    } finally {
+      if (reply && !bodyOwned && !await cancelBody()) {
+        remember('UNKNOWN'); stop(true);
+      }
+      clearTimeout(timer); controllers.delete(controller);
+    }
+  }
+  function installRamContext(load, identity) {
+    const maps = [new Map(), new Map()];
+    ramClear = () => { for (const map of maps) map.clear(); };
+    for (const [index, name] of ['localStorage', 'sessionStorage'].entries()) {
+      const values = maps[index];
+      const storage = Object.freeze({
+        get length() { if (stopped) return 0; alive(); return values.size; },
+        key(index) { if (stopped) return null; alive(); return [...values.keys()][index] ?? null; },
+        getItem(key) { if (stopped) return null; alive(); return values.get(String(key)) ?? null; },
+        setItem(key, value) {
+          alive(); const name = String(key), text = String(value);
+          if (name.length > 256 || text.length > 8192 || !values.has(name) && values.size >= 128) refuseContext();
+          values.set(name, text);
+        },
+        removeItem(key) { alive(); values.delete(String(key)); },
+        clear() { alive(); values.clear(); },
+      });
+      Object.defineProperty(window, name, { configurable: true, value: storage });
+    }
+    window.localStorage.setItem(load(29441).Z.ABEMA_ACCESS_TOKEN, identity.accessToken);
+  }
   function loadModules() {
     const queue = window.__LOADABLE_LOADED_CHUNKS__;
     if (!Array.isArray(queue) || queue.length !== 4) throw new Error();
@@ -228,7 +343,7 @@
     return btoa(value);
   };
   const begin = encoded => {
-    if (!usable() || state !== 'READY' || used || typeof encoded !== 'string' ||
+    if (!usable() || modernContext || state !== 'READY' || used || typeof encoded !== 'string' ||
       encoded.length > 22000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return 'REFUSED';
     used = true;
     state = 'WORKING'; phase = 'LICENSE';
@@ -276,13 +391,15 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
     if (requestedChannelDiagnostic !== undefined && typeof requestedChannelDiagnostic !== 'boolean') return;
     const channelDiagnostic = requestedChannelDiagnostic === true;
     if (channelDiagnostic && (!configuredChannel || replay || requestedAccount == null)) return;
+    if (requestedModernChannelContext !== undefined && typeof requestedModernChannelContext !== 'boolean') return;
+    if (requestedModernChannelContext === true && (!channelDiagnostic || !configuredChannel || replay || requestedAccount == null)) return;
     if (configuredSlot && (configured || configuredChannel || !replay || typeof requestedSlot !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requestedSlot))) return;
     if (configuredChannel && (configured || replay || typeof requestedChannel !== 'string' ||
@@ -294,6 +411,7 @@
     const slotRequest = configuredSlot ? requestedSlot.split('/') : undefined;
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
+    modernContext = requestedModernChannelContext === true;
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
       status: () => { usable(); return state; },
@@ -386,13 +504,13 @@
         state = 'WAITING_SOURCE'; phase = 'CONTENT';
         // Source/session construction below is supplied from reviewed provider
         // interfaces; never fall back to the original page or a guessed MPD.
-        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic);
+        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic, modernContext);
         alive();
         phase = 'READY'; state = 'READY';
       } catch { stop(true); }
     })();
   };
-  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic) {
+  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic, modernChannelContext) {
     const browser = load(60506).N;
     const clientInfo = {
       app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
@@ -410,15 +528,42 @@
     }
     if (!replay) {
       const refuseChannel = category => { if (channelDiagnostic) phase = category; throw new Error(); };
+      let channelURL = 'https://api.abema.io/v1/channels';
+      let deviceTypeId;
+      if (modernChannelContext) {
+        phase = 'CHANNEL_REGION';
+        const region = await requireSlotRegion(); alive();
+        window.__CLIENT_REGION__ = region;
+        installRamContext(load, identity);
+        phase = 'CHANNEL_DEVICE';
+        const timer = setTimeout(() => { if (!stopped) { remember('TIMER_EXPIRED'); stop(true); } }, 15000);
+        let result;
+        try { result = await load(44680).L().getDeviceTypeId(); }
+        finally { clearTimeout(timer); }
+        alive();
+        if (!result || deviceRequests !== 1 || (result.ok !== true && result.ok !== false)) refuseContext();
+        if (result.ok) {
+          deviceTypeId = result.val?.deviceTypeId;
+          if (deviceStatus !== 200 || deviceTypeId !== deviceResponseId ||
+            deviceTypeId !== undefined && !validDeviceId(deviceTypeId)) refuseContext();
+        } else if (![400, 500].includes(deviceStatus)) refuseContext();
+        const division = load(42561).w();
+        if (!division || typeof division !== 'object' || Array.isArray(division) ||
+          (region.divisionCode === 0 ? Object.keys(division).length !== 0 :
+            Object.keys(division).join(',') !== 'division' || division.division !== region.divisionCode)) refuseContext();
+        channelURL = new URL('/v1/channels', load(74284).kt.api);
+        for (const [key, value] of Object.entries(division)) channelURL.searchParams.set(key, value);
+        if (deviceTypeId !== undefined) channelURL.searchParams.set('dtid', deviceTypeId);
+      }
       if (channelDiagnostic) phase = 'CHANNEL_REQUEST';
-      const metadata = await json('https://api.abema.io/v1/channels', { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
+      const metadata = await json(channelURL, { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
       if (channelDiagnostic) phase = 'CHANNEL_RESPONSE';
       if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
         metadata.channels.some(channel => !channel || typeof channel !== 'object' || Array.isArray(channel) ||
           typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) refuseChannel('CHANNEL_ENVELOPE_REFUSED');
       const channels = metadata.channels?.filter(channel => channel.id === channelId);
       if (!Array.isArray(channels) || channels.length !== 1) refuseChannel('CHANNEL_SELECTION_REFUSED');
-      if (channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
+      if (!modernChannelContext && channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
       if (typeof channels[0].playback?.dash !== 'string') refuseChannel('CHANNEL_PLAYLIST_REFUSED');
       if (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean') refuseChannel('CHANNEL_DRM_REFUSED');
       const channel = channels[0];
@@ -433,12 +578,17 @@
               playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash))))) refuseChannel('CHANNEL_ALTERNATE_REFUSED');
       }
       phase = 'SOURCE';
+      const model = modernChannelContext ? load(40579).c.fromObject(channel) : null;
+      if (modernChannelContext && (model.id !== channelId || model.playlists?.dash !== channel.playback.dash ||
+        model.status?.drm !== (channel.status?.drm ?? false) ||
+        model.playlists?.yospace?.dash !== (channel.playback.yospace?.dash ?? (channel.playback.yospace !== undefined ? '' : undefined)))) refuseContext();
       // Fresh owned identity + advertised playlists, not the full player's
-      // global token store. Ad-cluster/device classification is not established;
-      // do not invent those values or force plain/ad-free stream selection.
+      // global token store. Only the source-only context supplies the verified
+      // device ID. No ad cluster is invented or plain/ad-free selection forced.
       selected = load(21470).tw({ sourceParam: { type: load(68610).Y1.Streaming,
-        playlists: channel.playback, isDrm: channel.status?.drm === true,
-        contentId: channel.id, mediaToken: identity.mediaToken },
+        playlists: modernChannelContext ? model.playlists : channel.playback, isDrm: channel.status?.drm === true,
+        contentId: channel.id, mediaToken: identity.mediaToken,
+        ...(modernChannelContext ? { dtid: deviceTypeId ?? null } : {}) },
         preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
       if (typeof selected !== 'string' || !selected) throw new Error();
       if (configuredChannel) {
@@ -447,12 +597,14 @@
         // preserving its advertisement decision without a second selection.
         const source = new URL(selected);
         const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
+        if (modernChannelContext && deviceTypeId !== undefined) allowed.add('dtid');
         if (!usableChannelPlaylist(selected, channelId) || source.href.length > 2048 ||
           [...source.searchParams.keys()].some(key => !allowed.has(key)) ||
           source.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
           new Set(source.searchParams.keys()).size !== [...source.searchParams.keys()].length ||
           source.searchParams.get('t') !== identity.mediaToken || source.searchParams.get('enc') !== 'clear' ||
           source.searchParams.get('ut') !== '1' || !['pc_chrome', 'pc_unknown'].includes(source.searchParams.get('dt')) ||
+          (modernChannelContext && source.searchParams.get('dtid') !== (deviceTypeId === undefined ? null : String(deviceTypeId))) ||
           (source.searchParams.has('sw') && source.searchParams.get('sw') !== '0')) throw new Error();
       }
       phase = 'CONFIG';
@@ -768,5 +920,6 @@
       checked.fill(0);
     }
     alive();
+    return region;
   }
 })();

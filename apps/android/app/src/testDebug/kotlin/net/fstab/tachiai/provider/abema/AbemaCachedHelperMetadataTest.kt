@@ -3,6 +3,9 @@ package net.fstab.tachiai.provider.abema
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class AbemaCachedHelperMetadataTest {
     @Test fun slotRefusalPhasesRemainClosedAndCannotPublishPreparation() {
@@ -94,5 +97,107 @@ class AbemaCachedHelperMetadataTest {
         assertFalse(evidence.observe(checkNotNull(parseAbemaCachedHelperMetadata(metadata("TIMER_EXPIRED", 0, "GUEST")))))
         assertFalse(evidence.permitsPreparation("READY", checkNotNull(parseAbemaCachedHelperMetadata(metadata()))))
         assertEquals(AbemaCachedHelperFailure.OWNED_CANCELLED, evidence.firstFailure)
+    }
+
+    private val channelPhases = listOf("CHANNEL_REQUEST", "CHANNEL_RESPONSE", "CHANNEL_ENVELOPE_REFUSED",
+        "CHANNEL_SELECTION_REFUSED", "CHANNEL_UNAVAILABLE", "CHANNEL_DRM_REFUSED", "CHANNEL_PLAYLIST_REFUSED",
+        "CHANNEL_ALTERNATE_REFUSED")
+
+    @Test fun channelPhasesParseCanonicalAndLegacyShapesWithoutChangingPreparationOrHttpGates() {
+        for (phase in channelPhases) {
+            for ((failure, http) in listOf("NONE" to 0, "NONE" to 200,
+                "HTTP_REFUSED" to 403, "RESPONSE_VALIDATION_REFUSED" to 200)) {
+                val text = metadata(failure, http, phase)
+                val value = checkNotNull(parseAbemaCachedHelperMetadata(text))
+                assertEquals(phase, value.phase); assertEquals(http, value.http)
+                assertEquals(value, parseAbemaCachedHelperMetadataCallback(callback(text)))
+                assertFalse(AbemaCachedHelperEvidence().permitsPreparation("READY", value))
+            }
+            val legacy = checkNotNull(parseAbemaCachedHelperMetadata(metadata(null, 403, phase)))
+            assertEquals(AbemaCachedHelperFailure.NONE, legacy.failure)
+            assertEquals(legacy, parseAbemaCachedHelperMetadataCallback(callback(metadata(null, 403, phase))))
+            for ((failure, http) in listOf("NONE" to 403, "HTTP_REFUSED" to 200,
+                "FETCH_REJECTED_BEFORE_HTTP" to 200, "RESPONSE_VALIDATION_REFUSED" to 0))
+                assertNull(parseAbemaCachedHelperMetadata(metadata(failure, http, phase)))
+        }
+        val ready = checkNotNull(parseAbemaCachedHelperMetadata(metadata()))
+        assertTrue(AbemaCachedHelperEvidence().permitsPreparation("READY", ready))
+    }
+
+    @Test fun channelMetadataStillRejectsUnknownEscapedDuplicatedExtraRawOrUnboundedFields() {
+        val valid = metadata("RESPONSE_VALIDATION_REFUSED", 200, "CHANNEL_ENVELOPE_REFUSED")
+        for (text in listOf(valid.replace("CHANNEL_ENVELOPE_REFUSED", "CHANNEL_PRIVATE_TOKEN"),
+            valid.replace("CHANNEL_ENVELOPE_REFUSED", "CHANNEL_ENVELOPE_REF\\u0055SED"),
+            valid.dropLast(1) + ",\"phase\":\"CHANNEL_RESPONSE\"}",
+            valid.dropLast(1) + ",\"body\":\"PRIVATE_PROVIDER_BODY\"}",
+            valid.dropLast(1) + ",\"url\":\"https://private.invalid/?token=secret\"}",
+            valid.replace("\"http\":200", "\"http\":\"200\""), valid.replace("24968", "1000001"),
+            valid.replace("50", "4097"), valid.replace("200", "600"))) {
+            assertNull(parseAbemaCachedHelperMetadata(text))
+            assertNull(parseAbemaCachedHelperMetadataCallback(callback(text)))
+        }
+        assertNull(parseAbemaCachedHelperMetadataCallback(callback(valid).replace("\\\"", "\\u0022")))
+    }
+
+    @Test fun channelObservationStartsEmptyAndKeepsLatestSafePrefixWithoutPublishingAuthority() {
+        val evidence = AbemaChannelPreparationEvidence()
+        assertNull(evidence.snapshot)
+        val request = checkNotNull(parseAbemaCachedHelperMetadata(metadata("NONE", 0, "CHANNEL_REQUEST")))
+        val response = checkNotNull(parseAbemaCachedHelperMetadata(metadata("NONE", 200, "CHANNEL_RESPONSE")))
+        evidence.observe(request); assertSame(request, evidence.snapshot)
+        evidence.observe(response); assertSame(response, evidence.snapshot)
+        assertFalse(AbemaCachedHelperEvidence().permitsPreparation("READY", evidence.snapshot))
+        val ready = checkNotNull(parseAbemaCachedHelperMetadata(metadata()))
+        evidence.observe(ready); assertSame(ready, evidence.snapshot)
+    }
+
+    @Test fun channelFirstFailureFreezesFullSnapshotAcrossOtherFailuresReadyAndCancellation() {
+        val evidence = AbemaChannelPreparationEvidence()
+        val failed = checkNotNull(parseAbemaCachedHelperMetadata(metadata("HTTP_REFUSED", 403, "CHANNEL_REQUEST")))
+        evidence.observe(failed)
+        for (text in listOf(metadata(), metadata("NONE", 200, "CHANNEL_RESPONSE"),
+            metadata("OWNED_CANCELLED", 0, "FAILED"), metadata("RESPONSE_VALIDATION_REFUSED", 200, "CHANNEL_DRM_REFUSED"))) {
+            evidence.observe(checkNotNull(parseAbemaCachedHelperMetadata(text)))
+            assertSame(failed, evidence.snapshot)
+        }
+        val changedCopy = failed.copy(phase = "CHANNEL_RESPONSE", http = 200, failure = AbemaCachedHelperFailure.NONE)
+        assertNotEquals(changedCopy, evidence.snapshot)
+        assertEquals("phase=CHANNEL_REQUEST modules=50 lastModule=24968 http=403 failure=HTTP_REFUSED",
+            checkNotNull(evidence.snapshot).closedSummary())
+    }
+
+    @Test fun channelParseRefusalPermanentlyWithholdsPrefixFailureAndFutureSnapshots() {
+        for (prefix in listOf<String?>(null, metadata("NONE", 0, "CHANNEL_REQUEST"),
+            metadata("RESPONSE_VALIDATION_REFUSED", 200, "CHANNEL_SELECTION_REFUSED"))) {
+            val evidence = AbemaChannelPreparationEvidence()
+            prefix?.let { evidence.observe(checkNotNull(parseAbemaCachedHelperMetadata(it))) }
+            assertNull(parseAbemaCachedHelperMetadata("PRIVATE_PROVIDER_CONTENT"))
+            evidence.refuse(); assertNull(evidence.snapshot)
+            evidence.observe(checkNotNull(parseAbemaCachedHelperMetadata(metadata())))
+            evidence.refuse(); assertNull(evidence.snapshot)
+        }
+    }
+
+    @Test fun concurrentRefusalCannotBeOverwrittenByLateAlreadyParsedMetadata() {
+        val evidence = AbemaChannelPreparationEvidence()
+        val ready = checkNotNull(parseAbemaCachedHelperMetadata(metadata()))
+        val response = checkNotNull(parseAbemaCachedHelperMetadata(metadata("NONE", 200, "CHANNEL_RESPONSE")))
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(2)
+        val failed = AtomicReference<Throwable?>()
+        val writers = listOf(Thread {
+            try { check(start.await(2, TimeUnit.SECONDS)); repeat(100) { evidence.observe(response) } }
+            catch (error: Throwable) { failed.compareAndSet(null, error) }
+            finally { done.countDown() }
+        }, Thread {
+            try { check(start.await(2, TimeUnit.SECONDS)); evidence.refuse(); repeat(100) { evidence.observe(ready) } }
+            catch (error: Throwable) { failed.compareAndSet(null, error) }
+            finally { done.countDown() }
+        })
+        writers.forEach { it.start() }; start.countDown()
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        writers.forEach { it.join(1000) }
+        assertNull(failed.get())
+        assertNull(evidence.snapshot)
     }
 }

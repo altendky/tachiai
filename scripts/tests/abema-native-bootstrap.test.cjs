@@ -199,7 +199,10 @@ function fixture(options = {}) {
     50052(module, exports, require) { require.d(exports, {}, { bq: { DEVICE_TYPE_WEB: 'DEVICE_TYPE_WEB' } }); },
     24968(module, exports, require) { require.d(exports, {}, { T: { LOGIN_GUEST: '/api/auth/login/guest' } }); },
     74284(module) { module.exports = { kt: { api: fake.apiOrigin || 'https://api.p-c3-e.abema-tv.com' } }; },
-    60506(module) { module.exports = { N: { browser: { name: 'Chrome', version: '1' }, os: { name: 'Android', version: '1' } } }; },
+    60506(module) {
+      if (fake.browserModuleFailure) throw fake.browserModuleFailure;
+      module.exports = { N: { browser: { name: 'Chrome', version: '1' }, os: { name: 'Android', version: '1' } } };
+    },
     87328(module) { module.exports = { xl: () => false }; },
     44602() { throw new Error('UNRELATED_MANAGER_MUST_NOT_RUN'); },
     91966(module, exports, require) { require.d(exports, { sD: () => () => ({
@@ -293,6 +296,7 @@ function fixture(options = {}) {
     68610(module, exports, require) { require.d(exports, {}, { Y1: { Streaming: 'FIXTURE_STREAMING' } }); },
     21470(module, exports, require) { require.d(exports, { tw: () => config => {
       observed.legacy.push(config);
+      if (fake.selectorFailure) throw fake.selectorFailure;
       if (fake.selectedURL !== undefined) return fake.selectedURL;
       const url = new URL(fake.selectYospace ? config.sourceParam.playlists.yospace.dash : config.sourceParam.playlists.dash);
       url.searchParams.set('t', config.sourceParam.mediaToken);
@@ -312,9 +316,9 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
@@ -440,6 +444,149 @@ test('successful opaque take and later cleanup stop do not manufacture owner can
   const value = fixture(); value.start(); await waitFor(value, 'READY');
   value.begin(challenge); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
   assert.equal(value.metadata().failure, 'NONE'); value.stop(); assert.equal(value.metadata().failure, 'NONE');
+});
+
+test('channel diagnostics distinguish pre-request runtime failure from the preceding token HTTP status', async () => {
+  let inspected = 0;
+  const rejection = Object.defineProperties({}, Object.fromEntries(['message', 'reason', 'stack', 'name'].map(key =>
+    [key, { get() { inspected++; throw new Error('MUST_NOT_INSPECT'); } }])));
+  const value = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic: true,
+    browserModuleFailure: rejection });
+  value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().phase, 'CONTENT'); assert.equal(value.metadata().http, 200);
+  assert.equal(value.metadata().failure, 'UNKNOWN'); assert.equal(inspected, 0);
+  assert.deepEqual(value.requests.map(({ uri }) => uri.pathname), ['/v1/media/token']);
+  assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('channel diagnostics retain REQUEST for fetch HTTP decode duplicate and body-limit failures', async () => {
+  for (const [extra, failure, http] of [
+    [{ rejections: { '/v1/channels': {} } }, 'FETCH_REJECTED_BEFORE_HTTP', 0],
+    [{ statuses: { '/v1/channels': 403 } }, 'HTTP_REFUSED', 403],
+    [{ responseTexts: { '/v1/channels': '{bad' } }, 'RESPONSE_VALIDATION_REFUSED', 200],
+    [{ responseTexts: { '/v1/channels': '{"channels":[],"channels":[]}' } }, 'RESPONSE_VALIDATION_REFUSED', 200],
+    [{ responseTexts: { '/v1/channels': ' '.repeat(512 * 1024 + 1) } }, 'RESPONSE_VALIDATION_REFUSED', 200],
+    [{ responseBytes: { '/v1/channels': new Uint8Array([0xc3, 0x28]) } }, 'RESPONSE_VALIDATION_REFUSED', 200],
+  ]) {
+    const value = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic: true, ...extra });
+    value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'CHANNEL_REQUEST'); assert.equal(value.metadata().failure, failure);
+    assert.equal(value.metadata().http, http); assert.equal(value.requests.length, 2);
+    assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null);
+  }
+});
+
+test('channel diagnostics retain RESPONSE for unexpected validation runtime failure after strict decoding', async () => {
+  const value = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic: true,
+    channels: { channels: [configuredLinearChannel('fixture-one')] } });
+  // The first app-owned .some call in this configured channel path is after
+  // the existing JSON await. This synthetic runtime failure is not a guard refusal.
+  value.evaluate('Array.prototype.some = () => { throw new Error("SYNTHETIC_RUNTIME"); }');
+  value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().phase, 'CHANNEL_RESPONSE'); assert.equal(value.metadata().http, 200);
+  assert.equal(value.metadata().failure, 'UNKNOWN'); assert.equal(value.requests.length, 2);
+  assert.equal(value.evaluate('observed.legacy.length'), 0);
+});
+
+test('channel diagnostics name only the existing guard refusal and preserve guard evaluation order', async () => {
+  const id = 'fixture-one'; const base = configuredLinearChannel(id);
+  for (const [channels, phase] of [
+    [{}, 'CHANNEL_ENVELOPE_REFUSED'],
+    [{ channels: [{}] }, 'CHANNEL_ENVELOPE_REFUSED'],
+    [{ channels: [{ ...base, id: '../other' }] }, 'CHANNEL_ENVELOPE_REFUSED'],
+    [{ channels: Array.from({ length: 501 }, (_, index) => configuredLinearChannel('fixture-' + index)) }, 'CHANNEL_ENVELOPE_REFUSED'],
+    [{ channels: [] }, 'CHANNEL_SELECTION_REFUSED'],
+    [{ channels: [base, base] }, 'CHANNEL_SELECTION_REFUSED'],
+    [{ channels: [configuredLinearChannel('other')] }, 'CHANNEL_SELECTION_REFUSED'],
+    [{ channels: [{ ...base, viewingOpened: false, status: { drm: true } }] }, 'CHANNEL_UNAVAILABLE'],
+    [{ channels: [{ ...base, viewingOpened: 'true' }] }, 'CHANNEL_UNAVAILABLE'],
+    [{ channels: [{ ...base, playback: {}, status: { drm: 'false' } }] }, 'CHANNEL_PLAYLIST_REFUSED'],
+    [{ channels: [{ ...base, status: { drm: 'false' } }] }, 'CHANNEL_DRM_REFUSED'],
+    [{ channels: [{ ...base, status: { drm: true } }] }, 'CHANNEL_DRM_REFUSED'],
+    [{ channels: [{ ...base, status: [], playback: { dash: 'https://unapproved.invalid/private' } }] }, 'CHANNEL_DRM_REFUSED'],
+    [{ channels: [{ ...base, playback: { dash: base.playback.dash.replace(id, 'other') } }] }, 'CHANNEL_PLAYLIST_REFUSED'],
+    [{ channels: [{ ...base, playback: { dash: base.playback.dash, yospace: false } }] }, 'CHANNEL_ALTERNATE_REFUSED'],
+    [{ channels: [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: false } } }] }, 'CHANNEL_ALTERNATE_REFUSED'],
+    [{ channels: [{ ...base, playback: { dash: base.playback.dash, yospace: { dash: 'x'.repeat(2049) } } }] }, 'CHANNEL_ALTERNATE_REFUSED'],
+  ]) {
+    const value = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic: true, channels });
+    value.startChannel(id); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, phase); assert.equal(value.metadata().failure, 'UNKNOWN');
+    assert.equal(value.metadata().http, 200); assert.equal(value.requests.length, 2);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.begin(challenge), 'REFUSED');
+    const metadata = JSON.stringify(value.metadata());
+    assert.deepEqual(Object.keys(value.metadata()).sort(), ['failure', 'http', 'lastModule', 'modules', 'phase']);
+    for (const secret of [id, 'ACCOUNT_', 'TEST_MEDIA', 'https://', 'yospace', 'viewingOpened', 'private'])
+      assert.equal(metadata.includes(secret), false);
+  }
+});
+
+test('channel diagnostics preserve SOURCE for selector failure without another request or exception inspection', async () => {
+  let inspected = 0;
+  const failure = Object.defineProperty({}, 'message', { get() { inspected++; throw new Error('MUST_NOT_INSPECT'); } });
+  const value = fixture({ account: savedAccount(), forbidGuest: true, configuredLinear: true,
+    channelDiagnostic: true, channels: { channels: [configuredLinearChannel('fixture-one')] }, selectorFailure: failure });
+  value.startChannel('fixture-one'); await waitFor(value, 'FAILED');
+  assert.equal(value.metadata().phase, 'SOURCE'); assert.equal(value.metadata().failure, 'UNKNOWN');
+  assert.equal(value.metadata().http, 200); assert.equal(value.requests.length, 2);
+  assert.equal(value.evaluate('observed.legacy.length'), 1); assert.equal(inspected, 0);
+  assert.equal(value.begin(challenge), 'REFUSED');
+});
+
+test('channel diagnostic opt-out preserves original CONTENT refusals and exact successful request selection', async () => {
+  for (const channelDiagnostic of [undefined, false]) {
+    const refused = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic, channels: {} });
+    refused.startChannel('fixture-one'); await waitFor(refused, 'FAILED');
+    assert.equal(refused.metadata().phase, 'CONTENT'); assert.equal(refused.metadata().failure, 'UNKNOWN');
+    assert.equal(refused.requests.length, 2);
+  }
+  const accepted = [];
+  for (const channelDiagnostic of [undefined, false, true]) {
+    const value = fixture({ account: savedAccount(), forbidGuest: true, channelDiagnostic, configuredLinear: true,
+      channels: { channels: [configuredLinearChannel('fixture-one')] } });
+    value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    accepted.push({ metadata: value.metadata(), binding: value.evaluate(`window['${name}'].channelBinding()`),
+      requests: value.requests.map(({ uri, request }) => ({ url: uri.href, credentials: request.credentials })) });
+    assert.equal(value.requests.length, 2); assert.equal(value.evaluate('observed.legacy.length'), 1);
+    assert.equal(value.evaluate('observed.legacy[0].enforcePlainStream'), false);
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+  }
+  assert.deepEqual(accepted[1], accepted[0]); assert.deepEqual(accepted[2], accepted[0]);
+});
+
+test('channel diagnostic malformed flags and forbidden scope cannot initialize or issue HTTP', () => {
+  for (const channelDiagnostic of [null, 'true', 1, {}, []]) {
+    const value = fixture({ account: savedAccount(), channelDiagnostic }); value.startChannel('fixture-one');
+    assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+  for (const [extra, start] of [
+    [{}, value => value.startChannel('fixture-one')],
+    [{ account: null }, value => value.startChannel('fixture-one')],
+    [{ account: savedAccount() }, value => value.start()],
+    [{ account: savedAccount() }, value => value.start(true, 'fixture-episode')],
+    [{ account: savedAccount() }, value => value.startSlot('sumo/fixture-slot')],
+  ]) {
+    const value = fixture({ channelDiagnostic: true, ...extra }); start(value);
+    assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+});
+
+test('channel diagnostics cannot revive delayed metadata after cancellation timer expiry or account-clock refusal', async () => {
+  for (const ending of ['cancel', 'timer', 'expiry', 'rollback']) {
+    const options = { account: savedAccount(), forbidGuest: true, channelDiagnostic: true, deferChannels: true,
+      channels: { channels: [configuredLinearChannel('fixture-one')] } };
+    const value = fixture(options); value.startChannel('fixture-one'); await waitForRequests(value, 2);
+    assert.equal(value.metadata().phase, 'CHANNEL_REQUEST');
+    if (ending === 'cancel') value.stop();
+    else if (ending === 'timer') value.expireTimers();
+    else options.nowMs = ending === 'expiry' ? fixtureNow + 600000 : fixtureNow - 1;
+    value.release(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, 'CHANNEL_REQUEST');
+    assert.equal(value.metadata().failure, ending === 'cancel' ? 'OWNED_CANCELLED' : 'TIMER_EXPIRED');
+    assert.equal(value.requests.length, 2); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.evaluate(`window['${name}'].channelBinding()`), null); assert.equal(value.begin(challenge), 'REFUSED');
+  }
 });
 
 test('configured linear IDs retain advertised selection and exact independent source and initial license identity', async () => {

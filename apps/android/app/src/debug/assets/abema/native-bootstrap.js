@@ -276,10 +276,13 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
+    if (requestedChannelDiagnostic !== undefined && typeof requestedChannelDiagnostic !== 'boolean') return;
+    const channelDiagnostic = requestedChannelDiagnostic === true;
+    if (channelDiagnostic && (!configuredChannel || replay || requestedAccount == null)) return;
     if (configuredSlot && (configured || configuredChannel || !replay || typeof requestedSlot !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requestedSlot))) return;
     if (configuredChannel && (configured || replay || typeof requestedChannel !== 'string' ||
@@ -383,13 +386,13 @@
         state = 'WAITING_SOURCE'; phase = 'CONTENT';
         // Source/session construction below is supplied from reviewed provider
         // interfaces; never fall back to the original page or a guessed MPD.
-        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest);
+        await prepareSource(load, user, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic);
         alive();
         phase = 'READY'; state = 'READY';
       } catch { stop(true); }
     })();
   };
-  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest) {
+  async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic) {
     const browser = load(60506).N;
     const clientInfo = {
       app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
@@ -406,23 +409,28 @@
       return;
     }
     if (!replay) {
+      const refuseChannel = category => { if (channelDiagnostic) phase = category; throw new Error(); };
+      if (channelDiagnostic) phase = 'CHANNEL_REQUEST';
       const metadata = await json('https://api.abema.io/v1/channels', { credentials: 'omit' }, configuredChannel ? 512 * 1024 : 1024 * 1024);
+      if (channelDiagnostic) phase = 'CHANNEL_RESPONSE';
       if (configuredChannel && (!metadata || !Array.isArray(metadata.channels) || metadata.channels.length > 500 ||
         metadata.channels.some(channel => !channel || typeof channel !== 'object' || Array.isArray(channel) ||
-          typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) throw new Error();
+          typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) refuseChannel('CHANNEL_ENVELOPE_REFUSED');
       const channels = metadata.channels?.filter(channel => channel.id === channelId);
-      if (!Array.isArray(channels) || channels.length !== 1 || channels[0].viewingOpened !== true ||
-        typeof channels[0].playback?.dash !== 'string' ||
-        (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean')) throw new Error();
+      if (!Array.isArray(channels) || channels.length !== 1) refuseChannel('CHANNEL_SELECTION_REFUSED');
+      if (channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
+      if (typeof channels[0].playback?.dash !== 'string') refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+      if (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean') refuseChannel('CHANNEL_DRM_REFUSED');
       const channel = channels[0];
       if (configuredChannel) {
         const playback = channel.playback;
-        if (!playback || typeof playback !== 'object' || Array.isArray(playback) ||
-          (channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
-          channel.status?.drm === true || !usableChannelPlaylist(playback.dash, channelId) ||
-          (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
+        if (!playback || typeof playback !== 'object' || Array.isArray(playback)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+        if ((channel.status != null && (typeof channel.status !== 'object' || Array.isArray(channel.status))) ||
+          channel.status?.drm === true) refuseChannel('CHANNEL_DRM_REFUSED');
+        if (!usableChannelPlaylist(playback.dash, channelId)) refuseChannel('CHANNEL_PLAYLIST_REFUSED');
+        if (playback.yospace !== undefined && (!playback.yospace || typeof playback.yospace !== 'object' || Array.isArray(playback.yospace) ||
             (playback.yospace.dash !== undefined && (typeof playback.yospace.dash !== 'string' ||
-              playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash)))))) throw new Error();
+              playback.yospace.dash.length > 2048 || /[\u0000-\u0020\\]/.test(playback.yospace.dash))))) refuseChannel('CHANNEL_ALTERNATE_REFUSED');
       }
       phase = 'SOURCE';
       // Fresh owned identity + advertised playlists, not the full player's

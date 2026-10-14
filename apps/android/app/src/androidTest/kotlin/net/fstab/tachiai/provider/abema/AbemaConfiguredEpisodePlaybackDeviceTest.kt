@@ -53,7 +53,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         REFUSED, PLAYBACK_REFUSED, SAFE_FAILURE, CLEANUP_UNCONFIRMED,
         EXACT_EPISODE_FRAME_AND_POSITION, EXACT_CHANNEL_FRAME_AND_POSITION, EXACT_SLOT_FRAME_AND_POSITION,
         HISTORICAL_NEWS_FRAME_AND_POSITION, HISTORICAL_REPLAY_FRAME_AND_POSITION,
-        INITIAL_MANIFEST_OBSERVED,
+        INITIAL_MANIFEST_OBSERVED, CHANNEL_PREPARATION_OBSERVED,
     }
     private enum class ObservationMode(val acceptedOutcome: Outcome) {
         CONFIGURED_EPISODE(Outcome.EXACT_EPISODE_FRAME_AND_POSITION),
@@ -222,20 +222,36 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 args.getString("tachiaiRequireSavedAbemaAccount") == "true" &&
                 listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
                     "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
-                    "tachiaiReadOnlyAbemaHistoricalReplay").none { args.getString(it) == "true" } &&
+                    "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaChannelPreparation").none { args.getString(it) == "true" } &&
                 listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
                     "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
         observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity))
     }
 
+    @Test fun optInOneChannelPreparationReportsClosedStagesWithoutNativePlayback() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaChannelPreparation") == "true")
+        val identity = args.getString("tachiaiAbemaManifestSlotIdentity")
+        assertTrue("Canonical public Schedule lead, saved account and exclusive channel diagnostic required",
+            identity != null && validAbemaSlotIdentity(identity) &&
+                args.getString("tachiaiRequireSavedAbemaAccount") == "true" &&
+                listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
+                    "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
+                    "tachiaiReadOnlyAbemaHistoricalReplay", "tachiaiReadOnlyAbemaManifestOnly").none { args.getString(it) == "true" } &&
+                listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
+                    "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
+        observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity), channelPreparationOnly = true)
+    }
+
     // Each explicitly selected method starts one bounded run. No loop, retry,
     // source fallback, stored choice or original provider-page comparison.
-    private fun observePlayback(mode: ObservationMode, resourceIdentity: String? = null) {
+    private fun observePlayback(mode: ObservationMode, resourceIdentity: String? = null, channelPreparationOnly: Boolean = false) {
         val instrumentation = cachedInstrumentation()
         val observationStarted = SystemClock.elapsedRealtime()
         val observationWall = System.currentTimeMillis()
         val args = InstrumentationRegistry.getArguments()
         val manifestOnly = mode == ObservationMode.CONFIGURED_MANIFEST
+        check(!channelPreparationOnly || manifestOnly)
         val manifestSlot = if (manifestOnly) AbemaSlotRequest.from(CatalogResource(ProviderId("abema"),
             "slot", checkNotNull(resourceIdentity), CatalogIntent.BROADCAST)) else null
         val manifestSnapshot = AtomicReference<AbemaInitialManifestSnapshot?>()
@@ -294,6 +310,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         var movementObserved: Boolean? = null
         var accountStatus: AbemaAccountAccessIpc.Status? = null
         var playbackObservation: PlaybackObservation? = null
+        var channelPreparation: AbemaCachedHelperMetadata? = null
+        var channelPreparationInTime = false
         var cleanupSnapshot = CleanupSnapshot()
         var cleanupMainFailed = false
         var cleanupWaitExpired = false
@@ -394,6 +412,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         Unit
                     }) else null,
                     manifestOnlySlot = manifestSlot,
+                    observeChannelPreparation = channelPreparationOnly,
                     onManifestOnlyPrepared = if (manifestOnly) ({ value ->
                         manifestCount.updateAndGet { (it + 1).coerceAtMost(2) }
                         manifestSnapshot.compareAndSet(null, value)
@@ -448,6 +467,10 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             }
             instrumentation.runOnMainSync {
                 accountStatus = session?.accountStatus
+                if (channelPreparationOnly) {
+                    channelPreparation = session?.channelPreparationDiagnostic
+                    channelPreparationInTime = remainingObservation() > 0 && manifestClockCurrent()
+                }
                 if (manifestOnly && (session?.player != null || session?.member != null)) nativeObserved.set(true)
             }
             val accountAccepted = InstrumentationRegistry.getArguments().getString("tachiaiRequireSavedAbemaAccount") != "true" ||
@@ -515,6 +538,21 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
         val manifestSummary = if (!manifestOnly) "DISABLED" else if (!releaseManifest) "WITHHELD"
             else manifestSnapshot.get()?.closedSummary() ?: "UNOBSERVED"
+        // Observing a safe refusal is diagnostic evidence, never manifest or
+        // playback acceptance. Publish only after the original preservation,
+        // account, clock and completed-cleanup gates have all been checked.
+        val releaseChannelPreparation = channelPreparationOnly && channelPreparation != null && channelPreparationInTime &&
+            outcome in setOf(Outcome.PLAYBACK_REFUSED, Outcome.INITIAL_MANIFEST_OBSERVED) && manifestClockCurrent() &&
+            !nativeObserved.get() && manifestCount.get() <= 1 &&
+            accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged &&
+            !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
+            cleanupSnapshot.state == SnapshotState.AVAILABLE &&
+            cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
+            cleanupSnapshot.sessionPending == false && cleanupSnapshot.sessionFailed == false &&
+            cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
+        val channelPreparationSummary = if (!channelPreparationOnly) "DISABLED" else if (!releaseChannelPreparation) "WITHHELD"
+            else checkNotNull(channelPreparation).closedSummary()
+        if (releaseChannelPreparation) outcome = Outcome.CHANNEL_PREPARATION_OBSERVED
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
             "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
             "playbackOutcome=${playbackObservation?.outcome} renderedFrame=${playbackObservation?.renderedFrame} " +
@@ -525,11 +563,16 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
             "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
             "slotInitialization=$initializationSummary manifestOnly=$manifestOnly nativeObserved=${nativeObserved.get()} " +
-            "initialManifest=$manifestSummary")
+            "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)
         assertTrue("Saved route owner must remain unchanged", ownerUnchanged)
-        if (manifestOnly) assertTrue("Only final clean source-only observations can be released", releaseManifest)
-        assertEquals(mode.acceptedOutcome, outcome)
+        if (channelPreparationOnly) {
+            assertTrue("Only final clean account-backed channel diagnostics can be released", releaseChannelPreparation)
+            assertEquals(Outcome.CHANNEL_PREPARATION_OBSERVED, outcome)
+        } else {
+            if (manifestOnly) assertTrue("Only final clean source-only observations can be released", releaseManifest)
+            assertEquals(mode.acceptedOutcome, outcome)
+        }
     }
 
     private fun encryptedRecords(directory: File, includeControlRecords: Boolean = false): Map<String, ByteArray> {

@@ -97,6 +97,7 @@ internal class CachedPrototypeAbemaSession(
     private val onSlotSourceDiagnostic: ((AbemaSlotSourceDiagnostic) -> Unit)? = null,
     private val manifestOnlySlot: AbemaSlotRequest? = null,
     private val onManifestOnlyPrepared: ((AbemaInitialManifestSnapshot) -> Unit)? = null,
+    private val observeChannelPreparation: Boolean = false,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -112,8 +113,11 @@ internal class CachedPrototypeAbemaSession(
         require((manifestOnlySlot == null) == (onManifestOnlyPrepared == null))
         require(manifestOnlySlot == null || channelResource != null && !replay &&
             episodeResource == null && slotResource == null && channelResource.identity == manifestOnlySlot.channelId)
+        require(!observeChannelPreparation || manifestOnlySlot != null)
     }
     private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
+    private val channelPreparationEvidence = if (observeChannelPreparation) AbemaChannelPreparationEvidence() else null
+    val channelPreparationDiagnostic get() = channelPreparationEvidence?.snapshot
     private val episodeId get() = episodeResource?.identity ?: "394-72_s10_p8529"
     private val channelId get() = channelResource?.identity ?: "abema-news"
     private val slotChannelId get() = checkNotNull(slotResource).identity.substringBefore('/')
@@ -458,7 +462,8 @@ internal class CachedPrototypeAbemaSession(
                     "__EPISODE_ARGUMENT__" to (episodeResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
                     "__CHANNEL_ARGUMENT__" to (channelResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
                     "__SLOT_ARGUMENT__" to (slotResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
-                    "__ACCOUNT_ARGUMENT__" to accountArgument)
+                    "__ACCOUNT_ARGUMENT__" to accountArgument,
+                    "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString())
                 val template = view.context.assets.open("abema/native-bootstrap-initialize.js")
                     .bufferedReader().use { it.readText() }
                 val initialization = Regex("__[A-Z_]+__").replace(template) { checkNotNull(arguments[it.value]) }
@@ -551,8 +556,10 @@ internal class CachedPrototypeAbemaSession(
             if (raw == "null") { onRead(null); return@evaluateJavascript }
             val value = parseAbemaCachedHelperMetadataCallback(raw)
             if (value == null) {
+                channelPreparationEvidence?.refuse()
                 record("metadata=REFUSED"); fail(); return@evaluateJavascript
             }
+            channelPreparationEvidence?.observe(value)
             val first = helperEvidence.observe(value)
             if (first) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE,
                 value.failure.diagnosticCategory())

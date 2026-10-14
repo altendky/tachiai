@@ -12,6 +12,7 @@ internal class AbemaApprovalBrowserRequest(
     val deadlineElapsedMs: Long,
     val emailNonce: String? = null,
     val resetBrowserSession: Boolean = false,
+    val automaticReturn: Boolean = false,
 ) {
     init {
         require(validProviderInstanceId(instanceId))
@@ -20,6 +21,7 @@ internal class AbemaApprovalBrowserRequest(
         require(deadlineElapsedMs >= 0)
         require(emailNonce == null || emailNonce.matches(Regex("[0-9a-f]{32}")) && verificationUri == "https://abema.tv/account")
         require(!resetBrowserSession || emailNonce != null)
+        require(!automaticReturn || emailNonce != null && !resetBrowserSession)
     }
 
     fun current(nowElapsedMs: Long) = nowElapsedMs >= 0 && nowElapsedMs < deadlineElapsedMs

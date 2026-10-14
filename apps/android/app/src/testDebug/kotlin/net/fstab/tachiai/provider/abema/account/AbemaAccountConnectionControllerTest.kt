@@ -36,6 +36,7 @@ class AbemaAccountConnectionControllerTest {
         var profileFailure: AbemaAccountFailure? = null
         var emailResult = AbemaAccountEmailResult.REGISTERED
         var emailChecks = 0
+        var emailBearer = fixtureAccountToken()
         var ownerReads = 0
         val profileIds = mutableListOf<String>()
         val profileBearers = mutableListOf<String>()
@@ -69,7 +70,7 @@ class AbemaAccountConnectionControllerTest {
                 }
                 override fun emailRegistration(id: String, bearer: String): AbemaAccountEmailResult {
                     assertTrue(gate()); assertEquals("intended-account", id)
-                    assertEquals(fixtureAccountToken(), bearer); emailChecks++; onEmail(); return emailResult
+                    assertEquals(emailBearer, bearer); emailChecks++; onEmail(); return emailResult
                 }
                 override fun cancelActiveRequest() = Unit
                 override fun close() { closed++; onClose(); if (closeThrows) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
@@ -117,7 +118,234 @@ class AbemaAccountConnectionControllerTest {
             assertFalse(controller.state.value.canContinue)
             controller.setForeground(true); pump(); assertTrue(controller.state.value.canContinue)
         }
+        fun expiredSnapshot(): AbemaAccountSnapshot { save(); wall = 2_000_001; return store.readSnapshot() }
+        fun renewedGrant(id: String = "intended-account", expiry: String = "3000"): AbemaAccountGrant =
+            decodedAbemaGrant(fixtureAccountToken(id, expiry), id, wall).also { emailBearer = it.bearer }
+        fun renewalOpened(snapshot: AbemaAccountSnapshot, results: MutableList<AbemaAutomaticRenewalResult>): AbemaApprovalBrowserRequest? {
+            var request: AbemaApprovalBrowserRequest? = null
+            controller.renewEmail(snapshot, { request = it; true }, { results.add(it) }); pump()
+            return request
+        }
+        fun renewalReturned(request: AbemaApprovalBrowserRequest, grant: AbemaAccountGrant) {
+            controller.setForeground(false)
+            assertTrue(inbox.deliver(checkNotNull(request.emailNonce), request.instanceId, request.ownerProof,
+                request.deadlineElapsedMs, grant))
+            controller.emailBrowserReturned()
+            assertTrue(profileIds.isEmpty())
+            controller.setForeground(true); pump()
+        }
     }
+    @Test fun automaticEmailRenewalPinsExpiredSnapshotAndCommitsOnlySameAccountWithLongerProviderExpiry() {
+        val f = Fixture(); val original = f.expiredSnapshot(); val prior = f.storage.bytes!!.copyOf()
+        val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+        val request = checkNotNull(f.renewalOpened(original, completed))
+        assertTrue(request.automaticReturn); assertFalse(request.resetBrowserSession)
+        assertEquals(91_000L, request.deadlineElapsedMs); assertArrayEquals(prior, f.storage.bytes)
+        val grant = f.renewedGrant()
+        f.renewalReturned(request, grant)
+        assertEquals(listOf(AbemaAutomaticRenewalResult.SUCCESS), completed)
+        val saved = checkNotNull(f.store.read())
+        assertEquals(grant.bearer, saved.grant.bearer); assertEquals(grant.expiresAtMs, saved.grant.expiresAtMs)
+        assertEquals(checkNotNull(original.record).generation + 1, saved.generation)
+        assertEquals(listOf("intended-account"), f.profileIds); assertEquals(1, f.emailChecks)
+        assertEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        f.controller.emailBrowserReturned(); f.controller.cancelAction(); f.controller.close(); f.pump()
+        assertEquals(1, completed.size); assertEquals(0, f.tokens); assertEquals(0, f.preparations)
+    }
+
+    @Test fun renewalUsesOneClippedOriginalDeadlineForInboxBrowserAndValidation() {
+        val f = Fixture(); val original = f.expiredSnapshot(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+        var request: AbemaApprovalBrowserRequest? = null
+        f.controller.renewEmail(original, { request = it; true }, { completed.add(it) }, originalDeadlineElapsedMs = 6000)
+        f.now = 4000; f.pump()
+        val browser = checkNotNull(request)
+        assertEquals(6000L, browser.deadlineElapsedMs)
+        val grant = f.renewedGrant()
+        assertFalse(f.inbox.deliver(checkNotNull(browser.emailNonce), browser.instanceId, browser.ownerProof, 91000, grant))
+        f.renewalReturned(browser, grant)
+        assertEquals(listOf(AbemaAutomaticRenewalResult.SUCCESS), completed)
+        assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+    }
+
+    @Test fun expiredQueuedOrMainDelayedRenewalNeverLaunchesOrExtendsItsOriginalBudget() {
+        for (phase in 0..2) {
+            val f = Fixture(); val original = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+            val completed = mutableListOf<AbemaAutomaticRenewalResult>(); var launches = 0
+            val ownerReads = f.ownerReads
+            f.controller.renewEmail(original, { launches++; true }, { completed.add(it) },
+                originalDeadlineElapsedMs = if (phase == 0) f.now else 6000)
+            if (phase == 2) assertTrue(f.worker.one())
+            f.now = 6000; f.pump()
+            assertEquals(0, launches); assertEquals(listOf(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED), completed)
+            assertTrue(f.profileIds.isEmpty()); assertArrayEquals(before, f.storage.bytes)
+            if (phase < 2) assertEquals(ownerReads, f.ownerReads)
+        }
+    }
+
+    @Test fun cancellationBeforePreparationAndAfterCommitCannotDeliverAStaleSuccess() {
+        for (phase in 0..1) {
+            val f = Fixture(); val original = f.expiredSnapshot(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+            if (phase == 0) {
+                val reads = f.ownerReads; val before = f.storage.bytes!!.copyOf()
+                f.controller.renewEmail(original, { fail("Cancelled renewal launched"); false }, { completed.add(it) })
+                f.controller.close(); f.pump()
+                assertEquals(reads, f.ownerReads); assertArrayEquals(before, f.storage.bytes)
+            } else {
+                val request = checkNotNull(f.renewalOpened(original, completed)); val grant = f.renewedGrant()
+                assertTrue(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId, request.ownerProof,
+                    request.deadlineElapsedMs, grant))
+                f.controller.emailBrowserReturned(); assertTrue(f.worker.one())
+                assertEquals(grant.bearer, checkNotNull(f.store.read()).grant.bearer)
+                // Completion is queued after the durable replacement. A later
+                // Forget revokes the replacement before success publication.
+                f.controller.forget(); f.pump(); assertNull(f.store.read())
+            }
+            assertEquals(listOf(AbemaAutomaticRenewalResult.CANCELLED), completed)
+        }
+    }
+
+    @Test fun queuedPostcommitPublicationAndCompletionCannotSucceedPastTheOriginalDeadline() {
+        for (phase in 0..2) {
+            val f = Fixture(); val original = f.expiredSnapshot(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+            val request = checkNotNull(f.renewalOpened(original, completed)); val grant = f.renewedGrant()
+            assertTrue(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId, request.ownerProof,
+                request.deadlineElapsedMs, grant))
+            f.controller.emailBrowserReturned(); assertTrue(f.worker.one())
+            assertEquals(grant.bearer, checkNotNull(f.store.read()).grant.bearer)
+            if (phase >= 1) checkNotNull(f.main.removeFirstOrNull()).invoke()
+            assertTrue(completed.isEmpty())
+            if (phase == 2) {
+                var checks = 0
+                f.onElapsed = { if (++checks == 2) f.now = request.deadlineElapsedMs }
+            } else f.now = request.deadlineElapsedMs
+            f.pump()
+            assertEquals(listOf(if (phase == 0) AbemaAutomaticRenewalResult.INTERACTION_REQUIRED
+                else AbemaAutomaticRenewalResult.CANCELLED), completed)
+            assertEquals(1, f.profileIds.size); assertEquals(1, f.emailChecks)
+        }
+    }
+
+    @Test fun wrongAccountNonextendingExpiredOrMalformedCandidatesNeverReachNetworkOrWrite() {
+        val f = Fixture(); val expected = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+        val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+        val request = checkNotNull(f.renewalOpened(expected, completed))
+        f.renewalReturned(request, f.renewedGrant("other"))
+        assertEquals(listOf(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED), completed)
+        assertTrue(f.profileIds.isEmpty()); assertEquals(0, f.emailChecks); assertArrayEquals(before, f.storage.bytes)
+        val old = checkNotNull(expected.record).grant
+        assertFalse(abemaRenewalCandidateExtends(expected, old, f.wall))
+        assertFalse(abemaRenewalCandidateExtends(expected, AbemaAccountGrant(old.userId, "invalid", 3_000_000), f.wall))
+        val renewed = f.renewedGrant()
+        assertFalse(abemaRenewalCandidateExtends(expected, renewed, renewed.expiresAtMs))
+    }
+
+    @Test fun automaticReturnWithoutGrantRequiresInteractionWhileManualReturnDoesNotAutoFinish() {
+        val f = Fixture(); val expected = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+        val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+        checkNotNull(f.renewalOpened(expected, completed))
+        f.controller.emailBrowserReturned(); f.controller.emailBrowserReturned(); f.pump()
+        assertEquals(listOf(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED), completed)
+        assertTrue(f.profileIds.isEmpty()); assertArrayEquals(before, f.storage.bytes)
+        val manual = Fixture(); val request = manual.emailOpened()
+        assertFalse(request.automaticReturn); assertFalse(request.resetBrowserSession)
+        manual.controller.emailBrowserReturned(); manual.pump()
+        assertTrue(manual.profileIds.isEmpty()); assertFalse(manual.controller.state.value.canContinue)
+    }
+
+    @Test fun obsoleteOrInconsistentRenewalSnapshotCannotLaunchABrowser() {
+        for (change in 0..5) {
+            val f = Fixture(); val original = f.expiredSnapshot(); val old = checkNotNull(original.record)
+            val expected = when (change) {
+                0 -> { f.store.forget(); original }
+                1 -> AbemaAccountSnapshot(AbemaStoredAccount(old.grant, old.acceptedWallMs + 1, old.generation), original.revision)
+                2 -> AbemaAccountSnapshot(AbemaStoredAccount(old.grant, old.acceptedWallMs, old.generation + 1), original.revision)
+                3 -> { f.wall = old.acceptedWallMs - 1; original }
+                4 -> { f.matching = false; original }
+                else -> AbemaAccountSnapshot(AbemaStoredAccount(AbemaAccountGrant(old.grant.userId, old.grant.bearer,
+                    old.grant.expiresAtMs + 1), old.acceptedWallMs, old.generation), original.revision)
+            }
+            val before = f.storage.bytes!!.copyOf(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+            assertNull(f.renewalOpened(expected, completed))
+            assertEquals(listOf(AbemaAutomaticRenewalResult.CANCELLED), completed)
+            assertArrayEquals(before, f.storage.bytes); assertTrue(f.profileIds.isEmpty())
+        }
+    }
+
+    @Test fun renewalCancelForgetCloseOwnerLossOrOriginalDeadlineCannotResurrect() {
+        for (loss in 0..4) {
+            val f = Fixture(); val expected = f.expiredSnapshot(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
+            val request = checkNotNull(f.renewalOpened(expected, completed)); val before = f.storage.bytes!!.copyOf()
+            val grant = f.renewedGrant()
+            when (loss) {
+                0 -> f.controller.cancelAction()
+                1 -> f.controller.close()
+                2 -> f.controller.forget()
+                3 -> f.matching = false
+                4 -> f.now = request.deadlineElapsedMs
+            }
+            if (loss <= 2) assertFalse(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId,
+                request.ownerProof, request.deadlineElapsedMs, grant))
+            else if (loss == 3) assertTrue(f.inbox.deliver(checkNotNull(request.emailNonce), request.instanceId,
+                request.ownerProof, request.deadlineElapsedMs, grant))
+            f.controller.emailBrowserReturned(); f.pump(); f.controller.finishEmailConnection(); f.pump()
+            assertEquals(1, completed.size)
+            assertEquals(if (loss == 4) AbemaAutomaticRenewalResult.INTERACTION_REQUIRED else AbemaAutomaticRenewalResult.CANCELLED,
+                completed.single())
+            assertTrue(f.profileIds.isEmpty()); if (loss == 2) assertNull(f.store.read()) else assertArrayEquals(before, f.storage.bytes)
+        }
+    }
+
+    @Test fun foregroundOrForgetDuringRenewalValidationCancelsWithoutAnotherAttempt() {
+        for (loss in 0..2) {
+            val f = Fixture(); val expected = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+            val completed = mutableListOf<AbemaAutomaticRenewalResult>(); val request = checkNotNull(f.renewalOpened(expected, completed))
+            when (loss) {
+                0 -> f.onProfile = { f.controller.setForeground(false) }
+                1 -> f.onProfile = { f.store.forget() }
+                2 -> f.onEmail = { f.matching = false }
+            }
+            f.renewalReturned(request, f.renewedGrant())
+            assertEquals(listOf(AbemaAutomaticRenewalResult.CANCELLED), completed)
+            f.controller.setForeground(true); f.pump()
+            assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+            if (loss == 1) assertNull(f.store.read()) else assertArrayEquals(before, f.storage.bytes)
+        }
+    }
+
+    @Test fun transientCleanupAndStorageFailuresRemainTypedAndDoNotClearTheOldGrant() {
+        for (failure in 0..3) {
+            val f = Fixture(); val expected = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+            val completed = mutableListOf<AbemaAutomaticRenewalResult>(); val request = checkNotNull(f.renewalOpened(expected, completed))
+            when (failure) {
+                0 -> f.profileInconclusive = true
+                1 -> f.emailResult = AbemaAccountEmailResult.INCONCLUSIVE
+                2 -> f.closeThrows = true
+                3 -> f.storage.failWrite = true
+            }
+            f.renewalReturned(request, f.renewedGrant())
+            assertEquals(listOf(if (failure == 3) AbemaAutomaticRenewalResult.STORAGE_FAILURE
+                else AbemaAutomaticRenewalResult.TEMPORARY_FAILURE), completed)
+            assertArrayEquals(before, f.storage.bytes); assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        }
+    }
+
+    @Test fun renewalWriteRaceAndClockRollbackCannotPublishSuccessOrReplaceSavedBytes() {
+        for (race in 0..3) {
+            val f = Fixture(); val expected = f.expiredSnapshot(); val before = f.storage.bytes!!.copyOf()
+            val completed = mutableListOf<AbemaAutomaticRenewalResult>(); val request = checkNotNull(f.renewalOpened(expected, completed))
+            when (race) {
+                0 -> f.storage.writeHook = { f.storage.writeHook = {}; f.controller.setForeground(false) }
+                1 -> f.onProfile = { f.wall -= 1 }
+                2 -> f.onProfile = { f.now -= 1 }
+                3 -> f.storage.writeHook = { f.storage.writeHook = {}; f.matching = false }
+            }
+            f.renewalReturned(request, f.renewedGrant())
+            assertEquals(listOf(AbemaAutomaticRenewalResult.CANCELLED), completed)
+            assertArrayEquals(before, f.storage.bytes)
+            assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
+        }
+    }
+
     @Test fun sharedSavedValidationKeepsForegroundProofForPeersAndReusesItWithoutMutatingTheGrant() {
         val f = Fixture(shared = true); f.save(); val bytes = f.storage.bytes!!.copyOf()
         f.controller.load(); f.pump()

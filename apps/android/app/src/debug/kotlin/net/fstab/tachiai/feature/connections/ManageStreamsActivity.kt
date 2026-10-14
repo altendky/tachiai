@@ -18,6 +18,9 @@ import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
+import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
+import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
+import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 
@@ -40,6 +43,8 @@ class ManageStreamsActivity : ComponentActivity() {
     private var pendingPreview: SharedCatalogPreviewHandoff? = null
     private var sharedOwnerProvider: ProviderId? = null
     private var rejectedPreview = false
+    private val accountReadiness by lazy { AbemaAccountReadiness(this) }
+    private var renewalHandoff = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,7 +86,11 @@ class ManageStreamsActivity : ComponentActivity() {
             }
         } }
     }
-    override fun onResume() { super.onResume(); resumed = true; if (BuildConfig.DEBUG) readOwner() }
+    override fun onResume() {
+        super.onResume(); resumed = true; renewalHandoff = false
+        accountReadiness.onResume()
+        if (BuildConfig.DEBUG) readOwner()
+    }
 
     private fun readOwner() {
         if (rejectedPreview) {
@@ -99,6 +108,25 @@ class ManageStreamsActivity : ComponentActivity() {
             try {
                 StreamManagementWrites.await(id)
                 TwitchCatalogConnectionWrites.await(id)
+                val needsAccountCheck = withContext(Dispatchers.IO) {
+                    providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
+                        .singleOrNull { it.id == id }?.service == PrototypeService.ABEMA
+                }
+                if (needsAccountCheck) {
+                    val readiness = suspendCancellableCoroutine { continuation ->
+                        accountReadiness.ensure(listOf(id)) { result ->
+                            if (continuation.isActive) continuation.resumeWith(Result.success(result))
+                        }
+                    }
+                    if (readiness != AbemaAccountReadinessResult.READY) {
+                        renewalHandoff = readiness == AbemaAccountReadinessResult.HANDOFF
+                        if (resumed && revision == current) {
+                            reading = readiness == AbemaAccountReadinessResult.HANDOFF
+                            message = abemaAccountReadinessMessage(readiness)
+                        }
+                        return@launch
+                    }
+                }
                 val loaded = withContext(Dispatchers.IO) {
                     val instances = providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
                     val owner = instances.singleOrNull { it.id == id } ?: error("Stale provider instance")
@@ -154,7 +182,10 @@ class ManageStreamsActivity : ComponentActivity() {
     }
     override fun onPause() {
         resumed = false
-        pendingPreview?.discard(); pendingPreview = null
+        accountReadiness.onPause()
+        // A known renewal handoff retains only this normalized public request.
+        // Resume still rereads its owner and uses the existing take() admission.
+        if (!renewalHandoff) { pendingPreview?.discard(); pendingPreview = null }
         revision++; readJob?.cancel()
         controller?.close()
         super.onPause()
@@ -175,5 +206,5 @@ class ManageStreamsActivity : ComponentActivity() {
         sharedOwnerProvider?.let { outState.putString(SHARED_OWNER_PROVIDER, it.value) }
         super.onSaveInstanceState(outState)
     }
-    override fun onDestroy() { revision++; controller?.close(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { revision++; accountReadiness.close(); controller?.close(); scope.cancel(); super.onDestroy() }
 }

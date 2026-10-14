@@ -1,5 +1,41 @@
 # Native playback access experiments
 
+## Remembered-session renewal implementation — 2026-10-14
+
+The debug application now coalesces foreground ABEMA renewal before discovery
+or playback and on launcher resume. The existing isolated email browser can
+capture a trusted account request and return automatically after confirmed
+cleanup. Native verification admits only a later-lived grant for the original
+account and protected snapshot; the original 90-second action deadline spans
+browser setup, return and verification. A returning host rereads configuration
+and creates a fresh operation. Native preparation and license budgets retain
+their own original limits.
+
+Verification passed 2,850 JVM cases with zero failures, errors or skips,
+instrumentation compilation, release isolation and both APK assemblies using
+the shared debug signer. Android lint reported zero errors, 24 debug warnings
+and one hint, plus two diagnostic warnings. Scoped hooks and independent
+reviews passed. Tests cover candidate/account mismatch, expiry and clock changes,
+owner/Forget/write races, cleanup failures, queued success crossing its deadline,
+duplicate captures, coalesced consumers and late unclaimed ticket cancellation.
+The first build caught a Kotlin Message field shadowing error, which was fixed;
+review also corrected late ticket cleanup and device-fixture preservation gates.
+
+The shared-signed build was installed without clearing persistent tachiai-dev,
+Android 16/API 36, x86-64, WebView 133.0.6943.137. A local-only ordinary-process
+check reported UNEXPIRED and made no provider requests. The saved owning ABEMA
+configuration uses Windscribe; its actual exit country was not observed. All
+20 protected account/configuration records matched before and after installation,
+the one passing local check and restoration of the normal launcher. This was
+not a playback or account-browser renewal observation.
+
+The opt-in real acceptance fixture is compiled but was not executed against
+this still-valid grant. It requires natural expiry, same-account durable rotation,
+resumed original discovery and unchanged other records without Connect or
+Return clicks. A real automatic renewal, an interaction-required case and
+physical-device behavior remain unverified; [issue #242](https://github.com/altendky/tachiai/issues/242)
+stays open for that acceptance evidence.
+
 ## Continuous broadcast live mode — 2026-10-14
 
 The user chose to open an airing broadcast at its channel's live edge and keep

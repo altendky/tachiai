@@ -1,5 +1,30 @@
 # Product-flow prototype
 
+## Remembered ABEMA account renewal — October 14
+
+The debug application checks saved ABEMA accounts on foreground startup and
+before configured discovery or playback. When the native grant has expired,
+one bounded renewal attempt opens the remembered email browser session through
+that instance's selected connection. A trusted passive account request can
+return automatically, without Connect or Return clicks. ABEMA's own pages retain
+any code, consent or account-selection interaction; renewal does not reset the
+browser session or inspect cookies.
+
+Replacement requires the original account, a useful later decoded expiry,
+fresh native profile and registered-email verification, confirmed browser and
+route cleanup, and an atomic protected-store update. Concurrent consumers share
+the attempt. Changed accounts/routes, Forget, cancellation and stale callbacks
+cannot adopt its result. Temporary connection failures and genuine sign-in
+requirements have distinct messages, and a failed attempt suppresses immediate
+resume loops.
+
+The host retains only its logical selection across the browser handoff. On
+return it rereads the configuration and starts a fresh discovery or playback
+operation; it never revives a paused player, account request or license budget.
+The automatic action has its own original 90-second deadline. Its real
+expired-session acceptance observation is separate from the implementation and
+fixture coverage in the native-access evidence.
+
 ## ABEMA broadcast live mode — October 14
 
 Opening a currently airing configured broadcast selects its continuous live

@@ -40,6 +40,23 @@ class AbemaApprovalBrowserPolicyTest {
         assertEquals("AbemaApprovalBrowserRequest(redacted)", request.toString())
     }
 
+    @Test fun automaticReturnIsExplicitEmailOnlyAndNeverClearsRememberedBrowserAuthorization() {
+        assertFalse(AbemaApprovalBrowserRequest(instanceId, proof, verification, 1000).automaticReturn)
+        val nonce = "0123456789abcdef".repeat(2)
+        val request = AbemaApprovalBrowserRequest(instanceId, proof, "https://abema.tv/account", 1000,
+            emailNonce = nonce, automaticReturn = true)
+        assertTrue(request.automaticReturn); assertFalse(request.resetBrowserSession)
+        assertFalse(request.current(1000))
+        assertEquals("AbemaApprovalBrowserRequest(redacted)", request.toString())
+        assertThrows(IllegalArgumentException::class.java) {
+            AbemaApprovalBrowserRequest(instanceId, proof, verification, 1000, automaticReturn = true)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AbemaApprovalBrowserRequest(instanceId, proof, "https://abema.tv/account", 1000,
+                emailNonce = nonce, resetBrowserSession = true, automaticReturn = true)
+        }
+    }
+
     @Test fun providerPagesAllowNormalQueriesAndFragmentsAtExactStandardHttpsOrigins() {
         for (host in listOf("abema.tv", "auth.abema.tv")) for (port in listOf("", ":443")) {
             for (path in listOf("", "/", "/account?email=fixture%40example.test&next=%2Faccount#step",

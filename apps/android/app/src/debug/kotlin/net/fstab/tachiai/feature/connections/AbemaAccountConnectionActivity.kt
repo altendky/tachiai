@@ -67,7 +67,8 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
                 .putExtra(AbemaApprovalBrowserActivity.VERIFICATION_URI, request.verificationUri)
                 .putExtra(AbemaApprovalBrowserActivity.DEADLINE, request.deadlineElapsedMs)
                 .putExtra(AbemaApprovalBrowserActivity.EMAIL_NONCE, request.emailNonce)
-                .putExtra(AbemaApprovalBrowserActivity.RESET_BROWSER_SESSION, request.resetBrowserSession))
+                .putExtra(AbemaApprovalBrowserActivity.RESET_BROWSER_SESSION, request.resetBrowserSession)
+                .putExtra(AbemaApprovalBrowserActivity.AUTOMATIC_RETURN, request.automaticReturn))
             true
         } catch (_: Exception) { false }
     }

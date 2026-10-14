@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.abema.account
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,13 +53,28 @@ internal class AbemaAccountConnectionController(
     }
     @Volatile private var link: Link? = null
     private class EmailLink(val owner: AbemaCatalogRouteOwner, val nonce: String,
-        val deadline: Long, val storeRevision: Long) {
+        val deadline: Long, val storeRevision: Long, val renewal: Renewal? = null) {
         var handedOff = false
+        var validating = false
         var candidate: AbemaAccountGrant? = null
         var browserReturned = false
         override fun toString() = "AbemaEmailConnectionLink(redacted)"
     }
     @Volatile private var emailLink: EmailLink? = null
+    private class Renewal(val expected: AbemaAccountSnapshot, val beganElapsed: Long, val deadline: Long, wall: Long,
+        val completed: (AbemaAutomaticRenewalResult) -> Unit) {
+        val finished = AtomicBoolean()
+        val lastWall = AtomicLong(wall)
+        val lastElapsed = AtomicLong(beganElapsed)
+        val refusedClock = AtomicBoolean()
+        fun clock(elapsed: Long, wall: Long): Boolean {
+            if (elapsed < lastElapsed.getAndUpdate { maxOf(it, elapsed) } || wall < lastWall.getAndUpdate { maxOf(it, wall) } ||
+                elapsed < 0 || wall < 0) refusedClock.set(true)
+            return !refusedClock.get()
+        }
+        override fun toString() = "AbemaAutomaticRenewal(redacted)"
+    }
+    @Volatile private var automaticRenewal: Renewal? = null
     private val session = AbemaAccountSession(binding.store, wallMs) {
         !closed && foreground && capturedOwner?.let(binding::sameOwner) == true
     }
@@ -79,9 +95,10 @@ internal class AbemaAccountConnectionController(
     }
     private fun current(run: Long) = synchronized(lock) { !closed && foreground && revision == run }
     private fun same(run: Long, owner: AbemaCatalogRouteOwner) = current(run) && binding.sameOwner(owner) && current(run)
-    private fun run(progress: AbemaAccountProgress, action: (Long) -> Unit) {
+    private fun run(progress: AbemaAccountProgress, action: (Long) -> Unit) { runAction(progress, action) }
+    private fun runAction(progress: AbemaAccountProgress, action: (Long) -> Unit): Boolean {
         val run = synchronized(lock) {
-            if (closed || !foreground || busy || forgetting.get()) return
+            if (closed || !foreground || busy || forgetting.get()) return false
             busy = true; ++revision
         }
         publish(progress)
@@ -93,34 +110,82 @@ internal class AbemaAccountConnectionController(
                     AbemaAccountFailure.CLEANUP_FAILED -> FailureStage.CATALOG_AUTH_CLEANUP
                     else -> FailureStage.CATALOG_AUTH_REQUEST
                 })
-                if (current(run)) { detachAccess(run); link = null; clearEmailLink(); session.failed(error.category) }
+                if (current(run)) { detachAccess(run); link = null
+                    val result = renewalFailure(error.category)
+                    if (!clearEmailLink(result = result)) automaticRenewal?.let { completeRenewal(it, result) }
+                    session.failed(error.category)
+                }
             }
-            catch (_: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST); if (current(run)) { detachAccess(run); link = null; clearEmailLink(); session.failed(AbemaAccountFailure.TEMPORARY) } }
+            catch (_: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_REQUEST); if (current(run)) { detachAccess(run); link = null
+                if (!clearEmailLink(result = AbemaAutomaticRenewalResult.TEMPORARY_FAILURE))
+                    automaticRenewal?.let { completeRenewal(it, AbemaAutomaticRenewalResult.TEMPORARY_FAILURE) }
+                session.failed(AbemaAccountFailure.TEMPORARY)
+            } }
             finally { post { synchronized(lock) {
                 if (revision == run && busy) { busy = false; if (!closed) publish() }
             } } }
         }
+        return true
     }
-    private fun maintenanceAllowed() = link == null && emailLink == null && !forgetting.get()
+    private fun maintenanceAllowed() = link == null && emailLink == null && automaticRenewal == null && !forgetting.get()
     fun load() {
         if (!maintenanceAllowed()) return
         run(AbemaAccountProgress.READING, ::validateSaved)
     }
     fun connectEmail(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(false, launch)
     fun signInAgain(launch: (AbemaApprovalBrowserRequest) -> Boolean) = beginEmail(true, launch)
-    private fun beginEmail(resetBrowserSession: Boolean, launch: (AbemaApprovalBrowserRequest) -> Boolean) = run(AbemaAccountProgress.PREPARING) { run ->
+    fun renewEmail(expectedSnapshot: AbemaAccountSnapshot, launch: (AbemaApprovalBrowserRequest) -> Boolean,
+        onComplete: (AbemaAutomaticRenewalResult) -> Unit, originalDeadlineElapsedMs: Long? = null) {
+        val renewal = try {
+            val began = elapsedMs()
+            if (began < 0 || began > Long.MAX_VALUE - 90000) {
+                post { runCatching { onComplete(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED) } }; return
+            }
+            val deadline = minOf(began + 90000, originalDeadlineElapsedMs ?: Long.MAX_VALUE)
+            if (deadline <= began) {
+                post { runCatching { onComplete(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED) } }; return
+            }
+            Renewal(expectedSnapshot, began, deadline, wallMs(), onComplete)
+        }
+        catch (_: Exception) { post { runCatching { onComplete(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE) } }; return }
+        val admitted = synchronized(lock) {
+            if (closed || !foreground || busy || forgetting.get() || link != null || emailLink != null || automaticRenewal != null) false
+            else { automaticRenewal = renewal; true }
+        }
+        if (!admitted) { completeRenewal(renewal, AbemaAutomaticRenewalResult.CANCELLED); return }
+        try { beginEmail(false, launch, renewal) }
+        catch (_: Exception) {
+            synchronized(lock) { if (automaticRenewal === renewal) { revision++; busy = false } }
+            completeRenewal(renewal, AbemaAutomaticRenewalResult.TEMPORARY_FAILURE)
+            if (!closed) publish()
+        }
+    }
+    private fun beginEmail(resetBrowserSession: Boolean, launch: (AbemaApprovalBrowserRequest) -> Boolean,
+        renewal: Renewal? = null) {
+        val admitted = runAction(AbemaAccountProgress.PREPARING) { run ->
+        if (renewal != null) {
+            if (!current(run) || !renewal.clock(elapsedMs(), wallMs())) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            if (elapsedMs() >= renewal.deadline) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+        }
         detachAccess(run)
         val inbox = emailInbox ?: throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
         val owner = binding.owner()
         if (!same(run, owner)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
         val now = elapsedMs()
-        if (now < 0 || now > Long.MAX_VALUE - 600000) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
-        val prepared = EmailLink(owner, UUID.randomUUID().toString().replace("-", ""), now + 600000, binding.store.revision())
+        val lifetime = if (renewal == null) 600000L else 90000L
+        if (now < 0 || now > Long.MAX_VALUE - lifetime) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+        if (renewal != null && (!renewal.clock(now, wallMs()) || automaticRenewal !== renewal ||
+            !renewalOriginalCurrent(renewal))) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+        val expires = renewal?.deadline ?: now + lifetime
+        if (now >= expires)
+            throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+        val prepared = EmailLink(owner, UUID.randomUUID().toString().replace("-", ""), expires,
+            renewal?.expected?.revision ?: binding.store.revision(), renewal)
         val prior = synchronized(lock) {
             if (!current(run)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             emailLink.also { emailLink = prepared }
         }
-        prior?.let { inbox.unregister(it.nonce); it.candidate = null }
+        prior?.let { inbox.unregister(it.nonce); it.candidate = null; it.renewal?.let { value -> completeRenewal(value, AbemaAutomaticRenewalResult.CANCELLED) } }
         inbox.register(prepared.nonce, owner.instance.id, owner.proof(), prepared.deadline) { candidate ->
             synchronized(lock) {
                 if (closed || emailLink !== prepared || !prepared.handedOff || elapsedMs() >= prepared.deadline) return@register
@@ -133,44 +198,86 @@ internal class AbemaAccountConnectionController(
             throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
         }
         post { if (current(run) && emailLink === prepared) {
+            if (renewal != null) {
+                if (!renewal.clock(elapsedMs(), wallMs())) { failEmail(prepared, AbemaAccountFailure.CANCELLED); return@post }
+                if (elapsedMs() >= prepared.deadline) { failEmail(prepared, AbemaAccountFailure.EXPIRED); return@post }
+            }
             capturedOwner = owner; prepared.handedOff = true; busy = false
             publish(AbemaAccountProgress.WAITING_APPROVAL)
             val request = AbemaApprovalBrowserRequest(owner.instance.id, owner.proof(), "https://abema.tv/account",
-                prepared.deadline, prepared.nonce, resetBrowserSession)
-            if (!launch(request)) failEmail(prepared, AbemaAccountFailure.TEMPORARY)
+                prepared.deadline, prepared.nonce, resetBrowserSession, automaticReturn = renewal != null)
+            val launched = if (renewal == null) launch(request) else runCatching { launch(request) }.getOrDefault(false)
+            if (!launched) failEmail(prepared, AbemaAccountFailure.TEMPORARY)
         } else inbox.unregister(prepared.nonce) }
         delay(prepared.deadline - elapsedMs()) {
             if (elapsedMs() >= prepared.deadline) failEmail(prepared, AbemaAccountFailure.EXPIRED)
         }
+        }
+        if (!admitted && renewal != null) completeRenewal(renewal, AbemaAutomaticRenewalResult.CANCELLED)
     }
     fun emailBrowserReturned() {
         val prepared = synchronized(lock) {
-            emailLink?.takeIf { !closed && it.handedOff && it.candidate != null }?.also { it.browserReturned = true }
+            emailLink?.takeIf { !closed && it.handedOff }?.also { if (it.candidate != null) it.browserReturned = true }
         } ?: return
+        if (prepared.candidate == null) {
+            if (prepared.renewal != null) failEmail(prepared, AbemaAccountFailure.NOT_VERIFIED)
+            return
+        }
         if (foreground && emailLink === prepared) finishEmailConnection()
     }
     fun finishEmailConnection() {
         val prepared = synchronized(lock) { emailLink?.takeIf { it.handedOff && it.candidate != null } } ?: return
         run(AbemaAccountProgress.CHECKING) { run ->
-            synchronized(lock) { prepared.browserReturned = false }
+            synchronized(lock) { prepared.browserReturned = false; prepared.validating = true }
             val grant = checkNotNull(prepared.candidate)
             val beganWall = wallMs()
+            val renewal = prepared.renewal
+            if (renewal != null && (!renewal.clock(elapsedMs(), beganWall) || !renewalOriginalCurrent(renewal)))
+                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            if (renewal != null && !abemaRenewalCandidateExtends(renewal.expected, grant, beganWall))
+                throw AbemaAccountException(AbemaAccountFailure.REFUSED)
             if (decodedAbemaGrant(grant.bearer, grant.userId, beganWall).expiresAtMs != grant.expiresAtMs)
                 throw AbemaAccountException(AbemaAccountFailure.REFUSED)
             fun grantCurrent(): Boolean {
                 val now = wallMs()
+                if (renewal != null && !renewal.clock(elapsedMs(), now)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                 if (now < beganWall || now >= grant.expiresAtMs) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
-                return emailLink === prepared && binding.store.usable(prepared.storeRevision)
+                return emailLink === prepared && binding.store.usable(prepared.storeRevision) &&
+                    (renewal == null || renewalOriginalCurrent(renewal))
             }
             val profile = request(run, prepared.owner, prepared.deadline, ::grantCurrent) { it.profile(grant.userId, grant.bearer) }
+            if (renewal != null && profile === AbemaAccountProfileResult.Inconclusive)
+                throw AbemaAccountException(AbemaAccountFailure.TEMPORARY)
             if (profile !is AbemaAccountProfileResult.Identity || profile.id != grant.userId)
                 throw AbemaAccountException(AbemaAccountFailure.REFUSED)
             val email = request(run, prepared.owner, prepared.deadline, ::grantCurrent) { it.emailRegistration(grant.userId, grant.bearer) }
+            if (renewal != null && email == AbemaAccountEmailResult.INCONCLUSIVE)
+                throw AbemaAccountException(AbemaAccountFailure.TEMPORARY)
             if (email != AbemaAccountEmailResult.REGISTERED) throw AbemaAccountException(AbemaAccountFailure.REFUSED)
             if (!session.acceptReplacement(grant, profile.id, prepared.storeRevision) {
-                    same(run, prepared.owner) && emailLink === prepared && elapsedMs() < prepared.deadline
-                }) throw AbemaAccountException(AbemaAccountFailure.STORAGE_FAILED)
-            post { if (current(run) && emailLink === prepared) { clearEmailLink(); publish() } }
+                    same(run, prepared.owner) && emailLink === prepared && elapsedMs() < prepared.deadline &&
+                        (renewal == null || automaticRenewal === renewal && renewal.clock(elapsedMs(), wallMs()))
+                }) throw AbemaAccountException(if (renewal != null && (!same(run, prepared.owner) || emailLink !== prepared ||
+                    !renewal.clock(elapsedMs(), wallMs())))
+                    AbemaAccountFailure.CANCELLED else AbemaAccountFailure.STORAGE_FAILED)
+            val replacement = if (renewal == null) null else binding.store.readSnapshot().also { saved ->
+                val value = saved.record
+                if (!same(run, prepared.owner) || emailLink !== prepared || !renewal.clock(elapsedMs(), wallMs()) ||
+                    elapsedMs() >= prepared.deadline || !binding.store.usable(saved.revision) || value == null ||
+                    value.grant.userId != grant.userId || value.grant.bearer != grant.bearer || value.grant.expiresAtMs != grant.expiresAtMs ||
+                    value.generation != checkNotNull(renewal.expected.record).generation + 1 || value.acceptedWallMs < beganWall)
+                    throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            }
+            post { if (current(run) && emailLink === prepared) {
+                if (renewal == null) clearEmailLink()
+                else if (elapsedMs() >= prepared.deadline) clearEmailLink(prepared, AbemaAutomaticRenewalResult.INTERACTION_REQUIRED)
+                else clearEmailLink(prepared, AbemaAutomaticRenewalResult.SUCCESS) {
+                    current(run) && elapsedMs() < prepared.deadline && binding.store.usable(checkNotNull(replacement).revision) &&
+                        session.status() == AbemaAccountStatus.CONNECTED && renewal.clock(elapsedMs(), wallMs()) &&
+                        wallMs() < grant.expiresAtMs && elapsedMs() < prepared.deadline
+                }
+                publish()
+            } }
         }
     }
     private fun failEmail(prepared: EmailLink, category: AbemaAccountFailure) {
@@ -179,20 +286,45 @@ internal class AbemaAccountConnectionController(
             revision
         }
         worker.execute {
-            if (!clearEmailLink(prepared) || !current(run) || synchronized(lock) { busy }) return@execute
+            if (!clearEmailLink(prepared, renewalFailure(category)) || !current(run) || synchronized(lock) { busy }) return@execute
             // Failure can preserve a validated prior grant, which requires a
             // protected owner check. Never evaluate it in a UI callback.
             session.failed(category)
             post { if (current(run) && emailLink == null) publish() }
         }
     }
-    private fun clearEmailLink(expected: EmailLink? = null): Boolean {
+    private fun clearEmailLink(expected: EmailLink? = null, result: AbemaAutomaticRenewalResult = AbemaAutomaticRenewalResult.CANCELLED,
+        successAllowed: () -> Boolean = { true }): Boolean {
         val prior = synchronized(lock) {
             if (expected != null && emailLink !== expected) return false
             emailLink.also { emailLink = null }
         } ?: return false
         emailInbox?.unregister(prior.nonce); prior.candidate = null
+        prior.renewal?.let { completeRenewal(it, result, successAllowed) }
         return true
+    }
+    private fun renewalOriginalCurrent(renewal: Renewal): Boolean {
+        val now = wallMs()
+        return automaticRenewal === renewal && renewal.clock(elapsedMs(), now) && binding.store.usable(renewal.expected.revision) &&
+            abemaRenewalSnapshotMatches(renewal.expected, binding.store.readSnapshot(), now) &&
+            binding.store.usable(renewal.expected.revision)
+    }
+    private fun renewalFailure(category: AbemaAccountFailure): AbemaAutomaticRenewalResult = when (category) {
+        AbemaAccountFailure.STORAGE_FAILED -> AbemaAutomaticRenewalResult.STORAGE_FAILURE
+        AbemaAccountFailure.CANCELLED -> AbemaAutomaticRenewalResult.CANCELLED
+        AbemaAccountFailure.REFUSED, AbemaAccountFailure.NOT_VERIFIED, AbemaAccountFailure.EXPIRED,
+        AbemaAccountFailure.TIME_LIMIT_REACHED -> AbemaAutomaticRenewalResult.INTERACTION_REQUIRED
+        else -> AbemaAutomaticRenewalResult.TEMPORARY_FAILURE
+    }
+    private fun completeRenewal(renewal: Renewal, result: AbemaAutomaticRenewalResult,
+        successAllowed: () -> Boolean = { true }) {
+        if (!renewal.finished.compareAndSet(false, true)) return
+        synchronized(lock) { if (automaticRenewal === renewal) automaticRenewal = null }
+        post {
+            val value = if (result == AbemaAutomaticRenewalResult.SUCCESS && !runCatching(successAllowed).getOrDefault(false))
+                AbemaAutomaticRenewalResult.CANCELLED else result
+            runCatching { renewal.completed(value) }
+        }
     }
     private fun prepare(run: Long, owner: AbemaCatalogRouteOwner): AbemaAccountChallenge {
         val prepared = binding.bootstrap(owner, { same(run, owner) }, { current(run) })
@@ -471,16 +603,20 @@ internal class AbemaAccountConnectionController(
         prior?.attachment?.close()
     }
     private class Cancellation(val bootstrap: AbemaAccountBootstrap?, val transport: AbemaAccountTransport?, val email: EmailLink?,
-        val access: SharedAccess?)
+        val access: SharedAccess?, val renewal: Renewal?)
     private fun revokeAction(retainHandoff: Boolean): Cancellation = synchronized(lock) {
         revision++; busy = false
         if (!retainHandoff || link?.handedOff != true) link = null
-        val removedEmail = emailLink?.takeUnless { retainHandoff && it.handedOff }?.also { emailLink = null }
-        Cancellation(bootstrap.get(), transport.get(), removedEmail, sharedAccess.getAndSet(null))
+        val removedEmail = emailLink?.takeUnless { retainHandoff && it.handedOff && (it.renewal == null || !it.validating) }
+            ?.also { emailLink = null }
+        val removedRenewal = automaticRenewal?.takeUnless { retainHandoff && emailLink?.renewal === it && emailLink?.handedOff == true }
+            ?.also { automaticRenewal = null }
+        Cancellation(bootstrap.get(), transport.get(), removedEmail, sharedAccess.getAndSet(null), removedRenewal)
     }
     private fun cancelResources(pending: Cancellation) {
         pending.access?.attachment?.close()
         pending.email?.let { emailInbox?.unregister(it.nonce); it.candidate = null }
+        pending.renewal?.let { completeRenewal(it, AbemaAutomaticRenewalResult.CANCELLED) }
         pending.bootstrap?.cancel()
         pending.transport?.let { active -> cancellation.execute { runCatching { active.cancelActiveRequest() } } }
     }

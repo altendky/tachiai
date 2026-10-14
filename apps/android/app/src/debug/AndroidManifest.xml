@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <service android:name=".provider.abema.account.AbemaAccountReadinessService" android:exported="false" />
+        <activity android:name=".provider.abema.account.AbemaAutomaticRenewalActivity"
+            android:theme="@style/Theme.Tachiai.Prototype" android:exported="false"
+            android:excludeFromRecents="true" />
         <activity
             android:name=".feature.connections.AbemaShareActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

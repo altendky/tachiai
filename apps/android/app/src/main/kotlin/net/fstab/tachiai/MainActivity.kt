@@ -56,6 +56,11 @@ private const val EXTRA_NATIVE_ACCESS_PROBE = "net.fstab.tachiai.extra.NATIVE_AC
 
 class MainActivity : ComponentActivity() {
     private val debugLaunch = DebugLaunchState()
+    private val accountReadiness by lazy { net.fstab.tachiai.feature.connections.startupAccountReadiness(this) }
+
+    override fun onResume() { super.onResume(); accountReadiness?.onResume() }
+    override fun onPause() { accountReadiness?.onPause(); super.onPause() }
+    override fun onDestroy() { accountReadiness?.close(); super.onDestroy() }
 
     private fun showNativeAccessMenu() = nativeAccessAtStartup(
         debug = BuildConfig.DEBUG,

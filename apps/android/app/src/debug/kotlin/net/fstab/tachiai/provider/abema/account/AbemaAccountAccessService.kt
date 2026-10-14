@@ -95,6 +95,11 @@ internal object AbemaAccountAccessIpc {
 internal object AndroidAbemaAccountAccessOwners {
     private val owners = ConcurrentHashMap<String, AbemaAccountAccessOwner>()
     private val blocked = ConcurrentHashMap.newKeySet<String>()
+    fun invalidate(instanceId: String, ownerProof: String) {
+        // A durably renewed account needs a fresh profile proof for surviving
+        // consumers. Retain the owner and any cleanup poison; never replace it.
+        owners["$instanceId|$ownerProof"]?.invalidate()
+    }
     fun poison(request: AbemaAccountAccessIpc.Request) { blocked.add("${request.instance}|${request.proof}") }
     fun attach(service: Service, request: AbemaAccountAccessIpc.Request): AbemaAccountAccessOwner.Attachment {
         return attach(service, request.instance, request.proof)

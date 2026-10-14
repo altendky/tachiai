@@ -87,6 +87,9 @@ import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.androidAbemaEpisodePlaybackOwnership
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
+import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
+import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
+import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -137,6 +140,10 @@ open class PrototypeActivity : ComponentActivity() {
     private var routePreparation: RoutePreparation? = null
     private var cachedRun: CachedViewerCleanupCoordinator.Run? = null
     private var selection: ConfiguredPlaybackSelection? = null
+    private val accountReadiness by lazy { AbemaAccountReadiness(this) }
+    private var checkingAccount = false
+    private var accountCheckRevision = 0L
+    private var pendingAccountSelection: ConfiguredFeedAssignments? = null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
     private var providerInstances by mutableStateOf(defaultProviderInstances())
@@ -308,6 +315,38 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun watch(assignments: ConfiguredFeedAssignments) {
+        if (checkingAccount || !resumed.get() || isFinishing || isDestroyed) return
+        if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
+        val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
+            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema,
+            allowConfiguredAbemaSlots = useCachedAbema)
+        if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
+            showPicker(configuredSelectionMessage(resolved.reason)); return
+        }
+        val ids = (resolved as ConfiguredPrototypeSelectionResult.Ready).selection.feeds
+            .filter { it.service == PrototypeService.ABEMA }.mapNotNull { it.resolve(providerInstances)?.id }.distinct()
+        if (ids.isEmpty()) { watchReady(assignments); return }
+        val check = ++accountCheckRevision
+        checkingAccount = true
+        showPicker("Checking the saved ABEMA account…")
+        accountReadiness.ensure(ids) { result ->
+            if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@ensure
+            checkingAccount = false
+            when (result) {
+                AbemaAccountReadinessResult.READY -> { pendingAccountSelection = null; watchReady(assignments) }
+                AbemaAccountReadinessResult.HANDOFF -> {
+                    pendingAccountSelection = assignments
+                    showPicker("Renewing the remembered ABEMA account…")
+                }
+                else -> {
+                    pendingAccountSelection = null
+                    showPicker(abemaAccountReadinessMessage(result))
+                }
+            }
+        }
+    }
+
+    private fun watchReady(assignments: ConfiguredFeedAssignments) {
         pickerAssignments = assignments
         updateRecoveryState()
         if (recoveryState.incident != null) {
@@ -968,6 +1007,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume(); resumed.set(true)
+        accountReadiness.onResume()
         recoveryState.addObserver(recoveryObserver)
         handler.post { updateRecoveryState() }
         resumeMessage?.let { resumeMessage = null; showPicker(it) }
@@ -994,6 +1034,10 @@ open class PrototypeActivity : ComponentActivity() {
                     sourceSetups = it.streams; providerInstances = it.instances; legacyQualityDefaults = it.qualities
                     configuredSources = it.sources; qualityDefaults = it.sources.associate { source -> source.choice to source.quality }
                     setupReady = true
+                    pendingAccountSelection?.let { assignments ->
+                        pendingAccountSelection = null
+                        watch(assignments)
+                    }
                 }, onFailure = {
                     if (it !is ObsoleteSourceSetupException) diagnostics.report(FailureStage.PROVIDER_SETUP_READ, it)
                     if (it is ObsoleteSourceSetupException) {
@@ -1024,6 +1068,8 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
     override fun onPause() {
+        accountReadiness.onPause()
+        accountCheckRevision++; checkingAccount = false
         recoveryState.removeObserver(recoveryObserver)
         dismissRecoveryDialog()
         setupRevision++
@@ -1032,6 +1078,8 @@ open class PrototypeActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        accountReadiness.close()
+        pendingAccountSelection = null
         recoveryState.removeObserver(recoveryObserver)
         dismissRecoveryDialog()
         resumed.set(false); dispose()

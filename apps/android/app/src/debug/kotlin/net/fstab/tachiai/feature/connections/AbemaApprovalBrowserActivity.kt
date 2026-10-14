@@ -41,6 +41,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         internal const val DEADLINE = "DEADLINE_ELAPSED_MS"
         internal const val EMAIL_NONCE = "EMAIL_CONNECTION_NONCE"
         internal const val RESET_BROWSER_SESSION = "RESET_BROWSER_SESSION"
+        internal const val AUTOMATIC_RETURN = "AUTOMATIC_RETURN"
         private const val LOG_TAG = "TachiaiAbemaApproval"
         private val occupied = AtomicBoolean()
         private val poisoned = AtomicBoolean()
@@ -79,6 +80,8 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
     private var loaded = false
     @Volatile private var trustedEmailPage = false
     @Volatile private var emailCandidate: AbemaAccountGrant? = null
+    private var automaticCandidate: AbemaAccountGrant? = null
+    private val automaticReturn = AbemaApprovalAutomaticReturn()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,7 +95,13 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         val parsed = runCatching { AbemaApprovalBrowserRequest(
             checkNotNull(intent.getStringExtra(INSTANCE_ID)), checkNotNull(intent.getStringExtra(OWNER_PROOF)),
             checkNotNull(intent.getStringExtra(VERIFICATION_URI)), intent.getLongExtra(DEADLINE, -1),
-            intent.getStringExtra(EMAIL_NONCE), intent.getBooleanExtra(RESET_BROWSER_SESSION, false)) }.getOrNull()
+            intent.getStringExtra(EMAIL_NONCE), intent.getBooleanExtra(RESET_BROWSER_SESSION, false),
+            if (intent.hasExtra(AUTOMATIC_RETURN)) {
+                @Suppress("DEPRECATION")
+                val value = intent.extras?.get(AUTOMATIC_RETURN)
+                require(value is Boolean)
+                value
+            } else false) }.getOrNull()
         intent.removeExtra(VERIFICATION_URI)
         if (parsed == null || !parsed.current(SystemClock.elapsedRealtime()) || !occupied.compareAndSet(false, true)) {
             finishDirect(); return
@@ -100,7 +109,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         claimed = true; request = parsed
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { closeBrowser(true) }
+            override fun handleOnBackPressed() { closeBrowser(!request.automaticReturn) }
         })
         try {
             if (!profileConfigured) {
@@ -117,8 +126,8 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             status = TextView(this).apply { text = "Preparing ABEMA’s browser through the selected connection…"; setPadding(16, 16, 16, 16) }
             column.addView(status)
             column.addView(Button(this).apply {
-                text = "Return to Tachiai"
-                setOnClickListener { closeBrowser(true) }
+                text = if (request.automaticReturn) "Cancel" else "Return to Tachiai"
+                setOnClickListener { closeBrowser(!request.automaticReturn) }
             })
             val browser = WebView(this)
             view = browser
@@ -257,7 +266,9 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                         ready = true
                         Log.i(LOG_TAG, "APPROVAL_ROUTE_PROXY_APPLIED")
                         if (resumed) resumeBrowser()
-                        status.text = if (request.emailNonce != null)
+                        status.text = if (request.automaticReturn)
+                            "ABEMA will return to Tachiai automatically after account confirmation. Sign in here if requested."
+                            else if (request.emailNonce != null)
                             "If already signed in, stay on Account management and return to Tachiai. Otherwise choose Switch account → Email address and sign in, then return."
                             else "Complete approval on ABEMA’s pages, then return to Tachiai."
                     })
@@ -308,6 +319,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             } else { Log.i(LOG_TAG, "HTTP_AUTH_REFUSED"); handler.cancel() }
         }
         override fun onReceivedError(browser: WebView, resource: WebResourceRequest, error: WebResourceError) {
+            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { closeBrowser(false); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_NETWORK_ERROR_${error.errorCode.coerceIn(-16, 0)}")
             if (resource.isForMainFrame) {
@@ -316,6 +328,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             }
         }
         override fun onReceivedHttpError(browser: WebView, resource: WebResourceRequest, response: WebResourceResponse) {
+            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { closeBrowser(false); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_HTTP_ERROR_${response.statusCode.coerceIn(100, 599)}")
             if (resource.isForMainFrame) {
@@ -330,6 +343,10 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
     private fun allowed(resource: WebResourceRequest) = if (resource.isForMainFrame)
         AbemaApprovalBrowserPolicy.allowedNavigation(resource.url.toString())
         else AbemaApprovalBrowserPolicy.allowedResource(resource.url.toString(), resource.method)
+    private fun fatalAutomaticResource(resource: WebResourceRequest): Boolean {
+        return abemaAutomaticReturnFatalResource(resource.isForMainFrame, resource.url.toString(),
+            resource.method, trustedEmailPage, emailCandidate?.userId)
+    }
     private fun intercept(resource: WebResourceRequest): WebResourceResponse? {
         if (!allowed(resource)) {
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST) Log.i(LOG_TAG, "GATEWAY_RESOURCE_REFUSED")
@@ -344,7 +361,28 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             if (origins.size <= 1 && origins.all { it == "https://abema.tv" }) {
                 val candidate = parseAbemaEmailCandidate(resource.url.toString(), resource.method,
                     resource.requestHeaders, System.currentTimeMillis())
-                if (currentOnWorker() && trustedEmailPage) emailCandidate = candidate
+                val admitted = currentOnWorker()
+                if (admitted && trustedEmailPage) {
+                    if (request.automaticReturn) {
+                        // Worker owner checks occur outside this monitor. Only
+                        // scalar admission and the first candidate are captured
+                        // here, so parallel identical requests cannot replace it.
+                        val queued = synchronized(automaticReturn) {
+                            if (automaticReturn.queue(current(), trustedEmailPage, candidate != null)) {
+                                emailCandidate = candidate
+                                true
+                            } else false
+                        }
+                        if (!queued) return null
+                        if (!main.post {
+                            val accepted = synchronized(automaticReturn) {
+                                automaticReturn.claim(current(), trustedEmailPage, candidate != null && emailCandidate === candidate)
+                                    .also { if (it) automaticCandidate = candidate }
+                            }
+                            closeBrowser(accepted)
+                        }) automaticReturn.cancel()
+                    } else emailCandidate = candidate
+                }
             }
         }
         if (resource.url.host !in AbemaApprovalBrowserPolicy.REGION_HOSTS) return null
@@ -363,7 +401,8 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             is AbemaApprovalRegionResult.Reply -> {
                 Log.i(LOG_TAG, when (result.status) { 200 -> "REGION_HTTP_200"; 403 -> "REGION_HTTP_403"; else -> "REGION_HTTP_OTHER" })
                 if (result.status == 403) main.post {
-                    if (current()) status.text = "ABEMA rejected this route’s region. Return to Tachiai."
+                    if (request.automaticReturn) closeBrowser(false)
+                    else if (current()) status.text = "ABEMA rejected this route’s region. Return to Tachiai."
                 }
                 WebResourceResponse("text/plain", "UTF-8", result.status, "Provider region response",
                     result.headers, ByteArrayInputStream(ByteArray(0)))
@@ -386,6 +425,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         ServiceWorkerController.getInstance().serviceWorkerWebSettings.blockNetworkLoads = false
         view?.onResume(); view?.resumeTimers()
         if (!loaded) { loaded = true; view?.loadUrl(request.verificationUri) }
+        if (request.automaticReturn) status.text = "ABEMA will return to Tachiai automatically after account confirmation. Sign in here if requested."
     }
     override fun onResume() {
         super.onResume(); resumed = true
@@ -404,6 +444,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         super.onPause()
     }
     private fun closeBrowser(returnRequested: Boolean) {
+        if (!returnRequested) automaticReturn.cancel()
         if (ending || !claimed) return
         ending = true; ready = false
         trustedEmailPage = false
@@ -444,15 +485,18 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                     main.removeCallbacks(clearDeadline)
                     if (!confirmed || poisoned.get()) { unconfirmed(); return@post }
                     occupied.set(false)
-                    val returning = returnRequested && loaded && request.current(SystemClock.elapsedRealtime())
+                    val returning = returnRequested && loaded && request.current(SystemClock.elapsedRealtime()) &&
+                        (!request.automaticReturn || automaticReturn.deliveryAllowed(confirmed))
                     val nonce = request.emailNonce
-                    val candidate = emailCandidate
+                    val candidate = if (request.automaticReturn) automaticCandidate else emailCandidate
+                    automaticCandidate = null
                     emailCandidate = null
                     if (returning && nonce != null && candidate != null) {
                         status.text = "Returning the protected ABEMA account connection…"
                         AndroidAbemaEmailGrantHandoffClient(applicationContext).deliver(nonce, request.instanceId,
                             request.ownerProof, request.deadlineElapsedMs, candidate) { delivered ->
-                            if (delivered) setResult(RESULT_OK)
+                            if (delivered && (!request.automaticReturn || !finishedAfterCleanup &&
+                                request.current(SystemClock.elapsedRealtime()) && automaticReturn.deliveryAllowed(confirmed))) setResult(RESULT_OK)
                             finishDirect()
                         }
                     } else {
@@ -463,7 +507,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             }
         }
     }
-    private fun finishDirect() { emailCandidate = null; trustedEmailPage = false; finishedAfterCleanup = true; super.finish() }
+    private fun finishDirect() { automaticReturn.cancel(); automaticCandidate = null; emailCandidate = null; trustedEmailPage = false; finishedAfterCleanup = true; super.finish() }
     override fun finish() { if (finishedAfterCleanup || !claimed) finishDirect() else closeBrowser(false) }
     override fun onDestroy() {
         if (claimed && !ending) closeBrowser(false)

@@ -1640,6 +1640,66 @@ shared-signed test APK reinstalled and the normal launcher restored. All 20 save
 files matched the same private baseline across app/test updates, synthetic guards,
 both actual attempts and final restoration.
 
+### Channel preparation stage diagnostic
+
+A separate account-backed source-only fixture now opts into eight closed channel
+stages at the existing request and guard boundaries: CHANNEL_REQUEST,
+CHANNEL_RESPONSE, CHANNEL_ENVELOPE_REFUSED, CHANNEL_SELECTION_REFUSED,
+CHANNEL_UNAVAILABLE, CHANNEL_DRM_REFUSED, CHANNEL_PLAYLIST_REFUSED and
+CHANNEL_ALTERNATE_REFUSED. Request and response distinguish the channel fetch
+from earlier token traffic. The earlier CONTENT / HTTP 200 snapshot can precede
+the channel fetch, so it does not establish a successful channel response.
+The option defaults off; request count, guard order, predicates, provider source
+selection and ordinary manifest/playback acceptance remain unchanged.
+
+The recorder freezes the first parsed failure snapshot. A malformed callback
+permanently withholds any prefix. The separate fixture may report a safe refusal
+only after retained ACCOUNT admission, capture within the original observation
+deadline, unchanged protected records and route owner, sticky clock checks and
+confirmed complete cleanup. It retains the source-only stop before native
+player/CDM/license/segments. Diagnostic completion means an observation was
+released; it supplies no manifest, entitlement, media-occurrence or playback
+acceptance. The existing manifest-only fixture still requires an actual initial
+manifest, and the ordinary native fixtures still require frame and movement.
+No raw response, URL, provider field, identifier or exception is exported.
+
+The dedicated instrumentation gate is
+`tachiaiReadOnlyAbemaChannelPreparation=true`, with
+`tachiaiRequireSavedAbemaAccount=true` and one canonical public Schedule tuple
+in `tachiaiAbemaManifestSlotIdentity`. It is exclusive with the existing actual
+playback and manifest-only gates and skips before WebView APIs by default.
+
+On 2026-10-14, the fresh Schedule attempt failed its response checks after
+27.562 seconds, with no released candidate or account/preparation refusal.
+No Schedule retry followed. A separate diagnostic reproduced channel preparation
+using the same previously returned public `abema-anime` channel and tuple from
+the earlier observation; the tuple was not asserted to be currently airing.
+The diagnostic passed its observation gates in 12.156 seconds, zero skips:
+ACCOUNT, CHANNEL_UNAVAILABLE, HTTP 200, UNKNOWN, 46 modules, last module 42204.
+The underlying outcome remained PLAYBACK_REFUSED. This identifies the original
+`viewingOpened !== true` check, without distinguishing an absent, false, null or
+other value. No raw field was exported and no manifest/native playback began.
+The last-module marker is not an exception stack: successful nested loads can
+leave that enum module recorded during later channel requests and guards.
+
+Both actual attempts used persistent tachiai-dev, Android 16/API 36, x86-64,
+WebView 133.0.6943.137 and the saved Windscribe route. All 20 private files stayed
+unchanged across updates, provider-free guards and both actual attempts. The
+channel attempt confirmed ACCOUNT, unchanged owner and records, FINISHED cleanup,
+no pending/failed session cleanup, confirmed teardown and no busy WebView route.
+Exit country, actual XML, entitlement, exact live-slot coverage, native playback
+and physical-device behavior were not established. No provider retry, alternative
+candidate, selection write or source fallback followed.
+
+Verification passed 103 Node cases, 2,788 JVM tests in 304 reports with zero
+failures, errors or skips, lint, release isolation, instrumentation compilation,
+assemblies, shared certificate checks, scoped hooks/docs and independent review.
+An initial incorrect device selector ran only 14 provider-free tests; the corrected
+verified suite passed all 18, zero skips, in 1.680 seconds. The ordinary test
+manifest was restored byte-identically before rebuilding and reinstalling the
+shared-signed ordinary test APK and returning to the normal launcher. #193 remains
+open; these diagnostics neither enable nor establish exact live playback.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

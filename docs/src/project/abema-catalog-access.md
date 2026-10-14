@@ -1509,6 +1509,77 @@ installed previous build. A non-destructive app update on verified persistent
 byte-for-byte and restored the normal launcher. This check used no provider
 browser or playback operation; positive Chase playback remains unobserved.
 
+### Fresh Chase eligibility observation
+
+The separate test-only `abemaReadOnlyChaseEligibility` opt-in uses the production
+`subscriptionProfile` operation once on the retained account's captured route.
+The owned account wrapper forwards this operation through its existing request,
+cancellation and route/HTTP cleanup boundary.
+It retains the profile fixture's verified persistent AVD, ordinary app process,
+explicit provider instance, read-only stores, original observation and cleanup
+budgets, foreground, owner, grant, clock and unchanged-record gates. The original
+profile-shape opt-in remains separate; both modes cannot run in one invocation.
+
+Only a matching identity and complete strict response can publish the typed Chase
+state, a claim count capped at 1,000 and `headroom70s`. The Boolean reports whether
+the earliest active claim expiry has at least 70 seconds remaining at publication.
+Expiry values and authority IDs remain private. Publication rechecks expiry and
+the highest observed publication wall time; expiry or rollback permanently
+withholds that observation. Actual input/disconnect, route/backend, worker and
+lifecycle cleanup must all be confirmed before a summary escapes.
+
+ABSENT, EMPTY, NO_AFFIRMATIVE_AUTHORITY and UNVERIFIED are distinct capability
+observations. They do not establish that the account has no subscription or that
+playback succeeded. A rejected, inconclusive or mismatched profile cannot publish
+a negative eligibility tuple. Local unavailable authorization makes zero provider
+requests. Its Chase-only summary adds a fixed local reason separating storage or
+revision refusal, missing records, clock/acceptance checks, elapsed saved expiry,
+decoder refusal and stored/decoded expiry mismatch. No token, identity or expiry
+value is exported to diagnose that local refusal.
+Even VERIFIED with sufficient headroom is not a retained playback grant:
+an actual exact Chase run must obtain fresh matching rights, source and session
+binding independently. This fixture does not select a broadcast, invoke playback,
+reconnect, renew authorization or write saved account, route or source records.
+
+On 2026-10-14, the first opted-in attempt reported local unavailable authorization
+without any provider request. Its refined follow-up identified elapsed saved
+expiry in 0.137 seconds; the record was byte-identical to the earlier profile
+observation whose token-derived expiry had passed consistency checks. Normal
+Connect reused the remembered account-management page through the saved Windscribe
+route. Returning automatically completed native validation without another email
+code, account switch or browser reset. Only the expected account record changed;
+the other saved records stayed intact. This observed reconnect is not silent
+credential renewal.
+
+The first post-reconnect eligibility run failed after 2.922 seconds because the
+owned account wrapper inherited the interface's inconclusive default instead of
+forwarding the subscription operation. No profile HTTP request followed that
+default. The added delegation uses the same ownership and cleanup path as the
+existing identity operation, and a provider-free regression now exercises the
+actual wrapper rather than only its inner HTTP transport.
+
+After that correction, one actual saved-account observation passed, zero skips,
+in 5.096 seconds on persistent `tachiai-dev`, Android 16/API 36, x86-64. It made
+exactly one production profile GET through the captured Windscribe route, returned
+HTTP 200 and matching identity, and passed strict JSON, original clock/owner/grant,
+worker, lifecycle, actual HTTP/route cleanup and protected-record gates. The closed
+result was **ABSENT**, zero active Chase claims and false 70-second headroom.
+This response supplies no affirmative Chase authority; it does not establish that
+the account has no subscription. No Schedule candidate or Chase playback request
+followed it. Actual positive Chase playback and exact channel-backed live
+occurrence remain unverified under #193.
+
+All 31 provider-free observer/admission guards passed, zero skips, in 2.494 seconds.
+Full Android verification covered 2,782 JVM cases with zero failures or skips,
+lint, release isolation, instrumentation compilation and assemblies. Both APKs
+matched the shared debug signer; scoped hooks/docs and independent source review
+passed. Non-destructive app/test updates preserved authorization and configuration.
+The existing diagnostic journal was the only other updated file, and its fixed
+schema validated. All 20 files were byte-identical across the final real profile
+experiment against its current baseline; ordinary instrumentation and the normal
+launcher were restored. Exit country, phone/TV behavior and native playback were
+not measured by this profile check.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

@@ -1,5 +1,50 @@
 # Native playback access experiments
 
+## Continuous broadcast live mode — 2026-10-14
+
+The user chose to open an airing broadcast at its channel's live edge and keep
+that channel playing across later broadcasts. The configured broadcast remains
+unchanged; ended catch-up retains exact slot binding. The implementation pins
+an explicit linear binding to the original channel/slot tuple, uses the channel
+license identity and live native manifest/DRM transition policy, and refuses a
+static or unseekable initial live timeline. Unused Premium/Chase candidates do
+not authorize or shorten linear playback. Account, owner, route, foreground,
+original preparation/playback deadlines and cleanup checks remain in force.
+The modern source-only diagnostic still cannot exchange a license or play.
+
+Verification passed 125 Node cases, 2,805 JVM tests with zero failures/errors/
+skips, Android lint/isolation/instrumentation compilation and both APK assemblies
+with the shared debug signer. Forty-one provider-free emulator checks passed
+with zero skips, including actual coordinator retention on uncertain listener
+removal, paused live-default startup and quantization-safe SDK period movement.
+The first Android build caught an explicit-port linear binding mismatch; the
+new binding now rejects that port without broadening the historical CDN policy.
+
+On persistent tachiai-dev, Android 16/API 36, x86-64, WebView
+133.0.6943.137, the user's remembered-browser Connect/Return replaced only the
+native account record. A regular graceful cold restart preserved all 20
+protected records. One owning saved-route Schedule lookup returned a current
+public lead, `abema-anime/9FYQxbMkNrS6Zu`, with no account failure. The saved
+ABEMA route was Windscribe; the actual exit country was not independently
+observed.
+
+One muted ACCOUNT native continuous-slot check failed in 47.227 seconds before
+source binding/native creation. Its final outcome was PLAYBACK_REFUSED, with
+resolved-linear, frame and movement all false. Closed helper timestamps ended
+in SLOT_REGION with HTTP 200 followed by HTTP 0. The sequence is consistent with
+the original preparation deadline expiring while another region-stage request
+was pending; the terminal timer/category was not retained, so its exact cause
+is unconfirmed. This is not native licensing or playback success and was not
+retried. The coordinator finished, session/listener/worker cleanup was confirmed,
+and the route owner and all protected records were unchanged. The ordinary test
+manifest/APK and launcher were restored after the observation.
+
+Actual continuous native license/frame/movement, a real broadcast-end
+transition, sustained use, positive Premium/Chase authority and physical-device
+behavior remain unverified. Account renewal is tracked separately in
+[issue #242](https://github.com/altendky/tachiai/issues/242); authentication work
+does not extend the native license or playback budgets.
+
 ## ABEMA public player/licensing investigation — 2026-10-06
 
 Read-only static inspection of anonymous ABEMA News HTML and the public

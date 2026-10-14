@@ -1,5 +1,26 @@
 # Product-flow prototype
 
+## ABEMA broadcast live mode — October 14
+
+Opening a currently airing configured broadcast selects its continuous live
+channel after fresh matching broadcast metadata and time checks. The viewer
+starts at the live edge and keeps the channel playing when that broadcast ends;
+the saved broadcast, provider instance, route and preferences remain intact.
+Future broadcasts refuse playback, while ended selections use exact catch-up
+with their separate Free/Premium eligibility checks. Chase remains a separate
+capability; linear live playback does not consume Chase authority.
+
+The adapter pins the resolved mode and channel source/license identity for the
+session. It retains account expiry, owner, route, foreground, deadline and cleanup
+checks. ACCOUNT linear preparation uses the verified modern region/device/channel
+context; a genuine Guest selection retains the existing legacy channel path.
+An account failure does not fall back to Guest. The source-only diagnostic still
+cannot create a player or exchange a license. Actual device verification of the
+new live mode is recorded separately in the native-access evidence.
+The first real native check was refused during region preparation before a
+player was created; frame/movement and a broadcast-end transition remain
+unverified. The implemented mode is not a device playback success claim.
+
 ## Audio-first adaptation follow-up
 
 The agreed first step is correct native transfer measurement, independent

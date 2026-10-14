@@ -9,6 +9,11 @@
 - The product model is generic multi-stream presentation, not a hard-coded
   ABEMA/Twitch or sumo client.
 - Both live and replay sources are in scope.
+- On 2026-10-14 the user chose continuous live playback for a currently airing
+  ABEMA broadcast selection: start its channel at the live edge and continue
+  across later broadcasts. Keep the saved broadcast resource and preferences.
+  Ended catch-up remains bound to the selected broadcast. Linear playback does
+  not claim exact media occurrence coverage or require Chase authority.
 - Product terminology is **route / provider / stream / feed**: a route is the
   network path (saved configuration is not proof of an active connection), a
   provider supplies selectable live/recorded streams, and a feed is an active

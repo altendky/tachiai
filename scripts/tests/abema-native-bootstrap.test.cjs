@@ -51,6 +51,150 @@ const chaseSlot = () => ({ ...freeSlot(), endAt: futureSeconds,
   flags: { chasePlay: true }, timeshiftFreeEndAt: futureSeconds,
   broadcastRegionPolicies: { linear: 1, timeshift: 1 }, chasePlayFeatureAuthorityIds: ['CHASE_AUTHORITY'],
   chasePlayback: { dash: 'https://ds-vod-abematv.akamaized.net/growing/fixture-slot/manifest.mpd' } });
+const continuousSlotOptions = extra => ({ configuredSlot: true, continuousSlotPlayback: true,
+  account: savedAccount(), forbidGuest: true,
+  slot: { id: 'fixture-slot', channelId: 'sumo', startAt: fixtureNow / 1000 - 600,
+    endAt: fixtureNow / 1000 + 1, flags: {}, broadcastRegionPolicies: { linear: 1 } },
+  channels: { channels: [configuredLinearChannel('sumo')] }, ...extra });
+
+test('ongoing selected broadcast opens modern continuous channel without Chase metadata and binds channel license', async () => {
+  const channel = configuredLinearChannel('sumo'); delete channel.viewingOpened;
+  const options = continuousSlotOptions({ channels: { channels: [channel] } });
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  assert.deepEqual(value.requests.map(({ uri }) => uri.pathname), ['/v1/media/token', '/now-on-air/abema-news',
+    '/v1/media/slots/fixture-slot', '/v1/media/deviceTypeId', '/v1/channels']);
+  assert.equal(value.requests[4].uri.origin, 'https://api.p-c3-e.abema-tv.com');
+  assert.equal(value.requests[4].request.headers, undefined);
+  assert.equal(new Headers(value.requests[3].request.headers).get('Authorization'), 'Bearer ACCOUNT_BEARER');
+  const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+  assert.deepEqual(Object.keys(binding), ['channelId', 'slotId', 'uri', 'linear']);
+  assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot'); assert.equal(binding.linear, true);
+  assert.equal(new URL(binding.uri).pathname, '/channel/sumo/manifest.mpd');
+  assert.equal(new URL(binding.uri).searchParams.get('dtid'), 'SYNTHETIC_DEVICE');
+  assert.equal(value.evaluate('observed.legacy[0].sourceParam.contentId'), 'sumo');
+  options.nowMs = fixtureNow + 2000;
+  assert.equal(value.evaluate(`window['${name}'].slotBinding()`), JSON.stringify(binding));
+  assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+  const license = value.requests.at(-1);
+  assert.equal(license.uri.pathname, '/abematv-dash');
+  assert.equal(license.uri.searchParams.get('ct'), 'channel'); assert.equal(license.uri.searchParams.get('cid'), 'sumo');
+  assert.equal(license.uri.searchParams.get('t'), 'TEST_MEDIA');
+  assert.equal(value.evaluate('observed.operation[0].user'), 'ACCOUNT_USER');
+  assert.ok(value.take()); assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+  assert.equal(value.persistentStorageTouches(), 0);
+});
+
+test('genuine guest continuous slot keeps legacy channel preparation without modern device or account fallback', async () => {
+  const value = fixture(continuousSlotOptions({ account: undefined, forbidGuest: false }));
+  value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  assert.equal(value.requests[0].uri.pathname, '/api/auth/login/guest');
+  const channels = value.requests.find(({ uri }) => uri.pathname === '/v1/channels');
+  assert.equal(channels.uri.origin, 'https://api.abema.io');
+  assert.equal(value.requests.some(({ uri }) => uri.pathname === '/v1/media/deviceTypeId'), false);
+  assert.equal(JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).linear, true);
+  assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+  assert.equal(value.evaluate('observed.operation[0].user'), 'TEST_USER'); assert.ok(value.take());
+});
+
+test('continuous intent never switches a wrong tuple upcoming or restricted broadcast into channel playback', async () => {
+  for (const change of [slot => { slot.id = 'other'; }, slot => { slot.channelId = 'other'; },
+    slot => { slot.startAt = fixtureNow / 1000 + 0.5; }, slot => { slot.startAt = slot.endAt; },
+    slot => { slot.startAt = fixtureNow / 1000 + 1; slot.endAt += 1; },
+    slot => { slot.flags.paused = true; }, slot => { slot.flags = false; },
+    slot => { slot.payperview = {}; }, slot => { delete slot.broadcastRegionPolicies; },
+    slot => { slot.broadcastRegionPolicies.linear = 2; }]) {
+    const options = continuousSlotOptions(); change(options.slot);
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.some(({ uri }) => ['/v1/channels', '/v1/media/deviceTypeId'].includes(uri.pathname)), false);
+    assert.equal(value.evaluate('observed.legacy.length'), 0); assert.equal(value.begin(challenge), 'REFUSED');
+  }
+  for (const field of ['payperview', 'payPerView']) {
+    const options = continuousSlotOptions(); options.slotResponse = { slot: options.slot, [field]: {} };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.some(({ uri }) => uri.pathname === '/v1/channels'), false);
+  }
+});
+
+test('continuous linear never activates unused Premium or Chase lifetimes including candidates expired before slot response', async () => {
+  for (const expiry of [fixtureNow - 1, fixtureNow + 1000]) {
+    const account = { ...slotPremiumAccount(expiry), slotChase: slotChaseAccount(expiry).slotChase };
+    const options = continuousSlotOptions({ account, deferSlot: true });
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitForRequests(value, 3);
+    options.nowMs = fixtureNow + 2000; options.slot.endAt = fixtureNow / 1000 + 10;
+    value.release(); await waitFor(value, 'READY'); options.nowMs = fixtureNow + 11000;
+    assert.equal(JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).linear, true);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
+  }
+});
+
+test('continuous intent leaves ended ordinary Free Premium and default Chase behavior unchanged', async () => {
+  for (const account of [savedAccount(), slotPremiumAccount()]) {
+    const slot = freeSlot(); if (account.slotPremium) slot.flags.timeshiftFree = false;
+    const value = fixture(continuousSlotOptions({ account, slot }));
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.deepEqual(Object.keys(binding), ['channelId', 'slotId', 'uri']);
+    assert.equal(new URL(binding.uri).pathname, '/occurrence/fixture-slot/manifest.mpd');
+    assert.equal(value.requests.some(({ uri }) => uri.pathname === '/v1/channels'), false);
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    assert.equal(value.requests.at(-1).uri.searchParams.get('ct'), 'slot'); assert.ok(value.take());
+  }
+  const value = fixture(continuousSlotOptions({ continuousSlotPlayback: false, slot: chaseSlot(), account: slotChaseAccount() }));
+  value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  assert.equal(JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).chase, true);
+  assert.equal(value.requests.some(({ uri }) => uri.pathname === '/v1/channels'), false); value.stop();
+  const expired = fixture(continuousSlotOptions({ slot: freeSlot(), account: slotPremiumAccount(fixtureNow - 1) }));
+  expired.startSlot('sumo/fixture-slot'); await waitFor(expired, 'FAILED');
+  assert.equal(expired.requests.some(({ uri }) => uri.pathname === '/v1/channels'), false);
+});
+
+test('continuous intent is strict scoped and immutable after initialization', async () => {
+  for (const continuousSlotPlayback of [null, 0, 1, 'true', {}, []]) {
+    const value = fixture(continuousSlotOptions({ continuousSlotPlayback })); value.startSlot('sumo/fixture-slot');
+    assert.equal(value.requests.length, 0); assert.equal(value.status(), undefined);
+  }
+  for (const extra of [{ channelDiagnostic: true }, { modernChannelContext: true }]) {
+    const value = fixture(continuousSlotOptions(extra)); value.startSlot('sumo/fixture-slot');
+    assert.equal(value.requests.length, 0); assert.equal(value.status(), undefined);
+  }
+  for (const start of [value => value.startChannel('sumo'), value => value.start(true, 'fixture-episode')]) {
+    const value = fixture(continuousSlotOptions()); start(value); assert.equal(value.requests.length, 0);
+  }
+  const options = continuousSlotOptions({ deferSlot: true }); const value = fixture(options);
+  value.startSlot('sumo/fixture-slot'); await waitForRequests(value, 3);
+  options.continuousSlotPlayback = false; value.release(); await waitFor(value, 'READY');
+  assert.equal(JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).linear, true); value.stop();
+});
+
+test('continuous modern channel refusal never falls back and cannot publish mismatched source token device or channel', async () => {
+  for (const extra of [{ account: null }, { statuses: { '/v1/media/deviceTypeId': 401 } },
+    { channels: { channels: [configuredLinearChannel('other')] } },
+    { channels: { channels: [{ ...configuredLinearChannel('sumo'), status: { drm: true } }] } },
+    { selectedURL: 'https://linear-abematv.akamaized.net/channel/other/manifest.mpd?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1&dtid=SYNTHETIC_DEVICE' },
+    { selectedURL: 'https://linear-abematv.akamaized.net/channel/sumo/manifest.mpd?t=OTHER&enc=clear&dt=pc_chrome&ut=1&dtid=SYNTHETIC_DEVICE' },
+    { selectedURL: 'https://linear-abematv.akamaized.net/channel/sumo/manifest.mpd?t=TEST_MEDIA&enc=clear&dt=pc_chrome&ut=1&dtid=OTHER' }]) {
+    const value = fixture(continuousSlotOptions(extra)); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.some(({ uri }) => uri.origin === 'https://api.abema.io' || uri.pathname === '/api/auth/login/guest'), false);
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null); assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.evaluate('observed.refresh'), 0);
+  }
+});
+
+test('continuous slot still revokes on account expiry rollback or cancellation during modern preparation', async () => {
+  for (const nowMs of [fixtureNow + 600000, fixtureNow - 1]) {
+    const options = continuousSlotOptions(); const value = fixture(options);
+    value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY'); options.nowMs = nowMs;
+    assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null); assert.equal(value.begin(challenge), 'REFUSED');
+    assert.equal(value.metadata().failure, 'TIMER_EXPIRED');
+  }
+  for (const deferred of ['deferEme', 'deferDevice', 'deferChannels']) {
+    const value = fixture(continuousSlotOptions({ [deferred]: true })); value.startSlot('sumo/fixture-slot');
+    await waitForRequests(value, deferred === 'deferEme' ? 3 : deferred === 'deferDevice' ? 4 : 5);
+    const count = value.requests.length; value.stop(); value.release(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(value.requests.length, count); assert.equal(value.evaluate(`window['${name}'].slotBinding()`), null);
+    assert.equal(value.begin(challenge), 'REFUSED'); assert.equal(value.evaluate('localStorage.length + sessionStorage.length'), 0);
+  }
+});
 
 test('configured playback uses one validated account identity through token source and opaque exchange', async () => {
   const value = fixture({ account: savedAccount(), forbidGuest: true });
@@ -363,9 +507,9 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate, persistentStorageTouches: () => persistentStorageTouches,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),

@@ -22,14 +22,20 @@ internal object AbemaNativeBootstrapPolicy {
     const val SLOT_REGION_URI = "https://ds-glb-linear-abematv.akamaized.net/region"
     val SLOT_REGION_URIS = setOf(SLOT_REGION_URI, "https://ds-linear-abematv.akamaized.net/region")
     fun contentSecurityPolicy(episodeId: String? = null, channelId: String? = null, slotIdentity: String? = null,
-        modernChannelContext: Boolean = false): String {
+        modernChannelContext: Boolean = false, continuousSlotPlayback: Boolean = false): String {
         require(listOfNotNull(episodeId, channelId, slotIdentity).size <= 1)
-        require(!modernChannelContext || channelId != null && episodeId == null && slotIdentity == null)
+        require(!continuousSlotPlayback || slotIdentity != null)
+        require(!modernChannelContext || channelId != null && episodeId == null && slotIdentity == null ||
+            continuousSlotPlayback && slotIdentity != null)
         if (slotIdentity != null) {
             require(validAbemaSlotIdentity(slotIdentity))
-            return CONTENT_SECURITY_POLICY.replace("https://api.abema.io/v1/channels ", "")
+            val policy = CONTENT_SECURITY_POLICY.replace("https://api.abema.io/v1/channels ",
+                if (!continuousSlotPlayback) "" else if (modernChannelContext)
+                    "https://api.p-c3-e.abema-tv.com/v1/channels https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId "
+                else "https://api.abema.io/v1/channels ")
                 .replace("https://api.abema.io/v1/video/programs/394-72_s10_p8529", slotUrl(slotIdentity.substringAfter('/')))
                 .replace("https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/ ", "$SLOT_REGION_PAGE ${SLOT_REGION_URIS.joinToString(" ")} ")
+            return if (modernChannelContext) policy.replace("https://abema.tv/api/auth/login/guest ", "") else policy
         }
         if (channelId != null) {
             require(validAbemaChannelIdentity(channelId))
@@ -86,12 +92,16 @@ internal object AbemaNativeBootstrapPolicy {
             uri.rawPath.endsWith(".mpd") && uri.rawFragment == null
     }
 
-    fun allowsNewsCdn(uri: URI, approvedPrototype: Boolean = false, channelId: String = "abema-news"): Boolean = allowsNewsSource(uri, approvedPrototype, channelId) ||
+    fun allowsNewsCdn(uri: URI, approvedPrototype: Boolean = false, channelId: String = "abema-news",
+        modernChannelContext: Boolean = false): Boolean = allowsNewsSource(uri, approvedPrototype, channelId, modernChannelContext) ||
         abemaNewsCdnUriPolicy(uri, approvedPrototype) == AbemaNewsMediaUriPolicy.ALLOWED
 
     fun allows(uri: URI, mainFrame: Boolean, method: String, episodeId: String? = null, channelId: String? = null,
-        slotIdentity: String? = null, modernChannelContext: Boolean = false): Boolean {
-        if (modernChannelContext && (channelId == null || episodeId != null || slotIdentity != null)) return false
+        slotIdentity: String? = null, modernChannelContext: Boolean = false,
+        continuousSlotPlayback: Boolean = false): Boolean {
+        if (continuousSlotPlayback && slotIdentity == null) return false
+        if (modernChannelContext && (episodeId != null ||
+                if (continuousSlotPlayback) channelId != null else channelId == null || slotIdentity != null)) return false
         if (listOfNotNull(episodeId, channelId, slotIdentity).size > 1 ||
             slotIdentity != null && !validAbemaSlotIdentity(slotIdentity)) return false
         if (channelId != null && (!validAbemaChannelIdentity(channelId) || episodeId != null)) return false
@@ -121,13 +131,15 @@ internal object AbemaNativeBootstrapPolicy {
                         (it["dtid"] == null || validDeviceTypeId(it.getValue("dtid"))) } == true
                 else if (slotIdentity != null) uri.toString() == slotUrl(slotIdentity.substringAfter('/')) + "?include=payperview" && method in setOf("GET", "OPTIONS")
                 else episodeId != null && uri.toString() == episodeUrl(episodeId) && method in setOf("GET", "OPTIONS")
-            "api.abema.io" -> !modernChannelContext && slotIdentity == null && episodeId == null && (uri.path == "/v1/channels" || channelId == null && uri.path == "/v1/video/programs/394-72_s10_p8529") && uri.rawQuery == null &&
+            "api.abema.io" -> !modernChannelContext && episodeId == null &&
+                (slotIdentity == null && (uri.path == "/v1/channels" || channelId == null && uri.path == "/v1/video/programs/394-72_s10_p8529") ||
+                    continuousSlotPlayback && uri.path == "/v1/channels") && uri.rawQuery == null &&
                 method in setOf("GET", "OPTIONS")
             "streaming-api-cf.p-c2-x.abema-tv.com" -> slotIdentity == null && channelId == null && method == "GET" && uri.rawQuery == null &&
                 Regex("/v1/playbackResources/[A-Za-z0-9_:.~-]{1,256}").matches(uri.path)
             "ds-glb-linear-abematv.akamaized.net", "ds-linear-abematv.akamaized.net" ->
                 (slotIdentity != null || modernChannelContext) && method == "GET" && uri.toString() in SLOT_REGION_URIS
-            "license.p-c3-e.abema-tv.com" -> !modernChannelContext && uri.path == "/abematv-dash" && method in setOf("POST", "OPTIONS") &&
+            "license.p-c3-e.abema-tv.com" -> (!modernChannelContext || continuousSlotPlayback) && uri.path == "/abematv-dash" && method in setOf("POST", "OPTIONS") &&
                 queryNames(uri)?.let { "t" in it && it.all { name -> name in setOf("t", "ct", "cid", "tt", "tk", "dt") } } == true &&
                 uri.rawQuery?.split('&')?.filter { it.startsWith("dt=") }?.all { it == "dt=web_android" } == true &&
                 (episodeId == null || uri.rawQuery?.split('&')?.associate { it.substringBefore('=') to it.substringAfter('=') }
@@ -135,7 +147,9 @@ internal object AbemaNativeBootstrapPolicy {
                 (channelId == null || uri.rawQuery?.split('&')?.associate { it.substringBefore('=') to it.substringAfter('=') }
                     ?.let { it.keys == setOf("t", "ct", "cid") && it["ct"] == "channel" && it["cid"] == channelId } == true) &&
                 (slotIdentity == null || uri.rawQuery?.split('&')?.associate { it.substringBefore('=') to it.substringAfter('=') }
-                    ?.let { it.keys == setOf("t", "ct", "cid") && it["ct"] == "slot" && it["cid"] == slotIdentity.substringAfter('/') } == true)
+                    ?.let { it.keys == setOf("t", "ct", "cid") &&
+                        (it["ct"] == "slot" && it["cid"] == slotIdentity.substringAfter('/') ||
+                            continuousSlotPlayback && it["ct"] == "channel" && it["cid"] == slotIdentity.substringBefore('/')) } == true)
             else -> false
         }
     }

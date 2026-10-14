@@ -74,6 +74,7 @@ import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.PrototypePlaybackController
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
+import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.presentation.PrototypePlayBarrier
@@ -669,7 +670,9 @@ open class PrototypeActivity : ComponentActivity() {
             viewer?.refresh()
         }
         focus = group
-        playback = PrototypePlaybackController(group::acquire)
+        playback = PrototypePlaybackController(group::acquire, admission = { member ->
+            sessions.any { host -> host != null && host.member === member && host.canContinue() }
+        })
         fun surface() = (layoutInflater.inflate(R.layout.native_viewer_player, root, false) as PlayerView).apply {
             useController = false; keepScreenOn = true
         }
@@ -684,6 +687,8 @@ open class PrototypeActivity : ComponentActivity() {
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT },
             setupLabel = "Preparation / provider pages", statusOverride = { playMessage ?: playback?.status },
             members = { NativeMixedSide.entries.map { playback?.member(it) } },
+            catchUpPlan = { side -> playback?.catchUpPlan(side) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) },
+            playbackBusy = { playback?.busy == true },
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal

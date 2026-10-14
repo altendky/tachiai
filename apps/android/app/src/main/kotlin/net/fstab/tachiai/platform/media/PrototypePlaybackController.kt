@@ -6,15 +6,17 @@ package net.fstab.tachiai.platform.media
 internal class PrototypePlaybackController(
     private val acquireFocus: () -> Boolean,
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val admission: (NativePairMember) -> Boolean = { true },
 ) : AutoCloseable {
     private var a: NativePairMember? = null
     private var b: NativePairMember? = null
     private var closed = false
     private var message = "No playable feeds."
+    private var recovery: NativeLiveRecovery? = null
     var pair: NativeMixedPair? = null
         private set
     val status: String get() = pair?.status ?: message
-    val busy: Boolean get() = pair?.busy == true
+    val busy: Boolean get() = pair?.busy == true || recovery?.busy == true
     val playingRequested: Boolean get() = members().any { snapshot(it)?.playWhenReady == true }
 
     fun member(side: NativeMixedSide): NativePairMember? = if (side == NativeMixedSide.A) a else b
@@ -26,6 +28,8 @@ internal class PrototypePlaybackController(
 
     fun setMember(side: NativeMixedSide, member: NativePairMember?) {
         if (closed || this.member(side) === member) return
+        recovery?.cancel()
+        recovery = null
         // Do not close the old pair: it owns members in historical callers.
         // Detach cancels pending restores without pausing the surviving feed.
         pair?.detach()
@@ -36,7 +40,11 @@ internal class PrototypePlaybackController(
         val preparedB = b
         if (preparedA != null && preparedB != null) {
             pair = NativeMixedPair(preparedA, preparedB, acquireFocus, {}, clockMs,
-                requireCurrentLiveWindowOnPlay = true)
+                requireCurrentLiveWindowOnPlay = true,
+                admission = { !closed && members().any { current -> current === it } && admission(it) })
+        } else members().singleOrNull()?.let { selected ->
+            recovery = NativeLiveRecovery(listOf(selected), clockMs,
+                { !closed && members().any { current -> current === it } && admission(it) })
         }
         message = when {
             members().isEmpty() -> "No playable feeds."
@@ -48,6 +56,7 @@ internal class PrototypePlaybackController(
     fun play(): Boolean {
         if (closed) return false
         pair?.let { return it.play() }
+        if (busy && !pause()) return false
         val selected = members().singleOrNull()
         if (selected == null) { message = "No playable feeds."; return false }
         val value = snapshot(selected)
@@ -80,6 +89,7 @@ internal class PrototypePlaybackController(
     fun pause(): Boolean {
         if (closed) return false
         pair?.let { return it.pause() }
+        recovery?.cancel()
         var accepted = true
         members().forEach { if (!playing(it, false)) accepted = false }
         message = if (accepted) "Paused." else "Pause refused; return to sources."
@@ -94,7 +104,21 @@ internal class PrototypePlaybackController(
             else "Audio focus lost; pause refused; return to sources."
     }
 
-    fun poll() { if (!closed) pair?.poll() }
+    fun poll() {
+        if (closed) return
+        pair?.let { it.poll(); return }
+        val transaction = recovery ?: return
+        val result = transaction.poll()
+        if (closed || recovery !== transaction) return
+        when (result.state) {
+            NativeLiveRecoveryPollState.SETTLED -> message = "SDK READY in current live window; available feed paused. Explicit Play required; not exact live edge."
+            NativeLiveRecoveryPollState.TIMED_OUT -> message = if (result.held == true) "Catch-up check timed out; available feed paused."
+                else "Catch-up check timed out; pause refused; return to sources."
+            NativeLiveRecoveryPollState.ADMISSION_LOST -> message = if (result.held == true) "Catch-up authorization lost; available feed paused."
+                else "Catch-up authorization lost; pause refused; return to sources."
+            else -> Unit
+        }
+    }
 
     fun setVolume(side: NativeMixedSide, volume: Float): Boolean {
         if (closed || !volume.isFinite() || volume !in 0f..1f) return false
@@ -108,15 +132,45 @@ internal class PrototypePlaybackController(
         return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
     }
 
+    fun catchUpPlan(side: NativeMixedSide): NativeSeekPlan {
+        if (closed || busy) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        pair?.let { return it.catchUpPlan(side) }
+        val selected = member(side) ?: return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        return recovery?.plan(selected) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+    }
+
     fun catchUp(side: NativeMixedSide): NativeSeekPlan {
-        if (!closed) pair?.let { return it.catchUp(side) }
-        message = "Joint catch-up requires two playable feeds."
-        return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (closed) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        pair?.let { return it.catchUp(side) }
+        if (busy) {
+            message = "Catch-up refused: wait for the current seek check."
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        }
+        val selected = member(side)
+        val transaction = recovery
+        if (selected == null || transaction == null) {
+            message = "Catch-up requires an available live feed."
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        }
+        val result = transaction.start(selected)
+        if (closed || recovery !== transaction || member(side) !== selected)
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        when (result.state) {
+            NativeLiveRecoveryStartState.PREFLIGHT_REFUSED, NativeLiveRecoveryStartState.RECHECK_REFUSED ->
+                message = "Catch-up not dispatched: ${result.plan.outcome}."
+            NativeLiveRecoveryStartState.HOLD_REFUSED -> message = "Pause refused; return to sources."
+            NativeLiveRecoveryStartState.DISPATCH_REFUSED -> message = if (result.held == true) "Catch-up refused; available feed paused."
+                else "Catch-up refused; pause refused; return to sources."
+            NativeLiveRecoveryStartState.STARTED -> message = "Catch-up requested; waiting for held live window (8 s maximum)."
+        }
+        return result.plan
     }
 
     override fun close() {
         if (closed) return
         pause()
+        recovery?.cancel()
+        recovery = null
         pair?.detach()
         pair = null
         a = null

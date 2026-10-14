@@ -12,17 +12,17 @@ import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.pressBack
+import androidx.test.espresso.ViewAction
+import androidx.test.espresso.UiController
 import androidx.test.espresso.action.ViewActions.click
-import androidx.test.espresso.action.GeneralClickAction
-import androidx.test.espresso.action.Press
-import androidx.test.espresso.action.Tap
-import androidx.test.espresso.matcher.ViewMatchers.isRoot
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import org.hamcrest.Matcher
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
@@ -167,6 +167,7 @@ class NativePairViewerDismissTest {
         for (playing in listOf(false, true)) for (panel in listOf("Audio", "Timing")) {
             for (dismissal in listOf("Back", "outside", "anchor")) {
                 withFixture(playing) { scenario, fixture ->
+                    val phase = "playing=$playing panel=$panel dismissal=$dismissal"
                     var calls = 0
                     var anchor = floatArrayOf()
                     var outside = floatArrayOf()
@@ -175,33 +176,66 @@ class NativePairViewerDismissTest {
                         calls = fixture.a.volumeCalls + fixture.b.volumeCalls
                     }
                     InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-                    scenario.onActivity {
+                    onView(withText("More")).perform(click())
+                    // The popup is a separate window. Wait for its actual
+                    // layout, then read both targets in the same UI action;
+                    // coordinates measured before opening it may be stale.
+                    onView(withText("Playback status")).perform(readPopupBounds { bounds ->
                         val location = IntArray(2)
                         val more = button(fixture.viewer, "More")
                         more.getLocationOnScreen(location)
                         anchor = floatArrayOf(location[0] + more.width / 2f, location[1] + more.height / 2f)
                         fixture.stage.getLocationOnScreen(location)
                         outside = floatArrayOf(location[0] + 8f, location[1] + 8f)
-                        // The popup occupies the control area; the video's top-left
-                        // is outside it and would hide the tray if the tap leaked.
-                    }
-                    onView(withText("More")).perform(click())
+                        if (dismissal != "Back") {
+                            val target = if (dismissal == "anchor") anchor else outside
+                            assertTrue("Owned cancellation target must be outside the displayed popup: $phase",
+                                target[0] < bounds[0] || target[0] >= bounds[2] ||
+                                    target[1] < bounds[1] || target[1] >= bounds[3])
+                        }
+                    })
                     if (dismissal == "Back") pressBack() else {
                         val target = if (dismissal == "anchor") anchor else outside
-                        onView(isRoot()).perform(GeneralClickAction(Tap.SINGLE, { target }, Press.FINGER))
+                        sendOneCancellationTap(target)
                     }
-                    onView(withText("Playback status")).check(doesNotExist())
+                    try { onView(withText("Playback status")).check(doesNotExist()) }
+                    catch (error: Throwable) {
+                        throw AssertionError("Owned popup cancellation failed: $phase", error)
+                    }
                     scenario.onActivity {
-                        assertEquals(View.VISIBLE, fixture.dock.visibility)
-                        assertEquals(View.VISIBLE, fixture.scroller.visibility)
-                        assertEquals(0, fixture.commands)
-                        assertEquals(calls, fixture.a.volumeCalls + fixture.b.volumeCalls)
+                        assertEquals("Popup cancellation must retain the tray: $phase", View.VISIBLE, fixture.dock.visibility)
+                        assertEquals("Popup cancellation must retain the panel: $phase", View.VISIBLE, fixture.scroller.visibility)
+                        assertEquals("Popup cancellation must not dispatch an action: $phase", 0, fixture.commands)
+                        assertEquals("Popup cancellation must not change volume: $phase", calls,
+                            fixture.a.volumeCalls + fixture.b.volumeCalls)
                         button(fixture.viewer, "Hide").performClick()
-                        assertEquals(View.GONE, fixture.dock.visibility)
+                        assertEquals("Explicit Hide must dismiss the retained tray: $phase", View.GONE, fixture.dock.visibility)
                     }
                 }
             }
         }
+    }
+
+    private fun readPopupBounds(observe: (IntArray) -> Unit) = object : ViewAction {
+        override fun getDescription() = "Read the laid-out owned fixture popup and current cancellation targets"
+        override fun getConstraints(): Matcher<View> = isDisplayed()
+        override fun perform(uiController: UiController, view: View) {
+            uiController.loopMainThreadUntilIdle()
+            val root = view.rootView
+            val location = IntArray(2)
+            root.getLocationOnScreen(location)
+            observe(intArrayOf(location[0], location[1], location[0] + root.width, location[1] + root.height))
+        }
+    }
+
+    private fun sendOneCancellationTap(target: FloatArray) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val downTime = SystemClock.uptimeMillis()
+        for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, target[0], target[1], 0)
+            try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+        }
+        instrumentation.waitForIdleSync()
     }
 
     @Test fun popupActionStillOpensStatusAndTeardownDoesNotRevealControls() {

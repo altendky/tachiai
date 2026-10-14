@@ -25,6 +25,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePairMember
+import net.fstab.tachiai.platform.media.NativeSeekOutcome
+import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativeQualityKind
@@ -66,6 +68,10 @@ internal class NativePairViewer(
     private val onQualityOverride: (NativeMixedSide, NativeQualityKind, NativeQualityRequest?) -> Unit = { _, _, _ -> },
     private val onSaveQuality: (NativeMixedSide, NativeQualityKind) -> Unit = { _, _ -> },
     private val onResetQuality: (NativeMixedSide, NativeQualityKind) -> Unit = { _, _ -> },
+    private val catchUpPlan: (NativeMixedSide) -> NativeSeekPlan = { side ->
+        pair()?.catchUpPlan(side) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+    },
+    private val playbackBusy: () -> Boolean = { pair()?.busy == true },
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private var mix = TwoFeedMix()
@@ -78,6 +84,7 @@ internal class NativePairViewer(
     private var volumeApplied = false
     private var volumeFailed = false
     private val repeats = mutableListOf<Runnable>()
+    private val liveTargets = arrayOfNulls<NativePairMember>(2)
     private data class QualityField(val side: NativeMixedSide, val kind: NativeQualityKind,
         val choose: Button, val readback: TextView, val capability: TextView, val save: Button, val reset: Button)
     private val qualityFields = mutableListOf<QualityField>()
@@ -93,7 +100,7 @@ internal class NativePairViewer(
     private val scroller = CappedScrollView().apply { addView(content) }
     private val scrollerParams = LinearLayout.LayoutParams(-1, -2)
     private val play = button("Play") {
-        if (requestedPlaying || pair()?.busy == true) onPause() else onPlay()
+        if (requestedPlaying || playbackBusy()) onPause() else onPlay()
         showControls(); refresh()
     }
     private val readback = text("").apply { textSize = 12f; maxLines = 2 }
@@ -110,12 +117,27 @@ internal class NativePairViewer(
     private val fit = button("") { fitVideo = !fitVideo; updateLabels(); showControls() }.apply {
         contentDescription = "Fit video beside visible controls; toggle without restarting playback"
     }
+    private val backToLive = NativeMixedSide.entries.map { side ->
+        button("Back to live ${side.name}") { control -> requestBackToLive(side, control) }.apply {
+            id = View.generateViewId()
+            contentDescription = "Back to live ${side.name} · ${if (side == NativeMixedSide.A) labelA else labelB}"
+        }
+    }
+    private val liveHint = text("").apply { textSize = 12f }
+    private val liveControls = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(row(*backToLive.toTypedArray()))
+        addView(liveHint)
+        visibility = GONE
+    }
     private val toolbar = row(*listOfNotNull(play, button("Audio") { togglePanel("Audio") },
         button("Timing") { togglePanel("Timing") }, onSources?.let { action -> button("Sources") { action() } },
         button("More") { showMore(it) },
         button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
 
     init {
+        backToLive[0].nextFocusRightId = backToLive[1].id
+        backToLive[1].nextFocusLeftId = backToLive[0].id
         for (index in advanceA.indices) {
             advanceA[index].nextFocusDownId = advanceB[index].id
             advanceB[index].nextFocusUpId = advanceA[index].id
@@ -132,6 +154,7 @@ internal class NativePairViewer(
         addView(dock)
         dock.addView(scroller, scrollerParams)
         dock.addView(toolbar)
+        dock.addView(liveControls)
         dock.addView(readback)
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
@@ -173,6 +196,36 @@ internal class NativePairViewer(
             if (index > 0) button.nextFocusLeftId = buttons[index - 1].id
             if (index < buttons.lastIndex) button.nextFocusRightId = buttons[index + 1].id
         }
+    }
+    private fun liveMember(side: NativeMixedSide): NativePairMember? {
+        if (feedMessage(side) != null) return null
+        val member = members().getOrNull(side.ordinal) ?: return null
+        val snapshot = runCatching { member.timingSnapshot() }.getOrNull() ?: return null
+        return member.takeIf { snapshot.live }
+    }
+    private fun currentCatchUpPlan(side: NativeMixedSide, member: NativePairMember): NativeSeekPlan {
+        val currentPair = pair()
+        if (currentPair != null && (if (side == NativeMixedSide.A) currentPair.a else currentPair.b) !== member)
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        val snapshot = runCatching { member.timingSnapshot() }.getOrNull()
+        if (snapshot == null || snapshot.state != Player.STATE_READY || playbackBusy())
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (snapshot.playingAd) return NativeSeekPlan(NativeSeekOutcome.AD_BLOCKED)
+        return runCatching { catchUpPlan(side) }.getOrElse { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+    }
+    private fun requestBackToLive(side: NativeMixedSide, control: Button,
+        shown: NativePairMember? = liveTargets[side.ordinal]) {
+        val selectedPair = pair()
+        if (!control.isEnabled || !isAttachedToWindow || visibility != VISIBLE || dock.visibility != VISIBLE ||
+            shown == null || liveTargets[side.ordinal] !== shown || liveMember(side) !== shown ||
+            currentCatchUpPlan(side, shown).outcome != NativeSeekOutcome.REQUESTED ||
+            pair() !== selectedPair || liveMember(side) !== shown) {
+            refresh(); return
+        }
+        val snapshot = runCatching { shown.timingSnapshot() }.getOrNull()
+        if (snapshot == null || snapshot.state != Player.STATE_READY || snapshot.playingAd) { refresh(); return }
+        onCatchUp(side)
+        showControls(); refresh()
     }
     private fun showControls() {
         dock.visibility = VISIBLE; removeCallbacks(hideControls)
@@ -308,6 +361,8 @@ internal class NativePairViewer(
     }
 
     private fun showMore(anchor: View) {
+        val shownPair = pair()
+        val holdLabel = if (members().count { it != null } == 1) "holds this feed" else "holds both"
         showMenu(anchor) {
             menu.add("Playback status").setOnMenuItemClickListener { togglePanel("Status"); true }
             menu.add("Quality").apply {
@@ -317,13 +372,17 @@ internal class NativePairViewer(
             menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { onLandscape(!landscape()); true }
             menu.add("Swap primary feed").setOnMenuItemClickListener { stage.swap(); true }
-            menu.add("Catch up $labelA (holds both)").apply {
-                isEnabled = pair() != null
-                setOnMenuItemClickListener { onCatchUp(NativeMixedSide.A); refresh(); true }
-            }
-            menu.add("Catch up $labelB (holds both)").apply {
-                isEnabled = pair() != null
-                setOnMenuItemClickListener { onCatchUp(NativeMixedSide.B); refresh(); true }
+            NativeMixedSide.entries.forEach { side ->
+                val control = backToLive[side.ordinal]
+                val shown = liveTargets[side.ordinal]
+                menu.add("Catch up ${if (side == NativeMixedSide.A) labelA else labelB} ($holdLabel)").apply {
+                    isEnabled = control.isEnabled && shown != null && liveMember(side) === shown &&
+                        currentCatchUpPlan(side, shown).outcome == NativeSeekOutcome.REQUESTED
+                    setOnMenuItemClickListener {
+                        if (pair() === shownPair) requestBackToLive(side, control, shown) else refresh()
+                        true
+                    }
+                }
             }
             menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
             menu.add("Stop both").setOnMenuItemClickListener { suspendControls(); onStop(); true }
@@ -332,7 +391,7 @@ internal class NativePairViewer(
 
     private fun showQualityChoices(anchor: View, side: NativeMixedSide, kind: NativeQualityKind) {
         val state = qualityState(side, kind) ?: return
-        if (state.saving || pair()?.busy == true) return
+        if (state.saving || playbackBusy()) return
         val control = members().getOrNull(side.ordinal)?.qualitySnapshot()?.controls?.get(kind)
         showMenu(anchor) {
             fun choice(title: String, request: NativeQualityRequest?, checked: Boolean) {
@@ -355,10 +414,22 @@ internal class NativePairViewer(
         if (stage.bindPlayers()) volumeApplied = false
         stage.updateMessages()
         val available = members()
+        backToLive.forEachIndexed { index, control ->
+            val side = NativeMixedSide.entries[index]
+            val member = liveMember(side)
+            liveTargets[index] = member
+            control.visibility = if (member == null) GONE else VISIBLE
+            control.isEnabled = member != null && currentCatchUpPlan(side, member).outcome == NativeSeekOutcome.REQUESTED &&
+                liveMember(side) === member
+        }
+        liveControls.visibility = if (liveTargets.any { it != null }) VISIBLE else GONE
+        liveHint.text = if (available.count { it != null } > 1)
+            "Pauses both feeds. Press Play to resume; adjust timing alignment again."
+            else "Pauses this feed. Press Play to resume; timing alignment is not restored."
         if (available.any { it != null } && !volumeApplied) applyVolume()
         val wasPlaying = requestedPlaying
         requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
-        play.text = if (requestedPlaying || current?.busy == true) "Pause" else "Play"
+        play.text = if (requestedPlaying || playbackBusy()) "Pause" else "Play"
         play.isEnabled = available.any { it != null }
         (advanceA + advanceB).forEach { it.isEnabled = current != null && !current.busy }
         val adjustment = when {
@@ -392,7 +463,7 @@ internal class NativePairViewer(
                 if (it.omitted > 0) " ${it.omitted} additional options omitted." else "" }
                 ?: "Waiting for this feed's supported tracks; no quality change confirmed.") +
                 (state?.message?.let { "\n$it" } ?: "")
-            val enabled = state != null && !state.saving && current?.busy != true
+            val enabled = state != null && !state.saving && !playbackBusy()
             field.choose.isEnabled = enabled; field.save.isEnabled = enabled; field.reset.isEnabled = enabled
         }
         if (wasPlaying != requestedPlaying) showControls()
@@ -416,8 +487,10 @@ internal class NativePairViewer(
         val childWidth = MeasureSpec.makeMeasureSpec(innerW, MeasureSpec.EXACTLY)
         val childHeight = MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST)
         toolbar.measure(childWidth, childHeight); readback.measure(childWidth, childHeight)
+        if (liveControls.visibility != GONE) liveControls.measure(childWidth, childHeight)
+        val liveHeight = if (liveControls.visibility == GONE) 0 else liveControls.measuredHeight
         scroller.maximumHeight = minOf((contentH * 0.6f).toInt(),
-            (contentH - toolbar.measuredHeight - readback.measuredHeight - dock.paddingTop - dock.paddingBottom).coerceAtLeast(0))
+            (contentH - toolbar.measuredHeight - readback.measuredHeight - liveHeight - dock.paddingTop - dock.paddingBottom).coerceAtLeast(0))
         dock.measure(MeasureSpec.makeMeasureSpec(dockW, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST))
         val visible = !dock.isGone
@@ -538,15 +611,17 @@ internal class NativePairViewer(
             contentDescription = "$label feed; tap floating feed to swap, drag to move"
             setOnClickListener { if (landscape() && sideA != primaryA) swap() else toggleControls() }
             var downX = 0f; var downY = 0f; var originLeft = 0; var originTop = 0; var dragged = false
+            var gestureActive = false; var gestureDownTime = 0L
             val slop = ViewConfiguration.get(context).scaledTouchSlop
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        gestureActive = true; gestureDownTime = event.downTime
                         downX = event.rawX; downY = event.rawY; originLeft = view.left; originTop = view.top; dragged = false
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (landscape() && sideA != primaryA) {
+                        if (gestureActive && event.downTime == gestureDownTime && landscape() && sideA != primaryA) {
                             val dx = event.rawX - downX; val dy = event.rawY - downY
                             if (abs(dx) > slop || abs(dy) > slop) dragged = true
                             if (dragged) {
@@ -557,8 +632,13 @@ internal class NativePairViewer(
                         }
                         true
                     }
-                    MotionEvent.ACTION_UP -> { if (!dragged) view.performClick(); true }
-                    MotionEvent.ACTION_CANCEL -> { dragged = false; true }
+                    MotionEvent.ACTION_UP -> {
+                        val click = gestureActive && event.downTime == gestureDownTime && !dragged
+                        gestureActive = false
+                        if (click) view.performClick()
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> { gestureActive = false; dragged = false; true }
                     else -> true
                 }
             }

@@ -1580,6 +1580,66 @@ experiment against its current baseline; ordinary instrumentation and the normal
 launcher were restored. Exit country, phone/TV behavior and native playback were
 not measured by this profile check.
 
+### Initial ongoing-channel manifest observation
+
+The debug-only opt-in investigation under #193 selects the first canonical ongoing
+Schedule row with at least ten minutes remaining at the captured clock. It returns
+one public channel/slot tuple, strips its test marker before the unchanged normal
+decoder, and verifies literal displayed membership. This is a discovery lead;
+it supplies no Chase authority, entitlement or current media-occurrence proof.
+
+A separate source-only opt-in accepts that tuple, obtains one fresh configured
+channel source through the saved account and route, and reads its initial DASH
+manifest. It stops after the original protected initialization, source/HTTP close
+and exact source-binding recheck, before creating any player or CDM or requesting
+a license or media segment. It neither saves a selection nor enables live-slot
+playback. Ordinary configured playback remains unchanged.
+
+The bounded XML observer exports only closed counts and booleans: Periods,
+explicit finite starts/durations/intervals, EventStream and InbandEventStream,
+and literal comparisons of unqualified Period IDs or slotId attributes with the
+private expected slot. Malformed input, declarations, duplicate attributes,
+quota overflow, channel mismatch or repeated capture cannot export partial
+positive counts. No XML, URI, KID, identifier, duration or provider timestamp is
+released. Publication requires exactly one successful source-only completion,
+no native playback event or member, unchanged protected records and route owner,
+original monotonic/wall-clock bounds, sticky wall-clock rollback refusal and
+confirmed helper, HTTP, route, worker and lifecycle cleanup.
+
+Even a matching identifier and finite Period interval would be a candidate
+contract requiring independent verification, not proof that the interval covers
+only that selected broadcast or that a media transition can be stopped before
+presentation. Exact channel-backed live acceptance remains pending under #193.
+On 2026-10-14, one Schedule observation passed, zero skips, in 17.382 seconds on
+persistent tachiai-dev, Android 16/API 36, x86-64, through the saved Windscribe
+route and retained account. It found three eligible ongoing rows and released
+one public tuple after owner, cleanup and protected-record gates. No selection
+was saved, and no alternate candidate was tried.
+
+The subsequent source-only attempt failed its success assertion after 18.358
+seconds. Native admission reported ACCOUNT; source preparation stopped at the
+closed helper state CONTENT, HTTP 200, UNKNOWN before READY or any native manifest
+request. The exact failing content check is not identified. A successful HTTP
+response and Schedule membership do not prove that the configured channel source
+was accepted. No XML counts were published, no native player, CDM, license or
+rendered frame was created, and no provider retry followed. Helper, HTTP, route,
+worker and lifecycle cleanup were confirmed; route ownership and protected
+records stayed unchanged. This establishes a safe refusal, not a successful
+manifest observation or exact live playback.
+
+All 18 provider-free XML, Schedule and actual source-resolver guards passed, zero
+skips, in 1.614 seconds. The scoped Node fixture and CI hook passed; full Android
+verification covered 2,782 JVM tests with zero failures or skips, lint, release
+isolation, instrumentation compilation and assemblies. Both APKs matched the
+shared debug signer. Independent source review passed after making retained
+ACCOUNT admission mandatory before bootstrap for this mode and requiring
+already-present owner-store locks before read-only owner access. Exit country,
+phone/TV behavior and protected playback were not measured.
+The temporary source test manifest was restored byte-identically, the ordinary
+shared-signed test APK reinstalled and the normal launcher restored. All 20 saved
+files matched the same private baseline across app/test updates, synthetic guards,
+both actual attempts and final restoration.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

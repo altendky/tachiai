@@ -95,6 +95,8 @@ internal class CachedPrototypeAbemaSession(
     private val channelResource: CatalogResource? = null,
     private val slotResource: CatalogResource? = null,
     private val onSlotSourceDiagnostic: ((AbemaSlotSourceDiagnostic) -> Unit)? = null,
+    private val manifestOnlySlot: AbemaSlotRequest? = null,
+    private val onManifestOnlyPrepared: ((AbemaInitialManifestSnapshot) -> Unit)? = null,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -107,7 +109,11 @@ internal class CachedPrototypeAbemaSession(
         require(slotResource == null || replay && episodeResource == null && channelResource == null &&
             supportedConfiguredAbemaSlot(slotResource) && route != null && ownership != null)
         require(episodeResource != null || channelResource != null || slotResource != null || ownership == null)
+        require((manifestOnlySlot == null) == (onManifestOnlyPrepared == null))
+        require(manifestOnlySlot == null || channelResource != null && !replay &&
+            episodeResource == null && slotResource == null && channelResource.identity == manifestOnlySlot.channelId)
     }
+    private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
     private val episodeId get() = episodeResource?.identity ?: "394-72_s10_p8529"
     private val channelId get() = channelResource?.identity ?: "abema-news"
     private val slotChannelId get() = checkNotNull(slotResource).identity.substringBefore('/')
@@ -433,7 +439,9 @@ internal class CachedPrototypeAbemaSession(
                             }
                             accountArgument = argument.toString()
                         }
-                        AbemaAccountAccessIpc.Status.GUEST -> Unit
+                        AbemaAccountAccessIpc.Status.GUEST -> {
+                            if (initialManifest != null) throw AbemaAccountException(AbemaAccountFailure.NOT_VERIFIED)
+                        }
                         AbemaAccountAccessIpc.Status.FAILURE -> throw AbemaAccountException(checkNotNull(access.failure))
                     }
                     accountAdmitted.set(true)
@@ -596,7 +604,20 @@ internal class CachedPrototypeAbemaSession(
                     catch (error: Throwable) { cleanupFailed = true; throw error }
                 }
                 check(current(run) && workerOwned() && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
-                handler.post { if (current(run) && allows(view.url)) createNative(source, run) }
+                handler.post {
+                    if (!current(run) || !allows(view.url)) return@post
+                    // The diagnostic completes after the original source/transport
+                    // close and exact binding recheck. It can never reach a player,
+                    // CDM, license exchange or media segment request.
+                    if (initialManifest != null) {
+                        if (cleanupFailed || source !is AbemaChannelNativeSource || source.channelId != channelId ||
+                            initialManifest.snapshot.reason != AbemaInitialManifestReason.OBSERVED) { fail(); return@post }
+                        try { checkNotNull(onManifestOnlyPrepared)(initialManifest.snapshot) }
+                        catch (_: Throwable) { fail() }
+                        return@post
+                    }
+                    createNative(source, run)
+                }
             } catch (error: Throwable) {
                 if (current(run)) diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
                 handler.post { if (!closed.get() && revision.get() == run) fail() }
@@ -608,7 +629,7 @@ internal class CachedPrototypeAbemaSession(
         if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId,
             onSlotSourceDiagnostic)
         if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
-        if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId)
+        if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId, initialManifest)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))
         val source = requests.create(C.DATA_TYPE_MANIFEST)
         return try {
@@ -627,6 +648,7 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun createNative(source: AbemaNativeDashSource, run: Long) {
+        if (initialManifest != null) { fail(); return }
         if (slotResource != null && (source !is AbemaSlotNativeSource || source.channelId != slotChannelId || source.slotId != slotId)) { fail(); return }
         if (replay && slotResource == null && (source !is AbemaReplayNativeSource || source.episodeId != episodeId)) { fail(); return }
         if (channelResource != null && (source !is AbemaChannelNativeSource || source.channelId != channelId)) { fail(); return }

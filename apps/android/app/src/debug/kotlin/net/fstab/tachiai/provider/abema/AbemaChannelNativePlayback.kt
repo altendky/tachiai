@@ -12,7 +12,8 @@ import net.fstab.tachiai.platform.media.BoundedMediaRequests
 // Exact selected manifest only. Never synthesize a channel URL or issue another
 // metadata request here; the fresh owning JS runtime chose this signed URI.
 @UnstableApi
-internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String): AbemaChannelNativeSource {
+internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String,
+    onInitialManifest: AbemaInitialManifestObservation? = null): AbemaChannelNativeSource {
     if (!AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))
         throw IOException("Channel source refused")
     val source = requests.create(C.DATA_TYPE_MANIFEST)
@@ -30,6 +31,8 @@ internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaReq
         val text = try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString() }
         finally { raw.fill(0) }
+        // Observation cannot admit a source or interfere with the original close attempt.
+        try { onInitialManifest?.capture(channelId, text) } catch (_: Throwable) { }
         val initialization = parseAbemaRequestInitialization(text) ?: throw IOException("Channel initialization refused")
         return AbemaChannelNativeSource(channelId, uri, initialization.kids)
     } catch (_: Exception) { throw IOException("Channel source unavailable") }

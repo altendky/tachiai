@@ -66,6 +66,18 @@ class AbemaSeasonCandidateDeviceTest {
         catch (_: Throwable) { failHarness(phases, Observation.CATCHUP_CANDIDATE) }
     }
 
+    @Test fun optInOneScheduleSelectsOnlyOneOngoingSlotLead() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaOngoingCandidate") == "true")
+        check(listOf("tachiaiReadOnlyAbemaSeasonCandidate", "tachiaiReadOnlyAbemaSlotShape",
+            "tachiaiReadOnlyAbemaScheduleShape", "tachiaiReadOnlyAbemaCatchupCandidate",
+            "tachiaiReadOnlyAbemaSeasonCandidateHarness").none { args.getString(it) == "true" })
+        verifiedProbeInstrumentation("tachiaiReadOnlyAbemaOngoingCandidate")
+        val phases = HarnessPhases()
+        try { observe(phases, Observation.ONGOING_CANDIDATE) }
+        catch (_: Throwable) { failHarness(phases, Observation.ONGOING_CANDIDATE) }
+    }
+
     @Test fun optInOnlyAdoptsAndDestroysTheIdleGuestActivity() {
         val instrumentation = verifiedProbeInstrumentation("tachiaiReadOnlyAbemaSeasonCandidateHarness")
         val phases = HarnessPhases(); val active = AtomicBoolean()
@@ -248,7 +260,7 @@ class AbemaSeasonCandidateDeviceTest {
     private fun observe(phases: HarnessPhases, observation: Observation = Observation.SERIES_CANDIDATE) {
         val instrumentation = InstrumentationRegistry.getInstrumentation(); val context = instrumentation.targetContext
         val instanceId = defaultProviderInstanceId(PrototypeService.ABEMA)
-        val schedule = observation in setOf(Observation.SCHEDULE_SHAPE, Observation.CATCHUP_CANDIDATE)
+        val schedule = observation in setOf(Observation.SCHEDULE_SHAPE, Observation.CATCHUP_CANDIDATE, Observation.ONGOING_CANDIDATE)
         fun stableRecords() { if (schedule) requireStableRecords(context.noBackupFilesDir) }
         fun readOwner(): AbemaCatalogRouteOwner {
             stableRecords()
@@ -320,35 +332,41 @@ class AbemaSeasonCandidateDeviceTest {
         if (schedule) { before.values.forEach { it.fill(0) }; after?.values?.forEach { it.fill(0) } }
         val value = result.get()
         val cleanupConfirmed = admitted && completed.count == 0L && !probe.runtime.unavailable && (!schedule || activityFinished)
-        if (observation == Observation.CATCHUP_CANDIDATE) {
+        if (observation in setOf(Observation.CATCHUP_CANDIDATE, Observation.ONGOING_CANDIDATE)) {
+            val ongoing = observation == Observation.ONGOING_CANDIDATE
             val snapshot = value?.scheduleSnapshot
             val success = value?.category == "SCHEDULE_SNAPSHOT" && snapshot != null && snapshot.entries.size <= 501 &&
                 snapshot.entries.all { AbemaSlotRequest.from(it.resource) != null &&
                     it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null }
             val bounded = SystemClock.elapsedRealtime() - started in 0 until 70_000
-            val lead = environment.catchupCandidate.getAndSet(null).takeIf {
+            val observed = if (ongoing) environment.ongoingCandidate.getAndSet(null)?.let {
+                ScheduleLead(it.eligibleRows, it.candidate)
+            } else environment.catchupCandidate.getAndSet(null)?.let { ScheduleLead(it.eligibleRows, it.candidate) }
+            val lead = observed.takeIf {
                 cleanupConfirmed && unchanged && current && success && bounded && it != null &&
                     (it.candidate == null || snapshot.entries.take(500).any { entry -> entry.resource == it.candidate.resource })
             }
             val outcome = when {
                 !cleanupConfirmed -> "CLEANUP_FAILED"; !unchanged -> "STORES_CHANGED"; !current -> "OWNER_CHANGED"
                 !bounded -> "BUDGET_REFUSED"; lead == null -> "INVALID_RESPONSE"
-                lead.candidate == null -> "NO_CATCHUP_LEAD"; else -> "EXPLICIT_FREE_ENDED_LEAD"
+                lead.candidate == null -> if (ongoing) "NO_ONGOING_LEAD" else "NO_CATCHUP_LEAD"
+                else -> if (ongoing) "ONGOING_PUBLIC_LEAD" else "EXPLICIT_FREE_ENDED_LEAD"
             }
-            // This public tuple is a lead only. Native playback must independently
-            // re-fetch the exact slot and prove current rights/source/license binding.
+            // This public tuple is a lead only. A later operation independently
+            // checks its exact current occurrence/source; no rights are inferred.
             Log.i(observation.tag, "outcome=$outcome eligibleRows=${lead?.eligibleRows ?: 0} " +
                 "candidateChannel=${lead?.candidate?.channelId ?: "NONE"} candidateSlot=${lead?.candidate?.slotId ?: "NONE"} " +
                 "sdk=${Build.VERSION.SDK_INT} routeMode=${owner.instance.setup.route!!.mode.name} " +
                 "accountFailure=${environment.accountFailure.get()?.name ?: "NONE"} " +
                 "preparationRefused=${value?.category == "PREPARATION_REFUSED"}")
             phases.at(HarnessPhase.RESULT_CHECK) {
-                assertTrue("Catchup candidate observation exceeded bounded budgets", bounded)
-                assertTrue("Catchup candidate observation changed protected records", unchanged)
-                assertTrue("Catchup candidate observation changed captured owner", current)
-                assertTrue("Catchup candidate observation did not confirm cleanup", cleanupConfirmed)
-                assertTrue("Catchup candidate observation did not return normal metadata", success)
-                assertNotNull("Catchup candidate observation did not return a closed marker", lead)
+                val label = if (ongoing) "Ongoing" else "Catchup"
+                assertTrue("$label candidate observation exceeded bounded budgets", bounded)
+                assertTrue("$label candidate observation changed protected records", unchanged)
+                assertTrue("$label candidate observation changed captured owner", current)
+                assertTrue("$label candidate observation did not confirm cleanup", cleanupConfirmed)
+                assertTrue("$label candidate observation did not return normal metadata", success)
+                assertNotNull("$label candidate observation did not return a closed marker", lead)
             }
             phases.current.set(HarnessPhase.COMPLETE)
             return
@@ -457,6 +475,11 @@ class AbemaSeasonCandidateDeviceTest {
         SLOT_SHAPE(AbemaGuestBootstrapOperation.FETCH_SLOT, "TachiaiAbemaSlotShapeProbe"),
         SCHEDULE_SHAPE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaScheduleShapeProbe"),
         CATCHUP_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaCatchupCandidateProbe"),
+        ONGOING_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaOngoingCandidateProbe"),
+    }
+
+    private class ScheduleLead(val eligibleRows: Int, val candidate: AbemaSlotRequest?) {
+        override fun toString() = "ScheduleLead(redacted)"
     }
 
     private enum class HarnessPhase {
@@ -560,11 +583,12 @@ class AbemaSeasonCandidateDeviceTest {
         val slotShapes = AtomicReference<SlotShapes?>()
         val scheduleShapes = AtomicReference<AbemaScheduleShapeObservation.Counts?>()
         val catchupCandidate = AtomicReference<AbemaScheduleCatchupCandidateObservation.Stripped?>()
+        val ongoingCandidate = AtomicReference<AbemaScheduleOngoingCandidateObservation.Stripped?>()
         val accountFailure = AtomicReference<AbemaAccountFailure?>()
-        private val scheduleWallMs = if (observation in setOf(Observation.SCHEDULE_SHAPE, Observation.CATCHUP_CANDIDATE))
+        private val scheduleWallMs = if (observation in setOf(Observation.SCHEDULE_SHAPE, Observation.CATCHUP_CANDIDATE, Observation.ONGOING_CANDIDATE))
             System.currentTimeMillis() else null
         override fun report(error: Throwable) {
-            if (observation == Observation.CATCHUP_CANDIDATE && error is AbemaAccountException)
+            if (observation in setOf(Observation.CATCHUP_CANDIDATE, Observation.ONGOING_CANDIDATE) && error is AbemaAccountException)
                 accountFailure.compareAndSet(null, error.category)
             base.report(error)
         }
@@ -583,6 +607,7 @@ class AbemaSeasonCandidateDeviceTest {
                 Observation.SLOT_SHAPE -> request.slotRequest?.let { it.channelId == SLOT_CHANNEL && it.slotId == SLOT_ID } == true
                 Observation.SCHEDULE_SHAPE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
                 Observation.CATCHUP_CANDIDATE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
+                Observation.ONGOING_CANDIDATE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
             })
             val files = base.prepare(owner, request, preparation, canRequest)
             val source = files.getValue(CONTROL_PATH).toString(Charsets.UTF_8)
@@ -590,11 +615,13 @@ class AbemaSeasonCandidateDeviceTest {
                 Observation.SERIES_CANDIDATE -> PROJECTION; Observation.SLOT_SHAPE -> SLOT_PROJECTION
                 Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.ANCHOR
                 Observation.CATCHUP_CANDIDATE -> AbemaScheduleCatchupCandidateObservation.ANCHOR
+                Observation.ONGOING_CANDIDATE -> AbemaScheduleOngoingCandidateObservation.ANCHOR
             }
             val projection = when (observation) {
                 Observation.SERIES_CANDIDATE -> TEST_PROJECTION; Observation.SLOT_SHAPE -> TEST_SLOT_PROJECTION
                 Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.projection(checkNotNull(scheduleWallMs))
                 Observation.CATCHUP_CANDIDATE -> AbemaScheduleCatchupCandidateObservation.projection(checkNotNull(scheduleWallMs))
+                Observation.ONGOING_CANDIDATE -> AbemaScheduleOngoingCandidateObservation.projection(checkNotNull(scheduleWallMs))
             }
             check(source.length <= 128 * 1024 && source.split(anchor).size == 2)
             return files + (CONTROL_PATH to source.replace(anchor, projection).toByteArray(Charsets.UTF_8))
@@ -621,9 +648,13 @@ class AbemaSeasonCandidateDeviceTest {
                         val stripped = AbemaScheduleShapeObservation.strip(raw)
                         scheduleShapes.set(stripped?.counts)
                         callback(stripped?.raw)
-                    } else {
+                    } else if (observation == Observation.CATCHUP_CANDIDATE) {
                         val stripped = AbemaScheduleCatchupCandidateObservation.strip(raw)
                         catchupCandidate.set(stripped)
+                        callback(stripped?.raw)
+                    } else {
+                        val stripped = AbemaScheduleOngoingCandidateObservation.strip(raw)
+                        ongoingCandidate.set(stripped)
                         callback(stripped?.raw)
                     }
                 }

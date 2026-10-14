@@ -115,6 +115,13 @@ repos:
         files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-guest-bootstrap\.test\.cjs$'
         pass_filenames: false
 
+      - id: abema-ongoing-candidate-tests
+        name: ABEMA ongoing Schedule lead fixture tests
+        entry: node --test scripts/tests/abema-ongoing-candidate.test.cjs
+        language: system
+        files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-ongoing-candidate\.test\.cjs$|AbemaScheduleOngoingCandidateObservation\.kt$'
+        pass_filenames: false
+
       - id: abema-helper-runtime-tests
         name: ABEMA offline helper runtime fixture tests
         entry: node scripts/tests/abema-helper-runtime.test.cjs

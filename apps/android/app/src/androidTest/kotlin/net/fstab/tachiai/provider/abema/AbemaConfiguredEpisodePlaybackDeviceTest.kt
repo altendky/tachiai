@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.feature.connections.providerInstanceStore
@@ -52,6 +53,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         REFUSED, PLAYBACK_REFUSED, SAFE_FAILURE, CLEANUP_UNCONFIRMED,
         EXACT_EPISODE_FRAME_AND_POSITION, EXACT_CHANNEL_FRAME_AND_POSITION, EXACT_SLOT_FRAME_AND_POSITION,
         HISTORICAL_NEWS_FRAME_AND_POSITION, HISTORICAL_REPLAY_FRAME_AND_POSITION,
+        INITIAL_MANIFEST_OBSERVED,
     }
     private enum class ObservationMode(val acceptedOutcome: Outcome) {
         CONFIGURED_EPISODE(Outcome.EXACT_EPISODE_FRAME_AND_POSITION),
@@ -59,6 +61,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         CONFIGURED_SLOT(Outcome.EXACT_SLOT_FRAME_AND_POSITION),
         HISTORICAL_NEWS(Outcome.HISTORICAL_NEWS_FRAME_AND_POSITION),
         HISTORICAL_REPLAY(Outcome.HISTORICAL_REPLAY_FRAME_AND_POSITION),
+        CONFIGURED_MANIFEST(Outcome.INITIAL_MANIFEST_OBSERVED),
     }
     private data class PlaybackObservation(val outcome: Outcome, val renderedFrame: Boolean, val moved: Boolean?)
     private enum class SnapshotState { AVAILABLE, UNAVAILABLE }
@@ -210,6 +213,21 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         observePlayback(ObservationMode.HISTORICAL_REPLAY)
     }
 
+    @Test fun optInOneOngoingChannelManifestStopsBeforeNativePlayback() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("tachiaiReadOnlyAbemaManifestOnly") == "true")
+        val identity = args.getString("tachiaiAbemaManifestSlotIdentity")
+        assertTrue("Canonical public Schedule lead, saved account and exclusive source-only opt-in required",
+            identity != null && validAbemaSlotIdentity(identity) &&
+                args.getString("tachiaiRequireSavedAbemaAccount") == "true" &&
+                listOf("tachiaiReadOnlyAbemaConfiguredPlayback", "tachiaiReadOnlyAbemaConfiguredSlot",
+                    "tachiaiReadOnlyAbemaConfiguredChannel", "tachiaiReadOnlyAbemaHistoricalNews",
+                    "tachiaiReadOnlyAbemaHistoricalReplay").none { args.getString(it) == "true" } &&
+                listOf("tachiaiAbemaConfiguredEpisodeId", "tachiaiAbemaConfiguredSlotIdentity",
+                    "tachiaiAbemaConfiguredChannelId").all { args.getString(it) == null })
+        observePlayback(ObservationMode.CONFIGURED_MANIFEST, checkNotNull(identity))
+    }
+
     // Each explicitly selected method starts one bounded run. No loop, retry,
     // source fallback, stored choice or original provider-page comparison.
     private fun observePlayback(mode: ObservationMode, resourceIdentity: String? = null) {
@@ -217,6 +235,28 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val observationStarted = SystemClock.elapsedRealtime()
         val observationWall = System.currentTimeMillis()
         val args = InstrumentationRegistry.getArguments()
+        val manifestOnly = mode == ObservationMode.CONFIGURED_MANIFEST
+        val manifestSlot = if (manifestOnly) AbemaSlotRequest.from(CatalogResource(ProviderId("abema"),
+            "slot", checkNotNull(resourceIdentity), CatalogIntent.BROADCAST)) else null
+        val manifestSnapshot = AtomicReference<AbemaInitialManifestSnapshot?>()
+        val manifestCount = AtomicInteger()
+        val nativeObserved = AtomicBoolean()
+        val observationEnd = observationStarted + if (manifestOnly) 50_000 else 70_000
+        fun remainingObservation() = (observationEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+        val wallHigh = AtomicLong(observationWall)
+        val clockRefused = AtomicBoolean()
+        val clockLock = Any()
+        fun manifestClockCurrent(): Boolean {
+            if (!manifestOnly) return true
+            return synchronized(clockLock) {
+                val wall = System.currentTimeMillis()
+                val elapsed = SystemClock.elapsedRealtime()
+                val previous = wallHigh.getAndUpdate { maxOf(it, wall) }
+                if (wall < previous || wall - observationWall !in 0 until 70_000 ||
+                    elapsed - observationStarted !in 0 until 70_000) clockRefused.set(true)
+                !clockRefused.get()
+            }
+        }
         val observeSlotInitialization = mode == ObservationMode.CONFIGURED_SLOT &&
             args.getString("tachiaiObserveAbemaSlotInitialization") == "true" &&
             args.getString("tachiaiRequireSavedAbemaAccount") == "true"
@@ -264,13 +304,18 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         try {
             check(retainedPoisoned == null)
             check(CookieHandler.getDefault() == null)
-            before = encryptedRecords(context.noBackupFilesDir)
+            before = encryptedRecords(context.noBackupFilesDir, includeControlRecords = manifestOnly)
+            if (manifestOnly) check(listOf("provider-instances.lock", "provider-setup.lock", "source-setup.lock",
+                "connection-profiles.lock").all { checkNotNull(before).containsKey(it) })
             owner = readOwner(); routeMode = owner.instance.setup.route!!.mode.name
             val source = when (mode) {
                 ObservationMode.CONFIGURED_EPISODE -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(CatalogResource(ProviderId("abema"), "episode", checkNotNull(resourceIdentity), CatalogIntent.VIDEO), "Temporary observation"))
                 ObservationMode.CONFIGURED_CHANNEL -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(resourceIdentity), CatalogIntent.CHANNEL), "Temporary observation"))
+                ObservationMode.CONFIGURED_MANIFEST -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
+                    CatalogEntry(CatalogResource(ProviderId("abema"), "channel", checkNotNull(manifestSlot).channelId,
+                        CatalogIntent.CHANNEL), "Temporary manifest observation"))
                 ObservationMode.CONFIGURED_SLOT -> ConfiguredSource(UUID.randomUUID().toString(), owner.instance.id,
                     CatalogEntry(checkNotNull(AbemaSlotRequest.from(CatalogResource(ProviderId("abema"), "slot",
                         checkNotNull(resourceIdentity), CatalogIntent.BROADCAST))).resource, "Temporary observation"))
@@ -290,7 +335,10 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             scenario = ActivityScenario.launch(AbemaEpisodeObservationActivity::class.java)
             val surface = AtomicReference<AbemaEpisodeObservationActivity>()
             scenario.onActivity { surface.set(it) }
-            val budget = NativePlaybackBudget(70_000, { active.get() && surface.get().observationActive.get() }, maximumDurationMs = 70_000)
+            check(!manifestOnly || remainingObservation() > 0)
+            val duration = if (manifestOnly) remainingObservation() else 70_000L
+            val budget = NativePlaybackBudget(duration, { active.get() && surface.get().observationActive.get() &&
+                manifestClockCurrent() }, maximumDurationMs = 70_000)
             val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
             lateinit var owned: CachedViewerCleanupCoordinator
             instrumentation.runOnMainSync {
@@ -316,11 +364,16 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 owned.proxyWillChange(checkNotNull(run))
                 webRoute.install(route, { routeAccepted.set(it); installed.countDown() })
             }
-            check(installed.await(5, TimeUnit.SECONDS) && routeAccepted.get() && captured.sameOwnership(readOwner()))
+            check(installed.await(if (manifestOnly) minOf(5_000, remainingObservation()) else 5_000, TimeUnit.MILLISECONDS) &&
+                routeAccepted.get() && captured.sameOwnership(readOwner()))
             instrumentation.runOnMainSync {
                 session = CachedPrototypeAbemaSession(surface.get(), replay,
-                    { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, onEvent = { event ->
-                        when (event) {
+                    { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) &&
+                        manifestClockCurrent() }, onEvent = { event ->
+                        if (manifestOnly && event in setOf(PrototypeFeedEvent.READY, PrototypeFeedEvent.VIDEO_FRAME,
+                            PrototypeFeedEvent.LICENSE_REQUESTED, PrototypeFeedEvent.LICENSE_READY)) {
+                            nativeObserved.set(true); failed.set(true); prepared.countDown()
+                        } else when (event) {
                             PrototypeFeedEvent.READY -> {
                                 session?.player?.let { surface.get().attachPlayer(it) }
                                 session?.member?.setVolume(0f); session?.member?.setTimingPlaying(true); prepared.countDown()
@@ -340,14 +393,22 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         slotInitialization.compareAndSet(null, value)
                         Unit
                     }) else null,
+                    manifestOnlySlot = manifestSlot,
+                    onManifestOnlyPrepared = if (manifestOnly) ({ value ->
+                        manifestCount.updateAndGet { (it + 1).coerceAtMost(2) }
+                        manifestSnapshot.compareAndSet(null, value)
+                        if (session?.player != null || session?.member != null) nativeObserved.set(true)
+                        prepared.countDown()
+                    }) else null,
                     ownership = if (!replay && feed.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
-                        { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) }, diagnostics))
+                        { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) &&
+                            manifestClockCurrent() }, diagnostics))
                 val created = checkNotNull(session)
                 owned.feed(checkNotNull(run), 0, created, pending = { created.cleanupPending }, knownFailed = { created.cleanupFailed }, confirmed = { created.cleanupConfirmed })
                 created.prepare(budget)
             }
-            val ready = prepared.await(55, TimeUnit.SECONDS)
-            val decoded = ready && !failed.get() && frame.await(10, TimeUnit.SECONDS) && !failed.get()
+            val ready = prepared.await(if (manifestOnly) remainingObservation() else 55_000, TimeUnit.MILLISECONDS)
+            val decoded = !manifestOnly && ready && !failed.get() && frame.await(10, TimeUnit.SECONDS) && !failed.get()
             var moved = false
             if (decoded) {
                 var firstPlayer: Player? = null
@@ -385,20 +446,29 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 }
                 movementObserved = moved
             }
-            instrumentation.runOnMainSync { accountStatus = session?.accountStatus }
+            instrumentation.runOnMainSync {
+                accountStatus = session?.accountStatus
+                if (manifestOnly && (session?.player != null || session?.member != null)) nativeObserved.set(true)
+            }
             val accountAccepted = InstrumentationRegistry.getArguments().getString("tachiaiRequireSavedAbemaAccount") != "true" ||
                 accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT
-            outcome = if (decoded && moved && accountAccepted && captured.sameOwnership(readOwner())) mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
+            val manifestObserved = manifestOnly && ready && !failed.get() && !nativeObserved.get() &&
+                manifestCount.get() == 1 && manifestSnapshot.get()?.reason == AbemaInitialManifestReason.OBSERVED &&
+                remainingObservation() > 0 && manifestClockCurrent()
+            outcome = if ((manifestObserved || decoded && moved) && accountAccepted && captured.sameOwnership(readOwner()))
+                mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
         } catch (_: Throwable) { outcome = Outcome.SAFE_FAILURE }
         finally {
             // Preserve the immutable playback evidence before disposal can
             // replace the final outcome with a cleanup refusal.
             playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
             try { instrumentation.runOnMainSync {
+                if (manifestOnly && (session?.player != null || session?.member != null)) nativeObserved.set(true)
                 active.set(false)
                 run?.let { coordinator?.prepared(it, routePreparation?.cleanupConfirmed == true); coordinator?.end(it) }
             } } catch (_: Throwable) { cleanupMainFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
-            if (run != null && !cleanupDone.await(22, TimeUnit.SECONDS)) {
+            val cleanupWait = if (manifestOnly) (observationStarted + 70_000 - SystemClock.elapsedRealtime()).coerceIn(0, 20_000) else 22_000
+            if (run != null && !cleanupDone.await(cleanupWait, TimeUnit.MILLISECONDS)) {
                 cleanupWaitExpired = true; outcome = Outcome.CLEANUP_UNCONFIRMED
             }
             try { instrumentation.runOnMainSync {
@@ -409,7 +479,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             // Keep a poisoned coordinator/backend reachable for the process.
             if (coordinator?.unavailable == true) retainedPoisoned = coordinator else worker.shutdown()
         }
-        val storesUnchanged = try { val after = encryptedRecords(context.noBackupFilesDir); val baseline = before
+        val storesUnchanged = try { val after = encryptedRecords(context.noBackupFilesDir, includeControlRecords = manifestOnly); val baseline = before
             baseline != null && baseline.keys == after.keys && baseline.all { (name, digest) -> MessageDigest.isEqual(digest, after[name]) }
         } catch (_: Throwable) { false }
         val ownerUnchanged = try { owner?.sameOwnership(readOwner()) == true } catch (_: Throwable) { false }
@@ -432,6 +502,19 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             slotInitializationCount.get() != 1 -> "REPEATED"
             else -> slotInitialization.get()?.closedSummary() ?: "UNOBSERVED"
         }
+        val releaseManifest = manifestOnly && outcome == Outcome.INITIAL_MANIFEST_OBSERVED &&
+            manifestClockCurrent() &&
+            !nativeObserved.get() && manifestCount.get() == 1 &&
+            accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged &&
+            SystemClock.elapsedRealtime() - observationStarted in 0 until 70_000 &&
+            System.currentTimeMillis() - observationWall in 0 until 70_000 &&
+            !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
+            cleanupSnapshot.state == SnapshotState.AVAILABLE &&
+            cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
+            cleanupSnapshot.sessionPending == false && cleanupSnapshot.sessionFailed == false &&
+            cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
+        val manifestSummary = if (!manifestOnly) "DISABLED" else if (!releaseManifest) "WITHHELD"
+            else manifestSnapshot.get()?.closedSummary() ?: "UNOBSERVED"
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
             "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
             "playbackOutcome=${playbackObservation?.outcome} renderedFrame=${playbackObservation?.renderedFrame} " +
@@ -441,20 +524,25 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "sessionCleanupConfirmed=${cleanupSnapshot.sessionConfirmed} webRouteBusy=${cleanupSnapshot.webRouteBusy} " +
             "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
             "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
-            "slotInitialization=$initializationSummary")
+            "slotInitialization=$initializationSummary manifestOnly=$manifestOnly nativeObserved=${nativeObserved.get()} " +
+            "initialManifest=$manifestSummary")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)
         assertTrue("Saved route owner must remain unchanged", ownerUnchanged)
+        if (manifestOnly) assertTrue("Only final clean source-only observations can be released", releaseManifest)
         assertEquals(mode.acceptedOutcome, outcome)
     }
 
-    private fun encryptedRecords(directory: File): Map<String, ByteArray> {
+    private fun encryptedRecords(directory: File, includeControlRecords: Boolean = false): Map<String, ByteArray> {
         val started = SystemClock.elapsedRealtime()
         fun bounded() = check(SystemClock.elapsedRealtime() - started in 0 until 5_000)
         check(directory.isDirectory && directory.canRead() && !Files.isSymbolicLink(directory.toPath()))
-        val files = checkNotNull(directory.listFiles()).filter { it.name.endsWith(".enc") || it.name.endsWith(".enc.bak") || it.name.endsWith(".enc.new") }
+        val files = checkNotNull(directory.listFiles()).filter { it.name.endsWith(".enc") || it.name.endsWith(".enc.bak") || it.name.endsWith(".enc.new") ||
+            includeControlRecords && (it.name.endsWith(".lock") || it.name.endsWith(".forget-pending")) }
+        if (includeControlRecords) check(checkNotNull(directory.listFiles()).none { it.name.endsWith(".bak") || it.name.endsWith(".new") })
         check(files.size in 1..64)
         return files.associate { file ->
-            bounded(); check(file.isFile && file.canRead() && !Files.isSymbolicLink(file.toPath()) && file.length() in 1..(PRIVATE_SECRET_LIMIT + 29).toLong())
+            bounded(); check(file.isFile && file.canRead() && !Files.isSymbolicLink(file.toPath()) &&
+                file.length() in (if (includeControlRecords && file.name.endsWith(".lock")) 0 else 1)..(PRIVATE_SECRET_LIMIT + 29).toLong())
             val digest = MessageDigest.getInstance("SHA-256")
             file.inputStream().use { input -> val buffer = ByteArray(8192); var size = 0
                 try { while (true) { bounded(); val count = input.read(buffer); if (count < 0) break

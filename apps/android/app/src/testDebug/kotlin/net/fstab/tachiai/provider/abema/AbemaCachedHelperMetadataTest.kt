@@ -9,7 +9,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 class AbemaCachedHelperMetadataTest {
     @Test fun slotRefusalPhasesRemainClosedAndCannotPublishPreparation() {
-        for (phase in listOf("ACCOUNT", "SLOT_REGION", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW")) {
+        for (phase in listOf("ACCOUNT", "SLOT_REGION", "SLOT_REGION_PAGE", "SLOT_REGION_CDN",
+            "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW")) {
             val value = checkNotNull(parseAbemaCachedHelperMetadata(metadata("UNKNOWN", 200, phase)))
             assertEquals(phase, value.phase)
             val evidence = AbemaCachedHelperEvidence()
@@ -101,7 +102,29 @@ class AbemaCachedHelperMetadataTest {
 
     private val channelPhases = listOf("CHANNEL_REQUEST", "CHANNEL_RESPONSE", "CHANNEL_ENVELOPE_REFUSED",
         "CHANNEL_SELECTION_REFUSED", "CHANNEL_UNAVAILABLE", "CHANNEL_DRM_REFUSED", "CHANNEL_PLAYLIST_REFUSED",
-        "CHANNEL_ALTERNATE_REFUSED", "CHANNEL_REGION", "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED")
+        "CHANNEL_ALTERNATE_REFUSED", "CHANNEL_REGION", "CHANNEL_REGION_PAGE", "CHANNEL_REGION_CDN",
+        "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED")
+
+    @Test fun returnedRegionCauseAndUnfinishedPrefixSurviveNativeTeardownWithoutInventingHelperTimeout() {
+        for (returned in listOf(metadata("NONE", 0, "SLOT_REGION_CDN"),
+            metadata("HTTP_REFUSED", 403, "SLOT_REGION_CDN"), metadata("TIMER_EXPIRED", 0, "SLOT_REGION_PAGE"))) {
+            val evidence = AbemaChannelPreparationEvidence()
+            val actual = checkNotNull(parseAbemaCachedHelperMetadata(returned))
+            evidence.observe(actual); evidence.seal()
+            for (late in listOf(metadata(), metadata("OWNED_CANCELLED", 0, "FAILED")))
+                evidence.observe(checkNotNull(parseAbemaCachedHelperMetadata(late)))
+            evidence.refuse(); evidence.seal()
+            assertSame(actual, evidence.snapshot)
+        }
+        val absent = AbemaChannelPreparationEvidence(); absent.seal()
+        absent.observe(checkNotNull(parseAbemaCachedHelperMetadata(metadata())))
+        assertNull(absent.snapshot)
+        val invalid = AbemaChannelPreparationEvidence()
+        invalid.observe(checkNotNull(parseAbemaCachedHelperMetadata(metadata("NONE", 200, "SLOT_REGION_PAGE"))))
+        invalid.refuse(); invalid.seal()
+        invalid.observe(checkNotNull(parseAbemaCachedHelperMetadata(metadata())))
+        assertNull(invalid.snapshot)
+    }
 
     @Test fun channelPhasesParseCanonicalAndLegacyShapesWithoutChangingPreparationOrHttpGates() {
         for (phase in channelPhases) {

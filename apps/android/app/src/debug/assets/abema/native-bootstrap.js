@@ -695,7 +695,7 @@
     let deviceTypeId;
     if (modernChannelContext) {
       phase = 'CHANNEL_REGION';
-      const region = freshRegion ?? await requireSlotRegion(); alive();
+      const region = freshRegion ?? await requireSlotRegion(true); alive();
       window.__CLIENT_REGION__ = region;
       installRamContext(load, identity);
       phase = 'CHANNEL_DEVICE';
@@ -919,7 +919,9 @@
       url.pathname.split('/').includes(slotId) && url.pathname.endsWith('.mpd') &&
       /^[A-Za-z0-9_./~$-]+$/.test(url.pathname);
   }
-  async function requireSlotRegion() {
+  async function requireSlotRegion(channel = false) {
+    // The caller owns this role. Provider data cannot supply phase names.
+    phase = channel ? 'CHANNEL_REGION_PAGE' : 'SLOT_REGION_PAGE';
     const bytes = await fetchBytes('https://abema.tv/now-on-air/abema-news', { credentials: 'omit', cache: 'no-store' }, 512 * 1024);
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
@@ -952,6 +954,7 @@
       // Provider status=true requires this additional CDN check. Requiring200
       // rather than its transport-error fallback is a stricter local refusal;
       // this status alone is never treated as returned Japan/country evidence.
+      phase = channel ? 'CHANNEL_REGION_CDN' : 'SLOT_REGION_CDN';
       const checked = await fetchBytes(region.cdnURL, { credentials: 'omit', cache: 'no-store' }, 4096);
       checked.fill(0);
     }

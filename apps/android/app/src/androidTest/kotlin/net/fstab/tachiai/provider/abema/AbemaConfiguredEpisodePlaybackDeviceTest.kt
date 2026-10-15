@@ -349,6 +349,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             if (failureStageCount.getAndIncrement() < 16) failureStages.add(observation.stage)
         })
         val failed = AtomicBoolean(); val active = AtomicBoolean(true)
+        val preparationFailure = AbemaPreparationFailureObservation()
         var session: CachedPrototypeAbemaSession? = null
         var run: CachedViewerCleanupCoordinator.Run? = null
         var scenario: ActivityScenario<AbemaEpisodeObservationActivity>? = null
@@ -466,7 +467,11 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                                     renderedFrame.set(true); frame.countDown()
                                 }
                             }
-                            PrototypeFeedEvent.FAILED -> { failed.set(true); prepared.countDown(); frame.countDown() }
+                            PrototypeFeedEvent.FAILED -> {
+                                preparationFailure.capture(session?.failure?.reason,
+                                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic)
+                                failed.set(true); prepared.countDown(); frame.countDown()
+                            }
                             else -> Unit
                         }
                     }, route = route, diagnostics = diagnostics,
@@ -724,6 +729,9 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
                     if (continuousCleanup == null) listenerRemoved = true // No feed/listener was allocated.
                 }
+                preparationFailure.capture(session?.failure?.reason,
+                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic)
+                preparationFailure.seal()
                 active.set(false)
                 run?.let { coordinator?.prepared(it, routePreparation?.cleanupConfirmed == true); coordinator?.end(it) }
             } } catch (_: Throwable) { cleanupMainFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
@@ -826,6 +834,16 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false
         val channelPreparationSummary = if (!channelPreparationOnly) "DISABLED" else if (!releaseChannelPreparation) "WITHHELD"
             else checkNotNull(channelPreparation).closedSummary()
+        val releasePreparationFailure = continuousSlot && manifestClockCurrent() &&
+            accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged &&
+            !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
+            cleanupSnapshot.state == SnapshotState.AVAILABLE &&
+            cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
+            cleanupSnapshot.sessionPending == false && cleanupSnapshot.sessionFailed == false &&
+            cleanupSnapshot.sessionConfirmed == true && cleanupSnapshot.webRouteBusy == false &&
+            listenerRemoved && closeWorkerTerminated
+        val preparationFailureSummary = if (!continuousSlot) "DISABLED" else if (!releasePreparationFailure) "WITHHELD"
+            else preparationFailure.snapshot?.closedSummary() ?: "UNOBSERVED"
         if (releaseChannelPreparation) outcome = Outcome.CHANNEL_PREPARATION_OBSERVED
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
             "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
@@ -837,7 +855,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "failureStages=${failureStages.joinToString(",") { it.name }} failureStagesTruncated=${failureStageCount.get() > 16} " +
             "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
             "slotInitialization=$initializationSummary manifestOnly=$manifestOnly nativeObserved=${nativeObserved.get()} " +
-            "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary modernChannelContext=$modernChannelContextOnly" +
+            "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary modernChannelContext=$modernChannelContextOnly " +
+            "preparationFailure=$preparationFailureSummary" +
             if (continuousSlot) " continuousSlot=true resolvedLinear=$resolvedLinear liveTimeline=$liveTimeline " +
                 "initialLiveStart=${initialPlayback?.stage?.name} listenerRemoved=$listenerRemoved closeWorkerTerminated=$closeWorkerTerminated" else "")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)

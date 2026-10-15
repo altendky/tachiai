@@ -26,10 +26,10 @@ private val helperPhases = setOf("MODULES", "GUEST", "ACCOUNT", "MEDIA_TOKEN", "
     "REPLAY_FREE", "REPLAY_WINDOW", "REPLAY_RESTRICTIONS", "REPLAY_TERMS", "REPLAY_RENTAL",
     "REPLAY_PRECEDENCE", "REPLAY_DEVICE", "REPLAY_TRIAL", "REPLAY_PARTNER", "REPLAY_EXTERNAL_CONTENT",
     "REPLAY_EXTERNAL_PROVIDER", "REPLAY_AUTHORITIES", "SOURCE_SESSION_REQUIRED", "SOURCE_MODE_UNSUPPORTED",
-    "SLOT_REGION", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW",
+    "SLOT_REGION", "SLOT_REGION_PAGE", "SLOT_REGION_CDN", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW",
     "CHANNEL_REQUEST", "CHANNEL_RESPONSE", "CHANNEL_ENVELOPE_REFUSED", "CHANNEL_SELECTION_REFUSED",
     "CHANNEL_UNAVAILABLE", "CHANNEL_DRM_REFUSED", "CHANNEL_PLAYLIST_REFUSED", "CHANNEL_ALTERNATE_REFUSED",
-    "CHANNEL_REGION", "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED",
+    "CHANNEL_REGION", "CHANNEL_REGION_PAGE", "CHANNEL_REGION_CDN", "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED",
     "SOURCE", "CONFIG", "LICENSE", "READY", "FAILED")
 private const val DECIMAL = "(0|[1-9][0-9]{0,6})"
 private val helperMetadataShape = Regex("""\{"phase":"([A-Z_]{1,40})","modules":$DECIMAL,"lastModule":$DECIMAL,"http":$DECIMAL(?:,"failure":"([A-Z_]{1,40})")?\}""")
@@ -87,11 +87,13 @@ internal class AbemaChannelPreparationEvidence {
     private var value: AbemaCachedHelperMetadata? = null
     private var failed = false
     private var refused = false
+    private var sealed = false
     @get:Synchronized val snapshot: AbemaCachedHelperMetadata? get() = value
     @Synchronized fun observe(value: AbemaCachedHelperMetadata) {
-        if (refused || failed) return
+        if (sealed || refused || failed) return
         this.value = value
         failed = value.failure != AbemaCachedHelperFailure.NONE
     }
-    @Synchronized fun refuse() { refused = true; value = null }
+    @Synchronized fun refuse() { if (!sealed) { refused = true; value = null } }
+    @Synchronized fun seal() { sealed = true }
 }

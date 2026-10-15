@@ -1806,6 +1806,58 @@ rebuilt and reinstalled, and the normal launcher was restored with all 20
 protected files still unchanged.
 Issue #193 remains open; this source-only option does not enable normal live playback.
 
+## Preparation failure observations — 2026-10-14
+
+The cached native session now retains its already-parsed helper prefix or first
+returned failure through teardown. Native readiness expiry has an independent
+marker; it never manufactures a JavaScript timer result. Region phases distinguish
+the public page from the conditional CDN request. The opt-in native fixture captures
+the first failure before disposal and releases only closed evidence after its
+original account, owner, protected-record, clock and completed-cleanup gates.
+Requests, preparation budgets and playback acceptance remain unchanged.
+
+On tachiai-dev, Android 16/API 36, x86-64, software graphics and WebView
+133.0.6943.137, 47 provider-free native failure/cleanup/live-start guards passed
+without skips. A regular graceful cold restart preserved the account and route
+records; local grant admission remained unexpired. The selected Windscribe
+connection's exit region was not observed. One public ongoing-Schedule observation
+then failed during shared account acquisition, before Schedule or source
+preparation: `TEMPORARY`, with no candidate returned. Only the closed diagnostic
+journal changed; the other 19 account/configuration records remained unchanged.
+
+A subsequent single production profile GET on the same saved grant and owning
+route failed after 13.904 seconds. Its cleanup-gated result was `PROFILE_REFUSED`,
+stage `RESPONSE`, HTTP `0`, one request, typed category `TEMPORARY`. This establishes
+failure before an HTTP response, not provider rejection, expiry or a need to sign
+in. All protected records remained unchanged. The positive acceptance assertion
+still failed; 22 provider-free profile-observation guards passed without skips.
+Ordinary instrumentation and the normal launcher were restored. The native
+continuous-slot check was not attempted because no fresh broadcast candidate was
+available; actual playback and the original CDN failure cause remain unverified.
+
+## Public bundle deployment comparison — 2026-10-14
+
+A bounded, cookie-free public check at 23:33–23:34 UTC found that all five
+configured runtime assets still return HTTP 200 and match their pinned size and
+SHA-256. This verifies their integrity and availability, not their currency.
+The current [public news page](https://abema.tv/now-on-air/abema-news) loads
+[application chunk 9298](https://abema.tv/assets/compat/4ad4fadda744ab29.9298.js)
+instead of pinned application chunk 5206. Its
+[application runtime](https://abema.tv/assets/compat/0325e1e8d67ded19.app.js)
+maps source chunk 8204 to
+[revision f6010ef1803f018d](https://abema.tv/assets/compat/f6010ef1803f018d.8204.bundle.js)
+instead of pinned revision 1deb672fea92d35e. The framework, source utilities
+and CSAI support assets match the other three configured pins.
+
+Earlier observations already reference chunk 9298 and the f601 source revision,
+so this check does not establish when ABEMA changed deployments. It also does
+not establish that bundle drift caused the native region-check failure. No
+automatic deployment-currency check is implemented; runtime cache verification
+and offline fixtures cannot discover a new deployment. Current pins remain
+unchanged while the current interfaces are compared against the reviewed loader
+contracts. Any replacement needs a coherent revision review and the existing
+provider-free and actual configured-source checks before execution.
+
 ## Remaining gates and issue status
 
 The original research established public identity distinctions, retention

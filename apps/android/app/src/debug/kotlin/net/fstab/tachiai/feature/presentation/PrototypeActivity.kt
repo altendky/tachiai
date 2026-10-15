@@ -11,7 +11,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
-import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -221,7 +220,6 @@ open class PrototypeActivity : ComponentActivity() {
             profileConfigured = true
         }
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onBackPressedDispatcher.addCallback(this) {
             if (budget != null) stopToPicker("Playback stopped.") else finish()
         }

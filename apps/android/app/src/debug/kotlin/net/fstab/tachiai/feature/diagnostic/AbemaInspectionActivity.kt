@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.util.Log
-import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
@@ -62,7 +61,6 @@ class AbemaInspectionActivity : ComponentActivity() {
             }
             net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())

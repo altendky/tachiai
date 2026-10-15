@@ -1,5 +1,12 @@
 # Product-flow prototype
 
+## Screen timeout
+
+Main pages, source selection, settings, account pages and diagnostic helpers
+follow Android's normal screen timeout. Native video views request keep-awake
+while visible; hiding or removing those views releases their request. Activities
+and authentication popups do not request keep-awake for the whole window.
+
 ## Remembered ABEMA account renewal — October 14
 
 The debug application checks saved ABEMA accounts on foreground startup and

@@ -10,7 +10,6 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.view.View
-import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
@@ -212,7 +211,6 @@ open class AbemaOpaqueBrokerActivity : ComponentActivity() {
         Log.d("TachiaiAbemaBroker", "capturePath=${if (originalOnly) "NONE" else if (sharedDashCapture) "SHARED_DASH" else "LEGACY_LOAD"}")
         if (!profileConfigured) { WebView.setDataDirectorySuffix("abema-opaque-broker"); profileConfigured = true }
         if (profileConfigured) net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())

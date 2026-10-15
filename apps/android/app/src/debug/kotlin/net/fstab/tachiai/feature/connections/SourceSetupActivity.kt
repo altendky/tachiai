@@ -2,7 +2,6 @@ package net.fstab.tachiai.feature.connections
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,7 +33,7 @@ class SourceSetupActivity : ComponentActivity() {
         source = runCatching { PrototypeSource.valueOf(checkNotNull(intent.getStringExtra(SOURCE))) }.getOrNull()
             ?: run { finish(); return }
         settings = sourceSetupStore(this)
-        enableEdgeToEdge(); window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {
             val value = initial
             if (value == null) androidx.compose.material3.Text(message ?: "Reading source setup…")

@@ -70,6 +70,74 @@ application ID before updating
 with `adb install -r` and launches Tachiai's normal entry point. A wrong signer
 or failed update stops; there is no uninstall/reinstall fallback.
 
+## Local inspection build
+
+The full-app `inspect` variant is for explicitly opted-in local debugging. Its
+launcher is **Tachiai Inspect**, its version ends in `-inspect`, and its APK is
+`apps/android/app/build/outputs/apk/inspect/app-inspect.apk`. It uses the same
+application ID and shared debug signing key as ordinary development builds, so
+an update preserves saved accounts, selected routes and isolated browser profiles.
+It replaces the existing development installation rather than creating a second
+account setup. It is `testOnly`; never distribute or release it.
+
+From `apps/android`, using the normal documented Android build environment:
+
+```sh
+./gradlew -PtachiaiLocalInspection=true :app:assembleInspect
+```
+
+Without the explicit opt-in the variant is unavailable. Inspect creation is
+refused under `CI` or `GITHUB_ACTIONS`, including when the opt-in is supplied.
+Existing CI builds normal variants and checks inspection/release boundaries
+without producing an inspect APK. Continue to verify the APK with `apksigner
+verify --print-certs` against the documented shared debug certificate before
+installation; do not create or replace a signing key.
+
+After verifying the requested device identity, update it explicitly:
+
+```sh
+adb -s SERIAL install -r -t apps/android/app/build/outputs/apk/inspect/app-inspect.apk
+```
+
+The `-t` permits this test-only APK. Restore the ordinary build with `adb -s
+SERIAL install -r apps/android/app/build/outputs/apk/debug/app-debug.apk`; do not
+uninstall or clear app data. The persistent-emulator install helper consumes the
+ordinary debug APK, so use the explicit command above for inspect.
+
+All app windows, including provider login pages and popup dialogs, permit capture
+in inspect. Every WebView process keeps DevTools enabled, including after closing
+another browser surface. Use Chrome's `chrome://inspect/#devices` with the
+explicitly connected device to inspect live WebViews. The user has authorized
+screenshots, UI hierarchy inspection and interactive DOM tooling on these login
+and account pages; provider credential entry remains user-controlled. Keep
+secrets out of automatic logs and retained artifacts. See the exact
+[inspection scope](security-and-privacy.md#local-inspection-build-approval--2026-10-15).
+Android/DRM may still protect a media surface independently; inspect does not
+override those platform protections.
+
+For native navigation without exporting normal internal activities:
+
+```sh
+adb -s SERIAL shell am start -n net.fstab.tachiai/.feature.diagnostic.InspectionControlActivity --es screen providers
+```
+
+The closed `screen` choices are `providers`, `routes`, `prototype`,
+`abema-account` and `twitch-account`. An account destination may use `--es
+PROVIDER_INSTANCE_ID ID` to select a validated provider instance. The dispatcher
+is enabled only for inspect and does not accept arbitrary components or URLs.
+Open provider sign-in through the normal account screen so its route, owner and
+handoff checks still run. Inspection diagnostics identify the selected route and
+request host/status without logging query strings or tokens.
+
+Acceptance for issue #248 requires a phone check before merge: verify the
+inspect identity, preserved settings, native navigation, login-page capture/UI
+access and DevTools access in the isolated approval process. Also check popup
+capture and that opening/closing other WebViews does not disable inspection.
+Verify normal debug/release protections separately. A build or emulator check
+alone is not phone acceptance; record limitations rather than inferring success.
+
+## Emulator runtime
+
 For a visible window, start from the desktop session. For agent-only operation:
 
 ```sh
@@ -172,7 +240,9 @@ Use the helper's `--state-dir /absolute/local/path` before the subcommand for a
 different location. Device state inside the repository is rejected. All commands
 must use the same state directory. Generated VM files, snapshots, authorization
 and routes stay outside Git. Treat the device disks and screenshots as sensitive
-when logged in; do not export snapshots or capture activation/login screens.
+when logged in; do not export snapshots. Ordinary builds prohibit capturing
+activation/login screens; the explicit local `inspect` exception above permits
+authorized debugging capture without changing image-retention rules.
 The helper sets a private creation umask; normal host filesystem security remains
 necessary and this is not whole-disk encryption.
 

@@ -66,6 +66,13 @@ repos:
         files: '^scripts/verify-release-isolation\.py$|^apps/android/app/build\.gradle\.kts$'
         pass_filenames: false
 
+      - id: inspection-policy
+        name: Local inspection access and build isolation guards
+        entry: uv run scripts/verify-inspection-policy.py --self-test --check
+        language: system
+        files: '^scripts/verify-inspection-policy\.py$|^apps/android/app/(build\.gradle\.kts|src/.*\.(kt|java|xml))$|^\.github/workflows/|^\.pre-commit-config\.yaml$'
+        pass_filenames: false
+
       - id: abema-eme-startup-tests
         name: ABEMA EME startup observer fixture tests
         entry: node --test scripts/tests/abema-eme-startup.test.cjs

@@ -274,7 +274,7 @@ internal class CachedPrototypeAbemaSession(
     @SuppressLint("MissingOnRenderProcessGone")
     private fun configureBrowser() {
         // Activity chooses its dedicated process/profile before construction.
-        WebView.setWebContentsDebuggingEnabled(false)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         view.configureSecureSettings()
         view.settings.domStorageEnabled = false
         view.settings.blockNetworkImage = true

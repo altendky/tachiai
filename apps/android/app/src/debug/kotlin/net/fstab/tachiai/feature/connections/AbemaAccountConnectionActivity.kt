@@ -31,7 +31,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) { finish(); return }
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
         setContent { TachiaiPrototypeTheme {
             BackHandler { finish() }
             val current = controller

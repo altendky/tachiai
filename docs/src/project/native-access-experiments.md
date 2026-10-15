@@ -52,6 +52,21 @@ the successor grant also passed with unchanged saved records. These observations
 satisfy the real renewal case in [issue #242](https://github.com/altendky/tachiai/issues/242);
 actual interaction-required and physical-device cases remain unverified.
 
+After a later idle period, another naturally expired renewal observation failed
+its generic fixture check in 82.016 seconds. Exactly two files changed: the native
+account record and `shared_prefs/AwOriginVisitLoggerPrefs.xml`; the other 18 records
+and inventory were unchanged. Chromium uses that exact preference for
+[WebView visit metrics](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/android_webview/java/src/org/chromium/android_webview/metrics/AwSiteVisitLogger.java).
+The generic catch did not retain which assertion failed, so this run remains a
+failed renewal observation. A separate audit passed local current-grant checks
+and one production profile GET, including decoded subject/expiry, stored
+generation/revision, route owner and confirmed cleanup, with all 20 records
+unchanged during the audit. Only that audited account/metrics delta was adopted
+for subsequent playback preservation checks. No manual sign-in, clock change or
+browser reset occurred. The renewal fixture's treatment of engine metrics
+remains a test-maintenance gap; this does not revise the earlier successful
+same-account renewal observation.
+
 ## Continuous broadcast live mode — 2026-10-14
 
 The user chose to open an airing broadcast at its channel's live edge and keep
@@ -91,9 +106,59 @@ retried. The coordinator finished, session/listener/worker cleanup was confirmed
 and the route owner and all protected records were unchanged. The ordinary test
 manifest/APK and launcher were restored after the observation.
 
-Actual continuous native license/frame/movement, a real broadcast-end
-transition, sustained use, positive Premium/Chase authority and physical-device
-behavior remain unverified. Account renewal is tracked separately in
+A later saved-account probe failed in 50.974 seconds without a frame or
+movement, despite resolving the selected broadcast to linear playback. Its
+source-preparation stage could also have come from cleanup cancellation; it did
+not identify a worker exception. Memory-only preparation evidence now freezes
+the actual phase and pending flags before teardown, and the fixture retains
+nonterminal helper progress separately from a native failure.
+
+The next probe reached a live timeline, settled its initial live-default seek
+and rendered a frame, but failed movement in 52.043 seconds with PLAYBACK_LIMIT.
+Another probe created the native host but did not become ready. Its closed
+event trace placed manifest loading, native buffering and the initial DRM
+request only about five seconds before final publication. These runs preserved
+the account, route owner and all 20 protected records, and confirmed session,
+listener, worker and route cleanup. They establish partial startup, not
+advancing playback or the exact producer of PLAYBACK_LIMIT.
+
+The continuous fixture previously shared just 50 seconds across setup and
+playback. It now permits one 90-second observation from the original start, plus
+at most 20 seconds for cleanup, with no deadline reset at readiness or the first
+frame. Manifest-only observations retain 50+20 seconds. Production preparation,
+binding, license-exchange and playback limits are unchanged. The new timing
+summary retains first startup/frame marks and sampler result/states without
+media positions, timeline identities or provider values.
+
+The final muted ACCOUNT observation passed in 25.587 seconds, one test and zero
+skips. A fresh owning-route Schedule lookup supplied
+`abema-anime/9QLZ8Hfks7ttBy`. The unchanged production session resolved that exact
+currently-airing selection to its continuous channel, completed the fresh native
+DRM exchange and initial live-default settlement, rendered a frame, and passed
+the strict READY-pair movement check with matching window, period and continuity
+witnesses. Fixture timings placed initial preparation at 22.422 seconds, the
+accepted frame at 22.932 seconds and successful movement at 24.447 seconds;
+65.553 seconds remained in the original observation window. The run completed
+within the old 50-second window too, so it does not establish that the larger
+allowance alone explains the earlier failures.
+
+Device conditions were persistent tachiai-dev, Android 16/API 36, x86-64,
+WebView 133.0.6943.137, software graphics with KVM, saved ACCOUNT and Windscribe
+route; exit country was not independently observed. All 20 protected records
+and the route owner were unchanged from the separately audited current baseline.
+Session, listener, close-worker, scenario and route cleanup were confirmed.
+Ordinary instrumentation and the normal launcher were restored afterward.
+
+One intervening fresh Schedule lookup reported INVALID_RESPONSE; that fixture
+had collapsed runtime and projection failures into the same outcome. A later
+lookup with refined closed reporting passed through the saved Windscribe route:
+SCHEDULE_SNAPSHOT, projection invoked and stripping successful. The earlier
+failure's cause remains unknown. No stale lead was used for playback.
+
+A real broadcast-end transition, sustained use, positive Premium/Chase authority
+and physical-device behavior remain unverified. The short positive case is not
+evidence of those capabilities.
+Account renewal was separately verified in
 [issue #242](https://github.com/altendky/tachiai/issues/242); authentication work
 does not extend the native license or playback budgets.
 

@@ -300,6 +300,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val manifestOnly = mode == ObservationMode.CONFIGURED_MANIFEST
         val continuousSlot = mode == ObservationMode.CONTINUOUS_SLOT
         val boundedObservation = manifestOnly || continuousSlot
+        val boundedTiming = if (continuousSlot) AbemaBoundedPlaybackTiming.CONTINUOUS else AbemaBoundedPlaybackTiming.MANIFEST
         check(!channelPreparationOnly || manifestOnly)
         check(!modernChannelContextOnly || manifestOnly && channelPreparationOnly)
         val manifestSlot = if (manifestOnly) AbemaSlotRequest.from(CatalogResource(ProviderId("abema"),
@@ -307,7 +308,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         val manifestSnapshot = AtomicReference<AbemaInitialManifestSnapshot?>()
         val manifestCount = AtomicInteger()
         val nativeObserved = AtomicBoolean()
-        val observationEnd = observationStarted + if (boundedObservation) 50_000 else 70_000
+        val observationEnd = observationStarted + if (boundedObservation) boundedTiming.observationMs else 70_000
         fun remainingObservation() = (observationEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
         val wallHigh = AtomicLong(observationWall)
         val clockRefused = AtomicBoolean()
@@ -318,8 +319,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 val wall = System.currentTimeMillis()
                 val elapsed = SystemClock.elapsedRealtime()
                 val previous = wallHigh.getAndUpdate { maxOf(it, wall) }
-                if (wall < previous || wall - observationWall !in 0 until 70_000 ||
-                    elapsed - observationStarted !in 0 until 70_000) clockRefused.set(true)
+                if (wall < previous || wall - observationWall !in 0 until boundedTiming.totalMs ||
+                    elapsed - observationStarted !in 0 until boundedTiming.totalMs) clockRefused.set(true)
                 !clockRefused.get()
             }
         }
@@ -350,6 +351,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
         })
         val failed = AtomicBoolean(); val active = AtomicBoolean(true)
         val preparationFailure = AbemaPreparationFailureObservation()
+        val continuousProgress = if (continuousSlot) AbemaContinuousPlaybackObservation(observationStarted, observationEnd) else null
         var session: CachedPrototypeAbemaSession? = null
         var run: CachedViewerCleanupCoordinator.Run? = null
         var scenario: ActivityScenario<AbemaEpisodeObservationActivity>? = null
@@ -420,7 +422,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             check(!boundedObservation || remainingObservation() > 0)
             val duration = if (boundedObservation) remainingObservation() else 70_000L
             val budget = NativePlaybackBudget(duration, { active.get() && surface.get().observationActive.get() &&
-                manifestClockCurrent() }, maximumDurationMs = 70_000)
+                manifestClockCurrent() }, maximumDurationMs = if (continuousSlot) boundedTiming.observationMs else 70_000)
             val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
             lateinit var owned: CachedViewerCleanupCoordinator
             instrumentation.runOnMainSync {
@@ -464,12 +466,14 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                             }
                             PrototypeFeedEvent.VIDEO_FRAME -> {
                                 if (!continuousSlot || initialPlayback?.stage == ConfiguredTwitchInitialPlayback.Stage.PREPARED) {
+                                    continuousProgress?.frame(SystemClock.elapsedRealtime())
                                     renderedFrame.set(true); frame.countDown()
                                 }
                             }
                             PrototypeFeedEvent.FAILED -> {
                                 preparationFailure.capture(session?.failure?.reason,
-                                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic)
+                                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic,
+                                    session?.nativePreparationDiagnostic)
                                 failed.set(true); prepared.countDown(); frame.countDown()
                             }
                             else -> Unit
@@ -571,7 +575,10 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                                     }
                                 }
                                 when (stage) {
-                                    ConfiguredTwitchInitialPlayback.Stage.PREPARED -> prepared.countDown()
+                                    ConfiguredTwitchInitialPlayback.Stage.PREPARED -> {
+                                        continuousProgress?.prepared(SystemClock.elapsedRealtime())
+                                        prepared.countDown()
+                                    }
                                     ConfiguredTwitchInitialPlayback.Stage.REFUSED -> startupFailed()
                                     else -> if (!main.postDelayed(this, 100)) startupFailed()
                                 }
@@ -590,6 +597,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             if (decoded && continuousSlot) {
                 val sampler = ConfiguredTwitchMovementSampler(observationEnd, SystemClock.elapsedRealtime(), true,
                     SystemClock::elapsedRealtime)
+                continuousProgress?.beginSampling(SystemClock.elapsedRealtime())
                 while (sampler.result == ConfiguredTwitchMovementSampler.Result.PENDING &&
                     SystemClock.elapsedRealtime() < sampler.deadline) {
                     instrumentation.runOnMainSync {
@@ -638,6 +646,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         if (pause > 0) Thread.sleep(pause)
                     }
                 }
+                continuousProgress?.endSampling(SystemClock.elapsedRealtime(), sampler.result,
+                    sampler.firstSampleState, sampler.lastSampleState)
                 moved = sampler.result == ConfiguredTwitchMovementSampler.Result.MOVED
                 movementObserved = moved
             } else if (decoded) {
@@ -692,6 +702,9 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     val sameTimeline = window != null && period != null && !window.isPlaceholder && !period.isPlaceholder &&
                         period.windowIndex == windowIndex && window.uid == movementWindow && period.uid == movementPeriod &&
                         continuity.generation == movementGeneration
+                    continuousProgress?.eligibility(sameTimeline, !continuity.overflowed &&
+                        session?.player === continuityPlayer && continuity.generation == movementGeneration &&
+                        initialPlayback?.preparedFor(session?.member, session?.player) == true)
                     moved = moved && liveTimeline && sameTimeline && timing != null && timing.live && timing.dynamic &&
                         !timing.playingAd && timing.playing && timing.playWhenReady && timing.state == Player.STATE_READY &&
                         session?.failure == null && session?.canContinue() == true && session?.player === continuityPlayer &&
@@ -715,7 +728,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                 mode.acceptedOutcome else Outcome.PLAYBACK_REFUSED
         } catch (_: Throwable) { outcome = Outcome.SAFE_FAILURE }
         finally {
-            val continuousCleanupEnd = minOf(observationStarted + 70_000, SystemClock.elapsedRealtime() + 20_000)
+            val continuousCleanupEnd = boundedTiming.cleanupEnd(observationStarted, SystemClock.elapsedRealtime())
             // Preserve the immutable playback evidence before disposal can
             // replace the final outcome with a cleanup refusal.
             playbackObservation = PlaybackObservation(outcome, renderedFrame.get(), movementObserved)
@@ -730,13 +743,15 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     if (continuousCleanup == null) listenerRemoved = true // No feed/listener was allocated.
                 }
                 preparationFailure.capture(session?.failure?.reason,
-                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic)
+                    session?.nativeReadinessDeadlineReached == true, session?.helperPreparationDiagnostic,
+                    session?.nativePreparationDiagnostic)
                 preparationFailure.seal()
+                continuousProgress?.seal()
                 active.set(false)
                 run?.let { coordinator?.prepared(it, routePreparation?.cleanupConfirmed == true); coordinator?.end(it) }
             } } catch (_: Throwable) { cleanupMainFailed = true; outcome = Outcome.CLEANUP_UNCONFIRMED }
             val cleanupWait = if (continuousSlot) (continuousCleanupEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
-                else if (manifestOnly) (observationStarted + 70_000 - SystemClock.elapsedRealtime()).coerceIn(0, 20_000) else 22_000
+                else if (manifestOnly) (observationStarted + boundedTiming.totalMs - SystemClock.elapsedRealtime()).coerceIn(0, boundedTiming.cleanupMs) else 22_000
             if (run != null && !cleanupDone.await(cleanupWait, TimeUnit.MILLISECONDS)) {
                 cleanupWaitExpired = true; outcome = Outcome.CLEANUP_UNCONFIRMED
             }
@@ -811,8 +826,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             manifestClockCurrent() &&
             !nativeObserved.get() && manifestCount.get() == 1 &&
             accountStatus == AbemaAccountAccessIpc.Status.ACCOUNT && storesUnchanged && ownerUnchanged &&
-            SystemClock.elapsedRealtime() - observationStarted in 0 until 70_000 &&
-            System.currentTimeMillis() - observationWall in 0 until 70_000 &&
+            SystemClock.elapsedRealtime() - observationStarted in 0 until boundedTiming.totalMs &&
+            System.currentTimeMillis() - observationWall in 0 until boundedTiming.totalMs &&
             !cleanupMainFailed && !cleanupWaitExpired && !scenarioCloseFailed &&
             cleanupSnapshot.state == SnapshotState.AVAILABLE &&
             cleanupSnapshot.phase == CachedViewerCleanupCoordinator.Run.Phase.FINISHED &&
@@ -844,6 +859,8 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             listenerRemoved && closeWorkerTerminated
         val preparationFailureSummary = if (!continuousSlot) "DISABLED" else if (!releasePreparationFailure) "WITHHELD"
             else preparationFailure.snapshot?.closedSummary() ?: "UNOBSERVED"
+        val continuousProgressSummary = if (!continuousSlot) "DISABLED" else if (!releasePreparationFailure) "WITHHELD"
+            else continuousProgress?.snapshot?.closedSummary() ?: "UNOBSERVED"
         if (releaseChannelPreparation) outcome = Outcome.CHANNEL_PREPARATION_OBSERVED
         Log.i("TachiaiAbemaConfigured", "source=${mode.name} outcome=$outcome sdk=${Build.VERSION.SDK_INT} " +
             "routeMode=$routeMode accountStatus=$accountStatus storesUnchanged=$storesUnchanged ownerUnchanged=$ownerUnchanged " +
@@ -856,7 +873,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             "cleanupMainFailed=$cleanupMainFailed cleanupWaitExpired=$cleanupWaitExpired scenarioCloseFailed=$scenarioCloseFailed " +
             "slotInitialization=$initializationSummary manifestOnly=$manifestOnly nativeObserved=${nativeObserved.get()} " +
             "initialManifest=$manifestSummary channelPreparation=$channelPreparationSummary modernChannelContext=$modernChannelContextOnly " +
-            "preparationFailure=$preparationFailureSummary" +
+            "preparationFailure=$preparationFailureSummary continuousProgress=$continuousProgressSummary" +
             if (continuousSlot) " continuousSlot=true resolvedLinear=$resolvedLinear liveTimeline=$liveTimeline " +
                 "initialLiveStart=${initialPlayback?.stage?.name} listenerRemoved=$listenerRemoved closeWorkerTerminated=$closeWorkerTerminated" else "")
         assertTrue("Saved protected records must remain unchanged", storesUnchanged)

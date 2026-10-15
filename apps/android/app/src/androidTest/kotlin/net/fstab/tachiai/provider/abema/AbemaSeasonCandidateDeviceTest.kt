@@ -78,6 +78,22 @@ class AbemaSeasonCandidateDeviceTest {
         catch (_: Throwable) { failHarness(phases, Observation.ONGOING_CANDIDATE) }
     }
 
+    @Test fun ongoingRuntimeDiagnosticsWhitelistCategoriesAndWithholdEveryFieldWithoutProof() {
+        for (category in listOf("SCHEDULE_SNAPSHOT", "GUEST_SCHEDULE_RESPONSE", "GUEST_SCHEDULE_TRANSPORT")) {
+            assertEquals("runtimeCategory=$category projectionInvoked=true stripSucceeded=false",
+                abemaOngoingRuntimeDiagnostic(category, true, false, true))
+        }
+        for (unknown in listOf("https://synthetic.invalid/private", "GUEST_SCHEDULE_PRIVATE_VALUE", "SCHEDULE_SNAPSHOT\nprivate")) {
+            val summary = abemaOngoingRuntimeDiagnostic(unknown, false, false, true)
+            assertEquals("runtimeCategory=OTHER projectionInvoked=false stripSucceeded=false", summary)
+            assertFalse(summary.contains(unknown))
+        }
+        assertEquals("runtimeCategory=UNOBSERVED projectionInvoked=false stripSucceeded=false",
+            abemaOngoingRuntimeDiagnostic(null, false, false, true))
+        assertEquals("runtimeCategory=WITHHELD projectionInvoked=WITHHELD stripSucceeded=WITHHELD",
+            abemaOngoingRuntimeDiagnostic("GUEST_SCHEDULE_RESPONSE", true, true, false))
+    }
+
     @Test fun optInOnlyAdoptsAndDestroysTheIdleGuestActivity() {
         val instrumentation = verifiedProbeInstrumentation("tachiaiReadOnlyAbemaSeasonCandidateHarness")
         val phases = HarnessPhases(); val active = AtomicBoolean()
@@ -352,13 +368,16 @@ class AbemaSeasonCandidateDeviceTest {
                 lead.candidate == null -> if (ongoing) "NO_ONGOING_LEAD" else "NO_CATCHUP_LEAD"
                 else -> if (ongoing) "ONGOING_PUBLIC_LEAD" else "EXPLICIT_FREE_ENDED_LEAD"
             }
+            val runtimeDiagnostic = if (ongoing) " " + abemaOngoingRuntimeDiagnostic(value?.category,
+                environment.ongoingProjectionInvoked.get(), environment.ongoingStripSucceeded.get(),
+                cleanupConfirmed && unchanged && current && bounded) else ""
             // This public tuple is a lead only. A later operation independently
             // checks its exact current occurrence/source; no rights are inferred.
             Log.i(observation.tag, "outcome=$outcome eligibleRows=${lead?.eligibleRows ?: 0} " +
                 "candidateChannel=${lead?.candidate?.channelId ?: "NONE"} candidateSlot=${lead?.candidate?.slotId ?: "NONE"} " +
                 "sdk=${Build.VERSION.SDK_INT} routeMode=${owner.instance.setup.route!!.mode.name} " +
                 "accountFailure=${environment.accountFailure.get()?.name ?: "NONE"} " +
-                "preparationRefused=${value?.category == "PREPARATION_REFUSED"}")
+                "preparationRefused=${value?.category == "PREPARATION_REFUSED"}$runtimeDiagnostic")
             phases.at(HarnessPhase.RESULT_CHECK) {
                 val label = if (ongoing) "Ongoing" else "Catchup"
                 assertTrue("$label candidate observation exceeded bounded budgets", bounded)
@@ -584,6 +603,8 @@ class AbemaSeasonCandidateDeviceTest {
         val scheduleShapes = AtomicReference<AbemaScheduleShapeObservation.Counts?>()
         val catchupCandidate = AtomicReference<AbemaScheduleCatchupCandidateObservation.Stripped?>()
         val ongoingCandidate = AtomicReference<AbemaScheduleOngoingCandidateObservation.Stripped?>()
+        val ongoingProjectionInvoked = AtomicBoolean()
+        val ongoingStripSucceeded = AtomicBoolean()
         val accountFailure = AtomicReference<AbemaAccountFailure?>()
         private val scheduleWallMs = if (observation in setOf(Observation.SCHEDULE_SHAPE, Observation.CATCHUP_CANDIDATE, Observation.ONGOING_CANDIDATE))
             System.currentTimeMillis() else null
@@ -653,7 +674,9 @@ class AbemaSeasonCandidateDeviceTest {
                         catchupCandidate.set(stripped)
                         callback(stripped?.raw)
                     } else {
+                        ongoingProjectionInvoked.set(true)
                         val stripped = AbemaScheduleOngoingCandidateObservation.strip(raw)
+                        ongoingStripSucceeded.set(stripped != null)
                         ongoingCandidate.set(stripped)
                         callback(stripped?.raw)
                     }
@@ -895,4 +918,20 @@ class AbemaSeasonCandidateDeviceTest {
             StrippedSlotProjection(JSONObject.quote(value.toString()), SlotShapes(fields))
         }.getOrNull()
     }
+}
+
+// Exact runtime outcomes only; provider strings and unknown future categories
+// cannot become diagnostic text. Publication proof is independent of success.
+internal fun abemaOngoingRuntimeDiagnostic(category: String?, projectionInvoked: Boolean,
+    stripSucceeded: Boolean, mayPublish: Boolean): String {
+    if (!mayPublish) return "runtimeCategory=WITHHELD projectionInvoked=WITHHELD stripSucceeded=WITHHELD"
+    val allowed = setOf("SCHEDULE_SNAPSHOT", "PREPARATION_REFUSED", "RUNTIME_REFUSED", "ROUTE_REFUSED",
+        "OWNER_CHANGED", "TIMEOUT", "CANCELLED", "CLEANUP_FAILED", "STATUS_REFUSED", "NAVIGATION_REFUSED",
+        "RESOURCE_REFUSED", "TLS_REFUSED", "RENDERER_GONE", "GUEST_HTTP", "GUEST_RESPONSE", "GUEST_POLICY",
+        "GUEST_RUNTIME", "GUEST_TIMEOUT", "GUEST_SCHEDULE_RESPONSE", "GUEST_SCHEDULE_TIMEOUT",
+        "GUEST_SCHEDULE_TRANSPORT", "GUEST_SCHEDULE_REDIRECT", "GUEST_SCHEDULE_HTTP_401", "GUEST_SCHEDULE_HTTP_403",
+        "GUEST_SCHEDULE_HTTP_404", "GUEST_SCHEDULE_HTTP_410", "GUEST_SCHEDULE_HTTP_429", "GUEST_SCHEDULE_HTTP_3XX",
+        "GUEST_SCHEDULE_HTTP_4XX", "GUEST_SCHEDULE_HTTP_5XX", "GUEST_SCHEDULE_HTTP_OTHER")
+    val closed = if (category == null) "UNOBSERVED" else category.takeIf { it in allowed } ?: "OTHER"
+    return "runtimeCategory=$closed projectionInvoked=$projectionInvoked stripSucceeded=$stripSucceeded"
 }

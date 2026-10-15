@@ -73,6 +73,22 @@ URLs, identity or license bytes enter these projections. Missing callbacks or
 renderer death may still prevent collection, and new diagnostics cannot
 recover the cause of an earlier discarded error.
 
+The cached native session also retains a memory-only preparation phase, pending
+source/license flags, whether a native host was created, and the first current
+worker exception's fixed category. It never reads exception messages, causes or
+class names. Teardown freezes the observations before clearing pending work;
+host creation and an absent exception do not establish playback readiness.
+
+The opted-in continuous-broadcast fixture preserves helper progress even when
+there is no terminal native reason. It keeps progress separate from failure,
+then seals both before disposal. Bounded startup/frame/sampler timings and fixed
+sampler states explain how the observation window was consumed without exporting
+media positions or timeline identities. These summaries require the existing
+account, owner, saved-record, clock and confirmed-cleanup proofs. The Schedule
+lead fixture similarly exposes only an allowlisted runtime category and two
+projection flags after its preservation and cleanup checks. None of these
+observations grants playback authority or changes production deadlines.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

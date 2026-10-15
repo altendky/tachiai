@@ -3,7 +3,6 @@ package net.fstab.tachiai.feature.diagnostic
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.util.Log
-import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
@@ -41,7 +40,6 @@ class BrowserLabActivity : ComponentActivity() {
     @SuppressLint("MissingOnRenderProcessGone")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Deliberately no FLAG_SECURE: screenshots of this fixture are allowed.
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection(true)
         Log.d("TachiaiLab", "mode=FIXTURE_ONLY inspection=true screenshots=true")

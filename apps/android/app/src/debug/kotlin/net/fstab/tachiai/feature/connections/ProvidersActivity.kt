@@ -2,7 +2,6 @@ package net.fstab.tachiai.feature.connections
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,7 +25,7 @@ class ProvidersActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) { finish(); return }
-        enableEdgeToEdge(); window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {
             val value = settings
             if (value == null) Text(message ?: "Reading provider setup…")

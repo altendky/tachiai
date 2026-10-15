@@ -9,7 +9,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -69,7 +68,6 @@ class AbemaCachedHelperActivity : ComponentActivity() {
             profileConfigured = true
         }
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())

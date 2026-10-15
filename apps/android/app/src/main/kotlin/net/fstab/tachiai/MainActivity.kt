@@ -2,7 +2,6 @@ package net.fstab.tachiai
 
 import android.os.Bundle
 import android.content.Intent
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -92,7 +91,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         reportDebugLaunch(DebugLaunchSource.CREATE)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
         setContent {
             DebugLaunchTheme(debugLaunch.revision) {

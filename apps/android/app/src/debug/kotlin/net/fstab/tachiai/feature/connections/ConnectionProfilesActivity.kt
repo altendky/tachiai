@@ -7,7 +7,6 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
@@ -49,7 +48,6 @@ class ConnectionProfilesActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) { finish(); return }
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store = connectionProfileStore(this)
         onBackPressedDispatcher.addCallback(this) { if (draft != null) discard() else finish() }
         setContent {

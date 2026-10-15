@@ -496,7 +496,8 @@ unknown destinations and errors hide it. Android
 an iframe may request the window, so the parent page is not evidence of the
 requester's origin. Navigation checks are defense in depth, not a guarantee
 that no server redirect can initiate a network request before being stopped.
-The separate popup window also receives `FLAG_SECURE` and `FLAG_KEEP_SCREEN_ON`.
+The separate popup window follows the build's screenshot-protection policy and
+does not request keep-awake.
 Authentication-session pages suppress default JavaScript dialogs and console
 forwarding; default WebView script dialogs do not inherit the secure flag.
 Ordinary playback panes retain popup denial and their previous defaults.

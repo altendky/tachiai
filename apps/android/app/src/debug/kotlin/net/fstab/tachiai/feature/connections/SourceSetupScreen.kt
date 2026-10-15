@@ -45,22 +45,33 @@ internal fun SourceSetupScreen(source: PrototypeSource, initial: SourceSetup, pr
     var default by rememberSaveable(source.name, stateSaver = routeSaver) { mutableStateOf(initial.defaultRoute) }
     var a by rememberSaveable(source.name, stateSaver = routeSaver) { mutableStateOf(initial.feedA) }
     var b by rememberSaveable(source.name, stateSaver = routeSaver) { mutableStateOf(initial.feedB) }
+    var savedName by rememberSaveable(source.name) { mutableStateOf(initial.name) }
+    fun saveChanges() { onSave(SourceSetup(savedName, default, a, b)) }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Source setup", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         Text(source.title)
-        Text("These are the four existing live/replay resources. Channel and replay browsing are not implemented yet.")
-        OutlinedTextField(name, { if (it.length <= 64) name = it }, label = { Text("Source name · max 64 characters") }, singleLine = true, enabled = !busy)
-        Text("System network follows Android’s current connection, which may already include a VPN. Saved profiles are configured only: their playback routing is not implemented yet.")
+        SettingsSection("Name")
+        OutlinedTextField(name, {
+            if (it.length <= 64) {
+                name = it
+                if (validSourceSetupName(it.trim()) && savedName != it.trim()) {
+                    savedName = it.trim()
+                    saveChanges()
+                }
+            }
+        }, label = { Text("Source name · max 64 characters") }, singleLine = true, enabled = !busy,
+            isError = !validSourceSetupName(name.trim()))
+        if (!validSourceSetupName(name.trim())) Text("Enter a name of 1–64 characters. The previous valid name is retained.")
+        SettingsSection("Connection", "System network follows Android’s current connection, which may already include a VPN. Saved profiles here are configured only: playback routing from this legacy setup is not implemented.")
         Button(onClick = onImport, enabled = !busy) { Text("Add connection · setup / import") }
-        RouteOptions("Source default connection", default, profiles, false, !busy) { default = it }
-        Text("Optional feed overrides let two copies of this source use different connections. A/B identifies the feeds, not primary/floating video.")
-        RouteOptions("Feed A connection", a, profiles, true, !busy) { a = it }
-        RouteOptions("Feed B connection", b, profiles, true, !busy) { b = it }
+        RouteOptions("Source default connection", default, profiles, false, !busy) { if (default != it) { default = it; saveChanges() } }
+        SettingsSection("Feed overrides", "Optional feed overrides let two copies of this source use different connections. A/B identifies the feeds, not primary/floating video.")
+        RouteOptions("Feed A connection", a, profiles, true, !busy) { if (a != it) { a = it; saveChanges() } }
+        RouteOptions("Feed B connection", b, profiles, true, !busy) { if (b != it) { b = it; saveChanges() } }
         message?.let { Text(it) }
-        if (busy) Text("Reading or saving settings…")
-        Button(onClick = { onSave(SourceSetup(name.trim(), default, a, b)) }, enabled = !busy && validSourceSetupName(name.trim())) { Text("Save source setup") }
-        TextButton(onClick = onBack, enabled = !busy) { Text("Back without saving") }
+        if (busy) Text("Reading settings…")
+        TextButton(onClick = onBack) { Text("Back") }
     }
 }
 

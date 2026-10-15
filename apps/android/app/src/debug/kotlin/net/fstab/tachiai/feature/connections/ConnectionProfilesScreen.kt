@@ -39,42 +39,35 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Routes", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-        Text("Import and save ${routeProtocols.titles} route configurations, then assign one in Providers. Saving does not connect or change your system VPN; the native viewer opens the selected route at playback.")
+        SettingsHelp("Routes", "Import and save ${routeProtocols.titles} route configurations, then assign one in Providers. Saving does not connect or change your system VPN; the native viewer opens the selected route at playback.")
         message?.let { Text(it) }
         if (busy) Text("Processing…")
         if (draft == null) {
+            SettingsSection("Add route")
             Button(onClick = onProton, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Set up Proton") }
+            SettingsHelp("Proton setup", "1. Sign in on Proton’s site in your browser.\n2. Downloads → WireGuard configuration: select Android and your desired server, then Create and Download.\n3. Open or share the downloaded file with Tachiai—not the web page.\n4. Preview and save here. No filename renaming is needed.\n\nAn export is a one-server profile, not access to the app’s automatic server selection. Use Import file if Open/Share is unavailable.")
             Button(onClick = onWindscribe, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Set up Windscribe") }
-            Text("Proton export", style = MaterialTheme.typography.titleMedium)
-            Text("1. Sign in on Proton’s site in your browser.\n2. Downloads → WireGuard configuration: select Android and your desired Japan server, then Create and Download.\n3. Open the downloaded file with Tachiai, or share the file to Tachiai—not the web page.\n4. Preview and save here. No filename renaming is needed.")
-            Text("Proton export is a one-server profile, not access to its app’s automatic server selection. Browser handoff varies; use Import file if Open/Share is unavailable.",
-                style = MaterialTheme.typography.bodySmall)
-            Text("Windscribe export", style = MaterialTheme.typography.titleMedium)
-            Text("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.",
-                style = MaterialTheme.typography.bodySmall)
-            Text("1. Sign in on Windscribe’s site in your browser.\n2. My Account → Config Generator → WireGuard: choose a location, a port (443 if unsure), and a new key pair for this device.\n3. Download Config, then open or share the downloaded file with Tachiai.\n4. Preview and save here. Use Import file if Open/Share is unavailable.")
-            Text("For this Windscribe export, choose WireGuard. Password-based OpenVPN exports and IKEv2 are unsupported. This imports one configuration; it does not control Windscribe’s app or automatic server selection.",
-                style = MaterialTheme.typography.bodySmall)
+            SettingsHelp("Windscribe setup", "Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.\n\n1. Sign in on Windscribe’s site in your browser.\n2. My Account → Config Generator → WireGuard: choose a location, a port (443 if unsure), and a new key pair for this device.\n3. Download Config, then open or share the downloaded file with Tachiai.\n4. Preview and save here. Use Import file if Open/Share is unavailable.\n\nChoose WireGuard. Password-based OpenVPN exports and IKEv2 are unsupported. This imports one configuration; it does not control Windscribe’s app or automatic server selection.")
             Button(onClick = onFile, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Import file (fallback)") }
             TextButton(onClick = { editor = !editor; input = "" }, enabled = !busy) { Text(if (editor) "Close manual entry" else "Paste / enter manually") }
             if (editor) {
                 OutlinedTextField(value = input, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= CONNECTION_IMPORT_LIMIT) input = it },
                     label = { Text(routeProtocols.formatLabel) },
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                Text("Input is hidden because configurations can contain private keys or proxy credentials.", style = MaterialTheme.typography.bodySmall)
+                SettingsHelp("Manual import", "Input is hidden because configurations can contain private keys or proxy credentials.")
                 Button(onClick = { val value = input; input = ""; editor = false; onParse(value) }, enabled = !busy && input.isNotBlank()) { Text("Preview import") }
             }
         } else {
-            Text("Import preview", style = MaterialTheme.typography.titleLarge)
+            SettingsSection("Import preview")
             Text("${draft.kind.title}\nEndpoint: ${draft.endpoint}\nPrivate keys and credentials: hidden")
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Route name") },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
-            Text("Saved locally with encryption, excluded from backups. Not connected or tested. The original downloaded file remains outside Tachiai; delete it yourself after saving if no longer needed.",
-                style = MaterialTheme.typography.bodySmall)
+            Text("Not connected or tested.", style = MaterialTheme.typography.bodySmall)
+            SettingsHelp("Saving a route", "Saved locally with encryption, excluded from backups. The original downloaded file remains outside Tachiai; delete it yourself after saving if no longer needed.")
             Button(onClick = { onSave(name.trim()) }, enabled = !busy && validConnectionName(name.trim())) { Text("Save route") }
             TextButton(onClick = onDiscard, enabled = !busy) { Text("Discard import") }
         }
-        Text("Saved routes", style = MaterialTheme.typography.titleLarge)
+        SettingsSection("Saved routes")
         if (profiles.isEmpty()) Text("No saved routes.")
         profiles.forEach { profile ->
             Text("${profile.name} · ${profile.kind.title}\n${profile.endpoint}\nSaved only · not connected")

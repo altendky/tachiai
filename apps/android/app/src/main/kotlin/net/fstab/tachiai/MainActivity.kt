@@ -26,6 +26,7 @@ import net.fstab.tachiai.feature.diagnostic.DebugLaunchSource
 import net.fstab.tachiai.feature.diagnostic.DebugLaunchRoute
 import net.fstab.tachiai.feature.diagnostic.logDebugLaunch
 import net.fstab.tachiai.feature.diagnostic.nativeAccessAtStartup
+import net.fstab.tachiai.feature.diagnostic.streamPickerAtStartup
 import net.fstab.tachiai.feature.presentation.ABEMA_SUMO_TITLE_URL
 import net.fstab.tachiai.feature.presentation.PresentationScreen
 import net.fstab.tachiai.feature.presentation.createAbemaDiagnosticPresentation
@@ -61,13 +62,32 @@ class MainActivity : ComponentActivity() {
     override fun onPause() { accountReadiness?.onPause(); super.onPause() }
     override fun onDestroy() { accountReadiness?.close(); super.onDestroy() }
 
+    private fun nativeMenuRequest() = if (intent.hasExtra(EXTRA_NATIVE_ACCESS_PROBE))
+        intent.getBooleanExtra(EXTRA_NATIVE_ACCESS_PROBE, false) else null
+
+    private fun isLauncher() = intent.action == Intent.ACTION_MAIN &&
+        (intent.hasCategory(Intent.CATEGORY_LAUNCHER) || intent.hasCategory(Intent.CATEGORY_LEANBACK_LAUNCHER))
+
+    private fun hasExplicitDiagnostic() = intent.extras?.keySet()?.any {
+        it.startsWith("net.fstab.tachiai.extra.") && it != EXTRA_NATIVE_ACCESS_PROBE
+    } == true
+
+    private fun showStreamPicker() = streamPickerAtStartup(BuildConfig.DEBUG, android.os.Build.VERSION.SDK_INT,
+        nativeMenuRequest(), isLauncher(), hasExplicitDiagnostic())
+
+    private fun openStreamPicker(): Boolean {
+        if (!showStreamPicker()) return false
+        startActivity(Intent().setClassName(this, "net.fstab.tachiai.feature.presentation.CachedPrototypeActivity")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        finish()
+        return true
+    }
+
     private fun showNativeAccessMenu() = nativeAccessAtStartup(
         debug = BuildConfig.DEBUG,
-        requested = if (intent.hasExtra(EXTRA_NATIVE_ACCESS_PROBE)) intent.getBooleanExtra(EXTRA_NATIVE_ACCESS_PROBE, false) else null,
-        launcher = intent.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_LAUNCHER),
-        explicitDiagnostic = intent.extras?.keySet()?.any {
-            it.startsWith("net.fstab.tachiai.extra.") && it != EXTRA_NATIVE_ACCESS_PROBE
-        } == true,
+        requested = nativeMenuRequest(),
+        launcher = isLauncher(),
+        explicitDiagnostic = hasExplicitDiagnostic(),
     )
 
     override fun onNewIntent(intent: Intent) {
@@ -75,11 +95,13 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         debugLaunch.delivered(BuildConfig.DEBUG)
         reportDebugLaunch(DebugLaunchSource.NEW_INTENT)
+        openStreamPicker()
     }
 
     private fun reportDebugLaunch(source: DebugLaunchSource) {
         logDebugLaunch(source,
             when {
+                showStreamPicker() -> DebugLaunchRoute.STREAM_PICKER
                 showNativeAccessMenu() -> DebugLaunchRoute.NATIVE_ACCESS
                 BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_TWITCH_DEVICE_AUTH, false) -> DebugLaunchRoute.TWITCH_DEVICE_AUTH
                 BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_TWITCH_SIGN_IN, false) -> DebugLaunchRoute.TWITCH_SESSION
@@ -91,6 +113,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         reportDebugLaunch(DebugLaunchSource.CREATE)
+        if (openStreamPicker()) return
         enableEdgeToEdge()
         setContent {
             DebugLaunchTheme(debugLaunch.revision) {

@@ -74,7 +74,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
     onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers",
-    onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {}) {
+    onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {},
+    header: (@Composable () -> Unit)? = null) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -99,19 +100,20 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     val freshContext = state.discoveryContextId !in listStates
     val listState = listStates.getOrPut(state.discoveryContextId) { LazyListState() }
     LaunchedEffect(listState) {
-        if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size)
+        if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size + if (header != null) 1 else 0)
     }
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).testTag("Stream discovery list"),
         state = listState) {
+        if (header != null) item(key = "provider-settings") { header() }
         item(key = "management-heading") { Column(Modifier.padding(bottom = 12.dp)) {
-            Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
-            Text("Add items to the list shown on your selection page. Changes stay in Tachiai and do not change provider favorites.")
-            state.catalogNotice?.let { Text(it) }
+            if (header == null) Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
+            SettingsSection("Streams", "Add items to your selection page. Changes stay in Tachiai and do not change provider favorites." +
+                (state.catalogNotice?.let { "\n\n$it" } ?: ""))
             state.message?.let { Text(it) }
             if (state.loading) Text("Reading streams…")
             if (state.saving) Text("Saving configured streams…")
             if (state.storageFailed) Button(onClick = onRetry, enabled = !state.loading && !state.saving) { Text("Retry") }
-            TextButton(onClick = onBack) { Text(backLabel) }
+            if (header == null) TextButton(onClick = onBack) { Text(backLabel) }
         } }
         item(key = "configured-heading") { Column(Modifier.padding(bottom = 12.dp)) {
             Text("Configured streams", style = MaterialTheme.typography.titleLarge)
@@ -139,7 +141,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }
         }
         item(key = "discovery-controls") { Column(Modifier.padding(bottom = 12.dp)) {
-            Text("Find streams", style = MaterialTheme.typography.titleLarge)
+            SettingsSection("Find streams")
             Button(onClick = onAll, enabled = mutable && capabilities != null) { Text(capabilities?.browseTitle ?: "All") }
             if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
                 Text("${capabilities.browseTitle}: ${catalogAccessExplanation(capabilities.browse)}")

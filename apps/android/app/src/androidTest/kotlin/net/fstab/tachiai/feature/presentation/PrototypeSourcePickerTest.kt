@@ -44,6 +44,19 @@ class PrototypeSourcePickerTest {
         net.fstab.tachiai.presentation.prototypeCatalogResource(source) }
     private fun expected(a: PrototypeSource, b: PrototypeSource) = ConfiguredFeedAssignments(item(a).choice, item(b).choice)
 
+    @Test fun developerToolsIsAvailableOnlyThroughOverflowAndDoesNotOpenPlayback() {
+        var developerTools = 0
+        var watched = false
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, onDeveloperTools = { developerTools++ }, onWatch = { watched = true })
+        } }
+        compose.onNodeWithText("Developer tools").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Developer tools").performClick()
+        compose.onNodeWithText("Developer tools").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, developerTools); assertFalse(watched) }
+    }
+
     @Test fun savedOfflineBroadcasterCanRequestFreshAssessmentWithoutChangingItsIdentity() {
         val twitch = providers.single { it.service == PrototypeService.TWITCH }
         val channel = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,
@@ -372,7 +385,7 @@ class PrototypeSourcePickerTest {
     @Test fun unsupportedConfiguredResourceCannotOpenTheSampleViewer() {
         val original = item(PrototypeSource.ABEMA_LIVE)
         val unsupported = original.copy(entry = original.entry.copy(title = "Another saved channel",
-            resource = original.entry.resource.copy(identity = "another-channel")))
+            resource = original.entry.resource.copy(kind = "unsupported", identity = "another-channel")))
         compose.setContent { TachiaiPrototypeTheme {
             PrototypeSourcePicker(null, configuredSources = configured.map { if (it.id == original.id) unsupported else it },
                 onWatch = {})
@@ -384,7 +397,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun unsupportedResourceWithLegacyLookingTitleKeepsItsExactTitle() {
         val original = item(PrototypeSource.ABEMA_LIVE)
-        val unsupported = original.copy(entry = original.entry.copy(resource = original.entry.resource.copy(identity = "another-channel")))
+        val unsupported = original.copy(entry = original.entry.copy(resource = original.entry.resource.copy(kind = "unsupported", identity = "another-channel")))
         compose.setContent { TachiaiPrototypeTheme {
             PrototypeSourcePicker(null, configuredSources = configured.map { if (it.id == original.id) unsupported else it },
                 onWatch = {})

@@ -2,6 +2,7 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotFocused
@@ -56,9 +57,12 @@ class ConnectionProfilesScreenTest {
     @Test fun guidanceAndFallbackAreExplicitAndNeverSaveAutomatically() {
         screen()
         compose.onNodeWithText("Set up Proton").performScrollTo().performClick()
-        compose.onNodeWithText("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.")
-            .performScrollTo().assertExists()
-        compose.onNodeWithText("For this Windscribe export, choose WireGuard.", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("Paid Windscribe account required:", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Info about Windscribe setup").performScrollTo().performClick()
+        compose.onNodeWithText("Paid Windscribe account required: Pro includes all locations; Build-A-Plan includes your paid locations.", substring = true)
+            .assertExists()
+        compose.onNodeWithText("Choose WireGuard.", substring = true).assertExists()
+        compose.onNodeWithText("Close").performClick()
         compose.onNodeWithText("Set up Windscribe").performScrollTo().performClick()
         compose.onNodeWithText("Import file (fallback)").performScrollTo().performClick()
         compose.runOnIdle { assertTrue(openedProton); assertTrue(openedWindscribe); assertTrue(openedPicker); assertNull(saved) }

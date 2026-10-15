@@ -1,5 +1,42 @@
 # Product-flow prototype
 
+## Main flow and settings — October 15
+
+Normal development and inspection launches open **Choose two streams**. The
+picker's overflow menu retains **Developer tools**, which opens the historical
+experiment root. Explicit diagnostic launches and older Android fallback retain
+their existing entry behavior; recovery still enters the separate main process
+before terminating an unsafe prototype process.
+
+Providers opens the instance list. Configuring an instance opens one detail
+page with name, connection, account actions and stream management, instead of
+separate account and Manage streams navigation. Provider-controlled sign-in and
+catalog browsing remain focused operations. Account controllers remain mounted
+while their header scrolls offscreen or stream results reload.
+Explicit account operations also suspend parent automatic renewal and catalog
+loading until provider-return verification finishes.
+
+Ordinary valid name and route changes save automatically. Accepted writes are
+serialized and drained before returning, and new readers wait for outstanding
+writes. Invalid names remain drafts; failed writes show a retry action and the
+durable route. Changing a route invalidates old catalog/account bindings before
+new operations. Import previews and destructive actions remain explicit.
+
+Settings use section headings and horizontal dividers. Longer guidance lives
+behind section **Info** controls; current status, validation and errors stay
+beside their controls. Main and settings pages retain normal screen timeout.
+
+The October 15 verification used the visible persistent `tachiai-dev` emulator
+(Android 16/API 36, x86-64, WebView 133.0.6943.137). Normal launcher, combined
+ABEMA account/stream page, Info, Developer tools and Back navigation were
+observed. The existing account validated with its configured Windscribe route;
+this does not establish exit region, new sign-in or playback behavior. The final
+APK passed all 76 provider-free Compose fixtures and 1,967 JVM tests in each of
+debug and inspection variants, both lints, release isolation and inspection APK
+policy checks. APK signers matched the shared debug identity. Install and
+synthetic fixtures preserved all seven encrypted records. Fresh browser sign-in,
+physical-device behavior and TV interaction were not exercised in this UX check.
+
 ## Screen timeout
 
 Main pages, source selection, settings, account pages and diagnostic helpers

@@ -368,6 +368,7 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 (mode == Mode.REPLAY || sources(owner.instance).singleOrNull { it.choice == source.choice } == source) && localCurrent()
             foreground = ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
+                putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
             foregroundClose = CloseReceipt(checkNotNull(foreground)) { it.close() }

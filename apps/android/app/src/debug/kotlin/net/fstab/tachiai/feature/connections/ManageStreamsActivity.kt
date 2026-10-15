@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -16,6 +17,8 @@ import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
+import net.fstab.tachiai.platform.network.ConnectionSummary
+import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
@@ -23,10 +26,12 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
+import net.fstab.tachiai.provider.twitch.catalog.hasPendingAndroidTwitchCatalogForget
 
 class ManageStreamsActivity : ComponentActivity() {
     companion object {
         const val INSTANCE_ID = "PROVIDER_INSTANCE_ID"
+        const val PROVIDER_DETAILS = "PROVIDER_DETAILS"
         private const val SHARED_OWNER_PROVIDER = "SHARED_OWNER_PROVIDER"
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -45,6 +50,13 @@ class ManageStreamsActivity : ComponentActivity() {
     private var rejectedPreview = false
     private val accountReadiness by lazy { AbemaAccountReadiness(this) }
     private var renewalHandoff = false
+    private var preferences by mutableStateOf<ProviderPreferencesController?>(null)
+    private var profiles by mutableStateOf(emptyList<ConnectionSummary>())
+    private var catalogRoute: SourceRouteChoice? = null
+    private var accountExitCheck: (suspend () -> Boolean)? = null
+    private var accountActionPending = false
+    private var discardUnsaved = false
+    private val providerDetails get() = intent.getBooleanExtra(PROVIDER_DETAILS, false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +64,7 @@ class ManageStreamsActivity : ComponentActivity() {
         selectedInstanceId = try { intent.getStringExtra(INSTANCE_ID)?.takeIf(::validProviderInstanceId) }
             catch (_: Exception) { null }
         val shared = SharedCatalogPreviewHandoff.isPresent(intent)
+        val requestedProviderDetails = providerDetails
         pendingPreview = SharedCatalogPreviewHandoff.consume(intent, allowPreview = savedInstanceState == null)
         sharedOwnerProvider = pendingPreview?.providerId
         if (savedInstanceState?.containsKey(SHARED_OWNER_PROVIDER) == true) {
@@ -65,34 +78,79 @@ class ManageStreamsActivity : ComponentActivity() {
         // contain no shared entry, input URL, ClipData or sender extras.
         intent = Intent(this, ManageStreamsActivity::class.java).also { clean ->
             selectedInstanceId?.let { clean.putExtra(INSTANCE_ID, it) }
+            if (!shared) clean.putExtra(PROVIDER_DETAILS, requestedProviderDetails)
         }
         enableEdgeToEdge()
+        if (providerDetails) net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
         setContent { TachiaiPrototypeTheme {
             BackHandler { if (controller?.back() != true) finish() }
+            val preferenceState = preferences?.state?.collectAsState()?.value
+            val page: @Composable ((@Composable () -> Unit)?) -> Unit = { accountContent ->
+            val header: (@Composable () -> Unit)? = if (providerDetails && preferenceState != null) ({
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(preferenceState.instance.name, style = MaterialTheme.typography.headlineSmall)
+                    TextButton(onClick = ::finish) { Text("Back to providers") }
+                    ProviderSettingsFields(preferenceState.instance, profiles, preferenceState.nameDraft,
+                        preferenceState.selectedRoute, preferenceState.validName, { if (!savingWhileLeaving) preferences?.nameChanged(it) },
+                        { if (!savingWhileLeaving) preferences?.routeChanged(it) }, {
+                            if (!savingWhileLeaving)
+                            scope.launch { ProviderPreferenceWrites.await(preferenceState.instance.id)
+                                if (resumed && !isDestroyed && !savingWhileLeaving)
+                                    startActivity(Intent(this@ManageStreamsActivity, ConnectionProfilesActivity::class.java)) }
+                        }, enabled = !savingWhileLeaving)
+                    if (preferenceState.saving) Text("Saving changes…")
+                    preferenceState.error?.let {
+                        Text(it)
+                        TextButton(onClick = { if (!savingWhileLeaving) preferences?.retry() }, enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Retry saving") }
+                        TextButton(onClick = { discardUnsaved = true; finish() }, enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Discard unsaved changes") }
+                    }
+                    accountContent?.invoke() ?: Text("Account actions will be available when the connection is saved.")
+                }
+            }) else null
             val current = controller
             if (current != null && message == null) {
                 val state by current.state.collectAsState()
-                StreamManagementScreen(state.copy(loading = reading || state.loading, saving = savingWhileLeaving || state.saving,
+                StreamManagementScreen(state.copy(loading = reading || state.loading, saving = savingWhileLeaving || state.saving || preferenceState?.saving == true,
                     message = if (savingWhileLeaving) "Saving configured streams before returning…" else state.message), current::search, current::all,
                     current::collection, current::children, current::more, current::lookup,
                     current::add, current::remove, current::move, current::retry, ::finish,
                     backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers",
-                    onRefresh = current::refresh, onDiscoveryBack = { current.back() })
-            } else Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
+                    onRefresh = current::refresh, onDiscoveryBack = { current.back() }, header = header)
+            } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (header != null) item { header() }
+                item {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")
                 if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
-                TextButton(onClick = ::finish) { Text(if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
+                if (header == null) TextButton(onClick = ::finish) { Text(if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
+                }
             }
+            }
+            // Own account operations outside the lazy header: scrolling or a
+            // catalog reload must not dispose an in-progress sign-in controller.
+            if (providerDetails && preferenceState != null && preferenceState.selectedRoute == preferenceState.instance.setup.route)
+                key(preferenceState.instance.id, preferenceState.instance.setup.route) {
+                    when (preferenceState.instance.service) {
+                        PrototypeService.ABEMA -> AbemaAccountSettings(preferenceState.instance.id, ::accountActionStarted, ::accountActionFinished,
+                            enabled = !preferenceState.saving && !savingWhileLeaving) { page(it) }
+                        PrototypeService.TWITCH -> TwitchCatalogSettings(preferenceState.instance.id, ::accountActionStarted, ::accountActionFinished,
+                            enabled = !preferenceState.saving && !savingWhileLeaving,
+                            onExitCheck = { accountExitCheck = it }) { page(it) }
+                    }
+                }
+            else page(null)
         } }
     }
     override fun onResume() {
         super.onResume(); resumed = true; renewalHandoff = false
-        accountReadiness.onResume()
-        if (BuildConfig.DEBUG) readOwner()
+        if (!accountActionPending) {
+            accountReadiness.onResume()
+            if (BuildConfig.DEBUG) readOwner()
+        }
     }
 
     private fun readOwner() {
+        if (!resumed || isDestroyed || savingWhileLeaving || accountActionPending) return
         if (rejectedPreview) {
             reading = false; message = "Shared preview is unavailable. Share the item again to continue."; return
         }
@@ -103,11 +161,37 @@ class ManageStreamsActivity : ComponentActivity() {
         val current = ++revision
         readJob?.cancel()
         controller?.close()
+        controller = null
         reading = true; message = null
         readJob = scope.launch {
             try {
                 StreamManagementWrites.await(id)
+                ProviderPreferenceWrites.await(id)
                 TwitchCatalogConnectionWrites.await(id)
+                if (providerDetails) {
+                    val loaded = withContext(Dispatchers.IO) {
+                        providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } to
+                            connectionProfileStore(applicationContext).summaries()
+                    }
+                    if (!resumed || revision != current) return@launch
+                    val owner = loaded.first.singleOrNull { it.id == id } ?: error("Stale provider instance")
+                    profiles = loaded.second
+                    if (preferences == null) {
+                        val app = applicationContext
+                        preferences = ProviderPreferencesController(owner, loaded.first,
+                            { name, route -> providerInstanceStore(app).save(id, name, route) { legacyProviderSettings(app) } },
+                            { action -> runOnUiThread(action) },
+                            { if (preferences?.state?.value?.let { it.selectedRoute != it.instance.setup.route } == true) {
+                                // Changing route disposes the account owner bound to
+                                // the old route, including its pending action.
+                                accountActionPending = false
+                                accountReadiness.onPause()
+                                if (resumed) accountReadiness.onResume()
+                                invalidateCatalog()
+                            } },
+                            { committed -> if (controller == null || catalogRoute != committed.setup.route) readOwner() })
+                    }
+                }
                 val needsAccountCheck = withContext(Dispatchers.IO) {
                     providerInstanceStore(this@ManageStreamsActivity).read { legacyProviderSettings(this@ManageStreamsActivity) }
                         .singleOrNull { it.id == id }?.service == PrototypeService.ABEMA
@@ -124,7 +208,10 @@ class ManageStreamsActivity : ComponentActivity() {
                             reading = readiness == AbemaAccountReadinessResult.HANDOFF
                             message = abemaAccountReadinessMessage(readiness)
                         }
-                        return@launch
+                        if (!providerDetails || readiness == AbemaAccountReadinessResult.HANDOFF) return@launch
+                        // Keep configured streams usable/visible. The adapter
+                        // still decides which public/account operations can run.
+                        message = null
                     }
                 }
                 val loaded = withContext(Dispatchers.IO) {
@@ -144,6 +231,7 @@ class ManageStreamsActivity : ComponentActivity() {
                 }
                 if (isDestroyed || revision != current) { withContext(Dispatchers.IO) { loaded.first.second.close() }; return@launch }
                 val (parts, legacy) = loaded
+                catalogRoute = parts.first.setup.route
                 controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
                     diagnostics = diagnostics,
                     notice = if (parts.first.service == PrototypeService.ABEMA)
@@ -180,6 +268,22 @@ class ManageStreamsActivity : ComponentActivity() {
             }
         }
     }
+    private fun accountActionStarted() {
+        // An explicit browser return owns account verification. Do not start
+        // automatic renewal from onResume while that verification is pending.
+        accountActionPending = true
+        accountReadiness.onPause()
+        invalidateCatalog()
+    }
+    private fun accountActionFinished() {
+        accountActionPending = false
+        if (resumed) accountReadiness.onResume()
+        readOwner()
+    }
+    private fun invalidateCatalog() {
+        revision++; readJob?.cancel(); controller?.close(); controller = null
+        reading = false; message = "Updating provider access…"
+    }
     override fun onPause() {
         resumed = false
         accountReadiness.onPause()
@@ -192,12 +296,28 @@ class ManageStreamsActivity : ComponentActivity() {
     }
     override fun finish() {
         val id = selectedInstanceId
-        if (id == null || StreamManagementWrites.pending(id).isEmpty()) { super.finish(); return }
+        if (id == null) { super.finish(); return }
         if (awaitingFinish?.isActive == true) return
+        val discardThisAttempt = discardUnsaved
+        discardUnsaved = false
         savingWhileLeaving = true
         val wait = scope.launch(start = CoroutineStart.LAZY) {
             StreamManagementWrites.await(id)
-            finishAfterWrites()
+            ProviderPreferenceWrites.await(id)
+            TwitchCatalogConnectionWrites.await(id)
+            val accountSafe = runCatching {
+                if (!providerDetails) true else {
+                    val readSafe = accountExitCheck?.invoke() != false
+                    val pendingForget = withContext(Dispatchers.IO) {
+                        id != defaultProviderInstanceId(PrototypeService.ABEMA) &&
+                            hasPendingAndroidTwitchCatalogForget(applicationContext, id)
+                    }
+                    readSafe && !pendingForget
+                }
+            }.getOrDefault(false)
+            if (!discardThisAttempt && preferences?.state?.value?.error != null) savingWhileLeaving = false
+            else if (accountSafe && !TwitchCatalogConnectionWrites.isFailed(id)) finishAfterWrites()
+            else { savingWhileLeaving = false; message = "Account changes could not be confirmed. Retry account setup before leaving." }
         }
         awaitingFinish = wait; wait.start()
     }
@@ -206,5 +326,5 @@ class ManageStreamsActivity : ComponentActivity() {
         sharedOwnerProvider?.let { outState.putString(SHARED_OWNER_PROVIDER, it.value) }
         super.onSaveInstanceState(outState)
     }
-    override fun onDestroy() { revision++; accountReadiness.close(); controller?.close(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { revision++; accountReadiness.close(); preferences?.close(); controller?.close(); scope.cancel(); super.onDestroy() }
 }

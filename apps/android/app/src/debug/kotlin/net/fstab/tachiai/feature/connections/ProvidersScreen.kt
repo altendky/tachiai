@@ -28,21 +28,23 @@ internal fun ProvidersScreen(settings: Map<PrototypeService, ProviderSetup>, pro
 internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles: List<ConnectionSummary>, busy: Boolean,
     message: String?, onRoutes: () -> Unit, onSave: (String, String?, SourceRouteChoice) -> Unit, onBack: () -> Unit,
     onCreate: ((PrototypeService) -> Unit)? = null, twitchLogin: @Composable (String) -> Unit = {},
-    onManageStreams: ((String) -> Unit)? = null, onCatalogConnection: ((String) -> Unit)? = null) {
+    onManageStreams: ((String) -> Unit)? = null, onCatalogConnection: ((String) -> Unit)? = null,
+    onOpenProvider: ((String) -> Unit)? = null) {
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(enabled = editing != null && !busy) { editing = null }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Providers", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-        Text("Each provider instance has its own name, route and supported saved login. Assign a stream under an instance to either feed; each feed has an independent playback session.")
+        SettingsHelp("Providers", "Each provider instance has its own name, route and account. Choose streams from an instance for either feed.")
         message?.let { Text(it) }
         if (busy) Text("Reading or saving settings…")
         val instance = instances.singleOrNull { it.id == editing }
         if (instance == null) {
             if (editing != null) Text("Selected provider instance is unavailable. Choose an existing instance.")
             instances.forEach { entry ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text("${entry.name} · ${entry.service.title} · ${entry.setup.title}", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = { editing = entry.id }, enabled = !busy) { Text("Configure ${entry.name}") }
+                Button(onClick = { onOpenProvider?.invoke(entry.id) ?: run { editing = entry.id } }, enabled = !busy) { Text("Configure ${entry.name}") }
             }
             onCreate?.let { create -> PrototypeService.entries.forEach { service ->
                 Button(onClick = { create(service) }, enabled = !busy && instances.size < MAX_PROVIDER_INSTANCES) {
@@ -67,7 +69,6 @@ private fun routeKey(route: SourceRouteChoice) = "${route.mode.name}:${route.con
 @Composable
 private fun ProviderRouteEditor(instance: ProviderInstance, instances: List<ProviderInstance>, profiles: List<ConnectionSummary>, busy: Boolean,
     onRoutes: () -> Unit, onSave: (String?, SourceRouteChoice) -> Unit, onBack: () -> Unit, twitchLogin: @Composable () -> Unit) {
-    val provider = instance.service
     val initial = instance.setup
     var customName by rememberSaveable { mutableStateOf(instance.customName.orEmpty()) }
     val name = customName.trim().ifEmpty { null }
@@ -75,31 +76,49 @@ private fun ProviderRouteEditor(instance: ProviderInstance, instances: List<Prov
     val validName = validSourceSetupName(effectiveName) && instances.none {
         it.id != instance.id && it.service == instance.service && sameProviderInstanceName(it.name, effectiveName)
     }
-    var selected by rememberSaveable { mutableStateOf(initial.route?.let(::routeKey)) }
+    var selectedMode by rememberSaveable { mutableStateOf(initial.route?.mode?.name) }
+    var selectedId by rememberSaveable { mutableStateOf(initial.route?.connectionId) }
+    var selectedName by rememberSaveable { mutableStateOf(initial.route?.connectionName) }
+    val selected = selectedMode?.let { SourceRouteChoice(SourceRouteMode.valueOf(it), selectedId, selectedName) }
+    ProviderSettingsFields(instance, profiles, customName, selected, validName,
+        { value ->
+            customName = value
+            val candidate = value.trim().ifEmpty { null }
+            val effective = candidate ?: instance.defaultName
+            if (validSourceSetupName(effective) && instances.none { it.id != instance.id && it.service == instance.service && sameProviderInstanceName(it.name, effective) })
+                selected?.let { onSave(candidate, it) }
+        },
+        { route ->
+            selectedMode = route.mode.name; selectedId = route.connectionId; selectedName = route.connectionName
+            onSave(if (validName) name else instance.customName, route)
+        }, onRoutes, !busy)
+    if (instance.service == PrototypeService.TWITCH) twitchLogin()
+    TextButton(onClick = onBack, enabled = !busy) { Text("Back to providers") }
+}
+
+@Composable
+internal fun ProviderSettingsFields(instance: ProviderInstance, profiles: List<ConnectionSummary>, nameDraft: String,
+    selectedRoute: SourceRouteChoice?, validName: Boolean, onNameChanged: (String) -> Unit,
+    onRouteChanged: (SourceRouteChoice) -> Unit, onRoutes: () -> Unit, enabled: Boolean = true) {
+    val provider = instance.service
+    SettingsSection("General")
+    OutlinedTextField(nameDraft, onNameChanged, enabled = enabled, singleLine = true,
+        label = { Text("Provider instance name") }, placeholder = { Text(instance.defaultName) }, isError = !validName)
+    if (!validName) Text("Use a unique name, up to 64 printable characters.")
+    SettingsSection("Connection", "This route is used for this provider instance’s streams and account requests. System network includes any external VPN. Saved routes never silently fall back to System network. Simultaneous ABEMA feeds currently share one WebView route.")
     val choices = listOf(SourceRouteChoice.system) + profiles.map { SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, it.id, it.name) }
-    val choice = choices.firstOrNull { routeKey(it) == selected }
-    Text("${instance.name} setup", style = MaterialTheme.typography.titleLarge)
-    OutlinedTextField(customName, { customName = it }, enabled = !busy, singleLine = true,
-        label = { Text("Provider instance name") }, supportingText = { Text("Leave blank to use ${instance.defaultName}.") })
-    if (!validName) Text("Use a unique name for this provider, with 1–64 printable characters.")
-    if (provider == PrototypeService.TWITCH) twitchLogin()
-    Text("Default route for this instance’s live or replay streams, regardless of primary/floating position. Other ${provider.title} instances keep their own settings.")
-    if (provider == PrototypeService.ABEMA) Text("ABEMA uses anonymous guest playback. Simultaneous ABEMA feeds must use the same route because its WebView proxy is shared.")
-    if (initial.route == null) {
-        Text("Earlier stream defaults or feed overrides need review. Choose one provider route explicitly; the old settings remain stored.")
-        initial.previousRoutes.forEach { Text("Earlier route: ${it.title}") }
+    val choice = choices.firstOrNull { routeKey(it) == selectedRoute?.let(::routeKey) }
+    if (selectedRoute == null) {
+        Text("Choose a route to resolve earlier settings.")
+        instance.setup.previousRoutes.forEach { Text("Earlier route: ${it.title}") }
     }
-    if (selected != null && choice == null) Text("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.")
-    Text("System network inherits Android’s current network, including an external VPN. Saved routes connect when you open the native viewer. A failed route never falls back to System network.")
-    Text("Provider default route", style = MaterialTheme.typography.titleMedium)
+    if (selectedRoute != null && choice == null) Text("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.")
     choices.forEach { route ->
         Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected == routeKey(route), { selected = routeKey(route) }, enabled = !busy,
+            RadioButton(choice == route, { onRouteChanged(route) }, enabled = enabled,
                 modifier = Modifier.semantics { contentDescription = "${provider.title} route: ${route.title}" })
-            Text(route.title + if (route.mode == SourceRouteMode.SAVED_CONNECTION) " · connects at playback" else "")
+            Text(route.title)
         }
     }
-    Button(onClick = onRoutes, enabled = !busy) { Text("Add route · setup / import") }
-    Button(onClick = { choice?.let { onSave(name, it) } }, enabled = !busy && choice != null && validName) { Text("Save ${instance.name} setup") }
-    TextButton(onClick = onBack, enabled = !busy) { Text("Back to providers") }
+    TextButton(onClick = onRoutes, enabled = enabled) { Text("Add route · setup / import") }
 }

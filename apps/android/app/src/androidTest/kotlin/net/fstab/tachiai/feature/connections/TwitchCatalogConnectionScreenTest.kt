@@ -36,11 +36,14 @@ class TwitchCatalogConnectionScreenTest {
         } }
         compose.onNodeWithText("Connect Twitch").performScrollTo().performClick()
         compose.onAllNodesWithText("Connect Twitch").assertCountEquals(1)
-        compose.onNodeWithText("Following, stream discovery and playback", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("Following, stream discovery and playback", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Info about Twitch account").performScrollTo().performClick()
+        compose.onNodeWithText("Following, stream discovery and playback", substring = true).assertExists()
         compose.onNodeWithText("Other provider instances keep their own accounts", substring = true).assertExists()
+        compose.onNodeWithText("external consent browser uses its own network", substring = true).assertExists()
+        compose.onNodeWithText("Close").performClick()
         compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("external consent browser uses its own network", substring = true).performScrollTo().assertExists()
         compose.runOnIdle {
             assertEquals(1, connections)
             state.value = state.value.copy(hasSavedGrant = true, canForget = true,
@@ -73,6 +76,35 @@ class TwitchCatalogConnectionScreenTest {
         compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, forgotten) }
+    }
+    @Test fun embeddedAccountSharesParentScrollingWithoutAnAccountBackPage() {
+        compose.setContent { TachiaiPrototypeTheme {
+            androidx.compose.foundation.lazy.LazyColumn {
+                item { TwitchCatalogConnectionScreen(TwitchCatalogConnectionState(ready = true,
+                    status = "No saved Twitch account."), {}, {}, {}, {}, {}) }
+                item { androidx.compose.material3.Text("Configured streams fixture") }
+            }
+        } }
+        compose.onNodeWithText("No saved Twitch account.").assertExists()
+        compose.onNodeWithText("Back to providers").assertDoesNotExist()
+        compose.onNodeWithText("Configured streams fixture").performScrollTo().assertExists()
+    }
+    @Test fun pendingProviderSaveDisablesMutationsAndConsentHandoffWithoutHidingStatus() {
+        val state = mutableStateOf(TwitchCatalogConnectionState(ready = true, hasSavedGrant = true,
+            canForget = true, status = "Twitch account connected."))
+        compose.setContent { TachiaiPrototypeTheme {
+            TwitchCatalogConnectionScreen(state.value, {}, {}, {}, {}, {}, {}, onRetryOpen = {}, enabled = false)
+        } }
+        compose.onNodeWithText("Twitch account connected.").assertExists()
+        for (label in listOf("Reconnect Twitch", "Validate Twitch account", "Forget Twitch account on this device",
+            "Retry opening Twitch connection", "Back to providers"))
+            compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle {
+            state.value = state.value.copy(operation = TwitchCatalogConnectionOperation.CONNECT,
+                phase = DeviceAuthPhase.WAITING, activation = DeviceActivation("FIXTURE123", URI("https://www.twitch.tv/activate")))
+        }
+        for (label in listOf("Cancel Twitch action", "Open Twitch activation in Brave", "Open Twitch activation in Chrome"))
+            compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
     }
 
     // Persistent-device safe: only a Compose test host, synthetic public codes,

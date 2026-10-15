@@ -17,7 +17,18 @@ import org.junit.Test
 class ProviderInstancesScreenTest {
     @get:Rule val compose = createComposeRule()
     private val extra = ProviderInstance("12345678-1234-1234-1234-123456789abc", PrototypeService.TWITCH, "Twitch 2")
-    @Test fun selectedInstanceNameAndRouteDraftRestoreAndRequireExplicitSave() {
+    @Test fun configureOpensProviderDetailDirectly() {
+        var opened: String? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            ProviderInstancesScreen(defaultProviderInstances(), emptyList(), false, null, {}, { _, _, _ -> }, {},
+                onOpenProvider = { opened = it })
+        } }
+        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(defaultProviderInstanceId(PrototypeService.ABEMA), opened) }
+        compose.onNodeWithText("Manage streams").assertDoesNotExist()
+        compose.onNodeWithText("ABEMA account").assertDoesNotExist()
+    }
+    @Test fun selectedInstanceNameSavesOnEditAndRestoresWithoutAnotherSave() {
         val restoration = StateRestorationTester(compose)
         lateinit var focus: FocusManager
         var savedId: String? = null
@@ -34,11 +45,11 @@ class ProviderInstancesScreenTest {
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextReplacement("My second account")
         compose.runOnIdle { focus.clearFocus(force = true) }
         closeSoftKeyboard(); compose.waitForIdle()
-        compose.runOnIdle { assertNull(savedId) }
+        compose.runOnIdle { assertEquals(extra.id, savedId); assertEquals("My second account", savedName) }
         restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithText("My second account").performScrollTo().assertExists()
         compose.onNodeWithText("Second instance login").performScrollTo().assertExists()
-        compose.onNodeWithText("Save Twitch 2 setup").performScrollTo().performClick()
+        compose.onNodeWithText("Save Twitch 2 setup").assertDoesNotExist()
         compose.runOnIdle { assertEquals(extra.id, savedId); assertEquals("My second account", savedName) }
     }
     @Test fun creationAndDuplicateNameValidationCannotMutateAnotherInstance() {
@@ -57,7 +68,7 @@ class ProviderInstancesScreenTest {
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextReplacement("Twitch")
         compose.runOnIdle { focus.clearFocus(force = true) }
         closeSoftKeyboard(); compose.waitForIdle()
-        compose.onNodeWithText("Save Twitch 2 setup").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Use a unique name, up to 64 printable characters.").performScrollTo().assertExists()
         compose.runOnIdle { assertEquals(0, saves) }
     }
 
@@ -78,13 +89,13 @@ class ProviderInstancesScreenTest {
         compose.runOnIdle { focus.clearFocus(force = true) }
         closeSoftKeyboard(); compose.waitForIdle()
         // ROOT lowercasing expands capital dotted I to i + combining dot.
-        compose.onNodeWithText("Save Twitch 2 setup").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Use a unique name, up to 64 printable characters.").performScrollTo().assertExists()
         compose.runOnIdle { assertNull(savedId) }
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextReplacement("Account I")
         compose.runOnIdle { focus.clearFocus(force = true) }
         closeSoftKeyboard(); compose.waitForIdle()
         // Plain I lowercases to i without the dot, so this distinct name is allowed.
-        compose.onNodeWithText("Save Twitch 2 setup").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("Save Twitch 2 setup").assertDoesNotExist()
         compose.runOnIdle { assertEquals(extra.id, savedId); assertEquals("Account I", savedName) }
     }
 }

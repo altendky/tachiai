@@ -7,6 +7,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.provider.twitch.DeviceAuthPhase
 import net.fstab.tachiai.provider.twitch.catalog.*
@@ -14,41 +15,41 @@ import net.fstab.tachiai.provider.twitch.catalog.*
 @Composable
 internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, onConnect: () -> Unit,
     onValidate: () -> Unit, onForget: () -> Unit, onCancel: () -> Unit, onBrowser: (String) -> Unit,
-    onBack: () -> Unit, onRetryOpen: (() -> Unit)? = null) {
-    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
+    onBack: (() -> Unit)? = null, onRetryOpen: (() -> Unit)? = null, enabled: Boolean = true) {
+    val modifier = if (onBack == null) Modifier.fillMaxWidth() else Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    BoxWithConstraints(modifier) {
         // A scrollable column has unbounded content height. Capture its actual
         // viewport first so a landscape QR can be scrolled fully into view.
-        val maxQrSize = minOf(320.dp, maxWidth, maxHeight)
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        val maxQrSize = minOf(320.dp, maxWidth, if (constraints.hasBoundedHeight) maxHeight else screenHeight / 2)
+        val columnModifier = if (onBack == null) Modifier else Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        Column(columnModifier,
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Twitch account", style = MaterialTheme.typography.headlineSmall)
-            state.name?.let { Text("Provider instance: $it") }
-            state.routeTitle?.let { Text("Saved request route: $it") }
-            Text("Connect this instance for Following, stream discovery and playback. The connection uses the Smart TV client identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.")
-            Text("Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.")
+            SettingsSection("Twitch account", "Connect this provider for Following, stream discovery and playback. The connection uses Twitch’s Smart TV identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.\n\n" +
+                "Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.\n\n" +
+                "Forget disconnects discovery and playback for this provider. Browser login, configured streams, routes and other provider instances are retained.")
             Text(state.status)
-            Button(onConnect, enabled = state.ready && !state.busy) {
+            Button(onConnect, enabled = enabled && state.ready && !state.busy) {
                 Text(if (state.hasSavedGrant) "Reconnect Twitch" else "Connect Twitch")
             }
-            Button(onValidate, enabled = state.ready && state.hasSavedGrant && !state.busy) { Text("Validate Twitch account") }
-            TextButton(onForget, enabled = state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
+            Button(onValidate, enabled = enabled && state.ready && state.hasSavedGrant && !state.busy) { Text("Validate Twitch account") }
+            TextButton(onForget, enabled = enabled && state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
                 Text("Forget Twitch account on this device")
             }
-            Text("Forget disconnects discovery and playback for this instance. Browser login, configured streams, routes and other provider instances are retained.")
             if (state.operation == TwitchCatalogConnectionOperation.CONNECT || state.operation == TwitchCatalogConnectionOperation.VALIDATE)
-                TextButton(onCancel) { Text("Cancel Twitch action") }
+                TextButton(onCancel, enabled = enabled) { Text("Cancel Twitch action") }
             state.activation?.takeIf { state.operation == TwitchCatalogConnectionOperation.CONNECT &&
                 (state.phase == null || state.phase == DeviceAuthPhase.BROWSER_UNAVAILABLE ||
                     (!state.phase.terminal && state.phase != DeviceAuthPhase.VALIDATING)) }?.let {
                 TwitchActivationQr(it, maxSize = maxQrSize)
                 SelectionContainer { Text("Your activation code: ${it.userCode}") }
-                Button({ onBrowser("com.brave.browser") }) { Text("Open Twitch activation in Brave") }
-                Button({ onBrowser("com.android.chrome") }) { Text("Open Twitch activation in Chrome") }
+                Button({ onBrowser("com.brave.browser") }, enabled = enabled) { Text("Open Twitch activation in Brave") }
+                Button({ onBrowser("com.android.chrome") }, enabled = enabled) { Text("Open Twitch activation in Chrome") }
             }
             state.phase?.let { Text(catalogPhaseMessage(it)) }
             state.message?.let { Text(it) }
-            onRetryOpen?.let { retry -> TextButton(retry, enabled = !state.busy) { Text("Retry opening Twitch connection") } }
-            TextButton(onBack, enabled = state.operation != TwitchCatalogConnectionOperation.FORGET) { Text("Back to providers") }
+            onRetryOpen?.let { retry -> TextButton(retry, enabled = enabled && !state.busy) { Text("Retry opening Twitch connection") } }
+            onBack?.let { back -> TextButton(back, enabled = enabled && state.operation != TwitchCatalogConnectionOperation.FORGET) { Text("Back to providers") } }
         }
     }
 }

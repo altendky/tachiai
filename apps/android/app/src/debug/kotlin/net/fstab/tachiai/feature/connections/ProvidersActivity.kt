@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import java.util.concurrent.Executors
+import kotlinx.coroutines.runBlocking
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.connectionProfileStore
@@ -32,17 +33,9 @@ class ProvidersActivity : ComponentActivity() {
             else ProviderInstancesScreen(value, profiles, busy, message,
                 { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
                 onCreate = ::create,
-                onManageStreams = { startActivity(Intent(this, ManageStreamsActivity::class.java)
-                    .putExtra(ManageStreamsActivity.INSTANCE_ID, it)) },
-                onCatalogConnection = { id ->
-                    val service = value.singleOrNull { it.id == id }?.service
-                    val activity = when (service) {
-                        PrototypeService.ABEMA -> AbemaAccountConnectionActivity::class.java
-                        PrototypeService.TWITCH -> TwitchCatalogConnectionActivity::class.java
-                        else -> null
-                    }
-                    activity?.let { startActivity(Intent(this, it).putExtra("PROVIDER_INSTANCE_ID", id)) }
-                })
+                onOpenProvider = { startActivity(Intent(this, ManageStreamsActivity::class.java)
+                    .putExtra(ManageStreamsActivity.INSTANCE_ID, it)
+                    .putExtra(ManageStreamsActivity.PROVIDER_DETAILS, true)) })
         } }
     }
 
@@ -52,6 +45,7 @@ class ProvidersActivity : ComponentActivity() {
         val current = ++revision; busy = true
         worker.execute {
             val result = runCatching {
+                runBlocking { ProviderPreferenceWrites.awaitAll() }
                 val providers = providerInstanceStore(this).read { legacyProviderSettings(this) }
                 val routes = connectionProfileStore(this).summaries()
                 providers to routes
@@ -78,7 +72,7 @@ class ProvidersActivity : ComponentActivity() {
             runOnUiThread {
                 if (isDestroyed || revision != current) return@runOnUiThread
                 busy = false
-                result.fold(onSuccess = { settings = it; message = "Provider instances saved. No route was started or tested." },
+                result.fold(onSuccess = { settings = it; message = null },
                     onFailure = { message = "Provider instance could not be saved. Nothing was replaced; check the name or instance limit." })
             }
         }

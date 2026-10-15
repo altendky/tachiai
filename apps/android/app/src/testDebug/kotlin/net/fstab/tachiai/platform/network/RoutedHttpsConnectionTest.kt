@@ -19,6 +19,8 @@ import javax.net.SocketFactory
 import javax.net.ssl.SSLSocket
 import okhttp3.Authenticator
 import okhttp3.Credentials
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.tls.HandshakeCertificates
@@ -39,7 +41,7 @@ class RoutedHttpsConnectionTest {
     private inner class ProxyFixture(private val refusal: Boolean = false, private val block: Boolean = false,
         private val redirect: Boolean = false, private val user: String = username,
         private val secret: String = password, private val authRealm: String = realm,
-        private val slowBody: Boolean = false) : AutoCloseable {
+        private val slowBody: Boolean = false, private val blockHeaders: Boolean = false) : AutoCloseable {
         private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         val port get() = server.localPort
         val accepted = CountDownLatch(1)
@@ -84,6 +86,7 @@ class RoutedHttpsConnectionTest {
                 var offset = 0
                 while (offset < length) { val count = originInput.read(received, offset, length - offset); if (count < 0) throw IOException(); offset += count }
                 body.set(received)
+                if (blockHeaders) { while (originInput.read() >= 0) Unit; return@Thread }
                 val response = if (redirect) "HTTP/1.1 302 Found\r\nLocation: https://other.example/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     else "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\n" + if (slowBody) "" else "ok"
                 tls.getOutputStream().write(response.toByteArray())
@@ -194,11 +197,128 @@ class RoutedHttpsConnectionTest {
             val error = assertThrows(IOException::class.java) { connection.responseCode }
             assertEquals("Routed HTTPS request failed", error.message)
             assertNull(error.cause)
+            assertNull(connection.failureDiagnostic)
             assertNull(fixture.originHeaders.get())
             assertTrue(fixture.outbound.isNotEmpty())
             assertTrue("Every socket must remain on this proxy; no port-443 direct attempt", fixture.outbound.all { it.port == fixture.port })
             connection.disconnect()
         }
+    }
+
+    @Test fun optInTlsFailureIsClosedAndThrowingObserverCannotChangeSafeExceptionOrFirstSnapshot() {
+        ProxyFixture().use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(trusted = false), { true })
+            val captured = AtomicReference<RoutedHttpsFailureDiagnostic?>(); val calls = AtomicInteger()
+            assertTrue(connection.observeFailures { captured.set(it); calls.incrementAndGet(); error("synthetic private observer") })
+            assertFalse(connection.observeFailures { fail("Duplicate observer invoked") })
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
+            assertEquals("Routed HTTPS request failed", failure.message); assertNull(failure.cause)
+            val diagnostic = checkNotNull(captured.get())
+            assertSame(diagnostic, connection.failureDiagnostic)
+            assertEquals(RoutedHttpsFailureCategory.TLS_HANDSHAKE, diagnostic.category)
+            assertEquals(RoutedHttpsCallPhase.TLS, diagnostic.phase)
+            assertTrue(diagnostic.proxyPresent); assertTrue(diagnostic.phaseAvailable)
+            assertFalse(diagnostic.localCancellationRequested)
+            assertNull(fixture.originHeaders.get())
+            assertTrue(fixture.outbound.all { it.port == fixture.port })
+            connection.disconnect(); assertThrows(IOException::class.java) { connection.responseCode }
+            assertFalse(connection.observeFailures { fail("Late observer invoked") })
+            assertSame(diagnostic, connection.failureDiagnostic); assertEquals(1, calls.get())
+            for (privateValue in listOf("synthetic", username, password, "127.0.0.1", "https:"))
+                assertFalse(diagnostic.toString().contains(privateValue))
+        }
+    }
+
+    @Test fun refusedConnectRecordsOperationWithoutInventingAnOriginHttpOrAuthenticationCategory() {
+        ProxyFixture(refusal = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            assertTrue(connection.observeFailures { })
+            assertThrows(IOException::class.java) { connection.responseCode }
+            val diagnostic = checkNotNull(connection.failureDiagnostic)
+            assertEquals(RoutedHttpsFailureCategory.IO, diagnostic.category)
+            assertEquals(RoutedHttpsCallPhase.CONNECT, diagnostic.phase)
+            assertTrue(diagnostic.proxyPresent); assertTrue(diagnostic.phaseAvailable)
+            assertFalse(diagnostic.localCancellationRequested)
+            assertNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
+            connection.disconnect()
+        }
+    }
+
+    @Test fun responseHeaderTimeoutRetainsCompletedRequestWithoutClaimingResponseOrLocalCancellation() {
+        ProxyFixture(blockHeaders = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            connection.readTimeout = 1500
+            assertTrue(connection.observeFailures { })
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
+            assertEquals("Routed HTTPS request failed", failure.message); assertNull(failure.cause)
+            val diagnostic = checkNotNull(connection.failureDiagnostic)
+            assertEquals(RoutedHttpsFailureCategory.SOCKET_TIMEOUT, diagnostic.category)
+            assertEquals(RoutedHttpsCallPhase.REQUEST_HEADERS_COMPLETE, diagnostic.phase)
+            assertTrue(diagnostic.phaseAvailable); assertTrue(diagnostic.proxyPresent)
+            assertFalse(diagnostic.localCancellationRequested)
+            assertNotNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
+            connection.disconnect()
+        }
+    }
+
+    @Test fun explicitLocalCancellationIsIndependentAndCannotBeRewrittenByCleanupOrLaterRequests() {
+        ProxyFixture(block = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            val callbacks = AtomicInteger(); assertTrue(connection.observeFailures { callbacks.incrementAndGet() })
+            val caught = AtomicReference<Throwable?>()
+            val worker = Thread { try { connection.responseCode } catch (error: Throwable) { caught.set(error) } }
+            try {
+                worker.start(); assertTrue(fixture.accepted.await(3, TimeUnit.SECONDS))
+                connection.disconnect(); worker.join(3000)
+                assertFalse(worker.isAlive); assertTrue(caught.get() is IOException)
+                assertNull(caught.get()?.cause)
+                val diagnostic = checkNotNull(connection.failureDiagnostic)
+                assertTrue(diagnostic.localCancellationRequested)
+                assertEquals(RoutedHttpsCallPhase.CONNECT, diagnostic.phase)
+                assertTrue(diagnostic.proxyPresent); assertTrue(diagnostic.phaseAvailable)
+                connection.disconnect(); assertThrows(IOException::class.java) { connection.responseCode }
+                assertSame(diagnostic, connection.failureDiagnostic); assertEquals(1, callbacks.get())
+                assertNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
+            } finally { connection.disconnect(); worker.join(3000) }
+        }
+    }
+
+    @Test fun optInKeepsAnExistingListenerFactoryAndMarksItsOperationalPhasesUnavailable() {
+        ProxyFixture(refusal = true).use { fixture ->
+            val factories = AtomicInteger(); val starts = AtomicInteger(); val connects = AtomicInteger(); val failures = AtomicInteger()
+            val existing = object : EventListener() {
+                override fun callStart(call: Call) { starts.incrementAndGet() }
+                override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) { connects.incrementAndGet() }
+                override fun callFailed(call: Call, ioe: IOException) { failures.incrementAndGet() }
+            }
+            val client = fixture.client().newBuilder().eventListenerFactory { factories.incrementAndGet(); existing }.build()
+            val connection = RoutedHttpsConnection(url, client, { true })
+            assertTrue(connection.observeFailures { })
+            assertThrows(IOException::class.java) { connection.responseCode }
+            val diagnostic = checkNotNull(connection.failureDiagnostic)
+            assertFalse(diagnostic.phaseAvailable); assertEquals(RoutedHttpsCallPhase.NOT_STARTED, diagnostic.phase)
+            assertEquals(RoutedHttpsFailureCategory.IO, diagnostic.category)
+            assertEquals(1, factories.get()); assertEquals(1, starts.get()); assertEquals(1, connects.get()); assertEquals(1, failures.get())
+            assertTrue(diagnostic.proxyPresent); assertFalse(diagnostic.localCancellationRequested)
+            assertNull(fixture.originHeaders.get()); connection.disconnect()
+        }
+    }
+
+    @Test fun explicitNoProxyAndPreNetworkFailureRemainClosedWithoutDialing() {
+        val intercepted = AtomicInteger()
+        val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor {
+            intercepted.incrementAndGet(); throw IOException("synthetic private failure")
+        }.build()
+        val connection = RoutedHttpsConnection(url, client, { true })
+        assertTrue(connection.observeFailures { })
+        val failure = assertThrows(IOException::class.java) { connection.responseCode }
+        assertNull(failure.cause); assertEquals("Routed HTTPS request failed", failure.message)
+        val diagnostic = checkNotNull(connection.failureDiagnostic)
+        assertEquals(RoutedHttpsFailureCategory.IO, diagnostic.category)
+        assertEquals(RoutedHttpsCallPhase.CALL, diagnostic.phase)
+        assertTrue(diagnostic.phaseAvailable); assertFalse(diagnostic.proxyPresent)
+        assertFalse(diagnostic.localCancellationRequested); assertEquals(1, intercepted.get())
+        connection.disconnect()
     }
 
     @Test fun refusedProxyHasNoDirectFallback() {

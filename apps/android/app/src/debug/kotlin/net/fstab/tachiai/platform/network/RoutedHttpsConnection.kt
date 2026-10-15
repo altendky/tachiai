@@ -6,19 +6,40 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.URL
+import java.net.ConnectException
+import java.net.ProtocolException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.io.InterruptedIOException
 import java.security.cert.Certificate
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
+import javax.net.ssl.SSLException
 import okhttp3.Authenticator
 import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+
+internal enum class RoutedHttpsFailureCategory {
+    TLS_HANDSHAKE, TLS_PEER, TLS_OTHER, SOCKET_TIMEOUT, DNS, CONNECT, PROTOCOL, INTERRUPTED_IO, IO, OTHER,
+}
+internal enum class RoutedHttpsCallPhase {
+    NOT_STARTED, CALL, DNS, CONNECT, TLS, REQUEST_HEADERS, REQUEST_HEADERS_COMPLETE, REQUEST_BODY, RESPONSE_HEADERS, RESPONSE_BODY,
+}
+internal data class RoutedHttpsFailureDiagnostic(val category: RoutedHttpsFailureCategory,
+    val phase: RoutedHttpsCallPhase, val proxyPresent: Boolean, val localCancellationRequested: Boolean,
+    val phaseAvailable: Boolean)
 
 // Per-client CONNECT credentials, never a JVM-wide Authenticator or origin header.
 // OkHttp synthesizes a preemptive CONNECT challenge; real retries must also match
@@ -56,6 +77,15 @@ internal class RoutedHttpsConnection(
     private var responseStream: InputStream? = null
     private var call: Call? = null
     private var reply: Response? = null
+    private var failureObserver: ((RoutedHttpsFailureDiagnostic) -> Unit)? = null
+    private val firstDiagnostic = AtomicReference<RoutedHttpsFailureDiagnostic?>()
+    private val phase = AtomicReference(RoutedHttpsCallPhase.NOT_STARTED)
+    private val phaseAvailable = AtomicBoolean()
+    val failureDiagnostic: RoutedHttpsFailureDiagnostic? get() = firstDiagnostic.get()
+    fun observeFailures(observer: (RoutedHttpsFailureDiagnostic) -> Unit): Boolean = synchronized(lock) {
+        if (connected || disconnected || failureObserver != null) false
+        else { failureObserver = observer; true }
+    }
     private val headers = linkedMapOf<String, MutableList<String>>()
     private val body = object : ByteArrayOutputStream() {
         override fun write(value: Int) = synchronized(lock) {
@@ -136,11 +166,41 @@ internal class RoutedHttpsConnection(
                 .connectTimeout(connectTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
                 .readTimeout(readTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
                 .callTimeout(30, TimeUnit.SECONDS)
-                .build()
+            if (failureObserver != null) {
+                val inherited = client.eventListenerFactory
+                configured.eventListenerFactory { active ->
+                    val original = inherited.create(active)
+                    if (original !== EventListener.NONE) original
+                    else {
+                        phaseAvailable.set(true)
+                        object : EventListener() {
+                            override fun callStart(call: Call) { phase.set(RoutedHttpsCallPhase.CALL) }
+                            override fun dnsStart(call: Call, domainName: String) { phase.set(RoutedHttpsCallPhase.DNS) }
+                            override fun connectStart(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) {
+                                phase.set(RoutedHttpsCallPhase.CONNECT)
+                            }
+                            override fun secureConnectStart(call: Call) { phase.set(RoutedHttpsCallPhase.TLS) }
+                            override fun requestHeadersStart(call: Call) { phase.set(RoutedHttpsCallPhase.REQUEST_HEADERS) }
+                            override fun requestHeadersEnd(call: Call, request: Request) {
+                                // OkHttp reports responseHeadersStart only once
+                                // headers return, not when waiting begins. This
+                                // records request completion without claiming
+                                // any provider response or reading its fields.
+                                phase.set(RoutedHttpsCallPhase.REQUEST_HEADERS_COMPLETE)
+                            }
+                            override fun requestBodyStart(call: Call) { phase.set(RoutedHttpsCallPhase.REQUEST_BODY) }
+                            override fun responseHeadersStart(call: Call) { phase.set(RoutedHttpsCallPhase.RESPONSE_HEADERS) }
+                            override fun responseBodyStart(call: Call) { phase.set(RoutedHttpsCallPhase.RESPONSE_BODY) }
+                        }
+                    }
+                }
+            }
+            val activeClient = configured.build()
             connected = true
-            configured.newCall(request).also { call = it }
+            activeClient.newCall(request).also { call = it }
         }
-        val result = try { pending.execute() } catch (_: Exception) {
+        val result = try { pending.execute() } catch (error: Exception) {
+            rememberDiagnostic(error)
             disconnect(); throw IOException("Routed HTTPS request failed")
         }
         return synchronized(lock) {
@@ -148,6 +208,27 @@ internal class RoutedHttpsConnection(
                 result.close(); throw IOException("Route is closed")
             }
             result.also { reply = it }
+        }
+    }
+
+    private fun rememberDiagnostic(error: Exception) {
+        val observer = synchronized(lock) { failureObserver } ?: return
+        val category = when (error) {
+            is SSLHandshakeException -> RoutedHttpsFailureCategory.TLS_HANDSHAKE
+            is SSLPeerUnverifiedException -> RoutedHttpsFailureCategory.TLS_PEER
+            is SSLException -> RoutedHttpsFailureCategory.TLS_OTHER
+            is SocketTimeoutException -> RoutedHttpsFailureCategory.SOCKET_TIMEOUT
+            is UnknownHostException -> RoutedHttpsFailureCategory.DNS
+            is ConnectException -> RoutedHttpsFailureCategory.CONNECT
+            is ProtocolException -> RoutedHttpsFailureCategory.PROTOCOL
+            is InterruptedIOException -> RoutedHttpsFailureCategory.INTERRUPTED_IO
+            is IOException -> RoutedHttpsFailureCategory.IO
+            else -> RoutedHttpsFailureCategory.OTHER
+        }
+        val snapshot = RoutedHttpsFailureDiagnostic(category, phase.get(), usingProxy(),
+            synchronized(lock) { disconnected }, phaseAvailable.get())
+        if (firstDiagnostic.compareAndSet(null, snapshot)) {
+            try { observer(snapshot) } catch (_: Throwable) { }
         }
     }
 

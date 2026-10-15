@@ -4,6 +4,9 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.URL
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ServerSocket
 import java.security.cert.Certificate
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -13,6 +16,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
+import net.fstab.tachiai.platform.network.RoutedHttpsConnection
+import net.fstab.tachiai.platform.network.RoutedHttpsFailureDiagnostic
+import net.fstab.tachiai.platform.network.RoutedHttpsFailureCategory
+import net.fstab.tachiai.platform.network.RoutedHttpsCallPhase
+import okhttp3.OkHttpClient
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -32,9 +40,12 @@ internal class AbemaAccountProfileObservation(
     enum class FailureStage { ADMISSION, TRANSPORT, CONNECTION, RESPONSE, INPUT, BODY, PROFILE_RESULT }
     enum class Failure { PROFILE_REJECTED, PROFILE_INCONCLUSIVE, IDENTITY_MISMATCH, TYPED_FAILURE, UNEXPECTED_FAILURE }
     class ClosedFailure internal constructor(val stage: FailureStage, val http: Int, val requestCount: Int,
-        val failure: Failure, val category: AbemaAccountFailure?) {
+        val failure: Failure, val category: AbemaAccountFailure?, val transport: RoutedHttpsFailureDiagnostic? = null) {
         init { require((http == 0 || http in 100..599) && requestCount in 0..2) }
-        fun render() = "stage=${stage.name} http=$http requestCount=$requestCount failure=${failure.name} category=${category?.name ?: "NONE"}"
+        fun render() = "stage=${stage.name} http=$http requestCount=$requestCount failure=${failure.name} category=${category?.name ?: "NONE"} " +
+            (transport?.let { "transportCategory=${it.category.name} callPhase=${it.phase.name} " +
+                "proxyPresent=${it.proxyPresent} localCancellationRequested=${it.localCancellationRequested} phaseAvailable=${it.phaseAvailable}" }
+                ?: "transport=UNOBSERVED")
         override fun toString() = render()
     }
     class Proof(val ownerUnchanged: Boolean, val storeUnchanged: Boolean, val withinDeadline: Boolean,
@@ -72,9 +83,11 @@ internal class AbemaAccountProfileObservation(
     private val opened = AtomicInteger()
     private val status = AtomicInteger()
     private val stage = AtomicReference(FailureStage.ADMISSION)
+    private val profileDiagnostic = AtomicBoolean()
+    private val transportFailure = AtomicReference<RoutedHttpsFailureDiagnostic?>()
     private val firstFailure = AtomicReference<ClosedFailure?>()
     private fun rememberFailure(value: Failure, category: AbemaAccountFailure? = null) {
-        firstFailure.compareAndSet(null, ClosedFailure(stage.get(), status.get(), requestCount, value, category))
+        firstFailure.compareAndSet(null, ClosedFailure(stage.get(), status.get(), requestCount, value, category, transportFailure.get()))
     }
     private class FirstClose(val resource: AbemaAccountTransport) {
         private val started = AtomicBoolean()
@@ -130,6 +143,7 @@ internal class AbemaAccountProfileObservation(
         return actual
     }
     fun observe(userId: String, bearer: String): AbemaAccountProfileResult {
+        profileDiagnostic.set(true)
         try {
             val result = begin(bearer).profile(userId, bearer)
             stage.set(FailureStage.PROFILE_RESULT)
@@ -235,6 +249,11 @@ internal class AbemaAccountProfileObservation(
         @Synchronized fun wiped() = finished && size == 0 && bytes.all { it == 0.toByte() }
     }
     private inner class ObservedConnection(private val remote: HttpsURLConnection, private val number: Int) : HttpsURLConnection(BASE) {
+        init {
+            if (number == 1 && profileDiagnostic.get()) (remote as? RoutedHttpsConnection)?.observeFailures { diagnostic ->
+                if (!closeFinished.get()) transportFailure.compareAndSet(null, diagnostic)
+            }
+        }
         private val disconnectStarted = AtomicBoolean()
         private val disconnected = AtomicBoolean()
         private val inputRequested = AtomicBoolean()
@@ -414,6 +433,58 @@ internal class AbemaAccountProfileObservation(
 }
 
 class AbemaAccountProfileObservationGuardDeviceTest {
+    @Test fun actualRoutedProxyRefusalSurvivesAccountTranslationButNeedsEveryPublicationProof() {
+        val server = ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1")).apply { soTimeout = 2_000 }
+        val connections = AtomicInteger()
+        val serverFailure = AtomicReference<Throwable?>()
+        val served = Thread {
+            try { server.accept().use { socket ->
+                connections.incrementAndGet(); socket.soTimeout = 2_000
+                val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+                assertTrue(checkNotNull(reader.readLine()).startsWith("CONNECT "))
+                while (checkNotNull(reader.readLine()).isNotEmpty()) { }
+                socket.getOutputStream().write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                socket.getOutputStream().flush()
+            } } catch (error: Throwable) { serverFailure.set(error) }
+        }.apply { start() }
+        val client = OkHttpClient.Builder().proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", server.localPort)))
+            .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
+        lateinit var http: AbemaAccountHttpTransport
+        val helper = AbemaAccountProfileObservation({ true }, { wrap ->
+            AbemaAccountHttpTransport({ url ->
+                assertEquals(ADDRESS, url.toExternalForm())
+                wrap(RoutedHttpsConnection(url, client, { true }))
+            }, { true }, { 0 }, { WALL }).also { http = it }
+        }, { it === http && http.cleanupConfirmed }, { fail("Synthetic route cleanup must be definite") }, { WALL })
+        try {
+            assertThrows(AbemaAccountException::class.java) { helper.observe(ID, BEARER) }
+            assertNull(helper.publishFailure(PROOF))
+            helper.close(); assertTrue(helper.cleanupConfirmed)
+            val failure = checkNotNull(helper.publishFailure(PROOF))
+            assertEquals(AbemaAccountFailure.TEMPORARY, failure.category)
+            assertEquals(0, failure.http); assertEquals(1, failure.requestCount)
+            val route = checkNotNull(failure.transport)
+            assertEquals(RoutedHttpsFailureCategory.IO, route.category)
+            assertEquals(RoutedHttpsCallPhase.CONNECT, route.phase)
+            assertTrue(route.proxyPresent); assertTrue(route.phaseAvailable)
+            assertFalse(route.localCancellationRequested)
+            assertFalse(failure.render().contains("403")) // No proxy-status inference.
+            assertFalse(failure.render().contains(BEARER)); assertFalse(failure.render().contains("abema-tv"))
+            for (mask in 0 until 31) {
+                val proof = AbemaAccountProfileObservation.Proof(mask and 1 != 0, mask and 2 != 0,
+                    mask and 4 != 0, mask and 8 != 0, mask and 16 != 0)
+                assertNull(helper.publishFailure(proof))
+            }
+            assertThrows(AbemaAccountException::class.java) { helper.observe(ID, BEARER) }
+            helper.close(); assertSame(failure, helper.publishFailure(PROOF))
+            assertEquals(1, connections.get())
+        } finally {
+            helper.close(); server.close(); served.join(2_000)
+            client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+            assertFalse("Synthetic CONNECT server must terminate", served.isAlive)
+            serverFailure.get()?.let { throw AssertionError("Synthetic CONNECT server failed", it) }
+        }
+    }
     private class Fake(private val bytes: ByteArray, address: String = ADDRESS) : HttpsURLConnection(URL(address)) {
         val reads = AtomicInteger()
         val consumed = AtomicInteger()

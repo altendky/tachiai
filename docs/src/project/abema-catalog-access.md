@@ -1835,6 +1835,28 @@ Ordinary instrumentation and the normal launcher were restored. The native
 continuous-slot check was not attempted because no fresh broadcast candidate was
 available; actual playback and the original CDN failure cause remain unverified.
 
+An opt-in routed HTTPS observer now retains only the first fixed exception-type
+category, last OkHttp operation, configured-proxy presence and local cancellation
+state before cleanup. It leaves disabled clients and existing custom listeners
+unchanged. Request headers sent is distinct from response headers received:
+OkHttp 5.5 reports the response event only after headers return. A CONNECT refusal
+does not become an inferred provider HTTP status. Synthetic TLS, CONNECT refusal,
+response-wait timeout and cancellation cases verify those distinctions without
+provider traffic or direct-network fallback.
+
+After a subsequent graceful cold boot preserved the account and route data, the
+grant naturally expired. A real automatic same-account renewal then passed with
+original discovery resumed and only the account record changed; see the
+[renewal observation](native-access-experiments.md#remembered-session-renewal-implementation--2026-10-14).
+A single production profile GET using that successor grant passed after definite
+cleanup, one request, complete JSON and unchanged saved records. No failure
+category was produced by this successful request. The earlier transport failure
+was not reproduced; neither expiry nor a timeout is established as its cause.
+The revised checks passed 2,857 JVM tests, Android lint and release isolation,
+shared-signed APK verification, 23 provider-free profile guards and three renewal
+observation guards, with zero test skips. Actual continuous broadcast playback
+and the earlier native region/CDN failure remain unverified.
+
 ## Public bundle deployment comparison — 2026-10-14
 
 A bounded, cookie-free public check at 23:33–23:34 UTC found that all five

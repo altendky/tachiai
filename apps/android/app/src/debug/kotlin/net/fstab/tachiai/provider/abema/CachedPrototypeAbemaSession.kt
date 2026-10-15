@@ -123,8 +123,11 @@ internal class CachedPrototypeAbemaSession(
         require(!requireSavedAccount || ownership != null)
     }
     private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
-    private val channelPreparationEvidence = if (observeChannelPreparation) AbemaChannelPreparationEvidence() else null
-    val channelPreparationDiagnostic get() = channelPreparationEvidence?.snapshot
+    private val helperPreparationEvidence = AbemaChannelPreparationEvidence()
+    val helperPreparationDiagnostic get() = helperPreparationEvidence.snapshot
+    val channelPreparationDiagnostic get() = helperPreparationDiagnostic.takeIf { observeChannelPreparation }
+    @Volatile var nativeReadinessDeadlineReached: Boolean = false
+        private set
     private val episodeId get() = episodeResource?.identity ?: "394-72_s10_p8529"
     private val channelId get() = if (slotLinearAdmission.linearSelected) slotChannelId else channelResource?.identity ?: "abema-news"
     private val effectiveReplay get() = replay && !slotLinearAdmission.linearSelected
@@ -204,9 +207,10 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
-    private fun preparationCurrent(run: Long) = !closed.get() && revision.get() == run && active() &&
-        budget?.active == true && SystemClock.elapsedRealtime() < deadline && ownership?.canContinue() != false &&
+    private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
+        budget?.active == true && ownership?.canContinue() != false &&
         (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run) && slotChaseCurrent(run)
+    private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
         (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
@@ -362,8 +366,14 @@ internal class CachedPrototypeAbemaSession(
         val readinessDeadline = minOf(deadline, SystemClock.elapsedRealtime() + 45_000)
         handler.postDelayed({ if (!closed.get() && revision.get() == run)
             fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }, budget.remainingMs)
-        handler.postDelayed({ if (!closed.get() && revision.get() == run && !preparingNative)
-            fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT)) },
+        handler.postDelayed({ if (!closed.get() && revision.get() == run && !preparingNative) {
+            if (!preparationAdmitted(run)) fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED), admissionLost = true)
+            else {
+                val reached = SystemClock.elapsedRealtime() >= readinessDeadline
+                fail(PrototypeFeedFailure(if (reached) PrototypeFailureReason.PREPARATION_TIMEOUT
+                    else PrototypeFailureReason.STOPPED), readinessDeadline = reached)
+            }
+        } },
             maxOf(0L, readinessDeadline - SystemClock.elapsedRealtime()))
         worker.execute {
             fun cached(identity: AbemaPublicBundleIdentity): AbemaBundlePrepared {
@@ -548,8 +558,11 @@ internal class CachedPrototypeAbemaSession(
 
     private fun waitForHelper(run: Long, readinessDeadline: Long) {
         if (closed.get() || revision.get() != run) return
-        if (!preparationCurrent(run) || SystemClock.elapsedRealtime() >= readinessDeadline) {
-            fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT)); return
+        if (!preparationAdmitted(run)) {
+            fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED), admissionLost = true); return
+        }
+        if (SystemClock.elapsedRealtime() >= readinessDeadline) {
+            fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_TIMEOUT), readinessDeadline = true); return
         }
         if (!allows(view.url) || !routeCurrent.get()) {
             handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 100); return
@@ -583,10 +596,10 @@ internal class CachedPrototypeAbemaSession(
             if (raw == "null") { onRead(null); return@evaluateJavascript }
             val value = parseAbemaCachedHelperMetadataCallback(raw)
             if (value == null) {
-                channelPreparationEvidence?.refuse()
+                helperPreparationEvidence.refuse()
                 record("metadata=REFUSED"); fail(); return@evaluateJavascript
             }
-            channelPreparationEvidence?.observe(value)
+            helperPreparationEvidence.observe(value)
             val first = helperEvidence.observe(value)
             if (first) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE,
                 value.failure.diagnosticCategory())
@@ -932,8 +945,17 @@ internal class CachedPrototypeAbemaSession(
             code.takeIf { it in 1000..9999 } else null))
     }
 
-    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) {
-        remember(if (networkReviewNeeded.get()) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED) else value)
+    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED),
+        readinessDeadline: Boolean = false, admissionLost: Boolean = false) {
+        val observed = if (networkReviewNeeded.get()) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED) else value
+        // A current native readiness callback owns its STOPPED result even
+        // after active admission is lost. Request/teardown callbacks keep
+        // their existing active guard; an earlier cause always wins.
+        if (admissionLost && !closed.get()) firstFailure.remember(observed) else remember(observed)
+        // The existing atomic latch decides the first cause. A concurrent
+        // unrelated failure cannot acquire this native deadline marker.
+        if (readinessDeadline && observed.reason == PrototypeFailureReason.PREPARATION_TIMEOUT && failure === observed)
+            nativeReadinessDeadlineReached = true
         finish(if (failure?.reason == PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED)
             PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED else PrototypeFeedEvent.FAILED)
     }
@@ -960,6 +982,7 @@ internal class CachedPrototypeAbemaSession(
     private fun finish(event: PrototypeFeedEvent) {
         if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { finish(event) }; return }
         if (!closed.compareAndSet(false, true)) return
+        helperPreparationEvidence.seal()
         synchronized(accountLock) {
             accountClient.get()?.close()
             slotPremiumReceipt.set(null); slotPremiumScope.set(null)

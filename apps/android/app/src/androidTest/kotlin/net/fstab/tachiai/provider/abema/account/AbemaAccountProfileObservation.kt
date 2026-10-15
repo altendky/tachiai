@@ -29,6 +29,14 @@ internal class AbemaAccountProfileObservation(
     enum class Shape { ABSENT, NULL, OBJECT, ARRAY, STRING, NUMBER, BOOLEAN, OTHER }
     enum class BooleanShape { ABSENT, NULL, TRUE, FALSE, OTHER }
     enum class Expiry { ABSENT, NULL, ZERO, ACTIVE, EXPIRED, INVALID_TYPE, INVALID_VALUE }
+    enum class FailureStage { ADMISSION, TRANSPORT, CONNECTION, RESPONSE, INPUT, BODY, PROFILE_RESULT }
+    enum class Failure { PROFILE_REJECTED, PROFILE_INCONCLUSIVE, IDENTITY_MISMATCH, TYPED_FAILURE, UNEXPECTED_FAILURE }
+    class ClosedFailure internal constructor(val stage: FailureStage, val http: Int, val requestCount: Int,
+        val failure: Failure, val category: AbemaAccountFailure?) {
+        init { require((http == 0 || http in 100..599) && requestCount in 0..2) }
+        fun render() = "stage=${stage.name} http=$http requestCount=$requestCount failure=${failure.name} category=${category?.name ?: "NONE"}"
+        override fun toString() = render()
+    }
     class Proof(val ownerUnchanged: Boolean, val storeUnchanged: Boolean, val withinDeadline: Boolean,
         val foregroundPreserved: Boolean, val recordsUnchanged: Boolean) {
         internal fun confirmed() = ownerUnchanged && storeUnchanged && withinDeadline && foregroundPreserved && recordsUnchanged
@@ -63,6 +71,11 @@ internal class AbemaAccountProfileObservation(
     private val matched = AtomicBoolean()
     private val opened = AtomicInteger()
     private val status = AtomicInteger()
+    private val stage = AtomicReference(FailureStage.ADMISSION)
+    private val firstFailure = AtomicReference<ClosedFailure?>()
+    private fun rememberFailure(value: Failure, category: AbemaAccountFailure? = null) {
+        firstFailure.compareAndSet(null, ClosedFailure(stage.get(), status.get(), requestCount, value, category))
+    }
     private class FirstClose(val resource: AbemaAccountTransport) {
         private val started = AtomicBoolean()
         private val finished = AtomicBoolean()
@@ -100,10 +113,12 @@ internal class AbemaAccountProfileObservation(
         if (!live() || !began.compareAndSet(false, true)) refused()
         expectedBearer = bearer; observedWall = wallMs()
         if (observedWall < 0) refused()
+        stage.set(FailureStage.TRANSPORT)
         val actual = createTransport { remote ->
             // Return ownership before any rejecting getter/current/URL check:
             // the production HTTP Handle must own even a refused connection.
             val number = opened.incrementAndGet()
+            stage.set(FailureStage.CONNECTION)
             ObservedConnection(remote, number).also { connections.add(it) }
         }
         val receipt = FirstClose(actual)
@@ -115,10 +130,22 @@ internal class AbemaAccountProfileObservation(
         return actual
     }
     fun observe(userId: String, bearer: String): AbemaAccountProfileResult {
-        val result = begin(bearer).profile(userId, bearer)
-        if (!live()) refused()
-        matched.set(result is AbemaAccountProfileResult.Identity && result.id == userId)
-        return result
+        try {
+            val result = begin(bearer).profile(userId, bearer)
+            stage.set(FailureStage.PROFILE_RESULT)
+            if (!live()) refused()
+            matched.set(result is AbemaAccountProfileResult.Identity && result.id == userId)
+            when (result) {
+                AbemaAccountProfileResult.Rejected -> rememberFailure(Failure.PROFILE_REJECTED)
+                AbemaAccountProfileResult.Inconclusive -> rememberFailure(Failure.PROFILE_INCONCLUSIVE)
+                is AbemaAccountProfileResult.Identity -> if (!matched.get()) rememberFailure(Failure.IDENTITY_MISMATCH)
+            }
+            return result
+        } catch (error: Throwable) {
+            if (error is AbemaAccountException) rememberFailure(Failure.TYPED_FAILURE, error.category)
+            else rememberFailure(Failure.UNEXPECTED_FAILURE)
+            throw error
+        }
     }
     fun observeSubscriptions(userId: String, bearer: String): AbemaSubscriptionProfileResult {
         val result = begin(bearer).subscriptionProfile(userId, bearer)
@@ -156,6 +183,8 @@ internal class AbemaAccountProfileObservation(
         (!began.get() || owned.get()?.let { it.confirmed && transportCleanupConfirmed(it.resource) } == true) &&
         connections.all { it.cleanupConfirmed() }
     val requestCount: Int get() = opened.get().coerceIn(0, 2)
+    fun publishFailure(proof: Proof): ClosedFailure? =
+        if (proof.confirmed() && cleanupConfirmed) firstFailure.get() else null
     fun publish(proof: Proof): ClosedObservation? = if (proof.confirmed() && cleanupConfirmed && matched.get() &&
         opened.get() == 1 && status.get() == 200 && json.get() == JsonState.COMPLETE) projection.get() else null
     fun publishChase(proof: Proof): ClosedChaseObservation? {
@@ -251,6 +280,7 @@ internal class AbemaAccountProfileObservation(
         override fun getContentType(): String? = remote.contentType
         override fun getHeaderField(name: String?): String? = remote.getHeaderField(name)
         override fun getResponseCode(): Int {
+            stage.set(FailureStage.RESPONSE)
             if (!live() || number != 1 || remote.requestMethod != "GET" || remote.doOutput || remote.instanceFollowRedirects ||
                 remote.useCaches || remote.getRequestProperty("Authorization") != "Bearer $expectedBearer" ||
                 remote.getRequestProperty("Accept") != "application/json" || remote.getRequestProperty("Cookie") != null) refused()
@@ -259,6 +289,7 @@ internal class AbemaAccountProfileObservation(
         override fun getErrorStream(): InputStream? = refused()
         override fun getOutputStream(): java.io.OutputStream = refused()
         override fun getInputStream(): InputStream {
+            stage.set(FailureStage.INPUT)
             if (status.get() != 200 || !inputRequested.compareAndSet(false, true)) refused()
             val bytes = Capture().also { capture = it }
             // Allocate the forwarding owner before acquiring the raw input.
@@ -266,6 +297,7 @@ internal class AbemaAccountProfileObservation(
             // production Handle can register its existing bounded close receipt.
             val forwarding = object : InputStream() {
                 override fun read(): Int {
+                    stage.set(FailureStage.BODY)
                     val result = checkNotNull(actualInput).read()
                     if (result < 0) bytes.complete() else {
                         val one = byteArrayOf(result.toByte())
@@ -274,6 +306,7 @@ internal class AbemaAccountProfileObservation(
                     return result
                 }
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    stage.set(FailureStage.BODY)
                     val result = checkNotNull(actualInput).read(buffer, offset, length)
                     if (result < 0) bytes.complete() else if (result > 0) bytes.append(buffer, offset, result)
                     return result
@@ -391,6 +424,7 @@ class AbemaAccountProfileObservationGuardDeviceTest {
         val inputCloseReturned = CountDownLatch(1)
         var heldInputClose: CountDownLatch? = null
         var response = 200
+        var failResponse = false
         var length = bytes.size.toLong()
         var failInputClose = false
         var failDisconnect = false
@@ -413,7 +447,10 @@ class AbemaAccountProfileObservationGuardDeviceTest {
                 }
             }
         }
-        override fun getResponseCode() = response
+        override fun getResponseCode(): Int {
+            if (failResponse) throw java.io.IOException("synthetic")
+            return response
+        }
         override fun getContentType() = "application/json; charset=UTF-8"
         override fun getContentLengthLong() = length
         override fun disconnect() {
@@ -461,6 +498,49 @@ class AbemaAccountProfileObservationGuardDeviceTest {
         fun finish(): AbemaAccountProfileObservation.ClosedObservation? { helper.close(); return helper.publish(PROOF) }
         fun finishChase(): AbemaAccountProfileObservation.ClosedChaseObservation? { helper.close(); return helper.publishChase(PROOF) }
         fun refuse(): Boolean = try { observe(); false } catch (_: AbemaAccountException) { true }
+    }
+
+    @Test fun actualProfileFailureProjectionDistinguishesReturnedHttpFromNetworkBeforeResponse() {
+        for (http in listOf(403, 500)) {
+            val f = Fixture(owned = true).also { it.remote.response = http }
+            f.observe()
+            assertNull(f.helper.publishFailure(PROOF)); assertNull(f.finish())
+            val failure = checkNotNull(f.helper.publishFailure(PROOF))
+            assertEquals(AbemaAccountProfileObservation.FailureStage.PROFILE_RESULT, failure.stage)
+            assertEquals(http, failure.http); assertEquals(1, failure.requestCount); assertNull(failure.category)
+            assertEquals(if (http == 403) AbemaAccountProfileObservation.Failure.PROFILE_REJECTED
+                else AbemaAccountProfileObservation.Failure.PROFILE_INCONCLUSIVE, failure.failure)
+            assertEquals(0, f.remote.inputOpens.get()); assertEquals(1, f.remote.disconnects.get())
+            assertEquals(1, f.allocations); assertTrue(f.helper.cleanupConfirmed)
+            assertTrue(f.refuse()); assertSame(failure, f.helper.publishFailure(PROOF))
+            assertEquals(1, f.allocations)
+            for (privateValue in listOf(ID, BEARER, "https:", "synthetic")) assertFalse(failure.render().contains(privateValue))
+        }
+        val network = Fixture(owned = true).also { it.remote.failResponse = true }
+        assertTrue(network.refuse()); assertNull(network.finish())
+        val failure = checkNotNull(network.helper.publishFailure(PROOF))
+        assertEquals(AbemaAccountProfileObservation.FailureStage.RESPONSE, failure.stage)
+        assertEquals(0, failure.http); assertEquals(1, failure.requestCount)
+        assertEquals(AbemaAccountProfileObservation.Failure.TYPED_FAILURE, failure.failure)
+        assertEquals(AbemaAccountFailure.TEMPORARY, failure.category)
+        assertEquals(0, network.remote.inputOpens.get()); assertEquals(1, network.remote.disconnects.get())
+    }
+
+    @Test fun failureProjectionRequiresEveryIndependentReceiptAndCannotLaunderCleanupOrIdentity() {
+        val wrong = Fixture("""{"profile":{"userId":"synthetic_other"}}""".toByteArray())
+        wrong.observe(); assertNull(wrong.finish())
+        val failure = checkNotNull(wrong.helper.publishFailure(PROOF))
+        assertEquals(AbemaAccountProfileObservation.Failure.IDENTITY_MISMATCH, failure.failure)
+        assertEquals(200, failure.http); assertEquals(1, failure.requestCount)
+        for (mask in 0 until 31) assertNull(wrong.helper.publishFailure(AbemaAccountProfileObservation.Proof(
+            mask and 1 != 0, mask and 2 != 0, mask and 4 != 0, mask and 8 != 0, mask and 16 != 0)))
+        val uncertain = Fixture().also { it.remote.failDisconnect = true }
+        assertTrue(uncertain.refuse()); assertNull(uncertain.finish())
+        assertFalse(uncertain.helper.cleanupConfirmed); assertNull(uncertain.helper.publishFailure(PROOF))
+        uncertain.remote.failDisconnect = false; uncertain.helper.close()
+        assertNull(uncertain.helper.publishFailure(PROOF)); assertEquals(1, uncertain.remote.disconnects.get())
+        val accepted = Fixture(); accepted.observe(); assertNotNull(accepted.finish())
+        assertNull(accepted.helper.publishFailure(PROOF))
     }
     @Test fun oneProductionGetUsesUnchangedHeadersAndStrictRootSubscriptionShapes() {
         val f = Fixture()

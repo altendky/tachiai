@@ -306,6 +306,7 @@ function fixture(options = {}) {
       if (options.deferToken && uri.pathname === '/v1/media/token') await deferred;
       if (options.deferLicense && uri.pathname === '/abematv-dash') await deferred;
       if (options.deferRegion && uri.pathname === '/now-on-air/abema-news') await deferred;
+      if (options.deferRegionCdn && uri.pathname === '/region') await deferred;
       if (options.deferSlot && uri.pathname.startsWith('/v1/media/slots/')) await deferred;
       let body;
       if (uri.pathname === '/api/auth/login/guest') body = options.guest || { user_id: 'TEST_USER', access_token: 'TEST_ACCESS' };
@@ -640,6 +641,92 @@ test('successful opaque take and later cleanup stop do not manufacture owner can
 const modernChannelOptions = extra => ({ account: savedAccount(), forbidGuest: true, configuredLinear: true,
   channelDiagnostic: true, modernChannelContext: true,
   channels: { channels: [configuredLinearChannel('fixture-one')] }, ...extra });
+
+function regionRoleFixture(channel, extra) {
+  const options = channel ? modernChannelOptions(extra) : continuousSlotOptions(extra);
+  const value = fixture(options);
+  if (channel) value.startChannel('fixture-one'); else value.startSlot('sumo/fixture-slot');
+  return { value, options, prefix: channel ? 'CHANNEL' : 'SLOT' };
+}
+
+test('closed region roles distinguish pending page and required CDN without claiming HTTP or terminal failure', async () => {
+  for (const channel of [false, true]) for (const cdn of [false, true]) {
+    const { value, prefix } = regionRoleFixture(channel, cdn ?
+      { regionPage: slotRegion({ status: true }), deferRegionCdn: true } : { deferRegion: true });
+    await waitForRequests(value, cdn ? 3 : 2);
+    assert.equal(value.metadata().phase, prefix + (cdn ? '_REGION_CDN' : '_REGION_PAGE'));
+    assert.equal(value.metadata().http, 0); assert.equal(value.metadata().failure, 'NONE');
+    const request = value.requests.at(-1);
+    assert.equal(request.uri.pathname, cdn ? '/region' : '/now-on-air/abema-news');
+    assert.equal(request.request.credentials, 'omit'); assert.equal(request.request.cache, 'no-store');
+    assert.equal(value.evaluate('observed.deviceCalls'), 0); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    value.stop(); value.release(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(value.metadata().failure, 'OWNED_CANCELLED'); assert.equal(value.requests.length, cdn ? 3 : 2);
+  }
+});
+
+test('actual owned JS region timers retain the precise page or CDN role before ignored-abort late completion', async () => {
+  for (const channel of [false, true]) for (const cdn of [false, true]) {
+    const { value, prefix } = regionRoleFixture(channel, cdn ?
+      { regionPage: slotRegion({ status: true }), deferRegionCdn: true } : { deferRegion: true });
+    await waitForRequests(value, cdn ? 3 : 2); value.expireTimers(); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, prefix + (cdn ? '_REGION_CDN' : '_REGION_PAGE'));
+    assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.metadata().http, 0);
+    value.release(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(value.requests.length, cdn ? 3 : 2); assert.equal(value.evaluate('observed.legacy.length'), 0);
+    assert.equal(value.metadata().failure, 'TIMER_EXPIRED'); assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
+test('region network rejection and returned HTTP refusal keep their page or CDN role and exact cause', async () => {
+  for (const channel of [false, true]) for (const cdn of [false, true]) for (const rejected of [false, true]) {
+    const endpoint = cdn ? '/region' : '/now-on-air/abema-news';
+    const { value, prefix } = regionRoleFixture(channel, { regionPage: slotRegion({ status: true }),
+      ...(rejected ? { rejections: { [endpoint]: new Error('SYNTHETIC_UNEXPORTED') } } : { statuses: { [endpoint]: 403 } }) });
+    await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, prefix + (cdn ? '_REGION_CDN' : '_REGION_PAGE'));
+    assert.equal(value.metadata().failure, rejected ? 'FETCH_REJECTED_BEFORE_HTTP' : 'HTTP_REFUSED');
+    assert.equal(value.metadata().http, rejected ? 0 : 403);
+    assert.equal(value.requests.length, cdn ? 3 : 2); assert.equal(value.evaluate('observed.deviceCalls'), 0);
+    assert.equal(JSON.stringify(value.metadata()).includes('SYNTHETIC_UNEXPORTED'), false);
+    value.stop(); assert.equal(value.metadata().failure, rejected ? 'FETCH_REJECTED_BEFORE_HTTP' : 'HTTP_REFUSED');
+  }
+});
+
+test('region response validation retains page structural refusal separately from CDN byte-limit refusal', async () => {
+  for (const channel of [false, true]) for (const cdn of [false, true]) {
+    const extra = cdn ? { regionPage: slotRegion({ status: true }), responseTexts: { '/region': 'x'.repeat(4097) } } :
+      { regionPage: slotRegion() + slotRegion() };
+    const { value, prefix } = regionRoleFixture(channel, extra); await waitFor(value, 'FAILED');
+    assert.equal(value.metadata().phase, prefix + (cdn ? '_REGION_CDN' : '_REGION_PAGE'));
+    assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED'); assert.equal(value.metadata().http, 200);
+    assert.equal(value.requests.length, cdn ? 3 : 2); assert.equal(value.evaluate('observed.legacy.length'), 0);
+  }
+});
+
+test('continuous slot reuses its fresh page and CDN region while direct modern channel uses its own caller role', async () => {
+  for (const channel of [false, true]) {
+    const { value } = regionRoleFixture(channel, { regionPage: slotRegion({ status: true }) });
+    await waitFor(value, 'READY');
+    assert.equal(value.requests.filter(({ uri }) => uri.pathname === '/now-on-air/abema-news').length, 1);
+    assert.equal(value.requests.filter(({ uri }) => uri.pathname === '/region').length, 1);
+    assert.equal(value.requests.filter(({ uri }) => uri.pathname === '/v1/media/deviceTypeId').length, 1);
+    assert.equal(value.requests.filter(({ uri }) => uri.pathname === '/v1/channels').length, 1);
+    assert.equal(value.requests.length, channel ? 5 : 6);
+    assert.equal(value.metadata().phase, 'READY'); assert.equal(value.metadata().failure, 'NONE'); value.stop();
+  }
+});
+
+test('a wall-clock advance alone cannot fabricate a native preparation deadline or JS region timer event', async () => {
+  for (const channel of [false, true]) {
+    const { value, options, prefix } = regionRoleFixture(channel, { deferRegion: true });
+    await waitForRequests(value, 2); options.nowMs = fixtureNow + 45000;
+    assert.equal(value.status(), 'WAITING_SOURCE'); assert.equal(value.metadata().failure, 'NONE');
+    assert.equal(value.metadata().phase, prefix + '_REGION_PAGE');
+    assert.equal(value.requests.length, 2); value.stop(); value.release(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(value.metadata().failure, 'OWNED_CANCELLED');
+  }
+});
 
 test('modern source-only context binds fresh region device bearer anonymous channel and exact selected dtid', async () => {
   for (const viewingOpened of [true, false, undefined]) {
@@ -2110,7 +2197,7 @@ test('slot region needs explicit provider Japan NONE and allowed fields without 
     slotRegion().replace(';</script>', ' || arbitraryCode();</script>')];
   for (const regionPage of invalid) {
     const value = fixture({ configuredSlot: true, regionPage }); value.startSlot('sumo/fixture-slot');
-    await waitFor(value, 'FAILED'); assert.equal(value.metadata().phase, 'SLOT_REGION');
+    await waitFor(value, 'FAILED'); assert.equal(value.metadata().phase, 'SLOT_REGION_PAGE');
     assert.equal(value.requests.length, 3); assert.equal(value.evaluate('observed.legacy.length'), 0);
     assert.equal(value.requests.some(item => item.uri.pathname === '/region'), false);
   }
@@ -2142,7 +2229,7 @@ test('slot region accepts either reviewed provider-selected endpoint without cha
     { regionPage: slotRegion({ cdnURL: cdnURL.replace('.net/', '.net.evil/') }) }]) {
     const value = fixture({ configuredSlot: true, ...options });
     value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
-    assert.equal(value.metadata().phase, 'SLOT_REGION');
+    assert.equal(value.metadata().phase, options.statuses ? 'SLOT_REGION_CDN' : 'SLOT_REGION_PAGE');
     assert.equal(value.requests.some(item => item.uri.pathname === '/v1/media/slots/fixture-slot'), false);
   }
 });

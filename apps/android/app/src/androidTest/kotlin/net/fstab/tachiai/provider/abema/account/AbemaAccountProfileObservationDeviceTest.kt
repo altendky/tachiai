@@ -112,6 +112,7 @@ class AbemaAccountProfileObservationDeviceTest {
         val chaseProof = AtomicReference<AbemaAccountProfileObservation.Proof?>()
         val publicationGate = AtomicReference<(() -> Boolean)?>(null)
         val failure = AtomicBoolean()
+        val failurePublished = AtomicBoolean()
         val observation = AtomicReference<AbemaAccountProfileObservation?>()
         val closeReceipt = AtomicReference<AbemaProfileFixtureCleanup<AbemaAccountProfileObservation>?>()
         val worker = Executors.newSingleThreadExecutor { task ->
@@ -294,8 +295,11 @@ class AbemaAccountProfileObservationDeviceTest {
                     after = protectedRecords(directory, deadline)
                     profileObservationSameDigests(before, after)
                 } catch (_: Throwable) { false }
-                val finalGates = cleanupConfirmed && ownerUnchanged && storeUnchanged && recordsUnchanged &&
-                    !mutation.get() && !revoked.get() && clockCurrent() && !failure.get()
+                val preservationGates = cleanupConfirmed && ownerUnchanged && storeUnchanged && recordsUnchanged &&
+                    !mutation.get() && !revoked.get() && clockCurrent()
+                val finalGates = preservationGates && (!failure.get() || !chase && helper?.publishFailure(
+                    AbemaAccountProfileObservation.Proof(ownerUnchanged, storeUnchanged, clockCurrent(),
+                        foregroundReceipt.get(), recordsUnchanged)) != null)
                 if (finalGates) {
                     if (localUnavailable && helper == null) {
                         publicationGate.set { clockCurrent() && !revoked.get() && !mutation.get() &&
@@ -319,9 +323,14 @@ class AbemaAccountProfileObservationDeviceTest {
                             output.set(helper?.publishChase(proof)?.render()?.let {
                                 "outcome=CHASE_ELIGIBILITY_OBSERVED httpCount=${checkNotNull(helper).requestCount} $it"
                             })
-                        } else output.set(helper?.publish(proof)?.render()?.let {
-                            "outcome=PROFILE_ACCEPTED httpCount=${checkNotNull(helper).requestCount} $it"
-                        })
+                        } else {
+                            val accepted = if (!failure.get()) helper?.publish(proof) else null
+                            if (accepted != null) output.set("outcome=PROFILE_ACCEPTED httpCount=${checkNotNull(helper).requestCount} ${accepted.render()}")
+                            else helper?.publishFailure(proof)?.let { closed ->
+                                failurePublished.set(true)
+                                output.set("outcome=PROFILE_REFUSED ${closed.render()}")
+                            }
+                        }
                     }
                 }
                 before?.values?.forEach { it.fill(0) }
@@ -362,6 +371,7 @@ class AbemaAccountProfileObservationDeviceTest {
             assertTrue("No Chase summary may escape lost final memory/clock admission", stillAdmitted)
         }
         Log.i(if (chase) "TachiaiAbemaChaseEligibility" else "TachiaiAbemaProfile", checkNotNull(emitted))
+        assertFalse("A closed profile refusal diagnostic is not positive profile acceptance", failurePublished.get())
     }
 
     private class ProfileOwners(val worker: Any, val observation: AtomicReference<AbemaAccountProfileObservation?>,

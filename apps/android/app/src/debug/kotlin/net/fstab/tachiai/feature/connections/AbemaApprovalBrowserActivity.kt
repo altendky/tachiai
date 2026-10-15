@@ -107,7 +107,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             finishDirect(); return
         }
         claimed = true; request = parsed
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { closeBrowser(!request.automaticReturn) }
         })
@@ -116,7 +116,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 WebView.setDataDirectorySuffix(AbemaApprovalBrowserPolicy.PROFILE_SUFFIX)
                 profileConfigured = true
             }
-            WebView.setWebContentsDebuggingEnabled(false)
+            net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
             val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             ViewCompat.setOnApplyWindowInsetsListener(column) { host, insets ->
                 val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
@@ -241,6 +241,9 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                     { connectionProfileStore(applicationContext).selected(it) })
                 check(owner.proof() == request.ownerProof)
                 check((owner.profile == null) == (owner.instance.setup.route?.mode == SourceRouteMode.SYSTEM))
+                if (BuildConfig.LOCAL_INSPECTION) Log.i("TachiaiInspect", "ABEMA_ROUTE mode=${owner.instance.setup.route?.mode?.name} " +
+                    "kind=${owner.profile?.kind?.id ?: "SYSTEM"} " +
+                    "windscribeNamed=${owner.instance.setup.route?.connectionName?.contains("windscribe", ignoreCase = true) == true}")
                 handle.route = RouteSession.createAbemaApprovalBrowser(owner.profile, handle.preparation,
                     ownBackend = { backend ->
                         val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
@@ -319,6 +322,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             } else { Log.i(LOG_TAG, "HTTP_AUTH_REFUSED"); handler.cancel() }
         }
         override fun onReceivedError(browser: WebView, resource: WebResourceRequest, error: WebResourceError) {
+            inspectResource("NETWORK_ERROR", resource, error.errorCode.coerceIn(-16, 0))
             if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { closeBrowser(false); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_NETWORK_ERROR_${error.errorCode.coerceIn(-16, 0)}")
@@ -328,6 +332,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             }
         }
         override fun onReceivedHttpError(browser: WebView, resource: WebResourceRequest, response: WebResourceResponse) {
+            inspectResource("HTTP_ERROR", resource, response.statusCode.coerceIn(100, 599))
             if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { closeBrowser(false); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_HTTP_ERROR_${response.statusCode.coerceIn(100, 599)}")
@@ -349,6 +354,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
     }
     private fun intercept(resource: WebResourceRequest): WebResourceResponse? {
         if (!allowed(resource)) {
+            inspectResource("POLICY_REFUSED", resource)
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST) Log.i(LOG_TAG, "GATEWAY_RESOURCE_REFUSED")
             return blocked()
         }
@@ -417,6 +423,14 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 blocked()
             }
         }
+    }
+    // Host only: paths, queries, headers, bodies and credentials stay out of logcat.
+    private fun inspectResource(event: String, resource: WebResourceRequest, code: Int = 0) {
+        if (!BuildConfig.LOCAL_INSPECTION) return
+        val host = resource.url.host.orEmpty().takeIf {
+            it.length in 1..253 && it.matches(Regex("[A-Za-z0-9.-]+"))
+        } ?: "OTHER"
+        Log.i("TachiaiInspect", "$event host=$host main=${resource.isForMainFrame} code=$code")
     }
     private fun blocked() = WebResourceResponse("text/plain", "UTF-8", 403, "Unavailable", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     private fun resumeBrowser() {

@@ -133,7 +133,7 @@ internal class PrototypeAbemaSession(
     private fun configureBrowser(context: Context) {
         // The Activity selects its unique process/profile before construction.
         // No cookie/profile transfer, generic JS bridge or DevTools is enabled.
-        WebView.setWebContentsDebuggingEnabled(false)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         view.configureSecureSettings()
         view.settings.useWideViewPort = true
         view.settings.loadWithOverviewMode = true

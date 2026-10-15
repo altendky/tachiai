@@ -211,7 +211,7 @@ open class AbemaOpaqueBrokerActivity : ComponentActivity() {
         sharedDashCapture = nativePlayback || replaySourceProbe || intent.getBooleanExtra("net.fstab.tachiai.extra.ABEMA_BROKER_SHARED_DASH_CAPTURE", false)
         Log.d("TachiaiAbemaBroker", "capturePath=${if (originalOnly) "NONE" else if (sharedDashCapture) "SHARED_DASH" else "LEGACY_LOAD"}")
         if (!profileConfigured) { WebView.setDataDirectorySuffix("abema-opaque-broker"); profileConfigured = true }
-        if (profileConfigured) WebView.setWebContentsDebuggingEnabled(false)
+        if (profileConfigured) net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
@@ -901,7 +901,7 @@ open class AbemaOpaqueBrokerActivity : ComponentActivity() {
             view.stopLoading(); view.onPause(); host.removeView(view); view.webChromeClient = null; view.destroy()
         }
         browser = null
-        if (profileConfigured) WebView.setWebContentsDebuggingEnabled(false)
+        if (profileConfigured) net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
     }
 
     override fun onResume() { super.onResume(); Log.d("TachiaiAbemaBroker", "lifecycle=RESUME"); resumed.set(true); if (profileConfigured && browser == null) createBrowser() }

@@ -46,8 +46,9 @@ capability implemented. Record precise endpoint-policy changes under the
 [media-origin scope](media-origin-approvals.md#general-integration-scope--2026-10-10).
 
 Keep provider-controlled authentication, protected local grants, selected-route
-ownership and safe diagnostics. Do not collect passwords, inject scripts into
-login pages, transfer cookies between devices, bypass TLS, expose secrets,
+ownership and safe diagnostics. The local inspection exception below permits
+interactive debugging access, while the app must not collect passwords, inject
+scripts into login pages, transfer cookies between devices, bypass TLS, expose secrets,
 extract keys, copy helper algorithms, reuse licensing responses or capture/
 re-encode protected media. Verified provider entitlement and access restrictions
 remain mandatory. Renewal/session behavior must be understood and verified
@@ -78,6 +79,43 @@ The current scope is also recorded in the bodies of
 [issue #103](https://github.com/altendky/tachiai/issues/103). Their technical and
 account-backed verification dependencies remain in force.
 
+## Local inspection build approval — 2026-10-15
+
+For [issue #248](https://github.com/altendky/tachiai/issues/248), the user approved
+a full-application, local-only `inspect` build that permits screenshots, UI
+hierarchy access and WebView DevTools throughout the app, including provider
+login/account pages and separate browser processes. Authorized local debugging
+tools may inspect and interact with the DOM on those pages. This is an explicit
+exception to earlier capture and account-page inspection prohibitions in this
+document; it does not require another approval for each inspection action.
+
+Provider credential entry remains user-controlled on provider-owned pages.
+Inspection can expose sensitive page state transiently; do not automatically
+collect or retain passwords, cookies, tokens, signed URLs, raw protocol dumps or
+HAR files in logs, reports or artifacts. Existing image-retention rules still
+apply. This approval does not add app-injected login scripts, native JavaScript
+bridges, cross-device cookie transfers or protected-media/key extraction.
+
+The variant keeps the normal app's application ID, shared development signing
+key, app data, routes and browser profiles. Installing it replaces the current
+development APK. **Tachiai Inspect**, the `-inspect` version suffix and the APK
+name identify it; it is `testOnly` and must never be released. Build creation
+requires explicit local opt-in and is refused under `CI` or `GITHUB_ACTIONS`.
+CI checks the boundaries without building this variant. Ordinary debug,
+diagnostic and release policies remain distinct.
+
+Central screenshot and WebView-debugging policies remove app-imposed inspection
+barriers in this variant, including popup windows and teardown paths. TLS,
+safe-browsing, selected-route ownership, destination policy, provider permissions,
+account validation and profile isolation remain unchanged. The inspect-only
+navigation dispatcher offers closed destinations; it does not bypass a login
+request's owner, lifetime or handoff requirements. Android or DRM can still
+protect media surfaces independently of Tachiai's window flags.
+
+See the [local build, installation and verification instructions](android-development.md#local-inspection-build).
+Phone acceptance of the inspection capabilities is required before merging
+issue #248; emulator checks alone do not establish phone behavior.
+
 ## Authentication boundary
 
 The debug [ABEMA guest-only preparation](abema-guest-bootstrap.md) runs in a
@@ -87,8 +125,9 @@ credentials remain in the owned runtime and are discarded at teardown. It
 neither reads existing browser state nor implements account linking or renewal.
 
 - Provider credentials are entered only into provider-controlled pages.
-- Tachiai does not add key listeners, form listeners, DOM serialization, or
-  debugging instrumentation to login and account pages.
+- Ordinary builds do not add key listeners, form listeners, DOM serialization,
+  or debugging instrumentation to login and account pages. The explicit local
+  inspection exception above permits tooling access in `inspect`.
 - Adapter injection is enabled only on exact allowlisted playback origins and
   routes after navigation is complete.
 - Passwords, cookies, OAuth tokens, license requests, and signed media URLs are
@@ -466,7 +505,9 @@ windows that do not inherit the Activity secure flag; do not capture or inspect
 their provider content. The comparison requires no credential entry, is not
 selected for the authentication popup/direct-login probes, and cannot relax
 dialog suppression in a release build. Native dimensions and closed callback
-markers are the diagnostic surface for this experiment.
+markers are the diagnostic surface for this experiment. These capture restrictions
+describe ordinary debug; the explicit local `inspect` exception above applies
+when running that build.
 
 ### Native ABEMA request-format experiment
 
@@ -827,6 +868,9 @@ boolean-only native schema refuses other shapes. Licensing and timers remain
 unchanged.
 
 ### Explicit ABEMA playback inspection
+
+The restrictions in this historical experiment describe ordinary `debug`;
+the full-app local `inspect` variant follows its separate approval above.
 
 The user authorized an inspectable ABEMA WebView experiment on 2026-10-06.
 The `debug` APK alone adds `AbemaInspectionActivity` in the existing application,

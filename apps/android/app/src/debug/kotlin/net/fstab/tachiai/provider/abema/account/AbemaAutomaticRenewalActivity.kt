@@ -29,7 +29,7 @@ class AbemaAutomaticRenewalActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
         setContentView(TextView(this).apply { text = "Checking remembered ABEMA sign-in…"; setPadding(24, 24, 24, 24) })
         val value = intent.getStringExtra(TICKET)
         if (!BuildConfig.DEBUG || savedInstanceState != null || intent.extras?.keySet() != setOf(TICKET) ||

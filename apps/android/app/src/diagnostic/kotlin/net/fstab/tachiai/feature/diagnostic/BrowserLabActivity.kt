@@ -43,7 +43,7 @@ class BrowserLabActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Deliberately no FLAG_SECURE: screenshots of this fixture are allowed.
-        WebView.setWebContentsDebuggingEnabled(true)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection(true)
         Log.d("TachiaiLab", "mode=FIXTURE_ONLY inspection=true screenshots=true")
         enableEdgeToEdge()
         setContent {

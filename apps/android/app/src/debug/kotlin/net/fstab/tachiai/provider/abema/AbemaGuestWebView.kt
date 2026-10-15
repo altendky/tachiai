@@ -19,7 +19,7 @@ internal fun configureAbemaGuestBootstrapProfile(context: Context) {
         WebView.setDataDirectorySuffix(AbemaGuestBootstrapPolicy.PROFILE_SUFFIX)
         AbemaGuestProfile.configured = true
     }
-    WebView.setWebContentsDebuggingEnabled(false)
+    net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
 }
 
 internal fun configureAbemaGuestWebView(view: WebView) {

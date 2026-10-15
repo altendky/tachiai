@@ -68,7 +68,7 @@ class AbemaCachedHelperActivity : ComponentActivity() {
             WebView.setDataDirectorySuffix("abema-cached-helper")
             profileConfigured = true
         }
-        WebView.setWebContentsDebuggingEnabled(false)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->

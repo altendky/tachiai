@@ -60,7 +60,7 @@ class AbemaInspectionActivity : ComponentActivity() {
                 WebView.setDataDirectorySuffix(AbemaInspectionPolicy.PROFILE_SUFFIX)
                 profileConfigured = true
             }
-            WebView.setWebContentsDebuggingEnabled(false)
+            net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -102,7 +102,7 @@ class AbemaInspectionActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (!supported || browser != null) return
-        WebView.setWebContentsDebuggingEnabled(true)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection(true)
         Log.d("TachiaiAbemaInspect", "inspection=ENABLED profile=ISOLATED")
         browser = WebView(this).apply {
             configureSecureSettings()
@@ -186,7 +186,7 @@ class AbemaInspectionActivity : ComponentActivity() {
     private fun endInspection() {
         if (!supported) return
         // Disable the process-global debugger before disposing any page state.
-        WebView.setWebContentsDebuggingEnabled(false)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         browser?.let {
             it.stopLoading()
             it.onPause()

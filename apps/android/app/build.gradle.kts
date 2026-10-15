@@ -22,6 +22,15 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val localInspection = providers.gradleProperty("tachiaiLocalInspection").orNull.let {
+    require(it == null || it == "true" || it == "false") { "tachiaiLocalInspection must be true or false" }
+    it == "true"
+}
+val runningInCi = listOf("CI", "GITHUB_ACTIONS").any {
+    providers.environmentVariable(it).orNull?.lowercase() !in listOf(null, "", "false", "0")
+}
+check(!localInspection || !runningInCi) { "Inspection builds are local-only and cannot be enabled in CI" }
+
 abstract class VerifyDebugKeystore : DefaultTask() {
     @get:InputFile
     abstract val keystoreFile: RegularFileProperty
@@ -95,11 +104,24 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("boolean", "LOCAL_INSPECTION", "false")
+        manifestPlaceholders["localInspectionEnabled"] = "false"
+        manifestPlaceholders["localInspectionTestOnly"] = "false"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        create("inspect") {
+            initWith(getByName("debug"))
+            isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
+            versionNameSuffix = "-inspect"
+            buildConfigField("boolean", "LOCAL_INSPECTION", "true")
+            manifestPlaceholders["localInspectionEnabled"] = "true"
+            manifestPlaceholders["localInspectionTestOnly"] = "true"
+            matchingFallbacks += "debug"
+        }
         create("diagnostic") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".diagnostic"
@@ -114,6 +136,16 @@ android {
             )
         }
     }
+
+    // A build type's initWith does not inherit the debug source set.
+    sourceSets.getByName("inspect") {
+        kotlin.directories += "src/debug/kotlin"
+        res.srcDir("src/debug/res")
+        assets.srcDir("src/debug/assets")
+        jniLibs.srcDir("src/debug/jniLibs")
+        manifest.srcFile("src/debug/AndroidManifest.xml")
+    }
+    sourceSets.getByName("testInspect").kotlin.directories += "src/testDebug/kotlin"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -137,6 +169,10 @@ android {
 }
 
 androidComponents {
+    beforeVariants(selector().withBuildType("inspect")) { variant ->
+        variant.enable = localInspection
+        if (localInspection) checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
+    }
     beforeVariants(selector().withBuildType("diagnostic")) { variant ->
         checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
     }
@@ -152,6 +188,10 @@ androidComponents {
                 layout.projectDirectory.file("src/diagnostic/AndroidManifest.xml"))
         }
     }
+}
+
+listOf("Implementation", "RuntimeOnly", "CompileOnly").forEach { suffix ->
+    configurations.named("inspect$suffix") { extendsFrom(configurations.getByName("debug$suffix")) }
 }
 
 dependencies {
@@ -181,6 +221,8 @@ dependencies {
     testImplementation(libs.junit)
     testDebugImplementation(libs.json)
     testDebugImplementation(libs.okhttp.tls)
+    add("testInspectImplementation", libs.json)
+    add("testInspectImplementation", libs.okhttp.tls)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
@@ -192,5 +234,5 @@ val verifySharedDebugKeystore = tasks.register<VerifyDebugKeystore>("verifyShare
 }
 
 tasks.configureEach {
-    if (name == "validateSigningDebug" || name == "validateSigningDiagnostic") dependsOn(verifySharedDebugKeystore)
+    if (name in listOf("validateSigningDebug", "validateSigningDiagnostic", "validateSigningInspect")) dependsOn(verifySharedDebugKeystore)
 }

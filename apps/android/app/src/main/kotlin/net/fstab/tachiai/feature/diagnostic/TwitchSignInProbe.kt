@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import java.net.URI
 import net.fstab.tachiai.platform.web.BrowserPane
+import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.web.rememberBrowserPaneController
 import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.presentation.ResourceLocator
@@ -107,11 +108,11 @@ internal fun TwitchSignInProbeScreen(channel: String, window: Window, modifier: 
     var stage by remember { mutableStateOf(initialStage) }
     var viewport by remember { mutableStateOf(LoginViewport.DEFAULT) }
     // Remains protected through manual web viewing because Twitch can show a
-    // login modal without changing its channel URL. Do not capture this screen.
+    // login modal without changing its channel URL. Local inspection opts into capture.
     DisposableEffect(window) {
         val wasSecure = window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose { if (!wasSecure) window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+        net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
+        onDispose { if (!wasSecure) net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window, false) }
     }
     fun changeStage(next: SessionStage) {
         CookieManager.getInstance().flush() // Persist without reading/copying any cookie values.
@@ -119,7 +120,9 @@ internal fun TwitchSignInProbeScreen(channel: String, window: Window, modifier: 
     }
     Column(modifier) {
         if (stage == SessionStage.SIGN_IN || stage == SessionStage.EVERYTHING) {
-            Text(if (stage == SessionStage.EVERYTHING)
+            Text(if (BuildConfig.LOCAL_INSPECTION)
+                "Tachiai Inspect · screenshots and WebView inspection enabled. Use Twitch’s own sign-in controls. Done does not verify login."
+                else if (stage == SessionStage.EVERYTHING)
                 "Use Twitch's own Log In / Sign In in the chat area below, not the Twitch logo. No page inspection or screenshots."
                 else "Direct Twitch login rendering test · viewport=$viewport. Do not enter credentials yet. No page inspection or screenshots. Done does not verify login.")
             if (stage == SessionStage.EVERYTHING) {

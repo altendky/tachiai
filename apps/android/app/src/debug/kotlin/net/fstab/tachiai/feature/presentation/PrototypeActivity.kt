@@ -220,7 +220,7 @@ open class PrototypeActivity : ComponentActivity() {
             else WebView.setDataDirectorySuffix("prototype-player")
             profileConfigured = true
         }
-        WebView.setWebContentsDebuggingEnabled(false)
+        net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onBackPressedDispatcher.addCallback(this) {
             if (budget != null) stopToPicker("Playback stopped.") else finish()

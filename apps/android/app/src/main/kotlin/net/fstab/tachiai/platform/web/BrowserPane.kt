@@ -86,7 +86,7 @@ fun BrowserPane(
                     .build()
 
                 WebView(context).apply webView@{
-                    WebView.setWebContentsDebuggingEnabled(false)
+                    DeveloperAccess.configureWebInspection()
                     configureSecureSettings()
                     settings.useWideViewPort = request.useWideViewport
                     settings.loadWithOverviewMode = request.loadWithOverviewMode

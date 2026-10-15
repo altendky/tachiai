@@ -68,6 +68,17 @@ storage. Do not inject scripts on login pages,
 expose native JavaScript bridges to provider content, transfer session cookies
 between devices, bypass TLS errors, or log URLs that may contain tokens.
 
+The user-approved, local-only `inspect` build is an explicit exception to
+screenshot, UI hierarchy and DevTools restrictions, including provider login and
+account pages. Agents may observe these surfaces and use local debugging tools
+for DOM inspection and interaction without asking for another inspection approval.
+Provider credential entry remains user-controlled; do not collect passwords or
+automatically log or retain secrets. This does not authorize app-injected login
+scripts, native JavaScript bridges, TLS bypasses, route/account-validation changes
+or protected-media extraction. Ordinary builds retain their protections. Follow
+the [inspection build guide](docs/src/project/android-development.md#local-inspection-build)
+and [scope](docs/src/project/security-and-privacy.md#local-inspection-build-approval--2026-10-15).
+
 Treat Android phone/tablet and Android TV as the first implementation target.
 Treat iPhone/iPad, Windows, macOS, and Linux as later platform investigations,
 not as capabilities inherited automatically from Android WebView.

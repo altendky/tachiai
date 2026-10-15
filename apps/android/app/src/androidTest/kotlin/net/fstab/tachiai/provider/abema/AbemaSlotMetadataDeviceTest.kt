@@ -57,6 +57,7 @@ class AbemaSlotMetadataDeviceTest {
         check(owner.profile != null && owner.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION)
         val foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
             action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)
         })
         val active = AtomicBoolean(); val lifecycle = ActivityLifecycleMonitorRegistry.getInstance()
         val callback = ActivityLifecycleCallback { _, stage ->

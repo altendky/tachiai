@@ -23,7 +23,10 @@ class AbemaAccountConnectionScreenTest {
         compose.onAllNodes(isToggleable()).assertCountEquals(0)
         compose.onNodeWithTag("abema-account-identity").assertDoesNotExist()
         compose.onNodeWithText("I confirm this is the existing account I intend to connect.").assertDoesNotExist()
-        compose.onNodeWithText("Connect your existing account using ABEMA’s email sign-in. Enter your email address and emailed code only on ABEMA’s pages.").performScrollTo().assertExists()
+        compose.onNodeWithText("Enter your email address and emailed code", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Info about ABEMA account").performScrollTo().performClick()
+        compose.onNodeWithText("Enter your email address and emailed code", substring = true).assertExists()
+        compose.onNodeWithText("Close").performClick()
         compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
         compose.onNodeWithText("Connect ABEMA by email").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, connects) }
@@ -36,6 +39,30 @@ class AbemaAccountConnectionScreenTest {
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
         compose.onNodeWithText("Saved ABEMA account needs fresh validation.").performScrollTo().assertExists()
         compose.onNodeWithText("Connect ABEMA by email").performScrollTo().assertIsEnabled()
+    }
+    @Test fun embeddedAccountHasNoNestedBackNavigationAndKeepsStatusVisible() {
+        compose.setContent { TachiaiPrototypeTheme {
+            androidx.compose.foundation.lazy.LazyColumn {
+                item { AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.RECONNECT_REQUIRED,
+                    progress = AbemaAccountProgress.IDLE), {}, {}, {}, {}, {}) }
+                item { androidx.compose.material3.Text("Configured streams fixture") }
+            }
+        } }
+        compose.onNodeWithText("ABEMA account needs reconnection.").assertExists()
+        compose.onNodeWithText("Back to providers").assertDoesNotExist()
+        compose.onNodeWithText("Configured streams fixture").performScrollTo().assertExists()
+    }
+    @Test fun pendingProviderSaveDisablesAccountActionsWithoutChangingAccountStatus() {
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.CONNECTED,
+                progress = AbemaAccountProgress.IDLE, canContinue = true), {}, {}, {}, {}, {}, {},
+                onSignInAgain = {}, enabled = false)
+        } }
+        compose.onNodeWithText("ABEMA account validated for this instance.").assertExists()
+        compose.onNodeWithText("ABEMA account setup is unavailable.", substring = true).assertDoesNotExist()
+        for (label in listOf("Connect ABEMA by email", "Finish email connection", "Sign in again",
+            "Validate saved ABEMA account", "Forget ABEMA account on this device", "Cancel ABEMA action", "Back to providers"))
+            compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
     }
     @Test fun controllerReadinessReadingAndBusyStatePreventAnEnabledNoOp() {
         var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))

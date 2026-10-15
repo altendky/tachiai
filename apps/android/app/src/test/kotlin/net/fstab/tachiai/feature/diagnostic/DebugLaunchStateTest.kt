@@ -4,7 +4,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class DebugLaunchStateTest {
-    @Test fun `ordinary debug launcher opens native menu`() {
+    @Test fun `ordinary debug launcher opens stream picker only on supported Android`() {
+        for (sdk in listOf(28, 37)) assertEquals(true, streamPickerAtStartup(true, sdk, null, true, false))
+        for (sdk in listOf(26, 27)) assertEquals(false, streamPickerAtStartup(true, sdk, null, true, false))
+    }
+    @Test fun `picker does not replace explicit diagnostics developer tools or browser opt out`() {
+        for (request in listOf(false, true))
+            assertEquals(false, streamPickerAtStartup(true, 37, request, true, false))
+        assertEquals(false, streamPickerAtStartup(true, 37, null, true, true))
+        assertEquals(false, streamPickerAtStartup(true, 37, null, false, false))
+    }
+    @Test fun `release never enters debug picker`() {
+        for (request in listOf(null, false, true)) for (launcher in listOf(false, true))
+            assertEquals(false, streamPickerAtStartup(false, 37, request, launcher, false))
+    }
+    @Test fun `legacy menu remains available as older Android launcher fallback`() {
         assertEquals(true, nativeAccessAtStartup(true, null, true, false))
     }
     @Test fun `explicit diagnostic keeps its route even from launcher`() {

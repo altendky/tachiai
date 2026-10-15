@@ -18,6 +18,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -26,7 +29,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -61,11 +63,13 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     initialAssignments: ConfiguredFeedAssignments = restoreConfiguredFeedAssignments(false, null, null),
     onAssignmentsChanged: (ConfiguredFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
+    onDeveloperTools: (() -> Unit)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
     playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
     var a by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
     var b by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
+    var moreExpanded by rememberSaveable { mutableStateOf(false) }
     val assignments = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
     val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
     fun assign(slot: PrototypeSlot, choice: ConfiguredFeedChoice, checked: Boolean) {
@@ -83,17 +87,31 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
+            Text("Tachiai", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary, maxLines = 1)
+            onDeveloperTools?.let { action ->
+                Box {
+                    IconButton(onClick = { moreExpanded = true },
+                        modifier = Modifier.semantics { contentDescription = "More options" }) { Text("⋮") }
+                    DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Developer tools") }, onClick = {
+                            moreExpanded = false
+                            action()
+                        })
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
             onConnections?.let { action -> Button(onClick = action,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Routes") } }
             onProviders?.let { action -> Button(onClick = action, enabled = setupReady,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 Button(onClick = { onWatch(ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))) },
                     enabled = resolved is ConfiguredPrototypeSelectionResult.Ready && setupReady && playbackAvailable,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Watch") }
-                Text("Tachiai", Modifier.weight(1f, fill = false), style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End, maxLines = 1)
             }
         }
         message?.takeUnless { it == "Playback stopped." }?.let { Text(it) }
@@ -165,9 +183,9 @@ internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFail
     ConfiguredPrototypeSelectionFailure.MISSING_CHOICE -> "Choose a configured stream for each feed before opening the viewer."
     ConfiguredPrototypeSelectionFailure.STALE_ITEM -> "A selected item was removed. Choose another configured stream."
     ConfiguredPrototypeSelectionFailure.STALE_INSTANCE -> "A selected provider instance was removed. Choose another instance."
-    ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH -> "A selected item does not belong to its provider. Review it in Manage streams."
-    ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED -> "Save the selected provider's route in Providers before playback."
+    ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH -> "A selected item does not belong to its provider. Review it in Providers."
+    ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED -> "Choose the selected provider's route in Providers before playback."
     ConfiguredPrototypeSelectionFailure.UNAVAILABLE -> "A selected item is not available now. It stays configured for later."
-    ConfiguredPrototypeSelectionFailure.COLLECTION -> "A collection is selected. Choose a playable item in Manage streams."
+    ConfiguredPrototypeSelectionFailure.COLLECTION -> "A collection is selected. Choose a playable item in Providers."
     ConfiguredPrototypeSelectionFailure.UNSUPPORTED -> "Playback for a selected item is not supported yet. It stays configured."
 }

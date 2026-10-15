@@ -12,11 +12,12 @@ may appear when browsing content; broader browsing is not implemented yet.
 
 **Prototype → Routes** opens the existing import/manage screen. **Prototype →
 Providers** opens the configured instances. Add ABEMA/Twitch instance creates a
-separate configuration; Configure edits its name and default route for its
-streams. The picker lists the catalogue under each instance and assigns a
+separate configuration; Configure opens its name, default route, account and
+stream management on one detail page. Valid name edits and route choices save
+automatically, with pending/error status and retry. The picker lists the catalogue under each instance and assigns a
 stream together with that instance to A or B. Provider setup also links to
 Routes for importing another configuration. Importing never automatically
-selects it. Selecting a route is an explicit Save action. Per-feed route
+selects it. Importing a new route retains its explicit preview and Save action. Per-feed route
 overrides are not exposed in this instance-default workflow yet.
 
 ### Multiple provider instances
@@ -26,8 +27,9 @@ New instances receive random stable UUIDs and persisted default names such as
 Twitch 2; a custom name never changes identity. Names are limited to 64 printable
 characters, unique within a provider type, and may be reset to that instance's
 own default by leaving the field blank. The prototype permits at most 16
-instances. Creating or saving an instance starts no route or playback. It does
-not clone another instance's route or login; new instances use System network
+instances. Creating or saving an instance does not start playback. Opening its
+detail page can validate account access or load the catalog through its route.
+It does not clone another instance's route or login; new instances use System network
 and have no saved Twitch grant.
 
 The default Twitch UUID returns the exact historical Smart TV LOCAL repository,

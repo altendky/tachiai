@@ -16,7 +16,7 @@ import org.junit.Test
 class ProvidersScreenTest {
     @get:Rule val compose = createComposeRule()
     private val profile = ConnectionSummary("12345678-1234-1234-1234-123456789abc", "Proton Japan", ConnectionKind.WIREGUARD, "fixture.example.test:51820")
-    @Test fun catalogAccountUsesSavedTwitchOwnerWithoutSavingEditorDraft() {
+    @Test fun catalogAccountKeepsExactTwitchOwnerWhileSettingsSaveAutomatically() {
         val second = ProviderInstance("12345678-1234-1234-1234-123456789abd", PrototypeService.TWITCH, "Twitch 2")
         var connected: String? = null
         var saved = false
@@ -34,9 +34,9 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Connect Twitch").assertDoesNotExist()
         compose.onAllNodesWithText("Twitch account").assertCountEquals(1)
         compose.onNodeWithText("Twitch account").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
+        compose.runOnIdle { assertEquals(second.id, connected); assertTrue(saved) }
     }
-    @Test fun abemaAccountUsesExactSavedOwnerWithoutSavingEditorDraft() {
+    @Test fun abemaAccountKeepsExactOwnerWhileNameSavesAutomatically() {
         val second = ProviderInstance("12345678-1234-1234-1234-123456789abe", PrototypeService.ABEMA, "ABEMA 2")
         var connected: String? = null; var saved = false
         compose.setContent { TachiaiPrototypeTheme {
@@ -46,9 +46,9 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Configure ABEMA 2").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
         compose.onNodeWithText("ABEMA account").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(second.id, connected); assertFalse(saved) }
+        compose.runOnIdle { assertEquals(second.id, connected); assertTrue(saved) }
     }
-    @Test fun manageStreamsUsesStableSelectedInstanceWithoutSavingItsDraft() {
+    @Test fun manageStreamsKeepsStableInstanceWhileNameSavesAutomatically() {
         val second = ProviderInstance("12345678-1234-1234-1234-123456789abd", PrototypeService.TWITCH, "Twitch 2")
         var managed: String? = null
         var saved = false
@@ -59,7 +59,7 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Unsaved draft")
         compose.onNodeWithText("Manage streams").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(second.id, managed); assertFalse(saved) }
+        compose.runOnIdle { assertEquals(second.id, managed); assertTrue(saved) }
     }
     @Test fun loginSectionBelongsOnlyToTwitchBesideItsRouteEditor() {
         compose.setContent { TachiaiPrototypeTheme {
@@ -73,7 +73,7 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Twitch login fixture").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
     }
-    @Test fun providerDefaultNeedsExplicitSaveAndDraftSurvivesRecreation() {
+    @Test fun providerDefaultSavesOnSelectionAndSurvivesRecreation() {
         val restoration = StateRestorationTester(compose)
         var imported = false
         var saved: Pair<PrototypeService, SourceRouteChoice>? = null
@@ -85,9 +85,9 @@ class ProvidersScreenTest {
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().performClick()
         compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         restoration.emulateSavedInstanceStateRestore()
-        compose.runOnIdle { assertTrue(imported); assertNull(saved) }
+        compose.runOnIdle { assertTrue(imported); assertEquals(profile.id, saved?.second?.connectionId) }
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().assertIsSelected()
-        compose.onNodeWithText("Save ABEMA setup").performScrollTo().performClick()
+        compose.onNodeWithText("Save ABEMA setup").assertDoesNotExist()
         compose.runOnIdle {
             val value = checkNotNull(saved)
             assertEquals(PrototypeService.ABEMA, value.first); assertEquals(profile.id, value.second.connectionId)
@@ -100,9 +100,9 @@ class ProvidersScreenTest {
         val settings = legacyProviderSetups(defaultSourceSetups()) + (PrototypeService.ABEMA to ProviderSetup(null))
         compose.setContent { TachiaiPrototypeTheme { ProvidersScreen(settings, emptyList(), false, null, {}, { _, _ -> }, {}) } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
-        compose.onNodeWithText("Save ABEMA setup").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Choose a route to resolve earlier settings.").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().performClick()
-        compose.onNodeWithText("Save ABEMA setup").performScrollTo().assertIsEnabled()
+        compose.onNodeWithContentDescription("ABEMA route: System network").assertIsSelected()
     }
     @Test fun deletedRouteDoesNotSelectSystemOrAllowSave() {
         val route = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, profile.id, profile.name)
@@ -110,7 +110,7 @@ class ProvidersScreenTest {
         compose.setContent { TachiaiPrototypeTheme { ProvidersScreen(settings, emptyList(), false, null, {}, { _, _ -> }, {}) } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().assertIsNotSelected()
-        compose.onNodeWithText("Save ABEMA setup").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Save ABEMA setup").assertDoesNotExist()
     }
     @Test fun routeDeletedDuringImportReturnInvalidatesDraftWithoutFallback() {
         val profiles = mutableStateOf(listOf(profile))
@@ -123,6 +123,6 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         compose.onNodeWithText("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().assertIsNotSelected()
-        compose.onNodeWithText("Save ABEMA setup").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Save ABEMA setup").assertDoesNotExist()
     }
 }

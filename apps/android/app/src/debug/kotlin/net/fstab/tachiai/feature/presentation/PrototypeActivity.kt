@@ -246,6 +246,8 @@ open class PrototypeActivity : ComponentActivity() {
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
+            onDeveloperTools = { startActivity(Intent(this, net.fstab.tachiai.MainActivity::class.java)
+                .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)) },
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,

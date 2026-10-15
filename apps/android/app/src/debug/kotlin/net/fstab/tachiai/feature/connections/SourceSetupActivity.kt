@@ -65,15 +65,16 @@ class SourceSetupActivity : ComponentActivity() {
     private fun save(value: SourceSetup) {
         if (busy) return
         val current = ++revision
-        busy = true
+        message = "Saving…"
         worker.execute {
             val result = runCatching { settings.save(source, value) }
             runOnUiThread {
                 if (isDestroyed || revision != current) return@runOnUiThread
-                busy = false
-                result.fold(onSuccess = { finish() }, onFailure = { message = "Source setup could not be saved. Nothing was replaced." })
+                result.fold(onSuccess = { initial = value; message = null },
+                    onFailure = { message = "Changes could not be saved. Change the setting again to retry." })
             }
         }
     }
-    override fun onDestroy() { revision++; worker.shutdownNow(); super.onDestroy() }
+    // Complete accepted changes even when Back closes this legacy editor.
+    override fun onDestroy() { revision++; worker.shutdown(); super.onDestroy() }
 }

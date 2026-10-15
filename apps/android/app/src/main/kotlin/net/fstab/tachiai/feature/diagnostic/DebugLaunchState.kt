@@ -7,11 +7,20 @@ import androidx.compose.runtime.setValue
 import net.fstab.tachiai.BuildConfig
 
 internal enum class DebugLaunchSource { CREATE, NEW_INTENT }
-internal enum class DebugLaunchRoute { TWITCH_SESSION, TWITCH_DEVICE_AUTH, NATIVE_ACCESS, OTHER }
+internal enum class DebugLaunchRoute { STREAM_PICKER, TWITCH_SESSION, TWITCH_DEVICE_AUTH, NATIVE_ACCESS, OTHER }
 internal const val LAUNCH_LOG_TAG = "TachiaiLaunch"
 
-// Only an ordinary debug launcher entry defaults to the experiment menu.
-// Explicit probe requests and explicit opt-out preserve earlier examples.
+// The native picker lives in the debug source set and requires API 28.
+// Explicit probe requests, including an opt-out, keep their existing routes.
+internal fun streamPickerAtStartup(
+    debug: Boolean,
+    sdkInt: Int,
+    requested: Boolean?,
+    launcher: Boolean,
+    explicitDiagnostic: Boolean,
+): Boolean = debug && sdkInt >= 28 && requested == null && launcher && !explicitDiagnostic
+
+// The retained experiment menu is also the fallback on older Android versions.
 internal fun nativeAccessAtStartup(
     debug: Boolean,
     requested: Boolean?,

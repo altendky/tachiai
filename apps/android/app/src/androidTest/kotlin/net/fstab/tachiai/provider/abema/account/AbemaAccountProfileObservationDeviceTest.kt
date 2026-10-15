@@ -228,6 +228,7 @@ class AbemaAccountProfileObservationDeviceTest {
                 if (!localUnavailable) {
                     holder.scenario = ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java).apply {
                         action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
+                        putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     })
                     val registered = CountDownLatch(1)

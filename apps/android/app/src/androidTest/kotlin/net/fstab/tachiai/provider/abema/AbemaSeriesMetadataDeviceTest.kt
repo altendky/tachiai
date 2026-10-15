@@ -68,6 +68,7 @@ class AbemaSeriesMetadataDeviceTest {
         val foreground = ActivityScenario.launch<net.fstab.tachiai.MainActivity>(
             Intent(context, net.fstab.tachiai.MainActivity::class.java).apply {
                 action = Intent.ACTION_MAIN; addCategory(Intent.CATEGORY_LAUNCHER)
+                putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         val active = AtomicBoolean()

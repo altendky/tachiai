@@ -124,6 +124,9 @@ internal class CachedPrototypeAbemaSession(
     }
     private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
     private val helperPreparationEvidence = AbemaChannelPreparationEvidence()
+    private val nativePreparationEvidence = AbemaNativePreparationEvidence()
+    val nativePreparationDiagnostic get() = nativePreparationEvidence.snapshot(
+        sourcePending.get()?.isDone == false, pending.get()?.isDone == false)
     val helperPreparationDiagnostic get() = helperPreparationEvidence.snapshot
     val channelPreparationDiagnostic get() = helperPreparationDiagnostic.takeIf { observeChannelPreparation }
     @Volatile var nativeReadinessDeadlineReached: Boolean = false
@@ -627,10 +630,12 @@ internal class CachedPrototypeAbemaSession(
 
     private fun prepareNative(run: Long) {
         if (!current(run) || !allows(view.url)) { fail(); return }
+        nativePreparationEvidence.observe(AbemaNativePreparationPhase.WORKER_QUEUED, true)
         emit(PrototypeFeedEvent.PREPARING)
         worker.execute {
             try {
                 check(current(run) && workerOwned() && CookieHandler.getDefault() == null)
+                nativePreparationEvidence.observe(AbemaNativePreparationPhase.SOURCE_SELECT, true)
                 val uri = selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000))
                     ?: throw IllegalStateException()
                 val requests = BoundedMediaRequests(checkNotNull(budget).child(), { current(run) && it == uri }, { event, code ->
@@ -645,12 +650,15 @@ internal class CachedPrototypeAbemaSession(
                         diagnostics.nativeObserver()(stage, error)
                     })
                 sourceRequests.set(requests)
+                nativePreparationEvidence.observe(AbemaNativePreparationPhase.MANIFEST_READ, current(run))
                 val source = try { readSource(uri, requests) }
                 finally {
                     try { requests.close(); sourceRequests.compareAndSet(requests, null) }
                     catch (error: Throwable) { cleanupFailed = true; throw error }
                 }
+                nativePreparationEvidence.observe(AbemaNativePreparationPhase.SOURCE_RECHECK, current(run))
                 check(current(run) && workerOwned() && selectedSource(run, minOf(deadline, SystemClock.elapsedRealtime() + 10_000)) == uri)
+                nativePreparationEvidence.observe(AbemaNativePreparationPhase.NATIVE_DISPATCH, true)
                 handler.post {
                     if (!current(run) || !allows(view.url)) return@post
                     // The diagnostic completes after the original source/transport
@@ -663,10 +671,14 @@ internal class CachedPrototypeAbemaSession(
                         catch (_: Throwable) { fail() }
                         return@post
                     }
+                    nativePreparationEvidence.observe(AbemaNativePreparationPhase.NATIVE_CREATE, true)
                     createNative(source, run)
                 }
             } catch (error: Throwable) {
-                if (current(run)) diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
+                if (current(run)) {
+                    nativePreparationEvidence.fail(error, true)
+                    diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
+                }
                 handler.post { if (!closed.get() && revision.get() == run) fail() }
             }
         }
@@ -771,6 +783,7 @@ internal class CachedPrototypeAbemaSession(
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })
             nativeHost = created
+            nativePreparationEvidence.observe(AbemaNativePreparationPhase.HOST_CREATED, true)
             created.start(source.uri, playWhenReady = false)
         } catch (error: Exception) {
             if (current(run)) diagnostics.report(FailureStage.ABEMA_PLAYER_CREATE, error)
@@ -983,6 +996,7 @@ internal class CachedPrototypeAbemaSession(
         if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { finish(event) }; return }
         if (!closed.compareAndSet(false, true)) return
         helperPreparationEvidence.seal()
+        nativePreparationEvidence.seal(sourcePending.get()?.isDone == false, pending.get()?.isDone == false)
         synchronized(accountLock) {
             accountClient.get()?.close()
             slotPremiumReceipt.set(null); slotPremiumScope.set(null)

@@ -29,12 +29,28 @@ configuration uses Windscribe; its actual exit country was not observed. All
 the one passing local check and restoration of the normal launcher. This was
 not a playback or account-browser renewal observation.
 
-The opt-in real acceptance fixture is compiled but was not executed against
-this still-valid grant. It requires natural expiry, same-account durable rotation,
-resumed original discovery and unchanged other records without Connect or
-Return clicks. A real automatic renewal, an interaction-required case and
-physical-device behavior remain unverified; [issue #242](https://github.com/altendky/tachiai/issues/242)
-stays open for that acceptance evidence.
+That initial run did not exercise renewal. A subsequent local-only check on the
+same persistent device reported EXPIRED_READY after natural grant expiry, with
+no provider requests or clock changes. The first real fixture refused before
+launch because it incorrectly applied the encrypted-secret size limit to the
+plaintext diagnostic journal. The corrected fixture permits the journal's
+existing 64 KiB limit only for its exact file and preserves the tighter bounds
+for other records. Another attempt reached the routed account browser but failed
+to replace the account within 120.758 seconds; all 20 records were unchanged.
+The fixture now observes only the host's four fixed terminal readiness messages,
+publishes a refusal after preservation and clock checks, and still fails positive
+acceptance. It does not read provider page text or log account identifiers.
+
+The final real observation passed in 77.495 seconds, one test and zero skips.
+The naturally expired native grant rotated durably to a later-lived grant for
+the same account, without Connect or Return clicks, credentials or consent. The
+original discovery operation resumed with entries available. Only the protected
+account record changed; the other 19 records were unchanged. The configured
+Windscribe route was retained, its exit country remains unobserved, and the
+normal launcher was restored. A separate single production profile GET using
+the successor grant also passed with unchanged saved records. These observations
+satisfy the real renewal case in [issue #242](https://github.com/altendky/tachiai/issues/242);
+actual interaction-required and physical-device cases remain unverified.
 
 ## Continuous broadcast live mode — 2026-10-14
 

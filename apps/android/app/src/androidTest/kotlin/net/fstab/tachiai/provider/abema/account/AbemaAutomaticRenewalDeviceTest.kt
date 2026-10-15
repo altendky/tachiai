@@ -17,6 +17,9 @@ import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
 import net.fstab.tachiai.presentation.SourceRouteMode
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.diagnostics.FailureJournalCodec
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
@@ -84,6 +87,7 @@ class AbemaAutomaticRenewalDeviceTest {
         var replaced = false
         var discovery = false
         var hostClosed = false
+        var refusal: AbemaAccountReadinessResult? = null
         val scenario = ActivityScenario.launch<ManageStreamsActivity>(Intent(context, ManageStreamsActivity::class.java)
             .putExtra(ManageStreamsActivity.INSTANCE_ID, instance))
         try {
@@ -100,10 +104,16 @@ class AbemaAutomaticRenewalDeviceTest {
                     break
                 }
                 check(binding.sameOwner(owner) && binding.store.usable(expected.revision))
+                scenario.onActivity { activity ->
+                    val text = ManageStreamsActivity::class.java.getDeclaredField("message\$delegate")
+                        .apply { isAccessible = true }.get(activity).let { it as MutableState<*> }.value as? String
+                    refusal = abemaRenewalTerminalReadiness(text)
+                }
+                if (refusal != null) break
                 Thread.sleep(100)
             }
-            check(replaced)
-            while (SystemClock.elapsedRealtime() < deadline && !discovery) {
+            check(replaced || refusal != null)
+            while (replaced && SystemClock.elapsedRealtime() < deadline && !discovery) {
                 scenario.onActivity { activity ->
                     val state = controller(activity)?.state?.value
                     discovery = state != null && state.instance.id == instance && !state.loading && !state.saving &&
@@ -111,7 +121,7 @@ class AbemaAutomaticRenewalDeviceTest {
                 }
                 if (!discovery) Thread.sleep(100)
             }
-            check(discovery && binding.sameOwner(owner))
+            check((!replaced || discovery) && binding.sameOwner(owner))
         } finally {
             scenario.close()
             hostClosed = true
@@ -121,6 +131,15 @@ class AbemaAutomaticRenewalDeviceTest {
             after[name]?.let { MessageDigest.isEqual(digest, it) } == true
         }
         val changedAccount = after[accountFile]?.let { !MessageDigest.isEqual(checkNotNull(before[accountFile]), it) } == true
+        if (!replaced) {
+            check(refusal != null && unchanged && !changedAccount && hostClosed &&
+                SystemClock.elapsedRealtime() < deadline && binding.sameOwner(owner) && binding.store.usable(expected.revision) &&
+                abemaRenewalSnapshotMatches(expected, binding.store.readSnapshot(), System.currentTimeMillis()))
+            check(SystemClock.elapsedRealtime() in began until deadline)
+            Log.i("TachiaiAbemaRenewalProbe", "outcome=RENEWAL_REFUSED readiness=${refusal!!.name} " +
+                "savedRecordsUnchanged=true count=${before.size} hostClosed=$hostClosed")
+            throw AssertionError("Same-account renewal was not observed")
+        }
         check(unchanged && changedAccount && hostClosed && SystemClock.elapsedRealtime() < deadline && binding.sameOwner(owner))
         Log.i("TachiaiAbemaRenewalProbe", "outcome=SAME_ACCOUNT_RENEWED_NO_CLICKS originalDiscoveryReady=$discovery " +
             "otherRecordsUnchanged=$unchanged count=${before.size} hostClosed=$hostClosed routeMode=${owner.instance.setup.route!!.mode.name}")
@@ -140,14 +159,56 @@ class AbemaAutomaticRenewalDeviceTest {
             check(files.size <= 64)
             for (file in files) {
                 check(SystemClock.elapsedRealtime() - began in 0 until 5_000)
-                check(!Files.isSymbolicLink(file.toPath()) && file.length() in 0..(PRIVATE_SECRET_LIMIT + 29).toLong())
+                check(!Files.isSymbolicLink(file.toPath()) && abemaRenewalRecordWithinLimit(prefix, file.name, file.length()))
                 check(file.length() > 0 || file.name.endsWith(".lock"))
                 val bytes = file.readBytes()
-                try { result["$prefix/${file.name}"] = MessageDigest.getInstance("SHA-256").digest(bytes) }
+                try {
+                    check(abemaRenewalRecordWithinLimit(prefix, file.name, bytes.size.toLong()))
+                    result["$prefix/${file.name}"] = MessageDigest.getInstance("SHA-256").digest(bytes)
+                }
                 finally { bytes.fill(0) }
             }
         }
         check(result.size in 1..64)
         return result
+    }
+}
+
+internal fun abemaRenewalRecordWithinLimit(prefix: String, name: String, size: Long): Boolean {
+    val limit = if (prefix == "no_backup" && name == "failure-diagnostics.tsv") FailureJournalCodec.MAX_BYTES
+        else PRIVATE_SECRET_LIMIT + 29
+    return size in 0..limit.toLong()
+}
+
+internal fun abemaRenewalTerminalReadiness(message: String?): AbemaAccountReadinessResult? =
+    listOf(AbemaAccountReadinessResult.FAILURE, AbemaAccountReadinessResult.TEMPORARY_FAILURE,
+        AbemaAccountReadinessResult.INTERACTION_REQUIRED, AbemaAccountReadinessResult.STORAGE_FAILURE)
+        .singleOrNull { message == abemaAccountReadinessMessage(it) }
+
+class AbemaAutomaticRenewalRecordGuardDeviceTest {
+    @Test fun onlyKnownTerminalHostMessagesBecomeClosedRefusals() {
+        for (status in listOf(AbemaAccountReadinessResult.FAILURE, AbemaAccountReadinessResult.TEMPORARY_FAILURE,
+            AbemaAccountReadinessResult.INTERACTION_REQUIRED, AbemaAccountReadinessResult.STORAGE_FAILURE)) {
+            assertTrue(abemaRenewalTerminalReadiness(abemaAccountReadinessMessage(status)) == status)
+        }
+        for (status in listOf(AbemaAccountReadinessResult.READY, AbemaAccountReadinessResult.HANDOFF)) {
+            assertTrue(abemaRenewalTerminalReadiness(abemaAccountReadinessMessage(status)) == null)
+        }
+        assertTrue(abemaRenewalTerminalReadiness(null) == null)
+        assertTrue(abemaRenewalTerminalReadiness("synthetic provider text") == null)
+    }
+    @Test fun diagnosticJournalKeepsItsProductionBoundWithoutRelaxingEncryptedRecords() {
+        assertTrue(abemaRenewalRecordWithinLimit("no_backup", "failure-diagnostics.tsv", 8_222))
+        assertTrue(abemaRenewalRecordWithinLimit("no_backup", "failure-diagnostics.tsv", 65_536))
+        assertFalse(abemaRenewalRecordWithinLimit("no_backup", "failure-diagnostics.tsv", 65_537))
+        assertTrue(abemaRenewalRecordWithinLimit("no_backup", "abema-account-synthetic.enc", 8_221))
+        assertFalse(abemaRenewalRecordWithinLimit("no_backup", "abema-account-synthetic.enc", 8_222))
+    }
+    @Test fun otherNamespacesAndJournalLookalikesKeepTheSecretBound() {
+        for ((prefix, name) in listOf("shared_prefs" to "failure-diagnostics.tsv",
+            "no_backup" to "failure-diagnostics.tsv.new", "no_backup" to "FAILURE-diagnostics.tsv")) {
+            assertFalse(abemaRenewalRecordWithinLimit(prefix, name, 8_222))
+        }
+        assertFalse(abemaRenewalRecordWithinLimit("no_backup", "failure-diagnostics.tsv", -1))
     }
 }

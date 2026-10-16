@@ -164,7 +164,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             it.reason == CatalogFailure.INVALID_INPUT && capabilities == null } == true -> "Retry catalog"
         else -> null
     }
-    var feedbackDismissed by remember(state.instance.id, state.privacyRevision, feedback, state.loading, state.saving) { mutableStateOf(false) }
+    var feedbackDismissed by remember(state.instance.id, state.privacyRevision, feedback) { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).onGloballyPositioned { drag.viewport = it }
         .testTag("Stream discovery list"),

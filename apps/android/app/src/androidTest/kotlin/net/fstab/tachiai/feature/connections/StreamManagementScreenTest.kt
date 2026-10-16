@@ -326,6 +326,11 @@ class StreamManagementScreenTest {
         compose.runOnIdle { assertTrue(fixture.calls.isEmpty()) }
         compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
         compose.onNodeWithText("Retry catalog").assertDoesNotExist()
+        val dismissed = fixture.state
+        compose.runOnIdle { fixture.state = dismissed.copy(saving = true) }
+        compose.onNodeWithText("Retry catalog").assertDoesNotExist()
+        compose.runOnIdle { fixture.state = dismissed }
+        compose.onNodeWithText("Retry catalog").assertDoesNotExist()
         assertEquals(baseline, handle.fetchSemanticsNode().boundsInRoot)
         compose.runOnIdle { fixture.state = ready.copy(storageFailed = true, message = "Configured streams could not be read.") }
         compose.onNodeWithContentDescription("Dismiss stream notice").assertDoesNotExist()

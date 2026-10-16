@@ -64,7 +64,8 @@ internal class AbemaScheduleClientOperation(
         !cancelled && clockMs() < request.deadline && runCatching(canRemainActive).getOrDefault(false)
     }
     fun accept(value: AbemaScheduleMetadataIpc.Result): Boolean = synchronized(lock) {
-        if (!current() || result != null || value.nonce != request.nonce || value.outcome == "OK" && value.snapshot == null) false
+        if (!current() || result != null || value.nonce != request.nonce || value.outcome == "OK" &&
+            (value.snapshot == null || value.snapshot.request != request.request)) false
         else { result = value; completed.countDown(); true }
     }
     fun cancel() = synchronized(lock) { cancelled = true; result = null; completed.countDown() }
@@ -146,7 +147,7 @@ internal class AndroidAbemaSeriesMetadataClient(
                 series.accept(AbemaSeriesMetadataIpc.decodeResult(fields, series.request.page) ?: return)
             } else if (schedule != null) {
                 val fields = AbemaScheduleMetadataIpc.fields(message.data) ?: return
-                schedule.accept(AbemaScheduleMetadataIpc.decodeResult(fields) ?: return)
+                schedule.accept(AbemaScheduleMetadataIpc.decodeResult(fields, schedule.request.request) ?: return)
             } else {
                 val fields = AbemaSearchMetadataIpc.fields(message.data) ?: return
                 checkNotNull(search).accept(AbemaSearchMetadataIpc.decodeResult(fields, search.request.search) ?: return)
@@ -212,10 +213,10 @@ internal class AndroidAbemaSeriesMetadataClient(
             is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.page))
         }
     }
-    override fun fetch(): CatalogResult<AbemaScheduleSnapshot> {
-        val request = AbemaScheduleMetadataIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
-            expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaSeriesMetadataIpc.OPERATION_MS)
-        val operation = ListOperation(schedule = AbemaScheduleClientOperation(request, SystemClock::elapsedRealtime) { !closed.get() && canRemainActive() })
+    override fun fetch(request: AbemaScheduleRequest): CatalogResult<AbemaScheduleSnapshot> {
+        val start = AbemaScheduleMetadataIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
+            expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaSeriesMetadataIpc.OPERATION_MS, request)
+        val operation = ListOperation(schedule = AbemaScheduleClientOperation(start, SystemClock::elapsedRealtime) { !closed.get() && canRemainActive() })
         return when (val result = fetch(operation)) {
             is CatalogResult.Failure -> result
             is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.snapshot))

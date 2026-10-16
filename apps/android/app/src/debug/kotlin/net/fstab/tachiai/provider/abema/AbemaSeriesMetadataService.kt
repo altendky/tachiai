@@ -74,7 +74,7 @@ class AbemaSeriesMetadataService : Service() {
         start(request.nonce, request.deadline, reply, AbemaScheduleMetadataIpc.CANCEL, { lease ->
             AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_SCHEDULE,
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
-                canRemainActive = lease::current)
+                scheduleRequest = request.request, canRemainActive = lease::current)
         }) { result ->
             val outcome = when (result.category) {
                 "SCHEDULE_SNAPSHOT" -> if (result.scheduleSnapshot != null) "OK" else "TEMPORARY"

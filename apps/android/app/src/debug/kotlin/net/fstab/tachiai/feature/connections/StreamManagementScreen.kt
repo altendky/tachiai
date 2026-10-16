@@ -70,8 +70,8 @@ private fun metadataRefreshExplanation(access: CatalogAccess?): String? = when (
     CatalogAccess.NOT_VERIFIED -> "Refresh metadata access is not verified."
     null -> "Refresh metadata is unavailable until provider access is checked."
 }
-private fun entryDetails(entry: CatalogEntry): String {
-    val intent = when (entry.resource.intent) {
+private fun entryDetails(entry: CatalogEntry, actionLabel: String? = null): String {
+    val intent = actionLabel?.let { "$it ›" } ?: when (entry.resource.intent) {
         CatalogIntent.CHANNEL -> "Ongoing channel"
         CatalogIntent.BROADCAST -> "Specific broadcast"
         CatalogIntent.VIDEO -> "On-demand video"
@@ -106,6 +106,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     var lookup by remember(state.instance.id, state.privacyRevision, state.link != null) { mutableStateOf("") }
     val mutable = !state.saving && !state.loading && !state.storageFailed && state.configured != null
     val capabilities = state.capabilities
+    val providerId = ProviderId(state.instance.service.name.lowercase(java.util.Locale.ROOT))
     // Keep only public control labels/support across access rechecks. Old access
     // states, entries and cursors must not become authorization evidence.
     var discoveryLabels by remember(state.instance.id) { mutableStateOf<CatalogCapabilities?>(null) }
@@ -243,8 +244,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             var moveMenu by remember(source.id) { mutableStateOf(false) }
             var handleCoordinates by remember(source.id) { mutableStateOf<LayoutCoordinates?>(null) }
             val pinnable = LocalPinnableContainer.current
-            val browsable = capabilities?.children == CatalogAccess.AVAILABLE &&
-                source.entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL)
+            val childCapability = capabilities?.childrenFor(source.entry.resource, providerId)
+                ?.takeIf { it.access == CatalogAccess.AVAILABLE }
             Box(Modifier.zIndex(if (drag.draggedId == source.id) 1f else 0f)
                 .onGloballyPositioned { drag.positioned(source.id, it) }) {
             Column(Modifier.graphicsLayer {
@@ -284,16 +285,16 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                                 modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} later" })
                         }
                     }
-                    val browse = if (browsable) Modifier.clickable(enabled = actionsEnabled, role = Role.Button,
-                        onClick = { onChildren(source.entry.resource) }).semantics { contentDescription = "Browse configured ${source.entry.title}" }
+                    val browse = if (childCapability != null) Modifier.clickable(enabled = actionsEnabled, role = Role.Button,
+                        onClickLabel = childCapability.actionLabel,
+                        onClick = { onChildren(source.entry.resource) }).semantics(mergeDescendants = true) {
+                            contentDescription = "${childCapability.actionLabel} for ${source.entry.title}"
+                        }
                         else Modifier
                     Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(source.entry.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            if (browsable) Text("›")
-                        }
-                        Text(entryDetails(source.entry), style = MaterialTheme.typography.bodySmall)
+                        Text(source.entry.title, style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(entryDetails(source.entry, childCapability?.actionLabel), style = MaterialTheme.typography.bodySmall)
                     }
                     IconButton(onClick = { onRefresh(source.id) },
                         enabled = actionsEnabled && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,
@@ -355,7 +356,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         } }
         item(key = "discovery-context") { Column {
             val heading = state.childHeading ?: state.query.parent?.let {
-                "${capabilities?.childrenHeadingPrefix ?: "Items under"} ${it.identity}"
+                "${capabilities?.childrenFor(it, providerId)?.headingPrefix ?: "Items under"} ${it.identity}"
             } ?: state.query.search?.let { "Search results" }
             heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             state.navigationBackLabel?.let { label ->
@@ -366,11 +367,12 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         items(state.entries, key = { "catalog:${it.resource.providerId.value}:${it.resource.kind}:${it.resource.identity}:${it.resource.intent}" }) { entry ->
             Column(Modifier.testTag("Discovery row ${entry.resource.kind}:${entry.resource.identity}")) {
                 val added = state.configured.orEmpty().any { it.entry.resource == entry.resource }
-                val browsable = entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL) &&
-                    capabilities?.children == CatalogAccess.AVAILABLE
+                val childCapability = capabilities?.childrenFor(entry.resource, providerId)
+                    ?.takeIf { it.access == CatalogAccess.AVAILABLE }
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val browse = if (browsable) Modifier.clickable(enabled = mutable, role = Role.Button,
+                    val browse = if (childCapability != null) Modifier.clickable(enabled = mutable, role = Role.Button,
+                        onClickLabel = childCapability.actionLabel,
                         onClick = { onChildren(entry.resource) }).semantics { contentDescription = "Browse ${entry.title}" }
                         else Modifier
                     Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
@@ -378,7 +380,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Top) {
                             Text(entryDetails(entry), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            if (browsable) Text("${capabilities.childrenTitle} ›",
+                            if (childCapability != null) Text("${childCapability.actionLabel} ›",
                                 modifier = Modifier.widthIn(max = 100.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }

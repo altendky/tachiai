@@ -93,7 +93,7 @@ class AbemaSeriesChildrenCatalogTest {
         assertEquals(CatalogFailure.INVALID_INPUT, (f.catalog.browse(CatalogQuery(parent = parent(), cursor = first.nextCursor)) as CatalogResult.Failure).reason)
         assertEquals(CatalogFailure.UNSUPPORTED, (f.catalog.resolve(parent()) as CatalogResult.Failure).reason)
         assertEquals(CatalogAccess.AVAILABLE, f.catalog.capabilities().collections.single().access)
-        assertEquals("Episodes", f.catalog.capabilities().childrenTitle)
+        assertEquals("Browse", f.catalog.capabilities().childrenTitle)
     }
     @Test fun parentInstanceProviderAndChangedQueryCannotResurrectContinuations() {
         assertThrows(IllegalArgumentException::class.java) { AbemaSeriesChildrenCatalog(Delegate(id, "twitch"), null) }

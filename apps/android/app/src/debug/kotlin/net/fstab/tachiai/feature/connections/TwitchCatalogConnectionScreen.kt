@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.provider.twitch.DeviceAuthPhase
 import net.fstab.tachiai.provider.twitch.catalog.*
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, onConnect: () -> Unit,
     onValidate: () -> Unit, onForget: () -> Unit, onCancel: () -> Unit, onBrowser: (String) -> Unit,
@@ -24,20 +25,23 @@ internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, 
         val maxQrSize = minOf(320.dp, maxWidth, if (constraints.hasBoundedHeight) maxHeight else screenHeight / 2)
         val columnModifier = if (onBack == null) Modifier else Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         Column(columnModifier,
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
             SettingsSection("Twitch account", "Connect this provider for Following, stream discovery and playback. The connection uses Twitch’s Smart TV identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.\n\n" +
                 "Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.\n\n" +
                 "Forget disconnects discovery and playback for this provider. Browser login, configured streams, routes and other provider instances are retained.")
             Text(state.status)
-            Button(onConnect, enabled = enabled && state.ready && !state.busy) {
-                Text(if (state.hasSavedGrant) "Reconnect Twitch" else "Connect Twitch")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+                maxItemsInEachRow = 2) {
+                Button(onConnect, enabled = enabled && state.ready && !state.busy) {
+                    Text(if (state.hasSavedGrant) "Reconnect Twitch" else "Connect Twitch")
+                }
+                TextButton(onValidate, enabled = enabled && state.ready && state.hasSavedGrant && !state.busy) { Text("Validate account") }
+                TextButton(onForget, enabled = enabled && state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
+                    Text("Forget account")
+                }
+                TextButton(onCancel, enabled = enabled && (state.operation == TwitchCatalogConnectionOperation.CONNECT ||
+                    state.operation == TwitchCatalogConnectionOperation.VALIDATE)) { Text("Cancel") }
             }
-            Button(onValidate, enabled = enabled && state.ready && state.hasSavedGrant && !state.busy) { Text("Validate Twitch account") }
-            TextButton(onForget, enabled = enabled && state.canForget && state.operation != TwitchCatalogConnectionOperation.FORGET) {
-                Text("Forget Twitch account on this device")
-            }
-            if (state.operation == TwitchCatalogConnectionOperation.CONNECT || state.operation == TwitchCatalogConnectionOperation.VALIDATE)
-                TextButton(onCancel, enabled = enabled) { Text("Cancel Twitch action") }
             state.activation?.takeIf { state.operation == TwitchCatalogConnectionOperation.CONNECT &&
                 (state.phase == null || state.phase == DeviceAuthPhase.BROWSER_UNAVAILABLE ||
                     (!state.phase.terminal && state.phase != DeviceAuthPhase.VALIDATING)) }?.let {

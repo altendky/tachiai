@@ -16,6 +16,12 @@ while their header scrolls offscreen or stream results reload.
 Explicit account operations also suspend parent automatic renewal and catalog
 loading until provider-return verification finishes.
 
+The provider detail headline is the instance name, with an edit icon and a small
+provider-type label. Name editing opens an autosaving dialog. Connection uses a
+single route selector whose menu also opens route import. Account actions stay
+visible in wrapping rows, with unavailable actions disabled; their layout does
+not collapse when an account connects. Section help uses info icons.
+
 Ordinary valid name and route changes save automatically. Accepted writes are
 serialized and drained before returning, and new readers wait for outstanding
 writes. Invalid names remain drafts; failed writes show a retry action and the

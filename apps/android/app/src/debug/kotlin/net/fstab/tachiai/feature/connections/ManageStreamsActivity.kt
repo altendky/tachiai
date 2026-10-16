@@ -87,11 +87,11 @@ class ManageStreamsActivity : ComponentActivity() {
             val preferenceState = preferences?.state?.collectAsState()?.value
             val page: @Composable ((@Composable () -> Unit)?) -> Unit = { accountContent ->
             val header: (@Composable () -> Unit)? = if (providerDetails && preferenceState != null) ({
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(preferenceState.instance.name, style = MaterialTheme.typography.headlineSmall)
-                    TextButton(onClick = ::finish) { Text("Back to providers") }
-                    ProviderSettingsFields(preferenceState.instance, profiles, preferenceState.nameDraft,
-                        preferenceState.selectedRoute, preferenceState.validName, { if (!savingWhileLeaving) preferences?.nameChanged(it) },
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ProviderDetailHeading(preferenceState.instance, preferenceState.nameDraft, preferenceState.validName,
+                        { if (!savingWhileLeaving) preferences?.nameChanged(it) }, ::finish, enabled = !savingWhileLeaving,
+                        saving = preferenceState.saving, error = preferenceState.error)
+                    ProviderConnectionSettings(preferenceState.instance, profiles, preferenceState.selectedRoute,
                         { if (!savingWhileLeaving) preferences?.routeChanged(it) }, {
                             if (!savingWhileLeaving)
                             scope.launch { ProviderPreferenceWrites.await(preferenceState.instance.id)

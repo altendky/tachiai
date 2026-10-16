@@ -44,9 +44,10 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         entries.add(Entry(instance, scope, value, nonce, now, minOf(now + lifetimeMs, originalDeadline)))
         return Decision(Status.LAUNCH, nonce)
     }
-    @Synchronized fun invalidate(instance: String) {
+    fun invalidate(instance: String) = invalidate(instance) { true }
+    @Synchronized fun invalidate(instance: String, matches: (T) -> Boolean) {
         val now = now() ?: 0
-        entries.filter { it.instance == instance && it.finished == null }.forEach { it.finished = now }
+        entries.filter { it.instance == instance && it.finished == null && matches(it.value) }.forEach { it.finished = now }
     }
     @Synchronized fun claim(ticket: String): T? {
         val now = now() ?: return null

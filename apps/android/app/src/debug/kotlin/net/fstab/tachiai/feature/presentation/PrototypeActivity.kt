@@ -67,7 +67,10 @@ import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.RouteSessionRegistry
 import net.fstab.tachiai.platform.network.RoutePreparation
-import net.fstab.tachiai.platform.network.planProviderInstanceRoutes
+import net.fstab.tachiai.platform.network.captureProviderInstanceRoutes
+import net.fstab.tachiai.platform.network.revalidateProviderInstanceRoutes
+import net.fstab.tachiai.platform.network.ProviderInstanceRoutePlan
+import net.fstab.tachiai.platform.network.ProviderEffectiveRoute
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -143,6 +146,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var checkingAccount = false
     private var accountCheckRevision = 0L
     private var pendingAccountSelection: ConfiguredFeedAssignments? = null
+    private var pendingAccountPlan: ProviderInstanceRoutePlan? = null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var sourceSetups by mutableStateOf(defaultSourceSetups())
     private var providerInstances by mutableStateOf(defaultProviderInstances())
@@ -184,6 +188,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var routes = emptyMap<String, RouteSession>()
     private var routeProfiles = emptyMap<String, Result<ConnectionProfile?>>()
     private var routeChoices = emptyMap<String, SourceRouteChoice>()
+    private var routeOwners = emptyMap<String, ProviderEffectiveRoute>()
     // Rate hints survive a stopped viewer so another explicit attempt cannot
     // skip its deadline. This Activity-owned map contains no grants or aliases.
     private val twitchBroadcasterRetryGate = TwitchBroadcasterRetryGate()
@@ -314,7 +319,9 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    private fun watch(assignments: ConfiguredFeedAssignments) {
+    private fun watch(assignments: ConfiguredFeedAssignments) = watchScoped(assignments, null)
+
+    private fun watchScoped(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?) {
         if (checkingAccount || !resumed.get() || isFinishing || isDestroyed) return
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
@@ -323,30 +330,61 @@ open class PrototypeActivity : ComponentActivity() {
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
-        val ids = (resolved as ConfiguredPrototypeSelectionResult.Ready).selection.feeds
-            .filter { it.service == PrototypeService.ABEMA }.mapNotNull { it.resolve(providerInstances)?.id }.distinct()
-        if (ids.isEmpty()) { watchReady(assignments); return }
+        val selected = (resolved as ConfiguredPrototypeSelectionResult.Ready).selection
         val check = ++accountCheckRevision
         checkingAccount = true
-        showPicker("Checking the saved ABEMA account…")
-        accountReadiness.ensure(ids) { result ->
-            if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@ensure
-            checkingAccount = false
-            when (result) {
-                AbemaAccountReadinessResult.READY -> { pendingAccountSelection = null; watchReady(assignments) }
-                AbemaAccountReadinessResult.HANDOFF -> {
-                    pendingAccountSelection = assignments
-                    showPicker("Renewing the remembered ABEMA account…")
+        showPicker("Checking provider connections…")
+        worker.execute {
+            fun instances() = providerInstanceStore(this).read { legacyProviderSettings(this) }
+            val plan = if (capturedPlan == null) captureProviderInstanceRoutes(selected, ::instances,
+                connectionProfileStore(this)::snapshot) else revalidateProviderInstanceRoutes(selected, capturedPlan,
+                ::instances, connectionProfileStore(this)::snapshot)
+            handler.post {
+                if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@post
+                if (!plan.abemaCompatible) {
+                    checkingAccount = false
+                    showPicker("Selected ABEMA instances need available, identical routes. Their WebView proxy is shared.")
+                    return@post
                 }
-                else -> {
-                    pendingAccountSelection = null
-                    showPicker(abemaAccountReadinessMessage(result))
+                val abema = selected.feeds.filter { it.service == PrototypeService.ABEMA }.map { it.instanceId }.distinct()
+                val targets = abema.mapNotNull { id -> plan.effective[id]?.getOrNull()?.let {
+                    net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(id, it.proof)
+                } }
+                if (targets.size != abema.size) {
+                    checkingAccount = false
+                    showPicker("The selected ABEMA connection is unavailable. Check its route in Providers.")
+                    return@post
+                }
+                if (targets.isEmpty()) {
+                    checkingAccount = false
+                    watchReady(assignments, plan)
+                    return@post
+                }
+                accountReadiness.ensure(targets) { result ->
+                    if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@ensure
+                    checkingAccount = false
+                    when (result) {
+                        AbemaAccountReadinessResult.READY -> {
+                            pendingAccountSelection = null; pendingAccountPlan = null
+                            watchReady(assignments, plan)
+                        }
+                        AbemaAccountReadinessResult.HANDOFF -> {
+                            pendingAccountSelection = assignments
+                            pendingAccountPlan = plan
+                            showPicker("Renewing the remembered ABEMA account…")
+                        }
+                        else -> {
+                            pendingAccountSelection = null
+                            pendingAccountPlan = null
+                            showPicker(abemaAccountReadinessMessage(result))
+                        }
+                    }
                 }
             }
         }
     }
 
-    private fun watchReady(assignments: ConfiguredFeedAssignments) {
+    private fun watchReady(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan) {
         pickerAssignments = assignments
         updateRecoveryState()
         if (recoveryState.incident != null) {
@@ -414,22 +452,23 @@ open class PrototypeActivity : ComponentActivity() {
         root = frame
         setContentView(frame)
         createViewer()
-        prepareRoutes(selected, sharedBudget, run, setup)
+        prepareRoutes(selected, sharedBudget, run, setup, routePlan)
         updateProgress()
         handler.post(ticker)
     }
 
-    private fun prepareRoutes(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout) {
+    private fun prepareRoutes(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout,
+        capturedPlan: ProviderInstanceRoutePlan) {
         val preparation = RoutePreparation(diagnostics).also { routePreparation = it }
         val ownedRun = cachedRun
         ownedRun?.let { cachedCleanup.preparation(it, preparation::cancel) }
         routeDiagnostics = diagnostics
-        val choices = activeInstances.toList()
         routesPending = true
         recoveryState.notifyChanged()
         worker.execute {
             try {
-            val plan = planProviderInstanceRoutes(selected, choices, connectionProfileStore(this)::selected)
+            val plan = revalidateProviderInstanceRoutes(selected, capturedPlan,
+                { providerInstanceStore(this).read { legacyProviderSettings(this) } }, connectionProfileStore(this)::snapshot)
             if (!plan.abemaCompatible) {
                 handler.post {
                     ownedRun?.let { cachedCleanup.prepared(it, preparation.cleanupConfirmed) }
@@ -487,7 +526,8 @@ open class PrototypeActivity : ComponentActivity() {
                 recoveryState.notifyChanged()
                 routes = results.mapNotNull { (provider, result) -> result.getOrNull()?.let { provider to it } }.toMap()
                 routeProfiles = plan.profiles.filterKeys { it in routes }
-                routeChoices = choices.filter { it.id in routes }.associate { it.id to checkNotNull(it.setup.route) }
+                routeOwners = plan.effective.mapNotNull { (id, result) -> result.getOrNull()?.takeIf { id in routes }?.let { id to it } }.toMap()
+                routeChoices = routeOwners.mapValues { (_, owner) -> owner.choice }
                 results.filterValues { it.isFailure }.keys.forEach { instanceId ->
                     selected.feeds.forEachIndexed { index, feed -> if (feed.instanceId == instanceId)
                         failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ROUTE_FAILED)) }
@@ -559,6 +599,11 @@ open class PrototypeActivity : ComponentActivity() {
                     }
                 }
                 val feedActive = { active() && failures[index] == null }
+                val abemaOwnership = if (source.service == PrototypeService.ABEMA && useCachedAbema)
+                    checkNotNull(routeOwners[source.instanceId]).let { owner ->
+                        androidAbemaEpisodePlaybackOwnership(this, owner.effectiveInstance, owner.profile,
+                            feedActive, feedDiagnostics(index), expectedProof = owner.proof)
+                    } else null
                 val session = when (source.service) {
                     PrototypeService.ABEMA -> if (useCachedAbema) CachedPrototypeAbemaSession(this, replay, feedActive, events,
                         route = checkNotNull(routes[selected.feeds[index].instanceId]), diagnostics = feedDiagnostics(index),
@@ -569,24 +614,25 @@ open class PrototypeActivity : ComponentActivity() {
                         channelResource = source.resource.takeIf { !replay && source.historicalSource == null },
                         slotResource = source.resource.takeIf { it.kind == "slot" && source.historicalSource == null },
                         continuousSlotPlayback = source.resource.kind == "slot" && source.historicalSource == null,
-                        ownership = if (!replay && source.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(this,
-                            checkNotNull(source.resolve(activeInstances)),
-                            checkNotNull(routeProfiles[source.instanceId]).getOrThrow(), feedActive, feedDiagnostics(index)))
+                        ownership = if (!replay && source.historicalSource != null) null else abemaOwnership,
+                        routeOwnership = abemaOwnership)
                         else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId
                         val route = checkNotNull(routes[instanceId])
                         val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
                         val routeChoice = checkNotNull(routeChoices[instanceId])
+                        val ownerProof = checkNotNull(routeOwners[instanceId]).proof
                         val preparation = {
                             CatalogTwitchPreparation(this, instanceId, profile, routeChoice, feedActive,
-                                openConnection = route::open)
+                                openConnection = route::open, expectedOwnerProof = ownerProof)
                         }
                         if (supportedConfiguredTwitchBroadcaster(source.resource)) {
                             configuredTwitchBroadcasterSession(this, source.resource, feedActive, events,
                                 liveIdentityResolverFactory = {
                                     androidTwitchLiveIdentityResolver(this, instanceId, profile, feedActive,
-                                        twitchBroadcasterRetryGate, expectedRoute = routeChoice)
+                                        twitchBroadcasterRetryGate, expectedRoute = routeChoice,
+                                        expectedOwnerProof = ownerProof)
                                 }, openConnection = route::open,
                                 diagnostics = feedDiagnostics(index), preparationFactory = preparation,
                                 onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
@@ -952,7 +998,7 @@ open class PrototypeActivity : ComponentActivity() {
             if (cachedCleanup.failed) cleanupFailed = true
             cachedRun = null
             routePreparation = null
-            routes = emptyMap(); routeProfiles = emptyMap(); routeChoices = emptyMap()
+            routes = emptyMap(); routeProfiles = emptyMap(); routeChoices = emptyMap(); routeOwners = emptyMap()
             updateRecoveryState(); recoveryState.notifyChanged()
             return
         }
@@ -964,6 +1010,7 @@ open class PrototypeActivity : ComponentActivity() {
         routes = emptyMap()
         routeProfiles = emptyMap()
         routeChoices = emptyMap()
+        routeOwners = emptyMap()
         if (oldRoutes.isEmpty()) return
         routeCleanupPending = true
         recoveryState.notifyChanged()
@@ -1035,8 +1082,11 @@ open class PrototypeActivity : ComponentActivity() {
                     configuredSources = it.sources; qualityDefaults = it.sources.associate { source -> source.choice to source.quality }
                     setupReady = true
                     pendingAccountSelection?.let { assignments ->
+                        val captured = pendingAccountPlan
                         pendingAccountSelection = null
-                        watch(assignments)
+                        pendingAccountPlan = null
+                        if (captured != null) watchScoped(assignments, captured)
+                        else showPicker("The saved connection check ended. Choose Watch to start again.")
                     }
                 }, onFailure = {
                     if (it !is ObsoleteSourceSetupException) diagnostics.report(FailureStage.PROVIDER_SETUP_READ, it)
@@ -1080,6 +1130,7 @@ open class PrototypeActivity : ComponentActivity() {
     override fun onDestroy() {
         accountReadiness.close()
         pendingAccountSelection = null
+        pendingAccountPlan = null
         recoveryState.removeObserver(recoveryObserver)
         dismissRecoveryDialog()
         resumed.set(false); dispose()

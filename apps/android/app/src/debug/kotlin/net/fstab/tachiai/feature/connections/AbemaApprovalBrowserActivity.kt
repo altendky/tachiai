@@ -23,7 +23,7 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.SourceRouteMode
-import net.fstab.tachiai.provider.abema.readAbemaCatalogRouteOwner
+import net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner
 import net.fstab.tachiai.provider.abema.account.*
 import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
@@ -177,9 +177,9 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         } catch (_: Throwable) { closeBrowser(false) }
     }
 
-    private fun sameOwner() = request.ownerProof == readAbemaCatalogRouteOwner(request.instanceId,
+    private fun sameOwner() = request.ownerProof == captureAbemaCatalogRouteOwner(request.instanceId,
         { providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } },
-        { connectionProfileStore(applicationContext).selected(it) }).proof()
+        { connectionProfileStore(applicationContext).snapshot(it) }, request.ownerProof).proof()
     private fun current() = !ending && ready && resumed && !poisoned.get() && request.current(SystemClock.elapsedRealtime())
     // WebView interception is on Chromium's worker. Protected owner reads never
     // occur in navigation, proxy-authentication or main-thread UI callbacks.
@@ -236,9 +236,9 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             var valid = false
             try {
                 if (ending || !request.current(SystemClock.elapsedRealtime())) return@execute
-                val owner = readAbemaCatalogRouteOwner(request.instanceId,
+                val owner = captureAbemaCatalogRouteOwner(request.instanceId,
                     { providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } },
-                    { connectionProfileStore(applicationContext).selected(it) })
+                    { connectionProfileStore(applicationContext).snapshot(it) }, request.ownerProof)
                 check(owner.proof() == request.ownerProof)
                 check((owner.profile == null) == (owner.instance.setup.route?.mode == SourceRouteMode.SYSTEM))
                 if (BuildConfig.LOCAL_INSPECTION) Log.i("TachiaiInspect", "ABEMA_ROUTE mode=${owner.instance.setup.route?.mode?.name} " +

@@ -20,13 +20,16 @@ import net.fstab.tachiai.provider.abema.account.*
 @Composable
 internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Unit, onAccountChanged: () -> Unit,
     enabled: Boolean = true,
+    expectedOwnerProof: String? = null,
     content: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val actionCallback by rememberUpdatedState(onAccountAction)
     val changedCallback by rememberUpdatedState(onAccountChanged)
     val actionsEnabled by rememberUpdatedState(enabled)
-    val owner = remember(context, instanceId) { AbemaAccountSettingsOwner(context.applicationContext, instanceId) }
+    val owner = remember(context, instanceId, expectedOwnerProof) {
+        AbemaAccountSettingsOwner(context.applicationContext, instanceId, expectedOwnerProof)
+    }
     val approval = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         owner.browserReturned = true
         if (result.resultCode == Activity.RESULT_OK) owner.controller?.emailBrowserReturned()
@@ -82,7 +85,8 @@ internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Uni
     }
 }
 
-private class AbemaAccountSettingsOwner(private val context: Context, private val instanceId: String) : AutoCloseable {
+private class AbemaAccountSettingsOwner(private val context: Context, private val instanceId: String,
+    private val expectedOwnerProof: String?) : AutoCloseable {
     private val main = Handler(Looper.getMainLooper())
     var controller by mutableStateOf<AbemaAccountConnectionController?>(null)
         private set
@@ -103,7 +107,8 @@ private class AbemaAccountSettingsOwner(private val context: Context, private va
         }
         val run = ++revision
         AbemaAccountWorkers.worker.execute {
-            val binding = runCatching { androidAbemaAccountConnectionBinding(context, instanceId) }.getOrNull()
+            val binding = runCatching { androidAbemaAccountConnectionBinding(context, instanceId,
+                expectedOwnerProof = expectedOwnerProof) }.getOrNull()
             main.post {
                 if (closed || revision != run) return@post
                 if (binding == null) {

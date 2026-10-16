@@ -130,12 +130,13 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         }
     }
     private fun savedInstances() = providerInstanceStore(context).read { legacyProviderSettings(context) }
-    private fun readSavedOwner(id: String) = readAbemaCatalogRouteOwner(id, ::savedInstances,
-        { connectionProfileStore(context).selected(it) })
-    override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner = Owner(readSavedOwner(instanceId))
+    private fun readSavedOwner(id: String, expectedProof: String?) = captureAbemaCatalogRouteOwner(id, ::savedInstances,
+        { connectionProfileStore(context).snapshot(it) }, expectedProof)
+    override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner = readOwner(instanceId, null)
+    override fun readOwner(instanceId: String, expectedProof: String?): AbemaGuestRuntimeOwner = Owner(readSavedOwner(instanceId, expectedProof))
     override fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean {
         val captured = (owner as Owner).saved
-        return captured.sameOwnership(readSavedOwner(captured.instance.id))
+        return captured.sameOwnership(readSavedOwner(captured.instance.id, captured.proof()))
     }
     override fun newPreparation(): AbemaGuestRuntimePreparation = Preparation(RoutePreparation(diagnostics))
     override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,

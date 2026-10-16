@@ -16,28 +16,34 @@ import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 import net.fstab.tachiai.provider.abema.account.*
 
-internal class AbemaCatalogRouteOwner(val instance: ProviderInstance, val profile: ConnectionProfile?) {
+internal class AbemaCatalogRouteOwner private constructor(val instance: ProviderInstance, val profile: ConnectionProfile?,
+    val configuredInstance: ProviderInstance, private val candidateProof: String?) {
+    // Direct construction is retained for provider-free ownership fixtures.
+    constructor(instance: ProviderInstance, profile: ConnectionProfile?) : this(instance, profile, instance, null)
+    // A viewer's worker-built route plan supplies this proof. The first worker
+    // ownership check still reconciles its choice/profile with protected state.
+    constructor(instance: ProviderInstance, profile: ConnectionProfile?, expectedProof: String) :
+        this(instance, profile, instance, expectedProof)
+    constructor(route: ProviderEffectiveRoute) : this(route.effectiveInstance, route.profile, route.configuredInstance, route.proof)
+    init { require(candidateProof == null || candidateProof.matches(Regex("[a-f0-9]{64}"))) }
     private val choice = checkNotNull(instance.setup.route)
     private val fingerprint = "${instance.id}|${instance.service.name}|${choice.mode.name}|${choice.connectionId ?: ""}|" +
         (profile?.let(::routeConfigurationKey) ?: "SYSTEM")
-    fun sameOwnership(other: AbemaCatalogRouteOwner) = fingerprint == other.fingerprint
-    fun proof(): String = MessageDigest.getInstance("SHA-256").digest(fingerprint.toByteArray(Charsets.UTF_8))
+    fun sameOwnership(other: AbemaCatalogRouteOwner) = proof() == other.proof() && fingerprint == other.fingerprint
+    fun proof(): String = candidateProof ?: MessageDigest.getInstance("SHA-256").digest(fingerprint.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 255) }
     override fun toString() = "AbemaCatalogRouteOwner(redacted)"
 }
 
 internal fun readAbemaCatalogRouteOwner(instanceId: String, readInstances: () -> List<ProviderInstance>,
-    readProfile: (String) -> ConnectionProfile): AbemaCatalogRouteOwner {
-    require(validProviderInstanceId(instanceId))
-    val instance = checkNotNull(readInstances().singleOrNull { it.id == instanceId && it.service == PrototypeService.ABEMA })
-    val choice = checkNotNull(instance.setup.route)
-    val profile = when (choice.mode) {
-        SourceRouteMode.SYSTEM -> null
-        SourceRouteMode.SAVED_CONNECTION -> readProfile(checkNotNull(choice.connectionId))
-        SourceRouteMode.SOURCE_DEFAULT -> error("Provider route needs review")
-    }
-    return AbemaCatalogRouteOwner(instance, profile)
-}
+    readProfile: (String) -> ConnectionProfile): AbemaCatalogRouteOwner =
+    captureAbemaCatalogRouteOwner(instanceId, readInstances, { ids -> ids.associateWith(readProfile) })
+
+// Production callers supply one coherent protected profile snapshot. A null
+// proof chooses only the first configured candidate; no fallback happens here.
+internal fun captureAbemaCatalogRouteOwner(instanceId: String, readInstances: () -> List<ProviderInstance>,
+    readProfiles: (Set<String>) -> Map<String, ConnectionProfile>, expectedProof: String? = null): AbemaCatalogRouteOwner =
+    AbemaCatalogRouteOwner(captureProviderRoutePool(instanceId, PrototypeService.ABEMA, readInstances, readProfiles).resolve(expectedProof))
 
 // Protected owner reads run on workers, outside lifecycle locks. A successful
 // read cannot resurrect admission revoked while that read was in progress.
@@ -47,21 +53,22 @@ internal fun abemaCatalogOwnerCurrent(canRemainActive: () -> Boolean, readOwnerM
 // Constructed/called on workers. Local import owns the instance separately from
 // metadata admission, so a broken saved route never becomes a System request.
 internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
-    setups: Map<PrototypeSource, SourceSetup>, canUse: () -> Boolean = { true }): ProviderCatalog {
+    setups: Map<PrototypeSource, SourceSetup>, canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): ProviderCatalog {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
     fun instances() = providerInstanceStore(application).read { legacyProviderSettings(application) }
     val instance = checkNotNull(instances().singleOrNull { it.id == instanceId && it.service == PrototypeService.ABEMA })
-    fun readOwner() = readAbemaCatalogRouteOwner(instanceId, ::instances,
-        { connectionProfileStore(application).selected(it) })
-    val captured = runCatching(::readOwner).onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
+    fun readOwner(expected: String?) = captureAbemaCatalogRouteOwner(instanceId, ::instances,
+        { connectionProfileStore(application).snapshot(it) }, expected)
+    val captured = runCatching { readOwner(expectedOwnerProof) }.onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
+    val routeAdmission = ProviderRouteAdmission(captured?.proof() ?: expectedOwnerProof)
     val lock = Any()
     var closed = false
     var cleanupFailed = false
-    fun canRemainActive(): Boolean = canUse() && !synchronized(lock) { closed || cleanupFailed }
-    fun current(): Boolean = abemaCatalogOwnerCurrent(::canRemainActive) {
-        captured != null && runCatching { captured.sameOwnership(readOwner()) }
-            .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
+    fun canRemainActive(): Boolean = canUse() && routeAdmission.canContinue() && !synchronized(lock) { closed || cleanupFailed }
+    fun current(): Boolean = routeAdmission.check(::canRemainActive) { expected ->
+        if (captured == null) null else runCatching { readOwner(expected).takeIf(captured::sameOwnership)?.proof() }
+            .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
     }
     fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
         runCatching { instances().any { it.id == instanceId && it.service == PrototypeService.ABEMA } }

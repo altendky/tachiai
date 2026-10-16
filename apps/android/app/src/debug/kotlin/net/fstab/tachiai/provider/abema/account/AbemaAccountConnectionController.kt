@@ -12,6 +12,8 @@ import net.fstab.tachiai.platform.diagnostics.*
 
 internal interface AbemaAccountConnectionBinding {
     val store: AbemaAccountGrantStore
+    // Memory-only configuration admission, independent of foreground/cleanup.
+    val routeCurrent: Boolean get() = true
     fun owner(): AbemaCatalogRouteOwner
     fun sameOwner(owner: AbemaCatalogRouteOwner): Boolean
     fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean): AbemaAccountBootstrap

@@ -77,6 +77,7 @@ internal interface AbemaGuestRuntimeView {
 }
 internal interface AbemaGuestRuntimeEnvironment {
     fun readOwner(instanceId: String): AbemaGuestRuntimeOwner
+    fun readOwner(instanceId: String, expectedProof: String?): AbemaGuestRuntimeOwner = readOwner(instanceId)
     fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean
     fun newPreparation(): AbemaGuestRuntimePreparation
     fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
@@ -159,7 +160,7 @@ internal class AbemaGuestRuntimeCoordinator(
         main.delay(active, 100, ::pulse)
         worker.execute {
             try {
-                active.owner = environment.readOwner(request.instanceId)
+                active.owner = environment.readOwner(request.instanceId, request.expectedOwnerProof)
                 check(sameOwner(active))
                 val files = environment.prepare(checkNotNull(active.owner), request, active.preparation) { sameOwner(active) }
                 check(sameOwner(active))

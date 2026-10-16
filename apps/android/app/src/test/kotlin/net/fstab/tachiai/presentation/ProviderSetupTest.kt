@@ -38,4 +38,32 @@ class ProviderSetupTest {
         assertNull(setup.route)
         assertEquals(setOf(japan, SourceRouteChoice.system), setup.previousRoutes.toSet())
     }
+
+    @Test fun explicitRoutePoolKeepsOrderAndHistoricalReviewSeparate() {
+        val other = japan.copy(connectionId = "12345678-1234-1234-1234-123456789abd", connectionName = "Other exit")
+        val setup = ProviderSetup(japan, listOf(SourceRouteChoice.system), listOf(other))
+        assertEquals(listOf(japan, other), setup.routes)
+        assertEquals(japan, setup.route)
+        assertEquals(listOf(SourceRouteChoice.system), setup.previousRoutes)
+        assertTrue(ProviderSetup(null, listOf(japan)).routes.isEmpty())
+        assertEquals(listOf(SourceRouteChoice.system), ProviderSetup(SourceRouteChoice.system).routes)
+    }
+
+    @Test fun poolsRejectAmbiguousDuplicateInheritedAndExcessiveRoutes() {
+        assertThrows(IllegalArgumentException::class.java) { ProviderSetup(null, fallbackRoutes = listOf(japan)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            ProviderSetup(japan, fallbackRoutes = listOf(japan.copy(connectionName = "Renamed same reference")))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ProviderSetup(SourceRouteChoice.system, fallbackRoutes = listOf(SourceRouteChoice.system))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ProviderSetup(japan, fallbackRoutes = listOf(SourceRouteChoice.inherit))
+        }
+        val alternatives = (1..MAX_PROVIDER_ROUTES).map {
+            japan.copy(connectionId = "00000000-0000-0000-0000-%012d".format(it))
+        }
+        assertEquals(MAX_PROVIDER_ROUTES, ProviderSetup(japan, fallbackRoutes = alternatives.drop(1)).routes.size)
+        assertThrows(IllegalArgumentException::class.java) { ProviderSetup(japan, fallbackRoutes = alternatives) }
+    }
 }

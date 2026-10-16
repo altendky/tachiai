@@ -9,6 +9,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.connections.*
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.diagnostics.*
@@ -39,50 +40,68 @@ private object TwitchCatalogMaintenanceScheduling {
 
 // All registry/profile/keystore calls stay on workers. A saved System choice is
 // intentional; an absent, inherited or broken imported choice is never System.
-internal class TwitchCatalogRouteOwner(
-    val instance: ProviderInstance, val profile: ConnectionProfile?,
-) {
+internal class TwitchCatalogRouteOwner(val effective: ProviderEffectiveRoute) {
+    val instance = effective.effectiveInstance
+    val profile = effective.profile
+    val proof get() = effective.proof
+    val routeIdentity get() = effective.routeIdentity
+    // Fixture compatibility. Production captures every profile in the saved
+    // pool together through ConnectionProfileStore.snapshot.
+    constructor(instance: ProviderInstance, profile: ConnectionProfile?) : this(
+        captureProviderRoutePool(instance.id, instance.service, { listOf(instance) }, { ids ->
+            check(instance.setup.routes.size <= 1)
+            ids.associateWith { checkNotNull(profile) }
+        }).resolve())
     private val choice = checkNotNull(instance.setup.route)
     val presentation = TwitchCatalogConnectionOwner(instance.id, instance.name, choice.title,
-        "${instance.id}|${instance.service.name}|${choice.mode.name}|${choice.connectionId ?: ""}|" +
-            (profile?.let(::routeConfigurationKey) ?: "SYSTEM"))
+        proof)
     override fun toString() = "TwitchCatalogRouteOwner(redacted)"
 }
 
 internal fun readTwitchCatalogRouteOwner(instanceId: String, readInstances: () -> List<ProviderInstance>,
-    readProfile: (String) -> ConnectionProfile): TwitchCatalogRouteOwner {
-    require(validProviderInstanceId(instanceId))
-    val instance = checkNotNull(readInstances().singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH })
-    val choice = checkNotNull(instance.setup.route)
-    val profile = when (choice.mode) {
-        SourceRouteMode.SYSTEM -> null
-        SourceRouteMode.SAVED_CONNECTION -> readProfile(checkNotNull(choice.connectionId))
-        SourceRouteMode.SOURCE_DEFAULT -> error("Provider route needs review")
-    }
-    return TwitchCatalogRouteOwner(instance, profile)
-}
+    readProfile: (String) -> ConnectionProfile): TwitchCatalogRouteOwner =
+    captureTwitchCatalogRouteOwner(instanceId, readInstances, { ids -> ids.associateWith(readProfile) })
+
+internal fun captureTwitchCatalogRouteOwner(instanceId: String, readInstances: () -> List<ProviderInstance>,
+    readProfiles: (Set<String>) -> Map<String, ConnectionProfile>, expectedProof: String? = null): TwitchCatalogRouteOwner =
+    TwitchCatalogRouteOwner(captureProviderRoutePool(instanceId, PrototypeService.TWITCH,
+        readInstances, readProfiles).resolve(expectedProof))
 
 internal fun androidTwitchCatalogConnectionBinding(context: Context,
-    instanceId: String, canUse: () -> Boolean = { true }): TwitchCatalogConnectionBinding {
+    instanceId: String, canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): TwitchCatalogConnectionBinding {
     val application = context.applicationContext
     AndroidPrivateSecretStore.removeRetiredTwitchRegistration(application)
     val diagnostics = FailureDiagnostics.create(application)
-    class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?)
+    class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?, val proof: String? = null)
+    val routeAdmission = ProviderRouteAdmission(expectedOwnerProof)
+    val sharedMaintenance = AtomicReference<TwitchCatalogMaintenanceRegistry.Handle?>()
+    val displayInstance = AtomicReference<ProviderInstance?>()
     fun readOwner(): Snapshot {
         require(validProviderInstanceId(instanceId))
-        val instance = checkNotNull(providerInstanceStore(application).read { legacyProviderSettings(application) }
-            .singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH })
-        val resolved = runCatching { readTwitchCatalogRouteOwner(instanceId, { listOf(instance) },
-            { connectionProfileStore(application).selected(it) }) }
-            .onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrNull()
-        return if (resolved != null) Snapshot(resolved.presentation, resolved.profile) else {
-            val choice = instance.setup.route
-            Snapshot(TwitchCatalogConnectionOwner(instanceId, instance.name, "Saved route unavailable",
+        var resolved: TwitchCatalogRouteOwner? = null
+        val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false }) { expected ->
+            runCatching {
+                displayInstance.set(checkNotNull(providerInstanceStore(application).read { legacyProviderSettings(application) }
+                    .singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH }))
+                captureTwitchCatalogRouteOwner(instanceId,
+                    { providerInstanceStore(application).read { legacyProviderSettings(application) } },
+                    connectionProfileStore(application)::snapshot, expected).also { resolved = it }.proof
+            }
+                .onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrNull()
+        }
+        if (!routeAdmission.canContinue()) sharedMaintenance.get()?.revoke()
+        if (!matched) resolved = null
+        val owner = resolved
+        return if (owner != null) Snapshot(owner.presentation, owner.profile, owner.proof) else {
+            val instance = displayInstance.get()
+            val choice = instance?.setup?.route
+            Snapshot(TwitchCatalogConnectionOwner(instanceId, instance?.name ?: "Twitch", "Saved route unavailable",
                 "UNAVAILABLE|$instanceId|${choice?.mode}|${choice?.connectionId}", routeUsable = false), null)
         }
     }
     val captured = readOwner()
     fun maintenanceOwner(): Boolean = captured.presentation.routeUsable &&
+        routeAdmission.canContinue() && sharedMaintenance.get()?.canContinue() != false &&
         !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
         !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
         runCatching { val current = readOwner().presentation
@@ -104,6 +123,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
             }, canCommit = ::maintenanceOwner, onIdle = onIdle,
             schedule = TwitchCatalogMaintenanceScheduling::schedule, dispatch = TwitchCatalogMaintenanceScheduling::dispatch)
     }
+    sharedMaintenance.set(maintenance)
     val store = maintenance.coordinator.store
     return object : TwitchCatalogConnectionBinding {
         private val lock = Any()
@@ -114,6 +134,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         // Main-looper publication admission must never reread the registry,
         // imported profile or encrypted grant. Durable checks remain below.
         override fun canPublishLocally(): Boolean = canUse() && captured.presentation.routeUsable &&
+            routeAdmission.canContinue() && maintenance.canContinue() &&
             !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
             !synchronized(lock) { closed || cleanupFailed }
         private fun currentOwner(): Boolean = canPublishLocally() &&
@@ -133,7 +154,10 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
             lateinit var owned: OwnedTwitchCatalogTransport
             owned = OwnedTwitchCatalogTransport(captured.profile,
                 canRequest = { canRequest() && currentOwner() },
-                onCleanupFailure = { synchronized(lock) { cleanupFailed = true } },
+                onCleanupFailure = {
+                    synchronized(lock) { cleanupFailed = true }
+                    TwitchContinueWatchingAdmission.poison(instanceId, owned)
+                },
                 diagnostics = diagnostics,
                 onClose = { synchronized(lock) { transports.remove(owned) } })
             synchronized(lock) { check(!closed); transports.add(owned) }

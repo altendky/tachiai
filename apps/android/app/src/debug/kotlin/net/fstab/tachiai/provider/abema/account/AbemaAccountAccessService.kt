@@ -90,34 +90,99 @@ internal object AbemaAccountAccessIpc {
     }
 }
 
-// Only the ordinary process constructs stores/route owners. Exact route keys
-// retain uncertain owners; a new consumer cannot replace or bypass their poison.
+// Validation is shared only for the exact captured candidate proof. Another
+// configured route cannot inherit this candidate's accepted profile response.
+internal class AbemaAccountAccessOwnerRegistry {
+    private class Entry(val owner: AbemaAccountAccessOwner, val routeCurrent: () -> Boolean) {
+        val retired = AtomicBoolean()
+        @Volatile var revoked = false
+    }
+    private val shared = ConcurrentHashMap<String, Entry>()
+    private val retired = ConcurrentHashMap.newKeySet<AbemaAccountAccessOwner>()
+    internal val retiredCount get() = retired.size
+    fun owner(instanceId: String, ownerProof: String, routeCurrent: () -> Boolean = { true },
+        create: () -> AbemaAccountAccessOwner): AbemaAccountAccessOwner {
+        val key = "$instanceId|$ownerProof"
+        while (true) {
+            if (!runCatching(routeCurrent).getOrDefault(false)) accountRefused()
+            val existing = shared[key]
+            if (existing != null) {
+                if (!existing.retired.get() && runCatching(existing.routeCurrent).getOrDefault(false)) return existing.owner
+                if (existing.retired.compareAndSet(false, true)) {
+                    retired.add(existing.owner)
+                    existing.owner.close() // Revoke old cheap leases before allowing replacement.
+                    existing.revoked = true
+                    existing.owner.whenRetiredIdle {
+                        retired.remove(existing.owner); shared.remove(key, existing)
+                    }
+                }
+                // Pending or uncertain old cleanup cannot start another backend.
+                if (!existing.revoked || !existing.owner.cleanupConfirmed) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                shared.remove(key, existing)
+                continue
+            }
+            val created = Entry(create(), routeCurrent)
+            if (shared.putIfAbsent(key, created) == null) return created.owner
+            created.owner.close() // Unattached factory allocation owns no transport.
+        }
+    }
+    fun invalidate(instanceId: String, ownerProof: String) { shared["$instanceId|$ownerProof"]?.owner?.invalidate() }
+}
+
+// Only the ordinary process constructs stores/route owners. Cleanup poison is
+// retained per instance, including across candidate/pool proof changes.
 internal object AndroidAbemaAccountAccessOwners {
-    private val owners = ConcurrentHashMap<String, AbemaAccountAccessOwner>()
+    private val owners = AbemaAccountAccessOwnerRegistry()
     private val blocked = ConcurrentHashMap.newKeySet<String>()
     fun invalidate(instanceId: String, ownerProof: String) {
         // A durably renewed account needs a fresh profile proof for surviving
         // consumers. Retain the owner and any cleanup poison; never replace it.
-        owners["$instanceId|$ownerProof"]?.invalidate()
+        owners.invalidate(instanceId, ownerProof)
     }
-    fun poison(request: AbemaAccountAccessIpc.Request) { blocked.add("${request.instance}|${request.proof}") }
+    fun poison(request: AbemaAccountAccessIpc.Request) {
+        blocked.add(request.instance)
+        AbemaAccountWorkers.poisoned(request.instance).set(true)
+    }
     fun attach(service: Service, request: AbemaAccountAccessIpc.Request): AbemaAccountAccessOwner.Attachment {
         return attach(service, request.instance, request.proof)
     }
     fun attach(context: Context, instanceId: String, ownerProof: String): AbemaAccountAccessOwner.Attachment {
-        val binding = androidAbemaAccountConnectionBinding(context, instanceId)
+        if (instanceId in blocked || AbemaAccountWorkers.poisoned(instanceId).get())
+            throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+        val binding = androidAbemaAccountConnectionBinding(context, instanceId, ownerProof)
         val captured = binding.owner()
         if (captured.proof() != ownerProof || !binding.sameOwner(captured)) accountRefused()
-        val key = "$instanceId|$ownerProof"
-        if (key in blocked) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
-        val owner = owners.computeIfAbsent(key) {
+        if (instanceId in blocked || AbemaAccountWorkers.poisoned(instanceId).get())
+            throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+        val owner = owners.owner(instanceId, ownerProof, routeCurrent = { binding.routeCurrent }) {
             AbemaAccountAccessOwner(instanceId, ownerProof, binding.store, System::currentTimeMillis,
                 SystemClock::elapsedRealtime, { binding.sameOwner(captured) },
                 { gate -> binding.transport(captured, gate) },
-                { transport -> (transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true })
+                { transport -> ((transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true).also { confirmed ->
+                    if (!confirmed) { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) }
+                } })
         }
-        return owner.attach()
+        // A reused registry owner does not replace the fresh caller's scope
+        // check. Durable acquire/lease checks still validate the shared grant
+        // revision and exact stored record against the captured route owner.
+        return attachAbemaAccountAccessOwner(owner,
+            freshScopeCurrent = { binding.sameOwner(captured) && instanceId !in blocked && !AbemaAccountWorkers.poisoned(instanceId).get() },
+            cleanupFailed = { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) })
     }
+}
+
+// Worker-only seam: cached owners must not substitute their original caller's
+// scope for the current attach request. No protected work occurs under a lock.
+internal fun attachAbemaAccountAccessOwner(owner: AbemaAccountAccessOwner, freshScopeCurrent: () -> Boolean,
+    cleanupFailed: () -> Unit): AbemaAccountAccessOwner.Attachment {
+    if (!runCatching(freshScopeCurrent).getOrDefault(false)) accountRefused()
+    val attachment = owner.attach()
+    if (!runCatching(freshScopeCurrent).getOrDefault(false)) {
+        attachment.close()
+        if (!attachment.cleanupConfirmed) cleanupFailed()
+        accountRefused()
+    }
+    return attachment
 }
 
 class AbemaAccountAccessService : Service() {

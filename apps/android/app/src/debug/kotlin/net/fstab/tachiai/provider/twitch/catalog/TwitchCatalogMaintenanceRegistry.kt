@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 // The client/scope are fixed by this adapter. Storage includes the application's
 // protected directory and exact encrypted binding, rather than just a UUID.
 // Owner equality includes the captured route configuration and credentials;
@@ -21,13 +23,22 @@ internal class TwitchCatalogMaintenanceScope(
 // race from creating two coordinators for the same owner. Construction, owner
 // callbacks, storage, transport cancellation and cleanup stay outside this lock.
 internal class TwitchCatalogMaintenanceRegistry {
-    private class Entry(val coordinator: TwitchCatalogMaintenanceCoordinator) { var references = 0 }
+    private class Entry(val coordinator: TwitchCatalogMaintenanceCoordinator) {
+        var references = 0
+        val revoked = AtomicBoolean()
+    }
     private val lock = Any()
     private val entries = mutableMapOf<TwitchCatalogMaintenanceScope, Entry>()
+    private val retired = mutableSetOf<Entry>()
 
-    internal class Handle(val coordinator: TwitchCatalogMaintenanceCoordinator, private val release: () -> Unit) : AutoCloseable {
+    internal class Handle(val coordinator: TwitchCatalogMaintenanceCoordinator,
+        private val scopeCurrent: () -> Boolean, private val revokeScope: () -> Unit,
+        private val release: () -> Unit) : AutoCloseable {
         private val lock = Any()
         private var closed = false
+        // Closing one binding does not revoke its other shared consumers.
+        fun canContinue() = scopeCurrent()
+        fun revoke() = revokeScope()
         override fun close() {
             if (synchronized(lock) { if (closed) false else { closed = true; true } }) release()
         }
@@ -46,8 +57,20 @@ internal class TwitchCatalogMaintenanceRegistry {
         }
     }
 
-    private fun handle(scope: TwitchCatalogMaintenanceScope, entry: Entry) = Handle(entry.coordinator) {
+    private fun handle(scope: TwitchCatalogMaintenanceScope, entry: Entry) = Handle(entry.coordinator,
+        { !entry.revoked.get() }, { revoke(scope, entry) }) {
         synchronized(lock) { check(entry.references > 0); entry.references-- }
+        retire(scope, entry.coordinator)
+    }
+
+    private fun revoke(scope: TwitchCatalogMaintenanceScope, entry: Entry) {
+        synchronized(lock) {
+            entry.revoked.set(true)
+            if (entries[scope] === entry) entries.remove(scope)
+            // Retain old workers/timers/attachments until their own cleanup is
+            // confirmed. A fresh scope never removes or replaces these owners.
+            retired.add(entry)
+        }
         retire(scope, entry.coordinator)
     }
 
@@ -57,6 +80,7 @@ internal class TwitchCatalogMaintenanceRegistry {
         synchronized(lock) {
             val entry = entries[scope]
             if (entry?.coordinator === coordinator && entry.references == 0 && coordinator.isIdle) entries.remove(scope)
+            retired.removeAll { it.coordinator === coordinator && it.references == 0 && coordinator.isIdle }
         }
     }
 }

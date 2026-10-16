@@ -31,13 +31,22 @@ internal class AbemaEpisodePlaybackOwnership(private val captured: AbemaCatalogR
 }
 
 internal fun androidAbemaEpisodePlaybackOwnership(context: Context, instance: ProviderInstance,
-    profile: ConnectionProfile?, canUse: () -> Boolean, diagnostics: FailureReporter): AbemaEpisodePlaybackOwnership {
+    profile: ConnectionProfile?, canUse: () -> Boolean, diagnostics: FailureReporter,
+    expectedProof: String? = null): AbemaEpisodePlaybackOwnership {
     val application = context.applicationContext
-    val captured = AbemaCatalogRouteOwner(instance, profile)
+    fun read(expected: String?) = captureAbemaCatalogRouteOwner(instance.id,
+        { providerInstanceStore(application).read { legacyProviderSettings(application) } },
+        { connectionProfileStore(application).snapshot(it) }, expected)
+    // This factory runs on main. Its inputs are the viewer's worker-built frozen
+    // plan; only checkWorker reads protected state. Legacy single-route callers
+    // can derive a candidate proof solely from those already-captured inputs.
+    check(expectedProof != null || instance.setup.routes.size == 1)
+    val captured = if (expectedProof != null) AbemaCatalogRouteOwner(instance, profile, expectedProof)
+        else captureAbemaCatalogRouteOwner(instance.id, { listOf(instance) }, { ids ->
+            if (profile == null) emptyMap() else ids.associateWith { profile }
+        })
     return AbemaEpisodePlaybackOwnership(captured, readOwner = {
         check(Looper.myLooper() != Looper.getMainLooper())
-        readAbemaCatalogRouteOwner(instance.id,
-            { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-            { connectionProfileStore(application).selected(it) })
+        read(captured.proof())
     }, canUse = canUse, diagnostics = diagnostics)
 }

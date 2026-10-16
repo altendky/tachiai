@@ -1,7 +1,11 @@
 package net.fstab.tachiai.feature.connections
 
 import java.io.RandomAccessFile
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.nio.channels.OverlappingFileLockException
+import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.*
 import org.junit.Assert.*
@@ -105,4 +109,125 @@ class ProviderInstanceStoreTest {
         assertEquals("Japan ABEMA", latest.single { it.id == abema.id }.name)
         RandomAccessFile(file, "rw").use { it.channel.tryLock().use { lock -> assertNotNull(lock) } }
     }
+
+    @Test fun versionOneRegistryIsReadWithoutWritingAndMigratesOnlyOnExplicitMutation() {
+        // Hand-written old format: a named route plus an unresolved legacy review.
+        val original = registryFixture(1)
+        val memory = Memory().apply { bytes = original.copyOf() }
+        val store = ProviderInstanceStore(memory)
+        val entries = store.read { error("An explicit old registry cannot fall back to legacy settings") }
+        assertEquals("Japan ABEMA", entries.first().name)
+        assertEquals(listOf(japan), entries.first().setup.routes)
+        assertNull(entries.last().setup.route)
+        assertTrue(entries.last().setup.routes.isEmpty())
+        assertEquals(listOf(japan, SourceRouteChoice.system), entries.last().setup.previousRoutes)
+        assertEquals(0, memory.writes)
+        assertArrayEquals(original, memory.bytes)
+
+        val saved = store.saveRoutes(entries.first().id, entries.first().customName,
+            listOf(japan, SourceRouteChoice.system)) { error("Do not consult legacy settings") }
+        assertEquals(1, memory.writes)
+        assertEquals(2, DataInputStream(memory.bytes!!.inputStream()).use { it.readInt() })
+        assertEquals(entries.last(), saved.last())
+        assertEquals(saved, store.read { error("Do not consult legacy settings") })
+    }
+
+    @Test fun routePoolsRoundTripReplacePromoteAndClearWithoutResolvingProfileReferences() {
+        val memory = Memory(); val store = ProviderInstanceStore(memory)
+        val entries = store.read(::defaults)
+        val first = entries.first()
+        // A profile may have been removed; persistence retains its ID for explicit repair.
+        val missing = japan.copy(connectionId = "00000000-0000-0000-0000-000000009999", connectionName = "Missing exit")
+        val pool = listOf(japan, missing, SourceRouteChoice.system)
+        val saved = store.saveRoutes(first.id, "Ordered routes", pool, ::defaults)
+        assertEquals(pool, saved.first().setup.routes)
+        assertEquals(saved, store.read(::defaults))
+        assertEquals(entries.drop(1), saved.drop(1))
+        assertEquals(pool.drop(1), store.saveRoutes(first.id, null, pool.drop(1), ::defaults).first().setup.routes)
+        assertEquals(missing, store.read(::defaults).first().setup.route)
+        assertTrue(store.saveRoutes(first.id, null, emptyList(), ::defaults).first().setup.routes.isEmpty())
+        assertNull(store.read(::defaults).first().setup.route)
+        store.saveRoutes(first.id, null, pool, ::defaults)
+        assertEquals(listOf(japan), store.save(first.id, null, japan, ::defaults).first().setup.routes)
+    }
+
+    @Test fun invalidPoolsAndFailedWholePoolWritesPreserveCommittedBytes() {
+        val memory = Memory(); val store = ProviderInstanceStore(memory)
+        val id = store.create(PrototypeService.TWITCH, ::defaults).last().id
+        store.saveRoutes(id, "Routes", listOf(japan, SourceRouteChoice.system), ::defaults)
+        val original = memory.bytes!!.copyOf()
+        for (routes in listOf(listOf(japan, japan.copy(connectionName = "Same ID")),
+            listOf(SourceRouteChoice.inherit), List(MAX_PROVIDER_ROUTES + 1) { SourceRouteChoice.system })) {
+            assertThrows(Exception::class.java) { store.saveRoutes(id, null, routes, ::defaults) }
+            assertArrayEquals(original, memory.bytes)
+        }
+        assertThrows(Exception::class.java) {
+            store.saveRoutes("00000000-0000-0000-0000-000000009999", null, emptyList(), ::defaults)
+        }
+        assertArrayEquals(original, memory.bytes)
+        memory.failWrite = true
+        assertThrows(Exception::class.java) { store.saveRoutes(id, null, emptyList(), ::defaults) }
+        assertArrayEquals(original, memory.bytes)
+    }
+
+    @Test fun unknownVersionsTruncationDuplicatesAndInvalidCountsFailClosedWithoutMutation() {
+        val v2 = registryFixture(2)
+        val fixtures = listOf(registryFixture(0), registryFixture(3), registryFixture(2, -1),
+            registryFixture(2, MAX_PROVIDER_ROUTES + 1), registryFixture(2, 2),
+            registryFixture(1, firstMode = "UNRECOGNIZED"), registryFixture(2, firstMode = "SOURCE_DEFAULT"),
+            v2.copyOf(v2.size - 1), v2 + byteArrayOf(0), byteArrayOf(0, 0, 0), ByteArray(PRIVATE_SECRET_LIMIT + 1))
+        for (fixture in fixtures) {
+            val memory = Memory().apply { bytes = fixture.copyOf() }
+            val store = ProviderInstanceStore(memory)
+            assertThrows(Exception::class.java) { store.read(::defaults) }
+            assertThrows(Exception::class.java) { store.create(PrototypeService.ABEMA, ::defaults) }
+            assertEquals(0, memory.writes)
+            assertArrayEquals(fixture, memory.bytes)
+        }
+    }
+
+    @Test fun boundedEncryptedRecordLimitRejectsOversizedPoolMutationWithoutChangingRegistry() {
+        val memory = Memory(); val store = ProviderInstanceStore(memory)
+        while (store.read(::defaults).size < MAX_PROVIDER_INSTANCES) store.create(PrototypeService.TWITCH, ::defaults)
+        val routes = (1..MAX_PROVIDER_ROUTES).map {
+            SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION,
+                "00000000-0000-0000-0000-%012d".format(it), "x".repeat(64))
+        }
+        var rejected = false
+        for (entry in store.read(::defaults)) {
+            val original = memory.bytes!!.copyOf()
+            try {
+                store.saveRoutes(entry.id, null, routes, ::defaults)
+            } catch (_: IllegalStateException) {
+                assertArrayEquals(original, memory.bytes)
+                rejected = true
+                break
+            }
+        }
+        assertTrue("A full registry of maximum-size pools must respect the shared record bound", rejected)
+        assertEquals(MAX_PROVIDER_INSTANCES, store.read(::defaults).size)
+    }
+
+    private fun registryFixture(version: Int, firstRouteCount: Int = 1, firstMode: String = "SAVED_CONNECTION"): ByteArray =
+        ByteArrayOutputStream().also { output ->
+        DataOutputStream(output).use { data ->
+            data.writeInt(version); data.writeInt(2)
+            data.writeUTF("00000000-0000-0000-0000-000000000001"); data.writeUTF("ABEMA")
+            data.writeUTF("ABEMA"); data.writeBoolean(true); data.writeUTF("Japan ABEMA")
+            if (version == 1) data.writeBoolean(true) else data.writeInt(firstRouteCount)
+            repeat(if (version == 1) 1 else firstRouteCount.coerceIn(0, MAX_PROVIDER_ROUTES + 1)) {
+                data.writeUTF(firstMode)
+                if (firstMode == "SAVED_CONNECTION") {
+                    data.writeUTF("12345678-1234-1234-1234-123456789abc"); data.writeUTF("Japan")
+                }
+            }
+            data.writeInt(0)
+            data.writeUTF("00000000-0000-0000-0000-000000000002"); data.writeUTF("TWITCH")
+            data.writeUTF("Twitch"); data.writeBoolean(false)
+            if (version == 1) data.writeBoolean(false) else data.writeInt(0)
+            data.writeInt(2)
+            data.writeUTF("SAVED_CONNECTION"); data.writeUTF("12345678-1234-1234-1234-123456789abc"); data.writeUTF("Japan")
+            data.writeUTF("SYSTEM")
+        }
+    }.toByteArray()
 }

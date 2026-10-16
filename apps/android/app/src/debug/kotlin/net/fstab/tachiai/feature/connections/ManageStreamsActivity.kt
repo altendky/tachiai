@@ -85,6 +85,13 @@ class ManageStreamsActivity : ComponentActivity() {
         setContent { TachiaiPrototypeTheme {
             BackHandler { if (controller?.back() != true) finish() }
             val preferenceState = preferences?.state?.collectAsState()?.value
+            preferenceState?.error?.let {
+                AlertDialog(onDismissRequest = {}, title = { Text("Changes could not be saved") }, text = { Text(it) },
+                    confirmButton = { TextButton(onClick = { if (!savingWhileLeaving) preferences?.retry() },
+                        enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Retry saving") } },
+                    dismissButton = { TextButton(onClick = { discardUnsaved = true; finish() },
+                        enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Discard unsaved changes") } })
+            }
             val page: @Composable ((@Composable () -> Unit)?) -> Unit = { accountContent ->
             val header: (@Composable () -> Unit)? = if (providerDetails && preferenceState != null) ({
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -98,12 +105,6 @@ class ManageStreamsActivity : ComponentActivity() {
                                 if (resumed && !isDestroyed && !savingWhileLeaving)
                                     startActivity(Intent(this@ManageStreamsActivity, ConnectionProfilesActivity::class.java)) }
                         }, enabled = !savingWhileLeaving)
-                    if (preferenceState.saving) Text("Saving changes…")
-                    preferenceState.error?.let {
-                        Text(it)
-                        TextButton(onClick = { if (!savingWhileLeaving) preferences?.retry() }, enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Retry saving") }
-                        TextButton(onClick = { discardUnsaved = true; finish() }, enabled = !preferenceState.saving && !savingWhileLeaving) { Text("Discard unsaved changes") }
-                    }
                     accountContent?.invoke() ?: Text("Account actions will be available when the connection is saved.")
                 }
             }) else null

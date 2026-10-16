@@ -35,8 +35,17 @@ class StreamManagementScreenTest {
         return compose.onNode(matcher).performScrollTo()
     }
 
-    private fun text(value: String) = scrollTo(hasText(value))
+    private fun text(value: String): SemanticsNodeInteraction {
+        val overlay = hasText(value) and !hasAnyAncestor(hasScrollToIndexAction())
+        return if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) compose.onNode(overlay)
+            else scrollTo(hasText(value))
+    }
     private fun description(value: String) = scrollTo(hasContentDescription(value))
+    private fun info(section: String, explanation: String) {
+        description("Info about $section").performClick()
+        compose.onNodeWithText(explanation, substring = true).assertExists()
+        compose.onNodeWithText("Close").performClick()
+    }
 
     private class Fixture(service: PrototypeService, private val historyAccess: CatalogAccess = CatalogAccess.UNSUPPORTED) {
         private val provider = ProviderId(service.name.lowercase(java.util.Locale.ROOT))
@@ -87,7 +96,7 @@ class StreamManagementScreenTest {
                     onMove = { id, delta -> calls.add("move:$delta"); val sources = state.configured.orEmpty().toMutableList()
                         val index = sources.indexOfFirst { it.id == id }; val moved = sources.removeAt(index)
                         sources.add(index + delta, moved); state = state.copy(configured = sources) },
-                    onRetry = { calls.add("retry"); state = state.copy(failure = null, storageFailed = false) },
+                    onRetry = { calls.add("retry"); state = state.copy(failure = null, storageFailed = false, message = null) },
                     onBack = { calls.add("back") }, onRefresh = { calls.add("refresh:$it") }, onReorder = { ids ->
                         calls.add("reorder")
                         state = state.copy(configured = ids.map { id -> state.configured.orEmpty().single { it.id == id } })
@@ -125,9 +134,10 @@ class StreamManagementScreenTest {
         fixture.state = fixture.state.copy(configured = listOf(saved))
         compose.setContent { fixture.Render() }
         text("Following").performClick()
-        text("History: Access to this list has not been verified.").assertExists()
+        info("Find streams", "History: Access to this list has not been verified.")
         text("History").performClick()
         text("Provider catalog access has not been verified.").assertExists()
+        compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
         description("Remove Offline channel").assertIsEnabled()
         compose.onNodeWithText("No catalog items found.").assertDoesNotExist()
         compose.onNodeWithText("Provider access is not connected yet.").assertDoesNotExist()
@@ -148,8 +158,9 @@ class StreamManagementScreenTest {
             browse = CatalogAccess.RECONNECT_REQUIRED, browseTitle = "Available streams"),
             entries = emptyList(), nextCursor = null, failure = CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED))
         compose.setContent { fixture.Render() }
-        text("Available streams: Reconnect the catalog account to access this list.").assertExists()
+        info("Find streams", "Available streams: Reconnect the catalog account to access this list.")
         text("Catalog account access is required. Your configured streams are retained.").assertExists()
+        compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
         description("Remove Offline channel").assertIsEnabled()
         compose.onNodeWithText("No catalog items found.").assertDoesNotExist()
         compose.runOnIdle { assertEquals(fixture.offline.resource, fixture.state.configured!!.single().entry.resource) }
@@ -163,8 +174,8 @@ class StreamManagementScreenTest {
             compose.runOnIdle { active.value = fixture }
             text(fixture.collection.title).assertExists()
             if (fixture.collection.access == CatalogAccess.AUTHORIZATION_REQUIRED)
-                text("My List: Connect a catalog account to access this list.").assertExists()
-            text("History: This list is not supported.").assertExists()
+                info("Find streams", "My List: Connect a catalog account to access this list.")
+            info("Find streams", "History: This list is not supported.")
             text("Ongoing channel · Offline").assertExists()
             description("Add Offline channel").performClick()
             description("Add Offline channel").assertIsNotEnabled()
@@ -271,6 +282,60 @@ class StreamManagementScreenTest {
         }, entries = emptyList(), nextCursor = null, capabilities = fixture.state.capabilities!!.copy(
             refresh = CatalogAccess.AVAILABLE, collections = emptyList(), search = CatalogAccess.UNSUPPORTED,
             lookup = CatalogAccess.UNSUPPORTED))
+    }
+
+    @Test fun transientStreamFeedbackNeverMovesConfiguredRowsAtNormalOrLargeText() {
+        val fixture = configuredFixture(10)
+        val ready = fixture.state
+        var fontScale by mutableFloatStateOf(1f)
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
+                Box(Modifier.width(320.dp).height(600.dp)) { fixture.Render() }
+            }
+        }
+        for (scale in listOf(1f, 2f)) {
+            compose.runOnIdle { fontScale = scale; fixture.state = ready }
+            for (index in listOf(0, 7)) {
+            val handle = description("Reorder Saved $index")
+            val baseline = handle.fetchSemanticsNode().boundsInRoot
+            val updates = listOf(ready.copy(saving = true), ready.copy(loading = true),
+                ready.copy(capabilities = ready.capabilities!!.copy(refresh = CatalogAccess.RECONNECT_REQUIRED)),
+                ready.copy(storageFailed = true, message = "Configured streams could not be read. Retry to continue."),
+                ready.copy(failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)), ready)
+            updates.forEach { state ->
+                compose.runOnIdle { fixture.state = state }
+                assertEquals(baseline, handle.fetchSemanticsNode().boundsInRoot)
+            }
+            compose.onNodeWithText("Saving configured streams…").assertDoesNotExist()
+            compose.onNodeWithText("Reading streams…").assertDoesNotExist()
+            compose.onNodeWithText("Configured streams saved on this device.").assertDoesNotExist()
+            }
+        }
+    }
+
+    @Test fun overlayFailureKeepsRetryGuardsAndCanBeDismissedWithoutChangingStreams() {
+        val fixture = configuredFixture(3)
+        val ready = fixture.state
+        compose.setContent { fixture.Render() }
+        val handle = description("Reorder Saved 0")
+        val baseline = handle.fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { fixture.state = ready.copy(failure = CatalogResult.Failure(CatalogFailure.RATE_LIMITED,
+            System.currentTimeMillis() + 150_000)) }
+        text("Retry catalog").assertIsNotEnabled().performClick()
+        compose.runOnIdle { assertTrue(fixture.calls.isEmpty()) }
+        compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
+        compose.onNodeWithText("Retry catalog").assertDoesNotExist()
+        assertEquals(baseline, handle.fetchSemanticsNode().boundsInRoot)
+        compose.runOnIdle { fixture.state = ready.copy(storageFailed = true, message = "Configured streams could not be read.") }
+        compose.onNodeWithContentDescription("Dismiss stream notice").assertDoesNotExist()
+        text("Retry").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(listOf("retry"), fixture.calls); assertEquals(ready.configured, fixture.state.configured) }
+        assertEquals(baseline, handle.fetchSemanticsNode().boundsInRoot)
+        compose.runOnIdle { fixture.state = ready.copy(message = "Configured streams could not be saved. Retry; the list was not replaced.",
+            failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)) }
+        text("Retry catalog").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(listOf("retry", "retry"), fixture.calls); assertEquals(ready.configured, fixture.state.configured) }
     }
 
     @Test fun handleDragMovesAcrossSeveralRowsInOneSaveAndCanMoveBack() {

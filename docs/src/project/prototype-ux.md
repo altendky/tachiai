@@ -29,6 +29,11 @@ confirmation. Browsable titles open their catalog children. Refresh retrieves
 the same resource's title, availability and schedule while retaining its saved
 identity, order and quality; it does not start playback or renew authorization.
 
+Successful configured-stream saves are silent. Transient progress and stream
+errors overlay the page without changing list padding or inserting status rows;
+retry remains available on the error surface. Capability explanations live in
+section Info. Routine feedback must not move settings controls or stream rows.
+
 Ordinary valid name and route changes save automatically. Accepted writes are
 serialized and drained before returning, and new readers wait for outstanding
 writes. Invalid names remain drafts; failed writes show a retry action and the

@@ -367,11 +367,11 @@ internal class StreamManagementController(
         }
     }
 
-    private fun mutate(refreshId: String? = null, expectedBrowseRevision: Long? = null, action: () -> List<ConfiguredSource>) {
+    private fun mutate(refreshId: String? = null, expectedBrowseRevision: Long? = null, action: () -> List<ConfiguredSource>): Job? {
         val job = synchronized(stateLock) {
             if (closed || state.value.saving || state.value.configured == null || state.value.storageFailed ||
                 expectedBrowseRevision == null && state.value.loading ||
-                expectedBrowseRevision != null && !current(expectedBrowseRevision)) return
+                expectedBrowseRevision != null && !current(expectedBrowseRevision)) return null
             if (refreshId == null) lastRefreshId = null
             val revision = mutationRevision.incrementAndGet()
             publish { it.copy(saving = true, loading = if (expectedBrowseRevision != null) false else it.loading, message = null) }
@@ -398,13 +398,18 @@ internal class StreamManagementController(
             accepted
         }
         job.start()
+        return job
     }
     fun add(entry: CatalogEntry) {
         if (entry.resource.providerId != catalog.providerId) { publish { it.copy(failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT)) }; return }
         mutate { store.add(entry, legacy) }
     }
-    fun remove(id: String) = mutate { store.remove(id, legacy) }
-    fun move(id: String, delta: Int) = mutate { store.move(id, delta, legacy) }
+    fun remove(id: String) { mutate { store.remove(id, legacy) } }
+    fun move(id: String, delta: Int) { mutate { store.move(id, delta, legacy) } }
+    fun reorder(ids: List<String>): Job? {
+        val requested = ids.toList()
+        return mutate { store.reorder(requested, legacy) }
+    }
     override fun close() {
         synchronized(stateLock) {
             if (closed) return

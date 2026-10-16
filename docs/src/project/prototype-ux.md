@@ -22,6 +22,13 @@ single route selector whose menu also opens route import. Account actions stay
 visible in wrapping rows, with unavailable actions disabled; their layout does
 not collapse when an account connects. Section help uses info icons.
 
+Configured streams use compact rows with drag handles, refresh and removal
+icons. Dragging previews a new order and saves it once on drop; tapping a handle
+also offers move actions for keyboard and accessibility use. Removal requires
+confirmation. Browsable titles open their catalog children. Refresh retrieves
+the same resource's title, availability and schedule while retaining its saved
+identity, order and quality; it does not start playback or renew authorization.
+
 Ordinary valid name and route changes save automatically. Accepted writes are
 serialized and drained before returning, and new readers wait for outstanding
 writes. Invalid names remain drafts; failed writes show a retry action and the

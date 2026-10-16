@@ -115,7 +115,8 @@ class ManageStreamsActivity : ComponentActivity() {
                     current::collection, current::children, current::more, current::lookup,
                     current::add, current::remove, current::move, current::retry, ::finish,
                     backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers",
-                    onRefresh = current::refresh, onDiscoveryBack = { current.back() }, header = header)
+                    onRefresh = current::refresh, onDiscoveryBack = { current.back() }, header = header,
+                    onReorder = current::reorder)
             } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (header != null) item { header() }

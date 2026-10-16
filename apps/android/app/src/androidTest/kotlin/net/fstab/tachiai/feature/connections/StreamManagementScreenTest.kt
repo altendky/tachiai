@@ -3,6 +3,7 @@ package net.fstab.tachiai.feature.connections
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
@@ -10,12 +11,14 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
@@ -85,7 +88,11 @@ class StreamManagementScreenTest {
                         val index = sources.indexOfFirst { it.id == id }; val moved = sources.removeAt(index)
                         sources.add(index + delta, moved); state = state.copy(configured = sources) },
                     onRetry = { calls.add("retry"); state = state.copy(failure = null, storageFailed = false) },
-                    onBack = { calls.add("back") }, onDiscoveryBack = {
+                    onBack = { calls.add("back") }, onRefresh = { calls.add("refresh:$it") }, onReorder = { ids ->
+                        calls.add("reorder")
+                        state = state.copy(configured = ids.map { id -> state.configured.orEmpty().single { it.id == id } })
+                        CompletableDeferred(Unit)
+                    }, onDiscoveryBack = {
                         calls.add("discovery-back")
                         previous?.let { state = it.copy(configured = state.configured, saving = state.saving, loading = false) }
                         previous = null
@@ -162,7 +169,8 @@ class StreamManagementScreenTest {
             description("Add Offline channel").performClick()
             description("Add Offline channel").assertIsNotEnabled()
             description("Add Upcoming program").performClick()
-            description("Move Upcoming program earlier").performClick()
+            description("Reorder Upcoming program").performClick()
+            compose.onNodeWithContentDescription("Move Upcoming program earlier").performClick()
             compose.runOnIdle { assertEquals(fixture.upcoming.resource, fixture.state.configured!!.first().entry.resource) }
             description("Browse A show").performClick()
             text("On-demand video · Available").assertExists()
@@ -220,6 +228,8 @@ class StreamManagementScreenTest {
         description("Remove Offline channel").assertIsNotEnabled()
         text("Retry").performClick()
         description("Remove Offline channel").performClick()
+        compose.runOnIdle { assertEquals(1, fixture.state.configured!!.size) }
+        compose.onNodeWithContentDescription("Confirm remove Offline channel").performClick()
         compose.runOnIdle { assertTrue(fixture.state.configured!!.isEmpty()) }
         text("No configured streams. Add an item below to show it on your selection page.").assertExists()
         compose.runOnIdle { fixture.state = fixture.state.copy(failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)) }
@@ -252,6 +262,192 @@ class StreamManagementScreenTest {
             assertTrue(bounds.height / pixelsPerDp >= 48f)
             assertTrue(bounds.width / pixelsPerDp >= 48f)
         }
+    }
+
+    private fun configuredFixture(count: Int): Fixture = Fixture(PrototypeService.TWITCH).also { fixture ->
+        fixture.state = fixture.state.copy(configured = List(count) { index ->
+            ConfiguredSource(UUID.randomUUID().toString(), fixture.state.instance.id,
+                fixture.offline.copy(resource = fixture.offline.resource.copy(identity = "saved$index"), title = "Saved $index"))
+        }, entries = emptyList(), nextCursor = null, capabilities = fixture.state.capabilities!!.copy(
+            refresh = CatalogAccess.AVAILABLE, collections = emptyList(), search = CatalogAccess.UNSUPPORTED,
+            lookup = CatalogAccess.UNSUPPORTED))
+    }
+
+    @Test fun handleDragMovesAcrossSeveralRowsInOneSaveAndCanMoveBack() {
+        val fixture = configuredFixture(3)
+        val original = fixture.state.configured!!.map { it.id }
+        compose.setContent { fixture.Render() }
+        val first = description("Reorder Saved 0")
+        val start = first.fetchSemanticsNode().boundsInRoot
+        val end = compose.onNodeWithContentDescription("Reorder Saved 2").fetchSemanticsNode().boundsInRoot
+        first.performTouchInput { swipe(center, Offset(center.x, center.y + end.bottom - start.center.y + 16f), 600) }
+        compose.runOnIdle {
+            assertEquals(listOf(original[1], original[2], original[0]), fixture.state.configured!!.map { it.id })
+            assertEquals(listOf("reorder"), fixture.calls)
+        }
+        val last = description("Reorder Saved 0")
+        val lastBounds = last.fetchSemanticsNode().boundsInRoot
+        val top = compose.onNodeWithContentDescription("Reorder Saved 1").fetchSemanticsNode().boundsInRoot
+        last.performTouchInput { swipe(center, Offset(center.x, center.y + top.top - lastBounds.center.y - 16f), 600) }
+        compose.runOnIdle {
+            assertEquals(original, fixture.state.configured!!.map { it.id })
+            assertEquals(listOf("reorder", "reorder"), fixture.calls)
+        }
+        compose.onNodeWithText("Up").assertDoesNotExist()
+        compose.onNodeWithText("Down").assertDoesNotExist()
+    }
+
+    @Test fun cancellingHandleDragDoesNotWriteOrReplaceTheDurableOrder() {
+        val fixture = configuredFixture(3)
+        val original = fixture.state.configured
+        compose.setContent { fixture.Render() }
+        val first = description("Reorder Saved 0")
+        val start = first.fetchSemanticsNode().boundsInRoot
+        val end = compose.onNodeWithContentDescription("Reorder Saved 2").fetchSemanticsNode().boundsInRoot
+        first.performTouchInput {
+            down(center); moveTo(Offset(center.x, center.y + end.bottom - start.center.y), 600); cancel()
+        }
+        compose.runOnIdle { assertEquals(original, fixture.state.configured); assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun stationaryEdgeDragScrollsToTheLastConfiguredRowWithoutMovingDiscovery() {
+        val fixture = configuredFixture(14)
+        val original = fixture.state.configured!!.map { it.id }
+        compose.setContent { Box(Modifier.width(360.dp).height(400.dp)) { fixture.Render() } }
+        val handle = description("Reorder Saved 0")
+        val start = handle.fetchSemanticsNode().boundsInRoot
+        val viewport = compose.onNodeWithTag("Stream discovery list").fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        try {
+            handle.performTouchInput {
+                down(center); moveTo(Offset(center.x, center.y + viewport.bottom - start.center.y - 8f), 200)
+            }
+            repeat(40) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle() }
+            // Keep the same pointer stream after the keyed row moves/scrolls.
+            handle.performTouchInput { up() }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(original.drop(1) + original.first(), fixture.state.configured!!.map { it.id })
+            assertEquals(listOf("reorder"), fixture.calls)
+            assertTrue(fixture.state.entries.isEmpty())
+        }
+    }
+
+    @Test fun edgeDragCanReversePastATallRowAndCancelWithoutSaving() {
+        val fixture = configuredFixture(10)
+        fixture.state = fixture.state.copy(configured = fixture.state.configured!!.mapIndexed { index, source ->
+            if (index == 4) source.copy(entry = source.entry.copy(title = "A taller wrapped configured channel name ".repeat(3).trim(),
+                scheduledStartEpochMs = 1_000)) else source
+        })
+        val original = fixture.state.configured
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.5f)) {
+                Box(Modifier.width(320.dp).height(400.dp)) { fixture.Render() }
+            }
+        }
+        val handle = description("Reorder Saved 0")
+        val start = handle.fetchSemanticsNode().boundsInRoot
+        val viewport = compose.onNodeWithTag("Stream discovery list").fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        try {
+            handle.performTouchInput { down(center); moveTo(Offset(center.x, center.y + viewport.bottom - start.center.y - 8f), 200) }
+            repeat(60) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle(); handle.assertIsDisplayed() }
+            assertEquals("10 of 10", handle.fetchSemanticsNode().config[SemanticsProperties.StateDescription])
+            val current = handle.fetchSemanticsNode().boundsInRoot
+            handle.performTouchInput { moveTo(Offset(center.x, center.y + viewport.top - current.center.y + 8f), 200) }
+            repeat(60) { compose.mainClock.advanceTimeBy(100); compose.waitForIdle(); handle.assertIsDisplayed() }
+            assertEquals("1 of 10", handle.fetchSemanticsNode().config[SemanticsProperties.StateDescription])
+            handle.performTouchInput { cancel() }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.runOnIdle { assertEquals(original, fixture.state.configured); assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun losingMutationAvailabilityCancelsAnActiveDragWithoutSaving() {
+        val fixture = configuredFixture(3)
+        val original = fixture.state.configured
+        compose.setContent { fixture.Render() }
+        val handle = description("Reorder Saved 0")
+        val start = handle.fetchSemanticsNode().boundsInRoot
+        val end = compose.onNodeWithContentDescription("Reorder Saved 2").fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        try {
+            handle.performTouchInput { down(center); moveTo(Offset(center.x, center.y + end.bottom - start.center.y), 200) }
+            compose.runOnIdle { fixture.state = fixture.state.copy(loading = true) }
+            compose.mainClock.advanceTimeBy(32); compose.waitForIdle()
+            handle.performTouchInput { up() }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.runOnIdle { assertEquals(original, fixture.state.configured); assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun removeRequiresConfirmationAndRechecksMutationAvailability() {
+        val fixture = configuredFixture(2)
+        compose.setContent { fixture.Render() }
+        description("Remove Saved 0").performClick()
+        compose.onNodeWithText("Remove “Saved 0” from your configured streams?").assertExists()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(2, fixture.state.configured!!.size); assertTrue(fixture.calls.isEmpty()) }
+        description("Remove Saved 0").performClick()
+        compose.runOnIdle { fixture.state = fixture.state.copy(loading = true) }
+        compose.onNodeWithContentDescription("Confirm remove Saved 0").assertIsNotEnabled().performClick()
+        compose.runOnIdle { assertTrue(fixture.calls.isEmpty()); fixture.state = fixture.state.copy(loading = false) }
+        compose.onNodeWithContentDescription("Confirm remove Saved 0").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("Saved 1"), fixture.state.configured!!.map { it.entry.title })
+            assertEquals(listOf("remove"), fixture.calls)
+        }
+    }
+
+    @Test fun staleRemovalDialogCannotRemoveAReplacementItem() {
+        val fixture = configuredFixture(2)
+        compose.setContent { fixture.Render() }
+        description("Remove Saved 0").performClick()
+        compose.runOnIdle { fixture.state = fixture.state.copy(configured = fixture.state.configured!!.drop(1)) }
+        compose.onNodeWithText("Remove stream?").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, fixture.state.configured!!.size); assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun handleMenuAndAccessibilityMoveActionsDoNotNeedVisibleUpDownButtons() {
+        val fixture = configuredFixture(3)
+        lateinit var inputMode: InputModeManager
+        compose.setContent { inputMode = LocalInputModeManager.current; fixture.Render() }
+        compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
+        val handle = description("Reorder Saved 1")
+        handle.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        handle.performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithContentDescription("Move Saved 1 earlier").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        compose.onNodeWithContentDescription("Move Saved 1 earlier").performKeyInput { pressKey(Key.Enter) }
+        compose.runOnIdle { assertEquals("Saved 1", fixture.state.configured!!.first().entry.title) }
+        val row = compose.onNodeWithTag("Configured row ${fixture.state.configured!!.first().id}")
+        val actions = row.fetchSemanticsNode().config[SemanticsActions.CustomActions]
+        compose.runOnIdle { assertTrue(actions.single { it.label == "Move later" }.action()) }
+        compose.runOnIdle { assertEquals("Saved 1", fixture.state.configured!![1].entry.title) }
+    }
+
+    @Test fun compactConfiguredRowsKeepBrowseRefreshAndRemoveSeparateAtLargeFonts() {
+        val fixture = configuredFixture(1)
+        val source = fixture.state.configured!!.single()
+        fixture.state = fixture.state.copy(configured = listOf(source.copy(entry = source.entry.copy(
+            title = "A very long configured channel name ".repeat(4).trim()))))
+        val title = fixture.state.configured!!.single().entry.title
+        var pixelsPerDp = 1f
+        compose.setContent {
+            val density = LocalDensity.current; pixelsPerDp = density.density
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                Box(Modifier.width(280.dp).height(480.dp).testTag("Discovery viewport")) { fixture.Render() }
+            }
+        }
+        for (label in listOf("Reorder $title", "Refresh metadata for $title", "Remove $title")) {
+            val node = description(label)
+            fitsDiscoveryViewport(node)
+            val bounds = node.fetchSemanticsNode().boundsInRoot
+            assertTrue(bounds.width / pixelsPerDp >= 48f); assertTrue(bounds.height / pixelsPerDp >= 48f)
+        }
+        description("Refresh metadata for $title").performClick()
+        compose.runOnIdle { assertEquals(listOf("refresh:${source.id}"), fixture.calls) }
+        description("Browse configured $title").performClick()
+        compose.runOnIdle { assertEquals(listOf("refresh:${source.id}", "children:saved0"), fixture.calls) }
     }
 
     @Test fun addAndAddedChannelBrowsingRemainSeparateKeyboardTargets() {

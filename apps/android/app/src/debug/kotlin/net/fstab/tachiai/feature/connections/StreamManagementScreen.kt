@@ -2,6 +2,9 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -10,6 +13,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.LocalPinnableContainer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -18,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import net.fstab.tachiai.R
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 
@@ -75,7 +91,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
     onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers",
     onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {},
-    header: (@Composable () -> Unit)? = null) {
+    header: (@Composable () -> Unit)? = null, onReorder: ((List<String>) -> Job?)? = null) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -99,15 +115,52 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     listStates.keys.retainAll(retained)
     val freshContext = state.discoveryContextId !in listStates
     val listState = listStates.getOrPut(state.discoveryContextId) { LazyListState() }
+    val ids = state.configured.orEmpty().map { it.id }
+    val latestIds by rememberUpdatedState(ids)
+    val canDrag by rememberUpdatedState(mutable && onReorder != null && ids.size > 1)
+    val reorder by rememberUpdatedState(onReorder)
+    val latestState by rememberUpdatedState(state)
+    val remove by rememberUpdatedState(onRemove)
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val drag = remember(state.instance.id, state.privacyRevision, listState, density.density) {
+        ConfiguredStreamDrag(listState, scope, { latestIds }, { canDrag }, { reorder?.invoke(it) },
+            with(density) { 64.dp.toPx() }, with(density) { 720.dp.toPx() })
+    }
+    DisposableEffect(drag) { onDispose { drag.cancel() } }
+    LaunchedEffect(ids, mutable) { drag.cancelGestureIfStale() }
+    val sources = state.configured.orEmpty()
+    val displayed = drag.order?.takeIf { it.size == ids.size && it.toSet() == ids.toSet() }
+        ?.map { id -> sources.single { it.id == id } } ?: sources
+    val actionsEnabled = mutable && !drag.busy
+    var pendingRemoval by remember(state.instance.id, state.privacyRevision) { mutableStateOf<String?>(null) }
+    LaunchedEffect(ids) { if (pendingRemoval !in ids) pendingRemoval = null }
+    pendingRemoval?.let { id -> sources.singleOrNull { it.id == id }?.let { source ->
+        AlertDialog(onDismissRequest = { pendingRemoval = null }, title = { Text("Remove stream?") },
+            text = { Text("Remove “${source.entry.title}” from your configured streams?",
+                Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(onClick = {
+                val current = latestState
+                if (!current.saving && !current.loading && !current.storageFailed &&
+                    current.configured?.any { it.id == id } == true && !drag.busy) {
+                    pendingRemoval = null; remove(id)
+                }
+            }, enabled = actionsEnabled, modifier = Modifier.semantics {
+                contentDescription = "Confirm remove ${source.entry.title}"
+            }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } })
+    } }
     LaunchedEffect(listState) {
         if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size + if (header != null) 1 else 0)
     }
-    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).testTag("Stream discovery list"),
+    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).onGloballyPositioned { drag.viewport = it }
+        .testTag("Stream discovery list"),
         state = listState) {
         if (header != null) item(key = "provider-settings") { header() }
         item(key = "management-heading") { Column(Modifier.padding(bottom = 12.dp)) {
             if (header == null) Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
             SettingsSection("Streams", "Add items to your selection page. Changes stay in Tachiai and do not change provider favorites." +
+                " Drag a handle to reorder, or tap it for move actions. Refresh reloads the same stream’s title, availability and scheduled start; identity, order and quality are retained. It does not start playback or renew your account. Removing asks for confirmation." +
                 (state.catalogNotice?.let { "\n\n$it" } ?: ""))
             state.message?.let { Text(it) }
             if (state.loading) Text("Reading streams…")
@@ -120,24 +173,76 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
             if (state.configured.orEmpty().size >= MAX_CONFIGURED_SOURCES) Text("Stream limit reached. Remove an item to add another.")
             metadataRefreshExplanation(capabilities?.refresh)?.let { Text(it) } } }
-        items(state.configured.orEmpty(), key = { "configured:${it.id}" }) { source ->
-            Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(source.entry.title, style = MaterialTheme.typography.titleMedium)
-                Text(entryDetails(source.entry), style = MaterialTheme.typography.bodySmall)
-                val index = state.configured.orEmpty().indexOf(source)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { onMove(source.id, -1) }, enabled = mutable && index > 0,
-                        modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} earlier" }) { Text("Up") }
-                    TextButton(onClick = { onMove(source.id, 1) }, enabled = mutable && index < state.configured.orEmpty().lastIndex,
-                        modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} later" }) { Text("Down") }
-                    TextButton(onClick = { onRemove(source.id) }, enabled = mutable,
-                        modifier = Modifier.semantics { contentDescription = "Remove ${source.entry.title}" }) { Text("Remove") }
+        items(displayed, key = { "configured:${it.id}" }) { source ->
+            val index = displayed.indexOf(source)
+            var moveMenu by remember(source.id) { mutableStateOf(false) }
+            var handleCoordinates by remember(source.id) { mutableStateOf<LayoutCoordinates?>(null) }
+            val pinnable = LocalPinnableContainer.current
+            val browsable = capabilities?.children == CatalogAccess.AVAILABLE &&
+                source.entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL)
+            Box(Modifier.zIndex(if (drag.draggedId == source.id) 1f else 0f)
+                .onGloballyPositioned { drag.positioned(source.id, it) }) {
+            Column(Modifier.graphicsLayer {
+                translationY = drag.translation(source.id)
+                shadowElevation = if (drag.draggedId == source.id) 8.dp.toPx() else 0f
+            }) {
+                Surface(color = if (drag.draggedId == source.id) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).testTag("Configured row ${source.id}").semantics {
+                    customActions = if (!actionsEnabled) emptyList() else buildList {
+                        if (index > 0) add(CustomAccessibilityAction("Move earlier") { onMove(source.id, -1); true })
+                        if (index < displayed.lastIndex) add(CustomAccessibilityAction("Move later") { onMove(source.id, 1); true })
+                    }
+                }, verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        IconButton(onClick = { moveMenu = true }, enabled = actionsEnabled && displayed.size > 1,
+                            modifier = Modifier.size(48.dp).onGloballyPositioned { handleCoordinates = it }
+                                .semantics { contentDescription = "Reorder ${source.entry.title}"
+                                    stateDescription = "${index + 1} of ${displayed.size}" }
+                                .pointerInput(source.id, drag, canDrag) {
+                                    if (canDrag)
+                                    detectDragGestures(onDragStart = { point ->
+                                        handleCoordinates?.takeIf { it.isAttached }?.let { drag.start(source.id, it.localToRoot(point).y, pinnable) }
+                                    }, onDragEnd = { if (drag.draggedId == source.id) drag.drop() },
+                                        onDragCancel = { if (drag.draggedId == source.id) drag.cancel() }) { change, amount ->
+                                        if (drag.draggedId == source.id) {
+                                            change.consume()
+                                            handleCoordinates?.takeIf { it.isAttached }?.let { drag.pointerAt(it.localToRoot(change.position).y, amount.y) }
+                                        }
+                                    }
+                                }) { Icon(painterResource(R.drawable.stream_drag), contentDescription = null) }
+                        DropdownMenu(expanded = moveMenu && actionsEnabled, onDismissRequest = { moveMenu = false }) {
+                            DropdownMenuItem(text = { Text("Move earlier") }, enabled = index > 0,
+                                onClick = { moveMenu = false; onMove(source.id, -1) },
+                                modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} earlier" })
+                            DropdownMenuItem(text = { Text("Move later") }, enabled = index < displayed.lastIndex,
+                                onClick = { moveMenu = false; onMove(source.id, 1) },
+                                modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} later" })
+                        }
+                    }
+                    val browse = if (browsable) Modifier.clickable(enabled = actionsEnabled, role = Role.Button,
+                        onClick = { onChildren(source.entry.resource) }).semantics { contentDescription = "Browse configured ${source.entry.title}" }
+                        else Modifier
+                    Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(source.entry.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (browsable) Text("›")
+                        }
+                        Text(entryDetails(source.entry), style = MaterialTheme.typography.bodySmall)
+                    }
+                    IconButton(onClick = { onRefresh(source.id) },
+                        enabled = actionsEnabled && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Refresh metadata for ${source.entry.title}" }) {
+                        Icon(painterResource(R.drawable.stream_refresh), contentDescription = null)
+                    }
+                    IconButton(onClick = { pendingRemoval = source.id }, enabled = actionsEnabled,
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Remove ${source.entry.title}" }) {
+                        Icon(painterResource(R.drawable.stream_remove), contentDescription = null)
+                    }
                 }
-                TextButton(onClick = { onRefresh(source.id) }, enabled = mutable && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,
-                    modifier = Modifier.semantics { contentDescription = "Refresh metadata for ${source.entry.title}" }) { Text("Refresh metadata") }
-                if (capabilities?.children == CatalogAccess.AVAILABLE && source.entry.resource.intent in setOf(CatalogIntent.COLLECTION, CatalogIntent.CHANNEL))
-                    TextButton(onClick = { onChildren(source.entry.resource) }, enabled = mutable,
-                        modifier = Modifier.semantics { contentDescription = "Browse configured ${source.entry.title}" }) { Text("Browse items") }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
             }
         }
         item(key = "discovery-controls") { Column(Modifier.padding(bottom = 12.dp)) {

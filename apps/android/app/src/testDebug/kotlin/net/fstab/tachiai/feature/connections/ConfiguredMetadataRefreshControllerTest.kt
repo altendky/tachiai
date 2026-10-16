@@ -73,6 +73,60 @@ class ConfiguredMetadataRefreshControllerTest {
         controller.state.first { !it.loading && !it.saving }
     }
 
+    @Test fun configuredReorderPersistsOneAtomicPermutationAndRetainsEverySourceField() = runBlocking {
+        val fixture = Fixture(this)
+        try {
+            listOf("456", "789").forEach { id -> fixture.store.add(fixture.original.copy(
+                resource = fixture.original.resource.copy(identity = id), title = "Saved $id")) { emptyList() } }
+            fixture.load()
+            val before = fixture.reopen()
+            val requested = listOf(before[1], before[2], before[0])
+            val writes = fixture.memory.writes
+            checkNotNull(fixture.controller.reorder(requested.map { it.id })).join()
+            assertEquals(requested, fixture.reopen())
+            assertEquals(requested, fixture.controller.state.value.configured)
+            assertEquals(writes + 1, fixture.memory.writes)
+        } finally { fixture.controller.close() }
+    }
+
+    @Test fun failedConfiguredReorderRetainsTheDurableOrderAndReportsSaveFailure() = runBlocking {
+        val fixture = Fixture(this)
+        try {
+            fixture.store.add(fixture.original.copy(resource = fixture.original.resource.copy(identity = "456"))) { emptyList() }
+            fixture.load()
+            val before = fixture.reopen()
+            val writes = fixture.memory.writes
+            fixture.memory.failWrite = true
+            checkNotNull(fixture.controller.reorder(before.reversed().map { it.id })).join()
+            assertEquals(before, fixture.reopen())
+            assertEquals(before, fixture.controller.state.value.configured)
+            assertEquals(writes, fixture.memory.writes)
+            assertEquals("Configured streams could not be saved. Retry; the list was not replaced.", fixture.controller.state.value.message)
+        } finally { fixture.controller.close() }
+    }
+
+    @Test fun acceptedReorderSurvivesControllerCloseAndRejectsOverlappingWrites() = runBlocking {
+        val fixture = Fixture(this, io = Dispatchers.IO)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        try {
+            fixture.store.add(fixture.original.copy(resource = fixture.original.resource.copy(identity = "456"))) { emptyList() }
+            fixture.load()
+            val before = fixture.reopen()
+            val requested = before.reversed().map { it.id }
+            val writes = fixture.memory.writes
+            fixture.memory.beforeWrite = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val write = checkNotNull(fixture.controller.reorder(requested))
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertNull(fixture.controller.reorder(before.map { it.id }))
+            fixture.controller.close()
+            release.countDown()
+            withTimeout(5_000) { write.join() }
+            assertEquals(before.reversed(), fixture.reopen())
+            assertEquals(writes + 1, fixture.memory.writes)
+            assertNull(fixture.controller.reorder(before.map { it.id }))
+        } finally { release.countDown(); fixture.controller.close() }
+    }
+
     @Test fun explicitRefreshReplacesUnknownOrOfflineMetadataAndRetainsExactLocalIdentityThroughReopen() = runBlocking {
         listOf(PrototypeService.TWITCH, PrototypeService.ABEMA).forEach { service ->
             listOf(CatalogAvailability.UNKNOWN, CatalogAvailability.OFFLINE).forEach { availability ->

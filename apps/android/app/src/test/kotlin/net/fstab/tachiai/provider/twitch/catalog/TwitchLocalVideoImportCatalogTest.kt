@@ -32,6 +32,7 @@ class TwitchLocalVideoImportCatalogTest {
             return readCapabilities?.invoke() ?: caps()
         }
         fun caps() = CatalogCapabilities(browse = access, search = access, lookup = access, children = access,
+            childCapabilities = listOf(CatalogChildrenCapability("broadcaster", CatalogIntent.CHANNEL, access, "Browse videos", "Videos from")),
             refresh = access, playback = CatalogAccess.NOT_VERIFIED,
             collections = listOf(CatalogCollection("following", "Following", access)),
             browseTitle = "Live channels", initialCollectionId = "following")

@@ -41,6 +41,34 @@ class AbemaScheduleCatalogTest {
         fun value(result: CatalogResult<CatalogPage>) = (result as CatalogResult.Value).value
     }
     private fun channel(value: String = "channel-A") = CatalogResource(ProviderId("abema"), "channel", value, CatalogIntent.CHANNEL)
+    @Test fun childDescriptorsPreserveDistinctChannelAndSeriesSupportThroughWrappers() {
+        val f = Fixture()
+        val series = CatalogResource(ProviderId("abema"), "series", "series-A", CatalogIntent.COLLECTION)
+        val outer = AbemaSeriesChildrenCatalog(f.catalog, null)
+        var capabilities = outer.capabilities()
+        assertEquals("Browse programs", capabilities.childrenFor(channel(), ProviderId("abema"))!!.actionLabel)
+        assertEquals("Programs from", capabilities.childrenFor(channel(), ProviderId("abema"))!!.headingPrefix)
+        assertEquals(CatalogAccess.AVAILABLE, capabilities.childrenFor(channel(), ProviderId("abema"))!!.access)
+        assertEquals(CatalogAccess.NOT_VERIFIED, capabilities.childrenFor(series, ProviderId("abema"))!!.access)
+        val complete = AbemaSeriesChildrenCatalog(f.catalog, { error("No metadata call expected") })
+        capabilities = complete.capabilities()
+        for (kind in listOf("series", "season")) {
+            val descriptor = capabilities.childrenFor(series.copy(kind = kind), ProviderId("abema"))!!
+            assertEquals("Browse episodes", descriptor.actionLabel); assertEquals("Episodes from", descriptor.headingPrefix)
+            assertEquals(CatalogAccess.AVAILABLE, descriptor.access)
+        }
+        assertNull(capabilities.childrenFor(entry(0).resource, ProviderId("abema")))
+        assertNull(capabilities.childrenFor(channel().copy(kind = "unknown"), ProviderId("abema")))
+        val denied = object : ProviderCatalog by f.catalog {
+            override fun capabilities() = f.catalog.capabilities().copy(children = CatalogAccess.RECONNECT_REQUIRED)
+        }
+        val mixed = AbemaSeriesChildrenCatalog(denied, { error("No metadata call expected") }).capabilities()
+        assertEquals(CatalogAccess.AVAILABLE, mixed.childrenFor(series, ProviderId("abema"))!!.access)
+        assertEquals(CatalogAccess.RECONNECT_REQUIRED, mixed.childrenFor(channel(), ProviderId("abema"))!!.access)
+        f.allowed = false
+        assertEquals(CatalogAccess.NOT_VERIFIED, complete.capabilities().childrenFor(channel(), ProviderId("abema"))!!.access)
+        assertEquals(0, f.fetches)
+    }
     @Test fun seriesWrapperDelegatesChannelProgramsAndChannelContinuationCannotBecomeGlobalOrAnotherChannel() {
         val f = Fixture()
         f.response = { CatalogResult.Value(AbemaScheduleSnapshot(List(101, ::entry), request = AbemaScheduleRequest("channel-A"))) }

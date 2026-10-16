@@ -111,9 +111,16 @@ class TwitchProviderCatalogTest {
         assertEquals(CatalogAccess.AVAILABLE, caps.browse); assertEquals("Live channels", caps.browseTitle)
         assertEquals("following", caps.initialCollectionId); assertEquals(CatalogAccess.NOT_VERIFIED, caps.playback)
         assertEquals("Videos", caps.childrenTitle); assertEquals("Videos from", caps.childrenHeadingPrefix)
+        val childCapability = caps.childrenFor(broadcaster("123"), ProviderId("twitch"))!!
+        assertEquals("Browse videos", childCapability.actionLabel); assertEquals("Videos from", childCapability.headingPrefix)
+        assertEquals(CatalogAccess.AVAILABLE, childCapability.access)
+        assertNull(caps.childrenFor(broadcaster("123").copy(kind = "channel"), ProviderId("twitch")))
+        assertNull(caps.childrenFor(broadcaster("123").copy(intent = CatalogIntent.VIDEO), ProviderId("twitch")))
         assertEquals(1, fixture.authValidations.get()); assertTrue(fixture.calls.isEmpty())
         fixture.store.beginConnection()
-        assertEquals(CatalogAccess.RECONNECT_REQUIRED, fixture.catalog.capabilities().browse)
+        val reconnect = fixture.catalog.capabilities()
+        assertEquals(CatalogAccess.RECONNECT_REQUIRED, reconnect.browse)
+        assertEquals(CatalogAccess.RECONNECT_REQUIRED, reconnect.childrenFor(broadcaster("123"), ProviderId("twitch"))!!.access)
         val blocked = Fixture(); blocked.publish = false
         assertEquals(CatalogAccess.NOT_VERIFIED, blocked.catalog.capabilities().lookup)
         failure(blocked.catalog.lookup("channel123"), CatalogFailure.TEMPORARY)

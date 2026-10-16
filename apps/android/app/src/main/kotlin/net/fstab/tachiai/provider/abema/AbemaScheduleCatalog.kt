@@ -30,7 +30,10 @@ internal class AbemaScheduleCatalog(
         val local = synchronized(lock) { revision }
         val access = if (transportFactory != null && current(local)) CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED
         return base.copy(collections = base.collections.filterNot { it.id == "schedule" } + CatalogCollection("schedule", "Schedule", access),
-            children = access, childrenTitle = "Programs", childrenHeadingPrefix = "Programs from")
+            children = access, childrenTitle = "Programs", childrenHeadingPrefix = "Programs from",
+            childCapabilities = base.childCapabilities.filterNot { it.kind == "channel" && it.intent == CatalogIntent.CHANNEL }
+                .map { if (base.children == CatalogAccess.AVAILABLE) it else it.copy(access = base.children) } +
+                CatalogChildrenCapability("channel", CatalogIntent.CHANNEL, access, "Browse programs", "Programs from"))
     }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         val parent = query.parent

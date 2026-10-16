@@ -51,6 +51,8 @@ class HistoryManagementScreenTest {
             override val instanceId = instance.id
             override fun capabilities() = CatalogCapabilities(browse = CatalogAccess.AVAILABLE,
                 search = CatalogAccess.AVAILABLE, lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
+                childCapabilities = listOf(CatalogChildrenCapability("series", CatalogIntent.COLLECTION,
+                    CatalogAccess.AVAILABLE, "Browse episodes", "Episodes from")),
                 collections = listOf(CatalogCollection("history", "History", CatalogAccess.AVAILABLE)), initialCollectionId = "history")
             override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
                 if (denied) return CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)

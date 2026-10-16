@@ -42,6 +42,11 @@ values; adapters must bind them to query, parent resource, account and session
 revision. Cursors are not configured identities or diagnostic fields.
 Resource-scoped browsing lets a saved series or channel expose explicit child
 episode/video choices where the adapter advertises that capability.
+Child support is declared for an exact resource kind and intent, with its own
+access state, browse action and heading. A provider-wide child flag alone does
+not make arbitrary channels or collections browsable. Current aggregate denial
+overrides retained descriptors; composed adapters preserve inherited denials
+when enabling a different kind of child operation.
 
 The management surface presents provider browse groups as horizontal tabs.
 Loaded root results and scroll contexts are retained only within the current

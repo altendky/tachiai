@@ -225,7 +225,7 @@ internal class StreamManagementController(
     private fun access(query: CatalogQuery): CatalogAccess {
         val capabilities = state.value.capabilities ?: return CatalogAccess.NOT_VERIFIED
         return when {
-            query.parent != null -> capabilities.children
+            query.parent != null -> capabilities.childrenFor(query.parent, catalog.providerId)?.access ?: CatalogAccess.UNSUPPORTED
             query.collectionId != null -> capabilities.collections.singleOrNull { it.id == query.collectionId }?.access ?: CatalogAccess.UNSUPPORTED
             query.search != null -> capabilities.search
             else -> capabilities.browse
@@ -342,7 +342,7 @@ internal class StreamManagementController(
             }
             val id = discoveryContexts.incrementAndGet()
             publish { it.copy(discoveryContextId = id, retainedDiscoveryContextIds = retainedIds(id),
-                childHeading = "${snapshot.capabilities?.childrenHeadingPrefix ?: "Items under"} $title", navigationBackLabel = label) }
+                childHeading = "${snapshot.capabilities?.childrenFor(resource, catalog.providerId)?.headingPrefix ?: "Items under"} $title", navigationBackLabel = label) }
         }
         browse(CatalogQuery(parent = resource), preserveContext = true)
     }

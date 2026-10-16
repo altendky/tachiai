@@ -38,6 +38,7 @@ class TwitchLocalVideoImportControllerTest {
         val closed = CompletableDeferred<Unit>()
         override fun capabilities() = CatalogCapabilities(browse = access, search = access, lookup = access,
             children = access, refresh = access, playback = CatalogAccess.NOT_VERIFIED,
+            childCapabilities = listOf(CatalogChildrenCapability("broadcaster", CatalogIntent.CHANNEL, access, "Browse videos", "Videos from")),
             collections = listOf(CatalogCollection("following", "Following", access)),
             browseTitle = "Live channels", initialCollectionId = "following")
         override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {

@@ -41,6 +41,8 @@ class StreamManagementControllerTest {
         var historyAccess = CatalogAccess.UNSUPPORTED
         var browseTitle = "All"
         var initialCollectionId: String? = null
+        var childrenAccess = CatalogAccess.AVAILABLE
+        var seriesAccess = CatalogAccess.AVAILABLE
         var onBrowse: (CatalogQuery) -> Unit = {}
         var lastQuery: CatalogQuery? = null
         var browses = 0
@@ -60,7 +62,9 @@ class StreamManagementControllerTest {
         override fun capabilities(): CatalogCapabilities {
             if (throwCapabilities) throw IllegalStateException("sensitive-account-state")
             return CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
-            lookup = lookupAccess, children = CatalogAccess.AVAILABLE,
+            lookup = lookupAccess, children = childrenAccess,
+            childCapabilities = listOf(CatalogChildrenCapability("series", CatalogIntent.COLLECTION, seriesAccess,
+                "Browse episodes", "Episodes from")),
             collections = listOf(CatalogCollection(collectionId, collectionTitle, collectionAccess),
                 CatalogCollection("history", "History", historyAccess)),
             browseTitle = browseTitle, initialCollectionId = initialCollectionId)
@@ -112,6 +116,38 @@ class StreamManagementControllerTest {
         controller.state.first { !it.loading && !it.saving && it.link?.loading != true }
     }
 
+    @Test fun childRequestsRequireDeclaredKindIntentAndBothCurrentAccessGates() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().first())
+        val memory = Memory()
+        store(memory, catalog.instance).add(catalog.series) { emptyList() }
+        val controller = controller(this, catalog, memory)
+        controller.load(); idle(controller)
+        for (resource in listOf(catalog.parent.copy(kind = "unknown"), catalog.episode.resource,
+            catalog.parent.copy(intent = CatalogIntent.CHANNEL))) {
+            val calls = catalog.browses
+            controller.children(resource)
+            assertEquals(CatalogFailure.UNSUPPORTED, idle(controller).failure!!.reason)
+            assertEquals(calls, catalog.browses)
+        }
+        catalog.seriesAccess = CatalogAccess.NOT_VERIFIED
+        controller.load(); idle(controller)
+        var calls = catalog.browses
+        controller.children(catalog.parent)
+        assertEquals(CatalogFailure.NOT_VERIFIED, idle(controller).failure!!.reason)
+        assertEquals(calls, catalog.browses)
+        catalog.seriesAccess = CatalogAccess.AVAILABLE; catalog.childrenAccess = CatalogAccess.RECONNECT_REQUIRED
+        controller.load(); idle(controller); calls = catalog.browses
+        controller.children(catalog.parent)
+        assertEquals(CatalogFailure.ACCESS_REQUIRED, idle(controller).failure!!.reason)
+        assertEquals(calls, catalog.browses)
+        catalog.childrenAccess = CatalogAccess.AVAILABLE
+        controller.load(); idle(controller); controller.children(catalog.parent)
+        val child = idle(controller)
+        assertNull(child.failure); assertEquals("Episodes from Saved show", child.childHeading)
+        assertEquals(catalog.children, child.entries)
+        controller.close()
+    }
+
     @Test fun backRestoresLoadedQueryCursorAndContextWhileKeepingChildAdds() = runBlocking {
         val catalog = Catalog(defaultProviderInstances().last())
         val memory = Memory()
@@ -120,7 +156,7 @@ class StreamManagementControllerTest {
         controller.load(); idle(controller)
         controller.collection(catalog.collectionId); val parent = idle(controller)
         controller.children(catalog.parent); var child = idle(controller)
-        assertEquals("Items under Saved show", child.childHeading)
+        assertEquals("Episodes from Saved show", child.childHeading)
         assertEquals("Back to Following", child.navigationBackLabel)
         assertTrue(child.retainedDiscoveryContextIds.contains(parent.discoveryContextId))
         assertNotEquals(parent.discoveryContextId, child.discoveryContextId)

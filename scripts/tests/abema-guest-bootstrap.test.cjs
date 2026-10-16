@@ -689,6 +689,47 @@ test('schedule keeps exact slots when annotations are missing and does not coerc
   }
 });
 
+test('channel programs filter before the bounded prefix and retain the requested binding even when empty', async () => {
+  const schedule = scheduleReply(1105);
+  schedule.slots.slice(0, 602).forEach(slot => { slot.channelId = 'unrelated'; });
+  const value = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'fixture-channel' }, schedule });
+  value.start(); await settle();
+  const projection = JSON.parse(value.call(`window['${apiName}'].metadata()`));
+  assert.equal(projection.channelId, 'fixture-channel');
+  assert.equal(projection.slots.length, 501); assert.equal(projection.truncated, true);
+  assert.equal(projection.slots[0].id, 'slot-602'); assert.equal(projection.slots[500].id, 'slot-1102');
+  assert.ok(projection.slots.every(slot => slot.channelId === 'fixture-channel'));
+  const empty = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'not-present' }, schedule });
+  empty.start(); await settle();
+  assert.deepEqual(JSON.parse(empty.call(`window['${apiName}'].metadata()`)),
+    { slots: [], truncated: false, channelId: 'not-present' });
+  const short = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'fixture-channel' }, schedule: scheduleReply(1) });
+  short.start(); await settle();
+  assert.equal(JSON.parse(short.call(`window['${apiName}'].metadata()`)).truncated, false);
+});
+
+test('channel filtering still validates unrelated and hidden raw slots and rejects malformed filter requests', async () => {
+  const malformed = scheduleReply(1105); malformed.slots[1104].channelId = 'unrelated'; malformed.slots[1104].title = '\ud800';
+  const duplicate = scheduleReply(1105); duplicate.slots[1104].channelId = 'unrelated'; duplicate.slots[1104].id = 'slot-0';
+  for (const schedule of [malformed, duplicate]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'fixture-channel' }, schedule });
+    value.start(); await settle(); assert.equal(value.state().failure, 'SCHEDULE_RESPONSE');
+    assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+  }
+  for (const resourceId of [null, {}, [], { channelId: '' }, { channelId: 'bad/id' },
+    { channelId: 1 }, { channelId: 'fixture-channel', url: 'https://other.invalid' }]) {
+    const value = fixture({ operation: 'FETCH_SCHEDULE', resourceId }); value.start(); await settle();
+    assert.equal(value.call(`typeof window['${apiName}']`), 'undefined'); assert.equal(value.requests.length, 0);
+  }
+});
+
+test('channel snapshot cancellation discards a delayed result without retry or changing channel', async () => {
+  const value = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'fixture-channel' }, delayedSchedule: true });
+  value.start(); await settle(); value.stop(); value.release(); await settle();
+  assert.equal(value.call(`window['${apiName}'].metadata()`), null);
+  assert.equal(value.requests.filter(({ url }) => url.endsWith('/timetable/dataSet')).length, 1);
+});
+
 test('schedule validates the entire raw snapshot before returning its bounded501 distinct prefix', async () => {
   for (const count of [0, 500, 501, 1500]) {
     const value = fixture({ operation: 'FETCH_SCHEDULE', schedule: scheduleReply(count) }); value.start(); await settle();

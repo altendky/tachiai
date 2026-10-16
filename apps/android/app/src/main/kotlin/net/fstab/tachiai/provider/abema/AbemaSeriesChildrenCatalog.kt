@@ -29,13 +29,15 @@ internal class AbemaSeriesChildrenCatalog(
     override fun capabilities(): CatalogCapabilities {
         val base = delegate.capabilities()
         val local = synchronized(lock) { revision }
-        return base.copy(children = if (transportFactory != null && current(local)) CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED,
-            childrenTitle = "Episodes", childrenHeadingPrefix = "Episodes from")
+        return base.copy(children = if (current(local) && (transportFactory != null || base.children == CatalogAccess.AVAILABLE))
+            CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED,
+            childrenTitle = "Browse", childrenHeadingPrefix = "From")
     }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         val parent = query.parent ?: run { clear(); return delegate.browse(query) }
-        if (parent.providerId != providerId || parent.kind !in setOf("series", "season") || parent.intent != CatalogIntent.COLLECTION)
-            return CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+        if (parent.providerId != providerId || parent.kind !in setOf("series", "season") || parent.intent != CatalogIntent.COLLECTION) {
+            clear(); return delegate.browse(query)
+        }
         val season = if (parent.kind == "season") abemaSeasonParent(parent) else null
         if ((parent.kind == "series" && !validAbemaSeriesId(parent.identity) || parent.kind == "season" && season == null) ||
             query.collectionId != null || query.search != null)

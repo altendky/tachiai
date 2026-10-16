@@ -12,7 +12,7 @@ internal class AbemaScheduleCatalog(
     private val canPublish: () -> Boolean = { true },
 ) : ProviderCatalog by delegate {
     init { require(delegate.providerId.value == "abema" && net.fstab.tachiai.presentation.validProviderInstanceId(delegate.instanceId)) }
-    private class Continuation(val token: String, val offset: Int, val revision: Long)
+    private class Continuation(val token: String, val offset: Int, val revision: Long, val request: AbemaScheduleRequest)
     private val lock = Any()
     private val operation = Any()
     private val active = AtomicReference<AbemaScheduleTransport?>()
@@ -29,17 +29,25 @@ internal class AbemaScheduleCatalog(
         val base = delegate.capabilities()
         val local = synchronized(lock) { revision }
         val access = if (transportFactory != null && current(local)) CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED
-        return base.copy(collections = base.collections.filterNot { it.id == "schedule" } + CatalogCollection("schedule", "Schedule", access))
+        return base.copy(collections = base.collections.filterNot { it.id == "schedule" } + CatalogCollection("schedule", "Schedule", access),
+            children = access, childrenTitle = "Programs", childrenHeadingPrefix = "Programs from")
     }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
-        if (query.collectionId != "schedule") { clear(); return delegate.browse(query) }
-        if (query.search != null || query.parent != null) { clear(); return CatalogResult.Failure(CatalogFailure.INVALID_INPUT) }
+        val parent = query.parent
+        if (parent == null && query.collectionId != "schedule") { clear(); return delegate.browse(query) }
+        if (parent != null && (parent.providerId != providerId || parent.kind != "channel" || parent.intent != CatalogIntent.CHANNEL)) {
+            clear(); return delegate.browse(query)
+        }
+        if (query.search != null || parent != null && (query.collectionId != null || !AbemaSlotRequest.validId(parent.identity))) {
+            clear(); return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+        }
+        val request = AbemaScheduleRequest(parent?.identity)
         return synchronized(operation) {
             if (query.cursor == null) clear()
             val local = synchronized(lock) { revision }
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
             val offset = synchronized(lock) {
-                if (query.cursor == null) 0 else continuation?.takeIf { it.token == query.cursor && it.revision == local }?.offset
+                if (query.cursor == null) 0 else continuation?.takeIf { it.token == query.cursor && it.revision == local && it.request == request }?.offset
             } ?: run { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT) }
             synchronized(lock) { continuation = null }
             val pageSnapshot = if (query.cursor != null) synchronized(lock) { snapshot }
@@ -49,7 +57,7 @@ internal class AbemaScheduleCatalog(
                 var cleanup = true
                 val result = try {
                     transport = factory { current(local) }; active.set(transport)
-                    if (!current(local)) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else transport.fetch()
+                    if (!current(local)) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else transport.fetch(request)
                 } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
                 finally {
                     try { transport?.close() } catch (_: Throwable) {
@@ -65,13 +73,14 @@ internal class AbemaScheduleCatalog(
                 }
             } ?: return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
+            if (pageSnapshot.request != request) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT) }
             val entries = pageSnapshot.entries.drop(offset).take(ABEMA_SCHEDULE_PAGE_LIMIT)
             val nextOffset = offset + entries.size
             val token = if (nextOffset < pageSnapshot.entries.size) UUID.randomUUID().toString() else null
             val published = synchronized(lock) {
                 if (!admitted(local)) false else {
                     snapshot = pageSnapshot.takeIf { token != null }
-                    continuation = token?.let { Continuation(it, nextOffset, local) }; true
+                    continuation = token?.let { Continuation(it, nextOffset, local, request) }; true
                 }
             }
             if (!published || !current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }

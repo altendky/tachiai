@@ -4,13 +4,13 @@ import net.fstab.tachiai.provider.catalog.*
 import org.json.JSONTokener
 
 // Only the normalized, bounded public projection crosses the private IPC.
-internal fun decodeAbemaScheduleProjection(text: String): AbemaScheduleSnapshot? = try {
+internal fun decodeAbemaScheduleProjection(text: String, expected: AbemaScheduleRequest = AbemaScheduleRequest()): AbemaScheduleSnapshot? = try {
     if (text.length > ABEMA_SCHEDULE_PROJECTION_BYTES ||
         text.toByteArray(Charsets.UTF_8).size > ABEMA_SCHEDULE_PROJECTION_BYTES) null
-    else ScheduleProjectionReader(text).read()
+    else ScheduleProjectionReader(text, expected).read()
 } catch (_: Throwable) { null }
 
-private class ScheduleProjectionReader(private val text: String) {
+private class ScheduleProjectionReader(private val text: String, private val expected: AbemaScheduleRequest) {
     private var at = 0
     private fun space() { while (at < text.length && text[at] in " \t\r\n") at++ }
     private fun take(char: Char): Boolean { space(); if (text.getOrNull(at) != char) return false; at++; return true }
@@ -41,7 +41,8 @@ private class ScheduleProjectionReader(private val text: String) {
     }
     fun read(): AbemaScheduleSnapshot {
         val entries = mutableListOf<CatalogEntry>(); var truncated = false
-        fields(setOf("slots", "truncated")) { key -> when (key) {
+        fields(setOf("slots", "truncated") + if (expected.channelId != null) setOf("channelId") else emptySet()) { key -> when (key) {
+            "channelId" -> check(string() == expected.channelId)
             "truncated" -> {
                 space()
                 if (text.startsWith("true", at)) { truncated = true; at += 4 }
@@ -65,6 +66,6 @@ private class ScheduleProjectionReader(private val text: String) {
             }
         } }
         space(); check(at == text.length)
-        return AbemaScheduleSnapshot(entries, truncated)
+        return AbemaScheduleSnapshot(entries, truncated, expected)
     }
 }

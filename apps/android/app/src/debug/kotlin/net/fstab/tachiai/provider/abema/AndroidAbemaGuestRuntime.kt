@@ -152,7 +152,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 AbemaGuestBootstrapOperation.FETCH_EPISODE -> AbemaGuestBootstrapPolicy.episodeUrl(checkNotNull(request.episodeId))
                 AbemaGuestBootstrapOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).url()
                 AbemaGuestBootstrapOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
-                AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> AbemaGuestBootstrapPolicy.SCHEDULE
+                AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> AbemaGuestBootstrapPolicy.SCHEDULE + "|" + request.scheduleRequest.channelId.orEmpty()
                 AbemaGuestBootstrapOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
                 else -> error("Discovery operation refused")
             }
@@ -215,6 +215,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
                     ", " + checkNotNull(request.searchRequest).let { JSONObject().put("query", it.query).put("moduleId", it.moduleId ?: JSONObject.NULL)
                         .put("offset", it.offset).toString() }
+                else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && request.scheduleRequest.channelId != null)
+                    ", " + JSONObject().put("channelId", request.scheduleRequest.channelId).toString()
                 else if (accountContext != null) ", undefined" else ""
         val initialization = context.assets.open("abema/guest-bootstrap-initialize.js")
             .bufferedReader().use { it.readText() }.replace("__NONCE__", request.nonce)

@@ -85,6 +85,7 @@ class ConfiguredMetadataRefreshControllerTest {
             checkNotNull(fixture.controller.reorder(requested.map { it.id })).join()
             assertEquals(requested, fixture.reopen())
             assertEquals(requested, fixture.controller.state.value.configured)
+            assertNull(fixture.controller.state.value.message)
             assertEquals(writes + 1, fixture.memory.writes)
         } finally { fixture.controller.close() }
     }

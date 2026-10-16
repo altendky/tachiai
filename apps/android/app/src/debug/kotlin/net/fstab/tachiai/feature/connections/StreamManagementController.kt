@@ -383,7 +383,7 @@ internal class StreamManagementController(
                     if (!closed && mutationRevision.get() == revision) publish {
                         if (refreshId != null) lastRefreshId = null
                         it.copy(configured = configured, failure = if (refreshId != null) null else it.failure,
-                            message = "Configured streams saved on this device.") }
+                            message = null) }
                 } catch (error: Exception) {
                     diagnostics.report(FailureStage.CONFIGURED_SOURCES_WRITE, error)
                     if (!closed && mutationRevision.get() == revision)

@@ -24,6 +24,8 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -153,6 +155,17 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     LaunchedEffect(listState) {
         if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size + if (header != null) 1 else 0)
     }
+    val feedback = state.message ?: if (state.storageFailed) "Configured streams could not be read. Retry to continue."
+        else state.failure?.let(::catalogFailureExplanation) ?: if (state.resultsTruncated)
+            "Showing the first $MAX_DISCOVERY_RESULTS results. More results were withheld; narrow your search or choose another collection." else null
+    val retryLabel = when {
+        state.storageFailed -> "Retry"
+        state.failure?.let { it.reason in setOf(CatalogFailure.TEMPORARY, CatalogFailure.RATE_LIMITED, CatalogFailure.ACCESS_REQUIRED) ||
+            it.reason == CatalogFailure.INVALID_INPUT && capabilities == null } == true -> "Retry catalog"
+        else -> null
+    }
+    var feedbackDismissed by remember(state.instance.id, state.privacyRevision, feedback) { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).onGloballyPositioned { drag.viewport = it }
         .testTag("Stream discovery list"),
         state = listState) {
@@ -161,18 +174,15 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (header == null) Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
             SettingsSection("Streams", "Add items to your selection page. Changes stay in Tachiai and do not change provider favorites." +
                 " Drag a handle to reorder, or tap it for move actions. Refresh reloads the same stream’s title, availability and scheduled start; identity, order and quality are retained. It does not start playback or renew your account. Removing asks for confirmation." +
+                (metadataRefreshExplanation(capabilities?.refresh)?.let { "\n\n$it" } ?: "") +
+                "\n\nUp to $MAX_CONFIGURED_SOURCES streams can be configured. Remove an item to add another when the limit is reached." +
                 (state.catalogNotice?.let { "\n\n$it" } ?: ""))
-            state.message?.let { Text(it) }
-            if (state.loading) Text("Reading streams…")
-            if (state.saving) Text("Saving configured streams…")
-            if (state.storageFailed) Button(onClick = onRetry, enabled = !state.loading && !state.saving) { Text("Retry") }
             if (header == null) TextButton(onClick = onBack) { Text(backLabel) }
         } }
         item(key = "configured-heading") { Column(Modifier.padding(bottom = 12.dp)) {
             Text("Configured streams", style = MaterialTheme.typography.titleLarge)
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
-            if (state.configured.orEmpty().size >= MAX_CONFIGURED_SOURCES) Text("Stream limit reached. Remove an item to add another.")
-            metadataRefreshExplanation(capabilities?.refresh)?.let { Text(it) } } }
+            } }
         items(displayed, key = { "configured:${it.id}" }) { source ->
             val index = displayed.indexOf(source)
             var moveMenu by remember(source.id) { mutableStateOf(false) }
@@ -246,13 +256,17 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }
         }
         item(key = "discovery-controls") { Column(Modifier.padding(bottom = 12.dp)) {
-            SettingsSection("Find streams")
+            SettingsSection("Find streams", buildString {
+                append("Browse, search or look up items to add to your configured streams.")
+                if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
+                    append("\n\n${capabilities.browseTitle}: ${catalogAccessExplanation(capabilities.browse)}")
+                capabilities?.collections.orEmpty().filter { it.access != CatalogAccess.AVAILABLE }.forEach {
+                    append("\n\n${it.title}: ${catalogAccessExplanation(it.access)}")
+                }
+            })
             Button(onClick = onAll, enabled = mutable && capabilities != null) { Text(capabilities?.browseTitle ?: "All") }
-            if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
-                Text("${capabilities.browseTitle}: ${catalogAccessExplanation(capabilities.browse)}")
             capabilities?.collections.orEmpty().forEach { collection ->
                 TextButton(onClick = { onCollection(collection.id) }, enabled = mutable) { Text(collection.title) }
-                if (collection.access != CatalogAccess.AVAILABLE) Text("${collection.title}: ${catalogAccessExplanation(collection.access)}")
             }
             if (capabilities != null && capabilities.search != CatalogAccess.UNSUPPORTED) {
                 OutlinedTextField(search, { search = it.take(160) }, enabled = mutable, singleLine = true,
@@ -272,13 +286,6 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             state.navigationBackLabel?.let { label ->
                 TextButton(onClick = onDiscoveryBack) { Text(label) }
-            }
-            if (state.resultsTruncated) Text("Showing the first $MAX_DISCOVERY_RESULTS results. More results were withheld; narrow your search or choose another collection.")
-            state.failure?.let { failure ->
-                Text(catalogFailureExplanation(failure))
-                if (failure.reason in setOf(CatalogFailure.TEMPORARY, CatalogFailure.RATE_LIMITED, CatalogFailure.ACCESS_REQUIRED) ||
-                    failure.reason == CatalogFailure.INVALID_INPUT && capabilities == null)
-                    Button(onClick = onRetry, enabled = mutable && retryReady) { Text("Retry catalog") }
             }
             if (!state.loading && state.failure == null && state.configured != null && state.entries.isEmpty()) Text("No catalog items found.")
         } }
@@ -313,5 +320,20 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         if (state.nextCursor != null) item(key = "discovery-more") {
             TextButton(onClick = onMore, enabled = mutable, modifier = Modifier.padding(top = 4.dp)) { Text("More items") }
         }
+    }
+    if (state.loading || state.saving) LinearProgressIndicator(
+        Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+            .padding(horizontal = 16.dp).fillMaxWidth().semantics {
+                contentDescription = if (state.saving) "Saving configured streams" else "Reading streams"
+            })
+    if (feedback != null && !feedbackDismissed) Snackbar(
+        modifier = Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding().padding(16.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        actionOnNewLine = true,
+        action = { retryLabel?.let { label -> TextButton(onClick = onRetry,
+            enabled = !state.loading && !state.saving && retryReady && (state.storageFailed || mutable)) { Text(label) } } },
+        dismissAction = if (state.storageFailed) null else ({ IconButton(onClick = { feedbackDismissed = true }, modifier = Modifier.semantics {
+            contentDescription = "Dismiss stream notice"
+        }) { Icon(painterResource(R.drawable.stream_remove), contentDescription = null) } })) { Text(feedback) }
     }
 }

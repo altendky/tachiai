@@ -113,11 +113,13 @@ class ManageStreamsActivity : ComponentActivity() {
                 val state by current.state.collectAsState()
                 StreamManagementScreen(state.copy(loading = reading || state.loading, saving = savingWhileLeaving || state.saving || preferenceState?.saving == true,
                     message = if (savingWhileLeaving) "Saving configured streams before returning…" else state.message), current::search, current::all,
-                    current::collection, current::children, current::more, current::lookup,
+                    current::collection, current::children, current::more,
                     current::add, current::remove, current::move, current::retry, ::finish,
                     backLabel = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers",
                     onRefresh = current::refresh, onDiscoveryBack = { current.back() }, header = header,
-                    onReorder = current::reorder)
+                    onReorder = current::reorder, onOpenLink = current::openLink,
+                    onResolveLink = current::resolveLink, onDismissLink = current::dismissLink,
+                    onAddLink = current::addLink, onEditLink = current::editLink)
             } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (header != null) item { header() }

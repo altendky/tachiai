@@ -22,6 +22,18 @@ single route selector whose menu also opens route import. Account actions stay
 visible in wrapping rows, with unavailable actions disabled; their layout does
 not collapse when an account connects. Section help uses info icons.
 
+Search uses a trailing icon inside the field and the keyboard Search action;
+both submit the same provider-wide query and respect loading and storage guards.
+Find streams groups use a horizontally scrolling tab row, with account/access
+indications kept in a reserved icon slot. Switching groups restores the loaded
+root and its scroll position; child Back and global search retain distinct
+contexts. Account-derived results and scroll anchors remain in memory only.
+
+The compact Add link action shares the Configured streams heading. Its dialog
+resolves a URL or channel to a public resource for review, then explicitly adds
+that resource. Lookup, validation and save failures stay in the dialog; Cancel
+leaves the browse context alone. Raw input is never restored from saved state.
+
 Configured streams use compact rows with drag handles, refresh and removal
 icons. Dragging previews a new order and saves it once on drop; tapping a handle
 also offers move actions for keyboard and accessibility use. Removal requires

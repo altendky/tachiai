@@ -60,11 +60,15 @@ class TwitchScheduleManagementScreenTest {
         TachiaiPrototypeTheme {
             StreamManagementScreen(state, fixture.controller::search, fixture.controller::all,
                 fixture.controller::collection, fixture.controller::children, fixture.controller::more,
-                fixture.controller::lookup, fixture.controller::add, fixture.controller::remove,
-                fixture.controller::move, fixture.controller::retry, {})
+                fixture.controller::add, fixture.controller::remove,
+                fixture.controller::move, fixture.controller::retry, {}, onOpenLink = fixture.controller::openLink,
+                onResolveLink = fixture.controller::resolveLink, onDismissLink = fixture.controller::dismissLink,
+                onAddLink = fixture.controller::addLink, onEditLink = fixture.controller::editLink)
         }
     }
     private fun scrollTo(matcher: SemanticsMatcher): SemanticsNodeInteraction {
+        val overlay = matcher and !hasAnyAncestor(hasScrollToIndexAction())
+        if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) return compose.onNode(overlay)
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(matcher)
         return compose.onNode(matcher).performScrollTo()
     }
@@ -74,8 +78,10 @@ class TwitchScheduleManagementScreenTest {
         scrollTo(matcher).performClick(); compose.waitForIdle()
     }
     private fun lookup() {
+        if (compose.onAllNodesWithText("Add by URL or channel").fetchSemanticsNodes().isNotEmpty()) tap(hasText("Cancel"))
+        tap(hasText("Add link"))
         scrollTo(hasText("Provider URL or channel")).performTextReplacement("fixture-channel")
-        tap(hasText("Look up"))
+        tap(hasText("Add"))
     }
     private fun details(availability: String, date: Long) =
         "Ongoing channel · $availability · Scheduled ${DateFormat.getDateTimeInstance().format(Date(date))}"
@@ -90,8 +96,8 @@ class TwitchScheduleManagementScreenTest {
                 assertTrue(fixture.controller.state.value.configured!!.isEmpty())
                 assertNull(fixture.memory.bytes); assertEquals(0, fixture.memory.writes)
             }
-            tap(hasContentDescription("Add $title"))
-            scrollTo(hasContentDescription("Add $title")).assertIsNotEnabled()
+            tap(hasText("Add"))
+            scrollTo(hasContentDescription("Remove $title")).assertExists()
             val saved = fixture.memory.bytes!!.copyOf()
             compose.runOnIdle {
                 val configured = fixture.reopen().single()
@@ -105,7 +111,8 @@ class TwitchScheduleManagementScreenTest {
             }
             lookup()
             scrollTo(hasText(details("Live", scheduled + 86_400_000L))).assertExists()
-            scrollTo(hasContentDescription("Add $title")).assertIsNotEnabled()
+            scrollTo(hasText("Add")).assertIsNotEnabled()
+            scrollTo(hasText("This stream is already configured.")).assertExists()
             compose.runOnIdle {
                 assertArrayEquals(saved, fixture.memory.bytes)
                 assertEquals(1, fixture.memory.writes)
@@ -124,8 +131,8 @@ class TwitchScheduleManagementScreenTest {
             compose.onAllNodes(hasText("Scheduled ", substring = true)).assertCountEquals(0)
             compose.onAllNodes(hasText("Upcoming", substring = true)).assertCountEquals(0)
             compose.runOnIdle {
-                assertNull(fixture.controller.state.value.entries.single().scheduledStartEpochMs)
-                assertEquals(CatalogAvailability.LIVE, fixture.controller.state.value.entries.single().availability)
+                assertNull(fixture.controller.state.value.link!!.entry!!.scheduledStartEpochMs)
+                assertEquals(CatalogAvailability.LIVE, fixture.controller.state.value.link!!.entry!!.availability)
                 assertNull(fixture.memory.bytes); assertEquals(0, fixture.memory.writes)
             }
         } finally { fixture.close() }

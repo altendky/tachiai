@@ -61,23 +61,32 @@ class StreamManagementScreenTest {
         var calls = mutableListOf<String>()
         private var previous: StreamManagementState? = null
         private var nextContext = 1L
+        private val tabs = mutableMapOf<String, StreamManagementState>()
         var state by mutableStateOf(StreamManagementState(instance, configured = emptyList(),
             capabilities = CatalogCapabilities(browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
                 lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
                 childrenTitle = if (service == PrototypeService.TWITCH) "Videos" else "Items",
                 childrenHeadingPrefix = if (service == PrototypeService.TWITCH) "Videos from" else "Items under",
                 collections = listOf(collection, CatalogCollection("history", "History", historyAccess))),
-            entries = all, nextCursor = "opaque:+page2"))
+            entries = all, nextCursor = "opaque:+page2", selectedTabId = DISCOVERY_ALL_TAB))
+        private fun tab(id: String, change: () -> StreamManagementState) {
+            state.selectedTabId?.let { tabs[it] = state }
+            state = tabs[id]?.copy(configured = state.configured, link = null) ?: change().copy(
+                discoveryContextId = nextContext++, selectedTabId = id)
+            state = state.copy(retainedDiscoveryContextIds = tabs.values.map { it.discoveryContextId }.distinct()
+                .filterNot { it == state.discoveryContextId })
+        }
         @Composable fun Render() {
             TachiaiPrototypeTheme {
                 StreamManagementScreen(state,
-                    onSearch = { search -> calls.add("search:$search"); state = state.copy(entries = all.filter { it.title.contains(search, true) }, nextCursor = null) },
-                    onAll = { calls.add("all"); state = state.copy(entries = all, query = CatalogQuery(), failure = null, nextCursor = "opaque:+page2") },
-                    onCollection = { id -> calls.add("collection:$id"); state = state.copy(query = CatalogQuery(collectionId = id),
+                    onSearch = { search -> calls.add("search:$search"); state = state.copy(query = CatalogQuery(search = search),
+                        selectedTabId = null, entries = all.filter { it.title.contains(search, true) }, nextCursor = null) },
+                    onAll = { calls.add("all"); tab(DISCOVERY_ALL_TAB) { state.copy(entries = all, query = CatalogQuery(), failure = null, nextCursor = "opaque:+page2") } },
+                    onCollection = { id -> calls.add("collection:$id"); tab(id) { state.copy(query = CatalogQuery(collectionId = id),
                         entries = if (id == collection.id && collection.access == CatalogAccess.AVAILABLE) listOf(offline) else emptyList(),
                         nextCursor = null, failure = if (id == "history") CatalogResult.Failure(
                             if (historyAccess == CatalogAccess.NOT_VERIFIED) CatalogFailure.NOT_VERIFIED else CatalogFailure.UNSUPPORTED)
-                            else if (collection.access == CatalogAccess.AUTHORIZATION_REQUIRED) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else null) },
+                            else if (collection.access == CatalogAccess.AUTHORIZATION_REQUIRED) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else null) } },
                     onChildren = { resource ->
                         calls.add("children:${resource.identity}")
                         previous = state
@@ -88,7 +97,6 @@ class StreamManagementScreenTest {
                             childHeading = "${state.capabilities!!.childrenHeadingPrefix} $title", navigationBackLabel = "Back to channel list")
                     },
                     onMore = { calls.add("more"); state = state.copy(entries = state.entries + episode, nextCursor = null) },
-                    onLookup = { input -> calls.add("lookup:$input"); state = state.copy(entries = listOf(episode), nextCursor = null, failure = null) },
                     onAdd = { entry -> calls.add("add:${entry.resource.identity}"); state = state.copy(configured =
                         if (state.configured.orEmpty().any { it.entry.resource == entry.resource }) state.configured
                         else state.configured.orEmpty() + ConfiguredSource(UUID.randomUUID().toString(), instance.id, entry)) },
@@ -105,6 +113,13 @@ class StreamManagementScreenTest {
                         calls.add("discovery-back")
                         previous?.let { state = it.copy(configured = state.configured, saving = state.saving, loading = false) }
                         previous = null
+                    }, onOpenLink = { state = state.copy(link = StreamLinkState()) },
+                    onResolveLink = { input -> calls.add("lookup:$input"); state = state.copy(link = StreamLinkState(entry = episode)) },
+                    onDismissLink = { state = state.copy(link = null) }, onEditLink = { state = state.copy(link = StreamLinkState()) }, onAddLink = {
+                        val entry = state.link!!.entry!!
+                        calls.add("add:${entry.resource.identity}")
+                        state = state.copy(configured = state.configured.orEmpty() + ConfiguredSource(UUID.randomUUID().toString(),
+                            instance.id, entry), link = null)
                     })
             }
         }
@@ -114,18 +129,51 @@ class StreamManagementScreenTest {
         val fixture = Fixture(PrototypeService.TWITCH)
         fixture.state = fixture.state.copy(capabilities = fixture.state.capabilities!!.copy(
             browseTitle = "Live channels", initialCollectionId = fixture.collection.id),
-            query = CatalogQuery(collectionId = fixture.collection.id), entries = listOf(fixture.offline), nextCursor = null)
+            query = CatalogQuery(collectionId = fixture.collection.id), selectedTabId = fixture.collection.id,
+            entries = listOf(fixture.offline), nextCursor = null)
         compose.setContent { fixture.Render() }
         text("Following").assertExists()
         text("Live channels").performClick()
         compose.onNodeWithText("All").assertDoesNotExist()
         compose.runOnIdle { assertTrue(fixture.calls.contains("all")); assertEquals(CatalogQuery(), fixture.state.query) }
-        text("Search").assertIsNotEnabled()
+        description("Search streams").assertIsNotEnabled()
         text("Search streams").performTextInput("   ")
-        text("Search").assertIsNotEnabled()
+        description("Search streams").assertIsNotEnabled()
         text("Search streams").performTextReplacement("Offline")
-        text("Search").performClick()
+        description("Search streams").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
+    }
+
+    @Test fun inlineSearchAndKeyboardShareSubmissionAndGuardsAtLargeText() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                Box(Modifier.width(320.dp)) { fixture.Render() }
+            }
+        }
+        val field = text("Search streams")
+        compose.onNodeWithText("Search", useUnmergedTree = true).assertDoesNotExist()
+        field.performImeAction()
+        compose.runOnIdle { assertTrue(fixture.calls.isEmpty()) }
+        field.performTextInput("Offline")
+        val inputBounds = text("Search streams").fetchSemanticsNode().boundsInRoot
+        val iconBounds = description("Search streams").fetchSemanticsNode().boundsInRoot
+        assertTrue(iconBounds.right <= inputBounds.right && iconBounds.left > inputBounds.center.x)
+        assertTrue(iconBounds.top >= inputBounds.top && iconBounds.bottom <= inputBounds.bottom)
+        description("Search streams").performClick()
+        text("Search streams").performImeAction()
+        compose.runOnIdle { assertEquals(listOf("search:Offline", "search:Offline"), fixture.calls) }
+        listOf<(StreamManagementState) -> StreamManagementState>(
+            { it.copy(loading = true) }, { it.copy(saving = true) },
+            { it.copy(storageFailed = true) }, { it.copy(configured = null) }
+        ).forEach { blocked ->
+            compose.runOnIdle { fixture.state = blocked(fixture.state.copy(loading = false, saving = false,
+                storageFailed = false, configured = emptyList())) }
+            description("Search streams").assertIsNotEnabled()
+            text("Search streams").assertIsNotEnabled()
+            compose.runOnIdle { assertEquals(2, fixture.calls.size) }
+        }
     }
 
     @Test fun connectedFollowingDoesNotImplyVerifiedHistoryOrLoseConfiguredItems() {
@@ -202,13 +250,15 @@ class StreamManagementScreenTest {
         text("Never-live episode").assertExists()
         text("Search streams").performTextInput("Offline")
         restoration.emulateSavedInstanceStateRestore()
-        text("Search").assertIsNotEnabled()
+        description("Search streams").assertIsNotEnabled()
         text("Search streams").performTextInput("Offline")
-        text("Search").performClick()
+        description("Search streams").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
+        text("Add link").performClick()
         text("Provider URL or channel").performTextInput("https://provider.example.test/video/1")
-        text("Look up").performClick()
+        text("Add").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("lookup:https://provider.example.test/video/1")) }
+        text("Cancel").performClick()
         text("Following").performClick()
         compose.runOnIdle { assertEquals("following", fixture.state.query.collectionId) }
         text("History").performClick()
@@ -219,12 +269,139 @@ class StreamManagementScreenTest {
         val fixture = Fixture(PrototypeService.TWITCH)
         val restoration = StateRestorationTester(compose)
         restoration.setContent { fixture.Render() }
+        text("Add link").performClick()
         text("Provider URL or channel")
             .performTextInput("https://provider.example.test/video/1?token=unvalidated-fixture")
-        text("Look up").assertIsEnabled()
+        text("Add").assertIsEnabled()
         restoration.emulateSavedInstanceStateRestore()
-        text("Look up").assertIsNotEnabled()
+        text("Add").assertIsNotEnabled()
         compose.runOnIdle { assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun addLinkDialogResolvesThenSavesExplicitlyWithoutReplacingBrowseResults() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        compose.setContent { fixture.Render() }
+        text("Add link").performClick()
+        text("Add by URL or channel").assertExists()
+        text("Add").assertIsNotEnabled()
+        text("Provider URL or channel").performTextInput("https://provider.example.test/video/1")
+        text("Add").performClick()
+        text("Never-live episode").assertExists()
+        compose.runOnIdle {
+            assertEquals(fixture.all, fixture.state.entries)
+            assertTrue(fixture.state.configured!!.isEmpty())
+            assertNotNull(fixture.state.link!!.entry)
+        }
+        text("Add").performClick()
+        compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
+        description("Remove Never-live episode").assertExists()
+        compose.runOnIdle { assertEquals(fixture.all, fixture.state.entries); assertNull(fixture.state.link) }
+        text("Add link").performClick()
+        text("Provider URL or channel").performTextInput("https://provider.example.test/video/1")
+        text("Add").performClick()
+        text("This stream is already configured.").assertExists()
+        text("Add").assertIsNotEnabled()
+        text("Edit link").performClick()
+        text("Provider URL or channel").assertIsEnabled()
+        text("Add").assertIsEnabled()
+        text("Cancel").performClick()
+        text("Add link").performClick()
+        text("Add").assertIsNotEnabled()
+    }
+
+    @Test fun linkFailureRemainsInDialogAndCancelLeavesTheBrowseContextAlone() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        compose.setContent { fixture.Render() }
+        text("Add link").performClick()
+        text("Provider URL or channel").performTextInput("invalid fixture")
+        compose.runOnIdle { fixture.state = fixture.state.copy(link = StreamLinkState(
+            failure = CatalogResult.Failure(CatalogFailure.INVALID_INPUT))) }
+        text("The input or catalog selection is invalid.").assertExists()
+        text("Add").assertIsEnabled()
+        text("Cancel").performClick()
+        compose.runOnIdle { assertEquals(fixture.all, fixture.state.entries); assertTrue(fixture.calls.isEmpty()) }
+        text("Add link").performClick()
+        text("Add").assertIsNotEnabled()
+        compose.runOnIdle { fixture.state = fixture.state.copy(link = null, privacyRevision = 2) }
+        compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
+    }
+
+    @Test fun discoveryGroupsStayOnOneHorizontalRowAtLargeTextAndExposeSelection() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        fixture.state = fixture.state.copy(capabilities = fixture.state.capabilities!!.copy(
+            browseTitle = "Channels", collections = listOf(
+                CatalogCollection("schedule", "Schedule", CatalogAccess.AVAILABLE), fixture.collection,
+                CatalogCollection("history", "History", CatalogAccess.NOT_VERIFIED))))
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                Box(Modifier.width(320.dp)) { fixture.Render() }
+            }
+        }
+        val first = text("Channels").assertIsSelected().fetchSemanticsNode().boundsInRoot
+        val last = text("History").assertIsNotSelected().fetchSemanticsNode().boundsInRoot
+        assertEquals(first.top, last.top, 1f)
+        assertEquals(first.bottom, last.bottom, 1f)
+        text("History").performClick()
+        text("History").assertIsSelected()
+        compose.runOnIdle { assertEquals("history", fixture.state.selectedTabId) }
+        compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
+        text("Channels").performClick()
+        text("Channels").assertIsSelected()
+        text("Search streams").performTextInput("Offline")
+        description("Search streams").performClick()
+        text("Search results").assertExists()
+        text("Channels").assertIsNotSelected()
+    }
+
+    @Test fun publicDiscoveryControlsRemainInPlaceWhileAccessIsRechecked() {
+        val fixture = Fixture(PrototypeService.TWITCH)
+        compose.setContent { fixture.Render() }
+        val before = text("Search streams").fetchSemanticsNode().boundsInRoot
+        val capabilities = fixture.state.capabilities
+        compose.runOnIdle { fixture.state = fixture.state.copy(capabilities = null, loading = true,
+            privacyRevision = fixture.state.privacyRevision + 1) }
+        text("Following").assertIsNotEnabled()
+        text("History").assertIsNotEnabled()
+        text("Search streams").assertIsNotEnabled()
+        assertEquals(before, text("Search streams").fetchSemanticsNode().boundsInRoot)
+        text("Add link").assertIsNotEnabled()
+        compose.runOnIdle { fixture.state = fixture.state.copy(capabilities = capabilities, loading = false) }
+        text("Following").assertIsEnabled()
+    }
+
+    @Test fun linkRetryWaitsForProviderDeadlineWithoutClosingOrMovingThePage() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        compose.setContent { fixture.Render() }
+        text("Add link").performClick()
+        text("Provider URL or channel").performTextInput("retry fixture")
+        val initial = fixture.state.entries
+        compose.runOnIdle { fixture.state = fixture.state.copy(link = StreamLinkState(
+            failure = CatalogResult.Failure(CatalogFailure.RATE_LIMITED, System.currentTimeMillis() + 60_000))) }
+        text("Add").assertIsNotEnabled()
+        text("Provider URL or channel").assertIsEnabled()
+        compose.runOnIdle { fixture.state = fixture.state.copy(link = StreamLinkState(
+            failure = CatalogResult.Failure(CatalogFailure.RATE_LIMITED, System.currentTimeMillis() - 1))) }
+        text("Add").assertIsEnabled()
+        text("Cancel").performClick()
+        compose.runOnIdle { assertEquals(initial, fixture.state.entries); assertTrue(fixture.calls.isEmpty()) }
+    }
+
+    @Test fun retainedTabContextsRestoreTheirOwnDiscoveryViewportOffsets() {
+        val fixture = Fixture(PrototypeService.TWITCH)
+        val channels = (0 until 30).map { fixture.offline.copy(resource = fixture.offline.resource.copy(identity = "channel$it"), title = "Channel $it") }
+        fixture.state = fixture.state.copy(entries = channels)
+        compose.setContent { fixture.Render() }
+        val firstY = description("Browse Channel 20").fetchSemanticsNode().boundsInRoot.top
+        val first = fixture.state
+        compose.runOnIdle { fixture.state = first.copy(query = CatalogQuery(collectionId = "following"),
+            selectedTabId = "following", discoveryContextId = 40, retainedDiscoveryContextIds = listOf(first.discoveryContextId)) }
+        val secondY = description("Browse Channel 10").fetchSemanticsNode().boundsInRoot.top
+        val second = fixture.state
+        compose.runOnIdle { fixture.state = first.copy(retainedDiscoveryContextIds = listOf(second.discoveryContextId)) }
+        assertEquals(firstY, compose.onNodeWithContentDescription("Browse Channel 20").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top, 1f)
+        compose.runOnIdle { fixture.state = second.copy(retainedDiscoveryContextIds = listOf(first.discoveryContextId)) }
+        assertEquals(secondY, compose.onNodeWithContentDescription("Browse Channel 10").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top, 1f)
     }
 
     @Test fun removalEmptyStatesAndErrorsDoNotReplaceConfiguredItemsOrEnableFailedStorageWrites() {
@@ -673,7 +850,7 @@ class StreamManagementScreenTest {
         all.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         all.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle { assertTrue(fixture.calls.contains("all")) }
-        all.performKeyInput { pressKey(Key.DirectionDown) }
+        all.performKeyInput { pressKey(Key.DirectionRight) }
         compose.onNodeWithText("Following").assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle { assertTrue(fixture.calls.contains("collection:following")) }
     }

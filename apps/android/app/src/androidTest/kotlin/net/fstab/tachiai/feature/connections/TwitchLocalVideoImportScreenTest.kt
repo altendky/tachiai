@@ -77,42 +77,55 @@ class TwitchLocalVideoImportScreenTest {
         TachiaiPrototypeTheme {
             StreamManagementScreen(state, fixture.controller::search, fixture.controller::all,
                 fixture.controller::collection, fixture.controller::children, fixture.controller::more,
-                fixture.controller::lookup, fixture.controller::add, fixture.controller::remove,
-                fixture.controller::move, fixture.controller::retry, {})
+                fixture.controller::add, fixture.controller::remove,
+                fixture.controller::move, fixture.controller::retry, {}, onOpenLink = fixture.controller::openLink,
+                onResolveLink = fixture.controller::resolveLink, onDismissLink = fixture.controller::dismissLink,
+                onAddLink = fixture.controller::addLink, onEditLink = fixture.controller::editLink)
         }
     }
     private fun scrollTo(matcher: SemanticsMatcher): SemanticsNodeInteraction {
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(matcher)
         return compose.onNode(matcher).performScrollTo()
     }
-    private fun text(value: String) = scrollTo(hasText(value))
+    private fun node(matcher: SemanticsMatcher): SemanticsNodeInteraction {
+        val overlay = matcher and !hasAnyAncestor(hasScrollToIndexAction())
+        return if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) compose.onNode(overlay) else scrollTo(matcher)
+    }
+    private fun text(value: String) = node(hasText(value))
     private fun description(value: String) = scrollTo(hasContentDescription(value))
     private fun tap(matcher: SemanticsMatcher) {
         compose.runOnIdle { focusManager.clearFocus(force = true) }
         closeSoftKeyboard(); compose.waitForIdle()
-        scrollTo(matcher).performClick(); compose.waitForIdle()
+        node(matcher).performClick(); compose.waitForIdle()
     }
     private fun lookup(url: String) {
+        if (compose.onAllNodesWithText("Add by URL or channel").fetchSemanticsNodes().isNotEmpty()) tap(hasText("Cancel"))
+        tap(hasText("Add link"))
         text("Provider URL or channel").performTextReplacement(url)
-        tap(hasText("Look up"))
+        tap(hasText("Add"))
     }
 
     @Test fun disconnectedVideoPreviewUsesExplicitAddAndExactDeduplicationWithNoMetadataCalls() {
         val fixture = Fixture()
         try {
             compose.setContent { Render(fixture) }
-            text("Following: Connect a catalog account to access this list.").assertExists()
-            text("Look up").assertIsNotEnabled()
+            description("Info about Find streams").performClick()
+            compose.onNodeWithText("Following: Connect a catalog account to access this list.", substring = true).assertExists()
+            compose.onNodeWithText("Close").performClick()
+            tap(hasText("Add link"))
+            text("Add").assertIsNotEnabled()
+            tap(hasText("Cancel"))
             lookup(videoUrl)
             text("On-demand video · Availability unknown").assertExists()
             compose.runOnIdle {
                 assertNull(fixture.memory.bytes); assertEquals(0, fixture.memory.writes)
                 assertEquals(0, fixture.metadataLookups); assertEquals(0, fixture.metadataPages)
             }
-            tap(hasContentDescription("Add $publicTitle"))
-            description("Add $publicTitle").assertIsNotEnabled()
+            tap(hasText("Add"))
+            description("Remove $publicTitle").assertExists()
             lookup("https://twitch.tv:443/videos/789/")
-            description("Add $publicTitle").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
+            text("This stream is already configured.").assertExists()
             compose.runOnIdle {
                 val saved = fixture.reopen().single()
                 assertEquals(fixture.video.resource, saved.entry.resource)
@@ -128,19 +141,23 @@ class TwitchLocalVideoImportScreenTest {
         val fixture = Fixture(); val restoration = StateRestorationTester(compose)
         try {
             restoration.setContent { Render(fixture) }
-            lookup(videoUrl); tap(hasContentDescription("Add $publicTitle"))
+            lookup(videoUrl); tap(hasText("Add"))
             val saved = fixture.memory.bytes!!.copyOf()
             listOf("789", "https://twitch.tv/fixturechannel", "$videoUrl?token=unvalidated-fixture").forEach { input ->
                 lookup(input)
                 text("The input or catalog selection is invalid.").assertExists()
-                compose.onNodeWithContentDescription("Add $publicTitle").assertDoesNotExist()
+                compose.runOnIdle {
+                    assertNull(fixture.controller.state.value.link!!.entry)
+                    assertEquals(CatalogResult.Failure(CatalogFailure.INVALID_INPUT), fixture.controller.state.value.link!!.failure)
+                }
             }
             compose.runOnIdle {
                 assertArrayEquals(saved, fixture.memory.bytes); assertEquals(1, fixture.memory.writes)
                 assertEquals(0, fixture.metadataLookups)
             }
             restoration.emulateSavedInstanceStateRestore()
-            text("Look up").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
+            tap(hasText("Cancel"))
             description("Remove $publicTitle").assertExists()
         } finally { fixture.close() }
     }
@@ -152,27 +169,31 @@ class TwitchLocalVideoImportScreenTest {
             tap(hasContentDescription("Add Connected fixture video"))
             val saved = fixture.memory.bytes!!.copyOf()
             text("Search streams").performTextInput("private fixture search")
+            tap(hasText("Add link"))
             text("Provider URL or channel").performTextInput("https://fixture.invalid/?token=unvalidated")
             compose.runOnIdle {
                 fixture.access = CatalogAccess.AUTHORIZATION_REQUIRED
                 fixture.browseFailure = CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
+                fixture.controller.load()
             }
-            tap(hasText("More items"))
             text("Catalog account access is required. Your configured streams are retained.").assertExists()
             compose.onNodeWithContentDescription("Add Private fixture Following channel").assertDoesNotExist()
             compose.onNodeWithText("More items").assertDoesNotExist()
-            compose.onNodeWithText("Look up").assertDoesNotExist()
+            compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
             description("Remove Connected fixture video").assertIsEnabled()
             tap(hasText("Retry catalog"))
-            text("Search").assertIsNotEnabled(); text("Look up").assertIsNotEnabled()
+            description("Search streams").assertIsNotEnabled()
             lookup(videoUrl)
             text("On-demand video · Availability unknown").assertExists()
-            description("Add $publicTitle").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
+            text("This stream is already configured.").assertExists()
+            tap(hasText("Cancel"))
             description("Remove Connected fixture video").assertIsEnabled()
             compose.runOnIdle {
                 assertArrayEquals(saved, fixture.memory.bytes)
                 assertEquals(fixture.video, fixture.reopen().single().entry)
-                assertEquals(0, fixture.metadataLookups); assertEquals(2, fixture.metadataPages)
+                // Reload observes denied capabilities before requesting another page.
+                assertEquals(0, fixture.metadataLookups); assertEquals(1, fixture.metadataPages)
                 assertEquals(CatalogAccess.AUTHORIZATION_REQUIRED, fixture.controller.state.value.capabilities!!.browse)
             }
         } finally { fixture.close() }
@@ -187,12 +208,21 @@ class TwitchLocalVideoImportScreenTest {
             compose.runOnIdle { fixture.lookupFailure = CatalogResult.Failure(CatalogFailure.TEMPORARY) }
             lookup(videoUrl)
             text("The catalog could not be loaded. Retry; your configured streams are retained.").assertExists()
-            compose.onNodeWithContentDescription("Add $publicTitle").assertDoesNotExist()
+            compose.runOnIdle {
+                val state = fixture.controller.state.value
+                val dialog = checkNotNull(state.link)
+                assertEquals(CatalogResult.Failure(CatalogFailure.TEMPORARY), dialog.failure)
+                assertNull(dialog.entry)
+                assertNull(state.failure)
+                assertEquals(listOf(fixture.channel, fixture.video), state.entries)
+                assertEquals("following", state.selectedTabId)
+            }
+            tap(hasText("Cancel"))
             description("Remove Connected fixture video").assertIsEnabled()
             compose.runOnIdle { fixture.memory.failRead = true; fixture.controller.load() }
             text("Configured streams could not be read. Nothing was replaced. Retry to continue.").assertExists()
             description("Remove Connected fixture video").assertIsNotEnabled()
-            compose.onNodeWithText("Look up").assertDoesNotExist()
+            text("Add link").assertIsNotEnabled()
             compose.runOnIdle {
                 fixture.controller.add(fixture.video)
                 assertArrayEquals(saved, fixture.memory.bytes); assertEquals(writes, fixture.memory.writes)

@@ -73,7 +73,8 @@ class AbemaSearchManagementTest {
                 bitrateBps = 1_000_000, width = 640, height = 360))
             store.saveQuality(ids.first(), NativeQualityKind.VIDEO, quality) { emptyList() }
             val persisted = memory.bytes!!.copyOf(); val writes = memory.writes
-            controller.more(); state = idle(controller); assertEquals(2, searches.size); assertNull(state.nextCursor)
+            controller.more(); state = idle(controller); assertEquals(3, searches.size); assertNull(state.nextCursor)
+            assertEquals(listOf(null, null, "episode"), searches.map { it.moduleId })
             assertArrayEquals(persisted, memory.bytes); assertEquals(writes, memory.writes)
             controller.add(rows.first()); idle(controller)
             assertEquals(ids, store.read { error("No fallback") }.map { it.id })

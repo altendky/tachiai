@@ -46,6 +46,12 @@ class StreamManagementControllerTest {
         var browses = 0
         var lookupFailure: CatalogFailure? = null
         var lastLookupInput: String? = null
+        var onLookup: () -> Unit = {}
+        var lookupEntry: CatalogEntry? = null
+        var lookupCalls = 0
+        var expireContinuations = false
+        private var continuation: String? = null
+        private var cursorSerial = 0
         @Volatile var closed = false
         val closedSignal = CompletableDeferred<Unit>()
         private fun entry(id: String, intent: CatalogIntent, title: String, availability: CatalogAvailability) =
@@ -67,16 +73,24 @@ class StreamManagementControllerTest {
             val matches = (if (query.parent != null) children else items).filter {
                 query.search == null || it.title.contains(query.search, true)
             }
-            val next = "opaque:${query.collectionId}:${query.parent?.identity}:${query.search}/+page=2"
-            return when (query.cursor) {
-                null -> CatalogResult.Value(CatalogPage(matches.take(2), next.takeIf { matches.size > 2 }))
-                next -> CatalogResult.Value(CatalogPage(matches.drop(2)))
+            if (expireContinuations && query.cursor != null && query.cursor != continuation)
+                return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+            val next = "opaque:${query.collectionId}:${query.parent?.identity}:${query.search}/+page=2" +
+                if (expireContinuations) ":${++cursorSerial}" else ""
+            val result = when {
+                query.cursor == null -> CatalogResult.Value(CatalogPage(matches.take(2), next.takeIf { matches.size > 2 }))
+                query.cursor == next || expireContinuations && query.cursor == continuation -> CatalogResult.Value(CatalogPage(matches.drop(2)))
                 else -> CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
+            if (expireContinuations) continuation = (result as? CatalogResult.Value)?.value?.nextCursor
+            return result
         }
         override fun lookup(input: String): CatalogResult<CatalogEntry> {
+            lookupCalls++; onLookup()
+            if (expireContinuations) continuation = null
             lastLookupInput = input
             lookupFailure?.let { return CatalogResult.Failure(it) }
+            lookupEntry?.let { return CatalogResult.Value(it) }
             return items.singleOrNull { it.resource.identity == input }
                 ?.let { CatalogResult.Value(it) } ?: CatalogResult.Failure(CatalogFailure.NOT_FOUND)
         }
@@ -94,6 +108,9 @@ class StreamManagementControllerTest {
     private suspend fun idle(controller: StreamManagementController) = withTimeout(5_000) {
         controller.state.first { !it.loading && !it.saving }
     }
+    private suspend fun linkIdle(controller: StreamManagementController) = withTimeout(5_000) {
+        controller.state.first { !it.loading && !it.saving && it.link?.loading != true }
+    }
 
     @Test fun backRestoresLoadedQueryCursorAndContextWhileKeepingChildAdds() = runBlocking {
         val catalog = Catalog(defaultProviderInstances().last())
@@ -105,7 +122,7 @@ class StreamManagementControllerTest {
         controller.children(catalog.parent); var child = idle(controller)
         assertEquals("Items under Saved show", child.childHeading)
         assertEquals("Back to Following", child.navigationBackLabel)
-        assertEquals(listOf(parent.discoveryContextId), child.retainedDiscoveryContextIds)
+        assertTrue(child.retainedDiscoveryContextIds.contains(parent.discoveryContextId))
         assertNotEquals(parent.discoveryContextId, child.discoveryContextId)
         controller.add(catalog.episode); child = idle(controller)
         assertTrue(controller.back())
@@ -117,7 +134,7 @@ class StreamManagementControllerTest {
         assertEquals(child.configured, restored.configured)
         assertEquals(parent.privacyRevision, restored.privacyRevision)
         assertNull(restored.childHeading); assertNull(restored.navigationBackLabel)
-        assertTrue(restored.retainedDiscoveryContextIds.isEmpty())
+        assertFalse(restored.retainedDiscoveryContextIds.contains(restored.discoveryContextId))
         val calls = catalog.browses
         assertFalse(controller.back()); assertEquals(calls, catalog.browses)
         controller.more(); assertEquals(catalog.items, idle(controller).entries)
@@ -467,9 +484,10 @@ class StreamManagementControllerTest {
         } }
         try {
             controller.search("Offline"); withTimeout(5_000) { entered.await() }
-            controller.search("On-demand"); val state = idle(controller)
-            assertEquals(listOf(catalog.episode), state.entries)
+            controller.search("On-demand")
             release.countDown()
+            val state = idle(controller)
+            assertEquals(listOf(catalog.episode), state.entries)
             assertEquals("On-demand", controller.state.value.query.search)
             assertEquals(listOf(catalog.episode), controller.state.value.entries)
         } finally { release.countDown(); controller.close() }
@@ -584,6 +602,245 @@ class StreamManagementControllerTest {
         assertEquals(saved, store(memory, catalog.instance).read { error("No legacy fallback") })
         controller.close()
         assertFalse(controller.preview(entry))
+    }
+
+    @Test fun tabsRestoreTheirRootRowsPaginationAndScrollIdentityWithoutWriting() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()).apply { historyAccess = CatalogAccess.AVAILABLE }
+        val memory = Memory(); val controller = controller(this, catalog, memory)
+        controller.load(); val all = idle(controller)
+        assertEquals(DISCOVERY_ALL_TAB, all.selectedTabId)
+        controller.collection(catalog.collectionId); idle(controller)
+        controller.more(); val following = idle(controller)
+        controller.children(catalog.parent); idle(controller)
+        controller.collection("history"); val history = idle(controller)
+        assertFalse(controller.back())
+        val calls = catalog.browses
+        controller.collection(catalog.collectionId); var restored = idle(controller)
+        assertEquals(following.entries, restored.entries)
+        assertEquals(following.nextCursor, restored.nextCursor)
+        assertEquals(following.discoveryContextId, restored.discoveryContextId)
+        assertNull(restored.childHeading); assertNull(restored.navigationBackLabel)
+        assertEquals(calls, catalog.browses)
+        controller.all(); restored = idle(controller)
+        assertEquals(all.discoveryContextId, restored.discoveryContextId)
+        assertEquals(all.entries, restored.entries); assertEquals(all.nextCursor, restored.nextCursor)
+        controller.search("Offline"); assertNull(idle(controller).selectedTabId)
+        controller.collection("history"); restored = idle(controller)
+        assertEquals(history.discoveryContextId, restored.discoveryContextId)
+        assertEquals(history.entries, restored.entries)
+        assertEquals(0, memory.writes)
+        controller.close()
+    }
+
+    @Test fun restoredTabsBackAndDismissedLookupRebuildProviderExpiredContinuations() = runBlocking {
+        for (operation in listOf("tab", "child", "lookup")) {
+            val catalog = Catalog(defaultProviderInstances().last()).apply { expireContinuations = true }
+            val controller = controller(this, catalog, Memory())
+            controller.load(); val initial = idle(controller)
+            when (operation) {
+                "tab" -> { controller.collection(catalog.collectionId); idle(controller); controller.all() }
+                "child" -> { controller.children(catalog.parent); idle(controller); assertTrue(controller.back()) }
+                else -> { controller.openLink(); controller.resolveLink(catalog.offline.resource.identity); linkIdle(controller); controller.dismissLink() }
+            }
+            assertEquals(initial.entries, controller.state.value.entries)
+            assertEquals(initial.discoveryContextId, controller.state.value.discoveryContextId)
+            controller.more(); val restored = idle(controller)
+            assertEquals(catalog.items, restored.entries)
+            assertNull(restored.nextCursor); assertNull(restored.failure)
+            assertEquals(initial.discoveryContextId, restored.discoveryContextId)
+            controller.close()
+        }
+    }
+
+    @Test fun tabSwitchCancelsLatePrivateResultAndObservedAccessLossInvalidatesEveryRoot() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()).apply { historyAccess = CatalogAccess.AVAILABLE }
+        val controller = controller(this, catalog, Memory(), Dispatchers.Default)
+        controller.load(); val all = idle(controller)
+        val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
+        catalog.onBrowse = { if (it.collectionId == catalog.collectionId) {
+            entered.complete(Unit); check(release.await(5, TimeUnit.SECONDS))
+        } }
+        try {
+            controller.collection(catalog.collectionId); withTimeout(5_000) { entered.await() }
+            val pending = coroutineContext[Job]!!.children.toList()
+            controller.all()
+            assertEquals(all.entries, controller.state.value.entries)
+            catalog.failure = CatalogFailure.ACCESS_REQUIRED
+            release.countDown(); pending.forEach { it.join() }
+            assertNull(controller.state.value.failure)
+            assertEquals(all.discoveryContextId, controller.state.value.discoveryContextId)
+            catalog.onBrowse = {}
+            controller.collection("history"); val lost = idle(controller)
+            assertEquals(CatalogFailure.ACCESS_REQUIRED, lost.failure!!.reason)
+            assertTrue(lost.entries.isEmpty()); assertTrue(lost.retainedDiscoveryContextIds.isEmpty())
+            assertTrue(lost.privacyRevision > all.privacyRevision)
+            catalog.failure = null
+            controller.all(); val afterLoss = idle(controller)
+            assertNotEquals(all.discoveryContextId, afterLoss.discoveryContextId)
+            controller.load(); val afterLoad = idle(controller)
+            assertNotEquals(afterLoss.discoveryContextId, afterLoad.discoveryContextId)
+            assertTrue(afterLoad.retainedDiscoveryContextIds.isEmpty())
+        } finally { release.countDown(); controller.close() }
+        assertNull(controller.state.value.selectedTabId)
+        assertTrue(controller.state.value.retainedDiscoveryContextIds.isEmpty())
+    }
+
+    @Test fun failedContinuationRebuildRetainsTheCachedRowsAndCanBeRetriedSafely() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()).apply { expireContinuations = true }
+        val controller = controller(this, catalog, Memory())
+        controller.load(); val root = idle(controller)
+        controller.collection(catalog.collectionId); idle(controller); controller.all(); idle(controller)
+        catalog.failure = CatalogFailure.TEMPORARY
+        controller.more(); val failed = idle(controller)
+        assertEquals(CatalogFailure.TEMPORARY, failed.failure!!.reason)
+        assertEquals(root.entries, failed.entries); assertEquals(root.discoveryContextId, failed.discoveryContextId)
+        assertEquals(root.nextCursor, failed.nextCursor)
+        catalog.failure = null
+        controller.retry(); val recovered = idle(controller)
+        assertEquals(catalog.items, recovered.entries); assertNull(recovered.failure); assertNull(recovered.nextCursor)
+        controller.close()
+    }
+
+    @Test fun reloadFromChildrenReloadsTheSelectedTabOrGlobalSearchRoot() = runBlocking {
+        for (searchRoot in listOf(false, true)) {
+            val catalog = Catalog(defaultProviderInstances().last()).apply { initialCollectionId = collectionId }
+            val controller = controller(this, catalog, Memory())
+            controller.load(); idle(controller)
+            if (searchRoot) { controller.search("Offline"); idle(controller) }
+            val root = controller.state.value
+            controller.children(catalog.parent); idle(controller)
+            controller.load(); val restored = idle(controller)
+            assertEquals(root.query.copy(cursor = null), restored.query)
+            assertEquals(root.selectedTabId, restored.selectedTabId)
+            assertEquals(root.entries, restored.entries)
+            assertNotEquals(root.discoveryContextId, restored.discoveryContextId)
+            assertTrue(restored.privacyRevision > root.privacyRevision)
+            assertNull(restored.childHeading); assertNull(restored.navigationBackLabel)
+            assertTrue(restored.retainedDiscoveryContextIds.isEmpty()); assertFalse(controller.back())
+            controller.close()
+        }
+    }
+
+    @Test fun unavailableTabRetentionIsBoundedAndReloadDiscardsEverySnapshot() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last())
+        val controller = controller(this, catalog, Memory())
+        controller.load(); idle(controller)
+        repeat(MAX_DISCOVERY_TABS + 5) { controller.collection("unavailable-$it"); idle(controller) }
+        assertTrue(controller.state.value.retainedDiscoveryContextIds.size <= MAX_DISCOVERY_TABS)
+        controller.load(); idle(controller)
+        assertTrue(controller.state.value.retainedDiscoveryContextIds.isEmpty())
+        controller.close()
+    }
+
+    @Test fun linkResolutionIsAnExplicitPreviewAndWriteFailuresStayInTheDialog() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val controller = controller(this, catalog, memory)
+        controller.load(); val discovery = idle(controller)
+        controller.openLink()
+        controller.resolveLink(" ${catalog.episode.resource.identity} "); var state = linkIdle(controller)
+        assertEquals(catalog.episode, state.link!!.entry)
+        assertEquals(catalog.episode.resource.identity, catalog.lastLookupInput)
+        assertEquals(0, memory.writes); assertTrue(state.configured!!.isEmpty())
+        assertEquals(discovery.entries, state.entries); assertEquals(discovery.discoveryContextId, state.discoveryContextId)
+        memory.failWrite = true
+        controller.addLink(); state = linkIdle(controller)
+        assertEquals(catalog.episode, state.link!!.entry)
+        assertNotNull(state.link.message)
+        assertNull(state.message); assertNull(state.failure); assertFalse(state.link.saving)
+        assertTrue(state.configured!!.isEmpty())
+        controller.editLink(); state = controller.state.value
+        assertNull(state.link!!.entry); assertNull(state.link.message); assertNull(state.link.failure)
+        memory.failWrite = false
+        controller.resolveLink(catalog.future.resource.identity); linkIdle(controller)
+        controller.addLink(); state = linkIdle(controller)
+        assertNull(state.link); assertEquals(catalog.future, state.configured!!.single().entry)
+        assertNull(state.message); assertEquals(discovery.entries, state.entries)
+        assertEquals(1, memory.writes)
+        controller.close()
+    }
+
+    @Test fun linkValidationLookupFailuresDuplicatesAndLimitNeverCommit() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val controller = controller(this, catalog, memory)
+        controller.load(); idle(controller); controller.openLink()
+        for (input in listOf(" ", "x".repeat(2049), "\n${catalog.offline.resource.identity}", "invisible\u200b")) {
+            controller.resolveLink(input)
+            assertEquals(CatalogFailure.INVALID_INPUT, controller.state.value.link!!.failure!!.reason)
+        }
+        assertEquals(0, catalog.lookupCalls)
+        catalog.lookupFailure = CatalogFailure.NOT_FOUND
+        controller.resolveLink("missing"); assertEquals(CatalogFailure.NOT_FOUND, linkIdle(controller).link!!.failure!!.reason)
+        catalog.lookupFailure = null
+        catalog.lookupEntry = catalog.offline.copy(resource = catalog.offline.resource.copy(providerId = ProviderId("abema")))
+        controller.resolveLink("foreign"); assertEquals(CatalogFailure.INVALID_INPUT, linkIdle(controller).link!!.failure!!.reason)
+        catalog.lookupEntry = null
+        controller.resolveLink(catalog.offline.resource.identity); linkIdle(controller)
+        controller.addLink(); idle(controller)
+        val writes = memory.writes
+        controller.openLink(); controller.resolveLink(catalog.offline.resource.identity); linkIdle(controller)
+        controller.addLink()
+        assertEquals("This stream is already configured.", controller.state.value.link!!.message)
+        assertEquals(writes, memory.writes)
+        controller.dismissLink(); controller.close()
+
+        val fullMemory = Memory()
+        repeat(MAX_CONFIGURED_SOURCES) { index -> store(fullMemory, catalog.instance).add(catalog.offline.copy(
+            resource = catalog.offline.resource.copy(identity = "saved-$index"))) { emptyList() } }
+        val full = controller(this, Catalog(catalog.instance), fullMemory)
+        full.load(); idle(full); full.openLink(); full.resolveLink(catalog.offline.resource.identity); linkIdle(full)
+        val fullWrites = fullMemory.writes
+        full.addLink()
+        assertEquals("Stream limit reached. Remove a stream before adding another.", full.state.value.link!!.message)
+        assertEquals(fullWrites, fullMemory.writes)
+        full.close()
+    }
+
+    @Test fun dismissAndReopenRejectsLateLookupAndAccessLossClearsPrivateTabSnapshots() = runBlocking {
+        for (failure in listOf(null, CatalogFailure.ACCESS_REQUIRED)) {
+            val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory(), Dispatchers.Default)
+            controller.load(); val root = idle(controller)
+            controller.collection(catalog.collectionId); idle(controller)
+            val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
+            catalog.onLookup = { entered.complete(Unit); check(release.await(5, TimeUnit.SECONDS)) }
+            try {
+                controller.openLink(); controller.resolveLink(catalog.offline.resource.identity)
+                withTimeout(5_000) { entered.await() }
+                val pending = coroutineContext[Job]!!.children.toList()
+                controller.dismissLink(); controller.openLink()
+                catalog.lookupFailure = failure
+                release.countDown(); pending.forEach { it.join() }
+                assertEquals(StreamLinkState(), controller.state.value.link)
+                assertNull(controller.state.value.failure)
+                catalog.onLookup = {}
+                catalog.lookupFailure = CatalogFailure.ACCESS_REQUIRED
+                controller.resolveLink("account-item"); val lost = linkIdle(controller)
+                assertEquals(CatalogFailure.ACCESS_REQUIRED, lost.link!!.failure!!.reason)
+                assertTrue(lost.entries.isEmpty()); assertTrue(lost.retainedDiscoveryContextIds.isEmpty())
+                assertTrue(lost.privacyRevision > root.privacyRevision)
+            } finally { release.countDown(); controller.close() }
+        }
+    }
+
+    @Test fun acceptedLinkWriteClosesOnlyAfterCommitAndSurvivesControllerReplacement() = runBlocking {
+        val instance = defaultProviderInstances().last(); val memory = Memory(); val catalog = Catalog(instance)
+        val first = controller(this, catalog, memory, Dispatchers.Default)
+        first.load(); idle(first); first.openLink(); first.resolveLink(catalog.episode.resource.identity); linkIdle(first)
+        val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
+        memory.beforeWrite = { entered.complete(Unit); check(release.await(5, TimeUnit.SECONDS)) }
+        val next = controller(this, Catalog(instance), memory, Dispatchers.Default)
+        try {
+            first.addLink(); withTimeout(5_000) { entered.await() }
+            assertTrue(first.state.value.link!!.saving)
+            first.dismissLink(); assertNotNull(first.state.value.link)
+            assertTrue(first.state.value.configured!!.isEmpty())
+            first.close(); val closed = first.state.value
+            next.load()
+            assertNull(withTimeoutOrNull(100) { next.state.first { it.configured != null } })
+            release.countDown(); val restored = idle(next)
+            assertEquals(catalog.episode, restored.configured!!.single().entry)
+            assertNull(restored.link); assertEquals(closed, first.state.value)
+            assertEquals(1, memory.writes)
+        } finally { release.countDown(); first.close(); next.close() }
     }
 
     @Test fun previewCannotBypassSuspendedLoadUnreadableStoreMissingCapabilitiesOrWrongProvider() = runBlocking {

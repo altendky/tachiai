@@ -32,6 +32,7 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
         route to androidTwitchCatalogConnectionBinding(application, instanceId, active, route.proof)
     },
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val startupValidation: TwitchCatalogReadOnlyValidation? = null,
 ) : TwitchPlaybackPreparation {
     companion object {
         private val cancellationWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
@@ -104,7 +105,9 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
             check(session.compareAndSet(null, connection))
             check(valid.get() && active())
             report(connection.readSummary(), onStatus)
-            val result = connection.validate(force = true)
+            val result = startupValidation?.let { connection.adoptReadOnlyValidation(it, route.proof) }
+                ?: if (startupValidation == null) connection.validate(force = true)
+                else throw IOException("Startup validation is no longer current")
             report(result.summary, onStatus)
             lease = result.lease ?: throw IOException("Playback connection unavailable")
             acceptanceDeadlineMs = minOf(checkNotNull(lease).deadlineMs, sourceDeadline)

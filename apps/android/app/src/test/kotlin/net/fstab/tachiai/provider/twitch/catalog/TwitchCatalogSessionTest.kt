@@ -77,6 +77,196 @@ class TwitchCatalogSessionTest {
         init { requests.validate = { validation() }; requests.refresh = { token() } }
     }
 
+    @Test fun readOnlyStartupUsesTheActualValidationAndRetainsItsLeaseWithoutRefreshing() {
+        val fixture = Fixture(); fixture.connect()
+        val saved = fixture.memory.bytes!!.copyOf(); val writes = fixture.memory.writes
+        fixture.session().use { session ->
+            val result = session.validateReadOnly()
+            assertEquals(TwitchCatalogSessionState.CONNECTED, result.summary.state)
+            assertNotNull(result.lease); assertNotNull(result.validationStartedMs)
+            assertFalse(result.requiresAuthorization); assertNull(result.transportFailure)
+            assertEquals(1, fixture.requests.validations.get()); assertEquals(0, fixture.requests.refreshes.get())
+            assertTrue(session.enrollReadOnlyValidation(result))
+            assertSame(result.lease, session.validate().lease)
+            assertEquals(1, fixture.requests.validations.get())
+            assertEquals(writes, fixture.memory.writes); assertArrayEquals(saved, fixture.memory.bytes)
+        }
+    }
+
+    @Test fun twoFreshConsumersAdoptOneReadOnlyValidationWithTheirOwnLeasesAndTheOriginalDeadline() {
+        val f = Fixture(); f.connect()
+        val proof = "a".repeat(64)
+        val maintenance = TwitchCatalogMaintenanceCoordinator(f.store, { f.requests.transport() }, { f.ownerMatches },
+            wallMs = { f.clock.wall }, monotonicMs = { f.clock.mono })
+        fun consumer() = TwitchCatalogSession(f.store, { f.requests.transport() }, { f.clock.wall }, { f.clock.mono },
+            { f.ownerMatches }, maintenance)
+        consumer().use { source ->
+            val validated = source.validateReadOnly()
+            val original = checkNotNull(validated.lease)
+            val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+            assertTrue(source.enrollReadOnlyValidation(validated))
+            val saved = f.memory.bytes!!.copyOf(); val writes = f.memory.writes
+            f.clock.advance(1000)
+            consumer().use { first -> consumer().use { second ->
+                val a = checkNotNull(first.adoptReadOnlyValidation(receipt, proof)).lease!!
+                f.clock.advance(1000)
+                val b = checkNotNull(second.adoptReadOnlyValidation(receipt, proof)).lease!!
+                assertNotSame(original, a); assertNotSame(a, b)
+                assertEquals(original.deadlineMs, a.deadlineMs); assertEquals(original.deadlineMs, b.deadlineMs)
+                assertTrue(first.isCurrent(a)); assertTrue(second.isCurrent(b))
+                assertSame(a, first.validate().lease); assertSame(b, second.validate().lease)
+                assertNull(first.adoptReadOnlyValidation(receipt, proof)) // Adoption never replaces a consumer's lease.
+                assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+                assertEquals(writes, f.memory.writes); assertArrayEquals(saved, f.memory.bytes)
+                first.close(); assertTrue(source.isCurrent(original)); assertTrue(second.isCurrent(b))
+            } }
+            assertEquals("TwitchCatalogReadOnlyValidation(redacted)", receipt.toString())
+        }
+    }
+
+    @Test fun receiptCannotCrossInstancesOrRoutesAndOnlyTheActualReadOnlyResultCanExportIt() {
+        val f = Fixture(); f.connect(); val proof = "a".repeat(64)
+        f.session().use { source ->
+            val ordinary = source.validate()
+            assertNull(source.exportReadOnlyValidation(ordinary, proof))
+            val validated = source.validateReadOnly()
+            val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+            assertNull(source.exportReadOnlyValidation(validated, "invalid"))
+            val reads = f.memory.reads
+            f.session().use { otherRoute -> assertNull(otherRoute.adoptReadOnlyValidation(receipt, "b".repeat(64))) }
+            assertEquals(reads, f.memory.reads)
+            val foreign = Fixture(); foreign.connect()
+            val foreignReads = foreign.memory.reads
+            foreign.session().use { otherInstance -> assertNull(otherInstance.adoptReadOnlyValidation(receipt, proof)) }
+            assertEquals(foreignReads, foreign.memory.reads)
+            assertEquals(2, f.requests.validations.get()); assertEquals(0, foreign.requests.validations.get())
+            assertEquals(0, f.requests.refreshes.get()); assertEquals(0, foreign.requests.refreshes.get())
+        }
+    }
+
+    @Test fun adoptionRejectsRotatedCorruptUnreadableOrClosedSourcesWithoutAnyNewExchange() {
+        val proof = "a".repeat(64)
+        for (mode in 0..3) {
+            val f = Fixture(); f.connect()
+            f.session().use { source ->
+                val receipt = checkNotNull(source.exportReadOnlyValidation(source.validateReadOnly(), proof))
+                when (mode) {
+                    0 -> f.connect()
+                    1 -> f.memory.bytes = byteArrayOf(0)
+                    2 -> f.memory.denyRead = true
+                    else -> source.close()
+                }
+                f.session().use { consumer -> assertNull(consumer.adoptReadOnlyValidation(receipt, proof)) }
+                assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+            }
+        }
+    }
+
+    @Test fun sameGenerationProviderExpiryTighteningInvalidatesTheOldReceiptWithoutAnExchange() {
+        val f = Fixture(); f.connectLocal(providerMs = 7_200_000L); val proof = "a".repeat(64)
+        f.session().use { source ->
+            val validated = source.validateReadOnly()
+            val original = checkNotNull(validated.lease)
+            val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+            val tightened = checkNotNull(f.store.tightenProviderExpiry(original.grant, f.clock.wall + 30_000L))
+            assertEquals(original.grant.generation, tightened.generation)
+            assertEquals(original.grant.revision, tightened.revision)
+            assertTrue(source.isCurrent(original)) // Existing same-pair gate alone is insufficient for receipt transfer.
+            assertNull(source.exportReadOnlyValidation(validated, proof))
+            f.session().use { consumer -> assertNull(consumer.adoptReadOnlyValidation(receipt, proof)) }
+            assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+        }
+    }
+
+    @Test fun adoptionRefusesOriginalDeadlineClockRollbackAndWallExpiryWithoutExtendingAnything() {
+        val proof = "a".repeat(64)
+        for (mode in 0..3) {
+            val f = Fixture(); f.connect()
+            f.session().use { source ->
+                val validated = source.validateReadOnly()
+                val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+                when (mode) {
+                    0 -> f.clock.mono = checkNotNull(validated.lease).deadlineMs
+                    1 -> f.clock.mono--
+                    2 -> f.clock.wall = 999_999L
+                    else -> f.clock.wall += 7_200_000L
+                }
+                val writes = f.memory.writes
+                f.session().use { consumer -> assertNull(consumer.adoptReadOnlyValidation(receipt, proof)) }
+                assertEquals(writes, f.memory.writes)
+                assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+            }
+        }
+    }
+
+    @Test fun sourceClosureOwnerLossAndDeadlineDuringProtectedAdoptionReadRejectTheLateLease() {
+        val proof = "a".repeat(64)
+        for (mode in 0..2) {
+            val f = Fixture(); f.connect()
+            f.session().use { source ->
+                val validated = source.validateReadOnly()
+                val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+                f.memory.onRead = {
+                    when (mode) {
+                        0 -> source.close()
+                        1 -> f.ownerMatches = false
+                        else -> f.clock.mono = checkNotNull(validated.lease).deadlineMs
+                    }
+                }
+                f.session().use { consumer ->
+                    assertNull(consumer.adoptReadOnlyValidation(receipt, proof))
+                    assertFalse(consumer.hasLocallyCurrentLease())
+                }
+                assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+            }
+        }
+    }
+
+    @Test fun ownerReconciliationAfterCreatingTheConsumerLeaseCannotSpendItsRemainingDeadline() {
+        val f = Fixture(); f.connect(); val proof = "a".repeat(64)
+        f.session().use { source ->
+            val validated = source.validateReadOnly()
+            val receipt = checkNotNull(source.exportReadOnlyValidation(validated, proof))
+            lateinit var consumer: TwitchCatalogSession
+            consumer = TwitchCatalogSession(f.store, { error("Adoption cannot open HTTP") }, { f.clock.wall }, { f.clock.mono }, {
+                if (consumer.hasLocallyCurrentLease()) f.clock.mono = checkNotNull(validated.lease).deadlineMs
+                true
+            })
+            consumer.use {
+                assertNull(it.adoptReadOnlyValidation(receipt, proof))
+                assertFalse(it.hasLocallyCurrentLease())
+            }
+            assertEquals(1, f.requests.validations.get()); assertEquals(0, f.requests.refreshes.get())
+        }
+    }
+
+    @Test fun readOnlyStartupCannotSpendRefreshCredentialsForExpiredOrRejectedAccess() {
+        for (expired in listOf(false, true)) {
+            val fixture = Fixture(); fixture.connect()
+            if (expired) fixture.clock.advance(7_200_000L)
+            else fixture.requests.validate = { DeviceAuthResponse(401, emptyMap()) }
+            val saved = fixture.memory.bytes!!.copyOf(); val writes = fixture.memory.writes
+            fixture.session().use { session ->
+                val result = session.validateReadOnly()
+                assertNull(result.lease); assertTrue(result.requiresAuthorization)
+                assertEquals(if (expired) 0 else 1, fixture.requests.validations.get())
+                assertEquals(0, fixture.requests.refreshes.get()); assertFalse(session.enrollReadOnlyValidation(result))
+                assertEquals(writes, fixture.memory.writes); assertArrayEquals(saved, fixture.memory.bytes)
+            }
+        }
+    }
+
+    @Test fun missingStartupGrantRequiresProviderAuthorizationWithoutAnyNetworkOperation() {
+        val fixture = Fixture()
+        fixture.session().use { session ->
+            val result = session.validateReadOnly()
+            assertEquals(TwitchCatalogSessionState.MISSING, result.summary.state)
+            assertNull(result.lease); assertTrue(result.requiresAuthorization)
+            assertEquals(0, fixture.requests.validations.get()); assertEquals(0, fixture.requests.refreshes.get())
+            assertEquals(0, fixture.memory.writes)
+        }
+    }
+
     @Test fun restartIsUnverifiedAndHourlyForegroundGateValidatesBeforeIssuingAnotherLease() {
         val fixture = Fixture(); fixture.connect(); val session = fixture.session()
         assertEquals(TwitchCatalogSessionState.UNVERIFIED, session.readSummary().state)

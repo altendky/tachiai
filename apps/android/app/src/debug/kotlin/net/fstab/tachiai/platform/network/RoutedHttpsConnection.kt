@@ -166,7 +166,9 @@ internal class RoutedHttpsConnection(
                 .connectTimeout(connectTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
                 .readTimeout(readTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
                 .callTimeout(30, TimeUnit.SECONDS)
-            if (failureObserver != null) {
+            // Typed request evidence is always available, independent of the
+            // optional diagnostic observer. Preserve an existing listener.
+            run {
                 val inherited = client.eventListenerFactory
                 configured.eventListenerFactory { active ->
                     val original = inherited.create(active)
@@ -200,8 +202,8 @@ internal class RoutedHttpsConnection(
             activeClient.newCall(request).also { call = it }
         }
         val result = try { pending.execute() } catch (error: Exception) {
-            rememberDiagnostic(error)
-            disconnect(); throw IOException("Routed HTTPS request failed")
+            val evidence = rememberDiagnostic(error)
+            disconnect(); throw ProviderTransportException(evidence)
         }
         return synchronized(lock) {
             if (disconnected || !routeActive()) {
@@ -211,8 +213,20 @@ internal class RoutedHttpsConnection(
         }
     }
 
-    private fun rememberDiagnostic(error: Exception) {
-        val observer = synchronized(lock) { failureObserver } ?: return
+    private fun rememberDiagnostic(error: Exception): ProviderTransportEvidence {
+        val cancelled = synchronized(lock) { disconnected } || !runCatching(routeActive).getOrDefault(false)
+        val observedPhase = if (!phaseAvailable.get()) ProviderTransportPhase.UNKNOWN else when (phase.get()) {
+            RoutedHttpsCallPhase.DNS -> ProviderTransportPhase.DNS
+            RoutedHttpsCallPhase.CONNECT -> ProviderTransportPhase.CONNECT
+            RoutedHttpsCallPhase.TLS -> ProviderTransportPhase.TLS
+            RoutedHttpsCallPhase.REQUEST_HEADERS, RoutedHttpsCallPhase.REQUEST_HEADERS_COMPLETE,
+            RoutedHttpsCallPhase.REQUEST_BODY -> ProviderTransportPhase.REQUEST
+            RoutedHttpsCallPhase.RESPONSE_HEADERS, RoutedHttpsCallPhase.RESPONSE_BODY -> ProviderTransportPhase.RESPONSE
+            else -> ProviderTransportPhase.UNKNOWN
+        }
+        val evidence = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
+            else providerTransportEvidence(error).let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
+        val observer = synchronized(lock) { failureObserver } ?: return evidence
         val category = when (error) {
             is SSLHandshakeException -> RoutedHttpsFailureCategory.TLS_HANDSHAKE
             is SSLPeerUnverifiedException -> RoutedHttpsFailureCategory.TLS_PEER
@@ -230,6 +244,7 @@ internal class RoutedHttpsConnection(
         if (firstDiagnostic.compareAndSet(null, snapshot)) {
             try { observer(snapshot) } catch (_: Throwable) { }
         }
+        return evidence
     }
 
     override fun disconnect() {
@@ -280,7 +295,9 @@ internal class RoutedHttpsConnection(
             private val input = response.body.byteStream()
             private fun <T> readBody(action: () -> T): T = withResponseBodyLock {
                 checkBodyReadable()
-                val result = action()
+                val result = try { action() } catch (error: IOException) {
+                    throw ProviderTransportException(rememberDiagnostic(error))
+                }
                 checkBodyReadable()
                 result
             }

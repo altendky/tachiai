@@ -19,8 +19,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.platform.network.*
 
 class AbemaChannelHttpTransportTest {
+    @Test fun channelReadKeepsTypedTransportFailureWhileMalformedResponsesRemainUnclassified() {
+        val evidence = ProviderTransportEvidence(ProviderTransportFailure.DNS)
+        val connection = Connection(url, body, beforeResponse = {
+            throw ProviderTransportException(evidence)
+        })
+        val transport = AbemaChannelHttpTransport(open = { connection })
+        val error = failure(AbemaChannelFailure.NETWORK_FAILED) { transport.fetch() }
+        assertEquals(evidence, error.transportFailure); assertEquals(1, connection.disconnects)
+        transport.close()
+        val malformed = AbemaChannelHttpTransport(open = { Connection(url, "not json".toByteArray()) })
+        assertNull(failure(AbemaChannelFailure.INVALID_RESPONSE) { malformed.fetch() }.transportFailure)
+        malformed.close()
+    }
+
     private val url = URL("https://api.abema.io/v1/channels")
     private val body = "{\"channels\":[{\"id\":\"sumo\",\"name\":\"相撲\",\"viewingOpened\":true}]}".toByteArray()
 

@@ -2,6 +2,8 @@ package net.fstab.tachiai.provider.abema
 
 import java.util.Collections
 import net.fstab.tachiai.presentation.ProviderId
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.ProviderTransportFailureCarrier
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogEntry
 import net.fstab.tachiai.provider.catalog.CatalogIntent
@@ -19,8 +21,9 @@ internal enum class AbemaChannelFailure {
 }
 
 // Only closed categories escape; never retain a response, URL or original cause.
-internal class AbemaChannelException(val category: AbemaChannelFailure) :
-    Exception(category.name, null, false, false)
+internal class AbemaChannelException(val category: AbemaChannelFailure,
+    override val transportFailure: ProviderTransportEvidence? = null) :
+    Exception(category.name, null, false, false), ProviderTransportFailureCarrier
 
 internal class AbemaChannelResponse(
     val status: Int,

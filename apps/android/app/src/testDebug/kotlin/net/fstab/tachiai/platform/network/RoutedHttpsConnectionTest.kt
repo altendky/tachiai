@@ -29,6 +29,9 @@ import okio.ForwardingSource
 import okio.buffer
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.presentation.*
+import net.fstab.tachiai.provider.abema.*
+import net.fstab.tachiai.provider.catalog.*
 
 // Real TCP CONNECT and TLS, but deliberately no provider endpoint, account,
 // imported file or native tunnel. Native bridge/WireGuard have separate tests.
@@ -41,12 +44,16 @@ class RoutedHttpsConnectionTest {
     private inner class ProxyFixture(private val refusal: Boolean = false, private val block: Boolean = false,
         private val redirect: Boolean = false, private val user: String = username,
         private val secret: String = password, private val authRealm: String = realm,
-        private val slowBody: Boolean = false, private val blockHeaders: Boolean = false) : AutoCloseable {
+        private val slowBody: Boolean = false, private val blockHeaders: Boolean = false,
+        private val originHost: String = "127.0.0.1", private val responseBody: String = "ok",
+        private val responseType: String = "text/plain", private val responseStatus: Int = 200,
+        private val requestCount: Int = 1) : AutoCloseable {
         private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         val port get() = server.localPort
         val accepted = CountDownLatch(1)
         val connectHeaders = AtomicReference<List<String>>()
         val originHeaders = AtomicReference<List<String>>()
+        val originRequests = AtomicInteger()
         val body = AtomicReference<ByteArray>()
         val outbound = CopyOnWriteArrayList<InetSocketAddress>()
         val observeBodyRead = AtomicBoolean()
@@ -56,10 +63,11 @@ class RoutedHttpsConnectionTest {
         val responseBodyCloses = AtomicInteger()
         private val current = AtomicReference<Socket?>()
         private val certificate = HeldCertificate.Builder().commonName("route fixture")
-            .addSubjectAlternativeName("127.0.0.1").build()
+            .addSubjectAlternativeName(originHost).build()
         private val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
         private val clientCertificates = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
         private val worker = Thread {
+          repeat(requestCount) {
             try {
                 val socket = server.accept().also { current.set(it); it.soTimeout = 5_000 }
                 val input = BufferedInputStream(socket.getInputStream())
@@ -72,15 +80,16 @@ class RoutedHttpsConnectionTest {
                     socket.getOutputStream().write("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"$authRealm\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
                     return@Thread
                 }
-                assertEquals("CONNECT 127.0.0.1:443 HTTP/1.1", headers.first())
+                assertEquals("CONNECT $originHost:443 HTTP/1.1", headers.first())
                 socket.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
-                val tls = serverCertificates.sslSocketFactory().createSocket(socket, "127.0.0.1", socket.port, true) as SSLSocket
+                val tls = serverCertificates.sslSocketFactory().createSocket(socket, originHost, socket.port, true) as SSLSocket
                 current.set(tls)
                 tls.useClientMode = false
                 tls.startHandshake()
                 val originInput = BufferedInputStream(tls.getInputStream())
                 val origin = readHeaders(originInput)
                 originHeaders.set(origin)
+                originRequests.incrementAndGet()
                 val length = origin.firstOrNull { it.startsWith("Content-Length:", true) }?.substringAfter(':')?.trim()?.toInt() ?: 0
                 val received = ByteArray(length)
                 var offset = 0
@@ -88,7 +97,7 @@ class RoutedHttpsConnectionTest {
                 body.set(received)
                 if (blockHeaders) { while (originInput.read() >= 0) Unit; return@Thread }
                 val response = if (redirect) "HTTP/1.1 302 Found\r\nLocation: https://other.example/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    else "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\n" + if (slowBody) "" else "ok"
+                    else "HTTP/1.1 $responseStatus ${if (responseStatus == 200) "OK" else "Fixture"}\r\nContent-Type: $responseType\r\nContent-Length: ${responseBody.toByteArray().size}\r\nConnection: close\r\n\r\n" + if (slowBody) "" else responseBody
                 tls.getOutputStream().write(response.toByteArray())
                 tls.getOutputStream().flush()
                 if (slowBody) while (originInput.read() >= 0) { /* Wait for the cancelled client to close. */ }
@@ -96,11 +105,16 @@ class RoutedHttpsConnectionTest {
                 // Expected for bad certificates, cancellation and close. The
                 // test asserts the client's result instead of treating this as success.
             } finally { current.getAndSet(null)?.close() }
+          }
         }.apply { isDaemon = true; start() }
 
         fun client(trusted: Boolean = true): OkHttpClient {
             val builder = OkHttpClient.Builder()
                 .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
+                .dns { hostname ->
+                    check(hostname == "127.0.0.1") { "Owned fixture refuses external DNS" }
+                    listOf(InetAddress.getByName("127.0.0.1"))
+                }
                 .socketFactory(object : SocketFactory() {
                     override fun createSocket(): Socket = object : Socket() {
                         override fun getInputStream() = object : FilterInputStream(super.getInputStream()) {
@@ -122,7 +136,10 @@ class RoutedHttpsConnectionTest {
                                 observed { `in`.read(bytes, offset, length) }
                         }
                         override fun connect(endpoint: java.net.SocketAddress, timeout: Int) {
-                            outbound += endpoint as InetSocketAddress
+                            check(endpoint is InetSocketAddress && endpoint.address?.isLoopbackAddress == true) {
+                                "Owned fixture refuses external sockets"
+                            }
+                            outbound += endpoint
                             super.connect(endpoint, timeout)
                         }
                     }
@@ -171,6 +188,174 @@ class RoutedHttpsConnectionTest {
         }
     }
 
+    private val channelsJson = "{\"channels\":[{\"id\":\"owned-fixture\",\"name\":\"Owned fixture channel\"}]}"
+    private val firstRouteId = "12345678-1234-1234-1234-123456789abc"
+    private val secondRouteId = "12345678-1234-1234-1234-123456789abd"
+
+    // Only this fixture client trusts the owned origin certificate. Production
+    // TLS policy, provider endpoints and route factories remain unchanged.
+    private inner class ChannelStartupNetwork(
+        private val first: ProxyFixture, private val second: ProxyFixture,
+        private val firstPort: Int = first.port, firstTrusted: Boolean = true,
+        private val uncertainFirstCleanup: Boolean = false,
+    ) : AutoCloseable {
+        private val clients = listOf(first.client(firstTrusted).newBuilder()
+            .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", firstPort))).build(), second.client())
+        private val ids = listOf(firstRouteId, secondRouteId)
+        private val ports = listOf(firstPort, second.port)
+        private val instance = defaultProviderInstances().first().copy(setup = ProviderSetup(
+            SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, firstRouteId, "First owned exit"),
+            fallbackRoutes = listOf(SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, secondRouteId, "Second owned exit"))))
+        private val profiles = ids.mapIndexed { index, id -> id to parseConnectionProfile(
+            "http://$username:$password@127.0.0.1:${ports[index]}".toByteArray()) }.toMap()
+        val pool = captureProviderRoutePool(instance.id, instance.service, { listOf(instance) }) { profiles }
+        val progress = CopyOnWriteArrayList<ProviderStartupProgress>()
+        val startup = ProviderRouteStartup(pool, elapsed() + 30_000, ::elapsed, { true }, progress::add,
+            scheduleDeadline = { _, _ -> AutoCloseable {} })
+        val created = CopyOnWriteArrayList<String>()
+        val requests = listOf(AtomicInteger(), AtomicInteger())
+        val disconnected = listOf(AtomicInteger(), AtomicInteger())
+        val closed = listOf(AtomicBoolean(), AtomicBoolean())
+        private val failedCleanup = listOf(AtomicBoolean(), AtomicBoolean())
+
+        fun prepare(): ProviderStartupResult<ProviderCatalog> = prepareAbemaChannelCatalogStartup(startup) { owner, attempt ->
+            val index = ids.indexOf(owner.choice.connectionId)
+            check(index >= 0 && owner.choice.mode == SourceRouteMode.SAVED_CONNECTION)
+            assertEquals("127.0.0.1:${ports[index]}", checkNotNull(owner.profile).endpoint)
+            if (index == 1) {
+                assertTrue("The rejected owner must close before the next candidate exists", closed[0].get())
+                assertEquals(requests[0].get(), disconnected[0].get())
+                assertFalse(failedCleanup[0].get())
+            }
+            created += checkNotNull(owner.choice.connectionId)
+            val observation = AbemaChannelStartupObservation()
+            observation.bindCurrent(attempt::canContinue)
+            val catalog = AbemaChannelCatalog(instance.id, canPublish = observation::isCurrent, transportFactory = { gate ->
+                val http = AbemaChannelHttpTransport(open = { requested ->
+                    assertEquals("https://api.abema.io/v1/channels", requested.toExternalForm())
+                    requests[index].incrementAndGet()
+                    RoutedHttpsConnection(requested, clients[index], { gate() && observation.isCurrent() }) {
+                        disconnected[index].incrementAndGet()
+                    }
+                }, canRequest = { gate() && observation.isCurrent() }, onFailure = { error ->
+                    observation.failure((error as? ProviderTransportFailureCarrier)?.transportFailure)
+                })
+                object : AbemaChannelTransport {
+                    override fun fetch() = http.fetch().also { observation.response(it.status) }
+                    override fun cancelActiveRequest() = http.cancelActiveRequest()
+                    override fun close() = http.close()
+                }
+            })
+            observation.own { !failedCleanup[index].get() && requests[index].get() == disconnected[index].get() }
+            val owned = object : ProviderCatalog by catalog {
+                override fun close() {
+                    if (!closed[index].compareAndSet(false, true)) return
+                    try { catalog.close() } finally {
+                        clients[index].dispatcher.cancelAll(); clients[index].connectionPool.evictAll()
+                        clients[index].dispatcher.executorService.shutdownNow()
+                    }
+                    if (index == 0 && uncertainFirstCleanup) {
+                        failedCleanup[index].set(true)
+                        throw IOException("Owned fixture cleanup remains unconfirmed")
+                    }
+                }
+            }
+            AbemaChannelStartupCandidate(owned, observation)
+        }
+
+        override fun close() {
+            startup.close()
+            clients.forEach { it.dispatcher.cancelAll(); it.connectionPool.evictAll(); it.dispatcher.executorService.shutdownNow() }
+        }
+    }
+
+    private fun elapsed() = System.nanoTime() / 1_000_000
+    private fun refusedLoopbackPort() = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+
+    @Test fun realChannelsGetUsesSecondExitAfterRefusedFirstConnectionIsCleanedThenStaysThere() {
+        ProxyFixture(originHost = "api.abema.io", responseBody = channelsJson, responseType = "application/json").use { first ->
+            ProxyFixture(originHost = "api.abema.io", responseBody = channelsJson, responseType = "application/json", requestCount = 2).use { second ->
+                val refusedPort = refusedLoopbackPort()
+                ChannelStartupNetwork(first, second, firstPort = refusedPort).use { fixture ->
+                    val result = fixture.prepare() as ProviderStartupResult.Ready
+                    assertEquals(fixture.pool.candidates[1].proof, result.owner.proof)
+                    assertEquals(secondRouteId, result.owner.choice.connectionId)
+                    assertTrue(fixture.startup.admitted)
+                    assertEquals(listOf(firstRouteId, secondRouteId), fixture.created.toList())
+                    assertEquals(listOf(1, 1), fixture.requests.map { it.get() })
+                    assertEquals(0, first.originRequests.get()); assertEquals(1, second.originRequests.get())
+                    val initial = (result.value.browse(CatalogQuery()) as CatalogResult.Value).value
+                    assertEquals("owned-fixture", initial.entries.single().resource.identity)
+                    assertEquals(1, second.originRequests.get()) // The real first page is consumed directly.
+                    val later = (result.value.browse(CatalogQuery()) as CatalogResult.Value).value
+                    assertEquals(initial.entries, later.entries)
+                    assertEquals(listOf(1, 2), fixture.requests.map { it.get() })
+                    assertEquals(2, second.originRequests.get()); assertEquals(0, first.originRequests.get())
+                    assertTrue(first.outbound.isNotEmpty())
+                    assertTrue(first.outbound.all { it.address.isLoopbackAddress && it.port == refusedPort })
+                    assertTrue(second.outbound.all { it.address.isLoopbackAddress && it.port == second.port })
+                    assertEquals("GET /v1/channels HTTP/1.1", second.originHeaders.get().first())
+                    assertFalse(second.originHeaders.get().any { it.startsWith("Authorization:", true) || it.startsWith("Cookie:", true) || it.startsWith("Proxy-Authorization:", true) })
+                    assertEquals(ProviderStartupPhase.SELECTED, fixture.progress.last().phase)
+                    assertTrue(fixture.progress.any { it.phase == ProviderStartupPhase.CLEANING && it.ordinal == 1 })
+                }
+            }
+        }
+    }
+
+    @Test fun realTlsProviderRefusalAndMalformedChannelsNeverReachTheSecondExit() {
+        for (mode in 0..2) {
+            ProxyFixture(originHost = "api.abema.io", responseBody = if (mode == 2) "not-json" else channelsJson,
+                responseType = "application/json", responseStatus = if (mode == 1) 401 else 200).use { first ->
+                ProxyFixture(originHost = "api.abema.io", responseBody = channelsJson, responseType = "application/json").use { second ->
+                    ChannelStartupNetwork(first, second, firstTrusted = mode != 0).use { fixture ->
+                        assertTrue(fixture.prepare() is ProviderStartupResult.Failed)
+                        assertEquals(listOf(firstRouteId), fixture.created.toList())
+                        assertEquals(1, fixture.requests[0].get()); assertEquals(0, fixture.requests[1].get())
+                        assertTrue(second.outbound.isEmpty()); assertNull(second.connectHeaders.get())
+                        assertEquals(0, second.originRequests.get()); assertFalse(fixture.startup.admitted)
+                        assertTrue(fixture.closed[0].get())
+                    }
+                }
+            }
+        }
+    }
+
+    @Test fun actualFailedChannelsConnectionWithUncertainCleanupCannotTryTheNextExit() {
+        ProxyFixture(originHost = "api.abema.io").use { first ->
+            ProxyFixture(originHost = "api.abema.io").use { second ->
+                ChannelStartupNetwork(first, second, firstPort = refusedLoopbackPort(), uncertainFirstCleanup = true).use { fixture ->
+                    val result = fixture.prepare() as ProviderStartupResult.Failed
+                    assertEquals(ProviderStartupFailure.CLEANUP_UNCONFIRMED, result.failure.reason)
+                    assertEquals(listOf(firstRouteId), fixture.created.toList())
+                    assertEquals(1, fixture.disconnected[0].get()); assertEquals(0, fixture.requests[1].get())
+                    assertTrue(second.outbound.isEmpty()); assertEquals(0, second.originRequests.get())
+                    assertFalse(fixture.startup.cleanupConfirmed)
+                }
+            }
+        }
+    }
+
+    @Test fun cancellingTheActualChannelsConnectionCannotStartAnotherExit() {
+        ProxyFixture(block = true, originHost = "api.abema.io").use { first ->
+            ProxyFixture(originHost = "api.abema.io").use { second ->
+                ChannelStartupNetwork(first, second).use { fixture ->
+                    val result = AtomicReference<ProviderStartupResult<ProviderCatalog>?>()
+                    val worker = Thread { result.set(fixture.prepare()) }
+                    try {
+                        worker.start(); assertTrue(first.accepted.await(3, TimeUnit.SECONDS))
+                        fixture.startup.cancel(); worker.join(5000)
+                        assertFalse(worker.isAlive)
+                        assertEquals(ProviderStartupFailure.CANCELLED, (result.get() as ProviderStartupResult.Failed).failure.reason)
+                        assertEquals(listOf(firstRouteId), fixture.created.toList())
+                        assertEquals(0, fixture.requests[1].get()); assertTrue(second.outbound.isEmpty())
+                        assertEquals(0, second.originRequests.get())
+                    } finally { fixture.startup.cancel(); worker.join(5000) }
+                }
+            }
+        }
+    }
+
     @Test fun actualConnectKeepsProxyCredentialsOutOfTlsOrigin() {
         ProxyFixture().use { fixture ->
             val connection = RoutedHttpsConnection(url, fixture.client(), { true })
@@ -196,6 +381,8 @@ class RoutedHttpsConnectionTest {
             val connection = RoutedHttpsConnection(url, fixture.client(trusted = false), { true })
             val error = assertThrows(IOException::class.java) { connection.responseCode }
             assertEquals("Routed HTTPS request failed", error.message)
+            assertEquals(ProviderTransportFailure.TLS, providerTransportEvidence(error).failure)
+            assertFalse(providerTransportEvidence(error).retryableAvailability)
             assertNull(error.cause)
             assertNull(connection.failureDiagnostic)
             assertNull(fixture.originHeaders.get())
@@ -271,6 +458,8 @@ class RoutedHttpsConnectionTest {
                 worker.start(); assertTrue(fixture.accepted.await(3, TimeUnit.SECONDS))
                 connection.disconnect(); worker.join(3000)
                 assertFalse(worker.isAlive); assertTrue(caught.get() is IOException)
+                assertEquals(ProviderTransportFailure.CANCELLED, providerTransportEvidence(checkNotNull(caught.get())).failure)
+                assertFalse(providerTransportEvidence(checkNotNull(caught.get())).retryableAvailability)
                 assertNull(caught.get()?.cause)
                 val diagnostic = checkNotNull(connection.failureDiagnostic)
                 assertTrue(diagnostic.localCancellationRequested)
@@ -319,6 +508,37 @@ class RoutedHttpsConnectionTest {
         assertTrue(diagnostic.phaseAvailable); assertFalse(diagnostic.proxyPresent)
         assertFalse(diagnostic.localCancellationRequested); assertEquals(1, intercepted.get())
         connection.disconnect()
+    }
+
+    @Test fun realPreTlsConnectTimeoutHasTypedEvidenceWithoutDiagnosticOptIn() {
+        ProxyFixture(block = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            connection.connectTimeout = 500; connection.readTimeout = 500
+            try {
+                val error = assertThrows(ProviderTransportException::class.java) { connection.responseCode }
+                assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
+                assertEquals(ProviderTransportPhase.CONNECT, error.evidence.phase)
+                assertTrue(error.evidence.retryableAvailability)
+                assertNull(connection.failureDiagnostic); assertNull(fixture.originHeaders.get())
+            } finally { connection.disconnect() }
+        }
+    }
+
+    @Test fun actualResponseBodyTimeoutRemainsTypedButCannotRestartTheEstablishedRequest() {
+        ProxyFixture(slowBody = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            connection.readTimeout = 500
+            assertTrue(connection.observeFailures { })
+            try {
+                assertEquals(200, connection.responseCode)
+                val error = assertThrows(ProviderTransportException::class.java) { connection.inputStream.read() }
+                assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
+                assertEquals(ProviderTransportPhase.RESPONSE, error.evidence.phase)
+                assertFalse(error.evidence.retryableAvailability)
+                assertEquals(RoutedHttpsFailureCategory.SOCKET_TIMEOUT, checkNotNull(connection.failureDiagnostic).category)
+                assertNotNull(fixture.originHeaders.get())
+            } finally { connection.disconnect() }
+        }
     }
 
     @Test fun refusedProxyHasNoDirectFallback() {

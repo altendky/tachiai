@@ -130,10 +130,10 @@ private class ProviderRouteDrag(
 @Composable
 internal fun ProviderRoutePoolSettings(instance: ProviderInstance, profiles: List<ConnectionSummary>,
     selectedRoutes: List<SourceRouteChoice>, onRoutesChanged: (List<SourceRouteChoice>) -> Unit,
-    onRoutes: () -> Unit, enabled: Boolean = true) {
-    SettingsSection("Connection", "Routes are saved in this order. The first route is selected; automatic attempts of later routes are not implemented yet. Changes apply to this provider instance’s streams and account requests. System network is used only when explicitly listed and includes any external VPN. Missing profiles require repair. Earlier routes awaiting review are not alternatives." +
+    onRoutes: () -> Unit, enabled: Boolean = true, startupStatus: String? = null) {
+    SettingsSection("Connection", "Routes are tried in this order during startup. Only confirmed transport availability failures can try another route; authentication, entitlement, DRM, TLS and unknown failures stop. The successful route stays selected for this session. Changes apply to this provider instance’s streams and account requests. System network is used only when explicitly listed and includes any external VPN. Missing profiles require repair. Earlier routes awaiting review are not alternatives." +
         if (selectedRoutes.isEmpty() && instance.setup.previousRoutes.isNotEmpty())
-            " Earlier routes requiring review: ${instance.setup.previousRoutes.joinToString { it.title }}." else "")
+            " Earlier routes requiring review: ${instance.setup.previousRoutes.joinToString { it.title }}." else "", status = startupStatus)
     val current by rememberUpdatedState(selectedRoutes)
     val active by rememberUpdatedState(enabled)
     val changed by rememberUpdatedState(onRoutesChanged)

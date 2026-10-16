@@ -10,6 +10,7 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
+import net.fstab.tachiai.platform.network.providerTransportEvidence
 
 internal sealed interface AbemaAccountProfileResult {
     class Identity(val id: String) : AbemaAccountProfileResult { override fun toString() = "AbemaAccountProfileResult.Identity(redacted)" }
@@ -177,7 +178,7 @@ internal class AbemaAccountHttpTransport(
                 try { return Reply(status, strictAccountUtf8(response)) } finally { response.fill(0) }
             } finally { buffer.fill(0) }
         } catch (error: AbemaAccountException) { throw error }
-        catch (_: Throwable) { throw AbemaAccountException(AbemaAccountFailure.TEMPORARY) }
+        catch (error: Throwable) { throw AbemaAccountException(AbemaAccountFailure.TEMPORARY, providerTransportEvidence(error)) }
         finally {
             val failed = handle?.cleanup() == false || synchronized(lock) { poisoned }
             if (failed) poison(handle)

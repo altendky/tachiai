@@ -32,6 +32,7 @@ class AbemaAccountConnectionControllerTest {
         var onOwner: () -> Unit = {}
         var onMatch: () -> Unit = {}
         var onClose: () -> Unit = {}
+        var beforeEmailApproval: (String, Long, () -> Boolean) -> Boolean = { _, _, gate -> gate() }
         var profileInconclusive = false
         var profileFailure: AbemaAccountFailure? = null
         var emailResult = AbemaAccountEmailResult.REGISTERED
@@ -86,7 +87,7 @@ class AbemaAccountConnectionControllerTest {
             accountAccess = if (shared) { captured ->
                 assertEquals(captured.proof(), sharedOwner.ownerProof)
                 sharedOwner.attach()
-            } else null)
+            } else null, beforeEmailApproval = { id, deadline, gate -> beforeEmailApproval(id, deadline, gate) })
         fun due(): Boolean {
             val task = later.firstOrNull { it.first <= now } ?: return false
             later.remove(task); task.second(); return true
@@ -135,6 +136,47 @@ class AbemaAccountConnectionControllerTest {
             controller.setForeground(true); pump()
         }
     }
+    @Test fun emailApprovalWaitsOnWorkerAndRechecksExactOwnerStoreForegroundAndDeadlineBeforePostingLaunch() {
+        for (change in 0..4) {
+            val f = Fixture(); f.controller.load(); f.pump()
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            var launches = 0
+            f.beforeEmailApproval = { id, deadline, gate ->
+                assertEquals(f.id, id); assertEquals(601000L, deadline); assertTrue(gate())
+                entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); true
+            }
+            f.controller.connectEmail { assertEquals(f.owner.proof(), it.ownerProof); launches++; true }
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val pending = worker.submit<Boolean> { f.worker.one() }
+                assertTrue(entered.await(2, TimeUnit.SECONDS)); assertEquals(0, launches)
+                when (change) {
+                    1 -> f.controller.setForeground(false)
+                    2 -> f.matching = false
+                    3 -> f.save()
+                    4 -> f.now = 601000L
+                }
+                release.countDown(); assertTrue(pending.get(2, TimeUnit.SECONDS))
+                assertEquals(0, launches) // Even confirmed cleanup only posts the launch.
+                f.pump(); assertEquals(if (change == 0) 1 else 0, launches)
+                assertEquals(0, f.preparations); assertEquals(0, f.tokens)
+            } finally { release.countDown(); worker.shutdownNow(); f.controller.close(); f.pump() }
+        }
+    }
+
+    @Test fun cleanupRefusalAndDelayedMainLaunchNeverOpenEmailBrowser() {
+        for (refused in listOf(true, false)) {
+            val f = Fixture(); f.controller.load(); f.pump(); var launches = 0
+            f.beforeEmailApproval = { _, _, gate -> gate() && !refused }
+            f.controller.connectEmail { launches++; true }
+            assertTrue(f.worker.one())
+            if (!refused) f.now = 601000L
+            f.pump(); assertEquals(0, launches)
+            assertEquals(0, f.preparations); assertEquals(0, f.tokens)
+            f.controller.close(); f.pump()
+        }
+    }
+
     @Test fun automaticEmailRenewalPinsExpiredSnapshotAndCommitsOnlySameAccountWithLongerProviderExpiry() {
         val f = Fixture(); val original = f.expiredSnapshot(); val prior = f.storage.bytes!!.copyOf()
         val completed = mutableListOf<AbemaAutomaticRenewalResult>()

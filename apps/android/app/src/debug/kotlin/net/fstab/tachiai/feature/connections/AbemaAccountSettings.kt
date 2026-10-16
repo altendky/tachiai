@@ -119,7 +119,11 @@ private class AbemaAccountSettingsOwner(private val context: Context, private va
                     { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
                     android.os.SystemClock::elapsedRealtime, System::currentTimeMillis, foreground,
                     FailureDiagnostics.create(context), AndroidAbemaEmailGrantHandoff.inbox,
-                    { owner -> AndroidAbemaAccountAccessOwners.attach(context, owner.instance.id, owner.proof()) }
+                    { owner -> AndroidAbemaAccountAccessOwners.attach(context, owner.instance.id, owner.proof()) },
+                    beforeEmailApproval = { id, deadline, gate ->
+                        net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate) ==
+                            net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission.READY
+                    }
                 ).also { if (foreground) it.load() }
             }
         }

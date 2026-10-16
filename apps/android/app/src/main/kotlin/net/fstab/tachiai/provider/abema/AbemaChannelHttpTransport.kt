@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.abema
 
+import net.fstab.tachiai.platform.network.providerTransportEvidence
+
 import java.io.ByteArrayOutputStream
 import java.net.CookieHandler
 import java.net.URL
@@ -145,7 +147,8 @@ internal class AbemaChannelHttpTransport(
             returning = true
             return AbemaChannelResponse(status, entries)
         } catch (error: Exception) {
-            val safe = if (error is AbemaChannelException) error else AbemaChannelException(AbemaChannelFailure.NETWORK_FAILED)
+            val safe = if (error is AbemaChannelException) error else AbemaChannelException(
+                AbemaChannelFailure.NETWORK_FAILED, providerTransportEvidence(error))
             report(safe)
             throw safe
         } finally {
@@ -155,7 +158,8 @@ internal class AbemaChannelHttpTransport(
                 if (!clean) fail(AbemaChannelFailure.CLEANUP_FAILED)
                 if (returning) checkActive(current, started, handle)
             } catch (error: Exception) {
-                val safe = if (error is AbemaChannelException) error else AbemaChannelException(AbemaChannelFailure.NETWORK_FAILED)
+                val safe = if (error is AbemaChannelException) error else AbemaChannelException(
+                    AbemaChannelFailure.NETWORK_FAILED, providerTransportEvidence(error))
                 if (clean) report(safe)
                 throw safe
             } finally {

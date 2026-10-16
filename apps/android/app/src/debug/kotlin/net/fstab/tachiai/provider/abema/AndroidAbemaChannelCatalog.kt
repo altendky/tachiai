@@ -5,6 +5,7 @@ import java.io.IOException
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -53,7 +54,8 @@ internal fun abemaCatalogOwnerCurrent(canRemainActive: () -> Boolean, readOwnerM
 // Constructed/called on workers. Local import owns the instance separately from
 // metadata admission, so a broken saved route never becomes a System request.
 internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
-    setups: Map<PrototypeSource, SourceSetup>, canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): ProviderCatalog {
+    setups: Map<PrototypeSource, SourceSetup>, canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null,
+    startupObservation: AbemaChannelStartupObservation? = null): ProviderCatalog {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
     fun instances() = providerInstanceStore(application).read { legacyProviderSettings(application) }
@@ -65,17 +67,21 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
     val lock = Any()
     var closed = false
     var cleanupFailed = false
-    fun canRemainActive(): Boolean = canUse() && routeAdmission.canContinue() && !synchronized(lock) { closed || cleanupFailed }
+    fun canRemainActive(): Boolean = canUse() && routeAdmission.canContinue() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) &&
+        !synchronized(lock) { closed || cleanupFailed }
     fun current(): Boolean = routeAdmission.check(::canRemainActive) { expected ->
         if (captured == null) null else runCatching { readOwner(expected).takeIf(captured::sameOwnership)?.proof() }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
     }
+    startupObservation?.bindCurrent(::current)
     fun canImport(): Boolean = canUse() && !synchronized(lock) { closed } &&
         runCatching { instances().any { it.id == instanceId && it.service == PrototypeService.ABEMA } }
             .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
     val channels = AbemaChannelCatalog(instanceId, transportFactory = { gate ->
         OwnedAbemaChannelTransport(captured?.profile, canRequest = { gate() && current() },
-            onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics)
+            onCleanupFailure = { synchronized(lock) { cleanupFailed = true } }, diagnostics = diagnostics,
+            onTransportFailure = { startupObservation?.failure(it) },
+            onResponse = { startupObservation?.response(it) }).also { owned -> startupObservation?.own { owned.cleanupConfirmed } }
     }, canPublish = ::current, episodeTransportFactory = if (captured == null) null else { gate ->
         AndroidAbemaEpisodeMetadataClient(application, instanceId, captured.proof(),
             canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
@@ -162,8 +168,12 @@ internal class OwnedAbemaChannelTransport(
     },
     private val onCleanupFailure: () -> Unit = {},
     private val diagnostics: FailureReporter = FailureReporter.NONE,
+    private val onTransportFailure: (ProviderTransportEvidence?) -> Unit = {},
+    private val onResponse: (Int) -> Unit = {},
+    private val cleanupWaitMs: Long = 1000,
 ) : AbemaChannelTransport {
     companion object {
+        private val retained = java.util.concurrent.ConcurrentLinkedQueue<List<Any>>()
         private val cancellationWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue(32), { task -> Thread(task, "abema-catalog-cancel").apply { isDaemon = true } })
     }
@@ -172,13 +182,22 @@ internal class OwnedAbemaChannelTransport(
     private var revision = 0L
     private var preparation: RoutePreparation? = null
     private var active: AbemaChannelTransport? = null
+    private var activeRoute: RouteSession? = null
     private var cancelSignalled: AbemaChannelTransport? = null
+    private var preparationCancelSignalled: RoutePreparation? = null
+    private var cancellationDone: CountDownLatch? = null
+    private var finishing = false
+    private var cleanupPoisoned = false
+    val cleanupConfirmed: Boolean get() = synchronized(lock) {
+        !cleanupPoisoned && preparation == null && active == null
+    }
 
     override fun fetch(): AbemaChannelResponse {
         val preparing = RoutePreparation(diagnostics)
         val current = synchronized(lock) {
             check(!closed && preparation == null)
             preparation = preparing
+            finishing = false
             revision
         }
         fun allowed() = synchronized(lock) { !closed && revision == current } && canRequest()
@@ -187,6 +206,7 @@ internal class OwnedAbemaChannelTransport(
         try {
             if (!allowed()) throw IOException("Channel catalog unavailable")
             route = createRoute(profile, preparing)
+            synchronized(lock) { activeRoute = route }
             if (!allowed()) throw IOException("Channel catalog unavailable")
             val ownedRoute = route
             transport = createTransport({ url ->
@@ -200,42 +220,76 @@ internal class OwnedAbemaChannelTransport(
             }
             val response = transport.fetch()
             if (!allowed()) throw IOException("Channel catalog unavailable")
+            onResponse(response.status)
             return response
         } catch (error: Exception) {
+            onTransportFailure((error as? ProviderTransportFailureCarrier)?.transportFailure)
             if (allowed()) diagnostics.report(FailureStage.CATALOG_LOAD, error)
             throw error
         } finally {
+            val cancellation = synchronized(lock) { finishing = true; cancellationDone }
             var failed = false
+            // Lifecycle cancellation only signals. Its HTTP worker must finish
+            // before the request worker releases the dependent route.
+            try { if (cancellation?.await(cleanupWaitMs, TimeUnit.MILLISECONDS) == false) failed = true }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt(); failed = true }
+            synchronized(lock) { failed = failed || cleanupPoisoned }
             try { transport?.close() } catch (error: Throwable) { diagnostics.report(FailureStage.CATALOG_CLOSE, error); failed = true }
-            try { route?.close() } catch (error: Throwable) { diagnostics.report(FailureStage.CATALOG_CLOSE, error); failed = true }
             if (!preparing.cleanupConfirmed) failed = true
-            if (failed) failCleanup()
+            if (!failed) {
+                try { route?.close() } catch (error: Throwable) { diagnostics.report(FailureStage.CATALOG_CLOSE, error); failed = true }
+            }
+            if (!preparing.cleanupConfirmed) failed = true
+            if (failed) {
+                retained.add(listOfNotNull(this, preparing, route, transport))
+                failCleanup()
+            }
             synchronized(lock) {
-                if (preparation === preparing) { preparation = null; active = null; cancelSignalled = null }
+                if (preparation === preparing) {
+                    preparation = null; active = null; activeRoute = null; cancelSignalled = null
+                    preparationCancelSignalled = null; cancellationDone = null
+                }
             }
             if (failed) throw IOException("Catalog route cleanup failed")
+            if (!allowed()) throw IOException("Channel catalog unavailable")
         }
     }
 
     override fun cancelActiveRequest() {
         val pending = synchronized(lock) {
             revision++
-            val request = active?.takeUnless { it === cancelSignalled }
-            if (request != null) cancelSignalled = request
-            preparation to request
+            val preparing = preparation?.takeUnless { finishing || it === preparationCancelSignalled }
+            val request = active?.takeUnless { finishing || it === cancelSignalled }
+            val parts = (if (preparing != null) 1 else 0) + (if (request != null) 1 else 0)
+            val done = if (parts > 0) CountDownLatch(parts).also {
+                preparationCancelSignalled = preparing; cancelSignalled = request; cancellationDone = it
+            } else null
+            Triple(preparing, request, done)
         }
-        pending.first?.cancel()
+        pending.first?.let { preparing ->
+            try { if (!preparing.cancel()) failCleanup() }
+            finally { pending.third?.countDown() }
+        }
         pending.second?.let { transport ->
             try { cancellationWorkers.execute {
                 try { transport.cancelActiveRequest() } catch (error: Throwable) {
                     diagnostics.report(FailureStage.CATALOG_CLOSE, error); failCleanup()
-                }
+                } finally { pending.third?.countDown() }
             } } catch (error: RejectedExecutionException) {
-                diagnostics.report(FailureStage.CATALOG_CLOSE, error); failCleanup()
+                diagnostics.report(FailureStage.CATALOG_CLOSE, error)
+                try { failCleanup() } finally { pending.third?.countDown() }
             }
         }
     }
-    private fun failCleanup() { close(); onCleanupFailure() }
+    private fun failCleanup() {
+        val first = synchronized(lock) {
+            val first = !cleanupPoisoned
+            cleanupPoisoned = true
+            if (first) retained.add(listOfNotNull(this, preparation, active, activeRoute))
+            first
+        }
+        close(); if (first) onCleanupFailure()
+    }
     override fun close() {
         if (!synchronized(lock) { if (closed) false else { closed = true; true } }) return
         cancelActiveRequest()

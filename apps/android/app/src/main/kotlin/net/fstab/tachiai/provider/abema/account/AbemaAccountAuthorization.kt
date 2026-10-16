@@ -5,9 +5,13 @@ import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.ProviderTransportFailureCarrier
 
 internal enum class AbemaAccountFailure { REFUSED, NOT_VERIFIED, TEMPORARY, TIME_LIMIT_REACHED, EXPIRED, CANCELLED, CLEANUP_FAILED, STORAGE_FAILED }
-internal class AbemaAccountException(val category: AbemaAccountFailure) : Exception(category.name, null, false, false)
+internal class AbemaAccountException(val category: AbemaAccountFailure,
+    override val transportFailure: ProviderTransportEvidence? = null) :
+    Exception(category.name, null, false, false), ProviderTransportFailureCarrier
 internal fun accountRefused(): Nothing = throw AbemaAccountException(AbemaAccountFailure.REFUSED)
 internal fun accountId(value: String) = value.matches(Regex("[A-Za-z0-9_-]{1,256}"))
 internal fun accountToken(value: String) = value.length in 1..6144 && value.all { it.code in 33..126 }

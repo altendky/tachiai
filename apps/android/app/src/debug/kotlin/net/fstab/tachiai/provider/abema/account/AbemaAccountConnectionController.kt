@@ -35,6 +35,7 @@ internal class AbemaAccountConnectionController(
     private val diagnostics: FailureReporter = FailureReporter.NONE,
     private val emailInbox: AbemaEmailGrantInbox? = null,
     private val accountAccess: ((AbemaCatalogRouteOwner) -> AbemaAccountAccessOwner.Attachment)? = null,
+    private val beforeEmailApproval: (String, Long, () -> Boolean) -> Boolean = { _, _, gate -> gate() },
 ) : AutoCloseable {
     private val lock = Any()
     @Volatile private var foreground = initiallyForeground
@@ -199,7 +200,16 @@ internal class AbemaAccountConnectionController(
             inbox.unregister(prepared.nonce)
             throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
         }
+        // This worker remains in the main app process, which owns catalog
+        // retirement. The separate browser process cannot observe that registry.
+        fun approvalCurrent() = same(run, owner) && emailLink === prepared &&
+            elapsedMs() < prepared.deadline && binding.store.usable(prepared.storeRevision) &&
+            (renewal == null || renewalOriginalCurrent(renewal))
+        if (!beforeEmailApproval(owner.instance.id, prepared.deadline, ::approvalCurrent) || !approvalCurrent())
+            throw AbemaAccountException(if (elapsedMs() >= prepared.deadline) AbemaAccountFailure.EXPIRED
+                else if (!same(run, owner)) AbemaAccountFailure.CANCELLED else AbemaAccountFailure.TEMPORARY)
         post { if (current(run) && emailLink === prepared) {
+            if (elapsedMs() >= prepared.deadline) { failEmail(prepared, AbemaAccountFailure.EXPIRED); return@post }
             if (renewal != null) {
                 if (!renewal.clock(elapsedMs(), wallMs())) { failEmail(prepared, AbemaAccountFailure.CANCELLED); return@post }
                 if (elapsedMs() >= prepared.deadline) { failEmail(prepared, AbemaAccountFailure.EXPIRED); return@post }

@@ -131,11 +131,34 @@ ABEMA proxy compatibility check includes configured channels and broadcasts as
 well as historical sources. Runtime choice does not rewrite the configured order.
 Cleanup uncertainty remains poisoned across reordering and owner replacement.
 
-This prerequisite selects the first configured candidate. Automatic startup
-attempts are tracked separately in #270; retaining alternatives alone does not
-establish fallback traffic. Later playback switching and randomized startup are
-separate follow-ups. A missing first profile fails rather than using another
-candidate implicitly.
+Startup attempts use the configured order within a 45-second initial selection
+budget, once per distinct transport configuration. Missing profiles are marked
+unavailable; only explicitly configured alternatives may follow them. An actual
+required read-only provider operation must validate the candidate: the initial
+ABEMA Channels response, saved-account profile/email reads, or Twitch's existing
+grant-validation GET. The winning response/session is retained for its consumer;
+constructing a backend, reading a cached lease or inspecting a local JWT is not
+connectivity evidence. Duplicate viewer feeds share one instance startup scope.
+
+Only typed DNS/connect failures and timeouts known to precede TLS may advance.
+TLS, provider/region rejection, authentication, entitlement, DRM, malformed
+responses, rate limits, cancellation and unknown failures stop. Ambiguous native
+errors remain terminal. Requests and routes must finish confirmed cleanup before
+another attempt; uncertain ownership remains retained and blocks replacement.
+The effective route appears in the existing Connection heading, with progress
+and exhaustion using the same fixed space. Saved ordering is never rewritten.
+
+Missing or expired authorization holds the current candidate for the existing
+provider-controlled transaction, without claiming read-only validation. Refresh,
+token, device-code and browser mutations never migrate to another exit. A known
+account handoff retains the exact chosen candidate and captured pool proof;
+configuration changes reject that continuation. Accepted account actions wait
+for prior startup cleanup in the ordinary process before opening another route.
+
+After selection the startup deadline ends and the route remains sticky for the
+runtime session. A later playback failure stops; restarting creates a new scope.
+Automatic switching during playback and randomized startup remain separate
+follow-ups.
 
 Worker snapshots use two bounded reads of the separately locked instance and
 profile stores. This detects observed configuration changes, but is not a

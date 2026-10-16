@@ -42,8 +42,9 @@ class TwitchCatalogConnectionScreenTest {
         compose.onNodeWithText("Other provider instances keep their own accounts", substring = true).assertExists()
         compose.onNodeWithText("external consent browser uses its own network", substring = true).assertExists()
         compose.onNodeWithText("Close").performClick()
-        compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Validate account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Forget account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Cancel").performScrollTo().assertIsNotEnabled()
         compose.runOnIdle {
             assertEquals(1, connections)
             state.value = state.value.copy(hasSavedGrant = true, canForget = true,
@@ -53,15 +54,15 @@ class TwitchCatalogConnectionScreenTest {
         compose.onNodeWithText("Reconnect Twitch").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Your activation code: FIXTURE123").performScrollTo().assertExists()
         compose.onNodeWithText("Open Twitch activation in Chrome").performScrollTo().performClick()
-        compose.onNodeWithText("Cancel Twitch action").performScrollTo().performClick()
-        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().performClick()
+        compose.onNodeWithText("Cancel").performScrollTo().performClick()
+        compose.onNodeWithText("Forget account").performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals("com.android.chrome", browser); assertEquals(1, cancellations); assertEquals(1, forgotten)
             assertEquals(0, validations)
             state.value = state.value.copy(operation = null, activation = null)
         }
         compose.onNodeWithText("Your activation code: FIXTURE123").assertDoesNotExist()
-        compose.onNodeWithText("Validate Twitch account").performScrollTo().performClick()
+        compose.onNodeWithText("Validate account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, validations) }
     }
 
@@ -73,8 +74,8 @@ class TwitchCatalogConnectionScreenTest {
                 { fail("Connect remains blocked") }, { fail("Validate remains blocked") }, { forgotten++ }, {}, {}, {})
         } }
         compose.onNodeWithText("Connect Twitch").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Validate Twitch account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Forget Twitch account on this device").performScrollTo().performClick()
+        compose.onNodeWithText("Validate account").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Forget account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, forgotten) }
     }
     @Test fun embeddedAccountSharesParentScrollingWithoutAnAccountBackPage() {
@@ -96,14 +97,14 @@ class TwitchCatalogConnectionScreenTest {
             TwitchCatalogConnectionScreen(state.value, {}, {}, {}, {}, {}, {}, onRetryOpen = {}, enabled = false)
         } }
         compose.onNodeWithText("Twitch account connected.").assertExists()
-        for (label in listOf("Reconnect Twitch", "Validate Twitch account", "Forget Twitch account on this device",
+        for (label in listOf("Reconnect Twitch", "Validate account", "Forget account",
             "Retry opening Twitch connection", "Back to providers"))
             compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
         compose.runOnIdle {
             state.value = state.value.copy(operation = TwitchCatalogConnectionOperation.CONNECT,
                 phase = DeviceAuthPhase.WAITING, activation = DeviceActivation("FIXTURE123", URI("https://www.twitch.tv/activate")))
         }
-        for (label in listOf("Cancel Twitch action", "Open Twitch activation in Brave", "Open Twitch activation in Chrome"))
+        for (label in listOf("Cancel", "Open Twitch activation in Brave", "Open Twitch activation in Chrome"))
             compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
     }
 
@@ -154,7 +155,7 @@ class TwitchCatalogConnectionScreenTest {
             activation = DeviceActivation("MANUAL123", URI(bareUri))) }
         assertEquals("$bareUri?device-code=MANUAL123", decodedRenderedQr())
         compose.onNodeWithText("Your activation code: MANUAL123").performScrollTo().assertExists()
-        compose.onNodeWithText("Cancel Twitch action").performScrollTo().performClick()
+        compose.onNodeWithText("Cancel").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Twitch activation QR code").assertDoesNotExist()
         compose.onNodeWithText("Your activation code: MANUAL123").assertDoesNotExist()
     }
@@ -195,7 +196,7 @@ class TwitchCatalogConnectionScreenTest {
         assertFitsSyntheticViewport(compose.onNodeWithText("Your activation code: FIXTURE123"))
         val chrome = compose.onNodeWithText("Open Twitch activation in Chrome")
         assertFitsSyntheticViewport(chrome); chrome.performClick()
-        val cancel = compose.onNodeWithText("Cancel Twitch action")
+        val cancel = compose.onNodeWithText("Cancel")
         assertFitsSyntheticViewport(cancel); cancel.performClick()
         compose.runOnIdle { assertEquals("com.android.chrome", browser); assertEquals(1, cancellations) }
     }

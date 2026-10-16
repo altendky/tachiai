@@ -72,14 +72,14 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
     var selected by remember { mutableStateOf<NativeAccessCase?>(null) }
     if (selected == NativeAccessCase.TWITCH_SMART_TV_LOCAL_EXTEND) {
         Column(modifier) {
-            Button(onClick = { selected = null }) { Text("Back to access cases") }
+            net.fstab.tachiai.feature.presentation.PageHeading(checkNotNull(selected).name.replace('_', ' '), { selected = null }, "Back to access cases")
             TwitchLocalRetentionProbeScreen()
         }
         return
     }
     if (selected == NativeAccessCase.TWITCH_NATIVE_REPLAY_PAIR) {
         Column(modifier) {
-            Button(onClick = { selected = null }) { Text("Back to access cases") }
+            net.fstab.tachiai.feature.presentation.PageHeading(checkNotNull(selected).name.replace('_', ' '), { selected = null }, "Back to access cases")
             TwitchNativeReplayPairProbeScreen()
         }
         return
@@ -88,7 +88,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
         NativeAccessCase.TWITCH_NATIVE_REPLAY_OBSERVED_CDN, NativeAccessCase.TWITCH_NATIVE_LIVE_TIMING,
         NativeAccessCase.TWITCH_NATIVE_REPLAY_TIMING)) {
         Column(modifier) {
-            Button(onClick = { selected = null }) { Text("Back to access cases") }
+            net.fstab.tachiai.feature.presentation.PageHeading(checkNotNull(selected).name.replace('_', ' '), { selected = null }, "Back to access cases")
             TwitchNativePlaybackProbeScreen(if (selected in setOf(NativeAccessCase.TWITCH_NATIVE_LIVE,
                 NativeAccessCase.TWITCH_NATIVE_LIVE_TIMING))
                 TwitchAccessCase.LIVE else TwitchAccessCase.REPLAY,
@@ -105,7 +105,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
         NativeAccessCase.TWITCH_SMART_TV_LOCAL_LIVE, NativeAccessCase.TWITCH_SMART_TV_LOCAL_REPLAY)) {
         val profile = nativeAuthorizationProfile(checkNotNull(selected))
         Column(modifier) {
-            Button(onClick = { selected = null }) { Text("Back to access cases") }
+            net.fstab.tachiai.feature.presentation.PageHeading(checkNotNull(selected).name.replace('_', ' '), { selected = null }, "Back to access cases")
             if (selected == NativeAccessCase.TWITCH_SMART_TV_LIFETIME_INSPECTION)
                 TwitchDeviceAuthProbeScreen(profile = profile, inspectSmartTvLifetime = true)
             else if (selected in setOf(NativeAccessCase.TWITCH_PROVIDER_AUTHORIZE_SAVE,

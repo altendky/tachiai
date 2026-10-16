@@ -35,16 +35,16 @@ class AbemaShareScreenTest {
         compose.onNodeWithText("Availability is unknown. Choose an ABEMA provider, then preview and Add. Nothing has been saved.")
             .assertIsDisplayed()
         compose.onNodeWithText("Choose ${twitch.name}").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Choose ABEMA instance ${twitch.name}").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Choose provider: ${twitch.name}").assertDoesNotExist()
         compose.runOnIdle { assertTrue(chosen.isEmpty()); assertEquals(0, canceled) }
 
-        scrollTo(hasContentDescription("Choose ABEMA instance ${second.name}"))
+        scrollTo(hasContentDescription("Choose provider: ${second.name}"))
             .assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(listOf(second.id), chosen) }
-        scrollTo(hasContentDescription("Choose ABEMA instance ${first.name}"))
+        scrollTo(hasContentDescription("Choose provider: ${first.name}"))
             .assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(listOf(second.id, first.id), chosen) }
-        scrollTo(hasText("Cancel")).performClick()
+        scrollTo(hasContentDescription("Cancel adding ABEMA item")).performClick()
         compose.runOnIdle { assertEquals(1, canceled); assertEquals(listOf(second.id, first.id), chosen) }
     }
 
@@ -65,7 +65,7 @@ class AbemaShareScreenTest {
         compose.setContent { TachiaiPrototypeTheme {
             AbemaShareScreen(current.value, chosen::add, {}, { canceled++ })
         } }
-        scrollTo(hasContentDescription("Choose ABEMA instance ${second.name}")).assertIsEnabled()
+        scrollTo(hasContentDescription("Choose provider: ${second.name}")).assertIsEnabled()
         val rejected = "Share one bare public ABEMA link. Other text, rich text and attachments are not supported."
         compose.runOnIdle { current.value = AbemaShareState(message = rejected) }
         scrollTo(hasText(rejected)).assertIsDisplayed()
@@ -75,7 +75,7 @@ class AbemaShareScreenTest {
         scrollTo(hasText(discarded)).assertIsDisplayed()
         compose.onNodeWithText(rejected).assertDoesNotExist()
         assertNoPreviewOrChoices()
-        scrollTo(hasText("Cancel")).performClick()
+        scrollTo(hasContentDescription("Cancel adding ABEMA item")).performClick()
         compose.runOnIdle { assertTrue(chosen.isEmpty()); assertEquals(1, canceled) }
     }
 
@@ -88,16 +88,16 @@ class AbemaShareScreenTest {
             AbemaShareScreen(current.value, chosen::add, { retried++ }, { canceled++ })
         } }
         scrollTo(hasText("Reading ABEMA providers…")).assertIsDisplayed()
-        scrollTo(hasContentDescription("Choose ABEMA instance ${first.name}")).assertIsNotEnabled()
+        scrollTo(hasContentDescription("Choose provider: ${first.name}")).assertIsNotEnabled()
         scrollTo(hasText("Retry")).assertIsNotEnabled()
         compose.runOnIdle { assertTrue(chosen.isEmpty()); assertEquals(0, retried) }
 
         val failed = "ABEMA providers could not be read. Retry or cancel; nothing was saved."
         compose.runOnIdle { current.value = AbemaShareState(entry = entry, message = failed, canRetry = true) }
         scrollTo(hasText(failed)).assertIsDisplayed()
-        compose.onNodeWithContentDescription("Choose ABEMA instance ${first.name}").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Choose provider: ${first.name}").assertDoesNotExist()
         scrollTo(hasText("Retry")).assertIsEnabled().performClick()
-        scrollTo(hasText("Cancel")).assertIsEnabled().performClick()
+        scrollTo(hasContentDescription("Cancel adding ABEMA item")).assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, retried); assertEquals(1, canceled); assertTrue(chosen.isEmpty()) }
     }
 
@@ -110,7 +110,7 @@ class AbemaShareScreenTest {
         scrollTo(hasText("No ABEMA providers are available. Return to Tachiai to configure a provider.")).assertIsDisplayed()
         compose.onNodeWithText("Choose ${twitch.name}").assertDoesNotExist()
         compose.onNodeWithText("Retry").assertDoesNotExist()
-        scrollTo(hasText("Cancel")).performClick()
+        scrollTo(hasContentDescription("Cancel adding ABEMA item")).performClick()
         compose.runOnIdle { assertTrue(canceled) }
     }
 
@@ -122,7 +122,7 @@ class AbemaShareScreenTest {
     private fun assertNoPreviewOrChoices() {
         compose.onNodeWithText(entry.title).assertDoesNotExist()
         listOf(first, second, twitch).forEach {
-            compose.onNodeWithContentDescription("Choose ABEMA instance ${it.name}").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Choose provider: ${it.name}").assertDoesNotExist()
         }
         compose.onNodeWithText("Retry").assertDoesNotExist()
     }

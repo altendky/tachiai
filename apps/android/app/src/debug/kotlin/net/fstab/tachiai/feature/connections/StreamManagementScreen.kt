@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -39,9 +40,39 @@ import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
 import net.fstab.tachiai.R
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
+
+private const val DISCOVERY_CONTROLS_KEY = "discovery-controls"
+
+private class DiscoveryListPosition {
+    val list = LazyListState()
+    var initialized = false
+    var transition by mutableStateOf<DiscoveryTabTransition?>(null)
+}
+
+private class DiscoveryTabTransition(val tab: String, val epoch: Long, val offset: Int,
+    initialLayout: LazyListLayoutInfo) {
+    val tailKey = "discovery-tail:$epoch"
+    val viewport = initialLayout.viewportSize
+    // Enough room even when the destination has no results. Layout measurement
+    // removes the excess without moving the controls or estimating row heights.
+    var gapPx by mutableIntStateOf((initialLayout.viewportEndOffset - offset).coerceAtLeast(0))
+    var beforeRequest: LazyListLayoutInfo? = null
+
+    fun measured(layout: LazyListLayoutInfo, loading: Boolean, canScrollBackward: Boolean) {
+        if (layout === beforeRequest) return
+        if (layout.viewportSize != viewport || !canScrollBackward) { gapPx = 0; return }
+        val tail = layout.visibleItemsInfo.firstOrNull { it.key == tailKey }
+        val needed = if (tail != null) (layout.viewportEndOffset - tail.offset).coerceAtLeast(0)
+            else if (!loading) 0 else return
+        // Scrolling back toward the top retires space. Reversing direction,
+        // loading results or returning from a child must never recreate it.
+        gapPx = minOf(gapPx, needed)
+    }
+}
 
 internal fun catalogAccessExplanation(access: CatalogAccess): String = when (access) {
     CatalogAccess.AVAILABLE -> "Available"
@@ -130,13 +161,46 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     val retryReady = retryAt == null || retryClock >= retryAt
     // Queries, account-derived results and their scroll anchors stay in this
     // composition only. A privacy reset discards every suspended list state.
-    val listStates = remember(state.instance.id, state.privacyRevision) { mutableMapOf<Long, LazyListState>() }
+    val listStates = remember(state.instance.id, state.privacyRevision) { mutableMapOf<Long, DiscoveryListPosition>() }
     val hadContext = listStates.isNotEmpty()
     val retained = state.retainedDiscoveryContextIds.toSet() + state.discoveryContextId
     listStates.keys.retainAll(retained)
-    val freshContext = state.discoveryContextId !in listStates
-    val listState = listStates.getOrPut(state.discoveryContextId) { LazyListState() }
+    val position = listStates.getOrPut(state.discoveryContextId) { DiscoveryListPosition() }
+    val listState = position.list
+    var tabEpoch by remember(state.instance.id, state.privacyRevision) { mutableLongStateOf(0) }
+    var pendingTab by remember(state.instance.id, state.privacyRevision) { mutableStateOf<DiscoveryTabTransition?>(null) }
+    val requestedTab = pendingTab?.takeIf { it.tab == state.selectedTabId && state.query.parent == null }
+    val transition = requestedTab ?: position.transition
     val ids = state.configured.orEmpty().map { it.id }
+    val leadingKeys = listOf(if (header != null) "provider-settings" else "management-heading", "configured-heading") +
+        ids.map { "configured:$it" }
+    val discoveryControlsIndex = leadingKeys.size
+    val latestLoading by rememberUpdatedState(state.loading)
+    SideEffect {
+        if (requestedTab != null) {
+            position.transition = requestedTab
+            requestedTab.beforeRequest = listState.layoutInfo
+            listState.requestScrollToItem(discoveryControlsIndex, -requestedTab.offset)
+            pendingTab = null
+        } else if (!position.initialized && (hadContext || state.query.parent != null)) {
+            listState.requestScrollToItem(discoveryControlsIndex)
+        }
+        position.initialized = true
+    }
+    LaunchedEffect(listState, transition) {
+        if (transition != null) snapshotFlow {
+            Triple(listState.layoutInfo, latestLoading, listState.canScrollBackward)
+        }.collect { (layout, loading, backward) ->
+            transition.measured(layout, loading, backward)
+        }
+    }
+    val selectTab: (String) -> Unit = { id ->
+        val layout = listState.layoutInfo
+        pendingTab = layout.visibleItemsInfo.firstOrNull { it.key == DISCOVERY_CONTROLS_KEY }?.let {
+            DiscoveryTabTransition(id, ++tabEpoch, it.offset, layout)
+        }
+        if (id == DISCOVERY_ALL_TAB) onAll() else onCollection(id)
+    }
     val latestIds by rememberUpdatedState(ids)
     val canDrag by rememberUpdatedState(mutable && onReorder != null && ids.size > 1)
     val reorder by rememberUpdatedState(onReorder)
@@ -200,9 +264,6 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } })
     } }
-    LaunchedEffect(listState) {
-        if (freshContext && (hadContext || state.query.parent != null)) listState.scrollToItem(3 + state.configured.orEmpty().size + if (header != null) 1 else 0)
-    }
     val feedback = state.message ?: if (state.storageFailed) "Configured streams could not be read. Retry to continue."
         else state.failure?.let(::catalogFailureExplanation) ?: if (state.resultsTruncated)
             "Showing the first $MAX_DISCOVERY_RESULTS results. More results were withheld; narrow your search or choose another collection." else null
@@ -217,26 +278,22 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).onGloballyPositioned { drag.viewport = it }
         .testTag("Stream discovery list"),
         state = listState) {
-        if (header != null) item(key = "provider-settings") { header() }
-        item(key = "management-heading") { Column(Modifier.padding(bottom = 12.dp)) {
-            if (header == null) Text("${state.instance.name} · Manage streams", style = MaterialTheme.typography.headlineSmall)
-            SettingsSection("Streams", "Add items to your selection page. Changes stay in Tachiai and do not change provider favorites." +
+        if (header != null) item(key = leadingKeys[0]) { header() }
+        if (header == null) item(key = leadingKeys[0]) {
+            SettingsPageHeader("${providerDisplayNames(state.instance).primary} · Manage streams", onBack = onBack, backDescription = backLabel)
+        }
+        item(key = leadingKeys[1]) { Column(Modifier.padding(bottom = 12.dp)) {
+            SettingsSection("Configured streams", "Add items to your selection page. Changes stay in Tachiai and do not change provider favorites." +
                 " Drag a handle to reorder, or tap it for move actions. Refresh reloads the same stream’s title, availability and scheduled start; identity, order and quality are retained. It does not start playback or renew your account. Removing asks for confirmation." +
                 (metadataRefreshExplanation(capabilities?.refresh)?.let { "\n\n$it" } ?: "") +
                 "\n\nUp to $MAX_CONFIGURED_SOURCES streams can be configured. Remove an item to add another when the limit is reached." +
-                (state.catalogNotice?.let { "\n\n$it" } ?: ""))
-            if (header == null) TextButton(onClick = onBack) { Text(backLabel) }
-        } }
-        item(key = "configured-heading") { Column(Modifier.padding(bottom = 12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Configured streams", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                (state.catalogNotice?.let { "\n\n$it" } ?: ""), actions = {
                 if (visibleCapabilities?.lookup != null && visibleCapabilities.lookup != CatalogAccess.UNSUPPORTED)
                     TextButton(onClick = onOpenLink, enabled = actionsEnabled && capabilities != null) {
                         Icon(painterResource(R.drawable.stream_link), contentDescription = null)
                         Spacer(Modifier.width(4.dp)); Text("Add link")
                     }
-            }
+            })
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
             } }
         items(displayed, key = { "configured:${it.id}" }) { source ->
@@ -311,7 +368,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }
             }
         }
-        item(key = "discovery-controls") { Column(Modifier.padding(bottom = 12.dp)) {
+        item(key = DISCOVERY_CONTROLS_KEY) { Column(Modifier.padding(bottom = 12.dp).testTag("Find streams controls")) {
             SettingsSection("Find streams", buildString {
                 append("Browse, search or look up items to add to your configured streams.")
                 if (capabilities != null && capabilities.browse != CatalogAccess.AVAILABLE)
@@ -330,7 +387,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                 tabs.forEach { (id, title, access) ->
                     Tab(selected = id == state.selectedTabId, enabled = !state.saving && !state.storageFailed &&
                         state.configured != null && capabilities != null && state.link == null,
-                        onClick = { if (id == DISCOVERY_ALL_TAB) onAll() else onCollection(id) },
+                        onClick = { selectTab(id) },
                         modifier = Modifier.semantics { stateDescription = catalogAccessExplanation(access ?: CatalogAccess.NOT_VERIFIED) },
                         text = { Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -358,10 +415,9 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             val heading = state.childHeading ?: state.query.parent?.let {
                 "${capabilities?.childrenFor(it, providerId)?.headingPrefix ?: "Items under"} ${it.identity}"
             } ?: state.query.search?.let { "Search results" }
-            heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
-            state.navigationBackLabel?.let { label ->
-                TextButton(onClick = onDiscoveryBack) { Text(label) }
-            }
+            if (state.navigationBackLabel != null) SettingsPageHeader(heading ?: "Find streams",
+                onBack = onDiscoveryBack, backDescription = state.navigationBackLabel)
+            else heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             if (!state.loading && state.failure == null && state.configured != null && state.entries.isEmpty()) Text("No catalog items found.")
         } }
         items(state.entries, key = { "catalog:${it.resource.providerId.value}:${it.resource.kind}:${it.resource.identity}:${it.resource.intent}" }) { entry ->
@@ -384,10 +440,14 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                                 modifier = Modifier.widthIn(max = 100.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    TextButton(onClick = { onAdd(entry) },
+                    IconButton(onClick = { onAdd(entry) },
                         enabled = mutable && !added && state.configured.orEmpty().size < MAX_CONFIGURED_SOURCES,
-                        modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Add ${entry.title}" }) {
-                        Text(if (added) "✓ Added" else "Add")
+                        colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.size(48.dp).semantics {
+                            contentDescription = "Add ${entry.title}"
+                            stateDescription = if (added) "Already added" else "Not added"
+                        }) {
+                        Icon(painterResource(if (added) R.drawable.stream_check else R.drawable.stream_plus), contentDescription = null)
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -396,6 +456,9 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         if (state.nextCursor != null) item(key = "discovery-more") {
             TextButton(onClick = onMore, enabled = mutable, modifier = Modifier.padding(top = 4.dp)) { Text("More items") }
         }
+        transition?.let { tail -> item(key = tail.tailKey) {
+            Spacer(Modifier.height(with(density) { tail.gapPx.toDp() }).testTag("Discovery trailing space"))
+        } }
     }
     if (state.loading || state.saving) LinearProgressIndicator(
         Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))

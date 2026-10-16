@@ -1,160 +1,210 @@
 package net.fstab.tachiai.feature.connections
 
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.verticalScroll
+import android.view.KeyEvent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.provider.abema.account.*
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
-// Synthetic UI only; no provider binding, authorization storage or WebView.
+// Synthetic presentation only; no provider binding, storage, login or WebView.
 class AbemaAccountConnectionScreenTest {
     @get:Rule val compose = createComposeRule()
-    @Test fun connectNeedsNoLocalIdentifierAndDelegatesSignInToAbema() {
+    private fun menu() = compose.onNodeWithContentDescription("ABEMA account actions").performClick()
+    private fun dismissMenuWithEscape() {
+        compose.onNode(isPopup()).assertExists()
+        // Android's popup window handles Escape outside the Compose owner.
+        // Send through the focused window instead of bypassing it at the node.
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ESCAPE)
+        compose.waitForIdle()
+        compose.onNode(isPopup()).assertDoesNotExist()
+    }
+
+    @Test fun compactPrimaryUsesProviderFlowWithoutLocalCredentialFieldsOrPermanentActionBank() {
         var connects = 0
         compose.setContent { TachiaiPrototypeTheme {
             AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
-                { connects++ }, {}, {}, {}, {}, {})
+                { connects++ }, {}, {}, onSignInAgain = {})
         } }
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
         compose.onAllNodes(isToggleable()).assertCountEquals(0)
-        compose.onNodeWithTag("abema-account-identity").assertDoesNotExist()
-        compose.onNodeWithText("I confirm this is the existing account I intend to connect.").assertDoesNotExist()
+        compose.onNodeWithText("Not connected").assertExists()
+        compose.onNodeWithText("Connect by email").performClick()
+        compose.runOnIdle { assertEquals(1, connects) }
+        for (label in listOf("Sign in again", "Check connection", "Forget account…", "Finish connection", "Cancel"))
+            compose.onNodeWithText(label).assertDoesNotExist()
         compose.onNodeWithText("Enter your email address and emailed code", substring = true).assertDoesNotExist()
-        compose.onNodeWithContentDescription("Info about ABEMA account").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Info about ABEMA account").performClick()
         compose.onNodeWithText("Enter your email address and emailed code", substring = true).assertExists()
         compose.onNodeWithText("Close").performClick()
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsEnabled()
-        compose.onNodeWithText("Connect by email").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, connects) }
-    }
-    @Test fun savedAccountStatusDoesNotReintroduceIdentifierEntry() {
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.UNVERIFIED, progress = AbemaAccountProgress.IDLE),
-                {}, {}, {}, {}, {}, {})
-        } }
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
-        compose.onNodeWithText("Saved ABEMA account needs fresh validation.").performScrollTo().assertExists()
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsEnabled()
-    }
-    @Test fun embeddedAccountHasNoNestedBackNavigationAndKeepsStatusVisible() {
-        compose.setContent { TachiaiPrototypeTheme {
-            androidx.compose.foundation.lazy.LazyColumn {
-                item { AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.RECONNECT_REQUIRED,
-                    progress = AbemaAccountProgress.IDLE), {}, {}, {}, {}, {}) }
-                item { androidx.compose.material3.Text("Configured streams fixture") }
-            }
-        } }
-        compose.onNodeWithText("ABEMA account needs reconnection.").assertExists()
-        compose.onNodeWithText("Back to providers").assertDoesNotExist()
-        compose.onNodeWithText("Configured streams fixture").performScrollTo().assertExists()
-    }
-    @Test fun pendingProviderSaveDisablesAccountActionsWithoutChangingAccountStatus() {
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(status = AbemaAccountStatus.CONNECTED,
-                progress = AbemaAccountProgress.IDLE, canContinue = true), {}, {}, {}, {}, {}, {},
-                onSignInAgain = {}, enabled = false)
-        } }
-        compose.onNodeWithText("ABEMA account validated for this instance.").assertExists()
-        compose.onNodeWithText("ABEMA account setup is unavailable.", substring = true).assertDoesNotExist()
-        for (label in listOf("Connect by email", "Finish connection", "Sign in again",
-            "Validate account", "Forget account", "Cancel", "Back to providers"))
-            compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
-    }
-    @Test fun controllerReadinessReadingAndBusyStatePreventAnEnabledNoOp() {
-        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
-        var ready by androidx.compose.runtime.mutableStateOf(true); var connects = 0; var backs = 0
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, { backs++ }, ready = ready)
-        } }
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsEnabled()
-        compose.runOnIdle { ready = false }
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Validate account").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Check ABEMA authorization").assertDoesNotExist()
-        compose.onNodeWithText("ABEMA account setup is unavailable. Return to providers and reopen this account.").performScrollTo().assertExists()
-        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, backs); ready = true; state = state.copy(progress = AbemaAccountProgress.READING) }
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Reading protected account setup…").performScrollTo().assertExists()
-        compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.IDLE, busy = true) }
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Wait for the current ABEMA action to finish.").performScrollTo().assertExists()
-        compose.runOnIdle { assertEquals(0, connects); state = state.copy(busy = false) }
-        compose.onNodeWithText("Connect by email").performScrollTo().assertIsEnabled()
-    }
-    @Test fun forgetInProgressBlocksAccountActionsAndNavigation() {
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.FORGETTING, busy = true),
-                {}, {}, {}, {}, {}, {})
-        } }
-        for (text in listOf("Connect by email", "Validate account",
-            "Forget account", "Cancel", "Back to providers"))
-            compose.onNodeWithText(text).performScrollTo().assertIsNotEnabled()
-    }
-    @Test fun emailCompletionIsOfferedAfterTheProtectedBrowserHandoff() {
-        var completions = 0
-        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.WAITING_APPROVAL))
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state, {}, { completions++ }, {}, {}, {}, {})
-        } }
-        compose.onNodeWithText("Open ABEMA approval").assertDoesNotExist()
-        compose.onNodeWithText("Finish connection").performScrollTo().assertIsNotEnabled()
-        compose.runOnIdle { state = state.copy(canContinue = true) }
-        compose.onNodeWithText("Finish connection").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, completions) }
-    }
-    @Test fun accountSetupDoesNotOfferDiagnosticAuthorizationProbes() {
-        compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
-                {}, {}, {}, {}, {}, {})
-        } }
-        compose.onNodeWithText("Check ABEMA authorization").assertDoesNotExist()
-        compose.onNodeWithText("Check profile authorization enforcement").assertDoesNotExist()
     }
 
-    @Test fun accountActionsStayPresentAcrossConnectionStatesAndWrapWithLargeText() {
-        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+    @Test fun connectedOpenAccountUsesSameCallbackAndEmbeddedSectionHasNoBackRow() {
+        var opens = 0
         compose.setContent { TachiaiPrototypeTheme {
-            val density = androidx.compose.ui.platform.LocalDensity.current
-            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides
-                androidx.compose.ui.unit.Density(density.density, 1.5f)) {
-                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier
-                    .width(320.dp)
-                    .verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                    AbemaAccountConnectionScreen(state, {}, {}, {}, {}, {}, onSignInAgain = {})
-                }
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(AbemaAccountStatus.CONNECTED, AbemaAccountProgress.IDLE),
+                { opens++ }, {}, {})
+        } }
+        compose.onNodeWithText("Connected").assertExists()
+        compose.onNodeWithText("Open account").performClick()
+        compose.onNodeWithText("Connect by email").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back to providers").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, opens) }
+    }
+
+    @Test fun overflowActionsCloseTheMenuAndForgetRequiresExplicitConfirmation() {
+        var resets = 0; var checks = 0; var forgets = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                {}, { checks++ }, { forgets++ }, onSignInAgain = { resets++ })
+        } }
+        menu(); compose.onNodeWithText("Sign in again").performClick()
+        compose.onNodeWithText("Check connection").assertDoesNotExist()
+        menu(); compose.onNodeWithText("Check connection").performClick()
+        menu(); compose.onNodeWithText("Forget account…").performClick()
+        compose.onNodeWithText("Forget ABEMA account?").assertExists()
+        compose.runOnIdle { assertEquals(1, resets); assertEquals(1, checks); assertEquals(0, forgets) }
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithText("Forget ABEMA account?").assertDoesNotExist()
+        menu(); compose.onNodeWithText("Forget account…").performClick()
+        compose.onNodeWithText("Forget account").performClick()
+        compose.runOnIdle { assertEquals(1, forgets) }
+    }
+
+    @Test fun keyboardCanActivateAndDismissOverflowWithoutRunningAnAction() {
+        var callbacks = 0
+        lateinit var inputMode: InputModeManager
+        compose.setContent { TachiaiPrototypeTheme {
+            inputMode = LocalInputModeManager.current
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                { callbacks++ }, { callbacks++ }, { callbacks++ }, onSignInAgain = { callbacks++ })
+        } }
+        compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
+        val button = compose.onNodeWithContentDescription("ABEMA account actions")
+        button.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        button.performKeyInput { pressKey(Key.Enter) }
+        val item = compose.onNodeWithText("Check connection").assertExists()
+        item.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        item.assertIsFocused()
+        dismissMenuWithEscape()
+        compose.onNodeWithText("Check connection").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, callbacks) }
+    }
+
+    @Test fun readingBusyReadinessAndPendingSaveGuardActionsWithoutAddingRows() {
+        var state by mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+        var ready by mutableStateOf(true); var enabled by mutableStateOf(true)
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(state, {}, {}, {}, ready = ready, enabled = enabled, onSignInAgain = {})
+        } }
+        val initial = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { ready = false }
+        compose.onNodeWithText("Connect by email").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("ABEMA account actions").assertIsNotEnabled()
+        compose.onNodeWithText("Unavailable").assertExists()
+        compose.runOnIdle { ready = true; state = state.copy(progress = AbemaAccountProgress.READING) }
+        compose.onNodeWithText("Reading…").assertExists()
+        compose.onNodeWithText("Connect by email").assertIsNotEnabled()
+        menu(); compose.onNodeWithText("Check connection").assertIsNotEnabled()
+        compose.onNodeWithText("Sign in again").assertIsNotEnabled()
+        dismissMenuWithEscape()
+        compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.IDLE, busy = true) }
+        compose.onNodeWithText("Working…").assertExists()
+        compose.onNodeWithText("Connect by email").assertIsNotEnabled()
+        compose.runOnIdle { state = state.copy(busy = false); enabled = false }
+        compose.onNodeWithText("Connect by email").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("ABEMA account actions").assertIsNotEnabled()
+        assertEquals(initial, compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test fun narrowLargeFontSectionKeepsHeightAndActionPositionAcrossAllStatusesAndProgress() {
+        var state by mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+        compose.setContent { TachiaiPrototypeTheme {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                Column(Modifier.width(320.dp)) { AbemaAccountConnectionScreen(state, {}, {}, {}, onSignInAgain = {}) }
             }
         } }
-        for (status in listOf(AbemaAccountStatus.MISSING, AbemaAccountStatus.CONNECTED, AbemaAccountStatus.RECONNECT_REQUIRED)) {
-            compose.runOnIdle { state = state.copy(status = status) }
-            for (label in listOf("Connect by email", "Sign in again", "Validate account", "Finish connection", "Forget account", "Cancel"))
-                compose.onNodeWithText(label).performScrollTo().assertIsDisplayed()
-            compose.onNodeWithText("Finish connection").assertIsNotEnabled()
+        val before = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
+        val button = compose.onNodeWithText("Connect by email").fetchSemanticsNode().boundsInRoot
+        for (status in AbemaAccountStatus.entries) for (progress in listOf(AbemaAccountProgress.IDLE,
+            AbemaAccountProgress.READING, AbemaAccountProgress.PREPARING, AbemaAccountProgress.CHECKING,
+            AbemaAccountProgress.WAITING_APPROVAL, AbemaAccountProgress.FORGETTING)) {
+            compose.runOnIdle { state = state.copy(status = status, progress = progress, busy = progress != AbemaAccountProgress.IDLE) }
+            assertEquals(before, compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot)
+            val label = if (status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email"
+            assertEquals(button, compose.onNodeWithText(label).assertIsDisplayed().fetchSemanticsNode().boundsInRoot)
+            compose.onNodeWithContentDescription("Info about ABEMA account").assertIsDisplayed()
         }
     }
 
-    @Test fun rememberedLoginAndFreshSignInAreSeparateExplicitActionsWithBusyGuards() {
-        var connects = 0; var resets = 0
-        var ready by androidx.compose.runtime.mutableStateOf(true)
-        var state by androidx.compose.runtime.mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+    @Test fun flowFinishAndCancelRemainSeparateFromSettingsAndRespectActiveState() {
+        var state by mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.WAITING_APPROVAL))
+        var finishes = 0; var cancels = 0
         compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(state, { connects++ }, {}, {}, {}, {}, {}, ready = ready,
-                onSignInAgain = { resets++ })
+            AbemaAccountConnectionFlow(state, { finishes++ }, { cancels++ })
         } }
-        compose.onNodeWithText("Connect by email").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, connects); assertEquals(0, resets); ready = false }
-        compose.onNodeWithText("Sign in again").performScrollTo().assertIsNotEnabled()
-        compose.runOnIdle { ready = true; state = state.copy(busy = true) }
-        compose.onNodeWithText("Sign in again").performScrollTo().assertIsNotEnabled()
-        compose.runOnIdle { state = state.copy(busy = false) }
-        compose.onNodeWithText("Sign in again").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, connects); assertEquals(1, resets) }
+        compose.onNodeWithText("Finish connection").assertIsNotEnabled()
+        compose.onNodeWithText("Cancel").assertIsEnabled()
+        compose.runOnIdle { state = state.copy(canContinue = true) }
+        compose.onNodeWithText("Finish connection").performClick()
+        compose.runOnIdle { assertEquals(1, finishes); state = state.copy(canContinue = false, busy = true, progress = AbemaAccountProgress.CHECKING) }
+        compose.onNodeWithText("Finish connection").assertIsNotEnabled()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(1, cancels) }
+    }
+
+    @Test fun mountedFlowSurvivesLazyAccountContentDisposalAndProviderPauseReturn() {
+        var includeSection by mutableStateOf(true); var foreground by mutableStateOf(true); var flow by mutableStateOf(true)
+        var cancels = 0
+        val state = AbemaAccountConnectionState(progress = AbemaAccountProgress.WAITING_APPROVAL, canContinue = true)
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionHost(state, flow, foreground, { flow = false }, { cancels++; flow = false }) {
+                LazyColumn(Modifier.height(180.dp), state = rememberLazyListState()) {
+                    if (includeSection) item { AbemaAccountConnectionScreen(state, {}, {}, {}) }
+                    items(20) { Text("Configured stream $it", Modifier.height(64.dp)) }
+                }
+            }
+        } }
+        compose.onNodeWithText("Finish connection").assertIsDisplayed()
+        compose.runOnIdle { includeSection = false; foreground = false }
+        compose.onNodeWithText("Finish connection").assertDoesNotExist()
+        compose.runOnIdle { foreground = true }
+        compose.onNodeWithText("Finish connection").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Finish connection").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, cancels); flow = true }
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(1, cancels) }
+    }
+
+    @Test fun standaloneHeadingUsesLeadingBackAndTrailingInfoWithoutTextBackRow() {
+        var backs = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                {}, {}, {}, onBack = { backs++ })
+        } }
+        val back = compose.onNodeWithContentDescription("Back to providers").assertIsDisplayed()
+        val title = compose.onNodeWithText("ABEMA account").fetchSemanticsNode().boundsInRoot
+        val info = compose.onNodeWithContentDescription("Info about ABEMA account").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue(back.fetchSemanticsNode().boundsInRoot.right <= title.left)
+        assertTrue(info.left >= title.right)
+        compose.onNodeWithText("Back to providers").assertDoesNotExist()
+        back.performClick(); compose.runOnIdle { assertEquals(1, backs) }
     }
 }

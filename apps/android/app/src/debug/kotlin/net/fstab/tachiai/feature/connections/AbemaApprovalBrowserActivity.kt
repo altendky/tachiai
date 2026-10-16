@@ -124,11 +124,11 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
                 insets
             }
             status = TextView(this).apply { text = "Preparing ABEMA’s browser through the selected connection…"; setPadding(16, 16, 16, 16) }
-            column.addView(status)
-            column.addView(Button(this).apply {
-                text = if (request.automaticReturn) "Cancel" else "Return to Tachiai"
-                setOnClickListener { closeBrowser(!request.automaticReturn) }
+            column.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this, "ABEMA sign-in",
+                if (request.automaticReturn) "Cancel ABEMA sign-in" else "Return to Tachiai") {
+                closeBrowser(!request.automaticReturn)
             })
+            column.addView(status)
             val browser = WebView(this)
             view = browser
             browser.configureSecureSettings()

@@ -73,15 +73,15 @@ class AbemaCachedHelperActivity : ComponentActivity() {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
+        host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this, "ABEMA cached helper", "Back to access cases", ::finish))
         host.addView(TextView(this).apply {
-            text = "ABEMA cached helper · initialization only\nDownloads reviewed public code into app cache. No login, license or playback. Existing players are unchanged."
+            text = "Initialization only · Downloads reviewed public code into app cache. No login, license or playback. Existing players are unchanged."
         })
         status = TextView(this).apply { text = "Ready. First run downloads; later runs verify and reuse the cache." }
         host.addView(status)
         start = Button(this).apply { text = "Download/cache + initialize"; setOnClickListener { begin() } }
         host.addView(start)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { stop("STOPPED") } })
-        host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
     }
 

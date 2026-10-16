@@ -48,8 +48,9 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
+        host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this, "ABEMA guest preparation", "Back to access cases", ::finish))
         host.addView(TextView(this).apply {
-            text = "ABEMA guest preparation · debug only\nSelect a saved ABEMA provider and explicitly prepare or verify a fresh guest using its saved route. No account login or playback. Cookies are disabled."
+            text = "Debug only · Select a saved ABEMA provider and explicitly prepare or verify a fresh guest using its saved route. No account login or playback. Cookies are disabled."
         })
         status = TextView(this).apply { text = "Loading saved providers. No provider request has started." }; host.addView(status)
         choose = Spinner(this).apply { isEnabled = false }; host.addView(choose)
@@ -64,7 +65,6 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         observeToken = Button(this).apply { text = "Observe one device-token response"; isEnabled = false
             setOnClickListener { begin(AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) } }; host.addView(observeToken)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { cancel() } })
-        host.addView(Button(this).apply { text = "Back"; setOnClickListener { finish() } })
         setContentView(host)
         worker.execute {
             try {
@@ -74,7 +74,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
                     if (!isFinishing && !isDestroyed) {
                         instances = saved
                         choose.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-                            saved.map { "${it.name} · ${it.setup.route?.title ?: "Route needs review"}" })
+                            saved.map { "${net.fstab.tachiai.presentation.providerDisplayNames(it).inline} · ${it.setup.route?.title ?: "Route needs review"}" })
                         status.text = if (saved.isEmpty()) "No saved ABEMA provider available." else
                             "Ready. Preparing a guest does not connect an existing account."
                         controls()

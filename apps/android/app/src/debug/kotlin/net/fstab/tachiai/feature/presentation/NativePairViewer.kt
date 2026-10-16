@@ -130,8 +130,10 @@ internal class NativePairViewer(
         addView(liveHint)
         visibility = GONE
     }
-    private val toolbar = row(*listOfNotNull(play, button("Audio") { togglePanel("Audio") },
-        button("Timing") { togglePanel("Timing") }, onSources?.let { action -> button("Sources") { action() } },
+    private val toolbar = row(*listOfNotNull(onSources?.let { action -> nativeBackButton(context, "Back to sources", action).apply {
+            imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.prototype_text))
+        } }, play, button("Audio") { togglePanel("Audio") },
+        button("Timing") { togglePanel("Timing") },
         button("More") { showMore(it) },
         button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
 
@@ -247,7 +249,16 @@ internal class NativePairViewer(
         (listOf(volumeLabel, volume, mixLabel, balance, muteA, muteB, fit, adjustmentLabel) + advanceA + advanceB).forEach {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
         }
-        if (panel != null) content.addView(row(text("${checkNotNull(panel)} controls").apply { gravity = Gravity.CENTER_VERTICAL }, fit))
+        panel?.let { current ->
+            content.addView(LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(nativeBackButton(context, "Back to playback controls") { togglePanel(current) }.apply {
+                    imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.prototype_text))
+                }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                addView(text("$current controls").apply { gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(fit, LinearLayout.LayoutParams(0, -2, 1f))
+            })
+        }
         if (panel == "Audio") {
             content.addView(row(volumeLabel.apply { gravity = Gravity.CENTER_VERTICAL }, volume))
             content.addView(mixLabel)

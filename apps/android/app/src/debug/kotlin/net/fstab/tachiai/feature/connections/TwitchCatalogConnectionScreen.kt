@@ -26,9 +26,12 @@ internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, 
         val columnModifier = if (onBack == null) Modifier else Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         Column(columnModifier,
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SettingsSection("Twitch account", "Connect this provider for Following, stream discovery and playback. The connection uses Twitch’s Smart TV identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.\n\n" +
+            val help = "Connect this provider for Following, stream discovery and playback. The connection uses Twitch’s Smart TV identity and requests permission to read the channels you follow. Other provider instances keep their own accounts.\n\n" +
                 "Tachiai’s authorization requests use the saved route. The external consent browser uses its own network and login. Return here after approving; polling pauses while you are away and the original code expiry still applies.\n\n" +
-                "Forget disconnects discovery and playback for this provider. Browser login, configured streams, routes and other provider instances are retained.")
+                "Forget disconnects discovery and playback for this provider. Browser login, configured streams, routes and other provider instances are retained."
+            if (onBack == null) SettingsSection("Twitch account", help)
+            else SettingsPageHeader("Twitch account", onBack, "Back to providers", help,
+                backEnabled = enabled && state.operation != TwitchCatalogConnectionOperation.FORGET)
             Text(state.status)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
                 maxItemsInEachRow = 2) {
@@ -53,7 +56,6 @@ internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, 
             state.phase?.let { Text(catalogPhaseMessage(it)) }
             state.message?.let { Text(it) }
             onRetryOpen?.let { retry -> TextButton(retry, enabled = enabled && !state.busy) { Text("Retry opening Twitch connection") } }
-            onBack?.let { back -> TextButton(back, enabled = enabled && state.operation != TwitchCatalogConnectionOperation.FORGET) { Text("Back to providers") } }
         }
     }
 }

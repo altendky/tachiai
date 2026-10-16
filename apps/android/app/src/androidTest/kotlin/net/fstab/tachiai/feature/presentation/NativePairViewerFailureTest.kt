@@ -50,7 +50,7 @@ class NativePairViewerFailureTest {
             assertEquals(View.GONE, a.visibility)
             assertEquals(View.GONE, b.visibility)
             assertFalse(button(viewer, "Play").isEnabled)
-            button(viewer, "Sources").performClick()
+            descendants(viewer).single { it.contentDescription == "Back to sources" }.performClick()
             assertEquals(1, returns)
             viewer.endSession()
         } }

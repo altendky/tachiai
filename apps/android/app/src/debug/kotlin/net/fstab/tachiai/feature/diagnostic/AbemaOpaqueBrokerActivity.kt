@@ -216,6 +216,8 @@ open class AbemaOpaqueBrokerActivity : ComponentActivity() {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
+        host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this,
+            if (nativePair) "Native paired playback" else "ABEMA access case", "Back to access cases", ::finish))
         host.addView(TextView(this).apply { setText(if (nativePair) R.string.native_mixed_warning else if (replaySourceProbe) R.string.abema_replay_source_warning else if (nativeReplay) R.string.abema_native_replay_warning else if (nativePlayback) R.string.abema_native_playback_warning else R.string.abema_broker_warning) })
         status = TextView(this).apply { setText(R.string.abema_request_ready) }
         host.addView(status)
@@ -226,11 +228,9 @@ open class AbemaOpaqueBrokerActivity : ComponentActivity() {
         controls.addView(Button(this).apply {
             setText(R.string.abema_inspection_reload); setOnClickListener { cancel(); browser?.reload() }
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        controls.addView(Button(this).apply { setText(R.string.abema_inspection_close); setOnClickListener { finish() } }, LinearLayout.LayoutParams(0, -2, 1f))
         host.addView(controls)
-        if (preliminaryViewer) host.addView(Button(this).apply {
-            setText(R.string.native_viewer_return); setOnClickListener { if (mixedPair != null) pairViewer?.open() }
-        })
+        if (preliminaryViewer) host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this,
+            "Viewer", getString(R.string.native_viewer_return)) { if (mixedPair != null) pairViewer?.open() })
         if (nativePlayback) {
             nativeStatus = TextView(this).also { host.addView(it) }
             if (nativePair) {

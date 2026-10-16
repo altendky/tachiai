@@ -41,6 +41,8 @@ class HistoryManagementControllerTest {
             check(!failCapabilities) { "Synthetic capability validation failure" }
             return CatalogCapabilities(browse = CatalogAccess.AVAILABLE,
                 search = CatalogAccess.AVAILABLE, lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
+                childCapabilities = listOf(CatalogChildrenCapability("series", CatalogIntent.COLLECTION,
+                    CatalogAccess.AVAILABLE, "Browse episodes", "Episodes from")),
                 collections = listOf(CatalogCollection("history", "History", access)), initialCollectionId = "history")
         }
         override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {

@@ -8,6 +8,32 @@ class ProviderCatalogTest {
     private val instanceId = "12345678-1234-1234-1234-123456789abc"
     private val otherInstance = "12345678-1234-1234-1234-123456789abd"
 
+    @Test fun childSupportRequiresExactKindIntentProviderAndCurrentAccess() {
+        val provider = ProviderId("fixture")
+        val parent = CatalogResource(provider, "channel", "one", CatalogIntent.CHANNEL)
+        val rule = CatalogChildrenCapability("channel", CatalogIntent.CHANNEL, CatalogAccess.AVAILABLE, "Browse programs", "Programs from")
+        val capabilities = CatalogCapabilities(children = CatalogAccess.AVAILABLE, childCapabilities = listOf(rule))
+        assertEquals(rule, capabilities.childrenFor(parent, provider))
+        assertNull(capabilities.childrenFor(parent.copy(kind = "unknown"), provider))
+        assertNull(capabilities.childrenFor(parent.copy(intent = CatalogIntent.COLLECTION), provider))
+        assertNull(capabilities.childrenFor(parent.copy(providerId = ProviderId("other")), provider))
+        assertNull(CatalogCapabilities(children = CatalogAccess.AVAILABLE).childrenFor(parent, provider))
+        for (access in CatalogAccess.entries.filterNot { it == CatalogAccess.AVAILABLE }) {
+            assertEquals(access, capabilities.copy(children = access).childrenFor(parent, provider)!!.access)
+            assertEquals(access, capabilities.copy(childCapabilities = listOf(rule.copy(access = access))).childrenFor(parent, provider)!!.access)
+        }
+        assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(childCapabilities = listOf(rule, rule)) }
+        assertThrows(IllegalArgumentException::class.java) { CatalogCapabilities(childCapabilities = List(17) { rule.copy(kind = "kind_$it") }) }
+        for (intent in listOf(CatalogIntent.VIDEO, CatalogIntent.BROADCAST))
+            assertThrows(IllegalArgumentException::class.java) { rule.copy(intent = intent) }
+        for (kind in listOf("", "Upper", "bad/kind", "a".repeat(33)))
+            assertThrows(IllegalArgumentException::class.java) { rule.copy(kind = kind) }
+        for (label in listOf("", " leading", "trailing ", "x".repeat(65), "hidden\u200b", "line\n")) {
+            assertThrows(IllegalArgumentException::class.java) { rule.copy(actionLabel = label) }
+            assertThrows(IllegalArgumentException::class.java) { rule.copy(headingPrefix = label) }
+        }
+    }
+
     @Test fun browseLabelsAndInitialCollectionsAreBoundedWithoutAssumingAccess() {
         assertEquals("All", CatalogCapabilities().browseTitle)
         assertNull(CatalogCapabilities().initialCollectionId)
@@ -44,6 +70,8 @@ class ProviderCatalogTest {
             browse = CatalogAccess.AVAILABLE, search = CatalogAccess.AVAILABLE,
             lookup = CatalogAccess.AVAILABLE, refresh = CatalogAccess.AVAILABLE,
             children = if (children.isEmpty()) CatalogAccess.UNSUPPORTED else CatalogAccess.AVAILABLE,
+            childCapabilities = children.keys.map { it.kind to it.intent }.distinct().map { (kind, intent) ->
+                CatalogChildrenCapability(kind, intent, CatalogAccess.AVAILABLE, "Browse items", "Items under") },
             playback = CatalogAccess.NOT_VERIFIED,
             collections = listOf(CatalogCollection(accountCollection, "Saved on provider", accountAccess),
                 CatalogCollection("history", "Watch history", CatalogAccess.UNSUPPORTED)),

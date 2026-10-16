@@ -246,6 +246,18 @@ entitlement, collection access or playback merely from login success.
 
 ### Public Schedule snapshot
 
+Channel child browsing reuses this same canonical timetable operation. The
+request carries a validated channel identity through the catalog, private IPC
+and owned runtime. The runtime validates the complete raw timetable before
+retaining up to 501 matching broadcasts, rather than filtering a global prefix.
+The normalized result includes the requested channel even when no slots match;
+the client rejects a missing or different binding and cross-channel rows.
+Single-use continuation tokens remain bound to that channel, instance and
+captured owner. Series and season children keep their separate exact operation.
+These paths preserve UNKNOWN availability and make no playback or entitlement
+claim. Fixture coverage establishes filtering and ownership behavior; a fresh
+device observation of channel browsing is still required.
+
 The public catalog under [#100](https://github.com/altendky/tachiai/issues/100)
 and [#101](https://github.com/altendky/tachiai/issues/101) offers **Schedule**
 alongside **Channels**, My List and History. Schedule uses a fresh guest rather

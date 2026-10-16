@@ -47,6 +47,7 @@ class AbemaGuestRuntimeCoordinatorTest {
         var seriesParent = "series-A"
         var seriesProjection: String? = null
         var slotRequest = AbemaSlotRequest("channel-A", "slot-A")
+        var scheduleRequest = AbemaScheduleRequest()
         var slotProjection: String? = null
         var scheduleProjection: String? = null
         var searchRequest = AbemaSearchRequest("Public query")
@@ -154,7 +155,8 @@ class AbemaGuestRuntimeCoordinatorTest {
             selectedNonce, proof, main.now + 45_000,
             seriesRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest(seriesParent) else null,
             slotRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest else null,
-            searchRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest else null) { foreground }
+            searchRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest else null,
+            scheduleRequest = scheduleRequest) { foreground }
         fun start(selectedNonce: String = nonce) = runtime.start(request(selectedNonce), completed = results::add)
         fun pump() {
             repeat(100) {
@@ -225,6 +227,31 @@ class AbemaGuestRuntimeCoordinatorTest {
         assertEquals("channel-A/slot-A", result.scheduleSnapshot!!.entries.single().resource.identity)
         assertNull(result.entry); assertNull(result.seriesPage); assertNull(result.accountChallenge); assertNull(result.accountValidation)
         assertTrue(f.events.lastIndexOf("check-owner") > f.events.indexOf("close-backend"))
+    }
+    @Test fun channelSnapshotBindingSurvivesCleanupAndRejectsWrongEmptyProjection() {
+        for (projection in listOf(
+            """{"slots":[],"truncated":false,"channelId":"channel-A"}""",
+            """{"slots":[],"truncated":false,"channelId":"channel-B"}""",
+            """{"slots":[],"truncated":false}""")) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply {
+                scheduleRequest = AbemaScheduleRequest("channel-A"); scheduleProjection = projection; holdClear = true
+            }
+            assertTrue(f.start()); f.pump(); assertTrue(f.results.isEmpty())
+            f.clearCallback!!.invoke(); f.pump()
+            val result = f.results.single()
+            if (projection.contains("channel-A")) {
+                assertEquals("SCHEDULE_SNAPSHOT", result.category); assertEquals(f.scheduleRequest, result.scheduleSnapshot!!.request)
+            } else { assertEquals("GUEST_SCHEDULE_RESPONSE", result.category); assertNull(result.scheduleSnapshot) }
+        }
+        for (mode in 0..2) {
+            val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply {
+                scheduleRequest = AbemaScheduleRequest("channel-A")
+                scheduleProjection = """{"slots":[],"truncated":false,"channelId":"channel-A"}"""; holdClear = true
+            }
+            assertTrue(f.start()); f.pump()
+            when (mode) { 0 -> f.foreground = false; 1 -> f.matching = false; else -> f.main.now += 45000 }
+            f.clearCallback!!.invoke(); f.pump(); assertNull(f.results.single().scheduleSnapshot)
+        }
     }
     @Test fun scheduleMalformedCrossModeOwnerForegroundExpiryAndCleanupFailuresNeverExportSnapshot() {
         val malformed = Fixture(AbemaGuestBootstrapOperation.FETCH_SCHEDULE).apply { scheduleProjection = "{\"slots\":[],\"truncated\":true}" }

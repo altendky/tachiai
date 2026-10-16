@@ -486,7 +486,7 @@
     if (new TextEncoder().encode(stringify(projection)).byteLength > 65536) throw new Error();
     return projection;
   }
-  function parseScheduleText(text) {
+  function parseScheduleText(text, channelId) {
     // Explicit local admission bounds. A runtime probe must measure the actual
     // provider response; these are not a claimed provider schema/horizon limit.
     const reply = parseBoundedJsonText(text, true, { depth: 24, nodes: 300000, array: 20000 });
@@ -510,6 +510,7 @@
       dates.add(date);
     }
     const ids = new Set(), slots = [];
+    let matching = 0;
     for (const item of reply.slots) {
       if (!object(item) || !id(item.id) || !id(item.channelId) || ids.has(item.id) ||
         typeof item.title !== 'string' || item.title.trim().length < 1 || item.title.trim().length > 160 ||
@@ -517,8 +518,12 @@
       ids.add(item.id);
       // Channel/date annotations do not replace this exact identity. Missing
       // annotation does not make an otherwise valid broadcast unconfigurable.
-      if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim() }));
+      if (channelId === undefined || item.channelId === channelId) {
+        matching++;
+        if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim() }));
+      }
     }
+    if (channelId !== undefined) return Object.freeze({ slots, truncated: matching > slots.length, channelId });
     return Object.freeze({ slots, truncated: reply.slots.length > slots.length });
   }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId, accountContext) => {
@@ -527,6 +532,9 @@
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) :
         operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) :
+        operation === 'FETCH_SCHEDULE' ? resourceId !== undefined && (!resourceId || Array.isArray(resourceId) ||
+          typeof resourceId !== 'object' || Object.keys(resourceId).join(',') !== 'channelId' ||
+          typeof resourceId.channelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(resourceId.channelId)) :
         operation === 'FETCH_SEARCH' ? !validSearchRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
@@ -548,6 +556,7 @@
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
     const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
     const slotRequest = operation === 'FETCH_SLOT' ? Object.freeze({ ...resourceId }) : undefined;
+    const scheduleChannel = operation === 'FETCH_SCHEDULE' ? resourceId?.channelId : undefined;
     const searchRequest = operation === 'FETCH_SEARCH' ? Object.freeze({ ...resourceId }) : undefined;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
@@ -705,7 +714,7 @@
           state = 'SCHEDULE';
           schedule = await boundedReply(apiOrigin + '/v1/timetable/dataSet', { method: 'GET', mode: 'cors',
             headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } },
-          parseScheduleText, 'SCHEDULE_', 8 * 1024 * 1024);
+          text => parseScheduleText(text, scheduleChannel), 'SCHEDULE_', 8 * 1024 * 1024);
           alive(); guest = undefined; failure = 'NONE'; state = 'SCHEDULE_SNAPSHOT';
         } else if (operation === 'FETCH_SLOT') {
           state = 'SLOT';

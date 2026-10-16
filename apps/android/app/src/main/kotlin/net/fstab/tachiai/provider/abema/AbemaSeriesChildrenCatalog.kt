@@ -29,13 +29,19 @@ internal class AbemaSeriesChildrenCatalog(
     override fun capabilities(): CatalogCapabilities {
         val base = delegate.capabilities()
         val local = synchronized(lock) { revision }
-        return base.copy(children = if (transportFactory != null && current(local)) CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED,
-            childrenTitle = "Episodes", childrenHeadingPrefix = "Episodes from")
+        val access = if (transportFactory != null && current(local)) CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED
+        return base.copy(children = if (current(local) && (transportFactory != null || base.children == CatalogAccess.AVAILABLE))
+            CatalogAccess.AVAILABLE else CatalogAccess.NOT_VERIFIED,
+            childrenTitle = "Browse", childrenHeadingPrefix = "From",
+            childCapabilities = base.childCapabilities.filterNot { it.kind in setOf("series", "season") && it.intent == CatalogIntent.COLLECTION }
+                .map { if (base.children == CatalogAccess.AVAILABLE) it else it.copy(access = base.children) } +
+                listOf("series", "season").map { CatalogChildrenCapability(it, CatalogIntent.COLLECTION, access, "Browse episodes", "Episodes from") })
     }
     override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> {
         val parent = query.parent ?: run { clear(); return delegate.browse(query) }
-        if (parent.providerId != providerId || parent.kind !in setOf("series", "season") || parent.intent != CatalogIntent.COLLECTION)
-            return CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+        if (parent.providerId != providerId || parent.kind !in setOf("series", "season") || parent.intent != CatalogIntent.COLLECTION) {
+            clear(); return delegate.browse(query)
+        }
         val season = if (parent.kind == "season") abemaSeasonParent(parent) else null
         if ((parent.kind == "series" && !validAbemaSeriesId(parent.identity) || parent.kind == "season" && season == null) ||
             query.collectionId != null || query.search != null)

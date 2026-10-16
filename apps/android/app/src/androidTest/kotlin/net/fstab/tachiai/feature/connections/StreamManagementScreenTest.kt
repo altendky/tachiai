@@ -67,6 +67,11 @@ class StreamManagementScreenTest {
                 lookup = CatalogAccess.AVAILABLE, children = CatalogAccess.AVAILABLE,
                 childrenTitle = if (service == PrototypeService.TWITCH) "Videos" else "Items",
                 childrenHeadingPrefix = if (service == PrototypeService.TWITCH) "Videos from" else "Items under",
+                childCapabilities = listOf(
+                    CatalogChildrenCapability("channel", CatalogIntent.CHANNEL, CatalogAccess.AVAILABLE,
+                        if (service == PrototypeService.TWITCH) "Browse videos" else "Browse programs",
+                        if (service == PrototypeService.TWITCH) "Videos from" else "Programs from"),
+                    CatalogChildrenCapability("series", CatalogIntent.COLLECTION, CatalogAccess.AVAILABLE, "Browse episodes", "Episodes from")),
                 collections = listOf(collection, CatalogCollection("history", "History", historyAccess))),
             entries = all, nextCursor = "opaque:+page2", selectedTabId = DISCOVERY_ALL_TAB))
         private fun tab(id: String, change: () -> StreamManagementState) {
@@ -94,7 +99,7 @@ class StreamManagementScreenTest {
                             .firstOrNull { it.resource == resource }?.title ?: resource.identity
                         state = state.copy(query = CatalogQuery(parent = resource), entries = listOf(episode), nextCursor = null,
                             failure = null, discoveryContextId = nextContext++, retainedDiscoveryContextIds = listOf(state.discoveryContextId),
-                            childHeading = "${state.capabilities!!.childrenHeadingPrefix} $title", navigationBackLabel = "Back to channel list")
+                            childHeading = "${state.capabilities!!.childrenFor(resource, provider)!!.headingPrefix} $title", navigationBackLabel = "Back to channel list")
                     },
                     onMore = { calls.add("more"); state = state.copy(entries = state.entries + episode, nextCursor = null) },
                     onAdd = { entry -> calls.add("add:${entry.resource.identity}"); state = state.copy(configured =
@@ -693,7 +698,8 @@ class StreamManagementScreenTest {
         }
         description("Refresh metadata for $title").performClick()
         compose.runOnIdle { assertEquals(listOf("refresh:${source.id}"), fixture.calls) }
-        description("Browse configured $title").performClick()
+        description("Browse videos for $title").assertTextContains("Browse videos › · Offline").performClick()
+        compose.onAllNodesWithText("›").assertCountEquals(0)
         compose.runOnIdle { assertEquals(listOf("refresh:${source.id}", "children:saved0"), fixture.calls) }
     }
 
@@ -708,7 +714,7 @@ class StreamManagementScreenTest {
         compose.runOnIdle { assertEquals(listOf("add:offline"), fixture.calls) }
         description("Add Offline channel").assertIsNotEnabled()
         val browse = description("Browse Offline channel")
-        browse.assertIsEnabled().assertTextContains("Videos ›")
+        browse.assertIsEnabled().assertTextContains("Browse videos ›")
         browse.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         browse.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         text("Videos from Offline channel").assertExists()
@@ -718,15 +724,52 @@ class StreamManagementScreenTest {
         }
     }
 
+    @Test fun configuredChildActionsNameExactSupportAndNeverAdvertiseVideosUnknownKindsOrDeniedAccess() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        val provider = fixture.offline.resource.providerId
+        val rules = listOf(
+            CatalogChildrenCapability("channel", CatalogIntent.CHANNEL, CatalogAccess.AVAILABLE, "Browse programs", "Programs from"),
+            CatalogChildrenCapability("series", CatalogIntent.COLLECTION, CatalogAccess.AVAILABLE, "Browse episodes", "Episodes from"),
+            CatalogChildrenCapability("season", CatalogIntent.COLLECTION, CatalogAccess.AVAILABLE, "Browse episodes", "Episodes from"),
+            CatalogChildrenCapability("broadcaster", CatalogIntent.CHANNEL, CatalogAccess.AVAILABLE, "Browse videos", "Videos from"))
+        val entries = listOf("channel" to CatalogIntent.CHANNEL, "series" to CatalogIntent.COLLECTION,
+            "season" to CatalogIntent.COLLECTION, "broadcaster" to CatalogIntent.CHANNEL,
+            "video" to CatalogIntent.VIDEO, "slot" to CatalogIntent.BROADCAST,
+            "unknown" to CatalogIntent.COLLECTION, "channel" to CatalogIntent.VIDEO).mapIndexed { index, (kind, intent) ->
+            CatalogEntry(CatalogResource(provider, kind, "item$index", intent), "Saved item $index")
+        }
+        fixture.state = fixture.state.copy(configured = entries.map { ConfiguredSource(UUID.randomUUID().toString(), fixture.state.instance.id, it) },
+            entries = emptyList(), nextCursor = null, capabilities = fixture.state.capabilities!!.copy(childCapabilities = rules))
+        lateinit var inputMode: InputModeManager
+        compose.setContent { inputMode = LocalInputModeManager.current; fixture.Render() }
+        compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
+        for ((index, action) in listOf("Browse programs", "Browse episodes", "Browse episodes", "Browse videos").withIndex()) {
+            val target = description("$action for Saved item $index")
+            target.assertTextContains("$action › · Availability unknown")
+            target.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            target.performKeyInput { pressKey(Key.Enter) }
+            compose.runOnIdle { assertEquals("children:item$index", fixture.calls.last()) }
+        }
+        compose.runOnIdle { fixture.state = fixture.state.copy(entries = emptyList(), childHeading = null) }
+        for (index in 4..7) {
+            text("Saved item $index").assertHasNoClickAction()
+            compose.onNodeWithContentDescription("Browse configured Saved item $index").assertDoesNotExist()
+        }
+        compose.onAllNodesWithText("›").assertCountEquals(0)
+        compose.runOnIdle { fixture.state = fixture.state.copy(capabilities = fixture.state.capabilities!!.copy(children = CatalogAccess.RECONNECT_REQUIRED)) }
+        for ((index, action) in listOf("Browse programs", "Browse episodes", "Browse episodes", "Browse videos").withIndex())
+            compose.onNodeWithContentDescription("$action for Saved item $index").assertDoesNotExist()
+    }
+
     @Test fun providerWordingAndChildCapabilityNeverGiveVideosAMisleadingBrowseTarget() {
         val fixture = Fixture(PrototypeService.ABEMA)
         compose.setContent { fixture.Render() }
-        description("Browse A show").assertTextContains("Items ›")
-        compose.onAllNodesWithText("Videos ›").assertCountEquals(0)
+        description("Browse A show").assertTextContains("Browse episodes ›")
+        compose.onAllNodesWithText("Browse videos ›").assertCountEquals(0)
         compose.runOnIdle { fixture.state = fixture.state.copy(entries = listOf(fixture.episode), nextCursor = null) }
         description("Add Never-live episode").assertIsEnabled()
         compose.onNodeWithContentDescription("Browse Never-live episode").assertDoesNotExist()
-        compose.onAllNodesWithText("Items ›").assertCountEquals(0)
+        compose.onAllNodesWithText("Browse episodes ›").assertCountEquals(0)
         compose.runOnIdle { fixture.state = fixture.state.copy(entries = fixture.all,
             capabilities = fixture.state.capabilities!!.copy(children = CatalogAccess.UNSUPPORTED)) }
         description("Add Offline channel").assertIsEnabled()

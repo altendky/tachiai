@@ -32,7 +32,7 @@ class AbemaScheduleManagementTest {
             override fun resolve(resource: CatalogResource) = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         }
         val catalog = AbemaScheduleCatalog(delegate, { gate -> object : AbemaScheduleTransport {
-            override fun fetch(): CatalogResult<AbemaScheduleSnapshot> { check(gate()); fetches++; return CatalogResult.Value(AbemaScheduleSnapshot(rows)) }
+            override fun fetch(request: AbemaScheduleRequest): CatalogResult<AbemaScheduleSnapshot> { check(gate()); fetches++; return CatalogResult.Value(AbemaScheduleSnapshot(rows)) }
             override fun cancelActiveRequest() = Unit
             override fun close() = Unit
         } }, { allowed })
@@ -73,7 +73,7 @@ class AbemaScheduleManagementTest {
             override fun resolve(resource: CatalogResource) = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         }
         val catalog = AbemaScheduleCatalog(delegate, { object : AbemaScheduleTransport {
-            override fun fetch(): CatalogResult<AbemaScheduleSnapshot> {
+            override fun fetch(request: AbemaScheduleRequest): CatalogResult<AbemaScheduleSnapshot> {
                 fetches++; return CatalogResult.Value(AbemaScheduleSnapshot(List(501) {
                     CatalogEntry(AbemaSlotRequest("channel-A", "slot-$it").resource, "Future slot $it") }, true))
             }

@@ -24,6 +24,7 @@ internal class AbemaGuestRuntimeRequest(
     val seriesRequest: AbemaSeriesPageRequest? = null,
     val slotRequest: AbemaSlotRequest? = null,
     val searchRequest: AbemaSearchRequest? = null,
+    val scheduleRequest: AbemaScheduleRequest = AbemaScheduleRequest(),
     val canRemainActive: () -> Boolean,
 ) {
     init {
@@ -36,6 +37,7 @@ internal class AbemaGuestRuntimeRequest(
         require(if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) seriesRequest != null && expectedOwnerProof != null else seriesRequest == null)
         require(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest != null && expectedOwnerProof != null else slotRequest == null)
         require(operation != AbemaGuestBootstrapOperation.FETCH_SCHEDULE || expectedOwnerProof != null)
+        require(operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE || scheduleRequest.channelId == null)
         require(if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest != null && expectedOwnerProof != null else searchRequest == null)
         require(operation !in setOf(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
             AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
@@ -242,7 +244,7 @@ internal class AbemaGuestRuntimeCoordinator(
                             val outer = JSONTokener(metadata?.takeIf { it.length <= ABEMA_SCHEDULE_PROJECTION_BYTES * 2 } ?: error("Schedule response refused"))
                             val text = outer.nextValue() as? String ?: error("Schedule response refused")
                             check(outer.nextClean() == '\u0000')
-                            decodeAbemaScheduleProjection(text)
+                            decodeAbemaScheduleProjection(text, active.request.scheduleRequest)
                         }.getOrNull()
                         if (snapshot == null) stop(active, "GUEST_SCHEDULE_RESPONSE")
                         else { active.scheduleSnapshot = snapshot; verifyThen(active) { stop(active, "SCHEDULE_SNAPSHOT") } }

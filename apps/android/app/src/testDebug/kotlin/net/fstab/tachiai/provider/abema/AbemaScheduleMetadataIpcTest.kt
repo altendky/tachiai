@@ -29,6 +29,23 @@ class AbemaScheduleMetadataIpcTest {
             assertNull(AbemaScheduleMetadataIpc.decodeResult(bad))
         assertNotNull(AbemaScheduleMetadataIpc.decodeResult(mapOf("nonce" to nonce, "outcome" to "TEMPORARY")))
     }
+    @Test fun channelStartAndResultPreserveTypedBindingAndCannotAdoptAnotherEmptyChannel() {
+        val start = AbemaScheduleMetadataIpc.decodeStart(fields() + ("channel" to "channel-A"), 1000)!!
+        assertEquals(AbemaScheduleRequest("channel-A"), start.request)
+        for (bad in listOf(null, 7, "", "bad/id", "a".repeat(65)))
+            assertNull(AbemaScheduleMetadataIpc.decodeStart(fields() + ("channel" to bad), 1000))
+        val projection = """{"slots":[],"truncated":false,"channelId":"channel-A"}"""
+        val good = mapOf("nonce" to nonce, "outcome" to "OK", "snapshot" to projection)
+        assertNotNull(AbemaScheduleMetadataIpc.decodeResult(good, start.request))
+        assertNull(AbemaScheduleMetadataIpc.decodeResult(good))
+        assertNull(AbemaScheduleMetadataIpc.decodeResult(good, AbemaScheduleRequest("channel-B")))
+        val operation = AbemaScheduleClientOperation(start, { 1000 }) { true }
+        assertFalse(operation.accept(AbemaScheduleMetadataIpc.Result(nonce, "OK", AbemaScheduleSnapshot(emptyList()))))
+        assertFalse(operation.accept(AbemaScheduleMetadataIpc.Result(nonce, "OK",
+            AbemaScheduleSnapshot(emptyList(), request = AbemaScheduleRequest("channel-B")))))
+        assertTrue(operation.accept(AbemaScheduleMetadataIpc.Result(nonce, "OK",
+            AbemaScheduleSnapshot(emptyList(), request = start.request))))
+    }
     @Test fun scheduleClientRejectsDuplicateLateWrongNonceMissingSnapshotAndExpiredResults() {
         var now = 1000L; var foreground = true
         val start = AbemaScheduleMetadataIpc.decodeStart(fields(), now)!!

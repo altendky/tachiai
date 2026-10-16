@@ -36,8 +36,12 @@ leaves the browse context alone. Raw input is never restored from saved state.
 
 Configured streams use compact rows with drag handles, refresh and removal
 icons. Dragging previews a new order and saves it once on drop; tapping a handle
-also offers move actions for keyboard and accessibility use. Removal requires
-confirmation. Browsable titles open their catalog children. Refresh retrieves
+also offers move actions for keyboard and accessibility use. Browsable titles
+and subtitles form one target; the existing subtitle names the action, such as
+“Browse programs › · Availability unknown”. Provider adapters distinguish
+channel programs, series episodes and broadcaster videos. Exact videos and
+broadcasts do not advertise child browsing. Refresh and removal remain separate
+targets. Removal requires confirmation. Refresh retrieves
 the same resource's title, availability and schedule while retaining its saved
 identity, order and quality; it does not start playback or renew authorization.
 

@@ -43,6 +43,23 @@ internal data class CatalogCollection(val id: String, val title: String, val acc
     }
 }
 
+// A provider declares the exact resource kinds it can browse. An aggregate
+// children capability alone never promises support for every channel or list.
+internal data class CatalogChildrenCapability(
+    val kind: String,
+    val intent: CatalogIntent,
+    val access: CatalogAccess,
+    val actionLabel: String,
+    val headingPrefix: String,
+) {
+    init {
+        require(kind.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
+        require(intent in setOf(CatalogIntent.CHANNEL, CatalogIntent.COLLECTION))
+        for (label in listOf(actionLabel, headingPrefix)) require(label == label.trim() && label.length in 1..64 &&
+            label.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
+    }
+}
+
 internal data class CatalogCapabilities(
     val browse: CatalogAccess = CatalogAccess.UNSUPPORTED,
     val search: CatalogAccess = CatalogAccess.UNSUPPORTED,
@@ -55,14 +72,23 @@ internal data class CatalogCapabilities(
     val initialCollectionId: String? = null,
     val childrenTitle: String = "Items",
     val childrenHeadingPrefix: String = "Items under",
+    val childCapabilities: List<CatalogChildrenCapability> = emptyList(),
 ) {
     init {
         require(collections.size <= 16 && collections.map { it.id }.distinct().size == collections.size)
+        require(childCapabilities.size <= 16 && childCapabilities.map { it.kind to it.intent }.distinct().size == childCapabilities.size)
         require(browseTitle == browseTitle.trim() && browseTitle.length in 1..64 &&
             browseTitle.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
         require(initialCollectionId == null || collections.any { it.id == initialCollectionId })
         for (label in listOf(childrenTitle, childrenHeadingPrefix)) require(label == label.trim() && label.length in 1..64 &&
             label.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
+    }
+
+    fun childrenFor(resource: CatalogResource, providerId: ProviderId): CatalogChildrenCapability? {
+        if (resource.providerId != providerId) return null
+        val capability = childCapabilities.singleOrNull { it.kind == resource.kind && it.intent == resource.intent } ?: return null
+        // A current aggregate denial overrides any retained per-kind support.
+        return if (children == CatalogAccess.AVAILABLE) capability else capability.copy(access = children)
     }
 }
 

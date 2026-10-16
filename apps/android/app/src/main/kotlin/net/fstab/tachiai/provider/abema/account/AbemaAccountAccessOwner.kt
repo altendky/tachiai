@@ -60,6 +60,7 @@ internal class AbemaAccountAccessOwner(
     private var proof: Proof? = null
     private var flight: Flight? = null
     private val cleanup = mutableListOf<AbemaAccountCleanupReceipt<AbemaAccountTransport>>()
+    private var retiredIdle: (() -> Unit)? = null
     private class Proof(val snapshot: AbemaAccountSnapshot, val generation: Long, val minimumWall: Long)
     private class Flight(val generation: Long, val began: Long, val deadline: Long) {
         val finished = CountDownLatch(1)
@@ -74,6 +75,18 @@ internal class AbemaAccountAccessOwner(
     }
     val cleanupConfirmed: Boolean get() = synchronized(lock) {
         !poisoned && flight == null && cleanup.all { it.confirmed }
+    }
+    val isIdle: Boolean get() = synchronized(lock) { idleLocked() }
+    private fun idleLocked() = attachments == 0 && !poisoned && flight == null && cleanup.all { it.confirmed }
+    internal fun whenRetiredIdle(callback: () -> Unit) {
+        synchronized(lock) { check(retiredIdle == null); retiredIdle = callback }
+        notifyRetiredIdle()
+    }
+    private fun notifyRetiredIdle() {
+        val callback = synchronized(lock) {
+            if (idleLocked()) retiredIdle.also { retiredIdle = null } else null
+        }
+        callback?.invoke()
     }
     inner class Attachment internal constructor() : AutoCloseable {
         private val active = AtomicBoolean(true)
@@ -102,6 +115,7 @@ internal class AbemaAccountAccessOwner(
                 }
             }
             cancelled?.start()
+            notifyRetiredIdle()
         }
         override fun toString() = "AbemaAccountAccessAttachment(redacted)"
     }
@@ -126,6 +140,7 @@ internal class AbemaAccountAccessOwner(
     override fun close() {
         val cancelled = synchronized(lock) { closed = true; revokeLocked() }
         cancelled?.start()
+        notifyRetiredIdle()
     }
     private fun cheap(value: Proof, attachment: Attachment? = null): Boolean {
         val now = wallMs()
@@ -189,6 +204,7 @@ internal class AbemaAccountAccessOwner(
             catch (_: Throwable) {
                 synchronized(lock) { if (flight === work) flight = null }
                 work.failure = AbemaAccountFailure.TEMPORARY; work.finished.countDown()
+                notifyRetiredIdle()
             }
         }
         while (work.finished.count != 0L) {
@@ -326,6 +342,7 @@ internal class AbemaAccountAccessOwner(
                 }
             }
             work.finished.countDown()
+            notifyRetiredIdle()
         }
     }
     override fun toString() = "AbemaAccountAccessOwner(redacted)"

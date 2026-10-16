@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
@@ -115,5 +116,106 @@ class ProviderDetailScreenTest {
         compose.onNodeWithContentDescription("Choose ABEMA route").performClick()
         compose.onNodeWithContentDescription("ABEMA route: System network").assertIsNotSelected().performClick()
         compose.runOnIdle { assertEquals(1, writes) }
+    }
+
+    @Test fun poolAddsExplicitChoicesExcludesDuplicatesAndImportsWithoutChangingSelection() {
+        var routes by mutableStateOf(emptyList<SourceRouteChoice>())
+        val writes = mutableListOf<List<SourceRouteChoice>>()
+        var imports = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                ProviderRoutePoolSettings(instance, listOf(profile), routes,
+                    { routes = it; writes += it }, { imports++ })
+            }
+        } }
+        compose.onNodeWithText("Choose a route.").assertExists()
+        compose.runOnIdle { assertTrue(writes.isEmpty()) }
+        compose.onNodeWithContentDescription("Add ABEMA route").performClick()
+        compose.onNodeWithContentDescription("Add route: Japan route").performClick()
+        compose.onNodeWithText("1. Japan route").assertExists()
+        compose.onNodeWithContentDescription("Add ABEMA route").performClick()
+        compose.onNodeWithContentDescription("Add route: Japan route").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Add route: System network").performClick()
+        compose.runOnIdle { assertEquals(listOf(savedRoute, SourceRouteChoice.system), routes) }
+        compose.onNodeWithContentDescription("Add ABEMA route").performClick()
+        compose.onNodeWithText("Setup / import routes").performClick()
+        compose.runOnIdle { assertEquals(1, imports); assertEquals(2, writes.size) }
+    }
+
+    @Test fun poolReordersFromHandleMenuAndRemovingPrimaryPromotesNextWithoutSystemFallback() {
+        var routes by mutableStateOf(listOf(savedRoute, SourceRouteChoice.system))
+        var writes = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                ProviderRoutePoolSettings(instance, listOf(profile), routes, { routes = it; writes++ }, {})
+            }
+        } }
+        compose.onNodeWithContentDescription("Reorder route: System network").performClick()
+        compose.onNodeWithText("Move earlier").performClick()
+        compose.onNodeWithText("1. System network").assertExists()
+        compose.runOnIdle { assertEquals(listOf(SourceRouteChoice.system, savedRoute), routes) }
+        compose.onNodeWithContentDescription("Remove route: System network").performClick()
+        compose.runOnIdle { assertEquals(listOf(savedRoute), routes) }
+        compose.onNodeWithContentDescription("Remove route: Japan route").performClick()
+        compose.onNodeWithText("Choose a route.").assertExists()
+        compose.runOnIdle { assertTrue(routes.isEmpty()); assertEquals(3, writes) }
+    }
+
+    @Test fun missingPooledProfilesKeepTheirReferencesUntilAnExplicitRepair() {
+        var routes by mutableStateOf(listOf(savedRoute))
+        var profiles by mutableStateOf(emptyList<ConnectionSummary>())
+        var writes = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                ProviderRoutePoolSettings(instance, profiles, routes, { routes = it; writes++ }, {})
+            }
+        } }
+        compose.onNodeWithText("Profile unavailable · remove or restore it").assertExists()
+        compose.onNodeWithText("1. Japan route").assertExists()
+        compose.runOnIdle { assertEquals(0, writes); assertEquals(listOf(savedRoute), routes)
+            profiles = listOf(profile.copy(name = "Restored exit")) }
+        compose.onNodeWithText("Profile unavailable · remove or restore it").assertDoesNotExist()
+        compose.onNodeWithText("1. Restored exit").assertExists()
+        compose.runOnIdle { assertEquals(0, writes); assertEquals(listOf(savedRoute), routes) }
+    }
+
+    @Test fun pooledRoutesCommitOneWholeOrderOnDragAndCancelWithoutWriting() {
+        val secondProfile = profile.copy(id = "12345678-1234-1234-1234-123456789abd", name = "Other route")
+        val other = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, secondProfile.id, secondProfile.name)
+        var routes by mutableStateOf(listOf(savedRoute, other, SourceRouteChoice.system))
+        val writes = mutableListOf<List<SourceRouteChoice>>()
+        compose.setContent { TachiaiPrototypeTheme {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                ProviderRoutePoolSettings(instance, listOf(profile, secondProfile), routes,
+                    { routes = it; writes += it }, {})
+            }
+        } }
+        val first = compose.onNodeWithContentDescription("Reorder route: Japan route")
+        val start = first.fetchSemanticsNode().boundsInRoot
+        val end = compose.onNodeWithContentDescription("Reorder route: System network").fetchSemanticsNode().boundsInRoot
+        first.performTouchInput { down(center); moveTo(Offset(center.x, center.y + end.bottom - start.center.y), 600); cancel() }
+        compose.runOnIdle { assertTrue(writes.isEmpty()) }
+        first.performTouchInput { swipe(center, Offset(center.x, center.y + end.bottom - start.center.y + 16f), 600) }
+        compose.runOnIdle { assertEquals(listOf(other, SourceRouteChoice.system, savedRoute), routes); assertEquals(1, writes.size) }
+    }
+
+    @Test fun disabledAndFullPoolsCannotAddAnAlternative() {
+        val profiles = (1..MAX_PROVIDER_ROUTES).map {
+            profile.copy(id = "00000000-0000-0000-0000-%012d".format(it), name = "Exit $it")
+        }
+        val routes = profiles.map { SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, it.id, it.name) }
+        var enabled by mutableStateOf(false)
+        var writes = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                ProviderRoutePoolSettings(instance, profiles, routes, { writes++ }, {}, enabled)
+            }
+        } }
+        compose.onNodeWithContentDescription("Add ABEMA route").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle { enabled = true }
+        compose.onNodeWithContentDescription("Add ABEMA route").performClick()
+        compose.onNodeWithContentDescription("Add route: System network").assertIsNotEnabled()
+        compose.onNodeWithText("Setup / import routes").performClick()
+        compose.runOnIdle { assertEquals(0, writes) }
     }
 }

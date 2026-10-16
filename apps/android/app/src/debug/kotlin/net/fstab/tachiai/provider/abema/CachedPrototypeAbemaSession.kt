@@ -101,6 +101,9 @@ internal class CachedPrototypeAbemaSession(
     private val observeModernChannelContext: Boolean = false,
     private val continuousSlotPlayback: Boolean = false,
     private val requireSavedAccount: Boolean = false,
+    // Historical guest live playback has no account/resource owner, but still
+    // belongs to the viewer's immutable provider route scope.
+    private val routeOwnership: AbemaEpisodePlaybackOwnership? = null,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -121,6 +124,7 @@ internal class CachedPrototypeAbemaSession(
         require(!continuousSlotPlayback || slotResource != null && manifestOnlySlot == null &&
             !observeChannelPreparation && !observeModernChannelContext)
         require(!requireSavedAccount || ownership != null)
+        require(routeOwnership == null || route != null)
     }
     private val initialManifest = manifestOnlySlot?.let(::AbemaInitialManifestObservation)
     private val helperPreparationEvidence = AbemaChannelPreparationEvidence()
@@ -211,11 +215,12 @@ internal class CachedPrototypeAbemaSession(
 
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
-        budget?.active == true && ownership?.canContinue() != false &&
+        budget?.active == true && ownership?.canContinue() != false && routeOwnership?.canContinue() != false &&
         (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run) && slotChaseCurrent(run)
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
+        (routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker()) &&
         (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
         slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
     private fun slotPremiumCurrent(run: Long): Boolean {

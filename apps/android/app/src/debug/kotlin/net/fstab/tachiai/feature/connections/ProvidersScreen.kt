@@ -2,6 +2,7 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -9,10 +10,17 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -68,6 +76,146 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
 }
 
 private fun routeKey(route: SourceRouteChoice) = "${route.mode.name}:${route.connectionId.orEmpty()}"
+
+// This bounded, non-lazy list stays in the provider header. A gesture previews
+// an ordering; only dropping a still-current pool commits a complete snapshot.
+@Stable
+private class ProviderRouteDrag(
+    private val current: () -> List<SourceRouteChoice>,
+    private val enabled: () -> Boolean,
+    private val change: (List<SourceRouteChoice>) -> Unit,
+) {
+    val centers = mutableMapOf<String, Float>()
+    var preview by mutableStateOf<List<SourceRouteChoice>?>(null)
+        private set
+    var dragged by mutableStateOf<String?>(null)
+        private set
+    private var original = emptyList<SourceRouteChoice>()
+    private var anchor = 0f
+    private var firstUpdate = false
+
+    fun start(key: String, pointerY: Float) {
+        if (!enabled() || dragged != null) return
+        val center = centers[key] ?: return
+        original = current().toList()
+        if (original.none { routeKey(it) == key }) return
+        preview = original; dragged = key; anchor = center - pointerY; firstUpdate = true
+    }
+
+    fun point(pointerY: Float, amountY: Float) {
+        val key = dragged ?: return
+        if (!enabled() || current() != original) { cancel(); return }
+        if (firstUpdate) { anchor += amountY; firstUpdate = false }
+        val center = pointerY + anchor
+        val routes = preview ?: return
+        val from = routes.indexOfFirst { routeKey(it) == key }
+        val target = routes.indices.filter { index ->
+            val other = centers[routeKey(routes[index])] ?: return@filter false
+            index > from && center > other || index < from && center < other
+        }.minByOrNull { kotlin.math.abs(center - checkNotNull(centers[routeKey(routes[it])])) } ?: return
+        preview = routes.toMutableList().apply { add(target, removeAt(from)) }
+    }
+
+    fun drop() {
+        val proposed = preview
+        val accepted = dragged != null && enabled() && current() == original && proposed != original
+        cancel()
+        if (accepted && proposed != null) change(proposed)
+    }
+
+    fun cancel() { preview = null; dragged = null; original = emptyList() }
+    fun cancelIfStale() { if (preview != null && (!enabled() || current() != original)) cancel() }
+}
+
+@Composable
+internal fun ProviderRoutePoolSettings(instance: ProviderInstance, profiles: List<ConnectionSummary>,
+    selectedRoutes: List<SourceRouteChoice>, onRoutesChanged: (List<SourceRouteChoice>) -> Unit,
+    onRoutes: () -> Unit, enabled: Boolean = true) {
+    SettingsSection("Connection", "Routes are saved in this order. The first route is selected; automatic attempts of later routes are not implemented yet. Changes apply to this provider instance’s streams and account requests. System network is used only when explicitly listed and includes any external VPN. Missing profiles require repair. Earlier routes awaiting review are not alternatives." +
+        if (selectedRoutes.isEmpty() && instance.setup.previousRoutes.isNotEmpty())
+            " Earlier routes requiring review: ${instance.setup.previousRoutes.joinToString { it.title }}." else "")
+    val current by rememberUpdatedState(selectedRoutes)
+    val active by rememberUpdatedState(enabled)
+    val changed by rememberUpdatedState(onRoutesChanged)
+    val drag = remember(instance.id) { ProviderRouteDrag({ current }, { active }, { changed(it) }) }
+    LaunchedEffect(selectedRoutes, enabled) { drag.cancelIfStale() }
+    // An external update must never commit a preview derived from an older pool.
+    DisposableEffect(drag) { onDispose { drag.cancel() } }
+    val displayed = drag.preview ?: selectedRoutes
+    val choices = (listOf(SourceRouteChoice.system) + profiles.map {
+        SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, it.id, it.name)
+    }).filter { candidate -> selectedRoutes.none { routeKey(it) == routeKey(candidate) } }
+    var expanded by remember(instance.id) { mutableStateOf(false) }
+    if (selectedRoutes.isEmpty()) Text("Choose a route.")
+    displayed.forEachIndexed { index, route -> key(routeKey(route)) {
+        val key = routeKey(route)
+        val profile = profiles.firstOrNull { it.id == route.connectionId }
+        val title = if (route.mode == SourceRouteMode.SAVED_CONNECTION) profile?.name ?: route.title else route.title
+        val missing = route.mode == SourceRouteMode.SAVED_CONNECTION && profile == null
+        var handleCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+        var moveMenu by remember { mutableStateOf(false) }
+        fun move(delta: Int) {
+            val from = current.indexOfFirst { routeKey(it) == key }
+            val to = from + delta
+            if (active && drag.dragged == null && from in current.indices && to in current.indices)
+                changed(current.toMutableList().apply { add(to, removeAt(from)) })
+        }
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .onGloballyPositioned { coordinates ->
+                drag.centers[key] = coordinates.localToRoot(androidx.compose.ui.geometry.Offset(0f, coordinates.size.height / 2f)).y
+            }.semantics {
+                customActions = if (!enabled || drag.dragged != null) emptyList() else buildList {
+                    if (index > 0) add(CustomAccessibilityAction("Move earlier") { move(-1); true })
+                    if (index < displayed.lastIndex) add(CustomAccessibilityAction("Move later") { move(1); true })
+                }
+            }, verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                IconButton(onClick = { moveMenu = true }, enabled = enabled && displayed.size > 1,
+                    modifier = Modifier.size(48.dp).onGloballyPositioned { handleCoordinates = it }
+                        .semantics { contentDescription = "Reorder route: $title"; stateDescription = "${index + 1} of ${displayed.size}" }
+                        .pointerInput(key, drag, enabled) {
+                            if (enabled) detectDragGestures(onDragStart = { point ->
+                                handleCoordinates?.takeIf { it.isAttached }?.let { drag.start(key, it.localToRoot(point).y) }
+                            }, onDragEnd = { drag.drop() }, onDragCancel = { drag.cancel() }) { event, amount ->
+                                if (drag.dragged == key) {
+                                    event.consume()
+                                    handleCoordinates?.takeIf { it.isAttached }?.let { drag.point(it.localToRoot(event.position).y, amount.y) }
+                                }
+                            }
+                        }) { Icon(painterResource(R.drawable.stream_drag), contentDescription = null) }
+                DropdownMenu(expanded = moveMenu && enabled, onDismissRequest = { moveMenu = false }) {
+                    DropdownMenuItem(text = { Text("Move earlier") }, enabled = index > 0,
+                        onClick = { moveMenu = false; move(-1) })
+                    DropdownMenuItem(text = { Text("Move later") }, enabled = index < displayed.lastIndex,
+                        onClick = { moveMenu = false; move(1) })
+                }
+            }
+            Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                Text("${index + 1}. $title", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (missing) Text("Profile unavailable · remove or restore it", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            IconButton(onClick = { changed(current.filterNot { routeKey(it) == key }) }, enabled = enabled && drag.dragged == null) {
+                Icon(painterResource(R.drawable.stream_remove), "Remove route: $title")
+            }
+        }
+    } }
+    Box {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled && drag.dragged == null,
+            modifier = Modifier.semantics { contentDescription = "Add ${instance.service.title} route" }) {
+            Text("Add route")
+            Icon(painterResource(R.drawable.settings_expand), contentDescription = null)
+        }
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+            choices.forEach { route -> DropdownMenuItem(text = { Text(route.title) },
+                enabled = selectedRoutes.size < MAX_PROVIDER_ROUTES,
+                onClick = { expanded = false; changed(current + route) },
+                modifier = Modifier.semantics { contentDescription = "Add route: ${route.title}" }) }
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("Setup / import routes") }, onClick = { expanded = false; onRoutes() })
+        }
+    }
+}
 
 @Composable
 private fun ProviderRouteEditor(instance: ProviderInstance, instances: List<ProviderInstance>, profiles: List<ConnectionSummary>, busy: Boolean,

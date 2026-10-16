@@ -15,15 +15,16 @@ import net.fstab.tachiai.provider.twitch.catalog.*
 internal fun TwitchCatalogSettings(instanceId: String, onAccountAction: () -> Unit, onAccountChanged: () -> Unit,
     enabled: Boolean = true,
     onExitCheck: ((suspend () -> Boolean)?) -> Unit = {},
+    expectedOwnerProof: String? = null,
     content: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
-    TwitchCatalogSettings(rememberTwitchCatalogSettingsOwner(instanceId), onAccountAction, onAccountChanged, enabled,
+    TwitchCatalogSettings(rememberTwitchCatalogSettingsOwner(instanceId, expectedOwnerProof), onAccountAction, onAccountChanged, enabled,
         onExitCheck, content)
 }
 
 @Composable
-internal fun rememberTwitchCatalogSettingsOwner(instanceId: String): TwitchCatalogSettingsOwner {
+internal fun rememberTwitchCatalogSettingsOwner(instanceId: String, expectedOwnerProof: String? = null): TwitchCatalogSettingsOwner {
     val context = LocalContext.current
-    return remember(context, instanceId) { TwitchCatalogSettingsOwner(context, instanceId) }
+    return remember(context, instanceId, expectedOwnerProof) { TwitchCatalogSettingsOwner(context, instanceId, expectedOwnerProof) }
 }
 
 @Composable
@@ -68,7 +69,8 @@ internal fun TwitchCatalogSettings(owner: TwitchCatalogSettingsOwner, onAccountA
     }
 }
 
-internal class TwitchCatalogSettingsOwner(private val context: Context, private val instanceId: String) : AutoCloseable {
+internal class TwitchCatalogSettingsOwner(private val context: Context, private val instanceId: String,
+    private val expectedOwnerProof: String? = null) : AutoCloseable {
     private val application = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val diagnostics = FailureDiagnostics.create(application)
@@ -111,7 +113,8 @@ internal class TwitchCatalogSettingsOwner(private val context: Context, private 
                         true
                     } || TwitchCatalogConnectionWrites.isFailed(instanceId)
                     if (clearingRequired) TwitchCatalogConnectionWrites.markFailure(instanceId, true)
-                    val created = androidTwitchCatalogConnectionBinding(application, instanceId)
+                    val created = androidTwitchCatalogConnectionBinding(application, instanceId,
+                        expectedOwnerProof = expectedOwnerProof)
                     binding = created
                     Triple(created, created.owner(), created.session())
                 }

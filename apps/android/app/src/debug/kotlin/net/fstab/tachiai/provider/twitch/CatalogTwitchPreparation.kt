@@ -23,12 +23,13 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     private val expectedProfile: ConnectionProfile?, private val expectedRoute: SourceRouteChoice,
     private val active: () -> Boolean,
     private val openConnection: (URL) -> HttpsURLConnection = { it.openConnection() as HttpsURLConnection },
+    private val expectedOwnerProof: String? = null,
     private val bindingFactory: () -> Pair<TwitchCatalogRouteOwner, TwitchCatalogConnectionBinding> = {
         val application = context.applicationContext
-        val route = readTwitchCatalogRouteOwner(instanceId,
+        val route = captureTwitchCatalogRouteOwner(instanceId,
             { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-            { connectionProfileStore(application).selected(it) })
-        route to androidTwitchCatalogConnectionBinding(application, instanceId, active)
+            connectionProfileStore(application)::snapshot, expectedOwnerProof)
+        route to androidTwitchCatalogConnectionBinding(application, instanceId, active, route.proof)
     },
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : TwitchPlaybackPreparation {

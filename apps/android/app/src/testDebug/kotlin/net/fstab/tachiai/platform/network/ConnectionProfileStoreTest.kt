@@ -21,6 +21,30 @@ class ConnectionProfileStoreTest {
     }
     private fun profile() = parseConnectionProfile(fixtureWireGuard().toByteArray())
 
+    @Test fun requestedProfileSnapshotUsesOneReadAndDistinguishesMissingFromUnreadable() {
+        val memory = MemorySecrets()
+        var reads = 0
+        val counted = object : PrivateSecretStore {
+            override fun read(): ByteArray? { reads++; return memory.read() }
+            override fun write(plaintext: ByteArray) = memory.write(plaintext)
+        }
+        val store = ConnectionProfileStore(counted)
+        val first = store.add("First", profile()).single().id
+        val second = store.add("Second", profile()).last().id
+        val missing = "12345678-1234-1234-1234-123456789abc"
+        reads = 0
+        val snapshot = store.snapshot(setOf(first, second, missing))
+        assertEquals(1, reads); assertEquals(setOf(first, second), snapshot.keys)
+        val captured = routeConfigurationKey(snapshot.getValue(first))
+        store.remove(first)
+        assertEquals(captured, routeConfigurationKey(snapshot.getValue(first)))
+        assertFalse(store.snapshot(setOf(first)).containsKey(first))
+        memory.bytes = byteArrayOf(1, 2)
+        assertThrows(Exception::class.java) { store.snapshot(setOf(first, missing)) }
+        reads = 0
+        assertTrue(store.snapshot(emptySet()).isEmpty()); assertEquals(0, reads)
+    }
+
     @Test fun saveReloadAndDeleteHaveStableIdentityWithoutLeakingConfiguration() {
         val secrets = MemorySecrets()
         val store = ConnectionProfileStore(secrets)

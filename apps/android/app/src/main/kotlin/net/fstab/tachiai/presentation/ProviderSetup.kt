@@ -1,8 +1,21 @@
 package net.fstab.tachiai.presentation
 
-// A saved reference is configuration, not evidence of an active route.
-internal data class ProviderSetup(val route: SourceRouteChoice?, val previousRoutes: List<SourceRouteChoice> = emptyList()) {
-    init { require(route?.mode != SourceRouteMode.SOURCE_DEFAULT) }
+internal const val MAX_PROVIDER_ROUTES = 8
+
+// Saved alternatives are explicit configuration, not evidence of an active route.
+// Historical previousRoutes require review and never participate in this pool.
+internal data class ProviderSetup(
+    val route: SourceRouteChoice?,
+    val previousRoutes: List<SourceRouteChoice> = emptyList(),
+    val fallbackRoutes: List<SourceRouteChoice> = emptyList(),
+) {
+    val routes get() = listOfNotNull(route) + fallbackRoutes
+    init {
+        require(route != null || fallbackRoutes.isEmpty())
+        require(routes.size <= MAX_PROVIDER_ROUTES)
+        require(routes.none { it.mode == SourceRouteMode.SOURCE_DEFAULT })
+        require(routes.distinctBy { it.mode to it.connectionId }.size == routes.size)
+    }
     val title get() = route?.title ?: "Route choice required"
 }
 

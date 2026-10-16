@@ -16,6 +16,62 @@ class ProviderInstanceRoutePlanTest {
         CatalogResource(ProviderId("twitch"), "video", id, CatalogIntent.VIDEO),
         PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY,
     )
+    @Test fun viewerCaptureSharesTheExactPoolCandidateAcrossDuplicateFeeds() {
+        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId),
+            fallbackRoutes = listOf(SourceRouteChoice.system)))
+        var instances = listOf(first)
+        val feed = video(first.id)
+        val selection = ConfiguredPlaybackSelection(feed, feed)
+        var batches = 0
+        val saved = profile("http://fixture.example.test:8080")
+        val captured = captureProviderInstanceRoutes(selection, { instances }, { ids ->
+            batches++; assertEquals(setOf(routeId), ids); mapOf(routeId to saved)
+        })
+        assertEquals(2, batches)
+        assertEquals(setOf(first.id), captured.effective.keys)
+        val owner = captured.effective[first.id]!!.getOrThrow()
+        assertEquals(choice(routeId), owner.choice)
+        assertEquals(first.setup.routes, owner.configuredInstance.setup.routes)
+        assertSame(saved, captured.profiles[first.id]!!.getOrThrow())
+        instances = listOf(first.copy(setup = ProviderSetup(SourceRouteChoice.system,
+            fallbackRoutes = listOf(choice(routeId)))))
+        val changed = revalidateProviderInstanceRoutes(selection, captured, { instances }, { mapOf(routeId to saved) })
+        assertTrue(changed.effective[first.id]!!.isFailure)
+        assertTrue(changed.profiles[first.id]!!.isFailure)
+    }
+
+    @Test fun unavailableCaptureCannotBecomeAnImplicitFallbackDuringReadiness() {
+        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId),
+            fallbackRoutes = listOf(SourceRouteChoice.system)))
+        val feed = video(first.id)
+        val selection = ConfiguredPlaybackSelection(feed, feed)
+        val captured = captureProviderInstanceRoutes(selection, { listOf(first) }, { emptyMap() })
+        assertTrue(captured.effective[first.id]!!.isFailure)
+        var profileReads = 0
+        val checked = revalidateProviderInstanceRoutes(selection, captured, { listOf(first) }, {
+            profileReads++; mapOf(routeId to profile("http://fixture.example.test:8080"))
+        })
+        assertTrue(checked.effective[first.id]!!.isFailure)
+        assertEquals(0, profileReads)
+    }
+
+    @Test fun configuredAbemaChannelsShareTheSameProcessWideProxyConstraint() {
+        val first = defaultProviderInstances().first().copy(setup = ProviderSetup(choice(routeId)))
+        val second = first.copy(id = secondId, setup = ProviderSetup(choice(duplicateRouteId)))
+        fun channel(instance: ProviderInstance) = ConfiguredPlaybackFeed(
+            ConfiguredFeedChoice(routeId, instance.id),
+            CatalogResource(ProviderId("abema"), "channel", "abema-news", CatalogIntent.CHANNEL),
+            PrototypeService.ABEMA, PrototypePlaybackKind.LIVE)
+        val selection = ConfiguredPlaybackSelection(channel(first), channel(second))
+        val a = profile("http://fixture.example.test:8080")
+        val b = profile("http://other.example.test:8080")
+        assertFalse(captureProviderInstanceRoutes(selection, { listOf(first, second) }, { ids ->
+            ids.associateWith { if (it == routeId) a else b }
+        }).abemaCompatible)
+        assertTrue(captureProviderInstanceRoutes(selection, { listOf(first, second) }, { ids ->
+            ids.associateWith { a }
+        }).abemaCompatible)
+    }
     @Test fun exactVideosKeepOwningRoutesAndDuplicateFeedsReadOneSnapshot() {
         val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId)))
         val second = ProviderInstance(secondId, PrototypeService.TWITCH, "Twitch 2", setup = ProviderSetup(choice(duplicateRouteId)))

@@ -7,6 +7,8 @@ import net.fstab.tachiai.feature.connections.StartupAccountReadiness
 import net.fstab.tachiai.feature.connections.providerInstanceStore
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.presentation.PrototypeService
+import net.fstab.tachiai.platform.network.connectionProfileStore
+import net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner
 
 class AbemaStartupReadiness(private val activity: ComponentActivity) : StartupAccountReadiness {
     private val main = Handler(Looper.getMainLooper())
@@ -19,12 +21,18 @@ class AbemaStartupReadiness(private val activity: ComponentActivity) : StartupAc
         resumed = true; readiness.onResume()
         val run = ++revision
         AbemaAccountWorkers.worker.execute {
-            val ids = runCatching { providerInstanceStore(activity.applicationContext)
-                .read { legacyProviderSettings(activity.applicationContext) }
-                .filter { it.service == PrototypeService.ABEMA }.map { it.id } }.getOrNull()
+            val targets = runCatching {
+                val application = activity.applicationContext
+                fun instances() = providerInstanceStore(application).read { legacyProviderSettings(application) }
+                instances().filter { it.service == PrototypeService.ABEMA }.map { instance ->
+                    val owner = captureAbemaCatalogRouteOwner(instance.id, ::instances,
+                        { ids -> connectionProfileStore(application).snapshot(ids) })
+                    AbemaReadinessTarget(instance.id, owner.proof())
+                }
+            }.getOrNull()
             main.post {
-                if (!closed && resumed && revision == run && !activity.isDestroyed && !activity.isFinishing && ids != null)
-                    readiness.ensure(ids) { }
+                if (!closed && resumed && revision == run && !activity.isDestroyed && !activity.isFinishing && targets != null)
+                    readiness.ensure(targets) { }
             }
         }
     }

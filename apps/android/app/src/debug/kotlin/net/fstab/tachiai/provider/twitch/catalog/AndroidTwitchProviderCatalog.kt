@@ -19,14 +19,14 @@ import net.fstab.tachiai.provider.catalog.ProviderCatalog
 // Constructed on a worker. Unreadable routes keep configured items available for
 // local management while preventing every provider request; they never pick System.
 internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
-    canUse: () -> Boolean = { true }): ProviderCatalog {
+    canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): ProviderCatalog {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
-    val route = runCatching { readTwitchCatalogRouteOwner(instanceId,
+    val route = runCatching { captureTwitchCatalogRouteOwner(instanceId,
         { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-        { connectionProfileStore(application).selected(it) }) }
+        connectionProfileStore(application)::snapshot, expectedOwnerProof) }
         .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
-    val binding = androidTwitchCatalogConnectionBinding(application, instanceId, canUse)
+    val binding = androidTwitchCatalogConnectionBinding(application, instanceId, canUse, route?.proof ?: expectedOwnerProof)
     try {
         val captured = binding.owner()
         val lock = Any()

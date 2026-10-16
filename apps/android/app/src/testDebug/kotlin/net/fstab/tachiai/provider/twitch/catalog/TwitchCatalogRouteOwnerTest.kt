@@ -35,7 +35,7 @@ class TwitchCatalogRouteOwnerTest {
         }
         val imported = instance(SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, routeId, "Private route"))
         assertThrows(IllegalStateException::class.java) { owner(imported) }
-        assertSame(imported, owner(imported, profile()).instance)
+        assertEquals(imported, owner(imported, profile()).instance)
     }
 
     @Test fun ownerComparisonDetectsSavedRouteAndSecretProfileChangesWithoutExposingThem() {
@@ -47,6 +47,45 @@ class TwitchCatalogRouteOwnerTest {
         assertFalse(original.presentation.sameOwnership(owner(instance()).presentation))
         assertFalse(original.toString().contains("fixture-secret"))
         assertFalse(original.presentation.toString().contains("proxy.example.test"))
+    }
+
+    @Test fun exactPoolProofSelectsAnAlternativeAndPoolEditsRevokeItsOwnership() {
+        val first = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, routeId, "First exit")
+        val alternate = SourceRouteChoice.system
+        var selected = instance(first).copy(setup = ProviderSetup(first, fallbackRoutes = listOf(alternate)))
+        var currentProfile = profile()
+        fun capture(expected: String? = null) = captureTwitchCatalogRouteOwner(instanceId,
+            { listOf(selected) }, { mapOf(routeId to currentProfile) }, expected)
+        val pool = captureProviderRoutePool(instanceId, PrototypeService.TWITCH,
+            { listOf(selected) }, { mapOf(routeId to currentProfile) })
+        val primary = capture()
+        val chosen = capture(pool.candidates[1].proof)
+        assertEquals(first, primary.instance.setup.route)
+        assertEquals(alternate, chosen.instance.setup.route)
+        assertNull(chosen.profile)
+        assertTrue(chosen.instance.setup.fallbackRoutes.isEmpty())
+        assertTrue(chosen.presentation.sameOwnership(capture(chosen.proof).presentation))
+        assertFalse(primary.presentation.sameOwnership(chosen.presentation))
+        currentProfile = profile("changed.example.test")
+        assertThrows(ProviderRoutePoolException::class.java) { capture(chosen.proof) }
+        val refreshed = captureProviderRoutePool(instanceId, PrototypeService.TWITCH,
+            { listOf(selected) }, { mapOf(routeId to currentProfile) }).candidates[1]
+        selected = selected.copy(setup = ProviderSetup(alternate, fallbackRoutes = listOf(first)))
+        assertThrows(ProviderRoutePoolException::class.java) { capture(refreshed.proof) }
+        assertEquals(refreshed.routeIdentity, capture().routeIdentity)
+        assertThrows(ProviderRoutePoolException::class.java) { capture("0".repeat(64)) }
+    }
+
+    @Test fun missingPreferredProfileCannotSilentlyUseExplicitAlternativeSystemRoute() {
+        val first = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, routeId, "Missing exit")
+        val selected = instance(first).copy(setup = ProviderSetup(first, fallbackRoutes = listOf(SourceRouteChoice.system)))
+        assertThrows(ProviderRoutePoolException::class.java) {
+            captureTwitchCatalogRouteOwner(instanceId, { listOf(selected) }, { emptyMap() })
+        }
+        val pool = captureProviderRoutePool(instanceId, PrototypeService.TWITCH,
+            { listOf(selected) }, { emptyMap() })
+        assertNull(captureTwitchCatalogRouteOwner(instanceId, { listOf(selected) },
+            { emptyMap() }, pool.candidates[1].proof).profile)
     }
 
     private class FakeTransport(private val request: () -> DeviceAuthResponse = { DeviceAuthResponse(200, emptyMap()) }) : TwitchCatalogTransport {

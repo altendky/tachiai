@@ -60,6 +60,41 @@ class AbemaRenewalReadinessCoordinatorTest {
         f.coordinator.finish(old, true)
         assertEquals("new-record", f.coordinator.claim(fresh)); assertTrue(f.coordinator.current(fresh))
     }
+    @Test fun selectedCandidateChangeCannotAdoptAnotherRoutesReadyResultOrClaimedTicket() {
+        val f = Fixture()
+        val instance = "00000000-0000-0000-0000-000000000001"
+        val firstOwner = AbemaReadinessTarget(instance, "a".repeat(64))
+        val secondOwner = firstOwner.copy(ownerProof = "b".repeat(64))
+        val first = checkNotNull(f.coordinator.check(instance, firstOwner, "first-route-work").ticket)
+        assertEquals("first-route-work", f.coordinator.claim(first))
+        f.coordinator.finish(first, true)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.READY,
+            f.coordinator.check(instance, firstOwner, "ignored").status)
+        val second = checkNotNull(f.coordinator.check(instance, secondOwner, "second-route-work").ticket)
+        assertNotEquals(first, second)
+        assertEquals("second-route-work", f.coordinator.claim(second))
+        assertNull(f.coordinator.claim(first))
+        assertTrue(f.coordinator.current(second))
+    }
+    @Test fun delayedOldCandidateFailureCannotCancelTheNewTicketButExactOwnerRevocationStillDoes() {
+        var nonce = 0
+        val coordinator = AbemaRenewalReadinessCoordinator<AbemaReadinessTarget>({ 100 },
+            { (++nonce).toString(16).padStart(32, '0') })
+        val instance = "00000000-0000-0000-0000-000000000001"
+        val firstOwner = AbemaReadinessTarget(instance, "a".repeat(64))
+        val secondOwner = firstOwner.copy(ownerProof = "b".repeat(64))
+        val first = checkNotNull(coordinator.check(instance, firstOwner, firstOwner).ticket)
+        val second = checkNotNull(coordinator.check(instance, secondOwner, secondOwner).ticket)
+        assertFalse(coordinator.current(first))
+        coordinator.invalidate(instance) { it.ownerProof == firstOwner.ownerProof }
+        assertTrue(coordinator.current(second))
+        assertEquals(secondOwner, coordinator.claim(second))
+        coordinator.invalidate(instance) { it.ownerProof == secondOwner.ownerProof }
+        assertFalse(coordinator.current(second))
+        coordinator.finish(second, true)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.FAILURE,
+            coordinator.check(instance, secondOwner, secondOwner).status)
+    }
     @Test fun staleClaimedBrowserKeepsExclusiveReservationUntilItsOwnerFinishes() {
         val f = Fixture(); val old = checkNotNull(f.coordinator.check("a", "old", "private").ticket)
         assertEquals("private", f.coordinator.claim(old))

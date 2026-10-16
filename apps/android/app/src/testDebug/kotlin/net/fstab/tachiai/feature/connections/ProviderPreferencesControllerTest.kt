@@ -26,16 +26,18 @@ class ProviderPreferencesControllerTest {
         var instances = defaultProviderInstances()
         val initial get() = instances.first()
         val writes = mutableListOf<Pair<String?, SourceRouteChoice>>()
+        val poolWrites = mutableListOf<Pair<String?, List<SourceRouteChoice>>>()
         val committed = mutableListOf<ProviderInstance>()
         val started = mutableListOf<ProviderPreferenceState>()
         var failNext = false
         lateinit var controller: ProviderPreferencesController
         fun open(): ProviderPreferencesController {
-            controller = ProviderPreferencesController(initial, instances, save = { name, route ->
-                writes += name to route
+            controller = ProviderPreferencesController(initial, instances, save = { name, routes ->
+                routes.singleOrNull()?.let { writes += name to it }
+                poolWrites += name to routes
                 if (failNext) { failNext = false; error("private storage details") }
                 instances.map { if (it.id == initial.id) it.copy(customName = name,
-                    setup = it.setup.copy(route = route)) else it }.also { instances = it }
+                    setup = it.setup.copy(route = routes.firstOrNull(), fallbackRoutes = routes.drop(1))) else it }.also { instances = it }
             }, dispatch = { deliveries.addLast(it) }, onChangeStarted = { started += controller.state.value },
                 onCommitted = { committed += it }, io = io)
             return controller
@@ -157,15 +159,93 @@ class ProviderPreferencesControllerTest {
         assertEquals(other, fixture.committed.single().setup.route)
     }
 
-    @Test fun ambiguousLegacyRouteIsNotReplacedUntilTheUserActuallyChoosesOne() {
+    @Test fun renamingAnAmbiguousLegacyOwnerNeverSelectsAnImplicitRoute() {
         val fixture = Fixture()
         fixture.instances = fixture.instances.map { it.copy(setup = ProviderSetup(null)) }
         val controller = fixture.open()
         controller.nameChanged("Account")
         assertTrue(fixture.writes.isEmpty())
         assertNull(controller.state.value.selectedRoute)
+        fixture.drain()
+        assertEquals(listOf("Account" to emptyList<SourceRouteChoice>()), fixture.poolWrites)
+        assertNull(controller.state.value.instance.setup.route)
         controller.routeChanged(japan)
         fixture.drain()
         assertEquals(listOf("Account" to japan), fixture.writes)
+    }
+
+    @Test fun pooledRouteChangesAndRenamingCommitWholeSnapshotsInOrder() {
+        val fixture = Fixture(); val controller = fixture.open()
+        val pool = listOf(japan, other, SourceRouteChoice.system)
+        controller.routesChanged(pool)
+        controller.nameChanged("Ordered account")
+        controller.routesChanged(pool.drop(1))
+        assertEquals(pool.drop(1), controller.state.value.selectedRoutes)
+        fixture.drain()
+        assertEquals(listOf(null to pool, "Ordered account" to pool, "Ordered account" to pool.drop(1)), fixture.poolWrites)
+        assertEquals(other, controller.state.value.selectedRoute)
+        assertEquals(pool.drop(1), fixture.committed.single().setup.routes)
+        controller.routesChanged(emptyList())
+        fixture.drain()
+        assertNull(controller.state.value.selectedRoute)
+        assertEquals(emptyList<SourceRouteChoice>(), fixture.poolWrites.last().second)
+        assertEquals("Ordered account", controller.state.value.instance.name)
+    }
+
+    @Test fun failedPoolChangeRollsBackWholeOrderAndRetryRetainsTheCompleteRequestedPool() {
+        val fixture = Fixture(); val controller = fixture.open()
+        val pool = listOf(japan, other)
+        controller.routesChanged(pool)
+        fixture.drain()
+        fixture.failNext = true
+        controller.routesChanged(pool.reversed())
+        fixture.drain()
+        assertEquals(pool, controller.state.value.selectedRoutes)
+        assertNotNull(controller.state.value.error)
+        controller.retry()
+        assertEquals(pool.reversed(), controller.state.value.selectedRoutes)
+        fixture.drain()
+        assertEquals(pool.reversed(), controller.state.value.instance.setup.routes)
+        assertNull(controller.state.value.error)
+    }
+
+    @Test fun acceptedPoolsAreCopiedAndInvalidAlternativesNeverStartAWritingBatch() {
+        val fixture = Fixture(); val controller = fixture.open()
+        val mutable = mutableListOf(japan, other)
+        controller.routesChanged(mutable)
+        mutable.clear()
+        fixture.drain()
+        assertEquals(listOf(japan, other), controller.state.value.selectedRoutes)
+        val started = fixture.started.size
+        assertThrows(IllegalArgumentException::class.java) { controller.routesChanged(listOf(japan, japan.copy(connectionName = "Renamed"))) }
+        assertThrows(IllegalArgumentException::class.java) { controller.routesChanged(listOf(SourceRouteChoice.inherit)) }
+        assertEquals(started, fixture.started.size)
+        assertEquals(1, fixture.poolWrites.size)
+    }
+
+    @Test fun acceptedWholePoolWritesSurviveCloseAndSuppressOldOwnerAcknowledgments() {
+        val fixture = Fixture(); val controller = fixture.open()
+        controller.routesChanged(listOf(japan, other))
+        controller.nameChanged("Account")
+        controller.close()
+        fixture.drain()
+        assertEquals(listOf(japan, other), fixture.initial.setup.routes)
+        assertEquals("Account", fixture.initial.name)
+        assertTrue(fixture.committed.isEmpty())
+    }
+
+    @Test fun renamingAnExistingPoolRetainsItsCompleteOrderAndLeavesOtherOwnersUnchanged() {
+        val fixture = Fixture()
+        fixture.instances = fixture.instances.mapIndexed { index, owner -> if (index == 0)
+            owner.copy(setup = ProviderSetup(japan, fallbackRoutes = listOf(other, SourceRouteChoice.system))) else owner }
+        val untouched = fixture.instances.drop(1)
+        val controller = fixture.open()
+        controller.nameChanged("Evening routes")
+        fixture.drain()
+        assertEquals(listOf("Evening routes" to listOf(japan, other, SourceRouteChoice.system)), fixture.poolWrites)
+        assertEquals(untouched, fixture.instances.drop(1))
+        controller.routesChanged(listOf(japan, other, SourceRouteChoice.system))
+        fixture.drain()
+        assertEquals(1, fixture.poolWrites.size)
     }
 }

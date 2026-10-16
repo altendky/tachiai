@@ -6,22 +6,34 @@ import org.junit.Test
 class AbemaReadinessIpcTest {
     private val nonce = "a".repeat(32)
     private val instance = "00000000-0000-0000-0000-000000000001"
+    private val proof = "b".repeat(64)
     private fun request() = mapOf<String, Any?>("nonce" to nonce, "instance" to instance,
-        "sequence" to 1L, "deadline" to 90100L)
+        "proof" to proof, "sequence" to 1L, "deadline" to 90100L)
     @Test fun sameUidExactBoundedRequestAdmitsWithoutCredentialFields() {
         val accepted = checkNotNull(AbemaReadinessIpc.decode(request(), 42, 42, 100))
-        assertEquals(instance, accepted.instance); assertEquals(90100L, accepted.deadline)
+        assertEquals(instance, accepted.instance); assertEquals(proof, accepted.ownerProof)
+        assertEquals(90100L, accepted.deadline)
+        assertEquals("AbemaReadinessRequest(redacted)", accepted.toString())
         for ((sender, own) in listOf(-1 to 42, 42 to -1, 41 to 42))
             assertNull(AbemaReadinessIpc.decode(request(), sender, own, 100))
         assertNull(AbemaReadinessIpc.decode(request() + ("bearer" to "synthetic-private"), 42, 42, 100))
     }
     @Test fun malformedTypesIdentitiesSequencesAndDeadlineRefuseBeforeProtectedLookup() {
         for ((key, value) in listOf("nonce" to "b".repeat(33), "nonce" to "A".repeat(32),
-            "instance" to "other", "instance" to false, "sequence" to 1, "sequence" to 0L,
+            "instance" to "other", "instance" to false, "proof" to false, "proof" to "b".repeat(63),
+            "proof" to "B".repeat(64), "proof" to "b".repeat(65), "sequence" to 1, "sequence" to 0L,
             "deadline" to 90101L, "deadline" to 100L, "deadline" to "90100"))
             assertNull(AbemaReadinessIpc.decode(request() + (key to value), 42, 42, 100))
         assertNull(AbemaReadinessIpc.decode(request() - "instance", 42, 42, 100))
+        assertNull(AbemaReadinessIpc.decode(request() - "proof", 42, 42, 100))
         assertNull(AbemaReadinessIpc.decode(request(), 42, 42, -1))
+    }
+    @Test fun requestedAlternativeProofIsPreservedRatherThanSubstitutedByAnotherCandidate() {
+        val alternative = "c".repeat(64)
+        val first = checkNotNull(AbemaReadinessIpc.decode(request(), 42, 42, 100))
+        val selected = checkNotNull(AbemaReadinessIpc.decode(request() + ("proof" to alternative), 42, 42, 100))
+        assertEquals(first.instance, selected.instance)
+        assertEquals(alternative, selected.ownerProof); assertNotEquals(first.ownerProof, selected.ownerProof)
     }
     @Test fun responseRequiresCurrentNonceSequenceClosedStatusAndOnlyLaunchMayCarryTicket() {
         fun fields(status: String) = mapOf<String, Any?>("nonce" to nonce, "sequence" to 1L, "status" to status)

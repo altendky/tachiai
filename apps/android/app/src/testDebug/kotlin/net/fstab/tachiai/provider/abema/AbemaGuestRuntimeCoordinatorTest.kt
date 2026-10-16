@@ -34,6 +34,8 @@ class AbemaGuestRuntimeCoordinatorTest {
         var foreground = true
         var matching = true
         var ownerProof = proof
+        var requestedOwnerProof: String? = proof
+        var readExpectedProof: String? = null
         var destroy: () -> Boolean = { true }
         var holdStatus = false
         var holdClear = false
@@ -115,6 +117,10 @@ class AbemaGuestRuntimeCoordinatorTest {
             override fun destroy(): Boolean { events += "destroy"; return this@Fixture.destroy.invoke() }
         }
         val environment = object : AbemaGuestRuntimeEnvironment {
+            override fun readOwner(instanceId: String, expectedProof: String?): AbemaGuestRuntimeOwner {
+                readExpectedProof = expectedProof
+                return readOwner(instanceId)
+            }
             override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner {
                 assertEquals(id, instanceId); reads++; events += "read-owner"
                 return object : AbemaGuestRuntimeOwner { override val proof = ownerProof }
@@ -151,7 +157,7 @@ class AbemaGuestRuntimeCoordinatorTest {
         val runtime = AbemaGuestRuntimeCoordinator(environment, main, worker, cleanup) { main.now }
         fun request(selectedNonce: String = nonce) = AbemaGuestRuntimeRequest(id, operation,
             if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "fixture-episode" else null,
-            selectedNonce, proof, main.now + 45_000,
+            selectedNonce, requestedOwnerProof, main.now + 45_000,
             seriesRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest(seriesParent) else null,
             slotRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest else null,
             searchRequest = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest else null) { foreground }
@@ -167,6 +173,19 @@ class AbemaGuestRuntimeCoordinatorTest {
         }
     }
 
+    @Test fun runtimeOwnerCaptureReceivesExactRequestedCandidateProofBeforePreparation() {
+        val candidateProof = "c".repeat(64)
+        val selected = Fixture().apply { requestedOwnerProof = candidateProof; ownerProof = candidateProof }
+        assertTrue(selected.start()); selected.pump()
+        assertEquals(candidateProof, selected.readExpectedProof)
+        assertEquals("EXACT_EPISODE_METADATA", selected.results.single().category)
+        val wrong = Fixture().apply { requestedOwnerProof = candidateProof }
+        assertTrue(wrong.start()); wrong.pump()
+        assertEquals(candidateProof, wrong.readExpectedProof)
+        assertFalse(wrong.events.contains("prepare")); assertNull(wrong.results.single().entry)
+        val initial = Fixture(AbemaGuestBootstrapOperation.GUEST_ONLY).apply { requestedOwnerProof = null; statusState = "PREPARED" }
+        assertTrue(initial.start()); initial.pump(); assertNull(initial.readExpectedProof)
+    }
     @Test fun authoritativeAccountLossBeforeProjectionPublicationSuppressesRowsAndStillCleansUp() {
         val f = Fixture().apply { onProjection = { accessCurrent = false } }
         assertTrue(f.start()); f.pump()

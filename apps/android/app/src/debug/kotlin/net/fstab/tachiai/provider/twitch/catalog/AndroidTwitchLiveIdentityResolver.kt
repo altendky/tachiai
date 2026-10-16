@@ -37,14 +37,14 @@ internal class TwitchBroadcasterRetryGate(private val wallMs: () -> Long = Syste
 internal fun androidTwitchLiveIdentityResolver(context: Context, instanceId: String,
     expectedProfile: ConnectionProfile?, canUse: () -> Boolean,
     retryGate: TwitchBroadcasterRetryGate? = null,
-    expectedRoute: SourceRouteChoice? = null): TwitchLiveIdentityResolver {
+    expectedRoute: SourceRouteChoice? = null, expectedOwnerProof: String? = null): TwitchLiveIdentityResolver {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
-    val route = readTwitchCatalogRouteOwner(instanceId,
+    val route = captureTwitchCatalogRouteOwner(instanceId,
         { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-        { connectionProfileStore(application).selected(it) })
+        connectionProfileStore(application)::snapshot, expectedOwnerProof)
     requireExpectedTwitchRoute(route, expectedRoute)
-    val binding = androidTwitchCatalogConnectionBinding(application, instanceId, canUse)
+    val binding = androidTwitchCatalogConnectionBinding(application, instanceId, canUse, route.proof)
     return try {
         ownedTwitchLiveIdentityResolver(instanceId, expectedProfile, route, binding, canUse,
             { profile, gate, cleanup -> OwnedTwitchHelixTransport(profile, gate,

@@ -67,6 +67,23 @@ class TwitchCatalogMaintenanceRegistryTest {
         replacement.close()
     }
 
+    @Test fun observedScopeRevocationBlocksEveryOldHandleButAReopenedBindingGetsAFreshOwner() {
+        val registry = TwitchCatalogMaintenanceRegistry()
+        val first = registry.acquire(scope(), ::coordinator)
+        val sibling = registry.acquire(scope()) { error("The original scope must be shared") }
+        val attached = first.coordinator.attach(live = { first.canContinue() }, revisionCurrent = { first.canContinue() })
+        first.revoke()
+        assertFalse(first.canContinue()); assertFalse(sibling.canContinue())
+        val fresh = registry.acquire(scope(), ::coordinator)
+        assertTrue(fresh.canContinue()); assertNotSame(first.coordinator, fresh.coordinator)
+        // Retiring the original binding/attachment must not evict the reopened
+        // scope or release its independent ownership reservation.
+        first.close(); sibling.close(); attached.close()
+        val later = registry.acquire(scope()) { error("The new scope is still referenced") }
+        assertSame(fresh.coordinator, later.coordinator); assertTrue(later.canContinue())
+        fresh.close(); later.close()
+    }
+
     @Test fun constructingAnotherOwnerCanProceedWhileAFactoryIsBlocked() {
         val registry = TwitchCatalogMaintenanceRegistry()
         val entered = CountDownLatch(1)

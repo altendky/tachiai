@@ -84,17 +84,28 @@ internal class AndroidAbemaAccountStorage(context: Context, instanceId: String) 
     override fun toString() = "AndroidAbemaAccountStorage(redacted)"
 }
 
-internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: String): AbemaAccountConnectionBinding {
+internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: String,
+    expectedOwnerProof: String? = null): AbemaAccountConnectionBinding {
     val application = context.applicationContext
     val store = AbemaAccountGrantStore(instanceId, AndroidAbemaAccountStorage(application, instanceId))
     val poisoned = AbemaAccountWorkers.poisoned(instanceId)
-    fun readOwner() = readAbemaCatalogRouteOwner(instanceId,
+    val routeAdmission = ProviderRouteAdmission(expectedOwnerProof)
+    fun readOwner(expected: String?) = captureAbemaCatalogRouteOwner(instanceId,
         { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-        { connectionProfileStore(application).selected(it) })
+        { connectionProfileStore(application).snapshot(it) }, expected)
     return object : AbemaAccountConnectionBinding {
         override val store = store
-        override fun owner() = readOwner()
-        override fun sameOwner(owner: AbemaCatalogRouteOwner) = !poisoned.get() && runCatching { owner.sameOwnership(readOwner()) }.getOrDefault(false)
+        override val routeCurrent get() = routeAdmission.canContinue()
+        override fun owner(): AbemaCatalogRouteOwner {
+            var captured: AbemaCatalogRouteOwner? = null
+            if (!routeAdmission.check({ !poisoned.get() }) { expected ->
+                readOwner(expected).also { captured = it }.proof()
+            }) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            return checkNotNull(captured)
+        }
+        override fun sameOwner(owner: AbemaCatalogRouteOwner) = routeAdmission.check({ !poisoned.get() }) { expected ->
+            readOwner(expected).takeIf(owner::sameOwnership)?.proof()
+        }
         override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean) =
             AndroidAbemaAccountBootstrapClient(application, instanceId, owner.proof(), gate, foreground)
         override fun transport(owner: AbemaCatalogRouteOwner, gate: () -> Boolean): AbemaAccountTransport =

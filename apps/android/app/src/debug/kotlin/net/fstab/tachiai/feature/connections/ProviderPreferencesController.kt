@@ -9,11 +9,13 @@ internal data class ProviderPreferenceState(
     val instance: ProviderInstance,
     val instances: List<ProviderInstance>,
     val nameDraft: String = instance.customName.orEmpty(),
-    val selectedRoute: SourceRouteChoice? = instance.setup.route,
+    val selectedRoutes: List<SourceRouteChoice> = instance.setup.routes,
     val saving: Boolean = false,
     val error: String? = null,
     val validName: Boolean = true,
-)
+) {
+    val selectedRoute get() = selectedRoutes.firstOrNull()
+}
 
 // Accepted writes belong to the process rather than a settings Activity. A new
 // editor/list waits for them before reading, including after its old host closes.
@@ -59,13 +61,13 @@ internal object ProviderPreferenceWrites {
 internal class ProviderPreferencesController(
     initial: ProviderInstance,
     instances: List<ProviderInstance>,
-    private val save: (String?, SourceRouteChoice) -> List<ProviderInstance>,
+    private val save: (String?, List<SourceRouteChoice>) -> List<ProviderInstance>,
     private val dispatch: ((() -> Unit) -> Unit),
     private val onChangeStarted: () -> Unit,
     private val onCommitted: (ProviderInstance) -> Unit,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : AutoCloseable {
-    private data class Change(val name: String?, val useCommittedName: Boolean, val route: SourceRouteChoice)
+    private data class Change(val name: String?, val useCommittedName: Boolean, val routes: List<SourceRouteChoice>)
     private val lock = Any()
     private val mutableState = MutableStateFlow(ProviderPreferenceState(initial, instances))
     val state: StateFlow<ProviderPreferenceState> = mutableState
@@ -87,14 +89,16 @@ internal class ProviderPreferencesController(
         if (closed || draft == state.value.nameDraft) return@synchronized
         val valid = validName(draft)
         mutableState.value = state.value.copy(nameDraft = draft, validName = valid)
-        val route = state.value.selectedRoute
-        if (valid && route != null) accept(Change(normalizedName(draft), false, route))
+        if (valid) accept(Change(normalizedName(draft), false, state.value.selectedRoutes))
     }
 
-    fun routeChanged(route: SourceRouteChoice) = synchronized(lock) {
-        require(route.mode != SourceRouteMode.SOURCE_DEFAULT)
-        if (closed || (route == state.value.selectedRoute && state.value.error == null)) return@synchronized
-        accept(Change(normalizedName(state.value.nameDraft), !state.value.validName, route))
+    fun routeChanged(route: SourceRouteChoice) = routesChanged(listOf(route))
+
+    fun routesChanged(routes: List<SourceRouteChoice>) = synchronized(lock) {
+        val snapshot = routes.toList()
+        ProviderSetup(snapshot.firstOrNull(), fallbackRoutes = snapshot.drop(1))
+        if (closed || (snapshot == state.value.selectedRoutes && state.value.error == null)) return@synchronized
+        accept(Change(normalizedName(state.value.nameDraft), !state.value.validName, snapshot))
     }
 
     fun retry() = synchronized(lock) {
@@ -104,15 +108,15 @@ internal class ProviderPreferencesController(
 
     private fun accept(change: Change) {
         if (pending == 0 && !change.useCommittedName && change.name == committed.customName &&
-            change.route == committed.setup.route && state.value.error == null) return
+            change.routes == committed.setup.routes && state.value.error == null) return
         val current = ++revision
         pending++
         failedChange = null
-        mutableState.value = state.value.copy(selectedRoute = change.route, saving = true, error = null)
+        mutableState.value = state.value.copy(selectedRoutes = change.routes, saving = true, error = null)
         onChangeStarted()
         ProviderPreferenceWrites.enqueue(committed.id, io) {
             val name = synchronized(lock) { if (change.useCommittedName) committed.customName else change.name }
-            val result = runCatching { save(name, change.route).also { entries ->
+            val result = runCatching { save(name, change.routes).also { entries ->
                 check(entries.single { it.id == committed.id }.service == committed.service)
             } }
             synchronized(lock) {
@@ -124,7 +128,7 @@ internal class ProviderPreferencesController(
                 if (pending == 0) {
                     if (!closed) {
                         failedChange = if (result.isFailure) change else null
-                        mutableState.value = state.value.copy(selectedRoute = committed.setup.route,
+                        mutableState.value = state.value.copy(selectedRoutes = committed.setup.routes,
                             saving = false, error = if (result.isFailure) "Changes could not be saved. Retry." else null,
                             validName = validName(state.value.nameDraft))
                     }

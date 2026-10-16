@@ -18,7 +18,8 @@ loading until provider-return verification finishes.
 
 The provider detail headline is the instance name, with an edit icon and a small
 provider-type label. Name editing opens an autosaving dialog. Connection uses a
-single route selector whose menu also opens route import. Account actions stay
+compact ordered route rows, with drag handles, removal and an Add route menu
+that also opens route import. Account actions stay
 visible in wrapping rows, with unavailable actions disabled; their layout does
 not collapse when an account connects. Section help uses info icons.
 
@@ -92,9 +93,11 @@ cannot adopt its result. Temporary connection failures and genuine sign-in
 requirements have distinct messages, and a failed attempt suppresses immediate
 resume loops.
 
-The host retains only its logical selection across the browser handoff. On
-return it rereads the configuration and starts a fresh discovery or playback
-operation; it never revives a paused player, account request or license budget.
+The host retains its logical selection and captured route plan across the
+browser handoff. On return it reconciles that exact route against the saved
+configuration before starting a fresh playback operation. Configuration changes
+end automatic continuation; they cannot silently select a newer preferred route.
+It never revives a paused player, account request or license budget.
 The automatic action has its own original 90-second deadline. Its real
 expired-session acceptance observation is separate from the implementation and
 fixture coverage in the native-access evidence.

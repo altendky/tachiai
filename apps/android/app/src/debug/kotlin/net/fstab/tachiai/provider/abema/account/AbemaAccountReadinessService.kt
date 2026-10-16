@@ -17,22 +17,26 @@ internal object AbemaReadinessIpc {
     const val RESULT = 2
     const val CANCEL = 3
     const val LIMIT_MS = 90_000L
-    class Request(val nonce: String, val instance: String, val sequence: Long, val deadline: Long)
+    class Request(val nonce: String, val instance: String, val ownerProof: String, val sequence: Long, val deadline: Long) {
+        override fun toString() = "AbemaReadinessRequest(redacted)"
+    }
     fun request(data: Bundle, sendingUid: Int, ownUid: Int, now: Long): Request? = runCatching {
-        if (data.size() != 4) return null
+        if (data.size() != 5) return null
         @Suppress("DEPRECATION") val fields = data.keySet().associateWith { data.get(it) }
         decode(fields, sendingUid, ownUid, now)
     }.getOrNull()
     fun decode(fields: Map<String, Any?>, sendingUid: Int, ownUid: Int, now: Long): Request? {
         if (sendingUid < 0 || ownUid < 0 || sendingUid != ownUid ||
-            fields.keys != setOf("nonce", "instance", "sequence", "deadline")) return null
+            fields.keys != setOf("nonce", "instance", "proof", "sequence", "deadline")) return null
         val nonce = fields["nonce"] as? String ?: return null
         val instance = fields["instance"] as? String ?: return null
+        val proof = fields["proof"] as? String ?: return null
         val sequence = fields["sequence"] as? Long ?: return null
         val deadline = fields["deadline"] as? Long ?: return null
-        if (!nonce.matches(Regex("[a-f0-9]{32}")) || !validProviderInstanceId(instance) || sequence < 1 ||
+        if (!nonce.matches(Regex("[a-f0-9]{32}")) || !validProviderInstanceId(instance) ||
+            !proof.matches(Regex("[a-f0-9]{64}")) || sequence < 1 ||
             now < 0 || deadline <= now || deadline - now > LIMIT_MS) return null
-        return Request(nonce, instance, sequence, deadline)
+        return Request(nonce, instance, proof, sequence, deadline)
     }
     fun decodeResponse(fields: Map<String, Any?>, nonce: String, sequence: Long): AbemaRenewalReadinessCoordinator.Decision? {
         if (fields["nonce"] != nonce || fields["sequence"] != sequence) return null
@@ -78,26 +82,29 @@ internal object AndroidAbemaRenewalReadiness {
     }
     private val coordinator = AbemaRenewalReadinessCoordinator<Work>(SystemClock::elapsedRealtime,
         { UUID.randomUUID().toString().replace("-", "") })
-    fun check(service: Service, instance: String, deadline: Long): AbemaRenewalReadinessCoordinator.Decision {
+    fun check(service: Service, target: AbemaReadinessTarget, deadline: Long): AbemaRenewalReadinessCoordinator.Decision {
+        val instance = target.instanceId
+        fun invalidateTarget() = coordinator.invalidate(instance) { it.owner.proof() == target.ownerProof }
         fun failed(status: AbemaRenewalReadinessCoordinator.Status = AbemaRenewalReadinessCoordinator.Status.FAILURE): AbemaRenewalReadinessCoordinator.Decision {
-            coordinator.invalidate(instance)
+            invalidateTarget()
             return AbemaRenewalReadinessCoordinator.Decision(status)
         }
         return try {
-            val binding = androidAbemaAccountConnectionBinding(service, instance)
+            val binding = androidAbemaAccountConnectionBinding(service, instance, target.ownerProof)
             val owner = binding.owner()
             val snapshot = binding.store.readSnapshot()
             val wall = System.currentTimeMillis()
-            if (!binding.sameOwner(owner) || !binding.store.usable(snapshot.revision)) return failed()
+            if (owner.instance.id != instance || owner.proof() != target.ownerProof ||
+                !binding.sameOwner(owner) || !binding.store.usable(snapshot.revision)) return failed()
             val record = snapshot.record
             if (record == null) {
-                coordinator.invalidate(instance)
+                invalidateTarget()
                 return AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.READY)
             }
             if (wall < record.acceptedWallMs || decodedAbemaGrant(record.grant.bearer, record.grant.userId,
                     record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs) return failed()
             if (wall < record.grant.expiresAtMs) {
-                coordinator.invalidate(instance)
+                invalidateTarget()
                 return AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.READY)
             }
             if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return failed()
@@ -148,7 +155,8 @@ class AbemaAccountReadinessService : Service() {
             try { workers.execute {
                 val decision = if (destroyed || SystemClock.elapsedRealtime() >= request.deadline)
                     AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.FAILURE)
-                else AndroidAbemaRenewalReadiness.check(this@AbemaAccountReadinessService, request.instance, request.deadline)
+                else AndroidAbemaRenewalReadiness.check(this@AbemaAccountReadinessService,
+                    AbemaReadinessTarget(request.instance, request.ownerProof), request.deadline)
                 if (!delivery.created(decision)) return@execute
                 main.post {
                     if (destroyed || SystemClock.elapsedRealtime() >= request.deadline) {

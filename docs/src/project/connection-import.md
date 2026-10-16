@@ -12,7 +12,7 @@ may appear when browsing content; broader browsing is not implemented yet.
 
 **Prototype → Routes** opens the existing import/manage screen. **Prototype →
 Providers** opens the configured instances. Add ABEMA/Twitch instance creates a
-separate configuration; Configure opens its name, default route, account and
+separate configuration; Configure opens its name, ordered routes, account and
 stream management on one detail page. Valid name edits and route choices save
 automatically, with pending/error status and retry. The picker lists the catalogue under each instance and assigns a
 stream together with that instance to A or B. Provider setup also links to
@@ -105,6 +105,48 @@ Earlier importer-only evidence below predates transport integration and does
 not verify it.
 The user reported loading a Proton file in the preceding build; no configuration
 contents were inspected, and that report does not establish an active tunnel.
+
+### Ordered route configuration and ownership
+
+A provider instance can retain up to eight explicit route choices in order.
+Compact rows support dragging, accessible move actions and removal; removing
+the first choice promotes the next one. Add route excludes duplicate profile
+identities. System network is an explicit choice and is never inserted as a
+replacement for a missing profile. An empty pool requires a new choice. Missing
+profile references remain visible for repair. Valid edits save the complete pool
+atomically, including when renaming the instance; failure retains the durable
+configuration and offers Retry.
+
+The provider-instance registry writes version 2. Version 1 single-route records
+remain readable without a write and preserve unresolved legacy choices. The next
+explicit mutation writes version 2. The existing 8 KiB registry limit remains;
+an oversized mutation fails without changing the saved record. Older APKs that
+only understand version 1 cannot read the registry after that mutation.
+
+Account, browser, catalog and viewer operations capture the ordered pool and its
+profile configurations. Subsequent requests reconcile the exact selected
+candidate; edits to the pool or any captured profile invalidate its proof.
+Duplicate viewer feeds share the same selected candidate. The process-wide
+ABEMA proxy compatibility check includes configured channels and broadcasts as
+well as historical sources. Runtime choice does not rewrite the configured order.
+Cleanup uncertainty remains poisoned across reordering and owner replacement.
+
+This prerequisite selects the first configured candidate. Automatic startup
+attempts are tracked separately in #270; retaining alternatives alone does not
+establish fallback traffic. Later playback switching and randomized startup are
+separate follow-ups. A missing first profile fails rather than using another
+candidate implicitly.
+
+Worker snapshots use two bounded reads of the separately locked instance and
+profile stores. This detects observed configuration changes, but is not a
+cross-store transaction and cannot detect an intervening ABA edit. Existing
+request/publication ownership gates remain required, with locally observed
+revocation retained for the operation lifetime. Profiles and proofs stay in
+worker-owned runtime state rather than saved UI state or diagnostic output.
+Restoring an earlier configuration does not revive an operation that observed
+its revocation. A newly opened scope can reconcile the restored configuration;
+healthy consumers of the same candidate continue to share account maintenance.
+Foreground pauses alone do not revoke a route or prevent browser sign-in return.
 
 ### Route protocol boundaries
 

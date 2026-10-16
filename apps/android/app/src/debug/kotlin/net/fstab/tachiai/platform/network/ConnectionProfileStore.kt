@@ -9,6 +9,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.presentation.MAX_PROVIDER_ROUTES
 
 internal data class ConnectionSummary(val id: String, val name: String, val kind: ConnectionKind, val endpoint: String)
 
@@ -70,6 +71,14 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
 
     // Worker-only secret snapshot; never sent through intents, UI state or diagnostics.
     fun selected(id: String): ConnectionProfile = locked { checkNotNull(read().find { it.id == id }).profile }
+
+    // One protected read captures all requested profiles. An absent ID is a
+    // missing candidate; an unreadable/corrupt record fails the whole snapshot.
+    fun snapshot(ids: Set<String>): Map<String, ConnectionProfile> {
+        require(ids.size <= MAX_PROVIDER_ROUTES && ids.all { UUID.fromString(it).toString() == it })
+        if (ids.isEmpty()) return emptyMap()
+        return locked { read().filter { it.id in ids }.associate { it.id to it.profile } }
+    }
 
     fun add(name: String, profile: ConnectionProfile) = locked {
         check(validConnectionName(name))

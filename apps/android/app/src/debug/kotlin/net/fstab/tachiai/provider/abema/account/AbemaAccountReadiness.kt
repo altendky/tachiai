@@ -12,6 +12,19 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 
 internal enum class AbemaAccountReadinessResult { READY, HANDOFF, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
 
+internal data class AbemaReadinessTarget(val instanceId: String, val ownerProof: String) {
+    override fun toString() = "AbemaReadinessTarget(redacted)"
+}
+
+internal fun normalizedAbemaReadinessTargets(targets: List<AbemaReadinessTarget>): List<AbemaReadinessTarget>? {
+    if (targets.size > 32) return null
+    val copied = targets.toList()
+    if (copied.any { !validProviderInstanceId(it.instanceId) || !it.ownerProof.matches(Regex("[a-f0-9]{64}")) }) return null
+    val distinct = copied.distinct()
+    if (distinct.distinctBy { it.instanceId }.size != distinct.size) return null
+    return distinct
+}
+
 // A resumed host owns a logical request only. Browser handoff invalidates this
 // client; the host creates a new bounded operation when it resumes.
 internal class AbemaAccountReadiness(private val activity: ComponentActivity) : AutoCloseable {
@@ -21,7 +34,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
     private var closed = false
     private var generation = 0L
     private var pending: Check? = null
-    private inner class Check(val ids: List<String>, val complete: (AbemaAccountReadinessResult) -> Unit,
+    private inner class Check(val targets: List<AbemaReadinessTarget>, val complete: (AbemaAccountReadinessResult) -> Unit,
         val run: Long, val began: Long, val deadline: Long) : ServiceConnection {
         val nonce = UUID.randomUUID().toString().replace("-", "")
         var index = 0
@@ -52,7 +65,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
                         ?: run { finish(AbemaAccountReadinessResult.FAILURE); return }
                     if (decision.status != AbemaRenewalReadinessCoordinator.Status.LAUNCH) clearLateSender()
                     when (decision.status) {
-                        AbemaRenewalReadinessCoordinator.Status.READY -> { index++; if (index == ids.size) finish(AbemaAccountReadinessResult.READY) else send() }
+                        AbemaRenewalReadinessCoordinator.Status.READY -> { index++; if (index == targets.size) finish(AbemaAccountReadinessResult.READY) else send() }
                         AbemaRenewalReadinessCoordinator.Status.WAIT -> main.postDelayed({ if (current()) send() }, 250)
                         AbemaRenewalReadinessCoordinator.Status.FAILURE -> finish(AbemaAccountReadinessResult.FAILURE)
                         AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE -> finish(AbemaAccountReadinessResult.TEMPORARY_FAILURE)
@@ -92,7 +105,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
                 !activity.isDestroyed && !activity.isFinishing && now >= began && now < deadline
         }
         fun send() {
-            if (!current() || index !in ids.indices) return
+            if (!current() || index !in targets.indices) return
             sequence++
             val sender = remote ?: return
             lateSender = sender
@@ -100,7 +113,8 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
             cancellationDeadline.postDelayed(forgetSender, maxOf(0L, deadline - SystemClock.elapsedRealtime()))
             try { sender.send(Message.obtain().apply {
                 what = AbemaReadinessIpc.CHECK; replyTo = reply
-                data = Bundle().apply { putString("nonce", nonce); putString("instance", ids[index])
+                data = Bundle().apply { putString("nonce", nonce); putString("instance", targets[index].instanceId)
+                    putString("proof", targets[index].ownerProof)
                     putLong("sequence", sequence); putLong("deadline", deadline) }
             }) } catch (_: Throwable) { finish(AbemaAccountReadinessResult.FAILURE) }
         }
@@ -134,16 +148,16 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
     }
     fun onResume() { if (!closed) resumed = true }
     fun onPause() { resumed = false; generation++; pending?.detach(); main.removeCallbacksAndMessages(null) }
-    fun ensure(instanceIds: List<String>, complete: (AbemaAccountReadinessResult) -> Unit) {
+    fun ensure(targets: List<AbemaReadinessTarget>, complete: (AbemaAccountReadinessResult) -> Unit) {
         check(Looper.myLooper() == Looper.getMainLooper())
         pending?.detach(); generation++
         if (!resumed || closed) return
-        val ids = instanceIds.distinct()
-        if (ids.size > 32 || ids.any { !validProviderInstanceId(it) }) { complete(AbemaAccountReadinessResult.FAILURE); return }
-        if (ids.isEmpty()) { complete(AbemaAccountReadinessResult.READY); return }
+        val normalized = normalizedAbemaReadinessTargets(targets)
+        if (normalized == null) { complete(AbemaAccountReadinessResult.FAILURE); return }
+        if (normalized.isEmpty()) { complete(AbemaAccountReadinessResult.READY); return }
         val began = SystemClock.elapsedRealtime()
         if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { complete(AbemaAccountReadinessResult.FAILURE); return }
-        val check = Check(ids, complete, generation, began, began + AbemaReadinessIpc.LIMIT_MS)
+        val check = Check(normalized, complete, generation, began, began + AbemaReadinessIpc.LIMIT_MS)
         pending = check
         main.postDelayed({ if (!check.ended) check.finish(AbemaAccountReadinessResult.TEMPORARY_FAILURE) }, AbemaReadinessIpc.LIMIT_MS)
         try {

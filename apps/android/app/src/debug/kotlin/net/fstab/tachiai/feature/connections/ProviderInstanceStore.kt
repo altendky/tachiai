@@ -25,7 +25,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         val bytes = store.read() ?: return validate(defaultProviderInstances(legacy()))
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-            check(input.readInt() == 1)
+            val version = input.readInt(); check(version in 1..2)
             val count = input.readInt(); check(count in PrototypeService.entries.size..MAX_PROVIDER_INSTANCES)
             fun choice(): SourceRouteChoice {
                 val mode = SourceRouteMode.valueOf(input.readUTF())
@@ -35,9 +35,15 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
             val entries = List(count) {
                 val id = input.readUTF(); val service = PrototypeService.valueOf(input.readUTF())
                 val defaultName = input.readUTF(); val customName = if (input.readBoolean()) input.readUTF() else null
-                val route = if (input.readBoolean()) choice() else null
+                val routes = if (version == 1) {
+                    if (input.readBoolean()) listOf(choice()) else emptyList()
+                } else {
+                    val routeCount = input.readInt(); check(routeCount in 0..MAX_PROVIDER_ROUTES)
+                    List(routeCount) { choice() }
+                }
                 val previousCount = input.readInt(); check(previousCount in 0..32)
-                ProviderInstance(id, service, defaultName, customName, ProviderSetup(route, List(previousCount) { choice() }))
+                ProviderInstance(id, service, defaultName, customName,
+                    ProviderSetup(routes.firstOrNull(), List(previousCount) { choice() }, routes.drop(1)))
             }
             check(input.read() == -1)
             validate(entries)
@@ -64,15 +70,22 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
     }
 
     fun save(id: String, name: String?, route: SourceRouteChoice,
+        legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> =
+        saveRoutes(id, name, listOf(route), legacy)
+
+    // Replace the complete ordered pool in one write; an empty pool requires an
+    // explicit future choice and never implies System network.
+    fun saveRoutes(id: String, name: String?, routes: List<SourceRouteChoice>,
         legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = mutate(legacy) { entries ->
         check(entries.any { it.id == id }) // Stale IDs are never recreated or redirected.
-        entries.map { if (it.id == id) it.copy(customName = name, setup = it.setup.copy(route = route)) else it }
+        entries.map { if (it.id == id) it.copy(customName = name,
+            setup = it.setup.copy(route = routes.firstOrNull(), fallbackRoutes = routes.drop(1))) else it }
     }
 
     private fun mutate(legacy: () -> Map<PrototypeService, ProviderSetup>, update: (List<ProviderInstance>) -> List<ProviderInstance>): List<ProviderInstance> = locked {
         val entries = validate(update(readUnlocked(legacy)))
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(1); data.writeInt(entries.size)
+            data.writeInt(2); data.writeInt(entries.size)
             fun choice(value: SourceRouteChoice) {
                 data.writeUTF(value.mode.name)
                 if (value.mode == SourceRouteMode.SAVED_CONNECTION) {
@@ -82,7 +95,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
             entries.forEach {
                 data.writeUTF(it.id); data.writeUTF(it.service.name); data.writeUTF(it.defaultName)
                 data.writeBoolean(it.customName != null); it.customName?.let(data::writeUTF)
-                data.writeBoolean(it.setup.route != null); it.setup.route?.let(::choice)
+                data.writeInt(it.setup.routes.size); it.setup.routes.forEach(::choice)
                 data.writeInt(it.setup.previousRoutes.size); it.setup.previousRoutes.forEach(::choice)
             }
         } }.toByteArray()

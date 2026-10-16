@@ -25,6 +25,16 @@ class ProviderDetailScreenTest {
         ConnectionKind.WIREGUARD, "fixture.example.test:51820")
     private val savedRoute get() = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, profile.id, profile.name)
 
+    @Test fun providerSubstringKeepsOnlyTheUserHeadlineWithoutAProviderSubtitle() {
+        compose.setContent { TachiaiPrototypeTheme {
+            ProviderDetailHeading(instance.copy(customName = "Weekend abema"), "Weekend abema", true, {}, {})
+        } }
+        compose.onNodeWithText("Weekend abema").assertExists()
+        compose.onNodeWithText("ABEMA").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Edit provider name").assertExists()
+        compose.onNodeWithContentDescription("Back to providers").assertExists()
+    }
+
     @Test fun headlineShowsNameAndProviderAndEditingSavesImmediately() {
         var name by mutableStateOf(instance.customName.orEmpty())
         var owner by mutableStateOf(instance)

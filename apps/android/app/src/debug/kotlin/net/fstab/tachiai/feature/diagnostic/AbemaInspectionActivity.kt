@@ -67,6 +67,7 @@ class AbemaInspectionActivity : ComponentActivity() {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
+        host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this, "ABEMA inspection", "Back to access cases", ::finish))
         host.addView(TextView(this).apply { setText(R.string.abema_inspection_warning) })
         status = TextView(this).apply { setText(R.string.abema_inspection_stopped) }
         host.addView(status)
@@ -74,7 +75,6 @@ class AbemaInspectionActivity : ComponentActivity() {
             addControl(R.string.abema_inspection_news) { select(AbemaInspectionSource.NEWS) }
             addControl(R.string.abema_inspection_replay) { select(AbemaInspectionSource.REPLAY) }
             addControl(R.string.abema_inspection_reload) { browser?.reload() }
-            addControl(R.string.abema_inspection_close) { finish() }
         })
         host.addView(Button(this).apply {
             setText(R.string.abema_request_open)

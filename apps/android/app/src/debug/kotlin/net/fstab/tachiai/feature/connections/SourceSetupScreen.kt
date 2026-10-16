@@ -49,7 +49,7 @@ internal fun SourceSetupScreen(source: PrototypeSource, initial: SourceSetup, pr
     fun saveChanges() { onSave(SourceSetup(savedName, default, a, b)) }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Source setup", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsPageHeader("Source setup", onBack)
         Text(source.title)
         SettingsSection("Name")
         OutlinedTextField(name, {
@@ -71,7 +71,6 @@ internal fun SourceSetupScreen(source: PrototypeSource, initial: SourceSetup, pr
         RouteOptions("Feed B connection", b, profiles, true, !busy) { if (b != it) { b = it; saveChanges() } }
         message?.let { Text(it) }
         if (busy) Text("Reading settings…")
-        TextButton(onClick = onBack) { Text("Back") }
     }
 }
 

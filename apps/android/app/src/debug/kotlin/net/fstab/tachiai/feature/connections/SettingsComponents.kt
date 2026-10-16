@@ -2,6 +2,7 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -24,15 +25,27 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import net.fstab.tachiai.R
+import net.fstab.tachiai.feature.presentation.PageHeading
 
 @Composable
-internal fun SettingsSection(title: String, help: String? = null, status: String? = null) {
+internal fun SettingsPageHeader(title: String, onBack: (() -> Unit)? = null, backDescription: String = "Back",
+    help: String? = null, actions: @Composable RowScope.() -> Unit = {}, backEnabled: Boolean = true) {
+    PageHeading(title, onBack, backDescription, backEnabled) {
+        actions()
+        if (help != null) SettingsHelp(title, help)
+    }
+}
+
+@Composable
+internal fun SettingsSection(title: String, help: String? = null, status: String? = null,
+    actions: @Composable RowScope.() -> Unit = {}) {
     Column {
         HorizontalDivider()
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium)
             if (status != null) Text(status, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+            actions()
             if (help != null) SettingsHelp(title, help)
         }
     }

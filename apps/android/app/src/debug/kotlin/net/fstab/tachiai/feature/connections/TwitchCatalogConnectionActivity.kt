@@ -33,11 +33,7 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
             val owner = rememberTwitchCatalogSettingsOwner(id)
             awaitAccountRead = owner::awaitRead
             BackHandler { finish() }
-            Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                TwitchCatalogSettings(owner, {}, {})
-                TextButton(onClick = ::finish) { Text("Back to providers") }
-            }
+            TwitchCatalogSettings(owner, {}, {}, onBack = ::finish)
         } }
     }
     override fun finish() {

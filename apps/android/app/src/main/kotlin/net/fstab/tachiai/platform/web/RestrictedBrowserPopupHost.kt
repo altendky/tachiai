@@ -82,10 +82,12 @@ internal class RestrictedBrowserPopupHost {
         }
         val layout = LinearLayout(parent.context).apply {
             orientation = LinearLayout.VERTICAL
-            addView(label)
-            addView(Button(parent.context).apply {
-                setText(R.string.popup_close)
-                setOnClickListener { window.dismiss() }
+            addView(LinearLayout(parent.context).apply {
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                val size = (48 * parent.resources.displayMetrics.density).toInt()
+                addView(net.fstab.tachiai.feature.presentation.nativeBackButton(parent.context,
+                    parent.context.getString(R.string.popup_close)) { window.dismiss() }, LinearLayout.LayoutParams(size, size))
+                addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             })
             addView(browser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }

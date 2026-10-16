@@ -52,6 +52,7 @@ import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.legacyConfiguredSources
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
+import net.fstab.tachiai.presentation.providerDisplayNames
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
 
@@ -124,11 +125,12 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             providerInstances.forEach { instance ->
+                val providerName = providerDisplayNames(instance).inline
                 val service = instance.service
                 val items = configuredSources.filter { it.instanceId == instance.id }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(instance.name, Modifier.weight(1f).semantics { heading() },
+                        Text(providerName, Modifier.weight(1f).semantics { heading() },
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (setupReady) Text(instance.setup.title, Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -136,8 +138,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                             val selectedChoice = if (slot == PrototypeSlot.A) assignments.a else assignments.b
                             val selected = selectedChoice?.instanceId == instance.id && selectedChoice.resolve(items) != null
                             Box(Modifier.size(48.dp).clearAndSetSemantics {
-                                contentDescription = if (selected) "${instance.name}: a stream is selected for feed ${slot.name}"
-                                    else "${instance.name}: no stream selected for feed ${slot.name}"
+                                contentDescription = if (selected) "$providerName: a stream is selected for feed ${slot.name}"
+                                    else "$providerName: no stream selected for feed ${slot.name}"
                             }, contentAlignment = Alignment.Center) {
                                 if (selected) Box(Modifier.size(18.dp).border(1.dp, MaterialTheme.colorScheme.outline,
                                     RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
@@ -166,7 +168,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                                     modifier = Modifier.size(48.dp).semantics {
                                         contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
                                             "Assign ${source.entry.title} to feed ${slot.name}"
-                                        else "Assign ${source.entry.title} using ${instance.name} to feed ${slot.name}"
+                                        else "Assign ${source.entry.title} using $providerName to feed ${slot.name}"
                                     })
                             }
                         }

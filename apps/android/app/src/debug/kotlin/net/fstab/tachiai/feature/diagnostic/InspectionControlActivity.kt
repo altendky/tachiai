@@ -41,7 +41,7 @@ class InspectionControlActivity : ComponentActivity() {
                 if (generation != requestGeneration || isFinishing || isDestroyed) return@runOnUiThread
                 if (providers == null) { status.text = "Provider settings could not be read. Nothing changed."; return@runOnUiThread }
                 status.text = "Tachiai Inspect · screenshots and WebView DevTools enabled\n" +
-                    providers.joinToString("\n") { "${it.name} · ${it.service.title} · ${it.setup.title}" }
+                    providers.joinToString("\n") { "${net.fstab.tachiai.presentation.providerDisplayNames(it).inline} · ${it.setup.title}" }
                 val targets = mapOf(
                     "providers" to Intent(this, ProvidersActivity::class.java),
                     "routes" to Intent(this, ConnectionProfilesActivity::class.java),

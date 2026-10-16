@@ -27,7 +27,7 @@ class ProvidersScreenTest {
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithText("Twitch account").assertDoesNotExist()
         compose.onNodeWithText("ABEMA account").performScrollTo().assertExists()
-        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
         compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
         compose.onNodeWithContentDescription("Twitch route: Proton Japan").performScrollTo().performClick()
@@ -68,7 +68,7 @@ class ProvidersScreenTest {
         } }
         compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
         compose.onNodeWithText("Twitch login fixture").assertDoesNotExist()
-        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
         compose.onNodeWithText("Configure Twitch").performScrollTo().performClick()
         compose.onNodeWithText("Twitch login fixture").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
@@ -92,7 +92,7 @@ class ProvidersScreenTest {
             val value = checkNotNull(saved)
             assertEquals(PrototypeService.ABEMA, value.first); assertEquals(profile.id, value.second.connectionId)
         }
-        compose.onNodeWithText("Back to providers").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
         compose.onNodeWithText("Configure Twitch").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
     }

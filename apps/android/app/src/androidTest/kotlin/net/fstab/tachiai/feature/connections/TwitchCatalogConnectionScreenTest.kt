@@ -87,7 +87,7 @@ class TwitchCatalogConnectionScreenTest {
             }
         } }
         compose.onNodeWithText("No saved Twitch account.").assertExists()
-        compose.onNodeWithText("Back to providers").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back to providers").assertDoesNotExist()
         compose.onNodeWithText("Configured streams fixture").performScrollTo().assertExists()
     }
     @Test fun pendingProviderSaveDisablesMutationsAndConsentHandoffWithoutHidingStatus() {
@@ -98,8 +98,9 @@ class TwitchCatalogConnectionScreenTest {
         } }
         compose.onNodeWithText("Twitch account connected.").assertExists()
         for (label in listOf("Reconnect Twitch", "Validate account", "Forget account",
-            "Retry opening Twitch connection", "Back to providers"))
+            "Retry opening Twitch connection"))
             compose.onNodeWithText(label).performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Back to providers").performScrollTo().assertIsNotEnabled()
         compose.runOnIdle {
             state.value = state.value.copy(operation = TwitchCatalogConnectionOperation.CONNECT,
                 phase = DeviceAuthPhase.WAITING, activation = DeviceActivation("FIXTURE123", URI("https://www.twitch.tv/activate")))

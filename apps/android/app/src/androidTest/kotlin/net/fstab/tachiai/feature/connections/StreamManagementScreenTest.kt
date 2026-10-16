@@ -59,6 +59,7 @@ class StreamManagementScreenTest {
         val episode = CatalogEntry(CatalogResource(provider, "episode", "show_1", CatalogIntent.VIDEO), "Never-live episode", CatalogAvailability.AVAILABLE)
         val all = listOf(offline, upcoming, parent)
         var calls = mutableListOf<String>()
+        var collectionState: ((String, StreamManagementState) -> StreamManagementState)? = null
         private var previous: StreamManagementState? = null
         private var nextContext = 1L
         private val tabs = mutableMapOf<String, StreamManagementState>()
@@ -91,7 +92,9 @@ class StreamManagementScreenTest {
                         entries = if (id == collection.id && collection.access == CatalogAccess.AVAILABLE) listOf(offline) else emptyList(),
                         nextCursor = null, failure = if (id == "history") CatalogResult.Failure(
                             if (historyAccess == CatalogAccess.NOT_VERIFIED) CatalogFailure.NOT_VERIFIED else CatalogFailure.UNSUPPORTED)
-                            else if (collection.access == CatalogAccess.AUTHORIZATION_REQUIRED) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else null) } },
+                            else if (collection.access == CatalogAccess.AUTHORIZATION_REQUIRED) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else null) }
+                        collectionState?.let { state = it(id, state) }
+                    },
                     onChildren = { resource ->
                         calls.add("children:${resource.identity}")
                         previous = state
@@ -392,7 +395,7 @@ class StreamManagementScreenTest {
         compose.runOnIdle { assertEquals(initial, fixture.state.entries); assertTrue(fixture.calls.isEmpty()) }
     }
 
-    @Test fun retainedTabContextsRestoreTheirOwnDiscoveryViewportOffsets() {
+    @Test fun restoredNavigationContextsRetainTheirOwnDiscoveryViewportOffsets() {
         val fixture = Fixture(PrototypeService.TWITCH)
         val channels = (0 until 30).map { fixture.offline.copy(resource = fixture.offline.resource.copy(identity = "channel$it"), title = "Channel $it") }
         fixture.state = fixture.state.copy(entries = channels)
@@ -407,6 +410,147 @@ class StreamManagementScreenTest {
         assertEquals(firstY, compose.onNodeWithContentDescription("Browse Channel 20").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top, 1f)
         compose.runOnIdle { fixture.state = second.copy(retainedDiscoveryContextIds = listOf(first.discoveryContextId)) }
         assertEquals(secondY, compose.onNodeWithContentDescription("Browse Channel 10").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top, 1f)
+    }
+
+    private fun longDiscoveryFixture(): Fixture {
+        val fixture = configuredFixture(6)
+        fixture.state = fixture.state.copy(nextCursor = null, entries = (0 until 30).map { fixture.offline.copy(
+            resource = fixture.offline.resource.copy(identity = "channel$it"), title = "Channel $it") })
+        return fixture
+    }
+
+    private fun showFindControls() {
+        val list = compose.onNodeWithTag("Stream discovery list")
+        list.performScrollToNode(hasTestTag("Find streams controls"))
+        val controls = compose.onNodeWithTag("Find streams controls").performScrollTo()
+        val offset = controls.fetchSemanticsNode().boundsInRoot.top - list.fetchSemanticsNode().boundsInRoot.top
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, offset) }
+        compose.waitForIdle()
+    }
+
+    private fun discoveryControlY() = listOf("Following", "Search streams").map {
+        compose.onNodeWithText(it).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+    }
+
+    private fun assertDiscoveryControlY(expected: List<Float>) {
+        expected.zip(discoveryControlY()).forEach { (before, after) -> assertEquals(before, after, 1f) }
+    }
+
+    private fun trailingGapPx() = compose.onAllNodesWithTag("Discovery trailing space")
+        .fetchSemanticsNodes().singleOrNull()?.size?.height ?: 0
+
+    @Test fun explicitTabsKeepControlsInPlaceForShortEmptyAndCachedLongResults() {
+        val fixture = longDiscoveryFixture()
+        compose.setContent { Box(Modifier.width(360.dp).height(500.dp)) { fixture.Render() } }
+        showFindControls()
+        val original = discoveryControlY()
+        compose.onNodeWithText("Following").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        assertTrue("Short results preserve only the necessary trailing range", trailingGapPx() > 0)
+        compose.onNodeWithText("All").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.onNodeWithText("History").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        assertTrue("Empty results also preserve the controls", trailingGapPx() > 0)
+        compose.onNodeWithText("All").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.runOnIdle { assertEquals(30, fixture.state.entries.size) }
+        val list = compose.onNodeWithTag("Stream discovery list")
+        list.performScrollToNode(hasTestTag("Discovery row channel:channel29"))
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 100_000f) }
+        compose.waitForIdle()
+        assertEquals("A long destination must not retain an empty scrollable tail", 0, trailingGapPx())
+        val last = compose.onNodeWithTag("Discovery row channel:channel29").fetchSemanticsNode().boundsInRoot
+        val viewport = list.fetchSemanticsNode().boundsInRoot
+        assertTrue(last.bottom >= viewport.bottom - 2f)
+    }
+
+    @Test fun loadingThenShortOrEmptyResultsDoNotMoveTheSelectedTabsOrSearch() {
+        val fixture = longDiscoveryFixture()
+        fixture.collectionState = { _, state -> state.copy(loading = true, entries = emptyList(), failure = null, nextCursor = null) }
+        compose.setContent { Box(Modifier.width(360.dp).height(500.dp)) { fixture.Render() } }
+        showFindControls()
+        val original = discoveryControlY()
+        compose.onNodeWithText("Following").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.runOnIdle { fixture.state = fixture.state.copy(loading = false, entries = listOf(fixture.offline)) }
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.onNodeWithText("History").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.runOnIdle { fixture.state = fixture.state.copy(loading = false) }
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        // A cached long result wins immediately even when a previous tab was loading.
+        compose.onNodeWithText("All").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(original)
+        compose.runOnIdle { assertEquals(DISCOVERY_ALL_TAB, fixture.state.selectedTabId); assertEquals(30, fixture.state.entries.size) }
+    }
+
+    @Test fun upwardScrollingRetiresTrailingRangeAndReversingCannotRecreateIt() {
+        val fixture = longDiscoveryFixture()
+        compose.setContent { Box(Modifier.width(360.dp).height(500.dp)) { fixture.Render() } }
+        showFindControls()
+        compose.onNodeWithText("Following").performClick()
+        compose.waitForIdle()
+        val original = discoveryControlY()
+        val gap = trailingGapPx()
+        assertTrue(gap > 40)
+        val list = compose.onNodeWithTag("Stream discovery list")
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, -40f) }
+        compose.waitForIdle()
+        val reduced = trailingGapPx()
+        assertEquals((gap - 40).toFloat(), reduced.toFloat(), 1f)
+        val moved = discoveryControlY()
+        original.zip(moved).forEach { (before, after) -> assertEquals(before + 40f, after, 1f) }
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 40f) }
+        compose.waitForIdle()
+        assertEquals(reduced, trailingGapPx())
+        assertDiscoveryControlY(moved)
+        // Returning to a cached root follows this new controls anchor, not its old one.
+        compose.onNodeWithText("All").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(moved)
+        compose.onNodeWithText("Following").performClick()
+        compose.waitForIdle()
+        assertDiscoveryControlY(moved)
+        list.performScrollToIndex(0)
+        compose.waitForIdle()
+        assertEquals(0, trailingGapPx())
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 100_000f) }
+        compose.waitForIdle()
+        assertEquals("Once retired, ordinary scrolling does not rearm the gap", 0, trailingGapPx())
+    }
+
+    @Test fun viewportChangeAndPrivacyResetDiscardTemporaryTrailingRange() {
+        val fixture = longDiscoveryFixture()
+        var height by mutableStateOf(500.dp)
+        compose.setContent { Box(Modifier.width(360.dp).height(height)) { fixture.Render() } }
+        showFindControls()
+        compose.onNodeWithText("Following").performClick()
+        compose.waitForIdle()
+        assertTrue(trailingGapPx() > 0)
+        compose.runOnIdle { height = 400.dp }
+        compose.waitForIdle()
+        assertEquals(0, trailingGapPx())
+        compose.runOnIdle { height = 500.dp }
+        compose.waitForIdle()
+        assertEquals(0, trailingGapPx())
+        showFindControls()
+        compose.onNodeWithText("History").performClick()
+        compose.waitForIdle()
+        assertTrue(trailingGapPx() > 0)
+        compose.runOnIdle { fixture.state = fixture.state.copy(privacyRevision = fixture.state.privacyRevision + 1) }
+        compose.waitForIdle()
+        assertEquals(0, trailingGapPx())
+        compose.onNodeWithText("${fixture.state.instance.name} · Manage streams").assertIsDisplayed()
     }
 
     @Test fun removalEmptyStatesAndErrorsDoNotReplaceConfiguredItemsOrEnableFailedStorageWrites() {
@@ -790,7 +934,7 @@ class StreamManagementScreenTest {
         compose.runOnIdle { fixture.state = fixture.state.copy(loading = true, saving = true) }
         description("Browse Offline channel").assertIsNotEnabled()
         text("More items").assertIsNotEnabled()
-        text("Back to channel list").assertIsEnabled().performClick()
+        description("Back to channel list").assertIsEnabled().performClick()
         compose.runOnIdle {
             assertEquals(listOf("discovery-back"), fixture.calls)
             assertTrue(fixture.state.saving)
@@ -832,7 +976,7 @@ class StreamManagementScreenTest {
         target.performClick()
         text("Videos from Channel 20").assertIsDisplayed()
         description("Add Never-live episode").performClick()
-        text("Back to channel list").performClick()
+        description("Back to channel list").performClick()
         compose.waitForIdle()
         val restored = compose.onNodeWithContentDescription("Browse Channel 20").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
         assertEquals("The same discovery row retains its viewport offset", originalY, restored, 1f)

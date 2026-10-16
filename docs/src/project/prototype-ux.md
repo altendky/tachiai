@@ -1,6 +1,6 @@
 # Product-flow prototype
 
-## Main flow and settings — October 15
+## Main flow and settings — October 16
 
 Normal development and inspection launches open **Choose two streams**. The
 picker's overflow menu retains **Developer tools**, which opens the historical
@@ -16,31 +16,44 @@ while their header scrolls offscreen or stream results reload.
 Explicit account operations also suspend parent automatic renewal and catalog
 loading until provider-return verification finishes.
 
-The provider detail headline is the instance name, with an edit icon and a small
-provider-type label. Name editing opens an autosaving dialog. Connection uses
+The provider detail headline is the instance name, with an edit icon. A small
+provider-type label appears only when the non-empty name does not already contain
+the provider name, ignoring case; blank names display the provider name alone.
+The same rule applies to paired name/type summaries. Name editing opens an
+autosaving dialog. Page back arrows lead the title row, while page and section
+help controls occupy its trailing end. Connection uses
 compact ordered route rows, with drag handles, removal and an Add route menu
 that also opens route import. Its existing heading shows startup progress,
 the effective route or exhaustion in a fixed single-line area. Startup uses an
 actual required provider read before keeping a route for the session; only
 classified transport availability failures can try another configured choice.
 Account transactions stay on their chosen route, and later playback failures
-stop rather than switching automatically. Account actions stay
-visible in wrapping rows, with unavailable actions disabled; their layout does
-not collapse when an account connects. Section help uses info icons.
+stop rather than switching automatically. ABEMA account settings use a compact
+heading and a stable status/action row. The primary action reads Connect by email
+or Open account; Sign in again, Check connection and confirmed Forget account
+live in the overflow menu. Finish connection and Cancel remain inside the active
+connection flow, outside the scrolling settings content. Status changes do not
+insert or remove settings rows. Section help uses info icons.
 
 Search uses a trailing icon inside the field and the keyboard Search action;
 both submit the same provider-wide query and respect loading and storage guards.
 Find streams groups use a horizontally scrolling tab row, with account/access
-indications kept in a reserved icon slot. Switching groups restores the loaded
-root and its scroll position; child Back and global search retain distinct
-contexts. Account-derived results and scroll anchors remain in memory only.
+indications kept in a reserved icon slot. Switching groups retains their loaded
+roots while preserving the controls' current screen position. Shorter results
+may temporarily retain enough trailing space to prevent a jump; scrolling toward
+earlier content progressively retires that space without restoring it on reverse
+scroll. Child Back and global search retain distinct contexts. Account-derived
+results, transition space and scroll anchors remain in memory only.
 
-The compact Add link action shares the Configured streams heading. Its dialog
+Configured streams and Find streams are peer sections, without an outer Streams
+heading. The compact Add link action and section help share the Configured
+streams heading. Its dialog
 resolves a URL or channel to a public resource for review, then explicitly adds
 that resource. Lookup, validation and save failures stay in the dialog; Cancel
 leaves the browse context alone. Raw input is never restored from saved state.
 
-Configured streams use compact rows with drag handles, refresh and removal
+Discovery result rows use a plus icon with a descriptive Add accessibility label
+and preserve already-added feedback. Configured streams use compact rows with drag handles, refresh and removal
 icons. Dragging previews a new order and saves it once on drop; tapping a handle
 also offers move actions for keyboard and accessibility use. Browsable titles
 and subtitles form one target; the existing subtitle names the action, such as

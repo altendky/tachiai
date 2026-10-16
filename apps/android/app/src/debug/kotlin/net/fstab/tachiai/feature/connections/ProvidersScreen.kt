@@ -45,8 +45,10 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
     BackHandler(enabled = editing != null && !busy) { editing = null }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Providers", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-        SettingsHelp("Providers", "Each provider instance has its own name, route and account. Choose streams from an instance for either feed.")
+        SettingsPageHeader("Providers", if (editing == null) onBack else ({ editing = null }),
+            backDescription = if (editing == null) "Back to streams" else "Back to providers",
+            help = "Each provider instance has its own name, route and account. Choose streams from an instance for either feed.",
+            backEnabled = !busy)
         message?.let { Text(it) }
         if (busy) Text("Reading or saving settings…")
         val instance = instances.singleOrNull { it.id == editing }
@@ -54,7 +56,7 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
             if (editing != null) Text("Selected provider instance is unavailable. Choose an existing instance.")
             instances.forEach { entry ->
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("${entry.name} · ${entry.service.title} · ${entry.setup.title}", style = MaterialTheme.typography.titleMedium)
+                Text("${providerDisplayNames(entry).inline} · ${entry.setup.title}", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { onOpenProvider?.invoke(entry.id) ?: run { editing = entry.id } }, enabled = !busy) { Text("Configure ${entry.name}") }
             }
             onCreate?.let { create -> PrototypeService.entries.forEach { service ->
@@ -63,7 +65,6 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
                 }
             } }
             Button(onClick = onRoutes, enabled = !busy) { Text("Routes · import / setup") }
-            TextButton(onClick = onBack, enabled = !busy) { Text("Back to streams") }
         } else key(instance.id) {
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,
                 { name, route -> onSave(instance.id, name, route) }, { editing = null }, { twitchLogin(instance.id) })
@@ -244,7 +245,6 @@ private fun ProviderRouteEditor(instance: ProviderInstance, instances: List<Prov
             onSave(if (validName) name else instance.customName, route)
         }, onRoutes, !busy)
     if (instance.service == PrototypeService.TWITCH) twitchLogin()
-    TextButton(onClick = onBack, enabled = !busy) { Text("Back to providers") }
 }
 
 @Composable
@@ -263,12 +263,13 @@ internal fun ProviderDetailHeading(instance: ProviderInstance, nameDraft: String
     onNameChanged: (String) -> Unit, onBack: () -> Unit, enabled: Boolean = true,
     saving: Boolean = false, error: String? = null) {
     var editing by rememberSaveable(instance.id) { mutableStateOf(false) }
+    val names = providerDisplayNames(instance)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) { Icon(painterResource(R.drawable.settings_back), "Back to providers") }
+        IconButton(onClick = onBack) { Icon(painterResource(R.drawable.navigation_back), "Back to providers") }
         Column(Modifier.weight(1f)) {
-            Text(instance.name, style = MaterialTheme.typography.headlineSmall)
-            Text(instance.service.title, style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(names.primary, style = MaterialTheme.typography.headlineSmall)
+            names.provider?.let { Text(it, style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         IconButton(onClick = { editing = true }, enabled = enabled) {
             Icon(painterResource(R.drawable.settings_edit), "Edit provider name")

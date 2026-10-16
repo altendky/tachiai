@@ -49,13 +49,13 @@ class AbemaNativeRequestActivity : ComponentActivity() {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
+        host.addView(net.fstab.tachiai.feature.presentation.nativePageHeading(this, "ABEMA native request", "Back to access cases", ::finish))
         host.addView(TextView(this).apply { setText(R.string.abema_request_warning) })
         status = TextView(this).apply { setText(R.string.abema_request_ready) }
         host.addView(status)
         start = Button(this).apply { setText(R.string.abema_request_start); setOnClickListener { begin() } }
         host.addView(start)
         host.addView(Button(this).apply { setText(R.string.abema_request_stop); setOnClickListener { stop() } })
-        host.addView(Button(this).apply { setText(R.string.abema_inspection_close); setOnClickListener { finish() } })
         setContentView(host)
     }
 

@@ -173,7 +173,7 @@ class ConfiguredMetadataRefreshScreenTest {
         )
         for ((access, explanation) in explanations) {
             compose.runOnIdle { fixture.state = fixture.state.copy(capabilities = access?.let { CatalogCapabilities(refresh = it) }) }
-            node(hasContentDescription("Info about Streams")).performClick()
+            node(hasContentDescription("Info about Configured streams")).performClick()
             compose.onNodeWithText(explanation, substring = true).assertExists()
             compose.onAllNodesWithText(explanation, substring = true).assertCountEquals(1)
             compose.onNodeWithText("Close").performClick()

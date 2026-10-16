@@ -189,7 +189,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var viewer: NativePairViewer? = null
     private var root: FrameLayout? = null
     private var progress: TextView? = null
-    private var returnButton: Button? = null
+    private var returnButton: android.view.View? = null
     private var playBarrier: PrototypePlayBarrier? = null
     private var playMessage: String? = null
     private var cleanupFailed = false
@@ -489,17 +489,15 @@ open class PrototypeActivity : ComponentActivity() {
             val margin = (16 * resources.displayMetrics.density).toInt()
             view.setPadding(bars.left + margin, bars.top + margin, bars.right + margin, bars.bottom + margin); insets
         }
+        setup.addView(nativePageHeading(this, "Preparing feeds", "Back to sources") { stopToPicker("Playback stopped.") })
         progress = TextView(this).apply { textSize = 18f; setTextColor(getColor(R.color.prototype_text)) }.also { setup.addView(it) }
         setup.addView(TextView(this).apply {
             text = if (useCachedAbema) "Preparing your feeds… ABEMA uses cached provider modules, without opening its player page. No account entry is needed."
                 else "Preparing your feeds… ABEMA may ask you to keep using the web player. No account entry is needed for these fixed sources."
         })
-        setup.addView(Button(this).apply { text = "Back to sources"; stylePrototypeControl(); setOnClickListener { stopToPicker("Playback stopped.") } })
-        returnButton = Button(this).apply {
-            text = "Return to viewer"; isEnabled = false
-            stylePrototypeControl()
-            setOnClickListener { styleSystemBars(true); viewer?.open() }
-        }.also { setup.addView(it) }
+        setup.addView(nativePageHeading(this, "Viewer", "Return to viewer") { styleSystemBars(true); viewer?.open() }.also { heading ->
+            returnButton = heading.getChildAt(0).apply { isEnabled = false }
+        })
         frame.addView(setup, FrameLayout.LayoutParams(-1, -1))
         root = frame
         setContentView(frame)
@@ -839,7 +837,7 @@ open class PrototypeActivity : ComponentActivity() {
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal
-                failures[index]?.let { "Could not load this feed\n\n${it.message}\n\nUse Sources to choose another feed." }
+                failures[index]?.let { "Could not load this feed\n\n${it.message}\n\nUse the back arrow to choose another feed." }
                     ?: if (!prepared[index]) "Preparing this feed…" else null
             }, onSources = { stopToPicker("Playback stopped.") },
             qualityState = { side, kind -> qualitySession?.read(side, kind)?.copy(saving = savingQuality, message = qualityMessage) },
@@ -1206,7 +1204,7 @@ open class PrototypeActivity : ComponentActivity() {
     private fun sourceLabel(index: Int): String {
         val instance = checkNotNull(checkNotNull(selection).feeds[index].resolve(activeInstances))
         val title = configuredSourceDisplayTitle(activeConfiguredSources[index])
-        return "${if (index == 0) "A" else "B"} · ${instance.name} · $title"
+        return "${if (index == 0) "A" else "B"} · ${net.fstab.tachiai.presentation.providerDisplayNames(instance).inline} · $title"
     }
 
     private fun retireStartupScopes() {

@@ -18,7 +18,7 @@ internal fun TwitchCatalogSettings(instanceId: String, onAccountAction: () -> Un
     expectedOwnerProof: String? = null,
     content: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
     TwitchCatalogSettings(rememberTwitchCatalogSettingsOwner(instanceId, expectedOwnerProof), onAccountAction, onAccountChanged, enabled,
-        onExitCheck, content)
+        onExitCheck, content = content)
 }
 
 @Composable
@@ -31,6 +31,7 @@ internal fun rememberTwitchCatalogSettingsOwner(instanceId: String, expectedOwne
 internal fun TwitchCatalogSettings(owner: TwitchCatalogSettingsOwner, onAccountAction: () -> Unit, onAccountChanged: () -> Unit,
     enabled: Boolean = true,
     onExitCheck: ((suspend () -> Boolean)?) -> Unit = {},
+    onBack: (() -> Unit)? = null,
     content: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val actionCallback by rememberUpdatedState(onAccountAction)
@@ -65,7 +66,7 @@ internal fun TwitchCatalogSettings(owner: TwitchCatalogSettingsOwner, onAccountA
             { act { if (current == null) owner.retryLocalForget() else current.forget() } },
             { act { current?.cancel() } }, { if (actionsEnabled) owner.openBrowser(it) },
             onRetryOpen = if (current == null) ({ if (actionsEnabled) owner.loadConnection() }) else null,
-            enabled = enabled)
+            enabled = enabled, onBack = onBack)
     }
 }
 

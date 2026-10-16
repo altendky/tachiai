@@ -21,6 +21,7 @@ import net.fstab.tachiai.provider.abema.account.*
 internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Unit, onAccountChanged: () -> Unit,
     enabled: Boolean = true,
     expectedOwnerProof: String? = null,
+    onBack: (() -> Unit)? = null,
     content: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -46,9 +47,13 @@ internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Uni
     val current = owner.controller
     val state = current?.state?.collectAsState()?.value ?: owner.initial
     LaunchedEffect(state, owner.pendingAction, owner.foreground, owner.browserReturned) {
-        if (owner.pendingAction && owner.foreground && !state.busy && state.progress == AbemaAccountProgress.IDLE &&
+        // Starting an action publishes PREPARING synchronously. Its collector
+        // may still hold the preceding IDLE snapshot during this recomposition.
+        val latest = current?.state?.value ?: owner.initial
+        if (owner.pendingAction && owner.foreground && !latest.busy && latest.progress == AbemaAccountProgress.IDLE &&
             (!owner.browserOpened || owner.browserReturned)) {
             owner.pendingAction = false
+            owner.connectionFlow = false
             changedCallback()
         }
     }
@@ -75,13 +80,23 @@ internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Uni
             true
         } catch (_: Exception) { owner.browserOpened = false; false }
     }
-    content {
-        AbemaAccountConnectionScreen(state,
-            { act { owner.browserOpened = false; it.connectEmail(::openApproval) } },
-            { act { it.finishEmailConnection() } }, { act { it.revalidate() } },
-            { act { owner.browserOpened = false; it.forget() } },
-            { act { owner.browserOpened = false; it.cancelAction() } }, ready = current != null,
-            onSignInAgain = { act { owner.browserOpened = false; it.signInAgain(::openApproval) } }, enabled = enabled)
+    fun connect(fresh: Boolean) {
+        act {
+            owner.connectionFlow = true
+            owner.browserOpened = false
+            if (fresh) it.signInAgain(::openApproval) else it.connectEmail(::openApproval)
+        }
+    }
+    AbemaAccountConnectionHost(state, owner.connectionFlow, owner.foreground,
+        { act { it.finishEmailConnection() } },
+        { act { owner.connectionFlow = false; owner.browserOpened = false; it.cancelAction() } },
+        ready = current != null, enabled = enabled) {
+        content {
+            AbemaAccountConnectionScreen(state,
+                { connect(false) }, { act { it.revalidate() } },
+                { act { owner.connectionFlow = false; owner.browserOpened = false; it.forget() } }, ready = current != null,
+                onSignInAgain = { connect(true) }, enabled = enabled, onBack = onBack)
+        }
     }
 }
 
@@ -97,6 +112,7 @@ private class AbemaAccountSettingsOwner(private val context: Context, private va
     var pendingAction by mutableStateOf(false)
     var browserOpened by mutableStateOf(false)
     var browserReturned by mutableStateOf(false)
+    var connectionFlow by mutableStateOf(false)
     private var revision = 0L
     private var closed = false
 

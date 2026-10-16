@@ -129,10 +129,11 @@ class ManageStreamsActivity : ComponentActivity() {
             } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (header != null) item { header() }
+                else item { SettingsPageHeader(if (providerDetails) "Provider" else "Manage streams", onBack = ::finish,
+                    backDescription = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
                 item {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")
                 if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
-                if (header == null) TextButton(onClick = ::finish) { Text(if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
                 }
             }
             }

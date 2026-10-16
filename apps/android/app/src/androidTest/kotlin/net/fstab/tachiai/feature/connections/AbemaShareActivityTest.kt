@@ -57,8 +57,8 @@ class AbemaShareActivityTest {
                 assertNull(state(activity).entry)
                 assertNull(state(activity).instances)
             }
-            compose.onAllNodes(hasContentDescription("Choose ABEMA instance ABEMA")).assertCountEquals(0)
-            scrollTo(hasText("Cancel")).performClick()
+            compose.onAllNodes(hasContentDescription("Choose provider: ABEMA")).assertCountEquals(0)
+            scrollTo(hasContentDescription("Cancel adding ABEMA item")).performClick()
         }
         assertRecordsUnchanged(before)
     }
@@ -100,7 +100,7 @@ class AbemaShareActivityTest {
                 val expected = checkNotNull(ready.entry)
                 val owner = checkNotNull(ready.instances).single { it.id == defaultProviderInstanceId(PrototypeService.ABEMA) }
                 assertNull(delivered.get()) // A sole/default instance never auto-opens.
-                scrollTo(hasContentDescription("Choose ABEMA instance ${owner.name}")).performClick()
+                scrollTo(hasContentDescription("Choose provider: ${net.fstab.tachiai.presentation.providerDisplayNames(owner).inline}")).performClick()
                 compose.waitUntil(10_000) { delivered.get() != null }
                 val handoffIntent = checkNotNull(delivered.get())
                 assertEquals(ManageStreamsActivity::class.java.name, handoffIntent.component?.className)
@@ -126,7 +126,7 @@ class AbemaShareActivityTest {
                 // Activity-owned display state only, following the existing
                 // recreation fixtures. No saved registry entry is fabricated.
                 scenario.onActivity { activity -> stateHolder(activity).value = ready.copy(instances = listOf(missing)) }
-                scrollTo(hasContentDescription("Choose ABEMA instance ${missing.name}")).performClick()
+                scrollTo(hasContentDescription("Choose provider: ${net.fstab.tachiai.presentation.providerDisplayNames(missing).inline}")).performClick()
                 compose.waitUntil(10_000) {
                     var failed = false
                     scenario.onActivity { failed = state(it).canRetry && !state(it).loading }

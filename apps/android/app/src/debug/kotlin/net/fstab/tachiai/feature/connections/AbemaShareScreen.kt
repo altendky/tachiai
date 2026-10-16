@@ -25,7 +25,7 @@ internal fun AbemaShareScreen(state: AbemaShareState, onChoose: (String) -> Unit
     LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Text("Add a public ABEMA item", style = MaterialTheme.typography.headlineSmall)
+            SettingsPageHeader("Add a public ABEMA item", onCancel, "Cancel adding ABEMA item")
             state.message?.let { Text(it) }
             state.entry?.let { entry ->
                 Text(entry.title, style = MaterialTheme.typography.titleMedium)
@@ -37,8 +37,8 @@ internal fun AbemaShareScreen(state: AbemaShareState, onChoose: (String) -> Unit
             val choices = state.instances.orEmpty().filter { it.service == PrototypeService.ABEMA }
             choices.forEach { instance -> item(key = instance.id) {
                 Button(onClick = { onChoose(instance.id) }, enabled = !state.loading,
-                    modifier = Modifier.semantics { contentDescription = "Choose ABEMA instance ${instance.name}" }) {
-                    Text("Choose ${instance.name}")
+                    modifier = Modifier.semantics { contentDescription = "Choose provider: ${providerDisplayNames(instance).inline}" }) {
+                    Text("Choose ${providerDisplayNames(instance).inline}")
                 }
             } }
             if (state.instances != null && choices.isEmpty()) item {
@@ -48,6 +48,5 @@ internal fun AbemaShareScreen(state: AbemaShareState, onChoose: (String) -> Unit
                 Button(onClick = onRetry, enabled = !state.loading) { Text("Retry") }
             }
         }
-        item { TextButton(onClick = onCancel) { Text("Cancel") } }
     }
 }

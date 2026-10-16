@@ -15,8 +15,26 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
 import org.junit.Test
+import net.fstab.tachiai.platform.network.*
 
 class AbemaAccountHttpTransportTest {
+    @Test fun profileReadPreservesClosedTransportEvidenceAndCleanupFailureOverridesIt() {
+        val evidence = ProviderTransportEvidence(ProviderTransportFailure.CONNECT, ProviderTransportPhase.CONNECT)
+        for (failCleanup in listOf(false, true)) {
+            val connection = Connection(profile).apply {
+                responseHook = { throw ProviderTransportException(evidence) }
+                throwClose = failCleanup
+            }
+            val transport = AbemaAccountHttpTransport({ connection }, { true }, { 1000 }, { 1000000 })
+            val error = assertThrows(AbemaAccountException::class.java) { transport.profile("guest", "guest-bearer") }
+            assertEquals(if (failCleanup) AbemaAccountFailure.CLEANUP_FAILED else AbemaAccountFailure.TEMPORARY, error.category)
+            assertEquals(if (failCleanup) null else evidence, error.transportFailure)
+            assertNull(error.cause); assertEquals(1, connection.disconnected); assertEquals(0, connection.sent.size())
+            assertEquals(!failCleanup, transport.cleanupConfirmed)
+            if (!failCleanup) transport.close()
+        }
+    }
+
     private class HostileError : Error() {
         var messageReads = 0; var stringReads = 0
         override val message: String get() { messageReads++; throw AssertionError("PRIVATE MESSAGE MUST NOT BE READ") }

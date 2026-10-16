@@ -101,6 +101,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
     }
     val captured = readOwner()
     fun maintenanceOwner(): Boolean = captured.presentation.routeUsable &&
+        !ProviderStartupScopeCleanup.isPoisoned(instanceId) &&
         routeAdmission.canContinue() && sharedMaintenance.get()?.canContinue() != false &&
         !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
         !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
@@ -134,6 +135,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         // Main-looper publication admission must never reread the registry,
         // imported profile or encrypted grant. Durable checks remain below.
         override fun canPublishLocally(): Boolean = canUse() && captured.presentation.routeUsable &&
+            !ProviderStartupScopeCleanup.isPoisoned(instanceId) &&
             routeAdmission.canContinue() && maintenance.canContinue() &&
             !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
             !synchronized(lock) { closed || cleanupFailed }
@@ -142,15 +144,27 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
                 current.routeUsable && captured.presentation.sameOwnership(current)
             }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
         override fun owner() = readOwner().presentation
-        override fun session() = synchronized(lock) {
+        override val cleanupConfirmed get() = !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
+            synchronized(lock) { !cleanupFailed && transports.all { (it as? OwnedTwitchCatalogTransport)?.cleanupConfirmed == true } &&
+                sessions.none { it.cleanupUncertain } }
+        private fun newSession(attach: Boolean) = synchronized(lock) {
             check(!closed)
             TwitchCatalogSession(store, transportFactory = ::transport, canCommit = ::currentOwner,
                 maintenance = maintenance.coordinator, canParticipate = ::canPublishLocally).also {
-                    it.attach(); sessions.add(it)
+                    if (attach) it.attach()
+                    sessions.add(it)
                 }
         }
+        override fun session() = newSession(true)
+        override fun startupSession() = newSession(false)
         override fun transport(canRequest: () -> Boolean): TwitchCatalogTransport {
             check(currentOwner())
+            // The accepted account action may outlive the catalog scope it
+            // retired. Wait on this worker before allocating another backend;
+            // a cancelled startup predicate exits its own retirement promptly.
+            if (!awaitTwitchCatalogStartupCleanup(instanceId,
+                    android.os.SystemClock.elapsedRealtime() + 30_000L,
+                    { canRequest() && currentOwner() })) throw DeviceRequestPaused()
             lateinit var owned: OwnedTwitchCatalogTransport
             owned = OwnedTwitchCatalogTransport(captured.profile,
                 canRequest = { canRequest() && currentOwner() },
@@ -179,6 +193,13 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         override fun toString() = "TwitchCatalogConnectionBinding(redacted)"
     }
 }
+
+internal fun awaitTwitchCatalogStartupCleanup(instanceId: String, deadlineElapsedMs: Long,
+    canUse: () -> Boolean,
+    isReady: (String) -> Boolean = ProviderStartupScopeCleanup::isReady,
+    awaitReady: (String, Long, () -> Boolean) -> ProviderStartupCleanupAdmission = ProviderStartupScopeCleanup::awaitReady,
+): Boolean = canUse() && (isReady(instanceId) ||
+    awaitReady(instanceId, deadlineElapsedMs, canUse) == ProviderStartupCleanupAdmission.READY) && canUse()
 
 private fun androidTwitchCatalogGrantStore(context: Context, instanceId: String) =
     TwitchCatalogGrantStore(AndroidPrivateSecretStore.twitchCatalogInstance(context, instanceId),
@@ -228,6 +249,7 @@ internal class OwnedTwitchCatalogTransport(
     private var cancellationDone: CountDownLatch? = null
     private var cleanupUncertain = false
     private var finishing = false
+    val cleanupConfirmed get() = synchronized(lock) { !cleanupUncertain && preparation == null }
     // The shared admission owner retains this transport after uncertainty. Keep
     // the actual route/preparation/HTTP owners alive even after finally clears
     // the active-request fields; a successful sibling close is not their proof.

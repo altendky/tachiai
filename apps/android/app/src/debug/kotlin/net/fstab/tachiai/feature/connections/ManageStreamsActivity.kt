@@ -17,16 +17,16 @@ import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
-import net.fstab.tachiai.platform.network.ConnectionSummary
-import net.fstab.tachiai.platform.network.connectionProfileStore
-import net.fstab.tachiai.platform.network.captureProviderRoutePool
+import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
+import net.fstab.tachiai.provider.abema.prepareAndroidAbemaChannelCatalogStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
+import net.fstab.tachiai.provider.twitch.catalog.prepareAndroidTwitchCatalogStartup
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 import net.fstab.tachiai.provider.twitch.catalog.hasPendingAndroidTwitchCatalogForget
 
@@ -56,6 +56,9 @@ class ManageStreamsActivity : ComponentActivity() {
     private var profiles by mutableStateOf(emptyList<ConnectionSummary>())
     private var catalogRoutes: List<SourceRouteChoice>? = null
     private var detailOwnerProof by mutableStateOf<String?>(null)
+    private var routeStartup: ProviderRouteStartup? = null
+    private var pendingStartupOwner: ProviderEffectiveRoute? = null
+    private var startupStatus by mutableStateOf("Waiting for route")
     private var accountExitCheck: (suspend () -> Boolean)? = null
     private var accountActionPending = false
     private var discardUnsaved = false
@@ -107,7 +110,7 @@ class ManageStreamsActivity : ComponentActivity() {
                             scope.launch { ProviderPreferenceWrites.await(preferenceState.instance.id)
                                 if (resumed && !isDestroyed && !savingWhileLeaving)
                                     startActivity(Intent(this@ManageStreamsActivity, ConnectionProfilesActivity::class.java)) }
-                        }, enabled = !savingWhileLeaving)
+                        }, enabled = !savingWhileLeaving, startupStatus = startupStatus)
                     accountContent?.invoke() ?: Text("Account actions will be available when the connection is saved.")
                 }
             }) else null
@@ -140,10 +143,14 @@ class ManageStreamsActivity : ComponentActivity() {
                 key(preferenceState.instance.id, preferenceState.instance.setup.routes, detailOwnerProof) {
                     when (preferenceState.instance.service) {
                         PrototypeService.ABEMA -> AbemaAccountSettings(preferenceState.instance.id, ::accountActionStarted, ::accountActionFinished,
-                            enabled = !reading && !preferenceState.saving && !savingWhileLeaving,
+                            enabled = !reading && !preferenceState.saving && !savingWhileLeaving &&
+                                (accountActionPending || ProviderStartupScopeCleanup.isReady(preferenceState.instance.id)) &&
+                                routeStartup?.progress?.phase != ProviderStartupPhase.CLEANUP_UNCONFIRMED,
                             expectedOwnerProof = detailOwnerProof) { page(it) }
                         PrototypeService.TWITCH -> TwitchCatalogSettings(preferenceState.instance.id, ::accountActionStarted, ::accountActionFinished,
-                            enabled = !reading && !preferenceState.saving && !savingWhileLeaving,
+                            enabled = !reading && !preferenceState.saving && !savingWhileLeaving &&
+                                (accountActionPending || ProviderStartupScopeCleanup.isReady(preferenceState.instance.id)) &&
+                                routeStartup?.progress?.phase != ProviderStartupPhase.CLEANUP_UNCONFIRMED,
                             onExitCheck = { accountExitCheck = it }, expectedOwnerProof = detailOwnerProof) { page(it) }
                     }
                 }
@@ -168,11 +175,13 @@ class ManageStreamsActivity : ComponentActivity() {
             reading = false; message = "Selected provider instance is unavailable. Return to providers."; return
         }
         val current = ++revision
+        retireRouteStartup()
         readJob?.cancel()
         controller?.close()
         controller = null
         detailOwnerProof = null
         reading = true; message = null
+        startupStatus = "Waiting for route"
         readJob = scope.launch {
             try {
                 StreamManagementWrites.await(id)
@@ -195,6 +204,7 @@ class ManageStreamsActivity : ComponentActivity() {
                                 // Changing route disposes the account owner bound to
                                 // the old route, including its pending action.
                                 accountActionPending = false
+                                pendingStartupOwner = null
                                 accountReadiness.onPause()
                                 if (resumed) accountReadiness.onResume()
                                 invalidateCatalog()
@@ -209,14 +219,46 @@ class ManageStreamsActivity : ComponentActivity() {
                     captureProviderRoutePool(id, instance.service, ::instances, connectionProfileStore(app)::snapshot)
                 }
                 if (!resumed || revision != current) return@launch
-                val ownerProof = routeScope.candidates.firstOrNull()?.proof
-                if (ownerProof == null) {
+                if (routeScope.candidates.isEmpty()) {
                     reading = false
+                    startupStatus = "Choose a route"
                     message = "Choose a route to use this provider."
                     return@launch
                 }
+                val cleanup = withContext(Dispatchers.IO) { ProviderStartupScopeCleanup.awaitReady(id,
+                    android.os.SystemClock.elapsedRealtime() + 45_000L, { resumed && revision == current }) }
+                if (!resumed || revision != current) return@launch
+                if (cleanup != ProviderStartupCleanupAdmission.READY) {
+                    reading = false; message = "The previous connection has not finished closing. Retry shortly."
+                    startupStatus = "Waiting for connection cleanup"
+                    return@launch
+                }
+                val startup = androidProviderRouteStartup(this@ManageStreamsActivity, routeScope) { progress ->
+                    runOnUiThread { if (resumed && revision == current) startupStatus = providerStartupStatus(progress) }
+                }.also { routeStartup = it }
+                val handoffOwner = pendingStartupOwner.also { pendingStartupOwner = null }
+                val prepared = withContext(Dispatchers.IO) {
+                    if (handoffOwner != null) {
+                        check(handoffOwner.poolProof == routeScope.proof)
+                        check(startup.holdForMutation(handoffOwner.proof) is ProviderStartupResult.HeldForMutation)
+                    }
+                    val setups = sourceSetupStore(this@ManageStreamsActivity).read()
+                    if (routeScope.configuredInstance.service == PrototypeService.ABEMA)
+                        prepareAndroidAbemaChannelCatalogStartup(this@ManageStreamsActivity, id, setups, startup,
+                            canUse = { resumed && revision == current })
+                    else prepareAndroidTwitchCatalogStartup(this@ManageStreamsActivity, id, startup,
+                        canUse = { resumed && revision == current })
+                }
+                if (!resumed || revision != current) return@launch
+                val effective = when (prepared) {
+                    is ProviderStartupResult.Ready -> prepared.owner
+                    is ProviderStartupResult.HeldForMutation -> prepared.owner
+                    is ProviderStartupResult.Failed -> routeScope.candidates
+                        .getOrNull(startup.progress.ordinal - 1)?.let { runCatching { routeScope.resolve(it.proof) }.getOrNull() }
+                }
+                val ownerProof = effective?.proof ?: routeScope.candidates.first().proof
                 detailOwnerProof = ownerProof
-                val needsAccountCheck = routeScope.configuredInstance.service == PrototypeService.ABEMA && ownerProof != null
+                val needsAccountCheck = routeScope.configuredInstance.service == PrototypeService.ABEMA && prepared !is ProviderStartupResult.Failed
                 if (needsAccountCheck) {
                     val readiness = suspendCancellableCoroutine { continuation ->
                         accountReadiness.ensure(listOf(AbemaReadinessTarget(id, checkNotNull(ownerProof)))) { result ->
@@ -225,6 +267,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     }
                     if (readiness != AbemaAccountReadinessResult.READY) {
                         renewalHandoff = readiness == AbemaAccountReadinessResult.HANDOFF
+                        if (renewalHandoff) pendingStartupOwner = effective
                         if (resumed && revision == current) {
                             reading = readiness == AbemaAccountReadinessResult.HANDOFF
                             message = abemaAccountReadinessMessage(readiness)
@@ -241,11 +284,12 @@ class ManageStreamsActivity : ComponentActivity() {
                         ProviderId(owner.service.name.lowercase(java.util.Locale.ROOT)))
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
-                    val catalog = if (owner.service == PrototypeService.ABEMA)
+                    val catalog = if (prepared is ProviderStartupResult.Ready) prepared.value
+                        else if (owner.service == PrototypeService.ABEMA)
                         androidAbemaChannelCatalog(this@ManageStreamsActivity, owner.id, setups,
-                            canUse = { resumed && revision == current }, expectedOwnerProof = ownerProof)
+                            canUse = { resumed && revision == current && prepared !is ProviderStartupResult.Failed }, expectedOwnerProof = ownerProof)
                         else androidTwitchProviderCatalog(this@ManageStreamsActivity, owner.id,
-                            canUse = { resumed && revision == current }, expectedOwnerProof = ownerProof)
+                            canUse = { resumed && revision == current && prepared !is ProviderStartupResult.Failed }, expectedOwnerProof = ownerProof)
                     Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
                         legacyConfiguredSources(owner, setups, qualities)
                 }
@@ -292,6 +336,7 @@ class ManageStreamsActivity : ComponentActivity() {
         // An explicit browser return owns account verification. Do not start
         // automatic renewal from onResume while that verification is pending.
         accountActionPending = true
+        pendingStartupOwner = routeStartup?.selectedRoute
         accountReadiness.onPause()
         invalidateCatalog()
     }
@@ -301,6 +346,7 @@ class ManageStreamsActivity : ComponentActivity() {
         readOwner()
     }
     private fun invalidateCatalog() {
+        retireRouteStartup()
         revision++; readJob?.cancel(); controller?.close(); controller = null
         if (!accountActionPending) detailOwnerProof = null
         reading = false; message = "Updating provider access…"
@@ -313,6 +359,7 @@ class ManageStreamsActivity : ComponentActivity() {
         if (!renewalHandoff) { pendingPreview?.discard(); pendingPreview = null }
         revision++; readJob?.cancel()
         controller?.close()
+        retireRouteStartup()
         super.onPause()
     }
     override fun finish() {
@@ -347,5 +394,10 @@ class ManageStreamsActivity : ComponentActivity() {
         sharedOwnerProvider?.let { outState.putString(SHARED_OWNER_PROVIDER, it.value) }
         super.onSaveInstanceState(outState)
     }
-    override fun onDestroy() { revision++; accountReadiness.close(); preferences?.close(); controller?.close(); scope.cancel(); super.onDestroy() }
+    private fun retireRouteStartup() {
+        val previous = routeStartup ?: return
+        routeStartup = null
+        selectedInstanceId?.let { ProviderStartupScopeCleanup.retire(it, previous) } ?: previous.cancel()
+    }
+    override fun onDestroy() { revision++; retireRouteStartup(); accountReadiness.close(); preferences?.close(); controller?.close(); scope.cancel(); super.onDestroy() }
 }

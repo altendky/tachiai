@@ -22,9 +22,11 @@ internal class TwitchCatalogConnectionOwner(val instanceId: String, val name: St
 internal interface TwitchCatalogConnectionBinding : AutoCloseable {
     fun owner(): TwitchCatalogConnectionOwner
     fun session(): TwitchCatalogSession
+    fun startupSession(): TwitchCatalogSession = session()
     fun transport(canRequest: () -> Boolean): TwitchCatalogTransport
     // UI admission only. Implementations must not read stores or open routes.
     fun canPublishLocally(): Boolean = true
+    val cleanupConfirmed: Boolean get() = true
 }
 
 internal enum class TwitchCatalogConnectionOperation { READ, CONNECT, VALIDATE, FORGET }

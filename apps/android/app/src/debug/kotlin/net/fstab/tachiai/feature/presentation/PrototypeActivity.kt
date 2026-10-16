@@ -67,10 +67,17 @@ import net.fstab.tachiai.platform.network.AbemaWebViewRoute
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.RouteSessionRegistry
 import net.fstab.tachiai.platform.network.RoutePreparation
-import net.fstab.tachiai.platform.network.captureProviderInstanceRoutes
 import net.fstab.tachiai.platform.network.revalidateProviderInstanceRoutes
 import net.fstab.tachiai.platform.network.ProviderInstanceRoutePlan
 import net.fstab.tachiai.platform.network.ProviderEffectiveRoute
+import net.fstab.tachiai.platform.network.ProviderRouteStartup
+import net.fstab.tachiai.platform.network.ProviderStartupResult
+import net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission
+import net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup
+import net.fstab.tachiai.platform.network.androidProviderRouteStartup
+import net.fstab.tachiai.platform.network.captureProviderInstanceRoutePools
+import net.fstab.tachiai.platform.network.effectiveRoutePlan
+import net.fstab.tachiai.platform.network.providerStartupStatus
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePlaybackAudioGroup
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
@@ -89,6 +96,7 @@ import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.androidAbemaEpisodePlaybackOwnership
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
+import net.fstab.tachiai.provider.abema.prepareAndroidAbemaViewerStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
@@ -97,6 +105,9 @@ import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchLiveIdentityResolver
 import net.fstab.tachiai.provider.twitch.catalog.TwitchBroadcasterRetryGate
+import net.fstab.tachiai.provider.twitch.catalog.prepareAndroidTwitchCatalogStartup
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogReadOnlyValidation
+import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogStartupReceipt
 import net.fstab.tachiai.provider.twitch.CatalogTwitchPreparation
 import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
@@ -144,7 +155,10 @@ open class PrototypeActivity : ComponentActivity() {
     private var selection: ConfiguredPlaybackSelection? = null
     private val accountReadiness by lazy { AbemaAccountReadiness(this) }
     private var checkingAccount = false
-    private var accountCheckRevision = 0L
+    @Volatile private var accountCheckRevision = 0L
+    private val startupLock = Any()
+    private var startupScopes = emptyMap<String, ProviderRouteStartup>()
+    private var startupTwitchValidation = emptyMap<String, TwitchCatalogReadOnlyValidation>()
     private var pendingAccountSelection: ConfiguredFeedAssignments? = null
     private var pendingAccountPlan: ProviderInstanceRoutePlan? = null
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
@@ -332,17 +346,51 @@ open class PrototypeActivity : ComponentActivity() {
         }
         val selected = (resolved as ConfiguredPrototypeSelectionResult.Ready).selection
         val check = ++accountCheckRevision
+        retireStartupScopes()
         checkingAccount = true
         showPicker("Checking provider connections…")
         worker.execute {
             fun instances() = providerInstanceStore(this).read { legacyProviderSettings(this) }
-            val plan = if (capturedPlan == null) captureProviderInstanceRoutes(selected, ::instances,
-                connectionProfileStore(this)::snapshot) else revalidateProviderInstanceRoutes(selected, capturedPlan,
-                ::instances, connectionProfileStore(this)::snapshot)
+            val pools = captureProviderInstanceRoutePools(selected, ::instances, connectionProfileStore(this)::snapshot)
+            val validatedTwitch = mutableMapOf<String, TwitchCatalogReadOnlyValidation>()
+            fun active() = check == accountCheckRevision && resumed.get() && !isFinishing && !isDestroyed
+            val effective = pools.mapValues { (id, captured) -> runCatching {
+                val pool = captured.getOrThrow()
+                check(ProviderStartupScopeCleanup.awaitReady(id, SystemClock.elapsedRealtime() + 45_000L, ::active) ==
+                    ProviderStartupCleanupAdmission.READY)
+                val startup = androidProviderRouteStartup(this, pool) { status -> handler.post {
+                    if (active()) showPicker(providerStartupStatus(status))
+                } }
+                val registered = synchronized(startupLock) {
+                    if (!active()) false else { startupScopes = startupScopes + (id to startup); true }
+                }
+                if (!registered) { ProviderStartupScopeCleanup.retire(id, startup); error("Startup stopped") }
+                if (capturedPlan != null) {
+                    val previous = checkNotNull(capturedPlan.effective[id]).getOrThrow()
+                    check(previous.poolProof == pool.proof)
+                    check(startup.holdForMutation(previous.proof) is ProviderStartupResult.HeldForMutation)
+                }
+                val result = if (pool.configuredInstance.service == PrototypeService.ABEMA) {
+                    if (useCachedAbema) prepareAndroidAbemaViewerStartup(this, startup, ::active)
+                    else startup.holdFirstForMutation()
+                } else prepareAndroidTwitchCatalogStartup(this, id, startup, ::active)
+                when (result) {
+                    is ProviderStartupResult.Ready -> {
+                        if (pool.configuredInstance.service == PrototypeService.TWITCH)
+                            validatedTwitch[id] = checkNotNull((result.value as? TwitchCatalogStartupReceipt)?.startupValidation)
+                        result.owner
+                    }
+                    is ProviderStartupResult.HeldForMutation -> result.owner
+                    is ProviderStartupResult.Failed -> error("Provider startup stopped: ${result.failure.reason.name}")
+                }
+            } }
+            val plan = effectiveRoutePlan(selected, effective)
             handler.post {
                 if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@post
+                startupTwitchValidation = validatedTwitch.toMap()
                 if (!plan.abemaCompatible) {
                     checkingAccount = false
+                    retireStartupScopes()
                     showPicker("Selected ABEMA instances need available, identical routes. Their WebView proxy is shared.")
                     return@post
                 }
@@ -350,11 +398,9 @@ open class PrototypeActivity : ComponentActivity() {
                 val targets = abema.mapNotNull { id -> plan.effective[id]?.getOrNull()?.let {
                     net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(id, it.proof)
                 } }
-                if (targets.size != abema.size) {
-                    checkingAccount = false
-                    showPicker("The selected ABEMA connection is unavailable. Check its route in Providers.")
-                    return@post
-                }
+                // Failed owners remain in the plan for per-feed failure. Only
+                // successfully captured ABEMA owners can enter readiness; a
+                // failed ABEMA startup must not discard a healthy Twitch feed.
                 if (targets.isEmpty()) {
                     checkingAccount = false
                     watchReady(assignments, plan)
@@ -376,6 +422,7 @@ open class PrototypeActivity : ComponentActivity() {
                         else -> {
                             pendingAccountSelection = null
                             pendingAccountPlan = null
+                            retireStartupScopes()
                             showPicker(abemaAccountReadinessMessage(result))
                         }
                     }
@@ -385,6 +432,11 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun watchReady(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan) {
+        try { openPreparedViewer(assignments, routePlan) }
+        finally { if (budget == null) retireStartupScopes() }
+    }
+
+    private fun openPreparedViewer(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan) {
         pickerAssignments = assignments
         updateRecoveryState()
         if (recoveryState.incident != null) {
@@ -411,7 +463,7 @@ open class PrototypeActivity : ComponentActivity() {
         activeConfiguredSources = resolved.sources
         activeSetups = sourceSetups.toMap()
         activeInstances = providerInstances.toList()
-        dispose()
+        dispose(retainStartups = true)
         if (cleanupFailed) {
             updateRecoveryState()
             diagnostics.blocked(FailureStage.VIEWER_BLOCKED)
@@ -467,6 +519,7 @@ open class PrototypeActivity : ComponentActivity() {
         recoveryState.notifyChanged()
         worker.execute {
             try {
+            val scopes = synchronized(startupLock) { startupScopes.toMap() }
             val plan = revalidateProviderInstanceRoutes(selected, capturedPlan,
                 { providerInstanceStore(this).read { legacyProviderSettings(this) } }, connectionProfileStore(this)::snapshot)
             if (!plan.abemaCompatible) {
@@ -494,6 +547,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
             val results = selected.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to
                 runCatching {
+                    check(scopes[feed.instanceId]?.canContinue() == true)
                     val profile = checkNotNull(plan.profiles[feed.instanceId]).getOrThrow()
                     if (feed.service == PrototypeService.ABEMA && !useCachedAbema && profile != null)
                         error("Historical page comparison has no imported route support")
@@ -503,12 +557,15 @@ open class PrototypeActivity : ComponentActivity() {
             handler.post {
                 ownedRun?.let { cachedCleanup.prepared(it, preparation.cleanupConfirmed) }
                 val created = results.mapNotNull { it.value.getOrNull() }.distinct()
+                val startupStopped = plan.effective.any { (id, owner) -> owner.isSuccess && scopes[id]?.canContinue() != true }
                 if (!sharedBudget.active || epoch.get() != run || isDestroyed || isFinishing || !preparation.cleanupConfirmed ||
-                    (ownedRun != null && !cachedCleanup.current(ownedRun))) {
+                    startupStopped || (ownedRun != null && !cachedCleanup.current(ownedRun))) {
                     if (ownedRun != null) {
                         cachedCleanup.end(ownedRun)
                         routesPending = false
                         recoveryState.notifyChanged()
+                        if (startupStopped && sharedBudget.active && epoch.get() == run && !isDestroyed && !isFinishing)
+                            stopToPicker("The provider connection stopped. Check its routes and retry.")
                         return@post
                     }
                     closeRoutesAsync(created) { accepted ->
@@ -518,6 +575,8 @@ open class PrototypeActivity : ComponentActivity() {
                             if (sharedBudget.active && epoch.get() == run && !isDestroyed && !isFinishing)
                                 stopToPicker("Route cleanup could not be confirmed. Use Recovery options to restart.")
                         }
+                        else if (startupStopped && sharedBudget.active && epoch.get() == run && !isDestroyed && !isFinishing)
+                            stopToPicker("The provider connection stopped. Check its routes and retry.")
                         updateRecoveryState(); recoveryState.notifyChanged()
                     }
                     return@post
@@ -598,7 +657,8 @@ open class PrototypeActivity : ComponentActivity() {
                         else updateProgress()
                     }
                 }
-                val feedActive = { active() && failures[index] == null }
+                val startupScope = checkNotNull(synchronized(startupLock) { startupScopes[source.instanceId] })
+                val feedActive = { active() && failures[index] == null && startupScope.canContinue() }
                 val abemaOwnership = if (source.service == PrototypeService.ABEMA && useCachedAbema)
                     checkNotNull(routeOwners[source.instanceId]).let { owner ->
                         androidAbemaEpisodePlaybackOwnership(this, owner.effectiveInstance, owner.profile,
@@ -623,9 +683,10 @@ open class PrototypeActivity : ComponentActivity() {
                         val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
                         val routeChoice = checkNotNull(routeChoices[instanceId])
                         val ownerProof = checkNotNull(routeOwners[instanceId]).proof
+                        val startupValidation = startupTwitchValidation[instanceId]
                         val preparation = {
                             CatalogTwitchPreparation(this, instanceId, profile, routeChoice, feedActive,
-                                openConnection = route::open, expectedOwnerProof = ownerProof)
+                                openConnection = route::open, expectedOwnerProof = ownerProof, startupValidation = startupValidation)
                         }
                         if (supportedConfiguredTwitchBroadcaster(source.resource)) {
                             configuredTwitchBroadcasterSession(this, source.resource, feedActive, events,
@@ -962,7 +1023,8 @@ open class PrototypeActivity : ComponentActivity() {
         } else resumeMessage = result
     }
 
-    private fun dispose() {
+    private fun dispose(retainStartups: Boolean = false) {
+        if (!retainStartups) retireStartupScopes()
         disposing = true
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
@@ -1124,6 +1186,7 @@ open class PrototypeActivity : ComponentActivity() {
         dismissRecoveryDialog()
         setupRevision++
         resumed.set(false)
+        retireStartupScopes()
         if (budget != null) { dispose(); resumeMessage = "Playback stopped while the app was in the background." }
         super.onPause()
     }
@@ -1144,6 +1207,12 @@ open class PrototypeActivity : ComponentActivity() {
         val instance = checkNotNull(checkNotNull(selection).feeds[index].resolve(activeInstances))
         val title = configuredSourceDisplayTitle(activeConfiguredSources[index])
         return "${if (index == 0) "A" else "B"} · ${instance.name} · $title"
+    }
+
+    private fun retireStartupScopes() {
+        val previous = synchronized(startupLock) { startupScopes.also { startupScopes = emptyMap() } }
+        previous.forEach { (id, startup) -> ProviderStartupScopeCleanup.retire(id, startup) }
+        startupTwitchValidation = emptyMap()
     }
 
     private data class PickerSetup(val streams: Map<PrototypeSource, SourceSetup>, val instances: List<ProviderInstance>,

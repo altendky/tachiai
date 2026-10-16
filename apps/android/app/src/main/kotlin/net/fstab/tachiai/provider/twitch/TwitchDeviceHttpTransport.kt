@@ -13,6 +13,7 @@ import javax.net.ssl.SSLException
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONException
+import net.fstab.tachiai.platform.network.*
 
 internal const val DEVICE_RESPONSE_LIMIT = 16 * 1024
 internal enum class DeviceAuthEndpoint { DEVICE, TOKEN, VALIDATE }
@@ -34,7 +35,14 @@ internal fun deviceNetworkFailure(error: IOException): DeviceNetworkFailure = wh
     is SSLException -> DeviceNetworkFailure.TLS
     is SocketException -> DeviceNetworkFailure.CONNECTION
     is InterruptedIOException -> DeviceNetworkFailure.INTERRUPTED
-    else -> DeviceNetworkFailure.IO
+    else -> when ((error as? ProviderTransportFailureCarrier)?.transportFailure?.failure) {
+        ProviderTransportFailure.DNS -> DeviceNetworkFailure.DNS
+        ProviderTransportFailure.CONNECT -> DeviceNetworkFailure.CONNECTION
+        ProviderTransportFailure.TIMEOUT -> DeviceNetworkFailure.TIMEOUT
+        ProviderTransportFailure.TLS -> DeviceNetworkFailure.TLS
+        ProviderTransportFailure.CANCELLED -> DeviceNetworkFailure.INTERRUPTED
+        else -> DeviceNetworkFailure.IO
+    }
 }
 
 internal fun deviceForm(fields: Map<String, String>): ByteArray = fields.entries.joinToString("&") {

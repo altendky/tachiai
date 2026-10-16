@@ -17,9 +17,14 @@ Explicit account operations also suspend parent automatic renewal and catalog
 loading until provider-return verification finishes.
 
 The provider detail headline is the instance name, with an edit icon and a small
-provider-type label. Name editing opens an autosaving dialog. Connection uses a
+provider-type label. Name editing opens an autosaving dialog. Connection uses
 compact ordered route rows, with drag handles, removal and an Add route menu
-that also opens route import. Account actions stay
+that also opens route import. Its existing heading shows startup progress,
+the effective route or exhaustion in a fixed single-line area. Startup uses an
+actual required provider read before keeping a route for the session; only
+classified transport availability failures can try another configured choice.
+Account transactions stay on their chosen route, and later playback failures
+stop rather than switching automatically. Account actions stay
 visible in wrapping rows, with unavailable actions disabled; their layout does
 not collapse when an account connects. Section help uses info icons.
 

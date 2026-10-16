@@ -218,4 +218,21 @@ class ProviderDetailScreenTest {
         compose.onNodeWithText("Setup / import routes").performClick()
         compose.runOnIdle { assertEquals(0, writes) }
     }
+
+    @Test fun routeStartupFeedbackUsesTheHeadingWithoutMovingConfiguredStreams() {
+        var status by mutableStateOf("Trying 1 of 2 · Japan route")
+        compose.setContent { TachiaiPrototypeTheme {
+            Column {
+                ProviderRoutePoolSettings(instance, listOf(profile), listOf(savedRoute, SourceRouteChoice.system),
+                    {}, {}, startupStatus = status)
+                androidx.compose.material3.Text("Configured streams")
+            }
+        } }
+        val original = compose.onNodeWithText("Configured streams").fetchSemanticsNode().boundsInRoot
+        for (next in listOf("Using System network", "All configured routes failed", "Connection stopped")) {
+            compose.runOnIdle { status = next }
+            compose.onNodeWithText(next).assertExists()
+            assertEquals(original, compose.onNodeWithText("Configured streams").fetchSemanticsNode().boundsInRoot)
+        }
+    }
 }

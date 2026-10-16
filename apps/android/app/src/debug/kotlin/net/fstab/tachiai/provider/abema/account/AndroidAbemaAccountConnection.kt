@@ -98,12 +98,12 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
         override val routeCurrent get() = routeAdmission.canContinue()
         override fun owner(): AbemaCatalogRouteOwner {
             var captured: AbemaCatalogRouteOwner? = null
-            if (!routeAdmission.check({ !poisoned.get() }) { expected ->
+            if (!routeAdmission.check({ !poisoned.get() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) }) { expected ->
                 readOwner(expected).also { captured = it }.proof()
             }) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             return checkNotNull(captured)
         }
-        override fun sameOwner(owner: AbemaCatalogRouteOwner) = routeAdmission.check({ !poisoned.get() }) { expected ->
+        override fun sameOwner(owner: AbemaCatalogRouteOwner) = routeAdmission.check({ !poisoned.get() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) }) { expected ->
             readOwner(expected).takeIf(owner::sameOwnership)?.proof()
         }
         override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean) =

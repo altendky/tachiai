@@ -19,14 +19,19 @@ import net.fstab.tachiai.provider.catalog.ProviderCatalog
 // Constructed on a worker. Unreadable routes keep configured items available for
 // local management while preventing every provider request; they never pick System.
 internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
-    canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): ProviderCatalog {
+    canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null,
+    preparedOwner: TwitchCatalogRouteOwner? = null,
+    preparedBinding: TwitchCatalogConnectionBinding? = null,
+    preparedSession: TwitchCatalogSession? = null): ProviderCatalog {
     val application = context.applicationContext
     val diagnostics = FailureDiagnostics.create(application)
-    val route = runCatching { captureTwitchCatalogRouteOwner(instanceId,
+    require((preparedOwner == null) == (preparedBinding == null) && (preparedOwner == null) == (preparedSession == null))
+    val route = preparedOwner ?: runCatching { captureTwitchCatalogRouteOwner(instanceId,
         { providerInstanceStore(application).read { legacyProviderSettings(application) } },
         connectionProfileStore(application)::snapshot, expectedOwnerProof) }
         .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrNull()
-    val binding = androidTwitchCatalogConnectionBinding(application, instanceId, canUse, route?.proof ?: expectedOwnerProof)
+    check(preparedOwner == null || preparedOwner.instance.id == instanceId && preparedOwner.proof == expectedOwnerProof)
+    val binding = preparedBinding ?: androidTwitchCatalogConnectionBinding(application, instanceId, canUse, route?.proof ?: expectedOwnerProof)
     try {
         val captured = binding.owner()
         val lock = Any()
@@ -44,7 +49,7 @@ internal fun androidTwitchProviderCatalog(context: Context, instanceId: String,
             runCatching { providerInstanceStore(application).read { legacyProviderSettings(application) }
                 .any { it.id == instanceId && it.service == PrototypeService.TWITCH } }
                 .onFailure { diagnostics.report(FailureStage.CATALOG_LOAD, it) }.getOrDefault(false)
-        val session = binding.session()
+        val session = preparedSession ?: binding.session()
         val helix = TwitchProviderCatalog(instanceId, session,
             transportFactory = { gate -> OwnedTwitchHelixTransport(route?.profile,
                 canRequest = { gate() && current() },

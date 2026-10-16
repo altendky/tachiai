@@ -60,7 +60,11 @@ class AbemaAutomaticRenewalActivity : ComponentActivity() {
             { delay, action -> main.postDelayed(action, delay) }, SystemClock::elapsedRealtime,
             System::currentTimeMillis, true, FailureDiagnostics.create(applicationContext),
             AndroidAbemaEmailGrantHandoff.inbox,
-            { owner -> AndroidAbemaAccountAccessOwners.attach(applicationContext, owner.instance.id, owner.proof()) })
+            { owner -> AndroidAbemaAccountAccessOwners.attach(applicationContext, owner.instance.id, owner.proof()) },
+            beforeEmailApproval = { id, deadline, gate ->
+                net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate) ==
+                    net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission.READY
+            })
         controller?.renewEmail(captured.expected, ::openApproval, { result ->
             if (result == AbemaAutomaticRenewalResult.SUCCESS)
                 AndroidAbemaAccountAccessOwners.invalidate(captured.owner.instance.id, captured.owner.proof())

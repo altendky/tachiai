@@ -6,6 +6,7 @@ import java.io.InterruptedIOException
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.provider.twitch.*
+import net.fstab.tachiai.platform.network.*
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -24,7 +25,9 @@ internal data class TwitchCatalogHttpFailure(
     val endpoint: TwitchCatalogAuthEndpoint, val stage: DeviceRequestStage,
     val category: DeviceNetworkFailure, val elapsedMs: Long,
 )
-internal class TwitchCatalogNetworkException(val category: DeviceNetworkFailure) : IOException(category.name)
+internal class TwitchCatalogNetworkException(val category: DeviceNetworkFailure,
+    override val transportFailure: ProviderTransportEvidence? = null) :
+    IOException(category.name), ProviderTransportFailureCarrier
 private class CatalogResponseBudgetExceeded : InterruptedIOException()
 
 // Fixed first-party endpoints, one request at a time and no browser cookie jar,
@@ -152,7 +155,7 @@ internal class TwitchCatalogAuthTransport(
             if (!synchronized(lock) { closed }) onFailure(TwitchCatalogHttpFailure(endpoint, stage, category,
                 (clockMs() - started).coerceIn(0, 120_000)))
             if (paused || error is DeviceRequestPaused) throw DeviceRequestPaused()
-            throw TwitchCatalogNetworkException(category)
+            throw TwitchCatalogNetworkException(category, providerTransportEvidence(error))
         } finally {
             synchronized(lock) {
                 if (active === connection) active = null

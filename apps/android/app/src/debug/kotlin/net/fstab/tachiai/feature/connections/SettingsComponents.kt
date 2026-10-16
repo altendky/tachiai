@@ -22,14 +22,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import net.fstab.tachiai.R
 
 @Composable
-internal fun SettingsSection(title: String, help: String? = null) {
+internal fun SettingsSection(title: String, help: String? = null, status: String? = null) {
     Column {
         HorizontalDivider()
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+            if (status != null) Text(status, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (help != null) SettingsHelp(title, help)
         }
     }

@@ -15,10 +15,25 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLHandshakeException
 import net.fstab.tachiai.provider.twitch.*
+import net.fstab.tachiai.platform.network.*
 import org.junit.Assert.*
 import org.junit.Test
 
 class TwitchCatalogAuthTransportTest {
+    @Test fun readOnlyValidationPreservesTypedAvailabilityButNotGenericIoOrTlsAsRetryable() {
+        for (source in listOf(
+            ProviderTransportException(ProviderTransportEvidence(ProviderTransportFailure.CONNECT, ProviderTransportPhase.CONNECT)),
+            IOException("PRIVATE"), SSLHandshakeException("PRIVATE"))) {
+            val connection = Connection(URL("https://id.twitch.tv/oauth2/validate"), onStatus = { throw source })
+            val transport = TwitchCatalogAuthTransport(open = { connection })
+            val error = assertThrows(TwitchCatalogNetworkException::class.java) { transport.validate("fixture-access") }
+            assertEquals(providerTransportEvidence(source), error.transportFailure)
+            assertEquals(source is ProviderTransportException, checkNotNull(error.transportFailure).retryableAvailability)
+            assertNull(error.cause); assertTrue(connection.disconnected)
+            assertEquals("GET", connection.requestMethod); assertEquals(0, connection.written.size())
+        }
+    }
+
     private class Connection(url: URL, val status: Int = 200, val body: ByteArray = "{}".toByteArray(),
         val length: Long = -1, val onStatus: () -> Unit = {}, val onDisconnect: () -> Unit = {}) : HttpsURLConnection(url) {
         val written = ByteArrayOutputStream()

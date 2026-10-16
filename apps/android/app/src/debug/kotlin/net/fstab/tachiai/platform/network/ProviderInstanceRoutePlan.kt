@@ -5,6 +5,16 @@ import net.fstab.tachiai.presentation.*
 internal class ProviderInstanceRoutePlan(val profiles: Map<String, Result<ConnectionProfile?>>, val abemaCompatible: Boolean,
     val effective: Map<String, Result<ProviderEffectiveRoute>> = emptyMap())
 
+internal fun captureProviderInstanceRoutePools(selection: ConfiguredPlaybackSelection,
+    readInstances: () -> List<ProviderInstance>,
+    readProfiles: (Set<String>) -> Map<String, ConnectionProfile>): Map<String, Result<ProviderRoutePoolSnapshot>> =
+    selection.feeds.distinctBy { it.instanceId }.associate { feed -> feed.instanceId to runCatching {
+        captureProviderRoutePool(feed.instanceId, feed.service, readInstances, readProfiles).also { pool ->
+            check(selection.feeds.filter { it.instanceId == feed.instanceId }
+                .all { it.resolve(listOf(pool.configuredInstance)) != null })
+        }
+    } }
+
 // A viewer captures one pool per distinct provider instance before account
 // readiness. Duplicate feeds share that choice; no backend is created here.
 internal fun captureProviderInstanceRoutes(selection: ConfiguredPlaybackSelection,
@@ -35,7 +45,7 @@ internal fun revalidateProviderInstanceRoutes(selection: ConfiguredPlaybackSelec
     } })
 }
 
-private fun effectiveRoutePlan(selection: ConfiguredPlaybackSelection,
+internal fun effectiveRoutePlan(selection: ConfiguredPlaybackSelection,
     effective: Map<String, Result<ProviderEffectiveRoute>>): ProviderInstanceRoutePlan {
     val profiles = effective.mapValues { (_, owner) -> owner.map { it.profile } }
     val abema = selection.feeds.filter { it.service == PrototypeService.ABEMA }.map { it.instanceId }.distinct()

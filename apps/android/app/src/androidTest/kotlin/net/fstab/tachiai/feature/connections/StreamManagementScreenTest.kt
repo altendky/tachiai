@@ -413,8 +413,11 @@ class StreamManagementScreenTest {
     }
 
     private fun longDiscoveryFixture(): Fixture {
-        val fixture = configuredFixture(6)
-        fixture.state = fixture.state.copy(nextCursor = null, entries = (0 until 30).map { fixture.offline.copy(
+        val fixture = Fixture(PrototypeService.TWITCH)
+        fixture.state = fixture.state.copy(configured = List(6) { index ->
+            ConfiguredSource(UUID.randomUUID().toString(), fixture.state.instance.id,
+                fixture.offline.copy(resource = fixture.offline.resource.copy(identity = "saved$index"), title = "Saved $index"))
+        }, nextCursor = null, entries = (0 until 30).map { fixture.offline.copy(
             resource = fixture.offline.resource.copy(identity = "channel$it"), title = "Channel $it") })
         return fixture
     }

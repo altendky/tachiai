@@ -1,5 +1,6 @@
 package net.fstab.tachiai.feature.connections
 
+import android.view.KeyEvent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.provider.abema.account.*
 import org.junit.Assert.*
@@ -25,6 +27,14 @@ import org.junit.Test
 class AbemaAccountConnectionScreenTest {
     @get:Rule val compose = createComposeRule()
     private fun menu() = compose.onNodeWithContentDescription("ABEMA account actions").performClick()
+    private fun dismissMenuWithEscape() {
+        compose.onNode(isPopup()).assertExists()
+        // Android's popup window handles Escape outside the Compose owner.
+        // Send through the focused window instead of bypassing it at the node.
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ESCAPE)
+        compose.waitForIdle()
+        compose.onNode(isPopup()).assertDoesNotExist()
+    }
 
     @Test fun compactPrimaryUsesProviderFlowWithoutLocalCredentialFieldsOrPermanentActionBank() {
         var connects = 0
@@ -78,19 +88,23 @@ class AbemaAccountConnectionScreenTest {
     }
 
     @Test fun keyboardCanActivateAndDismissOverflowWithoutRunningAnAction() {
-        var checks = 0
+        var callbacks = 0
         lateinit var inputMode: InputModeManager
         compose.setContent { TachiaiPrototypeTheme {
             inputMode = LocalInputModeManager.current
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE), {}, { checks++ }, {})
+            AbemaAccountConnectionScreen(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE),
+                { callbacks++ }, { callbacks++ }, { callbacks++ }, onSignInAgain = { callbacks++ })
         } }
         compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
         val button = compose.onNodeWithContentDescription("ABEMA account actions")
         button.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
         button.performKeyInput { pressKey(Key.Enter) }
-        compose.onNodeWithText("Check connection").assertExists().performKeyInput { pressKey(Key.Escape) }
+        val item = compose.onNodeWithText("Check connection").assertExists()
+        item.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        item.assertIsFocused()
+        dismissMenuWithEscape()
         compose.onNodeWithText("Check connection").assertDoesNotExist()
-        compose.runOnIdle { assertEquals(0, checks) }
+        compose.runOnIdle { assertEquals(0, callbacks) }
     }
 
     @Test fun readingBusyReadinessAndPendingSaveGuardActionsWithoutAddingRows() {
@@ -109,7 +123,7 @@ class AbemaAccountConnectionScreenTest {
         compose.onNodeWithText("Connect by email").assertIsNotEnabled()
         menu(); compose.onNodeWithText("Check connection").assertIsNotEnabled()
         compose.onNodeWithText("Sign in again").assertIsNotEnabled()
-        compose.onNodeWithText("Check connection").performKeyInput { pressKey(Key.Escape) }
+        dismissMenuWithEscape()
         compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.IDLE, busy = true) }
         compose.onNodeWithText("Working…").assertExists()
         compose.onNodeWithText("Connect by email").assertIsNotEnabled()

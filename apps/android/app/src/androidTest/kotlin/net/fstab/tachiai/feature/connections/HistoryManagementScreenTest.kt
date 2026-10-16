@@ -18,6 +18,8 @@ import org.junit.Test
 class HistoryManagementScreenTest {
     @get:Rule val compose = createComposeRule()
     private fun text(value: String): SemanticsNodeInteraction {
+        val overlay = hasText(value) and !hasAnyAncestor(hasScrollToIndexAction())
+        if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) return compose.onNode(overlay)
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(value))
         return compose.onNodeWithText(value).performScrollTo()
     }
@@ -80,8 +82,10 @@ class HistoryManagementScreenTest {
             val state by controller.state.collectAsState()
             TachiaiPrototypeTheme {
                 StreamManagementScreen(state, controller::search, controller::all, controller::collection,
-                    controller::children, controller::more, controller::lookup, controller::add, controller::remove,
-                    controller::move, controller::retry, {})
+                    controller::children, controller::more, controller::add, controller::remove,
+                    controller::move, controller::retry, {}, onOpenLink = controller::openLink,
+                    onResolveLink = controller::resolveLink, onDismissLink = controller::dismissLink,
+                    onAddLink = controller::addLink, onEditLink = controller::editLink)
             }
         }
     }
@@ -104,6 +108,7 @@ class HistoryManagementScreenTest {
             description("Browse Unavailable fixture series").performClick()
             description("Add Never-live fixture episode").assertIsNotEnabled()
             description("Remove Unavailable fixture replay").performClick()
+            compose.onNodeWithContentDescription("Confirm remove Unavailable fixture replay").performClick()
             compose.runOnIdle { assertEquals(2, fixture.store.read { emptyList() }.size) }
         } finally { fixture.close() }
     }
@@ -114,25 +119,34 @@ class HistoryManagementScreenTest {
             restoration.setContent { fixture.Render() }
             description("Add Never-live fixture episode").performClick()
             text("Search streams").performTextInput("private fixture search")
+            text("Add link").performClick()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/?token=unvalidated")
-            compose.runOnIdle { fixture.denied = true; fixture.controller.more() }
+            compose.runOnIdle { fixture.denied = true; fixture.controller.load() }
             text("Catalog account access is required. Your configured streams are retained.").assertExists()
+            compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
             description("Remove Never-live fixture episode").assertIsEnabled()
             compose.onNodeWithContentDescription("Add Never-live fixture episode").assertDoesNotExist()
             compose.runOnIdle { fixture.denied = false }
             text("All").assertIsNotEnabled()
             text("Retry catalog").performClick()
-            text("Search").assertIsNotEnabled(); text("Look up").assertIsNotEnabled()
+            description("Search streams").assertIsNotEnabled()
             text("Search streams").performTextInput("another private fixture")
+            text("Add link").performClick()
+            text("Add").assertIsNotEnabled()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/private")
             // Close and replace in one event: the new controller must have a
             // distinct privacy revision even before the old clear recomposes.
             compose.runOnIdle { fixture.reopen() }
-            text("Search").assertIsNotEnabled(); text("Look up").assertIsNotEnabled()
+            compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
+            description("Search streams").assertIsNotEnabled()
             text("Search streams").performTextInput("unsaved fixture")
+            text("Add link").performClick()
+            text("Add").assertIsNotEnabled()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/unsaved")
             restoration.emulateSavedInstanceStateRestore()
-            text("Search").assertIsNotEnabled(); text("Look up").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
+            text("Cancel").performClick()
+            description("Search streams").assertIsNotEnabled()
             description("Remove Never-live fixture episode").assertExists()
         } finally { fixture.close() }
     }

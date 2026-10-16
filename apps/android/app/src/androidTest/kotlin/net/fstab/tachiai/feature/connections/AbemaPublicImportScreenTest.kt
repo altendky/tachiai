@@ -44,6 +44,7 @@ class AbemaPublicImportScreenTest {
         var picker by mutableStateOf(false)
         var pickerSources = emptyList<ConfiguredSource>()
         var assignments = ConfiguredFeedAssignments(null, null)
+        var watchRequest: ConfiguredFeedAssignments? = null
 
         init { controller.load() }
 
@@ -56,10 +57,12 @@ class AbemaPublicImportScreenTest {
             val state by controller.state.collectAsState()
             TachiaiPrototypeTheme {
                 if (picker) PrototypeSourcePicker(null, providerInstances = listOf(instance),
-                    configuredSources = pickerSources, initialAssignments = assignments, onWatch = {})
+                    configuredSources = pickerSources, initialAssignments = assignments, onWatch = { watchRequest = it })
                 else StreamManagementScreen(state, controller::search, controller::all, controller::collection,
-                    controller::children, controller::more, controller::lookup, controller::add, controller::remove,
-                    controller::move, controller::retry, {})
+                    controller::children, controller::more, controller::add, controller::remove,
+                    controller::move, controller::retry, {}, onOpenLink = controller::openLink,
+                    onResolveLink = controller::resolveLink, onDismissLink = controller::dismissLink,
+                    onAddLink = controller::addLink, onEditLink = controller::editLink)
             }
         }
 
@@ -76,16 +79,22 @@ class AbemaPublicImportScreenTest {
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(matcher)
         return compose.onNode(matcher).performScrollTo()
     }
-    private fun text(value: String) = scrollTo(hasText(value))
+    private fun text(value: String): SemanticsNodeInteraction {
+        val overlay = hasText(value) and !hasAnyAncestor(hasScrollToIndexAction())
+        return if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) compose.onNode(overlay)
+            else scrollTo(hasText(value))
+    }
     private fun description(value: String) = scrollTo(hasContentDescription(value))
     private fun lookup(url: String) {
+        if (compose.onAllNodesWithText("Add by URL or channel").fetchSemanticsNodes().isNotEmpty()) text("Cancel").performClick()
+        text("Add link").performClick()
         text("Provider URL or channel").performTextReplacement(url)
         text("Provider URL or channel").assertTextContains(url)
         // Settle focus and IME insets before scrolling to the real tap target.
         compose.runOnIdle { focusManager.clearFocus(force = true) }
         closeSoftKeyboard()
         compose.waitForIdle()
-        text("Look up").assertIsEnabled().assertIsDisplayed().performClick()
+        text("Add").assertIsEnabled().assertIsDisplayed().performClick()
     }
     private fun ready(harness: Harness) {
         compose.waitUntil { !harness.controller.state.value.loading && !harness.controller.state.value.saving }
@@ -103,25 +112,26 @@ class AbemaPublicImportScreenTest {
                 assertNull(harness.memory.bytes)
                 assertTrue(harness.controller.state.value.configured!!.isEmpty())
                 assertEquals(CatalogResource(ProviderId("abema"), "channel", "sumo", CatalogIntent.CHANNEL),
-                    harness.controller.state.value.entries.single().resource)
+                    harness.controller.state.value.link!!.entry!!.resource)
             }
-            description("Add ABEMA channel · sumo").performClick()
+            text("Add").performClick()
             ready(harness)
-            description("Add ABEMA channel · sumo").assertIsNotEnabled()
+            description("Remove ABEMA channel · sumo").assertExists()
             lookup("HTTPS://ABEMA.TV:443/channels/sumo")
             ready(harness)
-            description("Add ABEMA channel · sumo").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
+            text("This stream is already configured.").assertExists()
             compose.runOnIdle { assertEquals(1, harness.memory.writes); assertEquals(1, harness.reopen().size) }
 
             lookup("https://abema.tv/channels/sumo/slots/FutureSlot108")
             ready(harness)
             text("Specific broadcast · Availability unknown").assertExists()
-            description("Add ABEMA broadcast · sumo/FutureSlot108").performClick()
+            text("Add").performClick()
             ready(harness)
             lookup("https://abema.tv/video/episode/NeverLive108")
             ready(harness)
             text("On-demand video · Availability unknown").assertExists()
-            description("Add ABEMA episode · NeverLive108").performClick()
+            text("Add").performClick()
             ready(harness)
             compose.runOnIdle {
                 val configured = harness.reopen()
@@ -135,8 +145,16 @@ class AbemaPublicImportScreenTest {
             compose.onNodeWithText("ABEMA channel · sumo").assertExists()
             compose.onNodeWithText("ABEMA broadcast · sumo/FutureSlot108").assertExists()
             compose.onNodeWithText("ABEMA episode · NeverLive108").assertExists()
-            compose.onNodeWithText("Watch").assertIsNotEnabled()
-            compose.onNodeWithText("Playback for a selected item is not supported yet. It stays configured.").assertExists()
+            // Public identity enables a playback request. Provider eligibility is
+            // checked by the playback adapter, which this synthetic test never opens.
+            compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+            compose.runOnIdle {
+                val episode = harness.reopen().last()
+                assertEquals(ConfiguredFeedAssignments(episode.choice, episode.choice), harness.watchRequest)
+                assertEquals(harness.instance.id, harness.watchRequest!!.a!!.instanceId)
+                assertEquals(episode.id, harness.watchRequest!!.a!!.itemId)
+                assertEquals("NeverLive108", episode.entry.resource.identity)
+            }
         } finally { harness.close() }
     }
 
@@ -148,7 +166,7 @@ class AbemaPublicImportScreenTest {
             lookup("https://abema.tv/video/title/394-72")
             ready(harness)
             text("Show / series · choose an item before playback · Availability unknown").assertExists()
-            description("Add ABEMA series · 394-72").performClick()
+            text("Add").performClick()
             ready(harness)
             compose.onAllNodesWithText("Browse items").assertCountEquals(0)
             compose.runOnIdle {
@@ -161,7 +179,8 @@ class AbemaPublicImportScreenTest {
             compose.onNodeWithText("ABEMA series · 394-72").assertExists()
             compose.onNodeWithText("Collection · choose a stream in Manage streams").assertExists()
             compose.onNodeWithText("Watch").assertIsNotEnabled()
-            compose.onNodeWithText("A collection is selected. Choose a playable item in Manage streams.").assertExists()
+            compose.onNodeWithText("A collection is selected. Choose a playable item in Providers.").assertExists()
+            compose.runOnIdle { assertNull(harness.watchRequest) }
         } finally { harness.close() }
     }
 
@@ -173,21 +192,26 @@ class AbemaPublicImportScreenTest {
             ready(harness)
             lookup("https://abema.tv/video/episode/NeverLive108")
             ready(harness)
-            description("Add ABEMA episode · NeverLive108").performClick()
+            text("Add").performClick()
             ready(harness)
             val original = checkNotNull(harness.memory.bytes).copyOf()
+            val discovery = harness.controller.state.value
             lookup("https://abema.tv/video/episode/Other108?token=unvalidated-fixture")
             ready(harness)
             text("The input or catalog selection is invalid.").assertExists()
             compose.runOnIdle {
-                assertEquals(CatalogResult.Failure(CatalogFailure.INVALID_INPUT), harness.controller.state.value.failure)
-                assertTrue(harness.controller.state.value.entries.isEmpty())
+                assertEquals(CatalogResult.Failure(CatalogFailure.INVALID_INPUT), harness.controller.state.value.link!!.failure)
+                assertNull(harness.controller.state.value.failure)
+                assertNull(harness.controller.state.value.link!!.entry)
+                assertEquals(discovery.entries, harness.controller.state.value.entries)
+                assertEquals(discovery.query, harness.controller.state.value.query)
+                assertEquals(discovery.discoveryContextId, harness.controller.state.value.discoveryContextId)
                 assertEquals("NeverLive108", harness.reopen().single().entry.resource.identity)
                 assertArrayEquals(original, harness.memory.bytes)
                 assertEquals(1, harness.memory.writes)
             }
             restoration.emulateSavedInstanceStateRestore()
-            text("Look up").assertIsNotEnabled()
+            text("Add").assertIsNotEnabled()
             text("The input or catalog selection is invalid.").assertExists()
             compose.runOnIdle { assertArrayEquals(original, harness.memory.bytes) }
         } finally { harness.close() }

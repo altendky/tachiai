@@ -99,7 +99,7 @@ class ConfiguredMetadataRefreshScreenTest {
         inputMode = LocalInputModeManager.current
         TachiaiPrototypeTheme {
             StreamManagementScreen(state, onSearch = {}, onAll = {}, onCollection = {}, onChildren = {},
-                onMore = {}, onLookup = {}, onAdd = {}, onRemove = {}, onMove = { _, _ -> },
+                onMore = {}, onAdd = {}, onRemove = {}, onMove = { _, _ -> },
                 onRetry = {}, onBack = {}, onRefresh = refresh)
         }
     }

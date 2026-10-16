@@ -8,7 +8,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -30,6 +33,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
@@ -89,22 +93,36 @@ private fun entryDetails(entry: CatalogEntry): String {
 @Composable
 internal fun StreamManagementScreen(state: StreamManagementState,
     onSearch: (String) -> Unit, onAll: () -> Unit, onCollection: (String) -> Unit,
-    onChildren: (CatalogResource) -> Unit, onMore: () -> Unit, onLookup: (String) -> Unit,
+    onChildren: (CatalogResource) -> Unit, onMore: () -> Unit,
     onAdd: (CatalogEntry) -> Unit, onRemove: (String) -> Unit, onMove: (String, Int) -> Unit,
     onRetry: () -> Unit, onBack: () -> Unit, backLabel: String = "Back to providers",
     onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {},
-    header: (@Composable () -> Unit)? = null, onReorder: ((List<String>) -> Job?)? = null) {
+    header: (@Composable () -> Unit)? = null, onReorder: ((List<String>) -> Job?)? = null,
+    onOpenLink: () -> Unit = {}, onResolveLink: (String) -> Unit = {},
+    onDismissLink: () -> Unit = {}, onAddLink: () -> Unit = {}, onEditLink: () -> Unit = {}) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
-    var lookup by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
+    var lookup by remember(state.instance.id, state.privacyRevision, state.link != null) { mutableStateOf("") }
     val mutable = !state.saving && !state.loading && !state.storageFailed && state.configured != null
     val capabilities = state.capabilities
+    // Keep only public control labels/support across access rechecks. Old access
+    // states, entries and cursors must not become authorization evidence.
+    var discoveryLabels by remember(state.instance.id) { mutableStateOf<CatalogCapabilities?>(null) }
+    if (capabilities != null) discoveryLabels = CatalogCapabilities(
+        browseTitle = capabilities.browseTitle,
+        collections = capabilities.collections.map { it.copy(access = CatalogAccess.NOT_VERIFIED) },
+        search = if (capabilities.search == CatalogAccess.UNSUPPORTED) CatalogAccess.UNSUPPORTED else CatalogAccess.NOT_VERIFIED,
+        lookup = if (capabilities.lookup == CatalogAccess.UNSUPPORTED) CatalogAccess.UNSUPPORTED else CatalogAccess.NOT_VERIFIED)
+    val visibleCapabilities = capabilities ?: discoveryLabels
+    val discoveryMutable = mutable && capabilities != null
     val retryAt = state.failure?.retryAtEpochMs
-    var retryClock by remember(retryAt) { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(retryAt) {
-        while (retryAt != null && retryClock < retryAt) {
-            delay((retryAt - retryClock).coerceIn(1L, 1_000L))
+    val linkRetryAt = state.link?.failure?.retryAtEpochMs
+    val retryDeadline = listOfNotNull(retryAt, linkRetryAt).maxOrNull()
+    var retryClock by remember(retryDeadline) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(retryDeadline) {
+        while (retryDeadline != null && retryClock < retryDeadline) {
+            delay((retryDeadline - retryClock).coerceIn(1L, 1_000L))
             retryClock = System.currentTimeMillis()
         }
     }
@@ -135,6 +153,35 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     val displayed = drag.order?.takeIf { it.size == ids.size && it.toSet() == ids.toSet() }
         ?.map { id -> sources.single { it.id == id } } ?: sources
     val actionsEnabled = mutable && !drag.busy
+    state.link?.let { link ->
+        val busy = link.loading || link.saving
+        val resolved = link.entry
+        val duplicate = resolved != null && sources.any { it.entry.resource == resolved.resource }
+        val canSubmit = mutable && !busy && (linkRetryAt == null || retryClock >= linkRetryAt) && lookup.isNotBlank() &&
+            (resolved == null || !duplicate && sources.size < MAX_CONFIGURED_SOURCES)
+        val submit = { if (canSubmit) { if (resolved == null) onResolveLink(lookup.trim()) else onAddLink() } }
+        AlertDialog(onDismissRequest = { if (!link.saving) onDismissLink() },
+            title = { Text("Add by URL or channel") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(lookup, { lookup = it.take(2048) }, enabled = !busy && resolved == null,
+                    singleLine = true, label = { Text("Provider URL or channel") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }))
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics {
+                    contentDescription = if (link.saving) "Saving stream" else "Resolving stream"
+                })
+                resolved?.let {
+                    Text(it.title, style = MaterialTheme.typography.titleMedium); Text(entryDetails(it))
+                    TextButton(onClick = onEditLink, enabled = !busy) { Text("Edit link") }
+                }
+                val error = link.message ?: link.failure?.let(::catalogFailureExplanation)
+                    ?: if (duplicate) "This stream is already configured." else if (sources.size >= MAX_CONFIGURED_SOURCES)
+                        "Remove a configured stream before adding another." else null
+                error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
+            } },
+            confirmButton = { TextButton(onClick = submit, enabled = canSubmit) { Text("Add") } },
+            dismissButton = { TextButton(onClick = onDismissLink, enabled = !link.saving) { Text("Cancel") } })
+    }
     var pendingRemoval by remember(state.instance.id, state.privacyRevision) { mutableStateOf<String?>(null) }
     LaunchedEffect(ids) { if (pendingRemoval !in ids) pendingRemoval = null }
     pendingRemoval?.let { id -> sources.singleOrNull { it.id == id }?.let { source ->
@@ -180,7 +227,15 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             if (header == null) TextButton(onClick = onBack) { Text(backLabel) }
         } }
         item(key = "configured-heading") { Column(Modifier.padding(bottom = 12.dp)) {
-            Text("Configured streams", style = MaterialTheme.typography.titleLarge)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Configured streams", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                if (visibleCapabilities?.lookup != null && visibleCapabilities.lookup != CatalogAccess.UNSUPPORTED)
+                    TextButton(onClick = onOpenLink, enabled = actionsEnabled && capabilities != null) {
+                        Icon(painterResource(R.drawable.stream_link), contentDescription = null)
+                        Spacer(Modifier.width(4.dp)); Text("Add link")
+                    }
+            }
             if (state.configured?.isEmpty() == true) Text("No configured streams. Add an item below to show it on your selection page.")
             } }
         items(displayed, key = { "configured:${it.id}" }) { source ->
@@ -264,25 +319,44 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     append("\n\n${it.title}: ${catalogAccessExplanation(it.access)}")
                 }
             })
-            Button(onClick = onAll, enabled = mutable && capabilities != null) { Text(capabilities?.browseTitle ?: "All") }
-            capabilities?.collections.orEmpty().forEach { collection ->
-                TextButton(onClick = { onCollection(collection.id) }, enabled = mutable) { Text(collection.title) }
+            val tabs = listOf(Triple(DISCOVERY_ALL_TAB, visibleCapabilities?.browseTitle ?: "All", visibleCapabilities?.browse)) +
+                visibleCapabilities?.collections.orEmpty().map { Triple(it.id, it.title, it.access) }
+            val selected = tabs.indexOfFirst { it.first == state.selectedTabId }
+            @Suppress("DEPRECATION")
+            ScrollableTabRow(selectedTabIndex = selected.coerceAtLeast(0), edgePadding = 0.dp,
+                divider = {}, indicator = { positions -> if (selected >= 0) TabRowDefaults.SecondaryIndicator(
+                    Modifier.tabIndicatorOffset(positions[selected])) }) {
+                tabs.forEach { (id, title, access) ->
+                    Tab(selected = id == state.selectedTabId, enabled = !state.saving && !state.storageFailed &&
+                        state.configured != null && capabilities != null && state.link == null,
+                        onClick = { if (id == DISCOVERY_ALL_TAB) onAll() else onCollection(id) },
+                        modifier = Modifier.semantics { stateDescription = catalogAccessExplanation(access ?: CatalogAccess.NOT_VERIFIED) },
+                        text = { Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(title, maxLines = 1)
+                            Icon(painterResource(R.drawable.settings_info), contentDescription = null,
+                                modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                    alpha = if (access == CatalogAccess.AVAILABLE) 0f else 1f))
+                        } })
+                }
             }
-            if (capabilities != null && capabilities.search != CatalogAccess.UNSUPPORTED) {
-                OutlinedTextField(search, { search = it.take(160) }, enabled = mutable, singleLine = true,
-                    label = { Text("Search streams") })
-                Button(onClick = { onSearch(search) }, enabled = mutable && search.isNotBlank()) { Text("Search") }
-            }
-            if (capabilities != null && capabilities.lookup != CatalogAccess.UNSUPPORTED) {
-                OutlinedTextField(lookup, { lookup = it.take(2048) }, enabled = mutable, singleLine = true,
-                    label = { Text("Provider URL or channel") })
-                Button(onClick = { onLookup(lookup.trim()) }, enabled = mutable && lookup.isNotBlank()) { Text("Look up") }
+            if (visibleCapabilities != null && visibleCapabilities.search != CatalogAccess.UNSUPPORTED) {
+                val searchEnabled = discoveryMutable && search.isNotBlank()
+                val submitSearch = { if (searchEnabled) onSearch(search) }
+                OutlinedTextField(search, { search = it.take(160) }, enabled = discoveryMutable, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), label = { Text("Search streams") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
+                    trailingIcon = { IconButton(onClick = submitSearch, enabled = searchEnabled,
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Search streams" }) {
+                        Icon(painterResource(R.drawable.stream_search), contentDescription = null)
+                    } })
             }
         } }
         item(key = "discovery-context") { Column {
             val heading = state.childHeading ?: state.query.parent?.let {
                 "${capabilities?.childrenHeadingPrefix ?: "Items under"} ${it.identity}"
-            }
+            } ?: state.query.search?.let { "Search results" }
             heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             state.navigationBackLabel?.let { label ->
                 TextButton(onClick = onDiscoveryBack) { Text(label) }

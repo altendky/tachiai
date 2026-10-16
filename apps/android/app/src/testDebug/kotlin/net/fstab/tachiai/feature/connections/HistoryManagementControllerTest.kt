@@ -99,6 +99,8 @@ class HistoryManagementControllerTest {
             assertEquals(history.inventory.drop(1), state.configured!!.map { it.entry })
             assertEquals(4, history.inventory.size)
             history.emptyHistory = true; controller.collection("history"); state = idle(controller)
+            assertEquals(history.inventory, state.entries)
+            controller.collection("history"); state = idle(controller)
             assertTrue(state.entries.isEmpty()); assertNull(state.failure)
             assertEquals(history.inventory.drop(1), state.configured!!.map { it.entry })
             controller.close()

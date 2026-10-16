@@ -43,6 +43,14 @@ revision. Cursors are not configured identities or diagnostic fields.
 Resource-scoped browsing lets a saved series or channel expose explicit child
 episode/video choices where the adapter advertises that capability.
 
+The management surface presents provider browse groups as horizontal tabs.
+Loaded root results and scroll contexts are retained only within the current
+controller ownership. Provider-wide search has its own results context. Direct
+URL/channel entry uses a separate transient dialog: resolving previews a public
+resource, and a subsequent explicit Add persists it. Cancellation and failures
+do not replace the active browse results. Privacy/access invalidation clears
+retained discovery and drafts rather than carrying them into another owner.
+
 Catalog resolution retains the exact selected public resource. The existing
 browser `ProviderAdapter`, native `PrototypeFeedSession` and media-control
 `NativePairMember` remain separate interfaces. A session factory prepares a

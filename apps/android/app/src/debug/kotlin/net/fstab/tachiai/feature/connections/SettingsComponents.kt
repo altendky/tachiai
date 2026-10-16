@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -22,8 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.R
 import net.fstab.tachiai.feature.presentation.PageHeading
 
@@ -54,8 +57,10 @@ internal fun SettingsSection(title: String, help: String? = null, status: String
 @Composable
 internal fun SettingsHelp(title: String, text: String) {
     var open by remember(title) { mutableStateOf(false) }
-    IconButton(onClick = { open = true }) {
-        Icon(painterResource(R.drawable.settings_info), contentDescription = "Info about $title")
+    IconButton(onClick = { open = true }, modifier = Modifier.size(48.dp).semantics {
+        contentDescription = "Info about $title"
+    }) {
+        Icon(painterResource(R.drawable.settings_info), contentDescription = null)
     }
     if (open) AlertDialog(onDismissRequest = { open = false }, title = { Text(title) },
         text = { Text(text, Modifier.verticalScroll(rememberScrollState())) },

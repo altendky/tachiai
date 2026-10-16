@@ -31,8 +31,8 @@ class SettingsHeadingTest {
                 }
             }
         } }
-        val back = compose.onNodeWithContentDescription("Back to sources").assertIsDisplayed()
-        val pageHelp = compose.onNodeWithContentDescription("Info about $page").assertIsDisplayed()
+        val back = compose.onNode(hasClickAction() and hasContentDescription("Back to sources")).assertIsDisplayed()
+        val pageHelp = compose.onNode(hasClickAction() and hasContentDescription("Info about $page")).assertIsDisplayed()
         val title = compose.onNodeWithText(page).fetchSemanticsNode().boundsInRoot
         val backBounds = back.fetchSemanticsNode().boundsInRoot
         val helpBounds = pageHelp.fetchSemanticsNode().boundsInRoot
@@ -41,7 +41,8 @@ class SettingsHeadingTest {
         assertEquals(backBounds.center.y, helpBounds.center.y, 1f)
         val minimum = with(compose.density) { 48.dp.toPx() }
         for (bounds in listOf(backBounds, helpBounds)) {
-            assertTrue(bounds.width >= minimum); assertTrue(bounds.height >= minimum)
+            assertTrue("Click target width ${bounds.width}px must be at least ${minimum}px", bounds.width >= minimum)
+            assertTrue("Click target height ${bounds.height}px must be at least ${minimum}px", bounds.height >= minimum)
         }
         val sectionTitle = compose.onNodeWithText(section).fetchSemanticsNode().boundsInRoot
         val sectionHelp = compose.onNodeWithContentDescription("Info about $section").fetchSemanticsNode().boundsInRoot

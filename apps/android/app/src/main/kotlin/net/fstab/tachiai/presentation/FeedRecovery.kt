@@ -32,7 +32,7 @@ internal val PrototypeFeedFailure.viewerMessage: String get() = when {
 // Slot generations outlive their sessions. Invalidating before close prevents
 // synchronous and delayed old callbacks from affecting a replacement session.
 internal class FeedRetryState {
-    private var generation = 0L
+    @Volatile private var generation = 0L
     var requested = false
         private set
     var retrying = false

@@ -42,11 +42,7 @@ internal class PrototypePlaybackController(
         val preparedA = a
         val preparedB = b
         if (preparedA != null && preparedB != null) {
-            pair = NativeMixedPair(preparedA, preparedB, {
-                val focused = acquireFocus()
-                focused && a === preparedA && b === preparedB && allowed() &&
-                    admitted(preparedA) && admitted(preparedB)
-            }, {}, clockMs,
+            pair = NativeMixedPair(preparedA, preparedB, acquireFocus, {}, clockMs,
                 requireCurrentLiveWindowOnPlay = true,
                 initialAdjustmentValid = !coordinationLost,
                 admission = { !closed && members().any { current -> current === it } && admission(it) })
@@ -68,7 +64,10 @@ internal class PrototypePlaybackController(
         if (!allowed() || members().any { !admitted(it) }) { pause(); return false }
         val original = NativeMixedSide.entries.associateWith(::member)
         pair?.let { current ->
-            return current.play(onStaleLive?.let { owner -> { sides ->
+            return current.play(playAdmission = {
+                pair === current && NativeMixedSide.entries.all { member(it) === original[it] } &&
+                    allowed() && members().all(::admitted)
+            }, onStaleLive = onStaleLive?.let { owner -> { sides ->
                 pair === current && isolateStale(sides, original, owner)
             } })
         }

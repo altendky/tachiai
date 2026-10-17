@@ -66,7 +66,7 @@ internal class NativeMixedPair(
             else "Audio focus lost; pause refused; Stop required."
     }
 
-    fun play(onStaleLive: ((Set<NativeMixedSide>) -> Boolean)? = null): Boolean {
+    fun play(playAdmission: () -> Boolean = { true }, onStaleLive: ((Set<NativeMixedSide>) -> Boolean)? = null): Boolean {
         if (closed) return false
         if (busy && !pause()) return false
         val sa = snapshot(a)
@@ -94,7 +94,8 @@ internal class NativeMixedPair(
             return false
         }
         val focused = try { acquireFocus() } catch (_: Exception) { false }
-        if (!focused) { pause(); status = "Audio focus denied; pause requested for both."; return false }
+        val admitted = try { playAdmission() } catch (_: Exception) { false }
+        if (!focused || !admitted) { pause(); status = "Audio focus or playback admission denied; pause requested for both."; return false }
         val pa = playing(a, true)
         val pb = playing(b, true)
         if (!pa || !pb) { pause(); status = "Play refused; pause requested for both."; return false }

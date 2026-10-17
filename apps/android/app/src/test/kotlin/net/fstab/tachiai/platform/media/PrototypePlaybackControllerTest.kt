@@ -377,6 +377,26 @@ class PrototypePlaybackControllerTest {
         }
     }
 
+    @Test fun `timing nudge retains its own resume intent after explicit Play intent is cleared`() {
+        var intent = true
+        val a = Member(replay)
+        val b = Member(replay)
+        val controller = PrototypePlaybackController({ true }, playAllowed = { intent })
+        controller.setMember(NativeMixedSide.A, a)
+        controller.setMember(NativeMixedSide.B, b)
+        assertTrue(controller.play())
+        // The Activity clears automatic Play intent before a timing transaction;
+        // the pair owns that transaction's bounded restoration separately.
+        intent = false
+        assertEquals(NativeSeekOutcome.REQUESTED, controller.shiftRelative(1_000).outcome)
+        assertFalse(a.sample.playWhenReady)
+        assertFalse(b.sample.playWhenReady)
+        controller.poll()
+        assertFalse(controller.busy)
+        assertTrue(a.sample.playWhenReady)
+        assertTrue(b.sample.playWhenReady)
+    }
+
     @Test fun `either surviving live feed uses one default and held settlement with explicit play`() {
         for (side in NativeMixedSide.entries) {
             var focus = 0

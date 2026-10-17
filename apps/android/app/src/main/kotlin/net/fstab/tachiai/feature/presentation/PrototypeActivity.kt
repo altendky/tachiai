@@ -243,6 +243,7 @@ open class PrototypeActivity : ComponentActivity() {
         }
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         onBackPressedDispatcher.addCallback(this) {
+            if (viewer?.handleBack() == true) return@addCallback
             if (budget != null) stopToPicker("Playback stopped.") else finish()
         }
         showPicker(null)
@@ -707,7 +708,11 @@ open class PrototypeActivity : ComponentActivity() {
                 }
                 sessions = sessions.toMutableList().also { it[index] = session }
                 ownedRun?.let { cachedCleanup.feed(it, index, session,
-                    pending = { (session as? CachedPrototypeAbemaSession)?.cleanupPending == true },
+                    pending = { when (session) {
+                        is CachedPrototypeAbemaSession -> session.cleanupPending
+                        is PrototypeTwitchSession -> session.cleanupPending
+                        else -> false
+                    } },
                     knownFailed = { session.cleanupFailed }) {
                     when (session) {
                         is CachedPrototypeAbemaSession -> session.cleanupConfirmed

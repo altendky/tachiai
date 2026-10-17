@@ -3,6 +3,7 @@ package net.fstab.tachiai.platform.media
 import java.io.IOException
 import java.io.InputStream
 import java.io.FilterInputStream
+import java.util.concurrent.Executor
 
 // Own resources as they are allocated, including a partially built player.
 // A released flag or repeated no-op close is not confirmation of failed cleanup.
@@ -12,7 +13,10 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     private val lock = Any()
     private var failureObserved = false
     private var allocations = 0
-    private val actions = mutableListOf<Pair<Int, () -> Unit>>()
+    private data class Action(val order: Int, val ownerThread: Boolean, val run: () -> Unit)
+    private val actions = mutableListOf<Action>()
+    private var asynchronous = false
+    val pending get() = synchronized(lock) { asynchronous }
     val confirmed get() = synchronized(lock) { state == State.CONFIRMED }
     private fun notifyFailure() { runCatching(onUnconfirmed) }
     fun failed() {
@@ -39,9 +43,9 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
         }
         if (uncertain) notifyFailure()
     }
-    fun own(order: Int, action: () -> Unit) {
+    fun own(order: Int, ownerThread: Boolean = false, action: () -> Unit) {
         val refused = synchronized(lock) {
-            actions.add(order to action)
+            actions.add(Action(order, ownerThread, action))
             if (state != State.OPEN) {
                 failureObserved = true
                 if (state != State.SEALED) state = State.FAILED
@@ -72,7 +76,7 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
             if (state !in setOf(State.OPEN, State.SEALED)) throw IOException("Native cleanup remains unconfirmed")
             if (allocations != 0) failureObserved = true
             state = State.CLOSING
-            actions.sortedBy { it.first }.map { it.second }
+            actions.sortedBy { it.order }.map { it.run }
         }
         try {
             closeNativeResources(*captured.toTypedArray())
@@ -86,6 +90,63 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
             notifyFailure()
             throw error
         }
+    }
+
+    // Preserve release order without doing transport I/O on the player looper
+    // or blocking that looper waiting for a worker. The receipt owns every action
+    // until all lanes finish; failure/rejection never becomes confirmation.
+    fun closeAsync(worker: Executor, owner: Executor, onComplete: () -> Unit, onFailure: (Throwable) -> Unit) {
+        val captured = synchronized(lock) {
+            if (asynchronous || state == State.CONFIRMED) return
+            if (state !in setOf(State.OPEN, State.SEALED)) throw IOException("Native cleanup remains unconfirmed")
+            if (allocations != 0) failureObserved = true
+            state = State.CLOSING
+            asynchronous = true
+            actions.sortedBy { it.order }
+        }
+        val groups = mutableListOf<MutableList<Action>>()
+        captured.forEach { action ->
+            if (groups.lastOrNull()?.first()?.ownerThread != action.ownerThread) groups.add(mutableListOf())
+            groups.last().add(action)
+        }
+        var failure: Throwable? = null
+        fun remember(error: Throwable) {
+            val first = failure
+            if (first == null) failure = error else if (first !== error) first.addSuppressed(error)
+        }
+        fun finish() {
+            val error = synchronized(lock) {
+                if (state != State.CLOSING || failureObserved || failure != null) {
+                    state = State.FAILED
+                    failure ?: IOException("Native cleanup remains unconfirmed")
+                } else {
+                    state = State.CONFIRMED
+                    actions.clear()
+                    null
+                }.also { asynchronous = false }
+            }
+            if (error != null) { notifyFailure(); runCatching { onFailure(error) } }
+            runCatching(onComplete)
+        }
+        fun dispatch(index: Int) {
+            if (index == groups.size) {
+                try { owner.execute(::finish) }
+                catch (error: Throwable) { remember(error); finish() }
+                return
+            }
+            val group = groups[index]
+            val executor = if (group.first().ownerThread) owner else worker
+            try { executor.execute {
+                group.forEach { action -> try { action.run() } catch (error: Throwable) { remember(error) } }
+                dispatch(index + 1)
+            } } catch (error: Throwable) {
+                // A rejected lane's resources stay retained. Continue later
+                // lanes on their required executor, never on this caller.
+                remember(error)
+                dispatch(index + 1)
+            }
+        }
+        dispatch(0)
     }
     override fun toString() = "NativeCleanupReceipt(status only)"
 }

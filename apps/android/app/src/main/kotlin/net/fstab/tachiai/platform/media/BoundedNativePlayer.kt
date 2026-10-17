@@ -49,6 +49,7 @@ internal class BoundedNativePlayer(
     private val onFailure: NativeFailureObserver = { _, _ -> },
     onCleanupOwner: (NativeCleanupReceipt) -> Unit = {},
     onCleanupUnconfirmed: () -> Unit = {},
+    private val onCleanupChanged: () -> Unit = {},
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
@@ -65,7 +66,7 @@ internal class BoundedNativePlayer(
         })
         .also { owned -> cleanup.own(10) { owned.close() } }
     val player: ExoPlayer
-    private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40) {
+    private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {
         observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { owned.close() }
     } }
 
@@ -77,7 +78,15 @@ internal class BoundedNativePlayer(
         try {
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
-            .build().also { owned -> cleanup.ownPlayer(owned, { released }, onFailure) }
+            .build().also { owned ->
+                cleanup.own(-10, ownerThread = true) {
+                    observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure) {
+                        owned.playWhenReady = false
+                        owned.volume = 0f
+                    }
+                }
+                cleanup.ownPlayer(owned, { released }, onFailure)
+            }
         quality.bind(player)
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), handleAudioFocus)
@@ -189,11 +198,12 @@ internal class BoundedNativePlayer(
         Looper.myLooper() == player.applicationLooper && timingActive() && quality.request(player, preferences)
 
     override fun close() {
-        if (released) { cleanup.close(); return }
+        if (released) { if (!cleanup.pending) cleanup.close(); return }
         released = true
+        budget.stop()
         cleanup.seal()
         handler.removeCallbacks(ticker)
-        cleanup.close()
+        cleanup.closePlayer(handler, onFailure, onCleanupChanged)
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

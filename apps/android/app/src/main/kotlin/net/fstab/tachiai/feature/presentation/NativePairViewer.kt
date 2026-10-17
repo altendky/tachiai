@@ -480,6 +480,19 @@ internal class NativePairViewer(
         if (wasPlaying != requestedPlaying) showControls()
         if (available.all { it == null }) suspendControls()
     }
+    // System Back unwinds the visible controls before the Activity stops playback.
+    // Popup windows normally consume Back themselves; also handle dispatcher
+    // delivery here without invoking any menu action or playback command.
+    fun handleBack(): Boolean {
+        if (!isAttachedToWindow || visibility != VISIBLE) return false
+        if (activeMenu != null) {
+            dismissMenu(); showControls()
+            return true
+        }
+        val current = panel ?: return false
+        togglePanel(current)
+        return true
+    }
     fun open() { visibility = VISIBLE; showControls(); refresh() }
     fun endSession() { suspendControls(); stage.unbindPlayers(); observedPair = null; visibility = GONE }
     fun suspendControls() { dismissMenu(); cancelRepeats(); removeCallbacks(hideControls) }

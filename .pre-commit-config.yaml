@@ -140,7 +140,7 @@ repos:
         name: ABEMA opaque broker fixture tests
         entry: node scripts/tests/abema-opaque-broker.test.cjs
         language: system
-        files: 'opaque-broker\.js$|abema-opaque-broker\.test\.cjs$'
+        files: 'opaque-broker\.js$|abema-opaque-broker\.test\.cjs$|Abema(?:Replay|News)NativePlayback\.kt$'
         pass_filenames: false
 
       - id: twitch-session-tests

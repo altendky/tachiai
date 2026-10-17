@@ -1,5 +1,15 @@
 # Platform plan
 
+The dated [iOS interface and library review](ios-interface-review.md) compares
+the current primary Android application with Apple interfaces, native transport
+libraries and unresolved provider/routing requirements. It is the more detailed
+baseline for an iPhone/iPad implementation; browser-first descriptions below
+record the earlier platform investigation.
+
+The [desktop browser review](desktop-browser-review.md) separately assesses the
+whole application as a website/PWA, a browser extension and a browser front end
+with a local companion, including playback, account and route-parity gaps.
+
 ## Android phone and tablet
 
 This is the first implementation and validation platform. The expected shell

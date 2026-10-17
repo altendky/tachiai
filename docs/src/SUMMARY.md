@@ -14,6 +14,8 @@
   - [Connected Twitch catalog prototype](project/twitch-connected-catalog.md)
   - [Provider watch-history access](project/provider-history-access.md)
   - [Platform plan](project/platforms.md)
+  - [iOS interface and library review](project/ios-interface-review.md)
+  - [Desktop browser interface and library review](project/desktop-browser-review.md)
   - [Security and privacy](project/security-and-privacy.md)
   - [Implementation plan](project/implementation.md)
   - [Persistent Android development device](project/android-development.md)

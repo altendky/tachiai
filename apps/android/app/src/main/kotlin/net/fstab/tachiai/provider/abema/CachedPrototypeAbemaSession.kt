@@ -228,13 +228,13 @@ internal class CachedPrototypeAbemaSession(
     private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && ownership?.canContinue() != false && routeOwnership?.canContinue() != false &&
         (!accountAdmitted.get() || accountClient.get()?.current() == true) &&
-        playbackAvailability.get()?.current(System.currentTimeMillis()) != false && slotPremiumCurrent(run) && slotChaseCurrent(run)
+        playbackAvailability.get()?.current() != false && slotPremiumCurrent(run) && slotChaseCurrent(run)
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
         (routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker()) &&
         (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
-        playbackAvailability.get()?.current(System.currentTimeMillis()) != false &&
+        playbackAvailability.get()?.current() != false &&
         slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
     private fun slotPremiumCurrent(run: Long): Boolean {
         return slotLinearAdmission.current {
@@ -876,7 +876,7 @@ internal class CachedPrototypeAbemaSession(
                         record("sourcePolicy=$category shape=$shape")
                     }
                     if (allowed) playbackAvailability.compareAndSet(null, availability)
-                    completion.complete(uri?.takeIf { allowed && playbackAvailability.get()?.current(System.currentTimeMillis()) == true })
+                    completion.complete(uri?.takeIf { allowed && playbackAvailability.get()?.current() == true })
                 }
             }
         }

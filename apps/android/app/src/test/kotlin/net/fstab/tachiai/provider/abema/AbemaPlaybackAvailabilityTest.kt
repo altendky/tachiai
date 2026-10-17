@@ -1,6 +1,10 @@
 package net.fstab.tachiai.provider.abema
 
 import java.net.URI
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -24,6 +28,43 @@ class AbemaPlaybackAvailabilityTest {
             assertTrue(receipt.current(now + 100))
             assertFalse(receipt.current(now + 99))
             assertFalse(receipt.current(now + 101))
+        }
+    }
+
+    @Test fun concurrentAdmissionSamplesTheClockInsideTheReceiptLock() {
+        val firstClockEntered = CountDownLatch(1)
+        val releaseFirstClock = CountDownLatch(1)
+        val secondStarted = CountDownLatch(1)
+        val secondClockEntered = CountDownLatch(1)
+        val samples = AtomicInteger()
+        val receipt = AbemaPlaybackAvailability(now + 60_000, now) {
+            val sample = samples.incrementAndGet()
+            if (sample == 1) {
+                firstClockEntered.countDown()
+                check(releaseFirstClock.await(2, TimeUnit.SECONDS))
+            } else secondClockEntered.countDown()
+            now + sample
+        }
+        val workers = Executors.newFixedThreadPool(2)
+        try {
+            val first = workers.submit<Boolean> { receipt.current() }
+            assertTrue(firstClockEntered.await(2, TimeUnit.SECONDS))
+            val second = workers.submit<Boolean> {
+                secondStarted.countDown()
+                receipt.current()
+            }
+            assertTrue(secondStarted.await(2, TimeUnit.SECONDS))
+            assertFalse("A concurrent observer must not sample while an earlier observation holds the lock",
+                secondClockEntered.await(100, TimeUnit.MILLISECONDS))
+            releaseFirstClock.countDown()
+            assertTrue(first.get(2, TimeUnit.SECONDS))
+            assertTrue(second.get(2, TimeUnit.SECONDS))
+            assertEquals(2, samples.get())
+            assertTrue("Normal concurrent admission must not latch a false rollback", receipt.current())
+        } finally {
+            releaseFirstClock.countDown()
+            workers.shutdownNow()
+            assertTrue(workers.awaitTermination(2, TimeUnit.SECONDS))
         }
     }
 

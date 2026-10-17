@@ -56,20 +56,20 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
             backEnabled = enabled && state.progress != AbemaAccountProgress.FORGETTING)
         val density = LocalDensity.current
         val statusHeight = with(density) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() * 2 }
-        val actionHeight = with(density) { MaterialTheme.typography.labelLarge.lineHeight.toDp() * 2 }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Keep status changes from moving the next section. The button itself
+        // uses its natural label height; Material supplies its minimum touch target.
+        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).heightIn(min = statusHeight + 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f).height(statusHeight), contentAlignment = Alignment.CenterStart) {
                 Text(compactAccountStatus(state, ready), style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Box(Modifier.weight(1.6f), contentAlignment = Alignment.CenterEnd) {
-                Button(onConnect, enabled = idleActions, modifier = Modifier.heightIn(min = 48.dp),
+                Button(onConnect, enabled = idleActions,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) {
-                    Box(Modifier.height(actionHeight), contentAlignment = Alignment.Center) {
-                        Text(if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
-                            style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center)
-                    }
+                    Text(if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
+                        style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center)
                 }
             }
         }

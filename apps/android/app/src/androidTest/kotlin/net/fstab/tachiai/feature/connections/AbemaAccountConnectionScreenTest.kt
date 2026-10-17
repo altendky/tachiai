@@ -69,7 +69,9 @@ class AbemaAccountConnectionScreenTest {
         val button = compose.onNode(hasClickAction() and hasText("Open account"))
         val bounds = button.fetchSemanticsNode().boundsInRoot
         val section = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
-        assertEquals(with(compose.density) { 48.dp.toPx() }, bounds.height, 1f)
+        assertEquals(with(compose.density) { 40.dp.toPx() }, bounds.height, 1f)
+        button.assertTouchHeightIsEqualTo(48.dp)
+        assertTrue("The button clears the following divider", section.bottom - bounds.bottom >= with(compose.density) { 8.dp.toPx() })
         assertEquals(section.right, bounds.right, 1f)
         assertTrue("The action fits its label instead of filling its column", bounds.width < section.width / 2)
         button.performClick()
@@ -162,8 +164,7 @@ class AbemaAccountConnectionScreenTest {
             val bounds = compose.onNode(hasClickAction() and hasText(label)).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             assertEquals(before.right, bounds.right, 1f)
             assertEquals(button.center.y, bounds.center.y, 1f)
-            assertEquals(button.height, bounds.height, 1f)
-            assertTrue(bounds.height >= with(compose.density) { 48.dp.toPx() })
+            assertTrue("The label stays inside its stable row", bounds.top >= before.top && bounds.bottom <= before.bottom - with(compose.density) { 8.dp.toPx() })
             compose.onNodeWithContentDescription("Info about ABEMA account").assertIsDisplayed()
         }
     }

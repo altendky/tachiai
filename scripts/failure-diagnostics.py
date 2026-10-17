@@ -18,7 +18,7 @@ MAX_BYTES = 64 * 1024
 MAX_RECORDS = 128
 HEADER = "tachiai-failure-diagnostics-v1"
 ROOT = Path(__file__).resolve().parents[1]
-JOURNAL_SOURCE = ROOT / "apps/android/app/src/debug/kotlin/net/fstab/tachiai/platform/diagnostics/FailureJournal.kt"
+JOURNAL_SOURCE = ROOT / "apps/android/app/src/main/kotlin/net/fstab/tachiai/platform/diagnostics/FailureJournal.kt"
 REASON_SOURCE = ROOT / "apps/android/app/src/main/kotlin/net/fstab/tachiai/presentation/PrototypeFeedFailure.kt"
 IDENTIFIER = re.compile(r"[0-9a-f]{32}")
 

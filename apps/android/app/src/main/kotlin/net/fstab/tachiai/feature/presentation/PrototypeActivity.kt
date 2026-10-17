@@ -92,7 +92,6 @@ import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.presentation.PrototypePlaybackKind
 import net.fstab.tachiai.presentation.ConfiguredPlaybackSelection
 import net.fstab.tachiai.presentation.PrototypeService
-import net.fstab.tachiai.provider.abema.PrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.androidAbemaEpisodePlaybackOwnership
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
 import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
@@ -114,8 +113,8 @@ import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.diagnostics.FailureSlot
 
-// Product-flow prototype, separate from historical experiment screens. The
-// unsupported playback adapters deliberately remain confined to the debug APK.
+// Primary picker/viewer. Existing names and process/storage identities are kept
+// so updates retain configured sources, routes and provider authorization.
 @UnstableApi
 @SuppressLint("SetTextI18n") // Preliminary English UX; localization is deferred.
 open class PrototypeActivity : ComponentActivity() {
@@ -145,7 +144,11 @@ open class PrototypeActivity : ComponentActivity() {
             },
         ) }
     }
-    protected open val useCachedAbema: Boolean = false
+    protected open val useCachedAbema: Boolean = true
+    // Only the debug comparison subclass supplies a page-backed session.
+    internal open fun historicalAbemaSession(replay: Boolean, active: () -> Boolean,
+        events: (PrototypeFeedEvent) -> Unit, diagnostics: FailureReporter): PrototypeFeedSession =
+        error("Historical playback is unavailable in this build")
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val resumed = AtomicBoolean()
@@ -221,7 +224,7 @@ open class PrototypeActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         pickerAssignments = restoreConfiguredFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
-        if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
+        if (android.os.Build.VERSION.SDK_INT < 28) { finish(); return }
         if (savedInstanceState == null) {
             when (val checkpoint = ConfiguredRecoveryCheckpoint(noBackupFilesDir, useCachedAbema).consume()) {
                 ConfiguredRecoveryCheckpoint.Result.Absent -> Unit
@@ -265,8 +268,8 @@ open class PrototypeActivity : ComponentActivity() {
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
-            onDeveloperTools = { startActivity(Intent(this, net.fstab.tachiai.MainActivity::class.java)
-                .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)) },
+            onDeveloperTools = if (BuildConfig.DEBUG) ({ startActivity(Intent(this, net.fstab.tachiai.MainActivity::class.java)
+                .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)) }) else null,
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,
             playbackAvailable = playbackAvailable, recoveryMessage = recoveryMessage,
             onRecovery = if (hasRecovery) ({ showRecoveryDialog(true) }) else null,
@@ -674,7 +677,7 @@ open class PrototypeActivity : ComponentActivity() {
                         continuousSlotPlayback = source.resource.kind == "slot" && source.historicalSource == null,
                         ownership = if (!replay && source.historicalSource != null) null else abemaOwnership,
                         routeOwnership = abemaOwnership)
-                        else PrototypeAbemaSession(this, replay, feedActive, events, diagnostics = feedDiagnostics(index))
+                        else historicalAbemaSession(replay, feedActive, events, feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId
                         val route = checkNotNull(routes[instanceId])

@@ -10,17 +10,17 @@ internal enum class DebugLaunchSource { CREATE, NEW_INTENT }
 internal enum class DebugLaunchRoute { STREAM_PICKER, TWITCH_SESSION, TWITCH_DEVICE_AUTH, NATIVE_ACCESS, OTHER }
 internal const val LAUNCH_LOG_TAG = "TachiaiLaunch"
 
-// The native picker lives in the debug source set and requires API 28.
-// Explicit probe requests, including an opt-out, keep their existing routes.
+// The current application requires API 28. Release entry always opens it;
+// only development builds accept the retained diagnostic launch routes.
 internal fun streamPickerAtStartup(
     debug: Boolean,
     sdkInt: Int,
     requested: Boolean?,
     launcher: Boolean,
     explicitDiagnostic: Boolean,
-): Boolean = debug && sdkInt >= 28 && requested == null && launcher && !explicitDiagnostic
+): Boolean = sdkInt >= 28 && (!debug || requested == null && launcher && !explicitDiagnostic)
 
-// The retained experiment menu is also the fallback on older Android versions.
+// The retained experiment menu is available only to development builds.
 internal fun nativeAccessAtStartup(
     debug: Boolean,
     requested: Boolean?,

@@ -88,7 +88,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
         setResult(RESULT_CANCELED)
         // A recreated Activity cannot recover the native controller's private
         // challenge. Do not reload or extend a request after process death.
-        if (!BuildConfig.DEBUG || Build.VERSION.SDK_INT < 28 || savedInstanceState != null ||
+        if (Build.VERSION.SDK_INT < 28 || savedInstanceState != null ||
             Application.getProcessName() != "$packageName:abema_approval_browser" || poisoned.get()) {
             finishDirect(); return
         }

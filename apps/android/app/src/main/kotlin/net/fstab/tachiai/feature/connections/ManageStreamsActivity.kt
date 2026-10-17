@@ -14,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.platform.network.*
@@ -66,7 +65,6 @@ class ManageStreamsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { finish(); return }
         selectedInstanceId = try { intent.getStringExtra(INSTANCE_ID)?.takeIf(::validProviderInstanceId) }
             catch (_: Exception) { null }
         val shared = SharedCatalogPreviewHandoff.isPresent(intent)
@@ -162,7 +160,7 @@ class ManageStreamsActivity : ComponentActivity() {
         super.onResume(); resumed = true; renewalHandoff = false
         if (!accountActionPending) {
             accountReadiness.onResume()
-            if (BuildConfig.DEBUG) readOwner()
+            readOwner()
         }
     }
 

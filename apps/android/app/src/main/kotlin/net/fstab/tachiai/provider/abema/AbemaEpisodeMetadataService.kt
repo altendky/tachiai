@@ -4,9 +4,8 @@ import android.app.Service
 import android.content.Intent
 import android.os.*
 import android.os.Process
-import net.fstab.tachiai.BuildConfig
 
-// Debug-only, non-exported, same-UID service in the dedicated guest process.
+// Non-exported, same-UID service in the dedicated guest process.
 // Binding configures the isolated profile; only a valid explicit START can
 // prepare a route or make a request. No Activity/window/account is launched.
 class AbemaEpisodeMetadataService : Service() {
@@ -52,7 +51,7 @@ class AbemaEpisodeMetadataService : Service() {
     private val messenger = Messenger(handler)
     override fun onCreate() {
         super.onCreate()
-        if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
+        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
     private fun start(request: Request, reply: Messenger) {

@@ -1,12 +1,20 @@
-# Product-flow prototype
+# Primary application flow
+
+The source picker, provider settings and native viewer are the primary Android
+application in ordinary debug and release builds, following the user's October
+17 promotion request. `Prototype` class/file names, process names and profile
+identities may remain for compatibility with saved state and existing tooling.
+They do not make current functionality debug-only. Historical experiments below
+retain their original dates, restrictions and verification limits; promotion
+does not establish provider support or new device evidence.
 
 ## Main flow and settings — October 16
 
-Normal development and inspection launches open **Choose two streams**. The
-picker's overflow menu retains **Developer tools**, which opens the historical
-experiment root. Explicit diagnostic launches and older Android fallback retain
-their existing entry behavior; recovery still enters the separate main process
-before terminating an unsafe prototype process.
+Normal launches open **Choose two streams**. Development and inspection builds
+retain **Developer tools** in the picker's overflow menu to open the historical
+experiment root; release omits that entry. Explicit developer diagnostic launches
+retain their own entry behavior. Recovery still enters the separate main process
+before terminating an unsafe viewer process.
 
 Providers shows compact instance rows with a leading drag handle and trailing
 three-dot menu. Tap a row to configure it. Dropping a drag saves the order; the
@@ -110,7 +118,7 @@ and authentication popups do not request keep-awake for the whole window.
 
 ## Remembered ABEMA account renewal — October 14
 
-The debug application checks saved ABEMA accounts on foreground startup and
+The application checks saved ABEMA accounts on foreground startup and
 before configured discovery or playback. When the native grant has expired,
 one bounded renewal attempt opens the remembered email browser session through
 that instance's selected connection. A trusted passive account request can

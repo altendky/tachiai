@@ -14,11 +14,16 @@ class DebugLaunchStateTest {
         assertEquals(false, streamPickerAtStartup(true, 37, null, true, true))
         assertEquals(false, streamPickerAtStartup(true, 37, null, false, false))
     }
-    @Test fun `release never enters debug picker`() {
+    @Test fun `release always opens primary picker ignoring diagnostic routes`() {
         for (request in listOf(null, false, true)) for (launcher in listOf(false, true))
-            assertEquals(false, streamPickerAtStartup(false, 37, request, launcher, false))
+            for (diagnostic in listOf(false, true)) for (sdk in listOf(28, 37))
+                assertEquals(true, streamPickerAtStartup(false, sdk, request, launcher, diagnostic))
     }
-    @Test fun `legacy menu remains available as older Android launcher fallback`() {
+    @Test fun `unsupported Android does not launch primary picker in any build`() {
+        for (debug in listOf(false, true)) for (sdk in listOf(26, 27))
+            assertEquals(false, streamPickerAtStartup(debug, sdk, null, true, false))
+    }
+    @Test fun `legacy menu remains available for development launch routing`() {
         assertEquals(true, nativeAccessAtStartup(true, null, true, false))
     }
     @Test fun `explicit diagnostic keeps its route even from launcher`() {

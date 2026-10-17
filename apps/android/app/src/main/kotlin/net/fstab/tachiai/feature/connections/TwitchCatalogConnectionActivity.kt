@@ -13,7 +13,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.presentation.validProviderInstanceId
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
@@ -26,7 +25,6 @@ class TwitchCatalogConnectionActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { super.finish(); return }
         enableEdgeToEdge()
         val id = intent.getStringExtra(INSTANCE_ID).orEmpty()
         setContent { TachiaiPrototypeTheme {

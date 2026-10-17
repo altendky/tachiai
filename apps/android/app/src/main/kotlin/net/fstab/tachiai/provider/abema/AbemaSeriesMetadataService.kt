@@ -4,7 +4,6 @@ import android.app.Service
 import android.content.Intent
 import android.os.*
 import android.os.Process
-import net.fstab.tachiai.BuildConfig
 
 // Same-UID, nonexported, no work on bind. The existing process coordinator
 // exclusively owns routes, runtime admission and uncertain-cleanup retention.
@@ -52,7 +51,7 @@ class AbemaSeriesMetadataService : Service() {
     private val messenger = Messenger(handler)
     override fun onCreate() {
         super.onCreate()
-        if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
+        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
     private fun start(request: AbemaSeriesMetadataIpc.Start, reply: Messenger) {

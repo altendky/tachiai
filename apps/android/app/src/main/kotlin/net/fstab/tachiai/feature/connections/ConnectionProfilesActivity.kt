@@ -17,7 +17,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.concurrent.Executors
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.ConnectionImportFailure
 import net.fstab.tachiai.platform.network.ConnectionProfile
@@ -30,7 +29,7 @@ import net.fstab.tachiai.platform.network.parseConnectionProfile
 import net.fstab.tachiai.platform.network.readConnectionUri
 import net.fstab.tachiai.platform.network.CONNECTION_IMPORT_TIMEOUT_MS
 
-// Import-only debug entry point. It never connects, loads provider scripts or handles account credentials.
+// Import-only entry point. It never connects, loads provider scripts or handles account credentials.
 class ConnectionProfilesActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val reader = Executors.newSingleThreadExecutor()
@@ -46,7 +45,6 @@ class ConnectionProfilesActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { finish(); return }
         enableEdgeToEdge()
         store = connectionProfileStore(this)
         onBackPressedDispatcher.addCallback(this) { if (draft != null) discard() else finish() }

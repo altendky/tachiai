@@ -9,7 +9,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.concurrent.Executors
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -29,7 +28,6 @@ class SourceSetupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { finish(); return }
         source = runCatching { PrototypeSource.valueOf(checkNotNull(intent.getStringExtra(SOURCE))) }.getOrNull()
             ?: run { finish(); return }
         settings = sourceSetupStore(this)

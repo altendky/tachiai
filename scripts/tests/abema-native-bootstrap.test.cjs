@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const assets = path.resolve(__dirname, '../../apps/android/app/src/debug/assets/abema');
+const assets = path.resolve(__dirname, '../../apps/android/app/src/main/assets/abema');
 const source = fs.readFileSync(path.join(assets, 'native-bootstrap.js'), 'utf8');
 const nonce = '1234567890abcdef1234567890abcdef';
 const name = '__tachiaiNative_' + nonce;

@@ -10,7 +10,6 @@ import androidx.compose.runtime.*
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Job
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -26,7 +25,6 @@ class ProvidersActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { finish(); return }
         enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {
             val value = settings
@@ -43,7 +41,6 @@ class ProvidersActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!BuildConfig.DEBUG) return
         val current = ++revision; busy = true
         worker.execute {
             val result = runCatching {

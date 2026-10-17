@@ -13,6 +13,34 @@ ANDROID = "{http://schemas.android.com/apk/res/android}"
 TOOLS = "{http://schemas.android.com/tools}"
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 COMPONENTS = {"activity", "activity-alias", "service", "receiver", "provider"}
+REQUIRED_COMPONENTS = {
+    "activity": {
+        ".MainActivity",
+        ".feature.presentation.CachedPrototypeActivity",
+        ".feature.presentation.PlaybackRestartActivity",
+        ".feature.connections.ProvidersActivity",
+        ".feature.connections.ManageStreamsActivity",
+        ".feature.connections.ConnectionProfilesActivity",
+        ".feature.connections.AbemaAccountConnectionActivity",
+        ".feature.connections.AbemaApprovalBrowserActivity",
+        ".feature.connections.AbemaShareActivity",
+        ".feature.connections.TwitchCatalogConnectionActivity",
+        ".provider.abema.account.AbemaAutomaticRenewalActivity",
+    },
+    "service": {
+        ".provider.abema.AbemaEpisodeMetadataService",
+        ".provider.abema.AbemaSeriesMetadataService",
+        ".provider.abema.account.AbemaAccountReadinessService",
+        ".provider.abema.account.AbemaAccountBootstrapService",
+        ".provider.abema.account.AbemaEmailGrantHandoffService",
+        ".provider.abema.account.AbemaAccountAccessService",
+    },
+}
+REQUIRED_ASSETS = {
+    f"abema/{stem}{suffix}"
+    for stem in ("native-bootstrap", "guest-bootstrap")
+    for suffix in (".html", ".js", "-initialize.js")
+}
 
 
 class IsolationFailure(ValueError):
@@ -64,11 +92,13 @@ def verify(manifest, asset_paths, source_manifests, application_id):
     if len(applications) != 1:
         raise IsolationFailure("APPLICATION_COUNT")
     app = applications[0]
+    if app.get(ANDROID + "enabled") not in (None, "true"):
+        raise IsolationFailure("APPLICATION_DISABLED")
     for name in ("debuggable", "testOnly"):
         if app.get(ANDROID + name) not in (None, "false"):
             raise IsolationFailure("DEBUG_ATTRIBUTE")
     forbidden = forbidden_components(source_manifests, application_id)
-    activities = []
+    present = {}
     for node in app.iter():
         if node.tag not in COMPONENTS:
             continue
@@ -78,15 +108,31 @@ def verify(manifest, asset_paths, source_manifests, application_id):
         component = qualified(name, application_id)
         target = node.get(ANDROID + "targetActivity")
         if component in forbidden or (target and qualified(target, application_id) in forbidden):
-            raise IsolationFailure("PROTOTYPE_COMPONENT")
-        if node.tag == "activity":
-            activities.append(component)
-    if activities.count(application_id + ".MainActivity") != 1:
-        raise IsolationFailure("MAIN_ACTIVITY")
-    for path in asset_paths:
+            raise IsolationFailure("DIAGNOSTIC_COMPONENT")
+        present.setdefault((node.tag, component), []).append(node)
+    for kind, names in REQUIRED_COMPONENTS.items():
+        for name in names:
+            nodes = present.get((kind, qualified(name, application_id)), [])
+            if len(nodes) != 1 or nodes[0].get(ANDROID + "enabled") not in (None, "true"):
+                raise IsolationFailure("PRIMARY_COMPONENT")
+    main = present[("activity", application_id + ".MainActivity")][0]
+    launcher_categories = set()
+    for intent in main.findall("intent-filter"):
+        if any(action.get(ANDROID + "name") == "android.intent.action.MAIN"
+               for action in intent.findall("action")):
+            launcher_categories.update(category.get(ANDROID + "name") for category in intent.findall("category"))
+    if main.get(ANDROID + "exported") != "true" or not {
+        "android.intent.category.LAUNCHER", "android.intent.category.LEANBACK_LAUNCHER",
+    }.issubset(launcher_categories):
+        raise IsolationFailure("PRIMARY_LAUNCHER")
+    assets = set(asset_paths)
+    if not REQUIRED_ASSETS.issubset(assets):
+        raise IsolationFailure("PRIMARY_ASSETS")
+    for path in assets:
         parts = path.split("/")
-        if parts[0] in ("abema", "browser-lab"):
-            raise IsolationFailure("PROTOTYPE_ASSETS")
+        if parts[0] == "browser-lab" or (parts[0] == "abema" and len(parts) > 1 and
+                (parts[1].startswith("cached-helper") or parts[1] == "opaque-broker.js")):
+            raise IsolationFailure("DIAGNOSTIC_ASSETS")
 
 
 def bounded_manifest(path):
@@ -108,29 +154,44 @@ def asset_paths(directory):
     return result
 
 
-def fixture(content='<activity android:name=".MainActivity" />', attributes="", package="net.fstab.tachiai"):
+def primary_content():
+    launcher = ('<intent-filter><action android:name="android.intent.action.MAIN" />'
+                '<category android:name="android.intent.category.LAUNCHER" />'
+                '<category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent-filter>')
+    return "".join(
+        f'<{kind} android:name="{name}" android:exported="true">'
+        + (launcher if name == ".MainActivity" else "") + f'</{kind}>'
+        for kind, names in REQUIRED_COMPONENTS.items() for name in sorted(names)
+    )
+
+
+def fixture(content=None, attributes="", package="net.fstab.tachiai"):
+    if content is None:
+        content = primary_content()
     return (f'<manifest xmlns:android="{ANDROID[1:-1]}" xmlns:tools="{TOOLS[1:-1]}" package="{package}">'
             f'<application {attributes}>{content}</application></manifest>').encode()
 
 
 class IsolationTests(unittest.TestCase):
-    sources = [fixture('<activity android:name=".feature.presentation.PrototypeActivity" />'),
+    sources = [fixture('<activity android:name=".feature.diagnostic.InspectionControlActivity" />'
+                       '<activity android:name=".feature.diagnostic.AbemaCachedHelperActivity" />'),
                fixture('<activity android:name=".MainActivity" tools:node="remove" />'
                        '<activity android:name=".feature.diagnostic.BrowserLabActivity" />')]
 
-    def check(self, manifest=None, assets=()):
-        verify(manifest or fixture(), assets, self.sources, "net.fstab.tachiai")
+    def check(self, manifest=None, assets=None):
+        verify(manifest or fixture(), REQUIRED_ASSETS if assets is None else assets,
+               self.sources, "net.fstab.tachiai")
 
-    def test_release_main_and_existing_guarded_twitch_assets_pass(self):
-        self.check(assets=["twitch/session.js", "diagnostics/timing-tools.js"])
-        self.check(fixture('<activity android:name="net.fstab.tachiai.MainActivity" />'))
+    def test_primary_product_and_existing_guarded_twitch_assets_pass(self):
+        self.check(assets=REQUIRED_ASSETS | {"twitch/session.js", "diagnostics/timing-tools.js"})
+        self.check(fixture(primary_content().replace('".MainActivity"', '"net.fstab.tachiai.MainActivity"')))
 
     def test_source_removal_does_not_forbid_release_main(self):
         forbidden = forbidden_components(self.sources, "net.fstab.tachiai")
         self.assertNotIn("net.fstab.tachiai.MainActivity", forbidden)
         self.assertIn("net.fstab.tachiai.feature.diagnostic.BrowserLabActivity", forbidden)
 
-    def test_wrong_application_or_missing_main_refuse(self):
+    def test_wrong_application_or_empty_product_refuse(self):
         for manifest in (fixture(package="net.fstab.tachiai.diagnostic"), fixture(content="")):
             with self.assertRaises(IsolationFailure):
                 self.check(manifest)
@@ -140,17 +201,63 @@ class IsolationTests(unittest.TestCase):
             with self.assertRaises(IsolationFailure):
                 self.check(fixture(attributes=attribute))
 
-    def test_debug_component_or_alias_target_refuse(self):
-        for content in ('<activity android:name=".feature.presentation.PrototypeActivity" />',
-                        '<service android:name="net.fstab.tachiai.feature.diagnostic.BrowserLabActivity" />',
-                        '<activity-alias android:name=".Alias" android:targetActivity=".feature.presentation.PrototypeActivity" />'):
+    def test_disabled_application_refuses(self):
+        for value in ("false", "@bool/enabled"):
             with self.assertRaises(IsolationFailure):
-                self.check(fixture('<activity android:name=".MainActivity" />' + content))
+                self.check(fixture(attributes=f'android:enabled="{value}"'))
 
-    def test_both_prototype_asset_roots_refuse(self):
-        for path in ("abema", "abema/native-bootstrap.js", "browser-lab/index.html"):
+    def test_missing_duplicate_disabled_or_wrong_kind_product_component_refuses(self):
+        for kind, names in REQUIRED_COMPONENTS.items():
+            for name in names:
+                tree = manifest_tree(fixture())
+                app = tree.find("application")
+                node = next(item for item in app if item.get(ANDROID + "name") == name)
+                for mutation in ("missing", "duplicate", "disabled", "wrong-kind"):
+                    with self.subTest(name=name, mutation=mutation):
+                        altered = ET.fromstring(ET.tostring(tree))
+                        application = altered.find("application")
+                        component = next(item for item in application if item.get(ANDROID + "name") == name)
+                        if mutation == "missing":
+                            application.remove(component)
+                        elif mutation == "duplicate":
+                            application.append(ET.fromstring(ET.tostring(node)))
+                        elif mutation == "disabled":
+                            component.set(ANDROID + "enabled", "false")
+                        else:
+                            component.tag = "service" if kind == "activity" else "activity"
+                        with self.assertRaises(IsolationFailure):
+                            self.check(ET.tostring(altered))
+
+    def test_missing_nonexported_or_wrong_action_launcher_refuses(self):
+        for old, new in (
+            ('android.intent.category.LAUNCHER', 'android.intent.category.DEFAULT'),
+            ('android.intent.category.LEANBACK_LAUNCHER', 'android.intent.category.DEFAULT'),
+            ('android.intent.action.MAIN', 'android.intent.action.VIEW'),
+            ('android:name=".MainActivity" android:exported="true"',
+             'android:name=".MainActivity" android:exported="false"'),
+        ):
+            with self.subTest(old=old), self.assertRaises(IsolationFailure):
+                self.check(fixture(primary_content().replace(old, new)))
+
+    def test_debug_component_or_alias_target_refuse(self):
+        for content in ('<activity android:name=".feature.diagnostic.InspectionControlActivity" />',
+                        '<activity android:name=".feature.diagnostic.InspectionControlActivity" android:enabled="false" />',
+                        '<service android:name="net.fstab.tachiai.feature.diagnostic.BrowserLabActivity" />',
+                        '<activity-alias android:name=".Alias" android:targetActivity=".feature.diagnostic.AbemaCachedHelperActivity" />'):
             with self.assertRaises(IsolationFailure):
-                self.check(assets=[path])
+                self.check(fixture(primary_content() + content))
+
+    def test_diagnostic_assets_refuse(self):
+        for path in ("abema/cached-helper.js", "abema/cached-helper-initialize.js",
+                     "abema/cached-helper.html", "abema/opaque-broker.js", "browser-lab",
+                     "browser-lab/index.html"):
+            with self.assertRaises(IsolationFailure):
+                self.check(assets=REQUIRED_ASSETS | {path})
+
+    def test_missing_primary_assets_refuse(self):
+        for path in REQUIRED_ASSETS:
+            with self.subTest(path=path), self.assertRaises(IsolationFailure):
+                self.check(assets=REQUIRED_ASSETS - {path})
 
     def test_malformed_oversized_or_entity_xml_refuse(self):
         for data in (b"not xml", b"x" * (MAX_MANIFEST_BYTES + 1), b"<!DOCTYPE manifest><manifest />",
@@ -174,7 +281,7 @@ if __name__ == "__main__":
     if args.self_test:
         unittest.main(argv=[__file__])
     elif not all((args.manifest, args.assets, args.application_id, args.forbidden_manifest)):
-        parser.error("provide merged manifest/assets, application ID and source prototype manifests")
+        parser.error("provide merged manifest/assets, application ID and developer-only source manifests")
     else:
         try:
             verify(bounded_manifest(args.manifest), asset_paths(args.assets),

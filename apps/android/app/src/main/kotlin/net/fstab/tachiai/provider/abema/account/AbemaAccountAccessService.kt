@@ -12,7 +12,6 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.presentation.validProviderInstanceId
 
 // Closed RAM-only protocol. Bundle keys are unique; no JSON parsing or generic
@@ -343,7 +342,7 @@ class AbemaAccountAccessService : Service() {
             }
         }
     }
-    override fun onBind(intent: Intent): IBinder? = if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= 28 &&
+    override fun onBind(intent: Intent): IBinder? = if (Build.VERSION.SDK_INT >= 28 &&
         Application.getProcessName() == packageName) messenger.binder else null
     override fun onDestroy() { sessions.values.toList().forEach { it.end(it.sequence) }; super.onDestroy() }
 }

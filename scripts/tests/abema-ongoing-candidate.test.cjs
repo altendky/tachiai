@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '../..');
-const source = fs.readFileSync(path.join(root, 'apps/android/app/src/debug/assets/abema/guest-bootstrap.js'), 'utf8');
+const source = fs.readFileSync(path.join(root, 'apps/android/app/src/main/assets/abema/guest-bootstrap.js'), 'utf8');
 const helper = fs.readFileSync(path.join(root,
   'apps/android/app/src/androidTest/kotlin/net/fstab/tachiai/provider/abema/AbemaScheduleOngoingCandidateObservation.kt'), 'utf8');
 const projection = helper.match(/val TEST_SCHEDULE_PROJECTION = """([\s\S]*?)"""\.trimIndent\(\)/);

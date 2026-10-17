@@ -204,6 +204,113 @@ class CachedViewerCleanupCoordinatorTest {
         assertEquals(1, f.events.count { it == "close:route" })
     }
 
+    @Test fun confirmedClosedSlotCanBeReplacedWithoutClosingHealthyFeedOrRoute() {
+        val f = Fixture(); val run = f.begin(); f.route(run); f.helper(run)
+        var oldCloses = 0; var healthyCloses = 0; var replacementCloses = 0
+        val old = AutoCloseable { oldCloses++ }
+        f.owner.feed(run, 0, old) { true }
+        f.owner.feed(run, 1, AutoCloseable { healthyCloses++ }) { true }
+        assertFalse(f.owner.feedClosed(run, 0))
+        assertFalse(f.owner.retireClosedFeed(run, 0))
+        assertTrue(f.owner.closeFeed(run, 0))
+        assertTrue(f.owner.feedClosed(run, 0))
+        assertSame(old, run.feeds.getValue(0).resource)
+        assertTrue(f.owner.retireClosedFeed(run, 0))
+        assertSame(old, run.retiredFeeds.single().resource)
+        assertEquals(0, healthyCloses)
+        assertFalse(f.events.any { it.startsWith("close:") || it == "destroy" || it == "clear" })
+        f.owner.feed(run, 0, AutoCloseable { replacementCloses++ }) { true }
+        assertFalse(f.owner.feedClosed(run, 0))
+        assertFalse(f.owner.retireClosedFeed(run, 0))
+        assertThrows(IllegalStateException::class.java) {
+            f.owner.feed(run, 0, AutoCloseable {}) { true }
+        }
+        f.owner.end(run); f.finish()
+        assertEquals(1, oldCloses); assertEquals(1, healthyCloses); assertEquals(1, replacementCloses)
+        assertEquals(1, f.events.count { it == "close:route" })
+        assertTrue(run.retiredFeeds.isEmpty())
+    }
+
+    @Test fun repeatedReplacementsKeepEveryRetiredReceiptWithoutClosingAnyTwice() {
+        val f = Fixture(); val run = f.begin(); f.route(run)
+        var closes = 0
+        repeat(3) {
+            f.owner.feed(run, 0, AutoCloseable { closes++ }) { true }
+            assertTrue(f.owner.closeFeed(run, 0))
+            assertTrue(f.owner.retireClosedFeed(run, 0))
+            assertTrue(f.owner.retireClosedFeed(run, 0))
+        }
+        assertEquals(3, run.retiredFeeds.size)
+        assertEquals(3, closes)
+        f.owner.end(run); f.finish()
+        assertEquals(3, closes); assertFalse(f.owner.unavailable)
+    }
+
+    @Test fun pendingOrUncertainCleanupCannotRetireItsSlot() {
+        for (uncertainty in listOf("pending", "unconfirmed", "failed", "unknown")) {
+            val f = Fixture(); val run = f.begin(); f.route(run)
+            var pending = true; var confirmed = false; var failed = false; var unknown = false
+            val old = AutoCloseable {}
+            f.owner.feed(run, 0, old, pending = { pending }, knownFailed = { failed }) {
+                if (unknown) throw IOException("Synthetic receipt failure")
+                confirmed
+            }
+            assertTrue(f.owner.closeFeed(run, 0))
+            when (uncertainty) {
+                "pending" -> confirmed = true
+                "unconfirmed" -> pending = false
+                "failed" -> { pending = false; confirmed = true; failed = true }
+                "unknown" -> { pending = false; unknown = true }
+            }
+            assertFalse(uncertainty, f.owner.feedClosed(run, 0))
+            assertFalse(uncertainty, f.owner.retireClosedFeed(run, 0))
+            assertSame(old, run.feeds.getValue(0).resource)
+            assertTrue(run.retiredFeeds.isEmpty())
+            if (uncertainty == "pending") {
+                pending = false
+                assertTrue(f.owner.feedClosed(run, 0))
+                assertTrue(f.owner.retireClosedFeed(run, 0))
+            }
+        }
+    }
+
+    @Test fun refusedCloseCannotRetireEvenIfReceiptClaimsConfirmation() {
+        val f = Fixture(); val run = f.begin(); f.route(run)
+        val resource = AutoCloseable { throw IOException("Synthetic close refusal") }
+        f.owner.feed(run, 0, resource) { true }
+        assertFalse(f.owner.closeFeed(run, 0))
+        assertFalse(f.owner.feedClosed(run, 0)); assertFalse(f.owner.retireClosedFeed(run, 0))
+        assertSame(resource, run.feeds.getValue(0).resource)
+        assertTrue(run.retiredFeeds.isEmpty())
+    }
+
+    @Test fun absentSlotIsReusableOnlyInCurrentActiveRun() {
+        val f = Fixture(); val old = f.begin()
+        assertTrue(f.owner.feedClosed(old, 0)); assertTrue(f.owner.retireClosedFeed(old, 0))
+        f.owner.end(old); f.finish()
+        val next = f.begin()
+        f.owner.feed(next, 0, AutoCloseable {}) { true }
+        assertFalse(f.owner.feedClosed(old, 0)); assertFalse(f.owner.retireClosedFeed(old, 0))
+        assertEquals(1, next.feeds.size)
+        assertTrue(f.owner.current(next))
+        f.owner.end(next)
+        assertFalse(f.owner.feedClosed(next, 1)); assertFalse(f.owner.retireClosedFeed(next, 1))
+    }
+
+    @Test fun lateRetiredReceiptFailureStopsReplacementAndRetainsRoute() {
+        val f = Fixture(); val run = f.begin(); val route = f.route(run)
+        var failed = false; var replacementCloses = 0
+        f.owner.feed(run, 0, AutoCloseable {}, knownFailed = { failed }) { !failed }
+        assertTrue(f.owner.closeFeed(run, 0)); assertTrue(f.owner.retireClosedFeed(run, 0))
+        f.owner.feed(run, 0, AutoCloseable { replacementCloses++ }) { true }
+        failed = true
+        assertFalse(f.owner.feedClosed(run, 1)); assertFalse(f.owner.retireClosedFeed(run, 1))
+        f.owner.feedCleanupChanged(run); f.finish()
+        f.assertPoisoned(); assertEquals(1, replacementCloses)
+        assertSame(route, run.routes.single()); assertEquals(1, run.retiredFeeds.size)
+        assertFalse("close:route" in f.events)
+    }
+
     @Test fun nativeCleanupFailureRemainsUncertainEvenWhenHelperDestructionSucceeds() {
         val f = Fixture(); val run = f.begin(); f.route(run)
         val helper = CachedAbemaHelperCleanup(Any(), listOf(FailureStage.WEBVIEW_DESTROY to {}), FailureReporter.NONE)

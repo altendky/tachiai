@@ -24,6 +24,9 @@ internal class CachedViewerCleanupCoordinator(
         @Volatile internal var phase = Phase.ACTIVE
         internal val routes = mutableListOf<AutoCloseable>()
         internal val feeds = linkedMapOf<Int, Feed>()
+        // Freed slots may be reused, but their receipts remain owned until the
+        // run ends so a late cleanup failure cannot disappear on replacement.
+        internal val retiredFeeds = mutableListOf<Feed>()
         internal val helpers = mutableListOf<Helper>()
         internal var cancelPreparation: (() -> Boolean)? = null
         internal var producerFinished = true
@@ -83,16 +86,28 @@ internal class CachedViewerCleanupCoordinator(
         if (run.phase == Run.Phase.ENDING) finishFeeds(run)
         return accepted
     }
+    fun feedClosed(run: Run, slot: Int): Boolean {
+        if (!current(run) || !consumersConfirmed(run.retiredFeeds)) return false
+        val entry = run.feeds[slot] ?: return true
+        return entry.attempted && entry.accepted && consumersConfirmed(listOf(entry))
+    }
+    fun retireClosedFeed(run: Run, slot: Int): Boolean {
+        if (!feedClosed(run, slot)) return false
+        run.feeds.remove(slot)?.let(run.retiredFeeds::add)
+        return true
+    }
+    private fun feeds(run: Run): List<Feed> = run.retiredFeeds + run.feeds.values
     fun feedCleanupChanged(run: Run) {
         if (owned !== run) return
         if (run.phase == Run.Phase.ACTIVE) {
-            val completed = run.feeds.filterValues { it.attempted && !runCatching(it.pending).getOrDefault(true) }
-            if (run.feeds.values.any { runCatching(it.knownFailed).getOrDefault(true) } ||
-                completed.values.any { !runCatching(it.confirmed).getOrDefault(false) }) {
+            val ownedFeeds = feeds(run)
+            val completed = ownedFeeds.filter { it.attempted && !runCatching(it.pending).getOrDefault(true) }
+            if (ownedFeeds.any { runCatching(it.knownFailed).getOrDefault(true) } ||
+                completed.any { !runCatching(it.confirmed).getOrDefault(false) }) {
                 run.cleanupFailed = true; end(run)
             }
         } else if (run.phase == Run.Phase.ENDING) finishFeeds(run)
-        else if (run.phase in setOf(Run.Phase.CLEARING, Run.Phase.CLOSING) && !consumersConfirmed(run.feeds.values.toList()))
+        else if (run.phase in setOf(Run.Phase.CLEARING, Run.Phase.CLOSING) && !consumersConfirmed(feeds(run)))
             poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED)
     }
     private fun closeFeed(run: Run, entry: Feed): Boolean {
@@ -119,11 +134,11 @@ internal class CachedViewerCleanupCoordinator(
         // A synchronous feed event can ask for disposal inside that feed's
         // close(). Wait for its receipt before destroying helpers or clearing.
         if (owned !== run || run.phase != Run.Phase.ENDING || run.feedsClosed || run.feedClosesInProgress != 0) return
-        run.feeds.values.toList().forEach { entry ->
+        feeds(run).forEach { entry ->
             val accepted = closeFeed(run, entry)
             if (!runCatching(entry.pending).getOrDefault(true) && !accepted) run.cleanupFailed = true
         }
-        if (run.feeds.values.any { runCatching(it.pending).getOrDefault(true) }) return
+        if (feeds(run).any { runCatching(it.pending).getOrDefault(true) }) return
         var destroyed = true
         run.helpers.forEach { helper ->
             if (!run.diagnostics.cleanupAll(FailureStage.WEBVIEW_DESTROY) {
@@ -137,7 +152,7 @@ internal class CachedViewerCleanupCoordinator(
     }
     private fun advance(run: Run) {
         if (owned !== run || run.phase != Run.Phase.ENDING || !run.producerFinished || !run.feedsClosed) return
-        if (!consumersConfirmed(run.feeds.values.toList())) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED); return }
+        if (!consumersConfirmed(feeds(run))) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED); return }
         if (!run.proxyTouched) { closeRoutes(run); return }
         run.phase = Run.Phase.CLEARING
         delay(3_000) { if (owned === run && run.phase == Run.Phase.CLEARING)
@@ -154,7 +169,7 @@ internal class CachedViewerCleanupCoordinator(
             runCatching(it.confirmed).getOrDefault(false)
     }
     private fun closeRoutes(run: Run) {
-        val feeds = run.feeds.values.toList()
+        val feeds = feeds(run)
         if (!consumersConfirmed(feeds)) { poison(run, FailureStage.FEED_CLEANUP_UNCONFIRMED); return }
         run.phase = Run.Phase.CLOSING
         val routes = synchronized(run.routes) { run.routes.toList() }
@@ -168,7 +183,7 @@ internal class CachedViewerCleanupCoordinator(
                 if (owned === run && run.phase == Run.Phase.CLOSING) {
                     if (accepted && consumersConfirmed(feeds)) {
                         run.phase = Run.Phase.FINISHED
-                        run.feeds.clear(); run.helpers.clear(); synchronized(run.routes) { run.routes.clear() }
+                        run.feeds.clear(); run.retiredFeeds.clear(); run.helpers.clear(); synchronized(run.routes) { run.routes.clear() }
                         run.cancelPreparation = null
                         owned = null
                         changed()

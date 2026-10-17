@@ -13,6 +13,7 @@ internal class PrototypePlaybackController(
     private var closed = false
     private var message = "No playable feeds."
     private var recovery: NativeLiveRecovery? = null
+    private var coordinationLost = false
     var pair: NativeMixedPair? = null
         private set
     val status: String get() = pair?.status ?: message
@@ -32,6 +33,7 @@ internal class PrototypePlaybackController(
         recovery = null
         // Do not close the old pair: it owns members in historical callers.
         // Detach cancels pending restores without pausing the surviving feed.
+        if (pair != null) coordinationLost = true
         pair?.detach()
         pair = null
         this.member(side)?.let { playing(it, false) }
@@ -41,6 +43,7 @@ internal class PrototypePlaybackController(
         if (preparedA != null && preparedB != null) {
             pair = NativeMixedPair(preparedA, preparedB, acquireFocus, {}, clockMs,
                 requireCurrentLiveWindowOnPlay = true,
+                initialAdjustmentValid = !coordinationLost,
                 admission = { !closed && members().any { current -> current === it } && admission(it) })
         } else members().singleOrNull()?.let { selected ->
             recovery = NativeLiveRecovery(listOf(selected), clockMs,

@@ -12,13 +12,14 @@ internal class NativeMixedPair(
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val requireCurrentLiveWindowOnPlay: Boolean = false,
     private val admission: (NativePairMember) -> Boolean = { true },
+    initialAdjustmentValid: Boolean = true,
 ) : AutoCloseable {
     var status = "Prepared paused; press Play."
         private set
     // Positive = A requested later relative to B, not measured synchronization.
     var requestedAdjustmentMs = 0L
         private set
-    var requestedAdjustmentValid = true
+    var requestedAdjustmentValid = initialAdjustmentValid
         private set
     var busy = false
         private set

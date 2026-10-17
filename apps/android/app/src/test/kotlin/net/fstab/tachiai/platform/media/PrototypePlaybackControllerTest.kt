@@ -119,6 +119,32 @@ class PrototypePlaybackControllerTest {
         assertEquals(1, a.playRequests)
     }
 
+    @Test fun `recovering either feed preserves the survivor and invalidates prior alignment`() {
+        for (failedSide in NativeMixedSide.entries) {
+            val a = Member(replay)
+            val b = Member(replay)
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, a)
+            controller.setMember(NativeMixedSide.B, b)
+            assertTrue(controller.play())
+            assertTrue(controller.pair!!.requestedAdjustmentValid)
+            val survivor = if (failedSide == NativeMixedSide.A) b else a
+            val pauses = survivor.pauseRequests
+            val seeks = survivor.seekRequests
+            controller.setMember(failedSide, null)
+            val replacement = Member(replay)
+            controller.setMember(failedSide, replacement)
+            assertSame(replacement, controller.member(failedSide))
+            assertTrue(survivor.sample.playWhenReady)
+            assertEquals(pauses, survivor.pauseRequests)
+            assertEquals(seeks, survivor.seekRequests)
+            assertEquals(0, survivor.closeRequests)
+            assertFalse(controller.pair!!.requestedAdjustmentValid)
+            assertTrue(controller.play())
+            assertTrue(replacement.sample.playWhenReady)
+        }
+    }
+
     @Test fun `changing the other slot never restarts a feed or ends borrowed lifetimes`() {
         val a = Member(replay)
         val b = Member(replay)

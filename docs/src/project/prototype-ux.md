@@ -19,6 +19,18 @@ ABEMA replay availability follows the selected provider free/terms/timeshift
 window; removing a local timer does not extend that window or a provider grant.
 Earlier dated sections below describe the former experimental session limits.
 
+Failed feed panes offer **Go live** when playback has fallen behind the live
+window, or **Retry** for classified playback/network availability failures.
+Recovery creates a fresh session for that feed on its retained selected route,
+after its old session confirms cleanup. The other feed keeps playing; the viewer
+retains layout, mix/mutes and quality preferences. Live starts at the current
+provider default position; replay uses its last observed content position where
+the current source supports that seek. The prior relative timing anchor becomes
+invalid. Repeated taps cannot create concurrent attempts, and late callbacks
+from a retired session cannot affect its replacement. Retries are user initiated;
+account, entitlement, licensing, policy and unsafe cleanup failures retain their
+existing settings/recovery requirements. No playback route switching is added.
+
 ## Main flow and settings — October 16
 
 Normal launches open **Choose two streams**. Development and inspection builds

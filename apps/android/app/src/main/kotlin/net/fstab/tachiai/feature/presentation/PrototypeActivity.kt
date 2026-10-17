@@ -88,6 +88,9 @@ import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.presentation.PrototypePlayBarrier
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
+import net.fstab.tachiai.presentation.FeedRetryState
+import net.fstab.tachiai.presentation.recoveryAction
+import net.fstab.tachiai.presentation.viewerMessage
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.presentation.PrototypePlaybackKind
 import net.fstab.tachiai.presentation.ConfiguredPlaybackSelection
@@ -185,6 +188,9 @@ open class PrototypeActivity : ComponentActivity() {
     private val prepared = BooleanArray(2)
     private val initialCatchUp = BooleanArray(2)
     private val catchUpDeadline = LongArray(2)
+    private var feedRetries = List(2) { FeedRetryState() }
+    private val retryDeadline = LongArray(2)
+    private val replayRestoreTarget = arrayOfNulls<Long>(2)
     private var surfaces = emptyList<PlayerView>()
     private var budget: NativePlaybackBudget? = null
     private var playback: PrototypePlaybackController? = null
@@ -484,6 +490,7 @@ open class PrototypeActivity : ComponentActivity() {
         val sharedBudget = NativePlaybackBudget.continuous(::active)
         budget = sharedBudget
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
+        feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
         desiredPlaying = true; lastAuthorizationPoll = 0; lastSample = 0
         styleSystemBars(false)
         val frame = FrameLayout(this).apply { setBackgroundColor(getColor(R.color.prototype_background)) }
@@ -634,22 +641,21 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun createFeeds(selected: ConfiguredPlaybackSelection, sharedBudget: NativePlaybackBudget, run: Long, setup: LinearLayout,
-        providers: Set<PrototypeService>) {
+        providers: Set<PrototypeService>, slots: Set<Int> = setOf(0, 1)) {
         val ownedRun = cachedRun
         fun active() = resumed.get() && epoch.get() == run && !isFinishing &&
             (ownedRun == null || cachedCleanup.current(ownedRun))
         if (!active()) return
         val created = mutableListOf<Pair<Int, PrototypeFeedSession>>()
         selected.feeds.forEachIndexed { index, source ->
-            if (source.service !in providers || failures[index] != null || sessions[index] != null) return@forEachIndexed
+            if (index !in slots || source.service !in providers || failures[index] != null || sessions[index] != null) return@forEachIndexed
+            val attemptState = feedRetries[index]
+            val attempt = attemptState.newAttempt()
+            fun currentAttempt() = active() && feedRetries[index] === attemptState && attemptState.current(attempt)
             try {
                 val replay = source.kind == PrototypePlaybackKind.REPLAY
                 val events: (PrototypeFeedEvent) -> Unit = { event ->
-                    if (disposing && event == PrototypeFeedEvent.FAILED) {
-                        feedDiagnostics(index).report(FailureStage.DISPOSING_FEED_FAILED)
-                        cleanupFailed = true
-                    }
-                    else if (active() && failures[index] == null) {
+                    if (currentAttempt() && failures[index] == null) {
                         Log.d("TachiaiPrototype", "slot=${if (index == 0) "A" else "B"} source=${source.diagnosticName} event=${event.name}")
                         if (event == PrototypeFeedEvent.NETWORK_APPROVAL_REQUIRED)
                             failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED))
@@ -660,7 +666,7 @@ open class PrototypeActivity : ComponentActivity() {
                     }
                 }
                 val startupScope = checkNotNull(synchronized(startupLock) { startupScopes[source.instanceId] })
-                val feedActive = { active() && failures[index] == null && startupScope.canContinue() }
+                val feedActive = { currentAttempt() && failures[index] == null && startupScope.canContinue() }
                 val abemaOwnership = if (source.service == PrototypeService.ABEMA && useCachedAbema)
                     checkNotNull(routeOwners[source.instanceId]).let { owner ->
                         androidAbemaEpisodePlaybackOwnership(this, owner.effectiveInstance, owner.profile,
@@ -685,7 +691,7 @@ open class PrototypeActivity : ComponentActivity() {
                         val profile = checkNotNull(routeProfiles[instanceId]).getOrThrow()
                         val routeChoice = checkNotNull(routeChoices[instanceId])
                         val ownerProof = checkNotNull(routeOwners[instanceId]).proof
-                        val startupValidation = startupTwitchValidation[instanceId]
+                        val startupValidation = startupTwitchValidation[instanceId].takeUnless { attemptState.retrying }
                         val preparation = {
                             CatalogTwitchPreparation(this, instanceId, profile, routeChoice, feedActive,
                                 openConnection = route::open, expectedOwnerProof = ownerProof, startupValidation = startupValidation)
@@ -763,8 +769,15 @@ open class PrototypeActivity : ComponentActivity() {
                 viewer?.refresh()
                 return
             }
+            processFeedRetries(currentBudget)
+            if (budget !== currentBudget) return
             sessions.forEachIndexed { index, host ->
                 try {
+                    if (prepared[index] && selection?.feeds?.get(index)?.kind == PrototypePlaybackKind.REPLAY) {
+                        host?.member?.timingSnapshot()?.takeIf {
+                            it.state == Player.STATE_READY && !it.live && !it.dynamic && !it.playingAd
+                        }?.positionMs?.let(feedRetries[index]::rememberReplay)
+                    }
                     if (host?.member != null && !host.canContinue()) failFeed(index, authorizationFailure(index, host))
                     else if (host != null && failures[index] == null && !prepared[index]) prepareViewerSlot(index, host)
                 } catch (error: Exception) {
@@ -845,9 +858,16 @@ open class PrototypeActivity : ComponentActivity() {
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal
-                failures[index]?.let { "Could not load this feed\n\n${it.message}\n\nUse the back arrow to choose another feed." }
+                if (feedRetries[index].retrying) "Retrying this feed…"
+                else failures[index]?.let { it.viewerMessage }
                     ?: if (!prepared[index]) "Preparing this feed…" else null
-            }, onSources = { stopToPicker("Playback stopped.") },
+            }, feedRecovery = { side ->
+                val index = side.ordinal
+                failures[index]?.recoveryAction()?.takeIf { canRetryFeed(index) }?.let {
+                    ViewerFeedRecovery(it.label, !feedRetries[index].retrying)
+                } ?: if (feedRetries[index].retrying) ViewerFeedRecovery("Retrying…", false) else null
+            }, onRecoverFeed = { side -> requestFeedRetry(side.ordinal) },
+            onSources = { stopToPicker("Playback stopped.") },
             qualityState = { side, kind -> qualitySession?.read(side, kind)?.copy(saving = savingQuality, message = qualityMessage) },
             onQualityOverride = { side, kind, request ->
                 if (!savingQuality && playback?.busy != true) {
@@ -866,12 +886,36 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun prepareViewerSlot(index: Int, host: PrototypeFeedSession) {
+        if (replayRestoreTarget[index] != null && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
+            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
+        }
         if (initialCatchUp[index] && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
             failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_POSITION_FAILED)); return
         }
         val member = host.member ?: return
         val snapshot = member.timingSnapshot() ?: return
         if (snapshot.state != Player.STATE_READY || snapshot.playWhenReady || snapshot.playingAd) return
+        val retry = feedRetries[index]
+        if (retry.retrying && selection?.feeds?.get(index)?.kind == PrototypePlaybackKind.REPLAY &&
+            !snapshot.live && !snapshot.dynamic && retry.replayPositionMs != null) {
+            val target = replayRestoreTarget[index]
+            if (target == null) {
+                val duration = snapshot.durationMs ?: return
+                if (duration <= 0) return
+                val requested = checkNotNull(retry.replayPositionMs).coerceIn(0, duration - 1)
+                val plan = member.seekToMs(requested)
+                if (plan.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE) || plan.targetMs != requested) {
+                    failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
+                }
+                replayRestoreTarget[index] = requested
+                catchUpDeadline[index] = SystemClock.elapsedRealtime() + 8_000
+                return
+            }
+            if (SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
+                failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
+            }
+            if (snapshot.positionMs == null || kotlin.math.abs(snapshot.positionMs - target) > 1_000) return
+        }
         if (!initialCatchUp[index] && (snapshot.live || snapshot.dynamic)) {
             initialCatchUp[index] = true
             catchUpDeadline[index] = SystemClock.elapsedRealtime() + 8_000
@@ -884,6 +928,7 @@ open class PrototypeActivity : ComponentActivity() {
         if ((snapshot.live || snapshot.dynamic) && (snapshot.positionMs == null || snapshot.durationMs == null ||
                 snapshot.durationMs <= 0 || snapshot.positionMs !in 0..snapshot.durationMs)) return
         prepared[index] = true
+        retry.ready()
         invalidatePlay()
         playback?.setMember(NativeMixedSide.entries[index], member)
         applyQuality(NativeMixedSide.entries[index])
@@ -993,6 +1038,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (failure.reason !in setOf(PrototypeFailureReason.STOPPED, PrototypeFailureReason.PLAYBACK_LIMIT))
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
         failures[index] = failure
+        feedRetries[index].invalidate()
         Log.d("TachiaiPrototype", "slot=${NativeMixedSide.entries[index].name} failure=${failure.reason.name} http=${failure.httpStatus ?: 0}")
         invalidatePlay()
         playback?.setMember(NativeMixedSide.entries[index], null)
@@ -1011,11 +1057,41 @@ open class PrototypeActivity : ComponentActivity() {
             }
         }
         if (NativeMixedSide.entries.all { playback?.member(it) == null }) focus?.release()
-        if (failures.all { it != null }) releaseRoutes()
+        if (failures.all { it != null } && failures.none { it?.recoveryAction() != null }) releaseRoutes()
         updateProgress()
         viewer?.refresh()
         updateRecoveryState()
         if (cleanupFailed && !disposing) stopToPicker("Playback stopped because cleanup could not be confirmed.")
+    }
+
+    private fun canRetryFeed(index: Int): Boolean = useCachedAbema && !cleanupFailed &&
+        budget?.active == true && cachedRun?.let(cachedCleanup::current) == true &&
+        selection?.feeds?.get(index)?.instanceId?.let(routes::containsKey) == true
+
+    private fun requestFeedRetry(index: Int) {
+        if (!canRetryFeed(index) || failures[index]?.recoveryAction() == null || !feedRetries[index].request()) return
+        retryDeadline[index] = SystemClock.elapsedRealtime() + 20_000
+        viewer?.refresh()
+    }
+
+    private fun processFeedRetries(currentBudget: NativePlaybackBudget) {
+        feedRetries.forEachIndexed { index, retry ->
+            if (!retry.requested) return@forEachIndexed
+            if (!canRetryFeed(index)) return@forEachIndexed
+            val owned = cachedRun ?: return@forEachIndexed
+            if (!cachedCleanup.feedClosed(owned, index)) {
+                if (SystemClock.elapsedRealtime() >= retryDeadline[index])
+                    stopToPicker("Playback cleanup could not be confirmed. Use Recovery options to restart.")
+                return@forEachIndexed
+            }
+            if (!cachedCleanup.retireClosedFeed(owned, index)) return@forEachIndexed
+            val selected = selection ?: return@forEachIndexed
+            val setup = root?.getChildAt(0) as? LinearLayout ?: return@forEachIndexed
+            failures[index] = null
+            prepared[index] = false; initialCatchUp[index] = false; catchUpDeadline[index] = 0
+            replayRestoreTarget[index] = null
+            createFeeds(selected, currentBudget, epoch.get(), setup, setOf(selected.feeds[index].service), setOf(index))
+        }
     }
 
     private fun stopToPicker(message: String) {
@@ -1032,6 +1108,7 @@ open class PrototypeActivity : ComponentActivity() {
     private fun dispose(retainStartups: Boolean = false) {
         if (!retainStartups) retireStartupScopes()
         disposing = true
+        feedRetries.forEach { it.invalidate() }
         cancelRoutePreparation()
         epoch.incrementAndGet(); invalidatePlay(); handler.removeCallbacks(ticker)
         budget?.stop()

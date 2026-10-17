@@ -19,6 +19,7 @@ internal class ConfiguredStreamDrag(
     private val reorder: (List<String>) -> Job?,
     private val edgePx: Float,
     private val speedPxPerSecond: Float,
+    private val keyPrefix: String = "configured:",
 ) {
     var viewport: LayoutCoordinates? = null
     var order by mutableStateOf<List<String>?>(null)
@@ -38,7 +39,7 @@ internal class ConfiguredStreamDrag(
     val busy get() = order != null
 
     private fun viewportY() = viewport?.takeIf { it.isAttached }?.localToRoot(Offset.Zero)?.y
-    private fun item(id: String) = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "configured:$id" }
+    private fun item(id: String) = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "$keyPrefix$id" }
 
     fun start(id: String, rootY: Float, container: PinnableContainer?) {
         if (!enabled() || busy) return
@@ -97,8 +98,8 @@ internal class ConfiguredStreamDrag(
         val from = ids.indexOf(id)
         val target = list.layoutInfo.visibleItemsInfo.mapNotNull { row ->
             val key = row.key as? String ?: return@mapNotNull null
-            if (!key.startsWith("configured:")) return@mapNotNull null
-            val index = ids.indexOf(key.removePrefix("configured:"))
+            if (!key.startsWith(keyPrefix)) return@mapNotNull null
+            val index = ids.indexOf(key.removePrefix(keyPrefix))
             val midpoint = row.offset + row.size / 2f
             if (index > from && center > midpoint || index in 0 until from && center < midpoint)
                 index to abs(center - midpoint) else null

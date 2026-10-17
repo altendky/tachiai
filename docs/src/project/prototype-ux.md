@@ -8,7 +8,15 @@ experiment root. Explicit diagnostic launches and older Android fallback retain
 their existing entry behavior; recovery still enters the separate main process
 before terminating an unsafe prototype process.
 
-Providers opens the instance list. Configuring an instance opens one detail
+Providers shows compact instance rows with a leading drag handle and trailing
+three-dot menu. Tap a row to configure it. Dropping a drag saves the order; the
+handle's menu also supports moving earlier or later. Delete asks for confirmation
+and removes that instance and its streams from the configured setup, preserving
+shared routes and other instances. All instances may be removed; an explicitly
+empty registry stays empty, and adding again creates a fresh identity. Removal
+does not sign out, revoke an already-running session, or erase orphaned encrypted
+instance records. Missing identities cannot start new playback or silently use
+another account. Configuring an instance opens one detail
 page with name, connection, account actions and stream management, instead of
 separate account and Manage streams navigation. Provider-controlled sign-in and
 catalog browsing remain focused operations. Account controllers remain mounted

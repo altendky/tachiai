@@ -25,8 +25,9 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         val bytes = store.read() ?: return validate(defaultProviderInstances(legacy()))
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-            val version = input.readInt(); check(version in 1..2)
-            val count = input.readInt(); check(count in PrototypeService.entries.size..MAX_PROVIDER_INSTANCES)
+            val version = input.readInt(); check(version in 1..3)
+            val count = input.readInt()
+            check(count in (if (version < 3) PrototypeService.entries.size else 0)..MAX_PROVIDER_INSTANCES)
             fun choice(): SourceRouteChoice {
                 val mode = SourceRouteMode.valueOf(input.readUTF())
                 return if (mode == SourceRouteMode.SAVED_CONNECTION) SourceRouteChoice(mode, input.readUTF(), input.readUTF())
@@ -46,15 +47,17 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
                     ProviderSetup(routes.firstOrNull(), List(previousCount) { choice() }, routes.drop(1)))
             }
             check(input.read() == -1)
+            if (version < 3) PrototypeService.entries.forEach { service ->
+                check(entries.singleOrNull { it.id == defaultProviderInstanceId(service) }?.service == service)
+            }
             validate(entries)
         }
     }
 
     private fun validate(entries: List<ProviderInstance>): List<ProviderInstance> {
-        check(entries.size in PrototypeService.entries.size..MAX_PROVIDER_INSTANCES)
+        check(entries.size <= MAX_PROVIDER_INSTANCES)
         check(entries.map { it.id }.distinct().size == entries.size)
         PrototypeService.entries.forEach { service ->
-            check(entries.singleOrNull { it.id == defaultProviderInstanceId(service) }?.service == service)
             check(entries.filter { it.service == service }.map { it.name.lowercase(java.util.Locale.ROOT) }.distinct().size ==
                 entries.count { it.service == service })
         }
@@ -63,10 +66,21 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
 
     fun create(service: PrototypeService, legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = mutate(legacy) { entries ->
         check(entries.size < MAX_PROVIDER_INSTANCES)
-        var ordinal = 2
-        while (entries.any { it.service == service && (it.defaultName == "${service.title} $ordinal" ||
-                sameProviderInstanceName(it.name, "${service.title} $ordinal")) }) ordinal++
-        entries + ProviderInstance(UUID.randomUUID().toString(), service, "${service.title} $ordinal")
+        var ordinal = 1
+        fun name() = if (ordinal == 1) service.title else "${service.title} $ordinal"
+        while (entries.any { it.service == service && (it.defaultName == name() ||
+                sameProviderInstanceName(it.name, name())) }) ordinal++
+        entries + ProviderInstance(UUID.randomUUID().toString(), service, name())
+    }
+
+    fun remove(id: String, legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = mutate(legacy) { entries ->
+        check(entries.any { it.id == id })
+        entries.filterNot { it.id == id }
+    }
+
+    fun reorder(ids: List<String>, legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = mutate(legacy) { entries ->
+        check(ids.size == entries.size && ids.toSet() == entries.map { it.id }.toSet())
+        ids.map { id -> entries.single { it.id == id } }
     }
 
     fun save(id: String, name: String?, route: SourceRouteChoice,
@@ -85,7 +99,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
     private fun mutate(legacy: () -> Map<PrototypeService, ProviderSetup>, update: (List<ProviderInstance>) -> List<ProviderInstance>): List<ProviderInstance> = locked {
         val entries = validate(update(readUnlocked(legacy)))
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(2); data.writeInt(entries.size)
+            data.writeInt(3); data.writeInt(entries.size)
             fun choice(value: SourceRouteChoice) {
                 data.writeUTF(value.mode.name)
                 if (value.mode == SourceRouteMode.SAVED_CONNECTION) {

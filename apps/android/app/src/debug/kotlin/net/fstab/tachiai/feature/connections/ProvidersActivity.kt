@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Job
 import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.connectionProfileStore
@@ -33,6 +34,7 @@ class ProvidersActivity : ComponentActivity() {
             else ProviderInstancesScreen(value, profiles, busy, message,
                 { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) }, ::save, ::finish,
                 onCreate = ::create,
+                onReorder = ::reorder, onRemove = { remove(it) },
                 onOpenProvider = { startActivity(Intent(this, ManageStreamsActivity::class.java)
                     .putExtra(ManageStreamsActivity.INSTANCE_ID, it)
                     .putExtra(ManageStreamsActivity.PROVIDER_DETAILS, true)) })
@@ -64,18 +66,28 @@ class ProvidersActivity : ComponentActivity() {
     private fun create(service: PrototypeService) = mutate {
         providerInstanceStore(this).create(service) { legacyProviderSettings(this) }
     }
-    private fun mutate(action: () -> List<ProviderInstance>) {
-        if (busy) return
+    private fun reorder(ids: List<String>): Job? = mutate {
+        providerInstanceStore(this).reorder(ids) { legacyProviderSettings(this) }
+    }
+    private fun remove(id: String) = mutate {
+        runBlocking { ProviderPreferenceWrites.await(id) }
+        providerInstanceStore(this).remove(id) { legacyProviderSettings(this) }
+    }
+    private fun mutate(action: () -> List<ProviderInstance>): Job? {
+        if (busy) return null
+        val completion = Job()
         val current = ++revision; busy = true
         worker.execute {
             val result = runCatching(action)
             runOnUiThread {
-                if (isDestroyed || revision != current) return@runOnUiThread
+                if (isDestroyed || revision != current) { completion.complete(); return@runOnUiThread }
                 busy = false
                 result.fold(onSuccess = { settings = it; message = null },
-                    onFailure = { message = "Provider instance could not be saved. Nothing was replaced; check the name or instance limit." })
+                    onFailure = { message = "Provider setup could not be changed. Nothing was replaced; close and reopen to retry." })
+                completion.complete()
             }
         }
+        return completion
     }
     override fun onDestroy() { revision++; worker.shutdownNow(); super.onDestroy() }
 }

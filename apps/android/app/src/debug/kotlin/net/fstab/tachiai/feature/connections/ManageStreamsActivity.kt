@@ -194,7 +194,12 @@ class ManageStreamsActivity : ComponentActivity() {
                             connectionProfileStore(applicationContext).summaries()
                     }
                     if (!resumed || revision != current) return@launch
-                    val owner = loaded.first.singleOrNull { it.id == id } ?: error("Stale provider instance")
+                    val owner = loaded.first.singleOrNull { it.id == id }
+                    if (owner == null) {
+                        preferences?.close(); preferences = null
+                        reading = false; message = "Selected provider instance is unavailable. Return to providers."
+                        return@launch
+                    }
                     profiles = loaded.second
                     if (preferences == null) {
                         val app = applicationContext

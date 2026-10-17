@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -41,10 +42,16 @@ class PlaybackRestartActivityTest {
             scenario.recreate()
             scenario.onActivity { activity ->
                 assertRejected(activity, ownPid)
-                textViews(activity.findViewById(android.R.id.content)).filterIsInstance<Button>()
-                    .single { it.text.toString() == "Close" }.performClick()
+                val close = textViews(activity.findViewById(android.R.id.content)).filterIsInstance<Button>()
+                    .single { it.text.toString() == "Close" }
+                assertTrue("Close click must be handled", close.performClick())
+                assertTrue("Close must request Activity finish immediately", activity.isFinishing)
             }
-            instrumentation.waitForIdleSync()
+            // ActivityTaskManager delivers the finish lifecycle asynchronously;
+            // an idle main Looper does not imply that delivery has happened.
+            val deadline = SystemClock.elapsedRealtime() + 10_000
+            while (scenario.state != Lifecycle.State.DESTROYED && SystemClock.elapsedRealtime() < deadline)
+                SystemClock.sleep(25)
             assertEquals(Lifecycle.State.DESTROYED, scenario.state)
         }
         assertEquals("The instrumentation process must remain alive", ownPid, Process.myPid())

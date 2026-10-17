@@ -31,6 +31,15 @@ from a retired session cannot affect its replacement. Retries are user initiated
 account, entitlement, licensing, policy and unsafe cleanup failures retain their
 existing settings/recovery requirements. No playback route switching is added.
 
+Play rechecks each READY live feed's current window after provider-player
+isolation. A live position that is missing or outside that window retires only
+that feed through the same cleanup path and shows **Go live** in its pane. An
+authorized ready partner can start without seeking, restarting or clearing its
+requested playback. Unknown player state and advertisements retain their existing
+guards. Replacement sessions cannot inherit an older Play request, and unsafe
+cleanup still stops the presentation. This handles stale-window startup; it does
+not resolve the underlying sustained transfer failures tracked in issue #297.
+
 ## Main flow and settings — October 16
 
 Normal launches open **Choose two streams**. Development and inspection builds

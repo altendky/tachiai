@@ -838,7 +838,7 @@ open class PrototypeActivity : ComponentActivity() {
         focus = group
         playback = PrototypePlaybackController(group::acquire, admission = { member ->
             sessions.any { host -> host != null && host.member === member && host.canContinue() }
-        })
+        }, playAllowed = { resumed.get() && desiredPlaying && budget?.active == true })
         fun surface() = (layoutInflater.inflate(R.layout.native_viewer_player, root, false) as PlayerView).apply {
             useController = false; keepScreenOn = true
         }
@@ -1004,7 +1004,16 @@ open class PrototypeActivity : ComponentActivity() {
             if (playBarrier !== barrier || !resumed.get() || epoch.get() != run || playback !== current) return@PrototypePlayBarrier
             playBarrier = null
             if (accepted) {
-                if (!current.play()) desiredPlaying = false
+                fun active() = resumed.get() && epoch.get() == run && playback === current &&
+                    desiredPlaying && budget?.active == true
+                val played = active() && current.play { side, member ->
+                    val index = side.ordinal
+                    if (!active() || sessions[index]?.member !== member) false else {
+                        failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_WINDOW_EXPIRED))
+                        active()
+                    }
+                }
+                if (!played && playback === current) desiredPlaying = false
             } else {
                 current.pause()
                 desiredPlaying = false

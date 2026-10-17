@@ -14,6 +14,15 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import net.fstab.tachiai.platform.media.NativeMixedSide
+import net.fstab.tachiai.platform.media.NativePairMember
+import net.fstab.tachiai.platform.media.NativeSeekOutcome
+import net.fstab.tachiai.platform.media.NativeSeekPlan
+import net.fstab.tachiai.platform.media.NativeTimingSnapshot
+import net.fstab.tachiai.platform.media.PrototypePlaybackController
+import net.fstab.tachiai.presentation.PrototypeFeedFailure
+import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.presentation.recoveryAction
+import net.fstab.tachiai.presentation.viewerMessage
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,6 +30,67 @@ import org.junit.runner.RunWith
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class NativePairViewerRecoveryTest {
+    @Test fun readyReplayStartsWhileStaleLivePaneOffersGoLive() {
+        for (staleSide in NativeMixedSide.entries) {
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario -> scenario.onActivity { activity ->
+                val replay = RecoveryMember(NativeTimingSnapshot(20_000, 60_000, 30_000, null, null, null,
+                    false, false, true, true, false, false, false, 3, 1f))
+                val live = RecoveryMember(replay.sample.copy(live = true, dynamic = true))
+                val controller = PrototypePlaybackController({ true })
+                val replaySide = NativeMixedSide.entries.single { it != staleSide }
+                controller.setMember(replaySide, replay)
+                controller.setMember(staleSide, live)
+                val failures = mutableMapOf<NativeMixedSide, PrototypeFeedFailure>()
+                val recoveries = mutableListOf<NativeMixedSide>()
+                val viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B",
+                    { controller.pair }, {
+                        assertTrue(controller.play { side, _ ->
+                            failures[side] = PrototypeFeedFailure(PrototypeFailureReason.LIVE_WINDOW_EXPIRED)
+                            controller.setMember(side, null)
+                            true
+                        })
+                    }, { controller.pause() }, {}, {}, {}, {}, {},
+                    members = { NativeMixedSide.entries.map(controller::member) },
+                    volumeRequest = controller::setVolume,
+                    feedMessage = { failures[it]?.viewerMessage },
+                    feedRecovery = { failures[it]?.recoveryAction()?.let { action -> ViewerFeedRecovery(action.label) } },
+                    onRecoverFeed = { recoveries.add(it) })
+                activity.setContentView(viewer)
+                viewer.open()
+                layout(viewer)
+                // Stale after attachment, before the actual user Play request.
+                live.sample = live.sample.copy(positionMs = -1)
+                descendants(viewer).filterIsInstance<Button>().single { it.text == "Play" }.performClick()
+                viewer.refresh()
+                layout(viewer)
+                assertTrue(replay.sample.playWhenReady)
+                assertEquals(20_000L, replay.sample.positionMs)
+                assertEquals(0, replay.seeks)
+                assertEquals(setOf(staleSide), failures.keys)
+                val action = descendants(viewer).filterIsInstance<Button>().single { it.text == "Go live" }
+                assertTrue(action.isShown)
+                assertTrue(action.isEnabled)
+                action.performClick()
+                assertEquals(listOf(staleSide), recoveries)
+                assertTrue(replay.sample.playWhenReady)
+                viewer.endSession()
+                controller.close()
+            } }
+        }
+    }
+
+    private class RecoveryMember(var sample: NativeTimingSnapshot) : NativePairMember {
+        var seeks = 0
+        override fun timingSnapshot() = sample
+        override fun setTimingPlaying(playing: Boolean): Boolean {
+            sample = sample.copy(playing = playing, playWhenReady = playing)
+            return true
+        }
+        override fun seekToMs(targetMs: Long): NativeSeekPlan { seeks++; return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+        override fun setVolume(volume: Float) = true
+        override fun close() = Unit
+    }
+
     @Test fun recoveryTargetsEitherFloatingFeedWithoutSwappingAndDisablesWhilePending() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         for (side in NativeMixedSide.entries) {

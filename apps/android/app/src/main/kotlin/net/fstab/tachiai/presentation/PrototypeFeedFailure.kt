@@ -24,6 +24,7 @@ internal enum class PrototypeFailureReason(val message: String) {
     PLAYER_FAILED("The video player could not continue."),
     PLAYBACK_LIMIT("The prototype playback time or request limit was reached."),
     LIVE_POSITION_FAILED("The current live position could not be prepared."),
+    LIVE_WINDOW_EXPIRED("The live position is outside or missing from the current window."),
     ORIGINAL_PLAYER_NOT_PAUSED("The original provider player could not be paused."),
     CLEANUP_FAILED("Playback could not be safely stopped. Close and reopen Tachiai."),
     STOPPED("Playback stopped."),

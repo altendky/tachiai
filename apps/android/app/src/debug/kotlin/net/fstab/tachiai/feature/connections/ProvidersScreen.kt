@@ -1,8 +1,12 @@
 package net.fstab.tachiai.feature.connections
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -13,6 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.LocalPinnableContainer
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -20,8 +28,12 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.Job
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.network.ConnectionSummary
 import net.fstab.tachiai.presentation.*
@@ -40,38 +52,137 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
     message: String?, onRoutes: () -> Unit, onSave: (String, String?, SourceRouteChoice) -> Unit, onBack: () -> Unit,
     onCreate: ((PrototypeService) -> Unit)? = null, twitchLogin: @Composable (String) -> Unit = {},
     onManageStreams: ((String) -> Unit)? = null, onCatalogConnection: ((String) -> Unit)? = null,
-    onOpenProvider: ((String) -> Unit)? = null) {
+    onOpenProvider: ((String) -> Unit)? = null, onReorder: ((List<String>) -> Job?)? = null,
+    onRemove: ((String) -> Unit)? = null) {
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
+    var removing by rememberSaveable { mutableStateOf<String?>(null) }
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val ids = instances.map { it.id }
+    val latestIds by rememberUpdatedState(ids)
+    val canDrag by rememberUpdatedState(!busy && editing == null && onReorder != null && ids.size > 1)
+    val reorder by rememberUpdatedState(onReorder)
+    val drag = remember(list, density.density) {
+        ConfiguredStreamDrag(list, scope, { latestIds }, { canDrag }, { reorder?.invoke(it) },
+            with(density) { 64.dp.toPx() }, with(density) { 720.dp.toPx() }, keyPrefix = "provider:")
+    }
+    DisposableEffect(drag) { onDispose { drag.cancel() } }
+    LaunchedEffect(ids, busy, editing) { drag.cancelGestureIfStale() }
+    val displayed = drag.order?.takeIf { it.size == ids.size && it.toSet() == ids.toSet() }
+        ?.map { id -> instances.single { it.id == id } } ?: instances
+    val actionsEnabled = !busy && !drag.busy
     BackHandler(enabled = editing != null && !busy) { editing = null }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().testTag("Providers list").onGloballyPositioned { drag.viewport = it },
+        state = list, contentPadding = PaddingValues(16.dp)) {
+        item(key = "heading") {
         SettingsPageHeader("Providers", if (editing == null) onBack else ({ editing = null }),
             backDescription = if (editing == null) "Back to streams" else "Back to providers",
-            help = "Each provider instance has its own name, route and account. Choose streams from an instance for either feed.",
+            help = "Tap a provider to configure it. Drag its handle to change the saved order, or use the handle's menu to move it earlier or later. The trailing menu removes a provider from this setup after confirmation. Shared routes and other providers are kept. Each provider instance has its own name, routes and account.",
             backEnabled = !busy)
-        message?.let { Text(it) }
-        if (busy) Text("Reading or saving settings…")
+        Spacer(Modifier.height(12.dp))
+        }
+        message?.let { item(key = "message") { Text(it) } }
         val instance = instances.singleOrNull { it.id == editing }
         if (instance == null) {
-            if (editing != null) Text("Selected provider instance is unavailable. Choose an existing instance.")
-            instances.forEach { entry ->
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("${providerDisplayNames(entry).inline} · ${entry.setup.title}", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = { onOpenProvider?.invoke(entry.id) ?: run { editing = entry.id } }, enabled = !busy) { Text("Configure ${entry.name}") }
+            if (editing != null) item { Text("Selected provider instance is unavailable. Choose an existing instance.") }
+            if (instances.isEmpty()) item { Text("No providers configured.", Modifier.padding(vertical = 12.dp)) }
+            items(displayed, key = { "provider:${it.id}" }) { entry ->
+                val index = displayed.indexOf(entry)
+                fun move(delta: Int) {
+                    val from = latestIds.indexOf(entry.id)
+                    val to = from + delta
+                    if (actionsEnabled && from in latestIds.indices && to in latestIds.indices)
+                        reorder?.invoke(latestIds.toMutableList().apply { add(to, removeAt(from)) })
+                }
+                ProviderInstanceRow(entry, index, displayed.size, drag, canDrag, actionsEnabled,
+                    onOpen = { onOpenProvider?.invoke(entry.id) ?: run { editing = entry.id } },
+                    onMove = ::move, onRemove = onRemove?.let { { removing = entry.id } })
             }
             onCreate?.let { create -> PrototypeService.entries.forEach { service ->
-                Button(onClick = { create(service) }, enabled = !busy && instances.size < MAX_PROVIDER_INSTANCES) {
+                item(key = "create:${service.name}") {
+                Button(onClick = { create(service) }, enabled = actionsEnabled && instances.size < MAX_PROVIDER_INSTANCES,
+                    modifier = Modifier.padding(top = 12.dp)) {
                     Text("Add ${service.title} instance")
                 }
+                }
             } }
-            Button(onClick = onRoutes, enabled = !busy) { Text("Routes · import / setup") }
-        } else key(instance.id) {
+            item(key = "routes") {
+                Button(onClick = onRoutes, enabled = actionsEnabled, modifier = Modifier.padding(top = 12.dp)) { Text("Routes · import / setup") }
+            }
+        } else item(key = "editor:${instance.id}") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,
                 { name, route -> onSave(instance.id, name, route) }, { editing = null }, { twitchLogin(instance.id) })
             onManageStreams?.let { manage -> Button(onClick = { manage(instance.id) }, enabled = !busy) { Text("Manage streams") } }
             if (instance.service in setOf(PrototypeService.TWITCH, PrototypeService.ABEMA)) onCatalogConnection?.let { connect ->
                 Button(onClick = { connect(instance.id) }, enabled = !busy) { Text("${instance.service.title} account") }
             }
+            }
+        }
+    }
+    instances.singleOrNull { it.id == removing }?.let { entry ->
+        AlertDialog(onDismissRequest = { removing = null }, title = { Text("Delete ${entry.name}?") },
+            text = { Text("Remove this provider and its configured streams from this setup? Shared routes and other providers are kept.") },
+            confirmButton = { TextButton(onClick = { removing = null; onRemove?.invoke(entry.id) }, enabled = actionsEnabled) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } })
+    }
+}
+
+@Composable
+private fun ProviderInstanceRow(entry: ProviderInstance, index: Int, count: Int, drag: ConfiguredStreamDrag,
+    canDrag: Boolean, enabled: Boolean, onOpen: () -> Unit, onMove: (Int) -> Unit, onRemove: (() -> Unit)?) {
+    var handleCoordinates by remember(entry.id) { mutableStateOf<LayoutCoordinates?>(null) }
+    var moveMenu by remember(entry.id) { mutableStateOf(false) }
+    var menu by remember(entry.id) { mutableStateOf(false) }
+    val pinnable = LocalPinnableContainer.current
+    Box(Modifier.zIndex(if (drag.draggedId == entry.id) 1f else 0f).onGloballyPositioned { drag.positioned(entry.id, it) }) {
+        Column(Modifier.graphicsLayer { translationY = drag.translation(entry.id) }) {
+            Surface(color = if (drag.draggedId == entry.id) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).testTag("Provider row ${entry.id}")
+                    .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Configure ${entry.name}", onClick = onOpen)
+                    .semantics {
+                        customActions = if (!enabled || !canDrag) emptyList() else buildList {
+                            if (index > 0) add(CustomAccessibilityAction("Move earlier") { onMove(-1); true })
+                            if (index < count - 1) add(CustomAccessibilityAction("Move later") { onMove(1); true })
+                        }
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        IconButton(onClick = { moveMenu = true }, enabled = canDrag && enabled,
+                            modifier = Modifier.size(48.dp).onGloballyPositioned { handleCoordinates = it }
+                                .semantics { contentDescription = "Reorder provider: ${entry.name}"; stateDescription = "${index + 1} of $count" }
+                                .pointerInput(entry.id, drag, canDrag) {
+                                    if (canDrag) detectDragGestures(onDragStart = { point ->
+                                        handleCoordinates?.takeIf { it.isAttached }?.let { drag.start(entry.id, it.localToRoot(point).y, pinnable) }
+                                    }, onDragEnd = { if (drag.draggedId == entry.id) drag.drop() },
+                                        onDragCancel = { if (drag.draggedId == entry.id) drag.cancel() }) { change, amount ->
+                                        if (drag.draggedId == entry.id) {
+                                            change.consume()
+                                            handleCoordinates?.takeIf { it.isAttached }?.let { drag.pointerAt(it.localToRoot(change.position).y, amount.y) }
+                                        }
+                                    }
+                                }) { Icon(painterResource(R.drawable.stream_drag), null) }
+                        DropdownMenu(expanded = moveMenu && enabled, onDismissRequest = { moveMenu = false }) {
+                            DropdownMenuItem(text = { Text("Move earlier") }, enabled = index > 0, onClick = { moveMenu = false; onMove(-1) })
+                            DropdownMenuItem(text = { Text("Move later") }, enabled = index < count - 1, onClick = { moveMenu = false; onMove(1) })
+                        }
+                    }
+                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                        Text(providerDisplayNames(entry).inline, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(entry.setup.title, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }, enabled = enabled && onRemove != null,
+                            modifier = Modifier.size(48.dp).semantics { contentDescription = "Provider actions: ${entry.name}" }) {
+                            Text("⋮", Modifier.clearAndSetSemantics {}, style = MaterialTheme.typography.titleLarge)
+                        }
+                        DropdownMenu(expanded = menu && enabled, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text("Delete…") }, onClick = { menu = false; onRemove?.invoke() })
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }

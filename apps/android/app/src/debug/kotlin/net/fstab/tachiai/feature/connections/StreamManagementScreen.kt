@@ -382,8 +382,13 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             val selected = tabs.indexOfFirst { it.first == state.selectedTabId }
             @Suppress("DEPRECATION")
             ScrollableTabRow(selectedTabIndex = selected.coerceAtLeast(0), edgePadding = 0.dp,
-                divider = {}, indicator = { positions -> if (selected >= 0) TabRowDefaults.SecondaryIndicator(
-                    Modifier.tabIndicatorOffset(positions[selected])) }) {
+                divider = {}, indicator = { positions ->
+                    // Subcomposition can briefly retain the previous measured
+                    // positions while newly loaded capabilities add tabs.
+                    positions.getOrNull(selected)?.let { position ->
+                        TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(position))
+                    }
+                }) {
                 tabs.forEach { (id, title, access) ->
                     Tab(selected = id == state.selectedTabId, enabled = !state.saving && !state.storageFailed &&
                         state.configured != null && capabilities != null && state.link == null,

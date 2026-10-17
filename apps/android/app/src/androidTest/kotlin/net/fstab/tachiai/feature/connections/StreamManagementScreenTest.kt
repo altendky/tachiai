@@ -362,6 +362,26 @@ class StreamManagementScreenTest {
         text("Channels").assertIsNotSelected()
     }
 
+    @Test fun initialCatalogCapabilitiesCanAddAndSelectCollectionTabsWithoutCrashing() {
+        val fixture = Fixture(PrototypeService.TWITCH)
+        val ready = fixture.state.copy(query = CatalogQuery(collectionId = "following"),
+            selectedTabId = "following", entries = emptyList(), nextCursor = null)
+        fixture.state = ready.copy(capabilities = null, query = CatalogQuery(), selectedTabId = null, loading = true)
+        compose.setContent { fixture.Render() }
+        text("All").assertIsNotEnabled()
+        repeat(3) {
+            compose.runOnIdle { fixture.state = ready.copy(loading = false) }
+            text("Following").assertIsSelected().assertIsEnabled()
+            text("History").assertExists()
+            compose.runOnIdle { fixture.state = ready.copy(capabilities = ready.capabilities!!.copy(collections = emptyList()),
+                query = CatalogQuery(), selectedTabId = DISCOVERY_ALL_TAB) }
+            text("All").assertIsSelected()
+            compose.onNodeWithText("Following").assertDoesNotExist()
+        }
+        compose.runOnIdle { fixture.state = ready }
+        text("Following").assertIsSelected()
+    }
+
     @Test fun publicDiscoveryControlsRemainInPlaceWhileAccessIsRechecked() {
         val fixture = Fixture(PrototypeService.TWITCH)
         compose.setContent { fixture.Render() }

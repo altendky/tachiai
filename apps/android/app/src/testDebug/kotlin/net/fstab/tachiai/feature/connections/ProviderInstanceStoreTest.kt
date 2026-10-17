@@ -110,6 +110,63 @@ class ProviderInstanceStoreTest {
         RandomAccessFile(file, "rw").use { it.channel.tryLock().use { lock -> assertNotNull(lock) } }
     }
 
+    @Test fun originalAndLastProvidersCanBeRemovedWithoutLegacyResurrectionOrIdentityReuse() {
+        val memory = Memory(); val store = ProviderInstanceStore(memory)
+        val initial = store.read(::defaults)
+        val remaining = store.remove(initial.first().id, ::defaults)
+        assertEquals(initial.drop(1), remaining)
+        assertTrue(store.remove(remaining.single().id, ::defaults).isEmpty())
+        assertTrue(ProviderInstanceStore(memory).read { error("Empty registry must not remigrate") }.isEmpty())
+        val empty = memory.bytes!!.copyOf()
+        assertThrows(Exception::class.java) { store.save(initial.first().id, null, japan, ::defaults) }
+        assertArrayEquals(empty, memory.bytes)
+        val replacement = store.create(PrototypeService.ABEMA) { error("Do not remigrate") }.single()
+        assertEquals("ABEMA", replacement.name)
+        assertTrue(initial.none { it.id == replacement.id })
+        assertEquals(SourceRouteChoice.system, replacement.setup.route)
+    }
+
+    @Test fun reorderPreservesLatestInstanceDataAndRejectsStaleOrInvalidMembership() {
+        val memory = Memory(); val first = ProviderInstanceStore(memory); val second = ProviderInstanceStore(memory)
+        val initial = first.create(PrototypeService.TWITCH, ::defaults)
+        val ids = initial.map { it.id }.reversed()
+        second.save(initial.last().id, "My Twitch", japan, ::defaults)
+        val reordered = first.reorder(ids, ::defaults)
+        assertEquals(ids, reordered.map { it.id })
+        assertEquals("My Twitch", reordered.first().name)
+        assertEquals(japan, reordered.first().setup.route)
+        assertEquals(reordered, ProviderInstanceStore(memory).read(::defaults))
+        val committed = memory.bytes!!.copyOf()
+        for (invalid in listOf(ids.drop(1), ids + ids.first(), listOf(ids.first(), ids.first(), ids.last()),
+            ids.drop(1) + "00000000-0000-0000-0000-000000009999")) {
+            assertThrows(Exception::class.java) { first.reorder(invalid, ::defaults) }
+            assertArrayEquals(committed, memory.bytes)
+        }
+        second.remove(ids.first(), ::defaults)
+        val afterRemoval = memory.bytes!!.copyOf()
+        assertThrows(Exception::class.java) { first.reorder(ids, ::defaults) }
+        assertThrows(Exception::class.java) { first.remove(ids.first(), ::defaults) }
+        assertArrayEquals(afterRemoval, memory.bytes)
+    }
+
+    @Test fun failedRemovalAndReorderKeepCommittedRegistryAndLegacyFormatsStillRequireDefaults() {
+        val memory = Memory(); val store = ProviderInstanceStore(memory)
+        val entries = store.create(PrototypeService.TWITCH, ::defaults)
+        val committed = memory.bytes!!.copyOf()
+        memory.failWrite = true
+        assertThrows(Exception::class.java) { store.remove(entries.first().id, ::defaults) }
+        assertThrows(Exception::class.java) { store.reorder(entries.map { it.id }.reversed(), ::defaults) }
+        assertArrayEquals(committed, memory.bytes)
+        for (version in listOf(1, 2, 3)) {
+            memory.failWrite = false
+            memory.bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use {
+                it.writeInt(version); it.writeInt(0)
+            } }.toByteArray()
+            if (version == 3) assertTrue(store.read(::defaults).isEmpty())
+            else assertThrows(Exception::class.java) { store.read(::defaults) }
+        }
+    }
+
     @Test fun versionOneRegistryIsReadWithoutWritingAndMigratesOnlyOnExplicitMutation() {
         // Hand-written old format: a named route plus an unresolved legacy review.
         val original = registryFixture(1)
@@ -127,7 +184,7 @@ class ProviderInstanceStoreTest {
         val saved = store.saveRoutes(entries.first().id, entries.first().customName,
             listOf(japan, SourceRouteChoice.system)) { error("Do not consult legacy settings") }
         assertEquals(1, memory.writes)
-        assertEquals(2, DataInputStream(memory.bytes!!.inputStream()).use { it.readInt() })
+        assertEquals(3, DataInputStream(memory.bytes!!.inputStream()).use { it.readInt() })
         assertEquals(entries.last(), saved.last())
         assertEquals(saved, store.read { error("Do not consult legacy settings") })
     }
@@ -172,7 +229,7 @@ class ProviderInstanceStoreTest {
 
     @Test fun unknownVersionsTruncationDuplicatesAndInvalidCountsFailClosedWithoutMutation() {
         val v2 = registryFixture(2)
-        val fixtures = listOf(registryFixture(0), registryFixture(3), registryFixture(2, -1),
+        val fixtures = listOf(registryFixture(0), registryFixture(4), registryFixture(2, -1),
             registryFixture(2, MAX_PROVIDER_ROUTES + 1), registryFixture(2, 2),
             registryFixture(1, firstMode = "UNRECOGNIZED"), registryFixture(2, firstMode = "SOURCE_DEFAULT"),
             v2.copyOf(v2.size - 1), v2 + byteArrayOf(0), byteArrayOf(0, 0, 0), ByteArray(PRIVATE_SECRET_LIMIT + 1))

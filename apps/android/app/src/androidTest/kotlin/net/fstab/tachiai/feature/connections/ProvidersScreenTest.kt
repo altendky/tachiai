@@ -24,11 +24,11 @@ class ProvidersScreenTest {
             ProviderInstancesScreen(defaultProviderInstances() + second, listOf(profile), false, null,
                 {}, { _, _, _ -> saved = true }, {}, onCatalogConnection = { connected = it })
         } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithText("Twitch account").assertDoesNotExist()
         compose.onNodeWithText("ABEMA account").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
-        compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${second.id}").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
         compose.onNodeWithContentDescription("Twitch route: Proton Japan").performScrollTo().performClick()
         compose.onNodeWithText("Connect Twitch").assertDoesNotExist()
@@ -43,7 +43,7 @@ class ProvidersScreenTest {
             ProviderInstancesScreen(defaultProviderInstances() + second, emptyList(), false, null,
                 {}, { _, _, _ -> saved = true }, {}, onCatalogConnection = { connected = it })
         } }
-        compose.onNodeWithText("Configure ABEMA 2").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${second.id}").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Draft")
         compose.onNodeWithText("ABEMA account").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(second.id, connected); assertTrue(saved) }
@@ -56,7 +56,7 @@ class ProvidersScreenTest {
             ProviderInstancesScreen(defaultProviderInstances() + second, emptyList(), false, null,
                 {}, { _, _, _ -> saved = true }, {}, onManageStreams = { managed = it })
         } }
-        compose.onNodeWithText("Configure Twitch 2").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${second.id}").performScrollTo().performClick()
         compose.onNodeWithText("Provider instance name").performScrollTo().performTextInput("Unsaved draft")
         compose.onNodeWithText("Manage streams").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(second.id, managed); assertTrue(saved) }
@@ -66,10 +66,10 @@ class ProvidersScreenTest {
             ProvidersScreen(legacyProviderSetups(defaultSourceSetups()), emptyList(), false, null, {}, { _, _ -> }, {},
                 twitchLogin = { Text("Twitch login fixture") })
         } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithText("Twitch login fixture").assertDoesNotExist()
         compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
-        compose.onNodeWithText("Configure Twitch").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.TWITCH)}").performScrollTo().performClick()
         compose.onNodeWithText("Twitch login fixture").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
     }
@@ -81,7 +81,7 @@ class ProvidersScreenTest {
             ProvidersScreen(legacyProviderSetups(defaultSourceSetups()), listOf(profile), false, null,
                 { imported = true }, { p, r -> saved = p to r }, {})
         } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().performClick()
         compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         restoration.emulateSavedInstanceStateRestore()
@@ -93,13 +93,13 @@ class ProvidersScreenTest {
             assertEquals(PrototypeService.ABEMA, value.first); assertEquals(profile.id, value.second.connectionId)
         }
         compose.onNodeWithContentDescription("Back to providers").performScrollTo().performClick()
-        compose.onNodeWithText("Configure Twitch").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.TWITCH)}").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Twitch route: System network").performScrollTo().assertIsSelected()
     }
     @Test fun legacyConflictRequiresAnExplicitReplacement() {
         val settings = legacyProviderSetups(defaultSourceSetups()) + (PrototypeService.ABEMA to ProviderSetup(null))
         compose.setContent { TachiaiPrototypeTheme { ProvidersScreen(settings, emptyList(), false, null, {}, { _, _ -> }, {}) } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithText("Choose a route to resolve earlier settings.").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: System network").assertIsSelected()
@@ -108,7 +108,7 @@ class ProvidersScreenTest {
         val route = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, profile.id, profile.name)
         val settings = legacyProviderSetups(defaultSourceSetups()) + (PrototypeService.ABEMA to ProviderSetup(route))
         compose.setContent { TachiaiPrototypeTheme { ProvidersScreen(settings, emptyList(), false, null, {}, { _, _ -> }, {}) } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: System network").performScrollTo().assertIsNotSelected()
         compose.onNodeWithText("Save ABEMA setup").assertDoesNotExist()
     }
@@ -118,7 +118,7 @@ class ProvidersScreenTest {
             ProvidersScreen(legacyProviderSetups(defaultSourceSetups()), profiles.value, false, null,
                 { profiles.value = emptyList() }, { _, _ -> }, {})
         } }
-        compose.onNodeWithText("Configure ABEMA").performScrollTo().performClick()
+        compose.onNodeWithTag("Provider row ${defaultProviderInstanceId(PrototypeService.ABEMA)}").performScrollTo().performClick()
         compose.onNodeWithContentDescription("ABEMA route: Proton Japan").performScrollTo().performClick()
         compose.onNodeWithText("Add route · setup / import").performScrollTo().performClick()
         compose.onNodeWithText("Selected saved route is unavailable. Choose a replacement; no system fallback occurs.").performScrollTo().assertExists()

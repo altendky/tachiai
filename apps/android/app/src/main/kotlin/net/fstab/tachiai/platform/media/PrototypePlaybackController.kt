@@ -7,6 +7,7 @@ internal class PrototypePlaybackController(
     private val acquireFocus: () -> Boolean,
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val admission: (NativePairMember) -> Boolean = { true },
+    private val playAllowed: () -> Boolean = { true },
 ) : AutoCloseable {
     private var a: NativePairMember? = null
     private var b: NativePairMember? = null
@@ -41,7 +42,11 @@ internal class PrototypePlaybackController(
         val preparedA = a
         val preparedB = b
         if (preparedA != null && preparedB != null) {
-            pair = NativeMixedPair(preparedA, preparedB, acquireFocus, {}, clockMs,
+            pair = NativeMixedPair(preparedA, preparedB, {
+                val focused = acquireFocus()
+                focused && a === preparedA && b === preparedB && allowed() &&
+                    admitted(preparedA) && admitted(preparedB)
+            }, {}, clockMs,
                 requireCurrentLiveWindowOnPlay = true,
                 initialAdjustmentValid = !coordinationLost,
                 admission = { !closed && members().any { current -> current === it } && admission(it) })
@@ -56,12 +61,21 @@ internal class PrototypePlaybackController(
         }
     }
 
-    fun play(): Boolean {
+    fun play(onStaleLive: ((NativeMixedSide, NativePairMember) -> Boolean)? = null): Boolean {
         if (closed) return false
-        pair?.let { return it.play() }
+        // Recheck ownership at the transport boundary, including after retiring
+        // a stale partner. Session destruction remains the owner's responsibility.
+        if (!allowed() || members().any { !admitted(it) }) { pause(); return false }
+        val original = NativeMixedSide.entries.associateWith(::member)
+        pair?.let { current ->
+            return current.play(onStaleLive?.let { owner -> { sides ->
+                pair === current && isolateStale(sides, original, owner)
+            } })
+        }
         if (busy && !pause()) return false
         val selected = members().singleOrNull()
         if (selected == null) { message = "No playable feeds."; return false }
+        val side = if (a === selected) NativeMixedSide.A else NativeMixedSide.B
         val value = snapshot(selected)
         if (value == null || value.state != 3 || value.playingAd) {
             message = "The available feed must be READY and outside an advertisement before Play."
@@ -71,6 +85,8 @@ internal class PrototypePlaybackController(
             val position = value.positionMs
             val duration = value.durationMs
             if (position == null || duration == null || duration <= 0 || position !in 0..duration) {
+                if (onStaleLive != null) return isolateStale(
+                    setOf(side), original, onStaleLive)
                 val held = pause()
                 message = if (held) "Play refused: live point outside/unknown current window."
                     else "Play refused: stale live point and pause refused; return to sources."
@@ -78,7 +94,10 @@ internal class PrototypePlaybackController(
             }
         }
         val focused = try { acquireFocus() } catch (_: Exception) { false }
-        if (!focused) { pause(); message = "Audio focus denied; available feed paused."; return false }
+        if (!focused || member(side) !== selected ||
+            !allowed() || !admitted(selected)) {
+            pause(); message = "Audio focus or playback admission denied; available feed paused."; return false
+        }
         if (!playing(selected, true)) {
             val held = pause()
             message = if (held) "Play refused; available feed paused."
@@ -87,6 +106,28 @@ internal class PrototypePlaybackController(
         }
         message = "One feed playing; the other feed is unavailable."
         return true
+    }
+
+    private fun admitted(member: NativePairMember): Boolean =
+        try { !closed && admission(member) } catch (_: Exception) { false }
+    private fun allowed(): Boolean = try { !closed && playAllowed() } catch (_: Exception) { false }
+
+    private fun isolateStale(sides: Set<NativeMixedSide>, original: Map<NativeMixedSide, NativePairMember?>,
+        owner: (NativeMixedSide, NativePairMember) -> Boolean): Boolean {
+        if (closed || NativeMixedSide.entries.any { member(it) !== original[it] }) return false
+        val stale = sides.mapNotNull { side -> original[side]?.let { side to it } }
+        for ((side, selected) in stale) {
+            if (!allowed() || member(side) !== selected || !admitted(selected)) { pause(); return false }
+            val continued = try { owner(side, selected) } catch (_: Exception) { false }
+            if (!continued || !allowed() || member(side) != null || NativeMixedSide.entries.any {
+                it !in sides && member(it) !== original[it]
+            }) {
+                if (!closed) pause()
+                return false
+            }
+        }
+        if (sides.any { member(it) != null }) { pause(); return false }
+        return !closed && members().isNotEmpty() && play(owner)
     }
 
     fun pause(): Boolean {

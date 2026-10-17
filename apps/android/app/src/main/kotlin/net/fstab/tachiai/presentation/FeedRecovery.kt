@@ -8,6 +8,7 @@ internal enum class FeedRecoveryAction(val label: String) { GO_LIVE("Go live"), 
 internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
     if (httpStatus in setOf(401, 403)) return null
     return when (reason) {
+        PrototypeFailureReason.LIVE_WINDOW_EXPIRED -> FeedRecoveryAction.GO_LIVE
         PrototypeFailureReason.PLAYER_FAILED -> when (playerCode) {
             1002 -> FeedRecoveryAction.GO_LIVE
             null, 1000, 1001, 1003, 2000, 2001, 2002 -> FeedRecoveryAction.RETRY

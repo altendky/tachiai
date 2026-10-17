@@ -8,6 +8,10 @@ class FeedRecoveryTest {
         val behind = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 1002)
         assertEquals("Playback fell behind live.", behind.viewerMessage)
         assertEquals(FeedRecoveryAction.GO_LIVE, behind.recoveryAction())
+        val stale = PrototypeFeedFailure(PrototypeFailureReason.LIVE_WINDOW_EXPIRED)
+        assertEquals(FeedRecoveryAction.GO_LIVE, stale.recoveryAction())
+        assertTrue(stale.viewerMessage.contains("current window"))
+        assertNull(stale.playerCode)
         assertEquals(FeedRecoveryAction.RETRY, PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED).recoveryAction())
     }
 

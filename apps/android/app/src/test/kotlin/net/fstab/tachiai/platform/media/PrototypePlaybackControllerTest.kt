@@ -22,7 +22,9 @@ class PrototypePlaybackControllerTest {
         var refusePause = false
         var defaultHook: () -> Unit = {}
         var pauseHook: () -> Unit = {}
+        var snapshotHook: () -> Unit = {}
         override fun timingSnapshot(): NativeTimingSnapshot? {
+            snapshotHook()
             if (throwSnapshot) throw IllegalStateException()
             return sample
         }
@@ -233,6 +235,147 @@ class PrototypePlaybackControllerTest {
 
     private val live = replay.copy(positionMs = -5_000, defaultPositionMs = 50_000,
         live = true, dynamic = true, seekable = false)
+
+    @Test fun `live position becoming stale after attachment retires only that feed at Play`() {
+        for (side in NativeMixedSide.entries) for (alreadyPlaying in listOf(false, true)) {
+            val healthy = Member(replay.copy(playing = alreadyPlaying, playWhenReady = alreadyPlaying))
+            val stale = Member(live.copy(positionMs = 40_000))
+            val controller = PrototypePlaybackController({ true })
+            val other = NativeMixedSide.entries.single { it != side }
+            controller.setMember(other, healthy)
+            controller.setMember(side, stale)
+            val oldPair = controller.pair!!
+            stale.sample = live
+            val retired = mutableListOf<NativeMixedSide>()
+            assertTrue(controller.play { selectedSide, selected ->
+                assertSame(stale, selected)
+                retired.add(selectedSide)
+                controller.setMember(selectedSide, null)
+                true
+            })
+            assertEquals(listOf(side), retired)
+            assertTrue(healthy.sample.playWhenReady)
+            assertEquals(20_000L, healthy.sample.positionMs)
+            assertEquals(0, healthy.pauseRequests)
+            assertEquals(0, healthy.seekRequests)
+            assertEquals(0, healthy.closeRequests)
+            assertEquals(0, stale.playRequests)
+            assertFalse(oldPair.play())
+            assertNull(controller.pair)
+            controller.setMember(side, Member(replay))
+            assertFalse(controller.pair!!.requestedAdjustmentValid)
+        }
+    }
+
+    @Test fun `unknown invalid live windows are isolated but valid endpoints and replay are retained`() {
+        for (sample in listOf(live, live.copy(positionMs = null), live.copy(durationMs = null),
+            live.copy(durationMs = 0), live.copy(positionMs = 60_001), live.copy(live = false, dynamic = true))) {
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, Member(replay))
+            controller.setMember(NativeMixedSide.B, Member(sample))
+            assertTrue(controller.play { side, _ -> controller.setMember(side, null); true })
+            assertNull(controller.member(NativeMixedSide.B))
+        }
+        for (sample in listOf(live.copy(positionMs = 0), live.copy(positionMs = 60_000), replay)) {
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, Member(replay))
+            controller.setMember(NativeMixedSide.B, Member(sample))
+            assertTrue(controller.play { _, _ -> throw AssertionError("Valid feed retired") })
+            assertTrue(controller.pair != null)
+        }
+    }
+
+    @Test fun `both stale feeds are retired without focus or fabricated playable member`() {
+        var focus = 0
+        val controller = PrototypePlaybackController({ focus++; true })
+        NativeMixedSide.entries.forEach { controller.setMember(it, Member(live)) }
+        val retired = mutableListOf<NativeMixedSide>()
+        assertFalse(controller.play { side, _ -> retired.add(side); controller.setMember(side, null); true })
+        assertEquals(NativeMixedSide.entries, retired)
+        assertEquals(0, focus)
+        assertFalse(controller.playingRequested)
+    }
+
+    @Test fun `owner must detach stale feed and keep survivor identity before fallback play`() {
+        for (mutation in 0..4) {
+            val healthy = Member(replay)
+            val stale = Member(live)
+            val replacement = Member(replay)
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, healthy)
+            controller.setMember(NativeMixedSide.B, stale)
+            assertFalse(controller.play { side, _ ->
+                when (mutation) {
+                    0 -> Unit // An owner that did not detach cannot authorize fallback.
+                    1 -> controller.setMember(side, replacement)
+                    2 -> { controller.setMember(side, null); controller.setMember(NativeMixedSide.A, replacement) }
+                    3 -> controller.close()
+                    4 -> controller.setMember(side, null)
+                }
+                mutation != 4 // Cleanup refusal after detach.
+            })
+            assertEquals(0, healthy.playRequests + stale.playRequests + replacement.playRequests)
+        }
+    }
+
+    @Test fun `fallback rechecks admission intent and focus after retiring stale partner`() {
+        for (denial in 0..3) {
+            var admitted = true
+            var intent = true
+            val healthy = Member(replay)
+            val controller = PrototypePlaybackController({
+                if (denial == 3) intent = false
+                denial != 2
+            }, admission = { admitted }, playAllowed = { intent })
+            controller.setMember(NativeMixedSide.A, healthy)
+            controller.setMember(NativeMixedSide.B, Member(live))
+            assertFalse(controller.play { side, _ ->
+                controller.setMember(side, null)
+                if (denial == 0) admitted = false
+                if (denial == 1) intent = false
+                true
+            })
+            assertEquals(0, healthy.playRequests)
+        }
+    }
+
+    @Test fun `buffering ads and missing snapshots are not mislabeled as stale live`() {
+        for (sample in listOf(live.copy(state = 2), live.copy(playingAd = true), live)) {
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, Member(replay))
+            controller.setMember(NativeMixedSide.B, Member(sample).apply { throwSnapshot = sample == live })
+            assertFalse(controller.play { _, _ -> throw AssertionError("Not a confirmed ready live window") })
+            assertTrue(controller.pair != null)
+        }
+    }
+
+    @Test fun `stale snapshot cannot retire a replacement attached while sampling`() {
+        val controller = PrototypePlaybackController({ true })
+        val stale = Member(live)
+        val replacement = Member(replay)
+        controller.setMember(NativeMixedSide.A, Member(replay))
+        controller.setMember(NativeMixedSide.B, stale)
+        stale.snapshotHook = {
+            stale.snapshotHook = {}
+            controller.setMember(NativeMixedSide.B, replacement)
+        }
+        assertFalse(controller.play { _, _ -> throw AssertionError("Retired a replacement from old snapshot") })
+        assertSame(replacement, controller.member(NativeMixedSide.B))
+        assertEquals(0, replacement.playRequests)
+    }
+
+    @Test fun `focus callback cancellation prevents both single and pair starts`() {
+        for (count in 1..2) {
+            var intent = true
+            val a = Member(replay)
+            val b = Member(replay)
+            val controller = PrototypePlaybackController({ intent = false; true }, playAllowed = { intent })
+            controller.setMember(NativeMixedSide.A, a)
+            if (count == 2) controller.setMember(NativeMixedSide.B, b)
+            assertFalse(controller.play())
+            assertEquals(0, a.playRequests + b.playRequests)
+        }
+    }
 
     @Test fun `either surviving live feed uses one default and held settlement with explicit play`() {
         for (side in NativeMixedSide.entries) {

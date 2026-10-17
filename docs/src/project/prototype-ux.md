@@ -372,6 +372,19 @@ not measured synchronization. Compact layouts retain scrollable controls and
 48 dp button targets. Cancelling More preserves the open controls and panel;
 Hide and video/background taps retain their explicit dismissal behavior.
 
+System Back dismisses an open More menu first, then an Audio, Timing, Quality or
+Status panel. Dismissing a panel keeps playback, volume/mute state and pane
+selection unchanged and cancels any held adjustment button. With no menu or
+panel open, Back retains its stop-and-return-to-sources behavior.
+
+Stopping a viewer ends request admission immediately. Network disconnect and
+stream closure run on cleanup workers; player and quality release remain on the
+player's application thread. Cleanup stays pending until native release and
+provider preparation/cancellation work, including running finally blocks, have
+settled. Helpers and routes stay owned until those receipts confirm completion.
+Actual cleanup failure still blocks another viewer and offers recovery; pending
+work alone does not count as failure or successful cleanup.
+
 The visible **Back to live A / B** controls target the named live feed, including
 a single surviving feed. Completed replay and missing feeds have no live action;
 current readiness, advertisement, SDK default-position capability, ownership and

@@ -371,6 +371,48 @@ class CachedViewerCleanupCoordinatorTest {
         assertFalse(native.confirmed)
     }
 
+    @Test fun asynchronousNativeConsumersKeepHelpersAndRoutesUntilBothPlayersRelease() {
+        val f = Fixture(); val run = f.begin(); f.route(run); f.helper(run)
+        val network = Queue()
+        val receipts = (0..1).map { slot ->
+            NativeCleanupReceipt().also { receipt ->
+                receipt.own(10) { f.events.add("network:$slot") }
+                receipt.own(30, ownerThread = true) { f.events.add("player:$slot") }
+                f.owner.feed(run, slot, AutoCloseable {
+                    receipt.closeAsync(network, f.main, { f.owner.feedCleanupChanged(run) }, { fail("Unexpected failure") })
+                }, pending = { receipt.pending }) { receipt.confirmed }
+            }
+        }
+        f.owner.proxyWillChange(run); f.owner.end(run); f.finish()
+        assertTrue(receipts.all { it.pending }); assertFalse(f.owner.failed)
+        assertFalse("destroy" in f.events); assertFalse("clear" in f.events)
+        network.drain()
+        assertFalse("destroy" in f.events); assertFalse(f.events.any { it.startsWith("player:") })
+        f.main.tasks.removeFirst().run()
+        assertFalse("destroy" in f.events); assertNull(f.owner.begin(FailureReporter.NONE))
+        f.main.drain()
+        assertTrue(receipts.all { it.confirmed }); assertEquals(1, f.events.count { it == "destroy" })
+        assertFalse("close:route" in f.events)
+        f.acknowledgments.single()(); f.finish()
+        assertEquals(1, f.events.count { it == "close:route" }); assertFalse(f.owner.unavailable)
+    }
+
+    @Test fun asynchronousTransportFailureStillReleasesPlayerButRetainsRouteOwnership() {
+        val f = Fixture(); val run = f.begin(); val route = f.route(run); f.helper(run)
+        val network = Queue(); var failed = false; var released = false
+        val receipt = NativeCleanupReceipt { failed = true }
+        receipt.own(10) { throw IOException("Synthetic disconnect failure") }
+        receipt.own(30, ownerThread = true) { released = true }
+        f.owner.feed(run, 0, AutoCloseable {
+            receipt.closeAsync(network, f.main, { f.owner.feedCleanupChanged(run) }, {})
+        }, pending = { receipt.pending }, knownFailed = { failed }) { receipt.confirmed }
+        f.owner.proxyWillChange(run); f.owner.end(run)
+        network.drain(); f.main.drain(); f.finish()
+        assertTrue(released); assertFalse(receipt.pending); assertFalse(receipt.confirmed)
+        f.assertPoisoned(); assertSame(route, run.routes.single())
+        assertFalse("clear" in f.events); assertFalse("close:route" in f.events)
+    }
+
     @Test fun knownFailureWithPendingWorkerStopsGroupImmediatelyAndStartsCleanupDeadline() {
         val f = Fixture(); val run = f.begin(); f.route(run); f.helper(run)
         var siblingCloses = 0

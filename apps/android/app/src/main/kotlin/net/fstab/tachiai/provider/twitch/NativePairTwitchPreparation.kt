@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runBlocking
 import net.fstab.tachiai.platform.net.AccessProbeHttp
+import net.fstab.tachiai.platform.media.closeNativeResources
 
 // Same-device saved LOCAL grant only. Worker owns validation/source resolution;
 // no token, signed URI or account field enters intents, UI, logs or toString.
@@ -19,6 +20,7 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
     private val valid = AtomicBoolean(true)
     private val validator = AtomicReference<TwitchDeviceHttpTransport?>()
     private val access = AtomicReference<AccessProbeHttp?>()
+    private val cleanup = TwitchPreparationCleanup()
     @Volatile private var lease: SavedAuthorizationLease? = null
     private var checkedMs = Long.MIN_VALUE
     private val storedLock = Any()
@@ -72,18 +74,21 @@ internal class NativePairTwitchPreparation(context: Context, private val active:
                             resource, token,
                             onHttpStatus = { onStatus("ACCESS", it) })
                         if (!checkStored(force = true)) selected = null
-                    } finally { access.compareAndSet(request, null); request.close() }
+                    } finally { access.compareAndSet(request, null); cleanup.close(request) }
                 })
             }
             onStatus(result.outcome.name, result.validationHttp)
             return selected?.takeIf { result.outcome == SavedTwitchUseOutcome.USED && checkStored(force = true) }
                 ?: throw IOException("Pair source unavailable")
-        } finally { validator.compareAndSet(validation, null); validation.close() }
+        } finally { validator.compareAndSet(validation, null); cleanup.close(validation) }
     }
 
     override fun close() {
         valid.set(false)
-        validator.getAndSet(null)?.close()
-        access.getAndSet(null)?.close()
+        closeNativeResources(
+            { cleanup.close(validator.getAndSet(null)) },
+            { cleanup.close(access.getAndSet(null)) },
+        )
+        cleanup.requireConfirmed()
     }
 }

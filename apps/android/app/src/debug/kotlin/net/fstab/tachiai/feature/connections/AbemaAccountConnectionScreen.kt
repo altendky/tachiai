@@ -62,12 +62,14 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
                 Text(compactAccountStatus(state, ready), style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            Button(onConnect, enabled = idleActions, modifier = Modifier.weight(1.6f),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-                Box(Modifier.fillMaxWidth().height(actionHeight), contentAlignment = Alignment.Center) {
-                    Text(if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
-                        style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center)
+            Box(Modifier.weight(1.6f), contentAlignment = Alignment.CenterEnd) {
+                Button(onConnect, enabled = idleActions, modifier = Modifier.heightIn(min = 48.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) {
+                    Box(Modifier.height(actionHeight), contentAlignment = Alignment.Center) {
+                        Text(if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
+                            style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center)
+                    }
                 }
             }
         }

@@ -58,11 +58,21 @@ class AbemaAccountConnectionScreenTest {
     @Test fun connectedOpenAccountUsesSameCallbackAndEmbeddedSectionHasNoBackRow() {
         var opens = 0
         compose.setContent { TachiaiPrototypeTheme {
-            AbemaAccountConnectionScreen(AbemaAccountConnectionState(AbemaAccountStatus.CONNECTED, AbemaAccountProgress.IDLE),
-                { opens++ }, {}, {})
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 1f)) {
+                Column(Modifier.width(320.dp)) {
+                    AbemaAccountConnectionScreen(AbemaAccountConnectionState(AbemaAccountStatus.CONNECTED, AbemaAccountProgress.IDLE),
+                        { opens++ }, {}, {})
+                }
+            }
         } }
         compose.onNodeWithText("Connected").assertExists()
-        compose.onNodeWithText("Open account").performClick()
+        val button = compose.onNode(hasClickAction() and hasText("Open account"))
+        val bounds = button.fetchSemanticsNode().boundsInRoot
+        val section = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
+        assertEquals(with(compose.density) { 48.dp.toPx() }, bounds.height, 1f)
+        assertEquals(section.right, bounds.right, 1f)
+        assertTrue("The action fits its label instead of filling its column", bounds.width < section.width / 2)
+        button.performClick()
         compose.onNodeWithText("Connect by email").assertDoesNotExist()
         compose.onNodeWithContentDescription("Back to providers").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, opens) }
@@ -142,14 +152,18 @@ class AbemaAccountConnectionScreenTest {
             }
         } }
         val before = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
-        val button = compose.onNodeWithText("Connect by email").fetchSemanticsNode().boundsInRoot
+        val button = compose.onNode(hasClickAction() and hasText("Connect by email")).fetchSemanticsNode().boundsInRoot
         for (status in AbemaAccountStatus.entries) for (progress in listOf(AbemaAccountProgress.IDLE,
             AbemaAccountProgress.READING, AbemaAccountProgress.PREPARING, AbemaAccountProgress.CHECKING,
             AbemaAccountProgress.WAITING_APPROVAL, AbemaAccountProgress.FORGETTING)) {
             compose.runOnIdle { state = state.copy(status = status, progress = progress, busy = progress != AbemaAccountProgress.IDLE) }
             assertEquals(before, compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot)
             val label = if (status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email"
-            assertEquals(button, compose.onNodeWithText(label).assertIsDisplayed().fetchSemanticsNode().boundsInRoot)
+            val bounds = compose.onNode(hasClickAction() and hasText(label)).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertEquals(before.right, bounds.right, 1f)
+            assertEquals(button.center.y, bounds.center.y, 1f)
+            assertEquals(button.height, bounds.height, 1f)
+            assertTrue(bounds.height >= with(compose.density) { 48.dp.toPx() })
             compose.onNodeWithContentDescription("Info about ABEMA account").assertIsDisplayed()
         }
     }

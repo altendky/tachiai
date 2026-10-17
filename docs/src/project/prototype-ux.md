@@ -30,7 +30,8 @@ classified transport availability failures can try another configured choice.
 Account transactions stay on their chosen route, and later playback failures
 stop rather than switching automatically. ABEMA account settings use a compact
 heading and a stable status/action row. The primary action reads Connect by email
-or Open account; Sign in again, Check connection and confirmed Forget account
+or Open account, fits its label and aligns right beside the status with a 48dp
+minimum height; Sign in again, Check connection and confirmed Forget account
 live in the overflow menu. Finish connection and Cancel remain inside the active
 connection flow, outside the scrolling settings content. Status changes do not
 insert or remove settings rows. Section help uses info icons.

@@ -12,17 +12,21 @@ concepts.
 
 ## Current status
 
-As of 2026-10-08, the Android debug application has a source-picker and native
-two-feed viewer alongside the retained experiment home. The default Prototype
-flow uses bounded native Twitch and cached ABEMA preparation; the older
-full-page ABEMA startup remains a comparison, not a required step in that flow.
-The [product prototype](prototype-ux.md),
+As of 2026-10-17, the source picker, provider settings and native two-feed viewer
+are the primary Android application in ordinary debug and release builds.
+Configured routes, provider accounts and playback belong to that application.
+Historical experiments remain developer-only, and the local inspection variant
+retains its separate debugging policy. The primary flow uses native Twitch and
+cached ABEMA preparation; the older full-page ABEMA startup remains a developer
+comparison. Existing `Prototype` class and file names may remain compatibility
+identities. The [application flow](prototype-ux.md),
 [native evidence](native-access-experiments.md) and
 [preliminary viewer](preliminary-native-viewer.md) record implementation and
 device conditions. Native video/audio and timing primitives have passed bounded
-Pixel 6 tests, but this is not a supported provider integration or a release
-readiness claim. The latest cached ABEMA runs rendered duplicate live and replay
-sources without a full provider page; those runs have no fresh acoustic
+Pixel 6 tests; promoting the application does not establish provider support,
+release readiness or broader device compatibility. The latest cached ABEMA runs
+rendered duplicate live and replay sources without a full provider page; those
+runs have no fresh acoustic
 confirmation.
 
 ### Historical browser milestones
@@ -75,20 +79,20 @@ The agreed preliminary interaction model is:
   requests and actual consumed formats are shown separately; Auto retains the
   audio-first selection policy and device constraints.
 
-The [product-flow prototype](prototype-ux.md) records the current implementation.
+The [application flow](prototype-ux.md) records the current implementation.
 Exact fade curves, defaults, floating size and control-hide timing remain
-provisional. Unsupported native playback adapters remain debug-only.
-The cached prototype's [media-origin approvals](media-origin-approvals.md)
+provisional. Current native playback adapters are included in ordinary builds;
+historical diagnostic entry points remain developer-only.
+The cached playback path's [media-origin approvals](media-origin-approvals.md)
 record user-approved CDN boundaries and the review process for new origins.
 
 [Per-source network routing research](source-network-routing.md) compares future
 proxy/VPN options and setup profiles. Its original assessment is historical;
-the subsequent debug implementation adds session-owned proxy and userspace VPN
+the current implementation adds session-owned proxy and userspace VPN
 routes, with supported configurations and staged verification recorded in the
 [connection importer](connection-import.md).
 Different simultaneous routes for duplicate ABEMA feeds remain unimplemented.
-The debug-only
-[connection importer](connection-import.md) adds guided Proton export and
+The [connection importer](connection-import.md) adds guided Proton export and
 Share/Open/file-picker handoffs into encrypted saved profiles, without activating
 any route or changing playback. Separate Routes and Providers screens manage
 profiles and assign provider defaults for all their streams/feeds; ambiguous

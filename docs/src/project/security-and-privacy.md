@@ -3,7 +3,7 @@
 Tachiai loads authenticated third-party pages and therefore handles sensitive
 browser state even though it does not operate an account service.
 
-The debug-only [connection importer](connection-import.md) separately handles
+The [connection importer](connection-import.md) separately handles
 user-exported WireGuard keys, inline OpenVPN/OpenConnect certificates/private keys and
 optional proxy credentials. It uses a
 distinct encrypted no-backup record, explicit preview/save and bounded file
@@ -78,6 +78,25 @@ The current scope is also recorded in the bodies of
 [issue #101](https://github.com/altendky/tachiai/issues/101) and
 [issue #103](https://github.com/altendky/tachiai/issues/103). Their technical and
 account-backed verification dependencies remain in force.
+
+## Primary application promotion — 2026-10-17
+
+The user requested that the current source picker, provider settings and native
+viewer become the primary application. Ordinary debug and release builds include
+configured routes, provider account connections and current playback adapters.
+Historical experiment entry points remain developer-only, and `inspect` remains
+local-only under its separate approval below. Existing `Prototype` class/file,
+process and profile names may remain compatibility identities.
+
+This changes build inclusion and product entry behavior. It does not establish
+provider support, distribution permission, new device results or broader media
+access. Account/session binding, provider entitlement, reviewed destinations,
+TLS, protected grant storage and opaque DRM boundaries remain required.
+Historical sections below retain their original evidence and scope; their
+debug-only descriptions do not exclude the promoted current implementation from
+ordinary release builds. Release assembly produces an unsigned APK until a
+production signing identity is configured separately; the shared development key
+must never sign production.
 
 ## Local inspection build approval — 2026-10-15
 

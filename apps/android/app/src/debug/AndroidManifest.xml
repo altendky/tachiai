@@ -5,79 +5,6 @@
             android:theme="@style/Theme.Tachiai.Prototype"
             android:enabled="${localInspectionEnabled}"
             android:exported="true" />
-        <service android:name=".provider.abema.account.AbemaAccountReadinessService" android:exported="false" />
-        <activity android:name=".provider.abema.account.AbemaAutomaticRenewalActivity"
-            android:theme="@style/Theme.Tachiai.Prototype" android:exported="false"
-            android:excludeFromRecents="true" />
-        <activity
-            android:name=".feature.connections.AbemaShareActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:label="Add public ABEMA item to Tachiai"
-            android:excludeFromRecents="true"
-            android:exported="true">
-            <intent-filter android:label="Add public ABEMA item to Tachiai">
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-        </activity>
-        <activity
-            android:name=".feature.connections.TwitchCatalogConnectionActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="false" />
-        <activity
-            android:name=".feature.connections.AbemaAccountConnectionActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="false" />
-        <activity
-            android:name=".feature.connections.AbemaApprovalBrowserActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:configChanges="orientation|screenSize"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:process=":abema_approval_browser" />
-        <activity
-            android:name=".feature.connections.ManageStreamsActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="false" />
-        <activity
-            android:name=".feature.connections.ProvidersActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="false" />
-        <activity
-            android:name=".feature.connections.SourceSetupActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="false" />
-        <activity
-            android:name=".feature.connections.ConnectionProfilesActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:launchMode="singleTask"
-            android:exported="true">
-            <intent-filter android:label="Import connection into Tachiai">
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-                <data android:mimeType="text/x-conf" />
-                <data android:mimeType="application/octet-stream" />
-                <data android:mimeType="application/x-wireguard-profile" />
-            </intent-filter>
-            <intent-filter android:label="Import connection into Tachiai">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="content" />
-                <data android:mimeType="text/plain" />
-                <data android:mimeType="text/x-conf" />
-                <data android:mimeType="application/octet-stream" />
-                <data android:mimeType="application/x-wireguard-profile" />
-            </intent-filter>
-        </activity>
-        <activity
-            android:name=".feature.presentation.CachedPrototypeActivity"
-            android:theme="@style/Theme.Tachiai.Prototype"
-            android:exported="true"
-            android:configChanges="orientation|screenSize"
-            android:process=":prototype_cached_player" />
         <activity
             android:name=".feature.diagnostic.AbemaCachedHelperActivity"
             android:exported="true"
@@ -91,26 +18,8 @@
             android:name=".feature.diagnostic.AbemaGuestBootstrapActivity"
             android:exported="true"
             android:process=":abema_guest_bootstrap" />
-        <service
-            android:name=".provider.abema.AbemaEpisodeMetadataService"
-            android:exported="false"
-            android:process=":abema_guest_bootstrap" />
-        <service
-            android:name=".provider.abema.AbemaSeriesMetadataService"
-            android:exported="false"
-            android:process=":abema_guest_bootstrap" />
-        <service
-            android:name=".provider.abema.account.AbemaAccountBootstrapService"
-            android:exported="false"
-            android:process=":abema_guest_bootstrap" />
-        <service
-            android:name=".provider.abema.account.AbemaEmailGrantHandoffService"
-            android:exported="false" />
-        <service
-            android:name=".provider.abema.account.AbemaAccountAccessService"
-            android:exported="false" />
         <activity
-            android:name=".feature.presentation.PrototypeActivity"
+            android:name=".feature.presentation.FullPagePrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="false"
             android:configChanges="orientation|screenSize"

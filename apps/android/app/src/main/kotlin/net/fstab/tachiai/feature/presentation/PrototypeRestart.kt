@@ -15,10 +15,13 @@ internal fun restartPrototypeProcess(activity: Activity, cached: Boolean, assign
     performPrototypeRestart(Application.getProcessName(), activity.packageName, cached,
         checkpoint = { ConfiguredRecoveryCheckpoint(activity.noBackupFilesDir, cached).write(assignments) },
         launch = {
-            activity.startActivity(Intent(activity, MainActivity::class.java)
+            val destination = if (cached) Intent(activity, PlaybackRestartActivity::class.java)
+                .putExtra(PlaybackRestartActivity.PRIOR_PID, Process.myPid())
+            else Intent(activity, MainActivity::class.java)
                 .setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true))
+                .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)
+            activity.startActivity(destination)
         },
         finish = activity::finish,
         terminate = { Process.killProcess(Process.myPid()) })

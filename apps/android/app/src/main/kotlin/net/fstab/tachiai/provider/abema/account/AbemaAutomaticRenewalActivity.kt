@@ -6,7 +6,6 @@ import android.view.WindowManager
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.connections.AbemaApprovalBrowserActivity
 import net.fstab.tachiai.platform.diagnostics.FailureDiagnostics
 
@@ -32,7 +31,7 @@ class AbemaAutomaticRenewalActivity : ComponentActivity() {
         net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
         setContentView(TextView(this).apply { text = "Checking remembered ABEMA sign-in…"; setPadding(24, 24, 24, 24) })
         val value = intent.getStringExtra(TICKET)
-        if (!BuildConfig.DEBUG || savedInstanceState != null || intent.extras?.keySet() != setOf(TICKET) ||
+        if (savedInstanceState != null || intent.extras?.keySet() != setOf(TICKET) ||
             value?.matches(Regex("[a-f0-9]{32}")) != true) { finish(); return }
         ticket = value
         AbemaAccountWorkers.worker.execute {

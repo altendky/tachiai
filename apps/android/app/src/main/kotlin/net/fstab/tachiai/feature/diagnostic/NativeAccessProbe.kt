@@ -147,7 +147,7 @@ internal fun NativeAccessProbeScreen(modifier: Modifier = Modifier) {
             context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.presentation.CachedPrototypeActivity"))
         }) { Text("Prototype · choose two streams") }
         Button(onClick = {
-            context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.presentation.PrototypeActivity"))
+            context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.presentation.FullPagePrototypeActivity"))
         }) { Text("Prototype comparison · original web startup") }
         Button(onClick = {
             context.startActivity(Intent().setClassName(context, "net.fstab.tachiai.feature.diagnostic.AbemaCachedHelperActivity"))

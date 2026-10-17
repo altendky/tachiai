@@ -14,10 +14,10 @@ const encoded = value => Buffer.from(value, 'utf8').toString('base64');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 const timingKotlin = fs.readFileSync(path.join(__dirname, '..', '..', 'apps', 'android', 'app',
-  'src', 'debug', 'kotlin', 'net', 'fstab', 'tachiai', 'provider', 'abema', 'AbemaReplayNativePlayback.kt'), 'utf8');
+  'src', 'main', 'kotlin', 'net', 'fstab', 'tachiai', 'provider', 'abema', 'AbemaReplayNativePlayback.kt'), 'utf8');
 const timingScript = timingKotlin.match(/fun abemaReplayOriginalTimingScript\(pause: Boolean\): String = """([\s\S]*?)"""/)[1];
 const newsKotlin = fs.readFileSync(path.join(__dirname, '..', '..', 'apps', 'android', 'app',
-  'src', 'debug', 'kotlin', 'net', 'fstab', 'tachiai', 'provider', 'abema', 'AbemaNewsNativePlayback.kt'), 'utf8');
+  'src', 'main', 'kotlin', 'net', 'fstab', 'tachiai', 'provider', 'abema', 'AbemaNewsNativePlayback.kt'), 'utf8');
 const newsPauseScript = newsKotlin.match(/fun abemaNewsPauseOriginalVideoScript\(\): String = """([\s\S]*?)"""/)[1];
 
 test('native pair News pause/mute confirms only the original visible News video', () => {

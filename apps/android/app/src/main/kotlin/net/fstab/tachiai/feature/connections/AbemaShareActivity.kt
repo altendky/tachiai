@@ -8,7 +8,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
 import kotlinx.coroutines.*
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.presentation.PrototypeService
@@ -26,7 +25,6 @@ class AbemaShareActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.DEBUG) { intent = Intent(); finish(); return }
         consumeInput(intent, savedInstanceState != null)
         enableEdgeToEdge()
         setContent { TachiaiPrototypeTheme {

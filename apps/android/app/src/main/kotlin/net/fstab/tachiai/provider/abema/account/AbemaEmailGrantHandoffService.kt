@@ -5,7 +5,6 @@ import android.app.Service
 import android.content.Intent
 import android.os.*
 import android.os.Process
-import net.fstab.tachiai.BuildConfig
 
 internal object AndroidAbemaEmailGrantHandoff {
     val inbox = AbemaEmailGrantInbox(SystemClock::elapsedRealtime, System::currentTimeMillis)
@@ -49,6 +48,6 @@ class AbemaEmailGrantHandoffService : Service() {
             }) } catch (_: Exception) { /* No private payload is logged. */ }
         }
     })
-    override fun onBind(intent: Intent): IBinder? = if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= 28 &&
+    override fun onBind(intent: Intent): IBinder? = if (Build.VERSION.SDK_INT >= 28 &&
         Application.getProcessName() == packageName) messenger.binder else null
 }

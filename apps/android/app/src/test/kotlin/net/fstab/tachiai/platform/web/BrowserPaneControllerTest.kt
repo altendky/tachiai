@@ -4,6 +4,7 @@ import android.app.Application
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import java.net.URI
+import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.diagnostic.AbemaTwitchSingleWebContentsAdapter
 import net.fstab.tachiai.feature.diagnostic.COMPOSITE_ABEMA_PANE
 import net.fstab.tachiai.feature.diagnostic.COMPOSITE_TWITCH_PANE
@@ -123,10 +124,21 @@ class BrowserPaneControllerTest {
     }
 
     @Test
-    fun `diagnostic callbacks are invalidated by same URL reload and newer reads`() {
+    fun `diagnostic reads obey build policy and invalidate stale callbacks`() {
         val view = TestWebView()
         val controller = controller(view)
         var result = "unset"
+        if (!BuildConfig.DEBUG) {
+            var scriptsRequested = 0
+            repeat(2) {
+                controller.evaluatePlaybackDiagnostic({ _, _ -> scriptsRequested++; "read" }) { result = it ?: "null" }
+                controller.pageLoading()
+            }
+            assertEquals(0, scriptsRequested)
+            assertEquals(0, view.callbacks.size)
+            assertEquals("unset", result)
+            return
+        }
         controller.evaluatePlaybackDiagnostic({ _, _ -> "read" }) { result = it ?: "null" }
         controller.pageLoading()
         view.callbacks[0].onReceiveValue("old document")

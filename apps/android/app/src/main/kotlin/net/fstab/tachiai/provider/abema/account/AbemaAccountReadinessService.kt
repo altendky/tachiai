@@ -8,7 +8,6 @@ import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.presentation.validProviderInstanceId
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
 
@@ -140,8 +139,7 @@ class AbemaAccountReadinessService : Service() {
     private val delivery = AbemaReadinessTicketDelivery(AndroidAbemaRenewalReadiness::cancelUnclaimed)
     private val messenger = Messenger(object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
-            if (!BuildConfig.DEBUG ||
-                message.sendingUid != Process.myUid()) return
+            if (message.sendingUid != Process.myUid()) return
             if (message.what == AbemaReadinessIpc.CANCEL) {
                 val data = message.data
                 if (data.keySet() != setOf("ticket")) return
@@ -169,6 +167,6 @@ class AbemaAccountReadinessService : Service() {
             } } catch (_: Throwable) { }
         }
     })
-    override fun onBind(intent: Intent?) = if (BuildConfig.DEBUG) messenger.binder else null
+    override fun onBind(intent: Intent?) = messenger.binder
     override fun onDestroy() { destroyed = true; delivery.close(); main.removeCallbacksAndMessages(null); super.onDestroy() }
 }

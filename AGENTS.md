@@ -4,10 +4,13 @@ Start with [the project documentation](docs/src/project/index.md).
 
 ## Current project state
 
-Tachiai has an Android feasibility implementation, not a production integration.
-The debug application preserves historical experiments and adds a separate
-[source-picker/native-viewer prototype](docs/src/project/prototype-ux.md).
-Distinguish implemented behavior, bounded device observations and proposals.
+Tachiai's [source picker, provider settings and native viewer](docs/src/project/prototype-ux.md)
+are the primary Android application in ordinary debug and release builds.
+Historical experiments remain developer-only; the local `inspect` variant keeps
+its separate inspection exception. Existing `Prototype` class/file names may
+remain compatibility identities, not a requirement to exclude product features
+from release. Distinguish implemented behavior, bounded device observations and
+proposals; promotion does not establish provider support or production readiness.
 
 The first concrete pairing is ABEMA's Grand Sumo coverage with the
 `midnightsumo` Twitch channel, but the product model must remain a generic

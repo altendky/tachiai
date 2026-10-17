@@ -42,7 +42,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.media.BoundedDashManifestParser
 import net.fstab.tachiai.platform.media.BoundedMediaRequests
 import net.fstab.tachiai.platform.media.BoundedNativeDashPlayer
@@ -368,7 +367,7 @@ internal class CachedPrototypeAbemaSession(
         started = true
         this.budget = budget
         deadline = SystemClock.elapsedRealtime() + budget.remainingMs
-        if (!BuildConfig.DEBUG || !active() || !budget.active) { fail(); return }
+        if (!active() || !budget.active) { fail(); return }
         emit(PrototypeFeedEvent.PREPARING)
         val run = revision.incrementAndGet()
         val readinessDeadline = minOf(deadline, SystemClock.elapsedRealtime() + 45_000)

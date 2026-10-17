@@ -58,26 +58,27 @@ class MainActivity : ComponentActivity() {
     private val debugLaunch = DebugLaunchState()
     private val accountReadiness by lazy { net.fstab.tachiai.feature.connections.startupAccountReadiness(this) }
 
-    override fun onResume() { super.onResume(); accountReadiness?.onResume() }
-    override fun onPause() { accountReadiness?.onPause(); super.onPause() }
-    override fun onDestroy() { accountReadiness?.close(); super.onDestroy() }
+    override fun onResume() { super.onResume(); accountReadiness.onResume() }
+    override fun onPause() { accountReadiness.onPause(); super.onPause() }
+    override fun onDestroy() { accountReadiness.close(); super.onDestroy() }
 
-    private fun nativeMenuRequest() = if (intent.hasExtra(EXTRA_NATIVE_ACCESS_PROBE))
+    private fun nativeMenuRequest() = if (BuildConfig.DEBUG && intent.hasExtra(EXTRA_NATIVE_ACCESS_PROBE))
         intent.getBooleanExtra(EXTRA_NATIVE_ACCESS_PROBE, false) else null
 
     private fun isLauncher() = intent.action == Intent.ACTION_MAIN &&
         (intent.hasCategory(Intent.CATEGORY_LAUNCHER) || intent.hasCategory(Intent.CATEGORY_LEANBACK_LAUNCHER))
 
-    private fun hasExplicitDiagnostic() = intent.extras?.keySet()?.any {
+    private fun hasExplicitDiagnostic() = BuildConfig.DEBUG && intent.extras?.keySet()?.any {
         it.startsWith("net.fstab.tachiai.extra.") && it != EXTRA_NATIVE_ACCESS_PROBE
     } == true
 
     private fun showStreamPicker() = streamPickerAtStartup(BuildConfig.DEBUG, android.os.Build.VERSION.SDK_INT,
         nativeMenuRequest(), isLauncher(), hasExplicitDiagnostic())
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun openStreamPicker(): Boolean {
         if (!showStreamPicker()) return false
-        startActivity(Intent().setClassName(this, "net.fstab.tachiai.feature.presentation.CachedPrototypeActivity")
+        startActivity(Intent(this, net.fstab.tachiai.feature.presentation.CachedPrototypeActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         finish()
         return true
@@ -115,6 +116,13 @@ class MainActivity : ComponentActivity() {
         reportDebugLaunch(DebugLaunchSource.CREATE)
         if (openStreamPicker()) return
         enableEdgeToEdge()
+        if (!BuildConfig.DEBUG || android.os.Build.VERSION.SDK_INT < 28 &&
+            nativeMenuRequest() == null && !hasExplicitDiagnostic()) {
+            setContent { MaterialTheme {
+                androidx.compose.material3.Text("Tachiai requires Android 9 or later.", Modifier.safeDrawingPadding())
+            } }
+            return
+        }
         setContent {
             DebugLaunchTheme(debugLaunch.revision) {
                 if (showNativeAccessMenu()) {

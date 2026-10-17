@@ -234,7 +234,8 @@ def bounded_analyzer(command):
 def verify_apk(apk, analyzer):
     if not apk.is_file() or not analyzer.is_file():
         raise PolicyFailure("APK_ANALYZER_INPUT")
-    expected = manifest_classes((ROOT / SOURCE / "debug/AndroidManifest.xml").read_text())
+    expected = set().union(*(manifest_classes((ROOT / SOURCE / variant / "AndroidManifest.xml").read_text())
+                             for variant in ("main", "debug")))
     actual = defined_classes(bounded_analyzer([str(analyzer.resolve()), "dex", "packages", "--defined-only", str(apk.resolve())]))
     missing = expected - actual
     if missing:

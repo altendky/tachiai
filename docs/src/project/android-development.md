@@ -70,6 +70,22 @@ application ID before updating
 with `adb install -r` and launches Tachiai's normal entry point. A wrong signer
 or failed update stops; there is no uninstall/reinstall fallback.
 
+## Ordinary application builds
+
+Ordinary debug and release builds contain the primary source picker, provider
+settings, configured routes and accounts, and native viewer. Historical
+experiments remain developer-only. Compatibility names such as
+`CachedPrototypeActivity` and `:prototype_cached_player` do not restrict the
+primary application to debug builds.
+
+CI assembles the release APK and checks its manifest and assets for the primary
+application and exclusion of developer entry points. The release artifact is
+unsigned until production signing is separately configured; it is not an
+installable signed release. Never sign production with the shared debug key.
+Development and inspection APKs continue to use the existing shared debug
+identity so updates preserve local app data. A production signing and upgrade
+plan is separate from making the current application available in release.
+
 ## Local inspection build
 
 The full-app `inspect` variant is for explicitly opted-in local debugging. Its

@@ -7,6 +7,53 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NativePlaybackBudgetTest {
+    @Test fun `normal playback has no elapsed time cutoff but still checks its owner`() {
+        var now = 1_000L
+        var current = true
+        val budget = NativePlaybackBudget.continuous({ current }, { now })
+        assertFalse(budget.isTimeBounded)
+        now += 86_400_000L
+        assertTrue(budget.active)
+        assertEquals(Long.MAX_VALUE, budget.remainingMs)
+        assertEquals(Long.MAX_VALUE, budget.deadlineAt(now))
+        current = false
+        assertFalse(budget.active)
+        assertEquals(0L, budget.remainingMs)
+        assertEquals(now, budget.deadlineAt(now))
+    }
+
+    @Test fun `continuous children share owner lifetime without extending bounded probes`() {
+        var now = 1_000L
+        val parent = NativePlaybackBudget.continuous({ true }, { now })
+        val temporary = parent.child()
+        temporary.stop()
+        assertTrue(parent.active)
+        val playback = parent.child()
+        now += 86_400_000L
+        assertTrue(playback.active)
+        assertFalse(playback.isTimeBounded)
+        parent.stop()
+        assertFalse(playback.active)
+        assertFalse(parent.child().active)
+    }
+
+    @Test fun `continuous clock rollback and explicit stop refuse further media`() {
+        var now = 1_000L
+        val budget = NativePlaybackBudget.continuous({ true }, { now })
+        now--
+        assertFalse(budget.active)
+        now++
+        budget.stop()
+        assertFalse(budget.active)
+        try { budget.check(); throw AssertionError("Expected stopped playback") } catch (_: IOException) { }
+    }
+
+    @Test fun `absolute deadline conversion saturates without overflow`() {
+        val budget = NativePlaybackBudget(10_000, { true }, { 0 })
+        assertEquals(11_000L, budget.deadlineAt(1_000))
+        assertEquals(Long.MAX_VALUE, budget.deadlineAt(Long.MAX_VALUE - 1))
+    }
+
     @Test fun `closing a temporary child does not stop the pair but parent closure stops children`() {
         var now = 1_000L
         val parent = NativePlaybackBudget(300_000, { true }, { now }, maximumDurationMs = 300_000)

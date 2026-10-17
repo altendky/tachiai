@@ -8,6 +8,17 @@ They do not make current functionality debug-only. Historical experiments below
 retain their original dates, restrictions and verification limits; promotion
 does not establish provider support or new device evidence.
 
+## Playback lifetime — October 17
+
+Normal viewing has no application-imposed five-minute cutoff. The presentation
+continues while its foreground owner, selected routes and provider authorization
+remain valid. Stop, background and unsafe cleanup still end playback. Startup,
+individual network operations and explicitly bounded test/diagnostic sessions
+keep their own deadlines. No timer renewal is needed merely to keep watching.
+ABEMA replay availability follows the selected provider free/terms/timeshift
+window; removing a local timer does not extend that window or a provider grant.
+Earlier dated sections below describe the former experimental session limits.
+
 ## Main flow and settings — October 16
 
 Normal launches open **Choose two streams**. Development and inspection builds

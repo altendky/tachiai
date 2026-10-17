@@ -195,6 +195,7 @@ internal class CachedPrototypeAbemaSession(
     @Volatile private var nativeHost: BoundedNativeDashPlayer? = null
     @Volatile private var budget: NativePlaybackBudget? = null
     @Volatile private var deadline = 0L
+    private val playbackAvailability = AtomicReference<AbemaPlaybackAvailability?>()
     private var started = false
     private var documentStarted = false
     private var preparingNative = false
@@ -226,12 +227,14 @@ internal class CachedPrototypeAbemaSession(
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && ownership?.canContinue() != false && routeOwnership?.canContinue() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run) && slotChaseCurrent(run)
+        (!accountAdmitted.get() || accountClient.get()?.current() == true) &&
+        playbackAvailability.get()?.current(System.currentTimeMillis()) != false && slotPremiumCurrent(run) && slotChaseCurrent(run)
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
         (routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker()) &&
         (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
+        playbackAvailability.get()?.current(System.currentTimeMillis()) != false &&
         slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
     private fun slotPremiumCurrent(run: Long): Boolean {
         return slotLinearAdmission.current {
@@ -377,12 +380,12 @@ internal class CachedPrototypeAbemaSession(
         if (started || closed.get()) return
         started = true
         this.budget = budget
-        deadline = SystemClock.elapsedRealtime() + budget.remainingMs
+        deadline = budget.deadlineAt(SystemClock.elapsedRealtime())
         if (!active() || !budget.active) { fail(); return }
         emit(PrototypeFeedEvent.PREPARING)
         val run = revision.incrementAndGet()
         val readinessDeadline = minOf(deadline, SystemClock.elapsedRealtime() + 45_000)
-        handler.postDelayed({ if (!closed.get() && revision.get() == run)
+        if (budget.isTimeBounded) handler.postDelayed({ if (!closed.get() && revision.get() == run)
             fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }, budget.remainingMs)
         handler.postDelayed({ if (!closed.get() && revision.get() == run && !preparingNative) {
             if (!preparationAdmitted(run)) fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED), admissionLost = true)
@@ -422,7 +425,9 @@ internal class CachedPrototypeAbemaSession(
                     val proof = MessageDigest.getInstance("SHA-256").digest(sourceBinding.toByteArray(Charsets.UTF_8))
                         .joinToString("") { "%02x".format(it.toInt() and 255) }
                     val client = AndroidAbemaAccountAccessClient(application, selectedOwner.instanceId,
-                        selectedOwner.ownerProof, proof, deadline, playback = true, canUse = {
+                        selectedOwner.ownerProof, proof,
+                        if (budget.isTimeBounded) deadline else minOf(deadline, SystemClock.elapsedRealtime() + 30_000),
+                        playback = true, continuousPlayback = !budget.isTimeBounded, canUse = {
                             !closed.get() && revision.get() == run && active() && budget.active &&
                                 SystemClock.elapsedRealtime() < deadline && selectedOwner.canContinue()
                         })
@@ -812,10 +817,13 @@ internal class CachedPrototypeAbemaSession(
         check(sourcePending.compareAndSet(null, completion))
         handler.post {
             if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
-            else view.evaluateJavascript("window['$name']?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null") { raw ->
+            else view.evaluateJavascript("(() => { const h = window['$name']; return JSON.stringify({" +
+                "binding: h?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null," +
+                "availability: h?.playbackAvailability() || null}); })()") { raw ->
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
-                    val selected = quoted(raw, 12_000)
+                    val projection = runCatching { org.json.JSONObject(quoted(raw, 24_000) ?: "") }.getOrNull()
+                    val selected = projection?.opt("binding") as? String
                     val slotBinding = if (slotResource != null)
                         parseAbemaSlotPlaybackBinding(selected, slotChannelId, slotId,
                             allowLinear = continuousSlotPlayback, modernChannelContext = modernChannelPreparation) else null
@@ -832,7 +840,10 @@ internal class CachedPrototypeAbemaSession(
                             record("cdnReview=UNAVAILABLE"); completion.complete(null); return@evaluateJavascript
                         }
                     }
-                    val allowed = uri != null && if (slotBinding?.linear == true)
+                    val availability = uri?.let { parseAbemaPlaybackAvailability(
+                        projection?.opt("availability") as? String, it,
+                        requireExpiry = replay && slotBinding?.linear != true, wallMs = System.currentTimeMillis()) }
+                    val allowed = uri != null && availability != null && if (slotBinding?.linear == true)
                         AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = slotChannelId,
                             modernChannelContext = modernChannelPreparation)
                     else if (slotResource != null) allowsAbemaSlotSource(uri, slotChannelId, slotId)
@@ -864,7 +875,8 @@ internal class CachedPrototypeAbemaSession(
                         }
                         record("sourcePolicy=$category shape=$shape")
                     }
-                    completion.complete(uri?.takeIf { allowed })
+                    if (allowed) playbackAvailability.compareAndSet(null, availability)
+                    completion.complete(uri?.takeIf { allowed && playbackAvailability.get()?.current(System.currentTimeMillis()) == true })
                 }
             }
         }

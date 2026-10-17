@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private fun showStreamPicker() = streamPickerAtStartup(BuildConfig.DEBUG, android.os.Build.VERSION.SDK_INT,
         nativeMenuRequest(), isLauncher(), hasExplicitDiagnostic())
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun openStreamPicker(): Boolean {
         if (!showStreamPicker()) return false
         startActivity(Intent(this, net.fstab.tachiai.feature.presentation.CachedPrototypeActivity::class.java)

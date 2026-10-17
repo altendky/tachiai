@@ -176,6 +176,9 @@ androidComponents {
     beforeVariants(selector().withBuildType("diagnostic")) { variant ->
         checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
     }
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        checkNotNull(variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]).enable = true
+    }
     onVariants(selector().withBuildType("release")) { variant ->
         tasks.register<VerifyReleaseIsolation>("verifyReleaseIsolation") {
             group = "verification"

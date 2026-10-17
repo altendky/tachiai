@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "net.fstab.tachiai.core"
+cdylib_name = "tachiai_core_ffi"
+
+[bindings.swift]
+module_name = "TachiaiCore"
+ffi_module_name = "TachiaiCoreFFI"

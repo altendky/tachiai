@@ -7,9 +7,11 @@ go = "1.27.2"
 java = "temurin-21"
 node = "24.21.0"
 python = "3.14.8"
+rust = "1.98.1"
 uv = "0.13.0"
 "pipx:pre-commit" = "4.6.2"
 "cargo:mdbook" = "0.5.4"
+"cargo:wasm-bindgen-cli" = "0.2.129"
 
 [tasks.docs]
 description = "Build the project documentation"
@@ -22,11 +24,20 @@ run = "pre-commit run --all-files --show-diff-on-failure"
 [tasks.android]
 description = "Test, lint, and assemble the Android feasibility spike"
 dir = "apps/android"
-run = "bash ../../scripts/build-android-routebridge.sh && ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation assembleDebug"
+run = "bash ../../scripts/build-android-core.sh && bash ../../scripts/build-android-routebridge.sh && ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation assembleDebug"
+
+[tasks.core]
+description = "Check the reusable Rust core and native/browser bindings"
+run = "bash scripts/check-core.sh"
+
+[tasks.core-bindings]
+description = "Build the shared native library and generate Kotlin/Swift bindings"
+run = "bash scripts/build-core-bindings.sh"
 
 [tasks.check]
 description = "Run the local validation suite"
-depends = ["pre-commit", "android"]
+depends = ["pre-commit", "core"]
+run = "mise run android"
 
 [tasks.android-emulator-setup]
 description = "Create the persistent local development device without replacing existing data"

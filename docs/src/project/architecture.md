@@ -198,6 +198,13 @@ verifies its minimum dimensions, activation, and mixed-audio behavior.
 
 ## Shared code
 
+The [shared Rust core](shared-rust-core.md) contains the current pure timing and
+seek-planning extraction, with separate native and web bindings. Android uses
+the generated native library through `:core`; player dispatch, DRM, account and
+route ownership remain platform/provider responsibilities. The original
+incremental-sharing guidance below explains the boundary rather than a ban on
+the now-identified portable rules.
+
 Do not create a shared Rust or Kotlin Multiplatform core merely because several
 platforms are desired. The first likely portable artifact is provider adapter
 JavaScript/CSS. A shared state-transition core becomes worthwhile only after

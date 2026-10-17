@@ -7,6 +7,11 @@ version = "0.5.4"
 backend = "cargo:mdbook"
 specifiers = ["0.5.4"]
 
+[[tools."cargo:wasm-bindgen-cli"]]
+version = "0.2.129"
+backend = "cargo:wasm-bindgen-cli"
+specifiers = ["0.2.129"]
+
 [[tools.go]]
 version = "1.27.2"
 backend = "core:go"
@@ -151,6 +156,11 @@ provenance = "github-attestations"
 checksum = "sha256:10e5705e44938ee78de35c62b30fdfe2945b53438343d04c0f53548cdd8e91b6"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 provenance = "github-attestations"
+
+[[tools.rust]]
+version = "1.98.1"
+backend = "core:rust"
+specifiers = ["1.98.1"]
 
 [[tools.uv]]
 version = "0.13.0"

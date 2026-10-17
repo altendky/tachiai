@@ -115,8 +115,9 @@ done < "$task_root/apps/android/openconnect-fixture/sources.tsv"
 for task_archive in openvpn3 asio openssl fmt lz4; do
   cp "$task_native/downloads/$task_archive.tar.gz" "$task_companion/upstream/openvpn/"
 done
-(cd "$task_root" && tar --exclude='*/build' --exclude='*/.gradle' --exclude='*/.kotlin' --exclude='*/local.properties' \
-  --exclude='*/__pycache__' --exclude='*.pyc' -cf - apps/android scripts LICENSE-MIT LICENSE-APACHE mise.toml mise.lock) | \
+(cd "$task_root" && tar --exclude='*/build' --exclude='*/target' --exclude='*/.gradle' --exclude='*/.kotlin' --exclude='*/local.properties' \
+  --exclude='*/__pycache__' --exclude='*.pyc' -cf - apps/android scripts packages tools/core-bindgen \
+  Cargo.toml Cargo.lock rust-toolchain.toml LICENSE-MIT LICENSE-APACHE mise.toml mise.lock) | \
   tar -xf - -C "$task_companion"
 cp "$task_root/apps/android/openconnect-fixture/RELINKING.md" "$task_companion/RELINKING.md"
 mkdir -p "$task_companion/native-artifact-identities"

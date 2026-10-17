@@ -16,6 +16,7 @@ import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.android.application)
@@ -102,6 +103,11 @@ android {
         applicationId = "net.fstab.tachiai"
         minSdk = 26
         targetSdk = 37
+        ndk {
+            // Match the routing/native core targets; do not package JNA-only
+            // 32-bit ABIs without the application's other native libraries.
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
         versionCode = 1
         versionName = "0.1.0"
         buildConfigField("boolean", "LOCAL_INSPECTION", "false")
@@ -198,6 +204,7 @@ listOf("Implementation", "RuntimeOnly", "CompileOnly").forEach { suffix ->
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(libs.activity.compose)
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.compose)
@@ -222,11 +229,19 @@ dependencies {
     debugImplementation(libs.compose.ui.test.manifest)
 
     testImplementation(libs.junit)
+    // Host JVM tests exercise the generated production bindings, not a Kotlin
+    // duplicate. The Android runtime uses :core's JNA AAR and packaged libraries.
+    testImplementation(libs.jna)
     testImplementation(libs.json)
     testImplementation(libs.okhttp.tls)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
+}
+
+tasks.withType<Test>().configureEach {
+    systemProperty("jna.library.path",
+        rootProject.layout.projectDirectory.dir("../../build/core/native/host").asFile.absolutePath)
 }
 
 val verifySharedDebugKeystore = tasks.register<VerifyDebugKeystore>("verifySharedDebugKeystore") {

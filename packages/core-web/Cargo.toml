@@ -1,0 +1,20 @@
+[package]
+name = "tachiai-core-web"
+description = "Browser WebAssembly interface to Tachiai's portable core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tachiai-core.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+
+[lints]
+workspace = true

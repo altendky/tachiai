@@ -55,4 +55,64 @@ class AbemaAccountAccessIpcTest {
             failure - "failure", failure + ("failure" to "UNKNOWN"), failure + ("bearer" to "private"),
             base + ("status" to "CONNECTED"))) assertNull(AbemaAccountAccessIpc.result(bad, request, 1, 1000))
     }
+
+    private fun continuous() = AbemaAccountAccessIpc.Request(request.nonce, request.instance, request.proof,
+        request.source, 31000L, playback = true, continuousPlayback = true)
+
+    @Test fun continuousPlaybackIsExplicitAndRetainsAFiniteStartupEnvelope() {
+        val chosen = continuous()
+        val fields = AbemaAccountAccessIpc.base(chosen, 1)
+        assertEquals(7, base.size)
+        assertEquals(8, fields.size)
+        assertTrue(AbemaAccountAccessIpc.request(fields, 1000)!!.continuousPlayback)
+        assertFalse(AbemaAccountAccessIpc.request(base, 1000)!!.continuousPlayback)
+        for (bad in listOf(fields + ("playback" to false), fields + ("continuous" to false),
+            fields + ("continuous" to "true"), fields + ("deadline" to Long.MAX_VALUE),
+            fields + ("deadline" to 301001L), fields + ("deadline" to 1000L)))
+            assertNull(AbemaAccountAccessIpc.request(bad, 1000))
+        assertNull(AbemaAccountAccessIpc.request(fields, 31000))
+    }
+
+    @Test fun onlyAnAcquiredContinuousPlaybackSessionOutlivesItsStartupDeadline() {
+        val chosen = continuous()
+        assertTrue(AbemaAccountAccessIpc.sessionCurrent(chosen, 1000, 30999, acquired = false))
+        assertFalse(AbemaAccountAccessIpc.sessionCurrent(chosen, 1000, 31000, acquired = false))
+        assertTrue(AbemaAccountAccessIpc.sessionCurrent(chosen, 1000, 601000, acquired = true))
+        assertFalse(AbemaAccountAccessIpc.sessionCurrent(chosen, 1000, 999, acquired = true))
+        assertFalse(AbemaAccountAccessIpc.sessionCurrent(chosen, -1, 1000, acquired = true))
+        assertFalse(AbemaAccountAccessIpc.sessionCurrent(request, 1000, request.deadline, acquired = true))
+        val invalid = AbemaAccountAccessIpc.Request(chosen.nonce, chosen.instance, chosen.proof, chosen.source,
+            chosen.deadline, playback = false, continuousPlayback = true)
+        assertFalse(AbemaAccountAccessIpc.sessionCurrent(invalid, 1000, 601000, acquired = true))
+    }
+
+    @Test fun continuousChecksGetFreshBoundedDeadlinesWhileAcquisitionStaysBoundedByStartup() {
+        val chosen = continuous()
+        assertEquals(31000L, AbemaAccountAccessIpc.operationDeadline(chosen, 2000, acquired = false, limitMs = 30000))
+        assertNull(AbemaAccountAccessIpc.operationDeadline(chosen, 31000, acquired = false, limitMs = 30000))
+        assertEquals(606000L, AbemaAccountAccessIpc.operationDeadline(chosen, 601000, acquired = true, limitMs = 5000))
+        assertNull(AbemaAccountAccessIpc.operationDeadline(request, 601000, acquired = true, limitMs = 5000))
+        assertNull(AbemaAccountAccessIpc.operationDeadline(chosen, Long.MAX_VALUE - 4999, acquired = true, limitMs = 5000))
+        assertNull(AbemaAccountAccessIpc.operationDeadline(chosen, -1, acquired = true, limitMs = 5000))
+        assertNull(AbemaAccountAccessIpc.operationDeadline(chosen, 1000, acquired = true, limitMs = 30001))
+    }
+
+    @Test fun continuousResultPinsItsModeAndStillRejectsAnExpiredProviderGrant() {
+        val chosen = continuous()
+        val fields = AbemaAccountAccessIpc.base(chosen, 2) + mapOf("status" to "ACCOUNT", "userId" to "account",
+            "bearer" to token("{\"sub\":\"account\",\"exp\":2000,\"dev\":\"private-device\"}"),
+            "expiry" to 2000000L, "deviceId" to "private-device")
+        assertEquals(13, fields.size)
+        assertEquals("private-device", AbemaAccountAccessIpc.result(fields, chosen, 2, 601000)?.deviceId)
+        assertNull(AbemaAccountAccessIpc.result(fields, chosen, 2, 2000000))
+        for (bad in listOf(fields - "continuous", fields + ("continuous" to false),
+            fields + ("playback" to false), fields + ("source" to "c".repeat(64)),
+            fields + ("proof" to "c".repeat(64))))
+            assertNull(AbemaAccountAccessIpc.result(bad, chosen, 2, 1000))
+        val finite = AbemaAccountAccessIpc.Request(chosen.nonce, chosen.instance, chosen.proof, chosen.source,
+            chosen.deadline, playback = true)
+        assertNull(AbemaAccountAccessIpc.result(fields, finite, 2, 1000))
+        assertEquals(AbemaAccountAccessIpc.Status.GUEST,
+            AbemaAccountAccessIpc.result(AbemaAccountAccessIpc.base(chosen, 2) + ("status" to "GUEST"), chosen, 2, 601000)?.status)
+    }
 }

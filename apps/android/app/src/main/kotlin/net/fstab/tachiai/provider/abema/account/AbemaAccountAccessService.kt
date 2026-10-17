@@ -22,7 +22,7 @@ internal object AbemaAccountAccessIpc {
     const val IPC_MS = 5000L
     enum class Status { ACCOUNT, GUEST, FAILURE }
     class Request(val nonce: String, val instance: String, val proof: String, val source: String,
-        val deadline: Long, val playback: Boolean) {
+        val deadline: Long, val playback: Boolean, val continuousPlayback: Boolean = false) {
         override fun toString() = "AbemaAccountAccessRequest(redacted)"
     }
     class Result(val status: Status, val grant: AbemaAccountGrant? = null, val deviceId: String? = null,
@@ -33,7 +33,7 @@ internal object AbemaAccountAccessIpc {
     fun fields(bundle: Bundle): Map<String, Any>? = runCatching {
         var size = 0
         buildMap {
-            if (bundle.size() !in 7..12) return null
+            if (bundle.size() !in 7..13) return null
             for (key in bundle.keySet()) {
                 if (key.length > 16) return null
                 @Suppress("DEPRECATION") val value = bundle.get(key)
@@ -45,7 +45,9 @@ internal object AbemaAccountAccessIpc {
         }
     }.getOrNull()
     fun request(fields: Map<String, Any>, now: Long): Request? {
-        if (fields.keys != keys || now < 0 || fields["sequence"] !is Long || (fields["sequence"] as Long) < 1) return null
+        val continuous = fields["continuous"] == true
+        if (fields.keys != keys + (if (continuous) setOf("continuous") else emptySet()) ||
+            now < 0 || fields["sequence"] !is Long || (fields["sequence"] as Long) < 1) return null
         val nonce = fields["nonce"] as? String ?: return null
         val instance = fields["instance"] as? String ?: return null
         val proof = fields["proof"] as? String ?: return null
@@ -54,23 +56,35 @@ internal object AbemaAccountAccessIpc {
         val playback = fields["playback"] as? Boolean ?: return null
         if (!nonce.matches(Regex("[a-f0-9]{32}")) || !validProviderInstanceId(instance) ||
             !proof.matches(Regex("[a-f0-9]{64}")) || !source.matches(Regex("[a-f0-9]{64}")) ||
-            deadline <= now || deadline - now > 300000) return null
-        return Request(nonce, instance, proof, source, deadline, playback)
+            deadline <= now || deadline - now > 300000 || (continuous && !playback)) return null
+        return Request(nonce, instance, proof, source, deadline, playback, continuous)
     }
     fun base(request: Request, sequence: Long): Map<String, Any> = mapOf("nonce" to request.nonce,
         "instance" to request.instance, "proof" to request.proof, "source" to request.source,
-        "deadline" to request.deadline, "playback" to request.playback, "sequence" to sequence)
+        "deadline" to request.deadline, "playback" to request.playback, "sequence" to sequence) +
+        (if (request.continuousPlayback) mapOf("continuous" to true) else emptyMap())
     fun matches(fields: Map<String, Any>, request: Request, sequence: Long) =
-        keys.all { fields[it] == base(request, sequence)[it] }
+        base(request, sequence).all { (key, value) -> fields[key] == value }
+    // The wire deadline always bounds startup. Only an acquired playback lease
+    // can continue beyond it; grant/owner/revision admission remains separate.
+    fun sessionCurrent(request: Request, began: Long, now: Long, acquired: Boolean): Boolean =
+        began >= 0 && now >= began && ((request.continuousPlayback && request.playback && acquired) || now < request.deadline)
+
+    fun operationDeadline(request: Request, began: Long, acquired: Boolean, limitMs: Long): Long? {
+        if (began < 0 || limitMs !in 1L..30000L || began > Long.MAX_VALUE - limitMs) return null
+        val bounded = began + limitMs
+        return (if (request.continuousPlayback && request.playback && acquired) bounded else minOf(request.deadline, bounded))
+            .takeIf { it > began }
+    }
     fun result(fields: Map<String, Any>, request: Request, sequence: Long, wall: Long): Result? = runCatching {
         if (!matches(fields, request, sequence)) return null
         val status = Status.valueOf(fields["status"] as? String ?: return null)
         when (status) {
-            Status.GUEST -> if (fields.keys == keys + "status") Result(status) else null
-            Status.FAILURE -> if (fields.keys == keys + setOf("status", "failure"))
+            Status.GUEST -> if (fields.keys == base(request, sequence).keys + "status") Result(status) else null
+            Status.FAILURE -> if (fields.keys == base(request, sequence).keys + setOf("status", "failure"))
                 Result(status, failure = AbemaAccountFailure.valueOf(fields["failure"] as? String ?: return null)) else null
             Status.ACCOUNT -> {
-                if (fields.keys != keys + setOf("status", "userId", "bearer", "expiry") +
+                if (fields.keys != base(request, sequence).keys + setOf("status", "userId", "bearer", "expiry") +
                     (if (request.playback) setOf("deviceId") else emptySet())) return null
                 val grant = decodedAbemaGrant(fields["bearer"] as? String ?: return null,
                     fields["userId"] as? String ?: return null, wall)
@@ -210,7 +224,8 @@ class AbemaAccountAccessService : Service() {
             }
             val session = sessions[nonce] ?: return
             if (message.what !in setOf(AbemaAccountAccessIpc.ACQUIRE, AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CLOSE)) return
-            if (!AbemaAccountAccessIpc.matches(fields, session.request, sequence) || fields.size != 7 ||
+            if (!AbemaAccountAccessIpc.matches(fields, session.request, sequence) ||
+                fields.keys != AbemaAccountAccessIpc.base(session.request, sequence).keys ||
                 reply.binder != session.reply.binder || sequence <= session.sequence) return
             session.sequence = sequence
             when (message.what) {
@@ -222,6 +237,7 @@ class AbemaAccountAccessService : Service() {
     })
     private inner class Session(val request: AbemaAccountAccessIpc.Request, val reply: Messenger) {
         var sequence = 1L
+        private val began = SystemClock.elapsedRealtime()
         private val ended = AtomicBoolean()
         private val busy = AtomicBoolean()
         private val jobs = AtomicInteger()
@@ -231,7 +247,7 @@ class AbemaAccountAccessService : Service() {
         private val death = IBinder.DeathRecipient { main.post { end(sequence) } }
         private fun current(): Boolean {
             val now = SystemClock.elapsedRealtime()
-            return !ended.get() && now >= 0 && now < request.deadline && lease?.current() != false
+            return !ended.get() && AbemaAccountAccessIpc.sessionCurrent(request, began, now, lease != null) && lease?.current() != false
         }
         fun open() {
             try { reply.binder.linkToDeath(death, 0) }
@@ -254,8 +270,8 @@ class AbemaAccountAccessService : Service() {
             if (acquireStarted || !current() || !busy.compareAndSet(false, true)) { end(seq); return }
             acquireStarted = true
             val began = SystemClock.elapsedRealtime()
-            if (began < 0 || began > Long.MAX_VALUE - 30000) { busy.set(false); end(seq); return }
-            val deadline = minOf(request.deadline, began + 30000)
+            val deadline = AbemaAccountAccessIpc.operationDeadline(request, began, acquired = false, limitMs = 30000)
+                ?: run { busy.set(false); end(seq); return }
             worker {
                 var result = AbemaAccountAccessIpc.Result(AbemaAccountAccessIpc.Status.FAILURE, failure = AbemaAccountFailure.CANCELLED)
                 try {
@@ -297,13 +313,19 @@ class AbemaAccountAccessService : Service() {
         }
         fun check(seq: Long) {
             if (!current() || lease == null || !busy.compareAndSet(false, true)) { end(seq); return }
+            val began = SystemClock.elapsedRealtime()
+            val deadline = AbemaAccountAccessIpc.operationDeadline(request, began, acquired = true,
+                limitMs = AbemaAccountAccessIpc.IPC_MS) ?: run { busy.set(false); end(seq); return }
+            fun inTime() = SystemClock.elapsedRealtime().let { it >= began && it < deadline }
             worker {
-                val okay = current() && runCatching { lease?.checkWorker() == true }.getOrDefault(false) && current()
+                val okay = inTime() && current() && runCatching { lease?.checkWorker() == true }.getOrDefault(false) &&
+                    current() && inTime()
                 main.post {
                     busy.set(false)
                     if (ended.get()) return@post
-                    send(AbemaAccountAccessIpc.CHECKED, seq, mapOf("current" to (okay && current())))
-                    if (!okay) end(seq)
+                    val admitted = okay && current() && inTime()
+                    send(AbemaAccountAccessIpc.CHECKED, seq, mapOf("current" to admitted))
+                    if (!admitted) end(seq)
                 }
             }
         }

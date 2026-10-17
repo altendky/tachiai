@@ -481,7 +481,7 @@ open class PrototypeActivity : ComponentActivity() {
         val run = epoch.incrementAndGet()
         qualitySession = ViewerQualityState(activeConfiguredSources.map { it.choice }, qualityDefaults)
         fun active() = resumed.get() && epoch.get() == run && !isFinishing
-        val sharedBudget = NativePlaybackBudget(300_000, ::active, maximumDurationMs = 300_000)
+        val sharedBudget = NativePlaybackBudget.continuous(::active)
         budget = sharedBudget
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         desiredPlaying = true; lastAuthorizationPoll = 0; lastSample = 0

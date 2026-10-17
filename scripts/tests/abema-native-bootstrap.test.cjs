@@ -57,6 +57,101 @@ const continuousSlotOptions = extra => ({ configuredSlot: true, continuousSlotPl
     endAt: fixtureNow / 1000 + 1, flags: {}, broadcastRegionPolicies: { linear: 1 } },
   channels: { channels: [configuredLinearChannel('sumo')] }, ...extra });
 
+const availability = value => {
+  const text = value.evaluate(`window['${name}'].playbackAvailability()`);
+  return text === null ? null : JSON.parse(text);
+};
+
+test('configured replay publishes its earliest free or advertising term expiry without a five-minute minimum', async () => {
+  const id = 'fixture-episode';
+  for (const earliest of ['free', 'term']) {
+    const program = { ...freeProgram(id), endAt: fixtureNow / 1000 - 1,
+      freeEndAt: fixtureNow / 1000 + (earliest === 'free' ? 1 : 3),
+      terms: [{ onDemandType: 3, endAt: fixtureNow / 1000 + 2 },
+        { onDemandType: 3, endAt: fixtureNow / 1000 + 4 }] };
+    const options = { program };
+    const value = fixture(options); value.start(true, id); await waitFor(value, 'READY');
+    const source = JSON.parse(value.evaluate(`window['${name}'].sourceBinding()`));
+    assert.deepEqual(Object.keys(source), ['episodeId', 'uri']);
+    assert.deepEqual(availability(value), { uri: source.uri,
+      expiresAtMs: fixtureNow + (earliest === 'free' ? 1000 : 2000) });
+    options.nowMs = availability(value).expiresAtMs;
+    assert.equal(availability(value), null);
+    options.nowMs = fixtureNow;
+    assert.equal(availability(value), null); assert.equal(value.begin(challenge), 'REFUSED');
+  }
+});
+
+test('historical replay availability includes its separately validated content end and rejects wall rollback', async () => {
+  const options = { program: { ...freeProgram(), endAt: fixtureNow / 1000 + 1 } };
+  const value = fixture(options); value.start(true); await waitFor(value, 'READY');
+  assert.equal(availability(value).expiresAtMs, fixtureNow + 1000);
+  options.nowMs = fixtureNow + 500;
+  assert.ok(availability(value));
+  options.nowMs = fixtureNow + 499;
+  assert.equal(availability(value), null);
+  options.nowMs = fixtureNow + 501;
+  assert.equal(availability(value), null);
+});
+
+test('ended Free and Premium slots publish only their active provider windows', async () => {
+  for (const premium of [false, true]) {
+    const slot = { ...freeSlot(), timeshiftEndAt: fixtureNow / 1000 + 3,
+      timeshiftFreeEndAt: fixtureNow / 1000 + (premium ? -1 : 1) };
+    if (premium) slot.flags.timeshiftFree = false;
+    const options = { configuredSlot: true, slot,
+      account: premium ? slotPremiumAccount(fixtureNow + 2000) : savedAccount() };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
+    assert.deepEqual(availability(value), { uri: binding.uri, expiresAtMs: fixtureNow + (premium ? 2000 : 1000) });
+    options.nowMs = fixtureNow + (premium ? 2000 : 1000);
+    assert.equal(availability(value), null);
+  }
+});
+
+test('Chase availability uses the active free or Premium window and its current authority lifetime', async () => {
+  for (const premium of [false, true]) {
+    const slot = { ...chaseSlot(), timeshiftEndAt: fixtureNow / 1000 + 1,
+      timeshiftFreeEndAt: fixtureNow / 1000 + 2 };
+    const account = { ...slotChaseAccount(fixtureNow + (premium ? 4000 : 500)),
+      ...(premium ? { slotPremium: slotPremiumAccount(fixtureNow + 3000).slotPremium } : {}) };
+    const options = { configuredSlot: true, slot, account };
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+    assert.equal(availability(value).expiresAtMs, fixtureNow + (premium ? 1000 : 500));
+    options.nowMs = fixtureNow + (premium ? 1000 : 500);
+    assert.equal(availability(value), null);
+  }
+});
+
+test('continuing linear availability ignores old occurrence and unused rights expiry but retains account expiry', async () => {
+  const options = continuousSlotOptions({ account: { ...slotPremiumAccount(fixtureNow + 500),
+    slotChase: slotChaseAccount(fixtureNow + 500).slotChase } });
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
+  options.nowMs = fixtureNow + 2000;
+  const bound = availability(value);
+  assert.equal(bound.expiresAtMs, savedAccount().expiresAtMs);
+  assert.equal(bound.uri, JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).uri);
+  options.nowMs = savedAccount().expiresAtMs;
+  assert.equal(availability(value), null);
+});
+
+test('guest channels publish explicit null availability and takeover or stop cannot reuse the projection', async () => {
+  for (const linear of [false, true]) {
+    const value = fixture(linear ? continuousSlotOptions({ account: undefined, forbidGuest: false }) : {});
+    if (linear) value.startSlot('sumo/fixture-slot'); else value.start();
+    assert.equal(availability(value), null);
+    await waitFor(value, 'READY');
+    const bound = availability(value);
+    assert.deepEqual(Object.keys(bound), ['uri', 'expiresAtMs']);
+    assert.equal(bound.expiresAtMs, null);
+    assert.equal(bound.uri, value.evaluate(`window['${name}'].selectedSource()`));
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    assert.ok(value.take()); assert.equal(availability(value), null);
+  }
+  const stopped = fixture(); stopped.start(); await waitFor(stopped, 'READY'); stopped.stop();
+  assert.equal(availability(stopped), null);
+});
+
 test('ongoing selected broadcast opens modern continuous channel without Chase metadata and binds channel license', async () => {
   const channel = configuredLinearChannel('sumo'); delete channel.viewingOpened;
   const options = continuousSlotOptions({ channels: { channels: [channel] } });
@@ -1480,9 +1575,9 @@ test('replay refuses coercible labels, wrong identity, unknown restrictions and 
   }
 });
 
-test('replay free/content windows require integer future epoch seconds covering the five-minute session', async () => {
+test('replay free/content windows require integer future epoch seconds', async () => {
   const invalid = [null, false, String(futureSeconds), futureSeconds + 0.5,
-    fixtureNow / 1000, fixtureNow / 1000 + 300, futureSeconds * 1000, 100000000000];
+    fixtureNow / 1000, fixtureNow / 1000 - 1, futureSeconds * 1000, 100000000000];
   for (const field of ['freeEndAt', 'endAt']) for (const timestamp of invalid) {
     const value = fixture({ program: { ...freeProgram(), [field]: timestamp } });
     value.start(true); await waitFor(value, 'FAILED');
@@ -1735,7 +1830,7 @@ test('configured free eligibility refuses absent, empty, malformed or unsupporte
     { terms: [{ onDemandType: 3, endAt: futureSeconds, unknown: true }] },
     { terms: [{ onDemandType: '3', endAt: futureSeconds }] },
     { terms: [{ onDemandType: 1, endAt: futureSeconds }] },
-    { terms: [{ onDemandType: 3, endAt: fixtureNow / 1000 + 299 }] },
+    { terms: [{ onDemandType: 3, endAt: fixtureNow / 1000 }] },
     { terms: [{ onDemandType: 3, endAt: futureSeconds * 1000 }] },
     { label: { free: 'true' } }, { label: {} }, { freeEndAt: undefined },
   ]) {
@@ -1907,7 +2002,7 @@ test('Premium preserves ended timeshift general-window region pause PPV DRM and 
     slot => { slot.endAt = futureSeconds; }, slot => { slot.startAt = slot.endAt; },
     slot => { slot.timeshiftEndAt = 0; }, slot => { delete slot.timeshiftEndAt; },
     slot => { slot.timeshiftEndAt = fixtureNow / 1000; },
-    slot => { slot.timeshiftEndAt = fixtureNow / 1000 + 300; }];
+    slot => { slot.timeshiftEndAt = fixtureNow / 1000 - 1; }];
   for (const change of changes) {
     const slot = freeSlot(); change(slot);
     const value = fixture({ configuredSlot: true, account: slotPremiumAccount(), forbidGuest: true, slot });
@@ -2076,7 +2171,7 @@ test('Chase retains independent rights windows linear and timeshift regions paus
     slot => { slot.broadcastRegionPolicies.timeshift = 2; }, slot => { slot.startAt = futureSeconds; },
     slot => { slot.startAt = slot.endAt; }, slot => { slot.timeshiftFreeEndAt = 0; },
     slot => { delete slot.timeshiftFreeEndAt; }, slot => { slot.timeshiftFreeEndAt = String(futureSeconds); },
-    slot => { slot.timeshiftFreeEndAt = fixtureNow / 1000 + 300; }];
+    slot => { slot.timeshiftFreeEndAt = fixtureNow / 1000; }];
   for (const change of changes) {
     const slot = chaseSlot(); change(slot);
     const value = fixture({ configuredSlot: true, account: slotChaseAccount(), forbidGuest: true, slot });
@@ -2244,7 +2339,7 @@ test('slot admission refuses wrong identities future live expired nonfree paid a
     slot => { slot.endAt = futureSeconds; }, slot => { slot.startAt = slot.endAt; },
     slot => { slot.startAt = 0; }, slot => { slot.timeshiftEndAt = 0; },
     slot => { delete slot.timeshiftEndAt; }, slot => { slot.timeshiftEndAt = fixtureNow / 1000; },
-    slot => { slot.timeshiftEndAt = fixtureNow / 1000 + 300; },
+    slot => { slot.timeshiftEndAt = fixtureNow / 1000 - 1; },
     slot => { slot.timeshiftFreeEndAt = fixtureNow / 1000 - 1; },
     slot => { slot.timeshiftFreeEndAt = null; }, slot => { slot.timeshiftFreeEndAt = '0'; }];
   for (const change of changes) {

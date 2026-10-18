@@ -6,7 +6,11 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -34,6 +38,7 @@ import net.fstab.tachiai.platform.media.NativeQualityKind
 import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.presentation.ViewerQualityReadback
 import net.fstab.tachiai.presentation.FloatingPosition
+import net.fstab.tachiai.presentation.FloatingFeedSize
 import net.fstab.tachiai.presentation.TwoFeedMix
 import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.ViewerTimingStep
@@ -79,11 +84,16 @@ internal class NativePairViewer(
     private val playbackBusy: () -> Boolean = { pair()?.busy == true },
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+    private val television = isTelevision(resources.configuration)
     private var mix = TwoFeedMix()
     private var panel: String? = null
     private var fitVideo = true
     private var sideDock = false
     private var activeMenu: PopupMenu? = null
+    private var activeMenuAnchor: View? = null
+    private var panelReturnFocus: View? = null
+    private var revealPress: Pair<Int, Long>? = null
+    private var focusGeneration = 0L
     private var requestedPlaying = false
     private var observedPair: NativeMixedPair? = null
     private var volumeApplied = false
@@ -94,7 +104,9 @@ internal class NativePairViewer(
         val choose: Button, val readback: TextView, val capability: TextView, val save: Button, val reset: Button)
     private val qualityFields = mutableListOf<QualityField>()
     private val hideControls = Runnable {
-        if (panel == null && requestedPlaying) { dock.visibility = GONE; requestLayout() }
+        if (panel == null && requestedPlaying && !(television && dock.hasFocus())) {
+            dock.visibility = GONE; requestLayout()
+        }
     }
     private val stage = FeedStage()
     private val dock = LinearLayout(context).apply {
@@ -108,6 +120,9 @@ internal class NativePairViewer(
         if (requestedPlaying || playbackBusy()) onPause() else onPlay()
         showControls(); refresh()
     }
+    private val audioControl = button("Audio") { togglePanel("Audio", it) }
+    private val timingControl = button("Timing") { togglePanel("Timing", it) }
+    private val moreControl = button("More") { showMore(it) }
     private val readback = text("").apply { textSize = 12f; maxLines = 2 }
     private val details = text("")
     private val adjustmentLabel = text("").apply { textSize = 12f }
@@ -137,9 +152,8 @@ internal class NativePairViewer(
     }
     private val toolbar = row(*listOfNotNull(onSources?.let { action -> nativeBackButton(context, "Back to sources", action).apply {
             imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.prototype_text))
-        } }, play, button("Audio") { togglePanel("Audio") },
-        button("Timing") { togglePanel("Timing") },
-        button("More") { showMore(it) },
+            remoteControl(this)
+        } }, play, audioControl, timingControl, moreControl,
         button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
 
     init {
@@ -150,6 +164,7 @@ internal class NativePairViewer(
             advanceB[index].nextFocusUpId = advanceA[index].id
         }
         setBackgroundColor(Color.BLACK)
+        if (television) { isFocusable = true; isFocusableInTouchMode = true }
         // Consume empty-area taps here rather than passing them to the hidden
         // provider page. Child controls and pane gestures keep their handlers.
         setOnClickListener { toggleControls() }
@@ -170,6 +185,7 @@ internal class NativePairViewer(
         volume.thumbTintList = volume.progressTintList
         balance.progressTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_secondary))
         balance.thumbTintList = balance.progressTintList
+        remoteControl(volume); remoteControl(balance)
         fun listener(action: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, value: Int, user: Boolean) { if (user) action(value) }
             override fun onStartTrackingTouch(bar: SeekBar) { removeCallbacks(hideControls) }
@@ -187,6 +203,60 @@ internal class NativePairViewer(
         text = value; textSize = 12f; isAllCaps = false; minHeight = dp(48); minWidth = dp(48)
         setPadding(dp(4), 0, dp(4), 0); setOnClickListener { action(this) }
         stylePrototypeControl()
+        remoteControl(this)
+    }
+    private fun remoteControl(control: View) {
+        if (!television) return
+        control.isFocusableInTouchMode = true
+        control.foreground = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(3).coerceAtLeast(1), context.getColor(R.color.prototype_text))
+                cornerRadius = dp(8).toFloat()
+            })
+            addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+        }
+        control.onFocusChangeListener = View.OnFocusChangeListener { _, focused ->
+            if (focused) removeCallbacks(hideControls) else cancelRepeats()
+        }
+    }
+    private fun restoreRemoteFocus(preferred: View? = play) {
+        if (!television) return
+        val generation = focusGeneration
+        post {
+            if (generation != focusGeneration || !isAttachedToWindow || !isShown || dock.isGone || activeMenu != null) return@post
+            if (preferred?.isShown == true && preferred.isEnabled && preferred.isFocusable && preferred.requestFocus()) return@post
+            if (play.isShown && play.isEnabled && play.requestFocus()) return@post
+            for (index in 0 until toolbar.childCount) {
+                val child = toolbar.getChildAt(index)
+                if (child.isShown && child.isEnabled && child.isFocusable && child.requestFocus()) return@post
+            }
+        }
+    }
+    private fun remoteKey(code: Int) = code in setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (television && isShown && remoteKey(event.keyCode)) {
+            val press = event.keyCode to event.downTime
+            if (revealPress == press) {
+                if (event.action == KeyEvent.ACTION_UP) revealPress = null
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_DOWN && dock.isGone) {
+                revealPress = press
+                showControls(); restoreRemoteFocus()
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_UP || event.isCanceled) cancelRepeats()
+            if (event.action == KeyEvent.ACTION_DOWN) removeCallbacks(hideControls)
+        }
+        return super.dispatchKeyEvent(event)
+    }
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (television && !hasWindowFocus) { cancelRepeats(); revealPress = null }
     }
     private fun row(vararg views: View) = LinearLayout(context).apply {
         views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
@@ -243,11 +313,15 @@ internal class NativePairViewer(
     private fun toggleControls() { if (dock.isGone) showControls() else dismissControls() }
     private fun dismissControls() {
         suspendControls(); panel = null; content.removeAllViews()
+        panelReturnFocus = null
         qualityFields.clear()
-        scroller.visibility = GONE; dock.visibility = GONE; requestLayout()
+        scroller.visibility = GONE; dock.visibility = GONE
+        if (television) requestFocus()
+        requestLayout()
     }
-    private fun togglePanel(value: String) {
-        dismissMenu(); cancelRepeats(); panel = if (panel == value) null else value
+    private fun togglePanel(value: String, opener: View? = null) {
+        if (panel != value && television) panelReturnFocus = opener ?: activeMenuAnchor ?: moreControl
+        dismissMenu(false); cancelRepeats(); panel = if (panel == value) null else value
         content.removeAllViews()
         qualityFields.clear()
         // Reused controls may still belong to a removed row container.
@@ -259,6 +333,7 @@ internal class NativePairViewer(
                 gravity = Gravity.CENTER_VERTICAL
                 addView(nativeBackButton(context, "Back to playback controls") { togglePanel(current) }.apply {
                     imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.prototype_text))
+                    remoteControl(this)
                 }, LinearLayout.LayoutParams(dp(48), dp(48)))
                 addView(text("$current controls").apply { gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0, -2, 1f))
                 addView(fit, LinearLayout.LayoutParams(0, -2, 1f))
@@ -305,6 +380,12 @@ internal class NativePairViewer(
         scroller.visibility = if (panel == null) GONE else VISIBLE
         scroller.scrollTo(0, 0)
         updateLabels(); showControls(); refresh()
+        if (television) {
+            if (panel == null) {
+                val target = panelReturnFocus; panelReturnFocus = null
+                restoreRemoteFocus(target)
+            } else restoreRemoteFocus((content.getChildAt(0) as? LinearLayout)?.getChildAt(0))
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -323,6 +404,10 @@ internal class NativePairViewer(
         button.setOnTouchListener { _, event ->
             if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) cancelRepeats()
             false // Native button click/accessibility semantics remain intact.
+        }
+        if (television) button.setOnKeyListener { _, _, event ->
+            if (event.action == KeyEvent.ACTION_UP || event.isCanceled) cancelRepeats()
+            false
         }
         return button
     }
@@ -350,29 +435,39 @@ internal class NativePairViewer(
         fit.isSelected = fitVideo
     }
 
-    private fun dismissMenu() {
+    private fun dismissMenu(restoreFocus: Boolean = true) {
         val previous = activeMenu
+        val anchor = activeMenuAnchor
         activeMenu = null
+        activeMenuAnchor = null
         previous?.setOnDismissListener(null)
-        previous?.menu?.let { menu ->
-            for (index in 0 until menu.size()) menu.getItem(index).setOnMenuItemClickListener(null)
+        fun clear(menu: android.view.Menu) {
+            for (index in 0 until menu.size()) menu.getItem(index).let { item ->
+                item.setOnMenuItemClickListener(null)
+                item.subMenu?.let(::clear)
+            }
         }
+        previous?.menu?.let(::clear)
         previous?.dismiss()
+        if (previous != null && restoreFocus) restoreRemoteFocus(anchor)
     }
 
     private fun showMenu(anchor: View, populate: PopupMenu.() -> Unit) {
-        dismissMenu(); cancelRepeats(); removeCallbacks(hideControls)
+        dismissMenu(false); cancelRepeats(); removeCallbacks(hideControls)
         if (!isAttachedToWindow || visibility != VISIBLE) return
         val popup = PopupMenu(context, anchor).apply(populate)
         popup.setOnDismissListener {
             if (activeMenu === popup) {
                 activeMenu = null
+                activeMenuAnchor = null
                 if (isAttachedToWindow && visibility == VISIBLE) {
                     showControls()
+                    restoreRemoteFocus(anchor)
                 }
             }
         }
         activeMenu = popup
+        activeMenuAnchor = anchor
         popup.show()
     }
 
@@ -385,9 +480,26 @@ internal class NativePairViewer(
                 isEnabled = NativeMixedSide.entries.any { qualityState(it, NativeQualityKind.VIDEO) != null }
                 setOnMenuItemClickListener { togglePanel("Quality"); true }
             }
-            menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
+            if (!television) menu.add(if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout")
                 .setOnMenuItemClickListener { onLandscape(!landscape()); true }
             menu.add("Swap primary feed").setOnMenuItemClickListener { stage.swap(); true }
+            if (television) {
+                menu.addSubMenu("Floating feed position").apply {
+                    listOf("Top left" to FloatingPosition(0f, 0f), "Top right" to FloatingPosition(1f, 0f),
+                        "Bottom left" to FloatingPosition(0f, 1f), "Bottom right" to FloatingPosition(1f, 1f)).forEach { (label, position) ->
+                        add(label).apply {
+                            isCheckable = true; isChecked = stage.floatingPosition == position
+                            setOnMenuItemClickListener { stage.placeFloating(position); true }
+                        }
+                    }
+                }
+                menu.addSubMenu("Floating feed size").apply {
+                    FloatingFeedSize.entries.forEach { size -> add(size.title).apply {
+                        isCheckable = true; isChecked = stage.floatingSize == size
+                        setOnMenuItemClickListener { stage.sizeFloating(size); true }
+                    } }
+                }
+            }
             NativeMixedSide.entries.forEach { side ->
                 val control = backToLive[side.ordinal]
                 val shown = liveTargets[side.ordinal]
@@ -498,9 +610,12 @@ internal class NativePairViewer(
         togglePanel(current)
         return true
     }
-    fun open() { visibility = VISIBLE; showControls(); refresh() }
+    fun open() { visibility = VISIBLE; showControls(); refresh(); restoreRemoteFocus() }
     fun endSession() { suspendControls(); stage.unbindPlayers(); observedPair = null; visibility = GONE }
-    fun suspendControls() { dismissMenu(); cancelRepeats(); removeCallbacks(hideControls) }
+    fun suspendControls() {
+        focusGeneration++
+        dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
+    }
     override fun onDetachedFromWindow() { suspendControls(); stage.unbindPlayers(); super.onDetachedFromWindow() }
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
@@ -540,7 +655,7 @@ internal class NativePairViewer(
         if (dock.visibility != GONE) dock.layout(width - paddingRight - dock.measuredWidth, dockTop,
             width - paddingRight, height - paddingBottom)
     }
-    private fun landscape() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    private fun landscape() = television || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     private inner class CappedScrollView : ScrollView(context) {
         var maximumHeight = 0
@@ -557,6 +672,11 @@ internal class NativePairViewer(
             set(value) { if (field != value) { field = value; requestLayout() } }
         private var primaryA = true
         private var floating = FloatingPosition()
+        val floatingPosition get() = floating
+        var floatingSize = FloatingFeedSize.MEDIUM
+            private set
+        fun placeFloating(position: FloatingPosition) { floating = position; showControls(); requestLayout() }
+        fun sizeFloating(size: FloatingFeedSize) { floatingSize = size; showControls(); requestLayout() }
         private var ratioA = 16f / 9f
         private var ratioB = 16f / 9f
         private var playerA: Player? = null
@@ -571,6 +691,7 @@ internal class NativePairViewer(
         private inner class FeedNotice(val scroll: ScrollView, val message: TextView, val recovery: Button)
         init {
             setOnClickListener { toggleControls() }
+            if (television) isFocusable = false
             addView(paneA); addView(paneB)
         }
         fun bindPlayers(): Boolean {
@@ -697,16 +818,18 @@ internal class NativePairViewer(
                     else -> true
                 }
             }
+            if (television) isFocusable = false
         }
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec))
             val bounds = twoFeedBounds(measuredWidth, measuredHeight, landscape(), primaryA, ratioA, ratioB, floating,
-                floatingBottom, floatingRight)
+                floatingBottom, floatingRight, floatingSize)
             fun measure(view: View, rect: ViewerRect) { view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY)) }
             measure(paneA, bounds.a); measure(paneB, bounds.b)
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-            val bounds = twoFeedBounds(width, height, landscape(), primaryA, ratioA, ratioB, floating, floatingBottom, floatingRight)
+            val bounds = twoFeedBounds(width, height, landscape(), primaryA, ratioA, ratioB, floating,
+                floatingBottom, floatingRight, floatingSize)
             fun place(view: View, rect: ViewerRect) {
                 view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY))
                 view.layout(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)

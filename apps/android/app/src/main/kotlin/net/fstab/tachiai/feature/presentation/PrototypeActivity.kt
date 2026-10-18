@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.media.session.PlaybackState
+import android.media.session.MediaController
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -193,6 +195,7 @@ open class PrototypeActivity : ComponentActivity() {
     private val replayRestoreTarget = arrayOfNulls<Long>(2)
     private var surfaces = emptyList<PlayerView>()
     private var budget: NativePlaybackBudget? = null
+    private var pairMediaSession: ForegroundPairMediaSession? = null
     private var playback: PrototypePlaybackController? = null
     private var focus: NativePlaybackAudioGroup? = null
     private var viewer: NativePairViewer? = null
@@ -824,6 +827,7 @@ open class PrototypeActivity : ComponentActivity() {
                     } finally { authorizationPolling.set(false) }
                 }
             }
+            publishPairTransport()
             if (budget === currentBudget) handler.postDelayed(this, 200)
         }
     }
@@ -881,6 +885,20 @@ open class PrototypeActivity : ComponentActivity() {
             onResetQuality = { side, kind -> saveQuality(side, kind, true) })
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
+        if (isTelevision(resources.configuration)) {
+            val current = playback
+            val ownedBudget = budget
+            val run = epoch.get()
+            pairMediaSession = ForegroundPairMediaSession(this,
+                admitted = { resumed.get() && epoch.get() == run && playback === current &&
+                    current != null && budget === ownedBudget && ownedBudget?.active == true &&
+                    viewer === pane && pane.visibility == View.VISIBLE && !isFinishing && !isDestroyed },
+                playingRequested = { desiredPlaying || current?.playingRequested == true },
+                play = ::playPair, pause = ::pausePair)
+            // Route this foreground window's media keys to its own pair rather
+            // than relying on another application's global media priority.
+            mediaController = MediaController(this, checkNotNull(pairMediaSession).token)
+        }
         returnButton?.isEnabled = true
         styleSystemBars(true)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -978,11 +996,28 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun invalidatePlay() { playBarrier?.cancel(); playBarrier = null; playMessage = null }
-    private fun pausePair() { desiredPlaying = false; invalidatePlay(); playback?.pause(); viewer?.refresh() }
+    private fun pausePair() {
+        desiredPlaying = false; invalidatePlay(); playback?.pause(); viewer?.refresh(); publishPairTransport()
+    }
 
     private fun playPair() {
         desiredPlaying = true
         playReadyFeeds()
+        publishPairTransport()
+    }
+
+    private fun publishPairTransport() {
+        val session = pairMediaSession ?: return
+        val current = playback
+        val playing = NativeMixedSide.entries.any { side ->
+            runCatching { current?.member(side)?.timingSnapshot()?.playing == true }.getOrDefault(false)
+        }
+        val state = when {
+            playing -> PlaybackState.STATE_PLAYING
+            desiredPlaying && current?.playingRequested == true -> PlaybackState.STATE_BUFFERING
+            else -> PlaybackState.STATE_PAUSED
+        }
+        session.publish(state)
     }
 
     private fun playReadyFeeds() {
@@ -1117,6 +1152,8 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun dispose(retainStartups: Boolean = false) {
+        if (pairMediaSession != null) mediaController = null
+        pairMediaSession?.close(); pairMediaSession = null
         if (!retainStartups) retireStartupScopes()
         disposing = true
         feedRetries.forEach { it.invalidate() }

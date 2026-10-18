@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "generator": "ffmpeg version 8.0.1-3ubuntu2 Copyright (c) 2000-2025 the FFmpeg developers",
+  "files": {
+    "a.mp4": {
+      "sha256": "38f95dbc38432297f7106aa77e7eff30e7a94965545fc30b35403738455e660a",
+      "bytes": 2872166,
+      "video": "h264",
+      "audio": "aac",
+      "duration_seconds": 60,
+      "width": 640,
+      "height": 360,
+      "frames_per_second": 24,
+      "tone_hz": 440,
+      "pulse_offset_seconds": 0
+    },
+    "b.mp4": {
+      "sha256": "035c11639d6b4fcd6f624d363177a09d7248422f053fc525c58abb9d6b0e70e0",
+      "bytes": 2862660,
+      "video": "h264",
+      "audio": "aac",
+      "duration_seconds": 60,
+      "width": 640,
+      "height": 360,
+      "frames_per_second": 24,
+      "tone_hz": 880,
+      "pulse_offset_seconds": 0.5
+    }
+  }
+}

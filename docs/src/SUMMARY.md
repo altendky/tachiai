@@ -16,6 +16,7 @@
   - [Provider watch-history access](project/provider-history-access.md)
   - [Cross-platform implementation landscape](project/platforms.md)
   - [Casting: screen mirroring and TV applications](project/casting.md)
+  - [Controlled mirroring media fixture](project/controlled-mirroring-fixture.md)
   - [Android TV and Google TV review](project/android-tv-interface-review.md)
   - [iOS interface and library review](project/ios-interface-review.md)
   - [Apple TV / tvOS review](project/tvos-interface-review.md)

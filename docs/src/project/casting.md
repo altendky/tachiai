@@ -47,6 +47,11 @@ See the [platform landscape](platforms.md).
    dependent on #304: verify complete output, audio, routes and lifecycle on a
    named phone/Chromecast pair before claiming playback support.
 
+The [controlled media fixture](controlled-mirroring-fixture.md) supplies two
+locally generated, unprotected clips and a bounded test-APK-only viewer for
+that preparation. Its local decoding/control checks do not establish receiver
+output, acoustic mix or provider acceptance.
+
 There is no current documented public Cast SDK entry established here for
 starting Google's native screen mirroring from Tachiai. The deprecated Remote
 Display API's support check always returns false. Android's public Cast settings

@@ -54,8 +54,8 @@ class CatalogTwitchPreparationTest {
         val route = TwitchCatalogRouteOwner(ProviderInstance(id, PrototypeService.TWITCH, "Fixture",
             setup = ProviderSetup(choice)), profile)
         val memory = Memory()
-        var wall = 1_000L
-        var mono = 10_000L
+        @Volatile var wall = 1_000L
+        @Volatile var mono = 10_000L
         val store = TwitchCatalogGrantStore(memory, id, wallMs = { wall })
         var owner = route.presentation
         var admission = true
@@ -162,6 +162,125 @@ class CatalogTwitchPreparationTest {
         assertEquals(1, fixture.refreshCalls); assertEquals(1, fixture.validationCalls)
         assertEquals("OAuth fresh-access", fixture.connections.single().getRequestProperty("Authorization"))
         assertTrue(preparation.checkStored(force = true)); preparation.close()
+    }
+
+    @Test fun everyIdleMediaAdmissionReadsTheFreshOwnerAndGrantExactlyOnceWithoutHttpOrWrites() {
+        for (shared in listOf(false, true)) {
+            val fixture = Fixture(shared); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            try {
+                val bytes = fixture.memory.bytes!!.copyOf(); val writes = fixture.memory.writes
+                val requests = fixture.validationCalls + fixture.refreshCalls
+                repeat(4) { index ->
+                    val reads = fixture.memory.reads; val owners = fixture.ownerReads
+                    assertTrue(preparation.checkStored(force = index % 2 == 0))
+                    assertEquals(reads + 1, fixture.memory.reads)
+                    assertEquals(owners + 1, fixture.ownerReads)
+                }
+                assertArrayEquals(bytes, fixture.memory.bytes); assertEquals(writes, fixture.memory.writes)
+                assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+                assertEquals(1, fixture.mediaCalls)
+            } finally { preparation.close() }
+        }
+    }
+
+    @Test fun idleOwnerRefusalDoesNotReadTheGrantOrStartMaintenance() {
+        val fixture = Fixture(shared = true); fixture.connect()
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        try {
+            val reads = fixture.memory.reads; val owners = fixture.ownerReads
+            val requests = fixture.validationCalls + fixture.refreshCalls
+            fixture.owner = TwitchCatalogConnectionOwner(fixture.id, "Changed", "Changed", "OTHER")
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue())
+            assertEquals(reads, fixture.memory.reads); assertEquals(owners + 1, fixture.ownerReads)
+            assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+        } finally { preparation.close() }
+    }
+
+    @Test fun workAppearingDuringIdleOwnerOrGrantReadReturnsToProvedAdoptionWithoutPoisoningTheViewer() {
+        for (stage in listOf("owner", "record")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            fixture.peerSession().use { peer ->
+                val old = peer.validate().lease!!
+                val preparation = fixture.preparation(); fixture.resolve(preparation)
+                try {
+                    val value = fixture.retainedSession.validate().lease!!
+                    val deadline = preparation.acceptanceDeadlineMs
+                    val reads = fixture.memory.reads; val owners = fixture.ownerReads
+                    var injected = false
+                    fun rotate() {
+                        fixture.onOwner = {}; fixture.memory.onRead = {}
+                        injected = true
+                        assertNotNull(peer.onUnauthorized(old).lease)
+                    }
+                    if (stage == "owner") fixture.onOwner = ::rotate else fixture.memory.onRead = ::rotate
+                    val result = fixture.retainedSession.admitIdleViewer(value) { preparation.canContinue() }
+                    assertEquals(TwitchCatalogIdleViewerAdmission.MAINTENANCE_REQUIRED, result)
+                    assertTrue(injected); assertTrue(preparation.canContinue())
+                    // Peer maintenance owns its own reads; only the viewer's
+                    // binding owner callback contributes to ownerReads.
+                    assertEquals(owners + 1, fixture.ownerReads)
+                    assertTrue(fixture.memory.reads > reads)
+                    val requests = fixture.validationCalls + fixture.refreshCalls
+                    val beforeAdoptionOwners = fixture.ownerReads
+                    assertTrue(preparation.checkStored()); assertTrue(preparation.canContinue())
+                    assertTrue(fixture.ownerReads >= beforeAdoptionOwners + 2)
+                    assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+                    assertEquals(deadline, preparation.acceptanceDeadlineMs)
+                    assertEquals(1, fixture.refreshCalls); assertEquals(1, fixture.mediaCalls)
+                    val idleReads = fixture.memory.reads; val idleOwners = fixture.ownerReads
+                    assertTrue(preparation.checkStored())
+                    assertEquals(idleReads + 1, fixture.memory.reads)
+                    assertEquals(idleOwners + 1, fixture.ownerReads)
+                } finally {
+                    fixture.onOwner = {}; fixture.memory.onRead = {}; preparation.close()
+                }
+            }
+        }
+    }
+
+    @Test fun idleAdmissionRechecksTheOriginalLeaseExpiryAfterOwnerAndBeforeGrantWork() {
+        val fixture = Fixture(shared = true); fixture.validationSeconds = 10
+        fixture.connect(lifetime = 10_000)
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        try {
+            val reads = fixture.memory.reads
+            fixture.onOwner = { fixture.advance(10_000) }
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue())
+            assertEquals(reads, fixture.memory.reads)
+        } finally { fixture.onOwner = {}; preparation.close() }
+    }
+
+    @Test fun changedOwnerOrExpiredBudgetWhileWaitingCannotUseTheIdleFallback() {
+        for (operation in listOf("owner", "deadline")) {
+            val fixture = Fixture(shared = true); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val peer = fixture.peerSession()
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val checking = AtomicReference<Thread>()
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                fixture.validateStatus = 500
+                fixture.onValidate = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+                val validation = executor.submit<TwitchCatalogSessionResult> { peer.validate(force = true) }
+                assertTrue(entered.await(2, TimeUnit.SECONDS))
+                val admission = executor.submit<Boolean> { checking.set(Thread.currentThread()); preparation.checkStored() }
+                val waiting = setOf(Thread.State.WAITING, Thread.State.TIMED_WAITING)
+                val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (checking.get()?.state !in waiting && System.nanoTime() < until) Thread.yield()
+                assertTrue(checking.get()?.state in waiting); assertFalse(admission.isDone)
+                if (operation == "owner") {
+                    fixture.owner = TwitchCatalogConnectionOwner(fixture.id, "Changed", "Changed", "OTHER")
+                    release.countDown()
+                } else fixture.advance(30_000)
+                assertFalse(admission.get(3, TimeUnit.SECONDS)); assertFalse(preparation.canContinue())
+                release.countDown(); validation.get(3, TimeUnit.SECONDS)
+                assertEquals(0, fixture.refreshCalls); assertEquals(1, fixture.mediaCalls)
+            } finally {
+                release.countDown(); fixture.onValidate = {}
+                preparation.close(); peer.close(); executor.shutdownNow()
+            }
+        }
     }
 
     @Test fun secondViewerTightensSameTokenExpiryWithoutInterruptingFirstViewer() {
@@ -396,6 +515,7 @@ class CatalogTwitchPreparationTest {
                 }
                 val validation = executor.submit<TwitchCatalogSessionResult> { peer.validate(force = true) }
                 assertTrue(entered.await(2, TimeUnit.SECONDS))
+                val owners = fixture.ownerReads
                 val admission = executor.submit<Boolean> {
                     admissionThread.set(Thread.currentThread()); preparation.checkStored()
                 }
@@ -407,6 +527,7 @@ class CatalogTwitchPreparationTest {
                 release.countDown()
                 assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, validation.get(5, TimeUnit.SECONDS).summary.state)
                 assertTrue(admission.get(5, TimeUnit.SECONDS))
+                assertEquals(owners + 2, fixture.ownerReads)
                 assertTrue(preparation.canContinue()); assertArrayEquals(bytes, fixture.memory.bytes)
                 assertEquals(2, fixture.validationCalls); assertEquals(0, fixture.refreshCalls)
                 assertEquals(1, fixture.mediaCalls); assertEquals(40_000L, preparation.acceptanceDeadlineMs)

@@ -7,6 +7,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.platform.media.NativeMediaRequestException
+import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.ProviderTransportException
+import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.provider.abema.AbemaChannelException
 import net.fstab.tachiai.provider.abema.AbemaChannelFailure
 import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
@@ -19,6 +24,65 @@ import org.junit.rules.TemporaryFolder
 class FailureJournalTest {
     @get:Rule val temporary = TemporaryFolder()
     private fun journalFile() = File(temporary.newFolder(), "failure-diagnostics.tsv")
+
+    @Test fun `media origin remains first when independent cleanup fails and both round trip without secrets`() {
+        val secret = "https://private.example/path?token=synthetic-secret"
+        val file = journalFile()
+        val journal = FailureJournal(file)
+        val reporter = FailureReporter(journal::record, clock = { 100_000 })
+        reporter.report(FailureStage.MEDIA_REQUEST_READ, NativeMediaRequestException(NativeMediaRequestFailure.TIMEOUT))
+        reporter.report(FailureStage.MEDIA_DISCONNECT, IOException(secret))
+        val records = journal.read()
+        assertEquals(listOf(FailureStage.MEDIA_REQUEST_READ, FailureStage.MEDIA_DISCONNECT), records.map { it.stage })
+        assertEquals(listOf(FailureCategory.TRANSPORT_TIMEOUT, FailureCategory.IO), records.map { it.failure.category })
+        assertEquals(listOf(FailureRelation.FIRST, FailureRelation.SECONDARY), records.map { it.relation })
+        assertEquals(records[0].recordId, records[1].rootId)
+        assertEquals(records, FailureJournalCodec.decode(file.readBytes()))
+        val encoded = file.readText()
+        assertFalse(encoded.contains(secret)); assertFalse(encoded.contains("private.example"))
+        assertFalse(encoded.contains("synthetic-secret"))
+    }
+
+    @Test fun `safe media and routed transport categories stay distinct from generic IO`() {
+        val media = mapOf(
+            NativeMediaRequestFailure.DNS to FailureCategory.TRANSPORT_DNS,
+            NativeMediaRequestFailure.CONNECT to FailureCategory.TRANSPORT_CONNECT,
+            NativeMediaRequestFailure.TIMEOUT to FailureCategory.TRANSPORT_TIMEOUT,
+            NativeMediaRequestFailure.TLS to FailureCategory.TRANSPORT_TLS,
+            NativeMediaRequestFailure.TRANSPORT_CANCELLED to FailureCategory.TRANSPORT_CANCELLED,
+            NativeMediaRequestFailure.TRANSPORT_UNKNOWN to FailureCategory.TRANSPORT_UNKNOWN,
+            NativeMediaRequestFailure.REQUEST_DEADLINE to FailureCategory.MEDIA_REQUEST_DEADLINE,
+            NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED to FailureCategory.MEDIA_REQUEST_ADMISSION_REFUSED,
+            NativeMediaRequestFailure.PLAYBACK_INACTIVE to FailureCategory.MEDIA_PLAYBACK_INACTIVE,
+            NativeMediaRequestFailure.IO to FailureCategory.IO,
+            NativeMediaRequestFailure.ILLEGAL_STATE to FailureCategory.ILLEGAL_STATE,
+            NativeMediaRequestFailure.ILLEGAL_ARGUMENT to FailureCategory.ILLEGAL_ARGUMENT,
+            NativeMediaRequestFailure.SECURITY to FailureCategory.SECURITY,
+            NativeMediaRequestFailure.CANCELLED to FailureCategory.CANCELLED,
+            NativeMediaRequestFailure.NETWORK_ON_MAIN_THREAD to FailureCategory.NETWORK_ON_MAIN_THREAD,
+            NativeMediaRequestFailure.OTHER to FailureCategory.OTHER,
+        )
+        assertEquals(NativeMediaRequestFailure.entries.toSet(), media.keys)
+        for ((failure, expected) in media) {
+            assertEquals(expected, SafeFailure.capture(NativeMediaRequestException(failure)).category)
+        }
+        val transports = mapOf(
+            ProviderTransportFailure.DNS to FailureCategory.TRANSPORT_DNS,
+            ProviderTransportFailure.CONNECT to FailureCategory.TRANSPORT_CONNECT,
+            ProviderTransportFailure.TIMEOUT to FailureCategory.TRANSPORT_TIMEOUT,
+            ProviderTransportFailure.TLS to FailureCategory.TRANSPORT_TLS,
+            ProviderTransportFailure.CANCELLED to FailureCategory.TRANSPORT_CANCELLED,
+            ProviderTransportFailure.UNKNOWN to FailureCategory.TRANSPORT_UNKNOWN,
+        )
+        for ((failure, expected) in transports) {
+            for (cancelled in listOf(false, true)) {
+                val error = ProviderTransportException(ProviderTransportEvidence(failure,
+                    localCancellationRequested = cancelled))
+                assertEquals(if (cancelled) FailureCategory.TRANSPORT_CANCELLED else expected,
+                    SafeFailure.capture(error).category)
+            }
+        }
+    }
 
     @Test fun `first failure survives secondary cleanup and repeated viewer blocks across recreation`() {
         val file = journalFile()

@@ -103,6 +103,29 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), data)
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_media_origin_categories_and_stages_round_trip_with_independent_cleanup(self):
+        expected = {"TRANSPORT_DNS", "TRANSPORT_CONNECT", "TRANSPORT_TIMEOUT", "TRANSPORT_TLS",
+                    "TRANSPORT_CANCELLED", "TRANSPORT_UNKNOWN", "MEDIA_REQUEST_DEADLINE",
+                    "MEDIA_REQUEST_ADMISSION_REFUSED", "MEDIA_PLAYBACK_INACTIVE"}
+        words = module.vocabulary()
+        self.assertEqual({value for value in words["FailureCategory"] if value.startswith(("TRANSPORT_", "MEDIA_"))}, expected)
+        for stage in ("MEDIA_REQUEST_OPEN", "MEDIA_REQUEST_READ"):
+            self.assertIn(stage, words["FailureStage"])
+            for category in expected:
+                data = self.journal([self.row(**{"4": stage, "9": category, "11": ""}),
+                                     self.row(**{"1": "3" * 32, "4": "MEDIA_DISCONNECT", "6": "SECONDARY"})])
+                stdout, stderr = io.BytesIO(), io.StringIO()
+                self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 0)
+                self.assertEqual(stdout.getvalue(), data)
+                self.assertEqual(stderr.getvalue(), "")
+        for value in ("TRANSPORT_private_secret", "MEDIA_private_secret"):
+            for field in ("4", "9"):
+                stdout, stderr = io.BytesIO(), io.StringIO()
+                data = self.journal([self.row(**{field: value})])
+                self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 1)
+                self.assertEqual(stdout.getvalue(), b"")
+                self.assertEqual(stderr.getvalue(), "JOURNAL_INVALID\n")
+
     def test_secret_fields_fail_without_any_output(self):
         secret = "https://secret.example/private?token=password"
         for index in range(13):

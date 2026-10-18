@@ -3,6 +3,7 @@ package net.fstab.tachiai.platform.media
 import java.io.IOException
 import java.io.InputStream
 import java.io.FilterInputStream
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 
 // Own resources as they are allocated, including a partially built player.
@@ -38,7 +39,6 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     fun seal() {
         val uncertain = synchronized(lock) {
             if (state == State.OPEN) state = State.SEALED
-            if (allocations != 0) failureObserved = true
             failureObserved
         }
         if (uncertain) notifyFailure()
@@ -55,15 +55,30 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
         if (refused) { notifyFailure(); throw IOException("Late native ownership refused") }
     }
     fun <T> allocate(order: Int, factory: () -> T, release: (T) -> Unit): T {
+        val completed = CountDownLatch(1)
+        var releaseResource: (() -> Unit)? = null
         synchronized(lock) {
             if (state != State.OPEN) throw IOException("Native allocation admission ended")
             allocations++
+            // Reserve ownership before the factory starts. Request cancellation
+            // runs first on the worker and can unblock an input factory; its
+            // eventual resource must close before the player is released.
+            actions.add(Action(order, ownerThread = false) {
+                completed.await()
+                releaseResource?.invoke()
+            })
         }
         try {
             val resource = factory()
-            own(order) { release(resource) }
+            releaseResource = { release(resource) }
+            // An admitted factory may finish after sealing, but its caller may
+            // no longer use the resource. The reservation still owns its close.
+            if (synchronized(lock) { state != State.OPEN }) throw IOException("Native allocation admission ended")
             return resource
-        } finally { synchronized(lock) { allocations-- } }
+        } finally {
+            synchronized(lock) { allocations-- }
+            completed.countDown()
+        }
     }
     fun input(factory: () -> InputStream): InputStream =
         allocate(25, { OwnedInput(factory(), ::failed) }) { it.close() }
@@ -74,7 +89,10 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
         val captured = synchronized(lock) {
             if (state == State.CONFIRMED) return
             if (state !in setOf(State.OPEN, State.SEALED)) throw IOException("Native cleanup remains unconfirmed")
-            if (allocations != 0) failureObserved = true
+            if (allocations != 0) {
+                state = State.SEALED
+                throw IOException("Native allocations still stopping; asynchronous cleanup required")
+            }
             state = State.CLOSING
             actions.sortedBy { it.order }.map { it.run }
         }
@@ -99,7 +117,6 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
         val captured = synchronized(lock) {
             if (asynchronous || state == State.CONFIRMED) return
             if (state !in setOf(State.OPEN, State.SEALED)) throw IOException("Native cleanup remains unconfirmed")
-            if (allocations != 0) failureObserved = true
             state = State.CLOSING
             asynchronous = true
             actions.sortedBy { it.order }

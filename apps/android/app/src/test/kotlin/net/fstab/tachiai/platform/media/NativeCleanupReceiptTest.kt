@@ -96,8 +96,9 @@ class NativeCleanupReceiptTest {
         assertThrows(IOException::class.java) { receipt.close() }
     }
 
-    @Test fun asyncCloseCannotConfirmAnInFlightAllocationOrReleaseItsLateResourceTwice() {
-        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+    @Test fun asyncCloseCancelsThenDrainsAnAdmittedFactoryBeforeReleasingPlayer() {
+        var notices = 0
+        val receipt = NativeCleanupReceipt { notices++ }; val worker = Lane(); val owner = Lane()
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         var allocationFailure: Throwable? = null; var lateReleases = 0; var playerReleases = 0
         val allocator = Thread {
@@ -107,23 +108,27 @@ class NativeCleanupReceiptTest {
                 }) { lateReleases++ }
             } catch (error: Throwable) { allocationFailure = error }
         }
-        receipt.own(30, ownerThread = true) { playerReleases++ }
+        receipt.own(10) { release.countDown() }
+        receipt.own(30, ownerThread = true) {
+            assertEquals(1, lateReleases); playerReleases++
+        }
         allocator.start()
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val failures = mutableListOf<Throwable>(); var completed = 0
+            receipt.seal()
+            assertEquals(0, notices)
             receipt.closeAsync(worker, owner, { completed++ }, failures::add)
-            assertTrue(receipt.pending)
-            release.countDown(); allocator.join(5_000)
+            assertTrue(receipt.pending); assertFalse(receipt.confirmed)
+            worker.next(); allocator.join(5_000)
             assertFalse(allocator.isAlive); assertTrue(allocationFailure is IOException)
+            assertEquals(1, lateReleases); assertTrue(receipt.pending); assertEquals(0, playerReleases)
             owner.drain()
-            assertEquals(1, playerReleases); assertEquals(0, lateReleases)
-            assertEquals(1, completed); assertTrue(failures.single() is IOException)
-            assertFalse(receipt.pending); assertFalse(receipt.confirmed)
-            assertThrows(IOException::class.java) { receipt.close() }
-            val actions = NativeCleanupReceipt::class.java.getDeclaredField("actions").apply { isAccessible = true }
-            assertEquals("The failed receipt retains late allocation ownership", 2, (actions.get(receipt) as List<*>).size)
-            assertEquals(0, lateReleases)
+            assertEquals(1, playerReleases); assertEquals(1, completed)
+            assertTrue(failures.isEmpty()); assertEquals(0, notices)
+            assertFalse(receipt.pending); assertTrue(receipt.confirmed)
+            receipt.close()
+            assertEquals(1, lateReleases); assertEquals(1, playerReleases)
         } finally { release.countDown(); allocator.join(5_000) }
     }
 
@@ -180,24 +185,75 @@ class NativeCleanupReceiptTest {
         assertThrows(IOException::class.java) { owner.allocate(10, { opened = true; Any() }) {} }
         assertFalse(opened); owner.close(); assertTrue(owner.confirmed)
     }
-    @Test fun inFlightFactoryCannotConfirmCleanupAndItsEventualResourceIsRetained() {
+    @Test fun synchronousCloseSealsWithoutPoisoningWhileAnAdmittedFactoryIsPending() {
         var notices = 0
         val owner = NativeCleanupReceipt { notices++ }
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
-        val resource = Any(); var failure: Throwable? = null
+        val resource = Any(); var failure: Throwable? = null; var releases = 0
         val allocator = Thread {
-            try { owner.allocate(10, { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); resource }) {} }
+            try { owner.allocate(10, { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); resource }) { releases++ } }
             catch (error: Throwable) { failure = error }
         }
         allocator.start()
         try {
-            assertTrue(entered.await(5, TimeUnit.SECONDS)); owner.seal()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
             assertThrows(IOException::class.java) { owner.close() }
+            assertFalse(owner.confirmed); assertEquals(0, notices)
+            assertThrows(IOException::class.java) { owner.allocate(10, { fail("Admission must be sealed") }) {} }
         } finally { release.countDown(); allocator.join(5_000) }
         assertFalse(allocator.isAlive); assertTrue(failure is IOException)
-        assertFalse(owner.confirmed); assertTrue(notices > 0)
-        val field = NativeCleanupReceipt::class.java.getDeclaredField("actions").apply { isAccessible = true }
-        assertEquals(1, (field.get(owner) as List<*>).size)
+        assertFalse(owner.confirmed); assertEquals(0, notices)
+        owner.close(); owner.close()
+        assertTrue(owner.confirmed); assertEquals(1, releases); assertEquals(0, notices)
+    }
+
+    @Test fun cancelledFactoryFailureSettlesWithoutInventingACleanupFailure() {
+        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+        val entered = CountDownLatch(1); val cancel = CountDownLatch(1)
+        val expected = IOException("Synthetic cancelled open")
+        var observed: Throwable? = null
+        val allocator = Thread {
+            try { receipt.input {
+                entered.countDown(); check(cancel.await(5, TimeUnit.SECONDS)); throw expected
+            } } catch (error: Throwable) { observed = error }
+        }
+        receipt.own(10) { cancel.countDown() }
+        allocator.start()
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val failures = mutableListOf<Throwable>(); var completed = 0
+            receipt.seal(); receipt.closeAsync(worker, owner, { completed++ }, failures::add)
+            worker.drain(); owner.drain(); allocator.join(5_000)
+            assertFalse(allocator.isAlive); assertSame(expected, observed)
+            assertTrue(receipt.confirmed); assertFalse(receipt.pending)
+            assertTrue(failures.isEmpty()); assertEquals(1, completed)
+        } finally { cancel.countDown(); allocator.join(5_000) }
+    }
+
+    @Test fun lateAdmittedResourceCloseFailureStillReleasesPlayerAndBlocksConfirmation() {
+        val receipt = NativeCleanupReceipt(); val worker = Lane(); val owner = Lane()
+        val entered = CountDownLatch(1); val cancel = CountDownLatch(1)
+        val expected = IOException("Synthetic late close failure")
+        var releases = 0; var playerReleases = 0
+        val allocator = Thread {
+            try { receipt.allocate(25, {
+                entered.countDown(); check(cancel.await(5, TimeUnit.SECONDS)); Any()
+            }) { releases++; throw expected } } catch (_: IOException) { }
+        }
+        receipt.own(10) { cancel.countDown() }
+        receipt.own(30, ownerThread = true) { playerReleases++ }
+        allocator.start()
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val failures = mutableListOf<Throwable>()
+            receipt.seal(); receipt.closeAsync(worker, owner, {}, failures::add)
+            worker.drain(); owner.drain(); allocator.join(5_000)
+            assertFalse(allocator.isAlive); assertSame(expected, failures.single())
+            assertFalse(receipt.confirmed); assertFalse(receipt.pending)
+            assertEquals(1, releases); assertEquals(1, playerReleases)
+            assertThrows(IOException::class.java) { receipt.close() }
+            assertEquals(1, releases)
+        } finally { cancel.countDown(); allocator.join(5_000) }
     }
     @Test fun ownedStreamCloseFailureRemainsStickyAndSuccessIsNeverDoubleClosed() {
         for (error in listOf<Throwable?>(null, IOException("fixture"), AssertionError("fixture"))) {

@@ -660,6 +660,45 @@ passed, including actual HLS/DASH player release after injected transport
 failures and diagnostic retention. These observations do not qualify phone
 playback, audio, performance or provider reliability.
 
+### Network opens admitted before Stop — October 18
+
+Back during real two-feed playback on `tachiai-tv-dev` produced
+`PLAYBACK_CLEANUP_UNCONFIRMED`. Its bounded journal retained generic
+`PLAYER_RELEASE / IO` and `FEED_CLEANUP_UNCONFIRMED`, without a corresponding
+disconnect error or typed player-release timeout. This is the same Kotlin
+teardown path used on phones.
+
+The native cleanup receipt previously treated an unfinished admitted factory
+as a permanent failure when sealed. Its cleanup snapshot could also omit the
+resource returned later. Ownership is now reserved before each factory starts.
+Sealing rejects new factories; worker-side cancellation runs before waiting
+for admitted factories, and their eventual resources close before player and
+quality release. A cancelled factory producing no resource does not invent a
+cleanup failure. Synchronous close rejects pending factories without poisoning
+the receipt, leaving them owned for asynchronous cleanup. Actual close errors,
+executor refusal, arbitrary late ownership and player-release timeouts retain
+their failure behavior.
+
+Four deterministic regressions failed against the previous implementation;
+all 17 receipt tests passed after the change. This identifies one teardown
+defect; it does not resolve every sustained-playback network failure in #297.
+
+On the named Android TV emulator (Android 16/API 36, x86-64,
+WebView 143.0.7499.24), twelve native cleanup/coordinator tests passed,
+including actual HLS and DASH players with synthetic input acquisition blocked
+across Stop. Both existing local two-video TV flow tests also passed. Every
+encrypted setup record was unchanged across installation and these tests.
+
+A bounded configured ABEMA News live / Twitch Virtual Japan live check used
+Windscribe Tokyo - Shinkansen for ABEMA and System network for Twitch, with
+the existing TV-local account state. Both feeds reported first frame and
+advancing playback. Back returned to an enabled picker without a recovery
+dialog or a new cleanup failure, and Watch admitted another session without
+restarting the app. No provider-page capture or credential entry was needed;
+account expiry, exit country, acoustic output and physical TV behavior were
+not independently verified. This is a short Stop/reopen check, not sustained
+playback acceptance.
+
 ## Cached viewer cleanup ownership
 
 The cached viewer uses a process-owned run acquired before route preparation.

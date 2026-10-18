@@ -114,13 +114,16 @@
 
 ## Platforms and distribution
 
-- Android phone/tablet and Android TV are the first supported family.
-- The Android UI is usable with touch, a D-pad remote, and common television
-  aspect ratios.
+- Android phone/tablet and Android TV/Google TV are the first target family.
+  Phone evidence does not establish TV support; see the
+  [platform validation roadmap](platform-validation-plan.md).
+- The Android UI must support touch, a D-pad remote, and common television
+  aspect ratios; complete TV remote operation remains a validation requirement.
 - APK sideloading is an intended distribution method. Play Store publication
   is not a current goal.
-- iPhone/iPad, Windows, macOS, and Linux are desired but must each pass an
-  explicit playback and DRM spike before becoming supported.
+- iPhone/iPad, Apple TV/tvOS and desktop web on Windows, macOS and Linux are
+  desired, but must each pass explicit playback, account and routing validation
+  before becoming supported. See the [platform landscape](platforms.md).
 - The project does not require a project-operated account service. A small
   static HTTPS document for the Twitch embed may be used if its `parent`
   requirement cannot be met from app-packaged content.

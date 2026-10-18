@@ -105,8 +105,9 @@ provider player makes the correction objectionable.
 
 ## Android shell
 
-The Android implementation uses Kotlin and Jetpack Compose with one
-conventional Gradle `app` module. Avoid premature Android library modules.
+The Android implementation uses Kotlin and Jetpack Compose in the Gradle `app`
+module, with the reusable Rust timing library exposed through Android `:core`.
+Platform players, provider sessions and route execution remain app-owned.
 
 Probable feature areas are:
 
@@ -205,11 +206,11 @@ route ownership remain platform/provider responsibilities. The original
 incremental-sharing guidance below explains the boundary rather than a ban on
 the now-identified portable rules.
 
-Do not create a shared Rust or Kotlin Multiplatform core merely because several
-platforms are desired. The first likely portable artifact is provider adapter
-JavaScript/CSS. A shared state-transition core becomes worthwhile only after
-Android reveals nontrivial, testable presentation and alignment rules that
-other shells can consume without platform browser dependencies.
+Additional shared state-transition code should follow identified, testable
+rules that other hosts can consume without Android/browser dependencies.
+Provider JavaScript/CSS is reusable only where the target actually supplies the
+required browser environment. The [platform landscape](platforms.md) separates
+implemented Rust timing from possible future extractions and platform effects.
 
 ## Desktop direction
 

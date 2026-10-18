@@ -7,9 +7,14 @@ including configured providers, accounts, routes and the native two-feed viewer.
 This is a source and documentation review. No iOS application was built, and no
 iOS device, Simulator, account or playback experiment was performed.
 
-The subsequent [shared Rust core](shared-rust-core.md) adds an initial timing
-library and generated Swift interface. It does not resolve the iOS-specific
-provider, route, framework-packaging or device-validation gaps below.
+Platform-landscape update, 2026-10-17: the merged
+[shared Rust core](shared-rust-core.md) adds an initial timing library used by
+Android and a generated Swift interface. No Apple application, framework slices
+or Apple-device integration have been built or verified. The original Android
+baseline above remains the historical inventory for this review; the changes
+below update sharing and distribution claims without asserting Apple support.
+See the [tvOS comparison](tvos-interface-review.md) for the related Apple TV
+target and the combined Apple distribution assessment.
 
 ## Assessment
 
@@ -45,7 +50,7 @@ requirement for which an equivalent implementation has not been established.
 | Android item or requirement | Available iOS interface/library | Fit and concerning gaps |
 | --- | --- | --- |
 | Kotlin, Jetpack Compose and Material 3 | Swift/SwiftUI with UIKit interop; alternatively Kotlin Multiplatform and Compose Multiplatform | **Documented.** Native lists, navigation, menus, dialogs and adaptive layouts are available. Compose Multiplatform's iOS target is stable, but existing Android activities, resources and dependencies still need separation. [SwiftUI][swiftui], [Compose iOS][compose] |
-| Presentation models, source identity, display names, capability and alignment planners | Kotlin Multiplatform shared code, or equivalent Swift models | **Inferred reuse candidate.** Preserve the platform-neutral rules and tests; isolate Android imports, clocks, JSON and storage access first. There is no shared module in this repository today. [KMP integration][kmp-integration] |
+| Presentation models, source identity, display names, capability and alignment planners | Existing Rust timing core with generated Swift interface; further Rust extraction or equivalent Swift models | **Implemented sharing is narrow:** the initial timing library exists. Most listed application rules remain Android code. Preserve platform-neutral rules and tests while separating effects; generated Swift does not establish Apple linkage. [Shared core](shared-rust-core.md), [KMP integration][kmp-integration] |
 | OkHttp and explicit native HTTP clients | Foundation URLSession; Ktor Client with its Darwin engine for shared Kotlin | **Documented.** Ktor Darwin uses URLSession; OkHttp itself is listed for JVM/Android. Cancellation, redirects, bounded response parsing, TLS and route ownership need equivalent policies in the selected engine. [Ktor engines][ktor] |
 | `org.json` and custom record codecs | Swift Codable/Foundation JSON; `kotlinx.serialization` for shared Kotlin | **Documented alternatives.** Existing parsing and record validation are not automatically portable. Keep size limits, schema versions and account/instance bindings. [Kotlin serialization][serialization] |
 | ZXing for device-authorization QR generation | Core Image `CIQRCodeGenerator` | **Documented direct functional alternative.** Generating a QR image does not require adding a third-party scanner dependency. [Apple QR generator][qr] |
@@ -63,9 +68,9 @@ still need verification. [UniFFI][uniffi]
 With migration cost explicitly not a deciding concern, the current recommendation
 is to investigate Rust for shared models, validation, provider parsing, state
 machines and planning. Keep playback, authentication, storage and lifecycle
-effects behind platform adapters. This is a recommendation, not an implemented
-shared module or proof of iOS integration. Shared behavior does not require
-shared UI.
+effects behind platform adapters. The initial timing extraction is implemented;
+expanding that scope remains a recommendation, and Apple integration remains
+unverified. Shared behavior does not require shared UI.
 
 The current Android dependency catalogue includes Activity/Compose, lifecycle,
 AndroidX WebKit, Media3, OkHttp, ZXing and a generated routebridge AAR. An AAR,
@@ -184,6 +189,31 @@ can require review. A downloadable unsigned archive is not a generally
 installable equivalent to an Android APK. [Developer accounts][accounts],
 [TestFlight][testflight]
 
+### Distribution beyond the App Store
+
+**Documented:** free Personal Teams allow up to 10 temporary App IDs, three
+registered devices and three installed apps per device, with seven-day profiles.
+Paid development/ad hoc installation avoids a public store listing but retains
+registered-device, signing and provisioning requirements. A paid program permits
+100 devices per product family per membership year; disabling one does not free
+its slot during that year. Plan profile renewal and signed updates rather than
+permanent installation. [Account limits][accounts], [Registered devices][devices]
+
+**Documented, region-dependent:** Apple's current alternative-distribution pages
+describe marketplaces in the EU, Japan and Brazil. This is not worldwide free
+installation of arbitrary IPA files: OS version, account/location eligibility,
+developer agreements and notarization still apply. Direct Web Distribution of
+ordinary apps is documented for EU iOS 17.5+/iPadOS 18+; do not extend that claim
+to tvOS or to every marketplace region. Recheck the current terms before choosing
+a public distribution channel. [Alternative distribution][alternative],
+[EU Web Distribution][web-distribution]
+
+The [Apple TV review's distribution matrix](tvos-interface-review.md#distribution-and-installation)
+compares personal development, paid development/ad hoc, TestFlight, enterprise
+and regional alternatives, including expiry and update friction. These methods
+change how an app is installed; they do not add unavailable operating-system
+APIs or resolve provider DRM, browser or routing compatibility.
+
 For App Store distribution, review third-party service authorization, downloaded
 runtime code and VPN classification. Apple documents relevant rules in 5.2.2,
 2.5.2/2.5.6 and 5.4; whether Tachiai's particular architecture is acceptable is
@@ -286,3 +316,6 @@ Related local documents: [architecture](architecture.md),
 [accounts]: https://developer.apple.com/help/account/basics/about-your-developer-account
 [testflight]: https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/
 [review]: https://developer.apple.com/app-store/review/guidelines/
+[devices]: https://developer.apple.com/help/account/devices/devices-overview/
+[alternative]: https://support.apple.com/en-ie/118110
+[web-distribution]: https://developer.apple.com/support/web-distribution-eu/

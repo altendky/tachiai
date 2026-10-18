@@ -36,6 +36,8 @@ Detailed reviews:
   signing, expiration and update ownership across all targets.
 - [Validation roadmap](platform-validation-plan.md): cheapest experiments that
   resolve the important gaps before committing to a full port.
+- [Casting](casting.md): complete-presentation screen mirroring and TV
+  applications, ownership boundaries and initial validation criteria.
 
 **Implemented/observed** means code or bounded evidence recorded in this
 repository. **Documented** means an upstream interface exists. **Inferred**

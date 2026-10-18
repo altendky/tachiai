@@ -6,10 +6,22 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.Collections
 import java.util.UUID
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.*
+
+// Provenance describes this one locked read, never a cached existence check.
+// Legacy-derived views may span other files and are not single-file snapshots.
+internal class ProviderInstanceRegistrySnapshot internal constructor(instances: List<ProviderInstance>, val committed: Boolean) {
+    val instances: List<ProviderInstance> = Collections.unmodifiableList(instances.map { instance ->
+        instance.copy(setup = instance.setup.copy(
+            previousRoutes = Collections.unmodifiableList(ArrayList(instance.setup.previousRoutes)),
+            fallbackRoutes = Collections.unmodifiableList(ArrayList(instance.setup.fallbackRoutes))))
+    })
+    override fun toString() = "ProviderInstanceRegistrySnapshot(redacted)"
+}
 
 // Missing registry is a read-only legacy view. The first explicit mutation commits
 // the whole view atomically; no source/provider/route/grant slot is rewritten.
@@ -19,12 +31,17 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         val file = lockFile
         if (file == null) action() else RandomAccessFile(file, "rw").use { it.channel.lock().use { action() } }
     }
-    fun read(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = locked { readUnlocked(legacy) }
+    fun read(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = readSnapshot(legacy).instances
+    fun readSnapshot(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot =
+        locked { readSnapshotUnlocked(legacy) }
 
-    private fun readUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> {
-        val bytes = store.read() ?: return validate(defaultProviderInstances(legacy()))
+    private fun readUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> =
+        readSnapshotUnlocked(legacy).instances
+
+    private fun readSnapshotUnlocked(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot {
+        val bytes = store.read() ?: return ProviderInstanceRegistrySnapshot(validate(defaultProviderInstances(legacy())), committed = false)
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
-        return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+        val entries = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt(); check(version in 1..3)
             val count = input.readInt()
             check(count in (if (version < 3) PrototypeService.entries.size else 0)..MAX_PROVIDER_INSTANCES)
@@ -52,6 +69,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
             }
             validate(entries)
         }
+        return ProviderInstanceRegistrySnapshot(entries, committed = true)
     }
 
     private fun validate(entries: List<ProviderInstance>): List<ProviderInstance> {

@@ -100,17 +100,24 @@ internal fun captureProviderRoutePool(
     val latestProfiles = profiles()
     val latestKeys = keys(latestProfiles)
     if (initialKeys != latestKeys) throw ProviderRoutePoolException(ProviderRoutePoolFailure.SNAPSHOT_CHANGED)
-    val prefix = "$instanceId|${service.name}"
-    val poolProof = routeDigest("provider-route-pool-v1|$prefix|" + latest.setup.routes.joinToString(";") { choice ->
-        "${choiceIdentity(choice)}|${choice.connectionId?.let(latestKeys::getValue) ?: "SYSTEM"}"
+    return providerRoutePoolSnapshot(latest, latestProfiles, latestKeys)
+}
+
+// Only proof construction is shared with the explicitly opted-in single-file
+// SYSTEM snapshot. Callers own validation/reconciliation, not this pure builder.
+internal fun providerRoutePoolSnapshot(instance: ProviderInstance, profiles: Map<String, ConnectionProfile>,
+    profileKeys: Map<String, String>): ProviderRoutePoolSnapshot {
+    val prefix = "${instance.id}|${instance.service.name}"
+    val poolProof = routeDigest("provider-route-pool-v1|$prefix|" + instance.setup.routes.joinToString(";") { choice ->
+        "${choiceIdentity(choice)}|${choice.connectionId?.let(profileKeys::getValue) ?: "SYSTEM"}"
     })
-    val candidates = latest.setup.routes.map { choice ->
-        val profile = choice.connectionId?.let(latestProfiles::get)
-        val configuration = choice.connectionId?.let(latestKeys::getValue) ?: "SYSTEM"
+    val candidates = instance.setup.routes.map { choice ->
+        val profile = choice.connectionId?.let(profiles::get)
+        val configuration = choice.connectionId?.let(profileKeys::getValue) ?: "SYSTEM"
         ProviderRouteCandidate(choice, profile,
             available = choice.mode == SourceRouteMode.SYSTEM || profile != null,
             proof = routeDigest("provider-route-candidate-v1|$poolProof|${choiceIdentity(choice)}|$configuration"),
             routeIdentity = routeDigest("provider-route-cleanup-v1|$prefix|$configuration"))
     }
-    return ProviderRoutePoolSnapshot(latest, candidates, poolProof)
+    return ProviderRoutePoolSnapshot(instance, candidates, poolProof)
 }

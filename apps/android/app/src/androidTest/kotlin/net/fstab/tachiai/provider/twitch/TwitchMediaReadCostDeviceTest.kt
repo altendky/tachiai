@@ -145,9 +145,12 @@ class TwitchMediaReadCostDeviceTest {
         var preserved = false
         var identityPreserved = false
         var captured = false
+        var initialRegistryCommitted = false
         try {
             before = encryptedRecords(context.noBackupFilesDir)
-            val instances = providerInstanceStore(context).read { legacyProviderSettings(context) }
+            val registrySnapshot = providerInstanceStore(context).readSnapshot { legacyProviderSettings(context) }
+            initialRegistryCommitted = registrySnapshot.committed
+            val instances = registrySnapshot.instances
             val owner = instances.single { it.service == PrototypeService.TWITCH }.also { instance = it }
             val pool = captureProviderRoutePool(owner.id, PrototypeService.TWITCH,
                 { providerInstanceStore(context).read { legacyProviderSettings(context) } }, connectionProfileStore(context)::snapshot)
@@ -299,6 +302,7 @@ class TwitchMediaReadCostDeviceTest {
             }
         }
         report.putBoolean("captured", captured)
+        report.putBoolean("initialRegistryCommitted", initialRegistryCommitted)
         report.putBoolean("playbackFailed", failed.get())
         report.putBoolean("frame", frame.get())
         report.putBoolean("recordsUnchanged", preserved)

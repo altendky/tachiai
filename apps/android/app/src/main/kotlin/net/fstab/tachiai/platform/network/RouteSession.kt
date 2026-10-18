@@ -71,7 +71,8 @@ internal class RouteSession private constructor(
             RoutePurpose.PLAYBACK -> Unit
         }
         if (!hasProxyBridge && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
-        val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() }) { connections.remove(it) }
+        val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() },
+            allowProgressingMediaBody = purpose == RoutePurpose.PLAYBACK) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
         return connection

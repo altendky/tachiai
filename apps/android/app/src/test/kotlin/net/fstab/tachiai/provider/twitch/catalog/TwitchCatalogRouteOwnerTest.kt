@@ -49,6 +49,41 @@ class TwitchCatalogRouteOwnerTest {
         assertFalse(original.presentation.toString().contains("proxy.example.test"))
     }
 
+    @Test fun displayObservationsReuseBothReconciledReadsWithoutReadingTheRegistryAgain() {
+        val selected = instance()
+        var reads = 0
+        val observed = mutableListOf<ProviderInstance>()
+        val captured = captureTwitchCatalogRouteOwner(instanceId,
+            { reads++; listOf(selected) }, { error("System must not read a profile") },
+            onInstanceObserved = observed::add)
+        assertEquals(2, reads)
+        assertEquals(listOf(selected, selected), observed)
+        assertEquals(selected, captured.instance)
+    }
+
+    @Test fun displayObservationNeverAdmitsMissingDuplicateOrInconsistentlyChangedOwners() {
+        val selected = instance()
+        val changed = instance(SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, routeId, "Changed route"))
+        for (latest in listOf(emptyList(), listOf(selected, selected),
+                listOf(selected.copy(service = PrototypeService.ABEMA)), listOf(changed))) {
+            var reads = 0
+            val observed = mutableListOf<ProviderInstance>()
+            assertThrows(ProviderRoutePoolException::class.java) {
+                captureTwitchCatalogRouteOwner(instanceId,
+                    { if (reads++ == 0) listOf(selected) else latest }, { emptyMap() },
+                    onInstanceObserved = observed::add)
+            }
+            assertEquals(2, reads)
+            assertEquals(selected, observed.first())
+        }
+        val observed = mutableListOf<ProviderInstance>()
+        assertThrows(ProviderRoutePoolException::class.java) {
+            captureTwitchCatalogRouteOwner(instanceId, { listOf(selected) }, { emptyMap() }, "0".repeat(64),
+                onInstanceObserved = observed::add)
+        }
+        assertEquals(listOf(selected, selected), observed)
+    }
+
     @Test fun exactPoolProofSelectsAnAlternativeAndPoolEditsRevokeItsOwnership() {
         val first = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION, routeId, "First exit")
         val alternate = SourceRouteChoice.system

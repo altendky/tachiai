@@ -1,0 +1,22 @@
+[workspace]
+members = ["packages/core", "packages/core-ffi", "packages/core-web", "tools/core-bindgen"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/altendky/tachiai"
+
+[workspace.dependencies]
+tachiai-core = { path = "packages/core", version = "0.1.0" }
+uniffi = { version = "=0.32.2", default-features = false }
+wasm-bindgen = "=0.2.129"
+js-sys = "=0.3.106"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

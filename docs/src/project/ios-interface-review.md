@@ -7,6 +7,10 @@ including configured providers, accounts, routes and the native two-feed viewer.
 This is a source and documentation review. No iOS application was built, and no
 iOS device, Simulator, account or playback experiment was performed.
 
+The subsequent [shared Rust core](shared-rust-core.md) adds an initial timing
+library and generated Swift interface. It does not resolve the iOS-specific
+provider, route, framework-packaging or device-validation gaps below.
+
 ## Assessment
 
 iOS provides credible equivalents for the application shell, HLS playback,

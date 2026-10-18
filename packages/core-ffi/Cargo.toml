@@ -1,0 +1,19 @@
+[package]
+name = "tachiai-core-ffi"
+description = "Generated native-language interfaces to Tachiai's portable core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+tachiai-core.workspace = true
+uniffi.workspace = true
+
+[lints]
+workspace = true

@@ -150,10 +150,15 @@ apps/
   android/
   ios/                    # reserved until an iOS spike begins
 packages/
+  core/                   # platform-independent Rust timing rules
+  core-ffi/               # generated native-language interface
+  core-web/               # browser/Wasm interface
   web-adapters/           # possible shared provider-page code
 docs/src/project/
 ```
 
-This layout is provisional. In particular, a shared Rust core, Kotlin
-Multiplatform module, TypeScript package, or desktop wrapper should not be
-created until the spike identifies meaningful portable logic.
+The [shared Rust core](shared-rust-core.md) extracts the first concrete portable
+rules: playback timing and seek planning. Its independent Rust, native-binding
+and browser-binding packages retain platform playback, authentication, routing
+and UI behind host adapters. This does not establish iOS or desktop provider
+support; those integration reviews and device tests remain separate.

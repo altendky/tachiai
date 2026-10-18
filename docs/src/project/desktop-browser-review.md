@@ -8,6 +8,10 @@ playback. This is a source/documentation review, not a browser implementation or
 new playback experiment. No extension, companion, browser profile or provider
 session was installed, modified or tested for this review.
 
+The subsequent [shared Rust core](shared-rust-core.md) adds an initial timing
+library and browser/Wasm interface. It does not establish desktop provider
+playback, account handoff or browser-route coverage.
+
 ## Assessment
 
 A complete browser interface is plausible. The picker, configured providers,

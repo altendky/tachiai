@@ -3,6 +3,7 @@
 - [Project](project/index.md)
   - [Requirements](project/requirements.md)
   - [Architecture](project/architecture.md)
+  - [Shared Rust core](project/shared-rust-core.md)
   - [Provider integrations](project/provider-integrations.md)
   - [ABEMA catalog and account access](project/abema-catalog-access.md)
   - [Language assistance for provider account pages](project/provider-page-language-assistance.md)

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tachiai core browser smoke</title>
+</head>
+<body>
+  <h1>Tachiai core browser smoke</h1>
+  <p id="result">Loading generated WebAssembly library…</p>
+  <script type="module">
+    import init, { SeekContext, SeekPlanKind } from '../../build/core/web/tachiai_core_web.js';
+
+    const result = document.querySelector('#result');
+    const assert = (condition, message) => {
+      if (!condition) throw new Error(message);
+    };
+    try {
+      await init();
+      const snapshot = new SeekContext(5000n, 10000n, 100000n, 9000n, true, true, true, false);
+      try {
+        assert(snapshot.contentTimeMs() === 105000n, 'content clock');
+        const plan = snapshot.planRelativeSeek(2000n);
+        try {
+          assert(plan.kind === SeekPlanKind.Requested, 'requested seek');
+          assert(plan.targetMs === 7000n, 'seek target');
+        } finally {
+          plan.free();
+        }
+        const clamped = snapshot.planAbsoluteSeek(50000n);
+        try {
+          assert(clamped.kind === SeekPlanKind.Clamped, 'clamped seek');
+          assert(clamped.targetMs === 10000n, 'clamped target');
+        } finally {
+          clamped.free();
+        }
+      } finally {
+        snapshot.free();
+      }
+      result.textContent = 'PASS: browser loaded Wasm and verified typed core plans.';
+      document.documentElement.dataset.result = 'pass';
+    } catch (error) {
+      result.textContent = `FAIL: ${error.message}`;
+      document.documentElement.dataset.result = 'fail';
+    }
+  </script>
+</body>
+</html>

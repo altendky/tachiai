@@ -213,6 +213,73 @@ class NativePlayerCleanupDeviceTest {
         }
     }
 
+    @Test fun hlsAndDashDrainInputOpenedDuringStopBeforeReleasingActualPlayer() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        for (group in listOf("hls", "dash-media", "dash-manifest")) {
+            val uri = URI("https://fixture.invalid/media")
+            val connection = TransportConnection(uri.toURL(), blockInput = true)
+            val complete = CountDownLatch(1)
+            val failures = Collections.synchronizedList(mutableListOf<NativeFailureStage>())
+            lateinit var host: NativePairMember
+            lateinit var player: ExoPlayer
+            lateinit var receipt: NativeCleanupReceipt
+            instrumentation.runOnMainSync {
+                val budget = NativePlaybackBudget(60_000, { true })
+                val observer: NativeFailureObserver = { stage, _ -> failures += stage }
+                val own: (NativeCleanupReceipt) -> Unit = { owned ->
+                    receipt = owned
+                    owned.own(29) { assertEquals(1, connection.inputCloses) }
+                }
+                host = if (group == "hls") BoundedNativePlayer(instrumentation.targetContext,
+                    budget, Long.MAX_VALUE, allowedUri = { it == uri }, onEvent = { _, _ -> },
+                    openConnection = { connection }, onFailure = observer,
+                    onCleanupOwner = own, onCleanupChanged = { complete.countDown() })
+                else BoundedNativeDashPlayer(instrumentation.targetContext, budget,
+                    expectedKids = listOf(UUID.fromString("00000000-0000-0000-0000-000000000001")),
+                    allowedUri = { it == uri }, manifestUri = uri,
+                    manifestParser = DashManifestParser(), exchange = { fail("No DRM exchange permitted"); null },
+                    onEvent = { _, _ -> }, onMediaEvent = { _, _ -> }, beforeRelease = {},
+                    openConnection = { connection }, onFailure = observer,
+                    onCleanupOwner = own, onCleanupChanged = { complete.countDown() })
+                player = when (val created = host) {
+                    is BoundedNativePlayer -> created.player
+                    is BoundedNativeDashPlayer -> created.player
+                    else -> throw AssertionError("Unexpected synthetic player")
+                }
+            }
+            val requests = field(host, if (group == "dash-manifest") "manifests" else "requests") as BoundedMediaRequests
+            var openFailure: Throwable? = null
+            val opener = Thread {
+                try { requests.create(if (group == "dash-manifest") C.DATA_TYPE_MANIFEST else C.DATA_TYPE_MEDIA).openUri(uri) }
+                catch (error: Throwable) { openFailure = error }
+            }
+            try {
+                opener.start()
+                assertTrue("Synthetic input acquisition started", connection.inputEntered.await(5, TimeUnit.SECONDS))
+                instrumentation.runOnMainSync {
+                    host.close(); host.close()
+                    assertTrue(receipt.pending); assertFalse(receipt.confirmed)
+                    assertFalse(player.isReleased)
+                }
+                awaitCleanup(complete); opener.join(5_000)
+                assertFalse(opener.isAlive); assertTrue(openFailure is IOException)
+                instrumentation.runOnMainSync {
+                    assertTrue(receipt.confirmed); assertFalse(receipt.pending)
+                    assertTrue(player.isReleased); assertQualityClosed(host)
+                    assertEquals(1, connection.inputCloses)
+                    assertNotSame(Looper.getMainLooper().thread, connection.inputCloseThread)
+                    assertTrue(connection.disconnectThreads.all { it !== Looper.getMainLooper().thread })
+                    assertFalse(failures.contains(NativeFailureStage.PLAYER_RELEASE))
+                    assertFalse(failures.contains(NativeFailureStage.MEDIA_DISCONNECT))
+                    host.close(); assertEquals(1, connection.inputCloses)
+                }
+            } finally {
+                connection.inputUnblock.countDown(); opener.join(5_000)
+                instrumentation.runOnMainSync { if (!player.isReleased) player.release() }
+            }
+        }
+    }
+
     @Test fun hlsAndDashStopPlaybackImmediatelyWhileTransportCleanupIsBlocked() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         for (dash in listOf(false, true)) {
@@ -467,14 +534,16 @@ class NativePlayerCleanupDeviceTest {
         override fun getServerCertificates(): Array<Certificate> = emptyArray()
     }
 
-    private class TransportConnection(url: URL) : HttpsURLConnection(url) {
-        val disconnectThreads = mutableListOf<Thread>()
+    private class TransportConnection(url: URL, private val blockInput: Boolean = false) : HttpsURLConnection(url) {
+        val disconnectThreads = Collections.synchronizedList(mutableListOf<Thread>())
+        val inputEntered = CountDownLatch(1)
+        val inputUnblock = CountDownLatch(1)
         var inputCloses = 0
         var inputCloseThread: Thread? = null
         private val stream = object : ByteArrayInputStream(byteArrayOf(1)) {
             override fun close() { inputCloses++; inputCloseThread = Thread.currentThread(); super.close() }
         }
-        override fun disconnect() { disconnectThreads += Thread.currentThread() }
+        override fun disconnect() { disconnectThreads += Thread.currentThread(); inputUnblock.countDown() }
         override fun connect() = fail("No connection permitted")
         override fun usingProxy() = false
         override fun getCipherSuite() = "fixture"
@@ -482,6 +551,12 @@ class NativePlayerCleanupDeviceTest {
         override fun getServerCertificates(): Array<Certificate> = emptyArray()
         override fun getResponseCode() = 200
         override fun getContentLengthLong() = 1L
-        override fun getInputStream() = stream
+        override fun getInputStream(): ByteArrayInputStream {
+            if (blockInput) {
+                inputEntered.countDown()
+                check(inputUnblock.await(10, TimeUnit.SECONDS)) { "Synthetic input was not cancelled" }
+            }
+            return stream
+        }
     }
 }

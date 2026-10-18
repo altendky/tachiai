@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:testOnly="${localInspectionTestOnly}">
+        <service
+            android:name=".provider.abema.account.AbemaRenewalProbeService"
+            android:exported="false"
+            android:process=":abema_approval_browser" />
         <activity
             android:name=".feature.diagnostic.InspectionControlActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

@@ -5,6 +5,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
@@ -22,11 +23,22 @@ internal fun NativeCleanupReceipt.closePlayer(handler: Handler, onFailure: Nativ
 // Media3 can report a release timeout through this listener and return void.
 @UnstableApi
 internal fun NativeCleanupReceipt.ownPlayer(player: Player, releasing: () -> Boolean,
-    onFailure: NativeFailureObserver) {
-    own(30, ownerThread = true) { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
+    onFailure: NativeFailureObserver, releaseClockMs: () -> Long = SystemClock::elapsedRealtime) {
+    val diagnostic = NativePlayerReleaseDiagnostics(releaseClockMs) {
+        reportNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure, it)
+    }
+    own(30, ownerThread = true) {
+        diagnostic.begin()
+        try { observeNativeFailure(NativeFailureStage.PLAYER_RELEASE, onFailure) { player.release() } }
+        finally { diagnostic.finish() }
+    }
     try {
         player.addListener(object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) { playerError(releasing(), error.errorCode) }
+            override fun onPlayerError(error: PlaybackException) {
+                val active = releasing()
+                playerError(active, error.errorCode)
+                diagnostic.playerError(active, error.errorCode)
+            }
         })
     } catch (error: Throwable) {
         // Rollback cannot prove a void-returning release without its observer.

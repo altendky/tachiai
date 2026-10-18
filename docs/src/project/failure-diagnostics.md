@@ -36,6 +36,36 @@ raw request details are added to the v1 journal, and unknown vocabulary still
 fails validation. This improves evidence for the sustained-playback investigation;
 it does not identify or fix the observed provider/network failures.
 
+Native player cleanup preserves Media3's release-timeout code 1003 as the fixed
+`PLAYER_RELEASE_TIMEOUT` category, distinct from generic receipt uncertainty.
+The app-owned projection contains no original Media3 exception, message or cause.
+The timeout is reported once, including when void-returning release completes
+normally; later cleanup stages still run and failed cleanup remains unconfirmed.
+Ordinary successful release produces no failure observation.
+Only a timeout observed after the actual release begins receives this category;
+an earlier queued timeout retains generic cleanup uncertainty.
+
+For this timeout only, debug builds also emit the closed `TachiaiNativeRelease`
+log entry with `event=PLAYER_RELEASE_TIMEOUT`, `code=1003` and numeric `elapsedMs`.
+This measures the release call itself, excluding preceding transport cleanup;
+it is capped at 60,000 ms, with -1 for an unavailable/invalid monotonic clock.
+The duration is ephemeral log evidence, not a new persisted journal field. The
+v1 journal schema, retention, deadlines and recovery decisions are unchanged.
+This instrumentation does not establish that an earlier generic release failure
+was a timeout or identify why Media3 could not release.
+
+On 2026-10-18, both provider-free asynchronous cleanup cases passed in 0.031
+seconds on persistent `tachiai-dev`, Android 16/API 36 x86-64, after a normal
+emulator restart and in-place update. Synthetic void release emitted duplicate
+1003 notifications; the typed report occurred once, every remaining cleanup lane
+ran, and confirmation stayed false. Successful release, unrelated uncertainty
+and a timeout before release began produced no invented timeout attribution.
+The journal was not replaced, and original picker assignments and every saved
+encrypted-record digest were preserved. All 2,228 JVM cases, 12 collector tests,
+lint, release isolation and app/test/unsigned-release assemblies passed, with
+the stable debug/test certificate and 16 KiB alignment. This validates the
+diagnostic boundary, not a reproduced provider timeout or its cause in #297.
+
 Accepted playback MEDIA response bodies may progress beyond the old absolute
 30-second lifetime. Setup and manifests remain bounded to 30 seconds; connect
 and individual read timeouts, byte limits and before/after admission checks are

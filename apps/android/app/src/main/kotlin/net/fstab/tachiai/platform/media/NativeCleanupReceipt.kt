@@ -25,7 +25,7 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     }
     // Media3 release may report timeout through its listener and still return normally.
     fun playerError(releasing: Boolean, errorCode: Int) {
-        if (releasing && errorCode == 1003) failed()
+        if (releasing && errorCode == NATIVE_PLAYER_RELEASE_TIMEOUT_CODE) failed()
     }
     // Internal Media3/timer callbacks must return so queued owner disposal can
     // run. External close still throws and rejects uncertain confirmation.

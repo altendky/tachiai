@@ -126,6 +126,18 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(stdout.getvalue(), b"")
                 self.assertEqual(stderr.getvalue(), "JOURNAL_INVALID\n")
 
+    def test_release_timeout_category_round_trips_with_independent_receipt_uncertainty(self):
+        data = self.journal([self.row(**{"4": "PLAYER_RELEASE", "9": "PLAYER_RELEASE_TIMEOUT", "11": ""}),
+                             self.row(**{"1": "3" * 32, "4": "PLAYER_RELEASE", "6": "SECONDARY", "11": ""})])
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        self.assertEqual(module.main(io.BytesIO(data), stdout, stderr), 0)
+        self.assertEqual(stdout.getvalue(), data)
+        self.assertEqual(stderr.getvalue(), "")
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        self.assertEqual(module.main(io.BytesIO(data.replace(b"PLAYER_RELEASE_TIMEOUT", b"PLAYER_RELEASE_private_secret")), stdout, stderr), 1)
+        self.assertEqual(stdout.getvalue(), b"")
+        self.assertEqual(stderr.getvalue(), "JOURNAL_INVALID\n")
+
     def test_secret_fields_fail_without_any_output(self):
         secret = "https://secret.example/private?token=password"
         for index in range(13):

@@ -95,6 +95,18 @@ per player; this is bounded no-op dispatch cleanup, not a per-chunk speedup or a
 measured buffering fix. Transfer listeners and opt-in read-cost counters remain
 unchanged; #297 remains open.
 
+On 2026-10-18, the integrated change passed 2,255 JVM cases, lint, release
+isolation, app/test/unsigned-release assembly and scoped hooks. Its configured
+muted Twitch replay/System-network fixture passed in 47.822 seconds on persistent
+`tachiai-dev`, Android 16/API 36 x86-64, with WebView 133.0.6943.137 installed
+and the existing saved catalog account. A frame rendered, position advanced
+39.434 seconds, and all 159 samples reported playing with no terminal failure.
+The final selected video was 712,897 bit/s and SDK bandwidth estimate 1,793,736
+bit/s. Cleanup, original selections and encrypted-record preservation passed.
+Exit country was not independently measured; no provider page or protected media
+was captured. The differing final rendition and sequential runs do not establish
+a dispatch-related speedup, sustained two-feed or physical-device acceptance.
+
 ## Main flow and settings — October 16
 
 Normal launches open **Choose two streams**. Development and inspection builds

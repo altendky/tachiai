@@ -50,9 +50,12 @@ product integration: sustained decoding, supported ABEMA operation, login
 persistence, timing adjustment, and the durability and policy acceptability of
 the composition across devices and player transitions remain unverified.
 
-Android phone/tablet is the implemented baseline; Android TV/Google TV is the
-closest additional target. The available NVIDIA Shield still needs a named
-device investigation. The [cross-platform landscape](platforms.md) compares
+Android phone/tablet is the implemented baseline. The same application now has
+an Android TV/Google TV presentation with remote controls and bounded TV-emulator
+local-media acceptance, recorded in the [TV implementation review](android-tv-interface-review.md).
+Provider accounts, routes/DRM, physical decoding and HDMI audio on a real TV remain
+unverified. The available NVIDIA Shield still needs a named device investigation.
+The [cross-platform landscape](platforms.md) compares
 Android TV, iOS/iPadOS, Apple TV/tvOS and desktop web, including available
 interfaces/libraries, shared Rust boundaries, gaps and validation priorities.
 Its [distribution comparison](platform-distribution.md) includes installation

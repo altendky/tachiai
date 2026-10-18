@@ -60,6 +60,28 @@ do not apply the phone-only navigation-bar overlay. Emulator results establish
 only bounded UI/input behavior; physical TV decoding, HDMI audio, DRM, provider
 sign-in and sustained route performance still require device evidence.
 
+The October 18 ordinary-build check used Android 16/API 36 and WebView
+143.0.7499.24. The [TV implementation record](android-tv-interface-review.md)
+separates remote/local-media observations from physical-TV and provider gaps.
+Build the ordinary debug app and its instrumentation APK with the documented
+Android toolchain, verify the development signer, then install them explicitly:
+
+```sh
+adb -s emulator-5582 install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5582 install -r apps/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s emulator-5582 shell am instrument -w -r \
+  -e class net.fstab.tachiai.feature.presentation.AndroidTvFlowTest \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The two bounded cases use in-memory setup and verified local video assets;
+they do not open provider accounts or saved routes. They cover actual-player
+progress, remote controls, local retry and lifecycle cleanup. Use the ordinary
+debug build: inspection cannot establish production security behavior. An
+unsigned release APK is compiled by CI, with the same TV launcher and supported
+ABIs, but requires separate production signing before it can be installed.
+Never sign a production release with the development key.
+
 ### Phone development device
 
 Requirements are Linux x86-64, usable KVM, Java 17 or newer, the repository's

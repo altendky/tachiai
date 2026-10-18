@@ -8,6 +8,72 @@ no TV was installed, paired, provisioned or tested for this review. The project
 mentions an available NVIDIA Shield, but its exact model, OS, ABI, browser engine
 and playback capabilities have not been recorded here.
 
+## Implementation and emulator evidence — October 18
+
+The existing Android application now has a TV presentation selected by UI mode:
+labelled A/B assignment, contrasting remote focus, shared settings navigation,
+native viewer panels, one foreground pair media session, and floating-feed
+corner/size presets. It reuses the Android services and Rust timing library.
+The implementation adapts the existing Material 3 controls rather than adding a
+second provider stack or adopting Compose for TV as a new dependency. The older
+research assessment below remains useful for the unverified device boundaries.
+
+The named `tachiai-tv-dev` emulator uses Android 16/API 36, Android TV image
+revision 4, x86-64, 1080p, 2048 MiB RAM, four cores and software graphics.
+Its installed WebView is `com.google.android.webview` 143.0.7499.24. It advertises
+x86-64 and arm64 ABIs; this does not establish ARM hardware decoding. No provider
+account, selected VPN route, region entitlement or DRM is involved in the
+controlled-media checks. Content is two local 60-second 640×360 H.264/AAC assets
+at 24 fps, with different synthetic tones.
+
+Observed and asserted bounds:
+
+- Nine picker/settings presentation cases (including one phone-mode compatibility
+  case) and a separate D-pad discovery-tab/IME
+  search case passed. Twelve viewer/media-session cases passed, including genuine
+  system Back and hardware media keys. Ten unchanged phone panel/menu/touch
+  regressions also passed.
+- Two TV acceptance cases passed using actual Media3 players and public test
+  assets. Genuine D-pad input traversed synthetic Providers, discovery and A/B
+  selection, then handed off to the native viewer. The fixture prepares players
+  before setup; Watch reveals/plays them. This does not test provider startup.
+- Both timelines and rendered-frame counters advanced. The full flow ended with
+  267/267 rendered buffers and approximately 27.0/26.0 seconds of content position
+  in the post-merge run.
+  Actual player gain values, a 1-second relative seek, corner/size/swap geometry
+  and unchanged player/surface identities were asserted. Gain requests are not
+  acoustic confirmation or measured event synchronization.
+- An explicitly injected local slot failure retired that player; remote Retry
+  prepared the same local asset while its original partner kept rendering.
+  Stop released the pair/session; real host pause released all three players
+  created across retry. This does not establish provider network recovery.
+- Ordinary debug and unsigned release APKs retain the TV launcher/banner and
+  arm64/x86-64 native libraries. Release isolation passed. Local debug updates use
+  the stable development signer; release remains unsigned and needs separate
+  production signing before distribution. No inspection exception is enabled.
+- An ordinary debug in-place update retained a temporary configured provider:
+  its encrypted registry file was byte-identical before and after `adb install -r`,
+  and the provider was still visible after relaunch. Only that test provider was
+  removed afterward; existing providers were preserved. This establishes setup
+  continuity, not account-grant renewal or route-session persistence.
+
+One navigation quirk is recorded: with a single wide provider row, Down from
+the header can choose the narrower Routes button first; Up from there enters
+the configure row. That input path was exercised without programmatic focus.
+
+### Physical-device acceptance still required
+
+Record the exact Shield/other TV model, OS, ABI, WebView version, remote and
+display/audio chain. Check normal installation/update and launcher behavior,
+provider-controlled account input and persistence, required WebView features,
+configured route startup/cancellation, entitlement/DRM and two concurrent decoder
+sessions. Exercise live/live, live/replay and replay/replay at realistic qualities,
+then measure sustained buffering, dropped frames, memory and route throughput.
+Confirm both audio tracks and mix/mute through HDMI/receiver output, interruptions,
+background/return and Stop cleanup. Emulator success does not close these gates.
+An ARM32-only device remains outside the packaged ABIs. Chromecast hardware
+acceptance remains separate from this native TV application.
+
 ## Assessment
 
 Android TV is the closest additional target to today's application. It can reuse

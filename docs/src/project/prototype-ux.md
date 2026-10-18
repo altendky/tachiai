@@ -8,6 +8,26 @@ They do not make current functionality debug-only. Historical experiments below
 retain their original dates, restrictions and verification limits; promotion
 does not establish provider support or new device evidence.
 
+## Android TV selection and settings — October 18
+
+TV UI mode selects landscape-safe margins, labelled A/B assignment buttons and a
+contrasting focus outline. Selection remains gold; focus has a separate outline.
+The picker initially focuses Routes, then Providers when Routes is unavailable,
+or the first rendered assignment. Shared settings retain their existing actions
+and stores, with screen-level focus restoration and remote-operable controls.
+Discovery tabs form a focus group; search keeps the keyboard Search action.
+Provider reordering uses the existing handle menu without requiring a drag.
+Twitch's device flow presents its activation QR and code on TV, without the
+phone-specific Brave/Chrome launch buttons. Credential entry remains on the
+provider's pages; no grants or browser sessions are transferred between devices.
+
+Bounded API 36 Android TV emulator checks cover duplicate-source A/B selection,
+Watch, Routes/Providers entry, help and Back, busy-state focus, delete-dialog
+return, and D-pad discovery tabs plus search submission. They use synthetic
+fixtures, not provider accounts. Provider-page remote input, physical TV decoding,
+DRM, audio and sustained playback require separate evidence. Viewer remote
+controls and integrated TV acceptance are separate work items.
+
 ## Playback lifetime — October 17
 
 Normal viewing has no application-imposed five-minute cutoff. The presentation

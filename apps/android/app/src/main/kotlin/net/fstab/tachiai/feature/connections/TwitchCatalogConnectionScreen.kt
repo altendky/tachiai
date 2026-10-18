@@ -5,6 +5,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
+import net.fstab.tachiai.feature.presentation.LocalTelevision
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -19,7 +23,7 @@ internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, 
     onBack: (() -> Unit)? = null, onRetryOpen: (() -> Unit)? = null, enabled: Boolean = true) {
     val modifier = if (onBack == null) Modifier.fillMaxWidth() else Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    BoxWithConstraints(modifier) {
+    BoxWithConstraints(modifier.then(if (onBack != null) Modifier.tvFocusGroup(enabled && state.ready) else Modifier)) {
         // A scrollable column has unbounded content height. Capture its actual
         // viewport first so a landscape QR can be scrolled fully into view.
         val maxQrSize = minOf(320.dp, maxWidth, if (constraints.hasBoundedHeight) maxHeight else screenHeight / 2)
@@ -50,8 +54,10 @@ internal fun TwitchCatalogConnectionScreen(state: TwitchCatalogConnectionState, 
                     (!state.phase.terminal && state.phase != DeviceAuthPhase.VALIDATING)) }?.let {
                 TwitchActivationQr(it, maxSize = maxQrSize)
                 SelectionContainer { Text("Your activation code: ${it.userCode}") }
-                Button({ onBrowser("com.brave.browser") }, enabled = enabled) { Text("Open Twitch activation in Brave") }
-                Button({ onBrowser("com.android.chrome") }, enabled = enabled) { Text("Open Twitch activation in Chrome") }
+                if (!LocalTelevision.current) {
+                    Button({ onBrowser("com.brave.browser") }, enabled = enabled) { Text("Open Twitch activation in Brave") }
+                    Button({ onBrowser("com.android.chrome") }, enabled = enabled) { Text("Open Twitch activation in Chrome") }
+                }
             }
             state.phase?.let { Text(catalogPhaseMessage(it)) }
             state.message?.let { Text(it) }

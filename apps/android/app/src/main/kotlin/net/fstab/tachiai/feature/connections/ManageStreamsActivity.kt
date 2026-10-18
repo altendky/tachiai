@@ -15,6 +15,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import net.fstab.tachiai.platform.diagnostics.*
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.presentation.*
@@ -124,7 +127,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     onReorder = current::reorder, onOpenLink = current::openLink,
                     onResolveLink = current::resolveLink, onDismissLink = current::dismissLink,
                     onAddLink = current::addLink, onEditLink = current::editLink)
-            } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
+            } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!reading).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (header != null) item { header() }
                 else item { SettingsPageHeader(if (providerDetails) "Provider" else "Manage streams", onBack = ::finish,

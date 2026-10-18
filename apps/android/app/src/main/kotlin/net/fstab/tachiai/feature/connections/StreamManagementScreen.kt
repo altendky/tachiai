@@ -2,6 +2,8 @@ package net.fstab.tachiai.feature.connections
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
+import net.fstab.tachiai.feature.presentation.LocalTelevision
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -12,6 +14,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
+import net.fstab.tachiai.feature.presentation.RemoteTab as Tab
+import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
+import net.fstab.tachiai.feature.presentation.tvFocusIndicator
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -275,7 +283,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     }
     var feedbackDismissed by remember(state.instance.id, state.privacyRevision, feedback) { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
-    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).onGloballyPositioned { drag.viewport = it }
+    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!state.saving, Triple(ids, state.selectedTabId, state.loading))
+        .padding(16.dp).onGloballyPositioned { drag.viewport = it }
         .testTag("Stream discovery list"),
         state = listState) {
         if (header != null) item(key = leadingKeys[0]) { header() }
@@ -342,7 +351,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                                 modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} later" })
                         }
                     }
-                    val browse = if (childCapability != null) Modifier.clickable(enabled = actionsEnabled, role = Role.Button,
+                    val browse = if (childCapability != null) Modifier.tvFocusIndicator().clickable(enabled = actionsEnabled, role = Role.Button,
                         onClickLabel = childCapability.actionLabel,
                         onClick = { onChildren(source.entry.resource) }).semantics(mergeDescendants = true) {
                             contentDescription = "${childCapability.actionLabel} for ${source.entry.title}"
@@ -381,7 +390,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                 visibleCapabilities?.collections.orEmpty().map { Triple(it.id, it.title, it.access) }
             val selected = tabs.indexOfFirst { it.first == state.selectedTabId }
             @Suppress("DEPRECATION")
-            ScrollableTabRow(selectedTabIndex = selected.coerceAtLeast(0), edgePadding = 0.dp,
+            ScrollableTabRow(selectedTabIndex = selected.coerceAtLeast(0),
+                modifier = if (LocalTelevision.current) Modifier.focusGroup() else Modifier, edgePadding = 0.dp,
                 divider = {}, indicator = { positions ->
                     // Subcomposition can briefly retain the previous measured
                     // positions while newly loaded capabilities add tabs.
@@ -432,7 +442,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     ?.takeIf { it.access == CatalogAccess.AVAILABLE }
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val browse = if (childCapability != null) Modifier.clickable(enabled = mutable, role = Role.Button,
+                    val browse = if (childCapability != null) Modifier.tvFocusIndicator().clickable(enabled = mutable, role = Role.Button,
                         onClickLabel = childCapability.actionLabel,
                         onClick = { onChildren(entry.resource) }).semantics { contentDescription = "Browse ${entry.title}" }
                         else Modifier

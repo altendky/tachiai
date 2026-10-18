@@ -13,27 +13,33 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.IconButton
+import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
+import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.PrototypeSlot
@@ -85,19 +91,32 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     // Recovery instructions must not consume the entire assignment viewport on
     // compact screens. Keep every blocked-picker control reachable by scrolling.
     val recoveryScroll = rememberScrollState()
-    Column(Modifier.fillMaxSize().safeDrawingPadding()
+    val television = LocalTelevision.current
+    val entry = remember { FocusRequester() }
+    val firstAssignment = providerInstances.asSequence().flatMap { instance ->
+        configuredSources.asSequence().filter { it.instanceId == instance.id }
+    }.firstOrNull()
+    val entryKind = when {
+        onConnections != null -> "routes"
+        onProviders != null && setupReady -> "providers"
+        firstAssignment != null -> "assignment"
+        else -> null
+    }
+    fun preferred(kind: String) = if (television && entryKind == kind) Modifier.focusRequester(entry) else Modifier
+    Column(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(setupReady, configuredSources.map { it.id },
+        if (entryKind != null) entry else null)
         .then(if (onRecovery != null) Modifier.verticalScroll(recoveryScroll) else Modifier)
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Text("Tachiai", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.primary, maxLines = 1)
-            if (onDeveloperTools != null || onScreenSharing != null) {
+            if (onDeveloperTools != null || onScreenSharing != null && !television) {
                 Box {
                     IconButton(onClick = { moreExpanded = true },
                         modifier = Modifier.semantics { contentDescription = "More options" }) { Text("⋮") }
                     DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
-                        onScreenSharing?.let {
+                        onScreenSharing?.takeUnless { television }?.let {
                             DropdownMenuItem(text = { Text("Screen sharing") }, onClick = {
                                 moreExpanded = false
                                 sharingSetupOpen = true
@@ -116,9 +135,9 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         if (sharingSetupOpen && onScreenSharing != null) ScreenSharingSetupDialog(onScreenSharing) { sharingSetupOpen = false }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            onConnections?.let { action -> Button(onClick = action,
+            onConnections?.let { action -> Button(onClick = action, modifier = preferred("routes"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Routes") } }
-            onProviders?.let { action -> Button(onClick = action, enabled = setupReady,
+            onProviders?.let { action -> Button(onClick = action, enabled = setupReady, modifier = preferred("providers"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 Button(onClick = { onWatch(ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))) },
@@ -148,11 +167,12 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                         for (slot in PrototypeSlot.entries) {
                             val selectedChoice = if (slot == PrototypeSlot.A) assignments.a else assignments.b
                             val selected = selectedChoice?.instanceId == instance.id && selectedChoice.resolve(items) != null
-                            Box(Modifier.size(48.dp).clearAndSetSemantics {
+                            Box(Modifier.width(if (television) 72.dp else 48.dp).height(48.dp).clearAndSetSemantics {
                                 contentDescription = if (selected) "$providerName: a stream is selected for feed ${slot.name}"
                                     else "$providerName: no stream selected for feed ${slot.name}"
                             }, contentAlignment = Alignment.Center) {
-                                if (selected) Box(Modifier.size(18.dp).border(1.dp, MaterialTheme.colorScheme.outline,
+                                if (television) Text("Feed ${slot.name}", style = MaterialTheme.typography.labelLarge)
+                                else if (selected) Box(Modifier.size(18.dp).border(1.dp, MaterialTheme.colorScheme.outline,
                                     RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
                                     Text("−", color = MaterialTheme.colorScheme.outline, style = MaterialTheme.typography.labelSmall)
                                 }
@@ -174,13 +194,25 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                                     Text(source.entry.availability.name.lowercase().replace('_', ' '), style = MaterialTheme.typography.bodySmall)
                             }
                             for (slot in PrototypeSlot.entries) {
-                                Checkbox(checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice,
+                                val checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice
+                                val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp).semantics {
+                                    contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
+                                        "Assign ${source.entry.title} to feed ${slot.name}"
+                                    else "Assign ${source.entry.title} using $providerName to feed ${slot.name}"
+                                    if (television) selected = checked
+                                }
+                                if (television) androidx.compose.material3.OutlinedButton(
+                                    onClick = { assign(slot, feedChoice, !checked) },
+                                    modifier = assignmentModifier.then(if (source == firstAssignment && slot == PrototypeSlot.A)
+                                        preferred("assignment") else Modifier).tvFocusIndicator(),
+                                    contentPadding = PaddingValues(4.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                                        containerColor = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        contentColor = if (checked) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)) {
+                                    Text(if (checked) "✓ ${slot.name}" else slot.name)
+                                } else Checkbox(checked = checked,
                                     onCheckedChange = { assign(slot, feedChoice, it) },
-                                    modifier = Modifier.size(48.dp).semantics {
-                                        contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
-                                            "Assign ${source.entry.title} to feed ${slot.name}"
-                                        else "Assign ${source.entry.title} using $providerName to feed ${slot.name}"
-                                    })
+                                    modifier = assignmentModifier)
                             }
                         }
                     }

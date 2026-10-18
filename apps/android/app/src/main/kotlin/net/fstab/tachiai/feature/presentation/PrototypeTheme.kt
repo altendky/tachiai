@@ -2,18 +2,22 @@ package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.colorResource
 import net.fstab.tachiai.R
 
 // Shared resource roles keep Compose and native controls in the same palette.
 @Composable
-internal fun TachiaiPrototypeTheme(content: @Composable () -> Unit) {
+internal fun TachiaiPrototypeTheme(television: Boolean = isTelevision(LocalConfiguration.current), content: @Composable () -> Unit) {
     val base = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
     val colors = base.copy(
         primary = colorResource(R.color.prototype_primary),
@@ -27,7 +31,12 @@ internal fun TachiaiPrototypeTheme(content: @Composable () -> Unit) {
         onSurfaceVariant = colorResource(R.color.prototype_muted),
         outline = colorResource(R.color.prototype_outline),
     )
-    MaterialTheme(colorScheme = colors) {
-        Surface(Modifier.fillMaxSize()) { content() }
+    CompositionLocalProvider(LocalTelevision provides television) {
+        MaterialTheme(colorScheme = colors) {
+            Surface(Modifier.fillMaxSize()) {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()
+                    .then(if (television) Modifier.padding(horizontal = 32.dp, vertical = 20.dp) else Modifier)) { content() }
+            }
+        }
     }
 }

@@ -8,12 +8,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
+import net.fstab.tachiai.feature.presentation.RemoteRadioButton as RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,7 +48,7 @@ internal fun SourceSetupScreen(source: PrototypeSource, initial: SourceSetup, pr
     var b by rememberSaveable(source.name, stateSaver = routeSaver) { mutableStateOf(initial.feedB) }
     var savedName by rememberSaveable(source.name) { mutableStateOf(initial.name) }
     fun saveChanges() { onSave(SourceSetup(savedName, default, a, b)) }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
+    Column(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!busy).verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SettingsPageHeader("Source setup", onBack)
         Text(source.title)

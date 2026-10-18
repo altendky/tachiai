@@ -102,6 +102,20 @@ internal class PrototypeTwitchSession(
     override val providerView: View? = null
     override val member: NativePairMember? get() = host
     override val player: Player? get() = host?.player
+    private val mediaEvents = TwitchNativeEventDispatcher(
+        log = { event, code -> Log.d("TachiaiPrototypeTwitch", "event=${event.name} code=$code") },
+        remember = ::remember, post = { action -> handler.post(action) },
+        current = { !closed.get() && active() }, deliver = { event, code ->
+            when (event) {
+                NativeMediaEvent.READY -> onEvent(PrototypeFeedEvent.READY)
+                NativeMediaEvent.VIDEO_FRAME -> onEvent(PrototypeFeedEvent.VIDEO_FRAME)
+                NativeMediaEvent.PLAYER_FAILED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED,
+                    playerCode = code.takeIf { it in 1000..9999 }))
+                NativeMediaEvent.LIMIT_REACHED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT))
+                NativeMediaEvent.STOPPED -> fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED))
+                else -> Unit
+            }
+        })
 
     override fun prepare(budget: NativePlaybackBudget) {
         check(started.compareAndSet(false, true))
@@ -177,21 +191,7 @@ internal class PrototypeTwitchSession(
                             onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
-                            }, onEvent = { event, code ->
-                                Log.d("TachiaiPrototypeTwitch", "event=${event.name} code=$code")
-                                rememberMedia(event, code)
-                                handler.post {
-                                    if (!closed.get() && active()) when (event) {
-                                        NativeMediaEvent.READY -> onEvent(PrototypeFeedEvent.READY)
-                                        NativeMediaEvent.VIDEO_FRAME -> onEvent(PrototypeFeedEvent.VIDEO_FRAME)
-                                        NativeMediaEvent.PLAYER_FAILED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED,
-                                            playerCode = code.takeIf { it in 1000..9999 }))
-                                        NativeMediaEvent.LIMIT_REACHED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT))
-                                        NativeMediaEvent.STOPPED -> fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED))
-                                        else -> Unit
-                                    }
-                                }
-                            })
+                            }, onEvent = mediaEvents::dispatch)
                         host = created
                         created.start(source.uri, playWhenReady = false)
                         if (initialPositionMs > 0) created.player.seekTo(initialPositionMs)
@@ -259,21 +259,6 @@ internal class PrototypeTwitchSession(
 
     private fun remember(value: PrototypeFeedFailure) {
         if (!closed.get() && active()) firstFailure.remember(value)
-    }
-
-    private fun rememberMedia(event: NativeMediaEvent, code: Int) {
-        val reason = when (event) {
-            NativeMediaEvent.HTTP_REJECTED -> if (code == 404) PrototypeFailureReason.MEDIA_NOT_FOUND else PrototypeFailureReason.HTTP_REJECTED
-            NativeMediaEvent.SOURCE_NOT_ALLOWLISTED -> PrototypeFailureReason.MEDIA_BLOCKED
-            NativeMediaEvent.REQUEST_FAILED -> PrototypeFailureReason.NETWORK_FAILED
-            NativeMediaEvent.ENCRYPTION_UNSUPPORTED, NativeMediaEvent.PLAYLIST_UNSUPPORTED -> PrototypeFailureReason.UNSUPPORTED_MEDIA
-            NativeMediaEvent.LIMIT_REACHED -> PrototypeFailureReason.PLAYBACK_LIMIT
-            NativeMediaEvent.PLAYER_FAILED -> PrototypeFailureReason.PLAYER_FAILED
-            else -> return
-        }
-        remember(PrototypeFeedFailure(reason,
-            httpStatus = if (event == NativeMediaEvent.HTTP_REJECTED) code.takeIf { it in 100..599 } else null,
-            playerCode = if (event == NativeMediaEvent.PLAYER_FAILED) code.takeIf { it in 1000..9999 } else null))
     }
 
     private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) {

@@ -4,7 +4,7 @@ internal fun abemaAccountReadinessMessage(result: AbemaAccountReadinessResult): 
     AbemaAccountReadinessResult.TEMPORARY_FAILURE ->
         "ABEMA connection is temporarily unavailable. Retry when the selected connection is available."
     AbemaAccountReadinessResult.INTERACTION_REQUIRED ->
-        "ABEMA needs sign-in or account confirmation. Open ABEMA account in Providers."
+        "ABEMA is signed in to a different account. Open ABEMA account in Providers and choose the saved account."
     AbemaAccountReadinessResult.STORAGE_FAILURE ->
         "The saved ABEMA account could not be read or updated. Provider access remains unavailable."
     AbemaAccountReadinessResult.FAILURE ->

@@ -1,5 +1,84 @@
 # Native playback access experiments
 
+## Operation-owned ABEMA renewal implementation — 2026-10-18
+
+[Issue #333](https://github.com/altendky/tachiai/issues/333) replaces production
+automatic-renewal Activity handoff with an application-owned operation and the
+nonexported `AbemaRenewalBrowserService` in the existing isolated approval
+process/profile. The shared browser runtime keeps the configured route, passive
+candidate capture and cleanup boundary established by #324. Explicit interactive
+account setup retains its foreground checks and protected Activity; automatic
+renewal starts no Activity and adds no scheduler.
+
+Readiness starts or joins the existing exact-account/owner/snapshot reservation
+internally and returns WAIT. Detaching an observer, including on pause, does not
+cancel admitted work or extend the original 90-second operation deadline.
+Browser Binder loss before confirmed handoff, cancellation, owner/route change,
+Forget, clock rollback, candidate expiry and uncertain cleanup prevent acceptance.
+Cleanup has a separate bounded watchdog; failure retains the actual resources
+and browser reservation rather
+than allowing another operation to claim confirmed cleanup.
+
+After confirmed browser/proxy/route cleanup, native profile and registered-email
+verification must accept a later-lived candidate for the original account.
+Transactional publication shares the interactive session's CAS/rollback helper
+without creating a foreground session or usable account lease. Protected owner
+checks bracket disk publication; memory-only admission runs within the CAS.
+Final acceptance proves the replacement receipt/revision, not its obsolete
+predecessor. A rejected publication cannot roll back a later writer or Forget.
+Readiness polling joins claimed work before interpreting a tentatively published
+record as ready or treating an obsolete revision as a new failure.
+
+Only a native profile that matches its candidate, differs from the saved account
+and independently has REGISTERED email can return INTERACTION_REQUIRED. The
+message asks the user to choose the saved account, without claiming an email
+code is required. Missing candidates, timeout, malformed responses, network,
+region/TLS failures and 401/403 remain ambiguous. UNREGISTERED also includes
+HTTP 404 and is not a verified guest/signed-out signal.
+
+Implementation and provider-free coverage do not establish naturally expired
+physical-device adoption, actual signed-out/email-code interaction, process-death
+publication behavior or reliable closed-app execution. Those remain in
+[#294](https://github.com/altendky/tachiai/issues/294). The earlier #324 emulator
+observations below used still-valid saved grants and did not adopt replacements;
+they establish bootstrap feasibility, not acceptance of this production operation.
+
+The opt-in production-host fixture uses the actual Service/client, verifies the
+same account and registered email after cleanup, and compares encrypted records
+and task metadata without adoption. It permits a still-valid saved grant and
+skips before private access without the opt-in. On the verified named emulator:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.abema.account.AbemaProductionRenewalBrowserProbeTest \
+  -e abemaProductionRenewalProbe true \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+If multiple ABEMA instances exist, supply `abemaRenewalProbeInstanceId`. Running
+that bootstrap fixture does not exercise replacement adoption or a paused
+observer; each needs its own recorded observation.
+
+The production-host fixture passed one case in 15.135 seconds on persistent
+`tachiai-dev`, Android 16/API 36 x86-64, with WebView 133.0.6943.137 installed,
+using the existing account and saved Windscribe route. Native profile and email
+verification matched the original account after browser/proxy/route cleanup.
+The candidate extended the saved expiry, but the saved grant was still valid
+and was not replaced. Task metadata stayed unchanged throughout bounded polling;
+this is not proof against every possible transient Activity. Browser release
+and native cleanup were confirmed, no resources were retained, and all saved
+encrypted-record digests matched across installation and the probe. No provider
+page or protected media was captured; exit country was not independently measured.
+
+The integrated change passed 2,246 JVM cases in 246 reports, debug lint, release
+isolation and debug/test/unsigned-release assembly. Debug/test certificates match
+the stable development signer and all APKs pass 16 KiB alignment. An initial
+protocol test used a URI already rejected by the request constructor; correcting
+that fixture to a valid general approval URI preserved the intended test that
+renewal rejects every destination except the fixed account page. The complete
+corrected build and scoped hooks passed. Actual expired adoption and minimized
+or process-death behavior remain separate acceptance in #294.
+
 ## Unattached remembered-session bootstrap prerequisite — 2026-10-18
 
 [Issue #324](https://github.com/altendky/tachiai/issues/324) separates browser
@@ -43,7 +122,10 @@ This establishes remembered-session bootstrap on that emulator, not automatic
 renewal adoption, naturally expired-grant recovery, reliable minimized/closed-app
 execution, scheduling or physical-device acceptance. A missing candidate, timeout
 or network error does not establish that interactive sign-in is required.
-Those distinctions and operation-owned publication remain in #294.
+At that checkpoint operation-owned publication was still outstanding. The
+[production implementation above](#operation-owned-abema-renewal-implementation--2026-10-18)
+addresses that slice; the broader lifecycle and interaction acceptance remains
+in #294.
 
 For an explicitly authorized remembered-account check, install the verified
 ordinary debug and instrumentation APKs on the named persistent emulator, stop

@@ -19,6 +19,23 @@ including DNS, TLS and timeout. These mappings inspect typed enums, never provid
 messages or grant fields. Unknown exceptions remain OTHER; a structured result
 reported without an exception cannot gain detail from exception capture.
 
+Native media open/read failures are observed before cleanup. Their fixed
+categories distinguish DNS, connection, transport timeout, TLS and transport
+cancellation from the existing per-request deadline, refused request admission
+and inactive playback budget. The admission boolean combines ownership,
+acceptance deadlines and provider grant/admission validity; refusal alone does
+not identify which condition failed or establish owner cancellation. An inactive
+budget does not identify whether its owner ended or a finite diagnostic
+observation expired. Originating request
+categories and subsequent cleanup errors remain independent records; an
+unconfirmed cleanup still blocks recovery. Request observations contain a new
+app-owned exception with only the closed category, never the original private
+transport exception or its message/cause. Existing routed transport exceptions
+also retain their closed failure category in the journal. No transport phase or
+raw request details are added to the v1 journal, and unknown vocabulary still
+fails validation. This improves evidence for the sustained-playback investigation;
+it does not identify or fix the observed provider/network failures.
+
 The first observed failure is retained as `FIRST`. Later distinct failures are
 `SECONDARY`; this ordering does not establish causation. For example, a Twitch
 404 and an ABEMA cleanup failure can be independent. Repeated blocked viewer

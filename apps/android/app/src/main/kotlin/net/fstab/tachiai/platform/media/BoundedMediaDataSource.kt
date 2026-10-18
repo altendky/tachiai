@@ -16,6 +16,8 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.HttpsURLConnection
 
+private class NativeMediaCleanupException : IOException("Native media cleanup unconfirmed")
+
 @UnstableApi
 internal class BoundedMediaRequests(
     private val budget: NativePlaybackBudget,
@@ -56,24 +58,38 @@ internal class BoundedMediaRequests(
         private var transferOpen = false
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
-            budget.check()
-            if (!canRequest() || clockMs() - requestStarted >= 30_000) throw IOException("Playback acceptance ended")
+            if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
+            // This boolean includes owner, acceptance deadline and provider
+            // grant/admission checks. A refusal does not identify which failed.
+            if (!canRequest()) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
+            if (clockMs() - requestStarted >= 30_000) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_DEADLINE)
         }
 
         override fun getUri(): Uri? = source?.toString()?.toUri()
         override fun getResponseHeaders(): Map<String, List<String>> = emptyMap()
         override fun open(dataSpec: DataSpec): Long {
-            try {
+            val uri = try {
                 require(dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET && dataSpec.httpBody == null &&
                     dataSpec.httpRequestHeaders.isEmpty())
                 transferInitializing(dataSpec)
-                return openUri(URI(dataSpec.uri.toString()), dataSpec.position, dataSpec.length, dataSpec)
-            } catch (_: Exception) { throw IOException("Native media request failed") }
+                URI(dataSpec.uri.toString())
+            } catch (error: Exception) {
+                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
+                throw IOException("Native media request failed")
+            }
+            return try { openUri(uri, dataSpec.position, dataSpec.length, dataSpec) }
+            catch (_: Exception) { throw IOException("Native media request failed") }
         }
 
         // Android-free seam for deterministic transport tests, not a public player API.
         internal fun openUri(uri: URI, position: Long = 0, length: Long = C.LENGTH_UNSET.toLong(),
             transferSpec: DataSpec? = null): Long {
+            var failureObserved = false
+            fun observeFailure(error: Exception) {
+                if (failureObserved || error is NativeMediaCleanupException) return
+                failureObserved = true
+                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
+            }
             try {
                 check(connection == null && !transferOpen)
                 requestStarted = clockMs()
@@ -124,9 +140,14 @@ internal class BoundedMediaRequests(
                                     bytes.write(buffer, 0, count)
                                 }
                                 bytes.toString("UTF-8")
+                            } catch (error: Exception) {
+                                // Observe the read before its finally block can
+                                // replace it with an independent cleanup error.
+                                observeFailure(error)
+                                throw error
                             } finally {
                                 try { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) { errorInput.close() } }
-                                catch (_: Throwable) { throw IOException("Native media cleanup unconfirmed") }
+                                catch (_: Throwable) { throw NativeMediaCleanupException() }
                             }
                         } ?: ""
                         checkActive()
@@ -149,7 +170,8 @@ internal class BoundedMediaRequests(
                     transferStarted(transferSpec)
                 }
                 return remaining
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                observeFailure(error)
                 close(); report(NativeMediaEvent.REQUEST_FAILED)
                 // Neither URI nor provider exception is attached as a cause.
                 throw IOException("Native media request failed")
@@ -170,7 +192,8 @@ internal class BoundedMediaRequests(
                 if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)
                 return count
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, onFailure, nativeMediaRequestException(error))
                 close()
                 report(NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")
@@ -200,7 +223,7 @@ internal class BoundedMediaRequests(
             ) } catch (_: Throwable) {
                 // Loader cleanup catches IOException only. Keep the original
                 // privately observed/retained; never let its Error/text escape.
-                throw IOException("Native media cleanup unconfirmed")
+                throw NativeMediaCleanupException()
             }
         }
     }

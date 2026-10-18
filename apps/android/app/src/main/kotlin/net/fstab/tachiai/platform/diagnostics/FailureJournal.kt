@@ -12,6 +12,11 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.UUID
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.platform.media.NativeMediaRequestException
+import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.ProviderTransportException
+import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.provider.abema.AbemaChannelException
 import net.fstab.tachiai.provider.abema.AbemaChannelFailure
 import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
@@ -43,7 +48,7 @@ internal enum class FailureStage {
     ABEMA_PLAYER_CREATE, TWITCH_PREPARE, TWITCH_PLAYER_CREATE, BUNDLE_TRANSPORT_CLOSE,
     SOURCE_REQUESTS_CLOSE, HELPER_STOP, NATIVE_HOST_CLOSE, SCRIPT_REGISTRATION_REMOVE,
     WEBVIEW_STOP, WEBVIEW_PAUSE, WEBVIEW_DETACH, WEBVIEW_DESTROY, RESOURCES_CLEAR,
-    WORKER_SHUTDOWN, TWITCH_PREPARATION_CLOSE, MEDIA_DISCONNECT, QUALITY_RELEASE,
+    WORKER_SHUTDOWN, TWITCH_PREPARATION_CLOSE, MEDIA_REQUEST_OPEN, MEDIA_REQUEST_READ, MEDIA_DISCONNECT, QUALITY_RELEASE,
     BEFORE_PLAYER_RELEASE, BUNDLE_DISCONNECT, DRM_ERROR, OPENVPN_PREPARE, OPENCONNECT_PREPARE,
     RECOVERY_RESTART, CONFIGURED_SOURCES_READ, CONFIGURED_SOURCES_WRITE, CATALOG_LOAD, CATALOG_CLOSE,
     CATALOG_AUTH_REQUEST, CATALOG_AUTH_STORAGE, CATALOG_AUTH_OWNER, CATALOG_AUTH_CLEANUP,
@@ -62,6 +67,8 @@ internal enum class FailureCategory {
     TWITCH_CATALOG_STORE_STORAGE, TWITCH_CATALOG_STORE_INVALID_RECORD, TWITCH_CATALOG_STORE_CLIENT_MISMATCH,
     ABEMA_CACHED_TIMER_EXPIRED, ABEMA_CACHED_OWNED_CANCELLED, ABEMA_CACHED_FETCH_REJECTED_BEFORE_HTTP,
     ABEMA_CACHED_HTTP_REFUSED, ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED, ABEMA_CACHED_UNKNOWN,
+    TRANSPORT_DNS, TRANSPORT_CONNECT, TRANSPORT_TIMEOUT, TRANSPORT_TLS, TRANSPORT_CANCELLED, TRANSPORT_UNKNOWN,
+    MEDIA_REQUEST_DEADLINE, MEDIA_REQUEST_ADMISSION_REFUSED, MEDIA_PLAYBACK_INACTIVE,
 }
 
 // An allowlist translates stack metadata into our own fixed vocabulary. There
@@ -116,6 +123,35 @@ internal data class SafeFailure(
 ) {
     init { require(causes.size <= 4 && frames.size <= 8) }
     companion object {
+        private fun transportCategory(value: ProviderTransportEvidence): FailureCategory =
+            if (value.localCancellationRequested) FailureCategory.TRANSPORT_CANCELLED else when (value.failure) {
+                ProviderTransportFailure.DNS -> FailureCategory.TRANSPORT_DNS
+                ProviderTransportFailure.CONNECT -> FailureCategory.TRANSPORT_CONNECT
+                ProviderTransportFailure.TIMEOUT -> FailureCategory.TRANSPORT_TIMEOUT
+                ProviderTransportFailure.TLS -> FailureCategory.TRANSPORT_TLS
+                ProviderTransportFailure.CANCELLED -> FailureCategory.TRANSPORT_CANCELLED
+                ProviderTransportFailure.UNKNOWN -> FailureCategory.TRANSPORT_UNKNOWN
+            }
+
+        private fun mediaCategory(value: NativeMediaRequestFailure): FailureCategory = when (value) {
+            NativeMediaRequestFailure.DNS -> FailureCategory.TRANSPORT_DNS
+            NativeMediaRequestFailure.CONNECT -> FailureCategory.TRANSPORT_CONNECT
+            NativeMediaRequestFailure.TIMEOUT -> FailureCategory.TRANSPORT_TIMEOUT
+            NativeMediaRequestFailure.TLS -> FailureCategory.TRANSPORT_TLS
+            NativeMediaRequestFailure.TRANSPORT_CANCELLED -> FailureCategory.TRANSPORT_CANCELLED
+            NativeMediaRequestFailure.TRANSPORT_UNKNOWN -> FailureCategory.TRANSPORT_UNKNOWN
+            NativeMediaRequestFailure.REQUEST_DEADLINE -> FailureCategory.MEDIA_REQUEST_DEADLINE
+            NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED -> FailureCategory.MEDIA_REQUEST_ADMISSION_REFUSED
+            NativeMediaRequestFailure.PLAYBACK_INACTIVE -> FailureCategory.MEDIA_PLAYBACK_INACTIVE
+            NativeMediaRequestFailure.IO -> FailureCategory.IO
+            NativeMediaRequestFailure.ILLEGAL_STATE -> FailureCategory.ILLEGAL_STATE
+            NativeMediaRequestFailure.ILLEGAL_ARGUMENT -> FailureCategory.ILLEGAL_ARGUMENT
+            NativeMediaRequestFailure.SECURITY -> FailureCategory.SECURITY
+            NativeMediaRequestFailure.CANCELLED -> FailureCategory.CANCELLED
+            NativeMediaRequestFailure.NETWORK_ON_MAIN_THREAD -> FailureCategory.NETWORK_ON_MAIN_THREAD
+            NativeMediaRequestFailure.OTHER -> FailureCategory.OTHER
+        }
+
         // Map typed, closed adapter values explicitly; provider strings and grant
         // fields never become diagnostic vocabulary.
         private fun providerCategory(value: AbemaChannelFailure): FailureCategory = when (value) {
@@ -172,6 +208,8 @@ internal data class SafeFailure(
                 value is TwitchCatalogNetworkException -> providerCategory(value.category)
                 value is TwitchHelixNetworkException -> providerCategory(value.category)
                 value is TwitchCatalogStoreException -> providerCategory(value.failure)
+                value is NativeMediaRequestException -> mediaCategory(value.failure)
+                value is ProviderTransportException -> transportCategory(value.evidence)
                 value is java.util.concurrent.CancellationException -> FailureCategory.CANCELLED
                 value is IOException -> FailureCategory.IO
                 value is IllegalStateException -> FailureCategory.ILLEGAL_STATE

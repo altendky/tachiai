@@ -18,8 +18,8 @@ restrict reverse engineering to debug modifications to these libraries.
 ## Rebuild from the exact source
 
 Extract the companion and verify `sha256sum --check SHA256SUMS` from its root.
-Use the versions in `mise.toml`/`mise.lock`: Go 1.27.2, Java 21 and the Android
-SDK/NDK versions declared by the provided scripts/Gradle sources. The native
+Use the versions in `mise.toml`/`mise.lock`: Rust 1.98.1, Go 1.27.2, Java 21 and
+the Android SDK/NDK versions declared by the provided scripts/Gradle sources. The native
 helpers require a Linux C build environment with make, autoconf, automake,
 gettext, libtool, pkg-config, cmake, ninja, perl, curl, tar, patch and uv.
 
@@ -30,6 +30,13 @@ archives from `upstream/openvpn` into
 `apps/android/routebridge/build/openvpn-native/downloads`. Both native builders
 verify their pinned hashes before use; their ordinary cache locations are
 inside the source tree and never modify the system SDK or library installations.
+
+Install the targets and components declared in `rust-toolchain.toml`. Run
+`bash scripts/build-android-core.sh` to build the shared core for both Android
+ABIs and generate its Kotlin bindings. Its native host library is also built
+for the Android JVM tests. The companion includes the Cargo workspace, locked
+dependencies, binding generator and core source; Cargo obtains dependency
+sources using the versions and checksums in `Cargo.lock`.
 
 Run `bash scripts/build-android-routebridge.sh`. It builds both complete ABI
 closures, normalizes library SONAMEs by relinking generated recipes, verifies

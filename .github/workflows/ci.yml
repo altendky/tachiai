@@ -42,6 +42,9 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml', 'mise.toml', 'mise.lock') }}
 
+      - name: Install Rust formatting tools
+        run: rustup component add rustfmt
+
       - run: mise run pre-commit
 
   android:
@@ -61,6 +64,13 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.2 build-tools;37.0.0 ndk;30.0.16248370
 
+      - name: Build shared Rust core and Android bindings
+        # Mise selects the pinned toolchain but does not provision manifest targets.
+        # Install them explicitly before cross-compiling the reusable library.
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          bash scripts/build-android-core.sh
+
       - name: Build and test route transports
         run: |
           sudo apt-get update
@@ -68,7 +78,22 @@ jobs:
           bash scripts/build-android-routebridge.sh
 
       - working-directory: apps/android
-        run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation :app:assembleRelease
+        run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation :app:assembleRelease :core:assembleRelease :core:generatePomFileForReleasePublication :core:sourceReleaseJar
+
+      - name: Upload reusable Android core library and source materials
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tachiai-core-android-${{ github.sha }}
+          path: |
+            apps/android/core/build/outputs/aar/core-release.aar
+            apps/android/core/build/intermediates/source_jar/release/release-sources.jar
+            apps/android/core/build/publications/release/pom-default.xml
+            apps/android/core/README.md
+            apps/android/routebridge/build/routebridge-native-source.tar.xz
+            docs/src/project/shared-rust-core.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
       - name: Checksum unsigned release APK
         working-directory: apps/android
@@ -128,10 +153,48 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+  core:
+    name: Core / Rust and browser bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
+        with:
+          cache: true
+
+      - name: Install Rust check tools and Wasm target
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add wasm32-unknown-unknown
+
+      - name: Check Rust and generated browser bindings
+        run: mise run core
+
+      - name: Upload browser package and generated native binding sources
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tachiai-core-bindings-${{ github.sha }}
+          path: |
+            build/core/web/
+            build/core/bindings/swift/
+            build/core/bindings/kotlin/
+            build/core/licenses/
+            packages/core-web/README.md
+            packages/core-web/example.html
+            packages/core-ffi/README.md
+            docs/src/project/shared-rust-core.md
+            LICENSE-MIT
+            LICENSE-APACHE
+          if-no-files-found: error
+          retention-days: 30
+
   all:
     name: all
     if: ${{ !cancelled() }}
-    needs: [mise, repository, android]
+    needs: [mise, repository, android, core]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # release/v1

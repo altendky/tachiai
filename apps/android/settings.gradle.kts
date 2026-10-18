@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "tachiai-android"
 include(":app")
+include(":core")

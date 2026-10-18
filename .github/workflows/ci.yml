@@ -42,6 +42,9 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml', 'mise.toml', 'mise.lock') }}
 
+      - name: Install Rust formatting tools
+        run: rustup component add rustfmt
+
       - run: mise run pre-commit
 
   android:
@@ -62,7 +65,11 @@ jobs:
           packages: platform-tools platforms;android-37.2 build-tools;37.0.0 ndk;30.0.16248370
 
       - name: Build shared Rust core and Android bindings
-        run: bash scripts/build-android-core.sh
+        # Mise selects the pinned toolchain but does not provision manifest targets.
+        # Install them explicitly before cross-compiling the reusable library.
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          bash scripts/build-android-core.sh
 
       - name: Build and test route transports
         run: |
@@ -157,6 +164,11 @@ jobs:
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
         with:
           cache: true
+
+      - name: Install Rust check tools and Wasm target
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add wasm32-unknown-unknown
 
       - name: Check Rust and generated browser bindings
         run: mise run core

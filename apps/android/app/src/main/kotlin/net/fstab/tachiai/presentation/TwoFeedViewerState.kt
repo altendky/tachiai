@@ -27,6 +27,11 @@ internal data class TwoFeedMix(
 
 internal data class ViewerRect(val left: Int, val top: Int, val width: Int, val height: Int)
 internal data class TwoFeedBounds(val a: ViewerRect, val b: ViewerRect)
+internal enum class FloatingFeedSize(val title: String, val widthFraction: Float) {
+    SMALL("Small", 0.24f),
+    MEDIUM("Medium", 0.32f),
+    LARGE("Large", 0.44f),
+}
 internal data class FloatingPosition(val x: Float = 1f, val y: Float = 0f) {
     init { require(x.isFinite() && y.isFinite()) }
     fun clamped() = copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f))
@@ -48,6 +53,7 @@ internal fun twoFeedBounds(
     floating: FloatingPosition = FloatingPosition(),
     floatingBottom: Int = height,
     floatingRight: Int = width,
+    floatingSize: FloatingFeedSize = FloatingFeedSize.MEDIUM,
 ): TwoFeedBounds {
     require(width >= 0 && height >= 0)
     fun ratio(value: Float) = value.takeIf { it.isFinite() && it > 0 } ?: (16f / 9f)
@@ -62,7 +68,7 @@ internal fun twoFeedBounds(
     val bottom = floatingBottom.coerceIn(0, height)
     val right = floatingRight.coerceIn(0, width)
     val secondaryRatio = if (primaryA) rb else ra
-    val sw = min(right * 0.32f, bottom * secondaryRatio * 0.65f).roundToInt().coerceIn(0, right)
+    val sw = min(right * floatingSize.widthFraction, bottom * secondaryRatio * 0.65f).roundToInt().coerceIn(0, right)
     val sh = (sw / secondaryRatio).roundToInt().coerceIn(0, bottom)
     val position = floating.clamped()
     val secondary = ViewerRect(((right - sw) * position.x).roundToInt(),

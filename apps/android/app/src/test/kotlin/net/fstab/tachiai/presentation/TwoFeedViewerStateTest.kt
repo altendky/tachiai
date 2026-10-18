@@ -98,4 +98,35 @@ class TwoFeedViewerStateTest {
         assertEquals(twoFeedBounds(400, 1000, false, true),
             twoFeedBounds(400, 1000, false, true, Float.NaN, -1f))
     }
+    @Test fun floatingSizePresetsKeepTheirCornerAndDefaultGeometryWithinControls() {
+        assertEquals(twoFeedBounds(1000, 600, true, true),
+            twoFeedBounds(1000, 600, true, true, floatingSize = FloatingFeedSize.MEDIUM))
+        for (corner in listOf(FloatingPosition(0f, 0f), FloatingPosition(1f, 0f),
+            FloatingPosition(0f, 1f), FloatingPosition(1f, 1f))) {
+            val sizes = FloatingFeedSize.entries.map { size ->
+                val bounds = twoFeedBounds(1000, 600, true, true, floating = corner,
+                    floatingBottom = 500, floatingRight = 800, floatingSize = size)
+                val floating = bounds.b
+                assertEquals(ViewerRect(0, 0, 1000, 600), bounds.a)
+                assertTrue(floating.left >= 0 && floating.top >= 0)
+                assertTrue(floating.left + floating.width <= 800 && floating.top + floating.height <= 500)
+                assertEquals(if (corner.x == 0f) 0 else 800 - floating.width, floating.left)
+                assertEquals(if (corner.y == 0f) 0 else 500 - floating.height, floating.top)
+                floating.width
+            }
+            assertTrue(sizes[0] < sizes[1]); assertTrue(sizes[1] < sizes[2])
+        }
+    }
+    @Test fun floatingSizesFitTallSourcesAndZeroSpaceWithoutChangingStackedLayout() {
+        val stacked = twoFeedBounds(400, 1000, false, true)
+        for (size in FloatingFeedSize.entries) {
+            assertEquals(stacked, twoFeedBounds(400, 1000, false, true, floatingSize = size))
+            val narrow = twoFeedBounds(1000, 600, true, false, aspectA = 0.25f,
+                floating = FloatingPosition(1f, 1f), floatingBottom = 200, floatingSize = size).a
+            assertTrue(narrow.left >= 0 && narrow.top >= 0 && narrow.top + narrow.height <= 200)
+            val zero = twoFeedBounds(1000, 600, true, true,
+                floatingBottom = 0, floatingRight = 0, floatingSize = size)
+            assertEquals(ViewerRect(0, 0, 0, 0), zero.b)
+        }
+    }
 }

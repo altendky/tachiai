@@ -26,7 +26,34 @@ Watch, Routes/Providers entry, help and Back, busy-state focus, delete-dialog
 return, and D-pad discovery tabs plus search submission. They use synthetic
 fixtures, not provider accounts. Provider-page remote input, physical TV decoding,
 DRM, audio and sustained playback require separate evidence. Viewer remote
-controls and integrated TV acceptance are separate work items.
+controls are described below; integrated TV acceptance is a separate work item.
+
+### TV viewer controls
+
+On TV, D-pad/Select reveals hidden controls and consumes that first press before
+activating anything. Focus starts on Play/Pause, has a contrasting outline, and
+keeps the control tray visible. Audio, Timing and More retain their opening
+controls for focus restoration. Back closes a menu, then a panel, before leaving
+playback. Held mix adjustment stops on release, cancellation, focus/window loss,
+panel dismissal and session suspension. More offers floating-feed corner and
+Small/Medium/Large presets plus swap, retaining the same player surfaces. TV omits
+the phone orientation toggle; phone drag and default floating geometry remain.
+
+One foreground TV media session sends Play/Pause to the existing guarded pair
+transport. It adds no background playback service or competing audio-focus owner,
+and releases before playback teardown. Media-key repeats and key-up do not repeat
+the command. Independent feeds expose no shared seek action or position clock.
+The session uses the
+[unknown-position form of PlaybackState](https://developer.android.com/reference/android/media/session/PlaybackState.Builder#setState(int,long,float,long))
+without a position-update timestamp, so Android cannot extrapolate a synthetic
+shared timeline. These controls do not change provider authorization, per-feed
+retry admission, session lifetime or routing policy.
+
+Bounded synthetic checks passed twelve TV viewer/media-session tests, including
+real system Back and injected hardware media keys, plus ten unchanged phone
+panel/menu/touch regressions. These establish control dispatch and state/surface
+retention with player doubles; actual two-video decoding and audio requests are
+the separate controlled-media acceptance step.
 
 ## Playback lifetime — October 17
 

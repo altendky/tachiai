@@ -91,39 +91,35 @@ internal class AbemaAccountSession(private val store: AbemaAccountGrantStore,
         }
     }
     fun acceptReplacement(grant: AbemaAccountGrant, profileId: String,
-        expectedRevision: Long, canCommit: () -> Boolean): Boolean {
+        expectedRevision: Long, canCommitLocally: (() -> Boolean)? = null, canCommit: () -> Boolean): Boolean {
         if (profileId != grant.userId) return false
         val prior = capture()
         val (run, minimumWall) = synchronized(lock) { if (!foreground) return false; generation to lastWall }
         if (!canUse() || !currentGeneration(run)) return false
-        var published: AbemaAccountSnapshot? = null
         var restored: AbemaAccountSnapshot? = null
         var accepted = false
         return try {
-            val acceptedWall = wallMs()
-            if (acceptedWall < minimumWall || decodedAbemaGrant(grant.bearer, grant.userId, acceptedWall).expiresAtMs != grant.expiresAtMs) return false
-            val snapshot = store.replaceSnapshot(grant, acceptedWall, expectedRevision, onRestored = { restored = it }) {
-                currentGeneration(run) && canUse() && canCommit() && currentGeneration(run)
-            }
-            published = snapshot
-            val replacement = snapshot.record ?: return false
-            val now = wallMs()
-            if (!currentGeneration(run) || !canUse() || !canCommit() || !currentGeneration(run)) return false
-            accepted = synchronized(lock) {
-                if (!foreground || generation != run || !store.usable(snapshot.revision) ||
-                    now < maxOf(replacement.acceptedWallMs, lastWall) || now >= replacement.grant.expiresAtMs) false
-                else {
-                    record = replacement; loadedRevision = snapshot.revision; validatedRevision = snapshot.revision
-                    lastWall = now; status = AbemaAccountStatus.CONNECTED; true
+            if (!canCommit()) return false
+            accepted = withAbemaAccountReplacement(store, grant, profileId, expectedRevision, minimumWall, wallMs,
+                onRestored = { restored = it },
+                // Android callers supply a memory-only admission here. Full
+                // protected owner checks bracket publication outside disk I/O.
+                canCommit = { currentGeneration(run) &&
+                    (canCommitLocally?.invoke() ?: (canUse() && canCommit())) && currentGeneration(run) }) { snapshot, now ->
+                val replacement = snapshot.record ?: return@withAbemaAccountReplacement false
+                if (!currentGeneration(run) || !canUse() || !canCommit() || !currentGeneration(run)) false
+                else synchronized(lock) {
+                    if (!foreground || generation != run || !store.usable(snapshot.revision) ||
+                        now < maxOf(replacement.acceptedWallMs, lastWall) || now >= replacement.grant.expiresAtMs) false
+                    else {
+                        record = replacement; loadedRevision = snapshot.revision; validatedRevision = snapshot.revision
+                        lastWall = now; status = AbemaAccountStatus.CONNECTED; true
+                    }
                 }
             }
             accepted
         } catch (_: Exception) { synchronized(lock) { if (generation == run) status = AbemaAccountStatus.STORAGE_FAILED }; false }
         finally { if (!accepted) {
-            published?.let { receipt ->
-                try { restored = store.rollbackPublished(receipt) }
-                catch (_: Exception) { restored = null; synchronized(lock) { if (generation == run) status = AbemaAccountStatus.STORAGE_FAILED } }
-            }
             if (prior != null && prior.revision == expectedRevision) restored?.let { recoverPrior(prior, it, run) }
         } }
     }

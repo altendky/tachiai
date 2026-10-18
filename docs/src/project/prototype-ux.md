@@ -195,32 +195,36 @@ follow Android's normal screen timeout. Native video views request keep-awake
 while visible; hiding or removing those views releases their request. Activities
 and authentication popups do not request keep-awake for the whole window.
 
-## Remembered ABEMA account renewal — October 14
+## Remembered ABEMA account renewal — October 18
 
 The application checks saved ABEMA accounts on foreground startup and
 before configured discovery or playback. When the native grant has expired,
-one bounded renewal attempt opens the remembered email browser session through
-that instance's selected connection. A trusted passive account request can
-return automatically, without Connect or Return clicks. ABEMA's own pages retain
-any code, consent or account-selection interaction; renewal does not reset the
-browser session or inspect cookies.
+one bounded application-owned operation reuses the remembered email browser
+session through that instance's selected connection. The browser runs in an
+unattached Service and launches no Activity. A trusted passive account request
+can supply a replacement without Connect or Return clicks. Explicit account
+setup remains foreground-controlled on ABEMA's pages; automatic renewal does
+not enter codes, reset the browser session or inspect cookies.
 
 Replacement requires the original account, a useful later decoded expiry,
 fresh native profile and registered-email verification, confirmed browser and
 route cleanup, and an atomic protected-store update. Concurrent consumers share
 the attempt. Changed accounts/routes, Forget, cancellation and stale callbacks
-cannot adopt its result. Temporary connection failures and genuine sign-in
-requirements have distinct messages, and a failed attempt suppresses immediate
-resume loops.
+cannot adopt its result. Readiness observers receive WAIT while the operation
+owns a tentative replacement, and a failed attempt suppresses immediate resume
+loops. A natively verified different registered account can ask the user to
+choose the saved account. Missing candidates, timeouts, network/region/TLS
+errors, 401/403 and unregistered-email results do not establish that sign-in or
+an email code is required; ambiguous results remain temporary failures.
 
-The host retains its logical selection and captured route plan across the
-browser handoff. On return it reconciles that exact route against the saved
-configuration before starting a fresh playback operation. Configuration changes
-end automatic continuation; they cannot silently select a newer preferred route.
-It never revives a paused player, account request or license budget.
-The automatic action has its own original 90-second deadline. Its real
-expired-session acceptance observation is separate from the implementation and
-fixture coverage in the native-access evidence.
+Pausing a readiness observer detaches that observer without cancelling admitted
+work or extending its original 90-second deadline. The operation can continue
+while the application process survives; it never revives a paused player,
+account request or license budget. There is no scheduler or reliable closed-app
+execution guarantee. The [production implementation and historical evidence](
+native-access-experiments.md#operation-owned-abema-renewal-implementation--2026-10-18)
+remain distinct: naturally expired physical-device adoption, actual signed-out
+interaction and process-death publication behavior remain in #294.
 
 ## ABEMA broadcast live mode — October 14
 

@@ -1869,6 +1869,13 @@ shared-signed APK verification, 23 provider-free profile guards and three renewa
 observation guards, with zero test skips. Actual continuous broadcast playback
 and the earlier native region/CDN failure remain unverified.
 
+That renewal observation used the historical foreground Activity path. The
+[October 18 operation-owned implementation](
+native-access-experiments.md#operation-owned-abema-renewal-implementation--2026-10-18)
+uses an unattached production Service and independent readiness observers;
+its naturally expired physical-device and broader lifecycle acceptance remains
+in #294 rather than being inferred from this earlier run.
+
 ## Public bundle deployment comparison — 2026-10-14
 
 A bounded, cookie-free public check at 23:33–23:34 UTC found that all five

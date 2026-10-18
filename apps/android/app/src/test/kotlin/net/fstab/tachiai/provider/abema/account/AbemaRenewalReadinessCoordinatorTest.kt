@@ -29,6 +29,28 @@ class AbemaRenewalReadinessCoordinatorTest {
         assertEquals("a", f.coordinator.claim(first)); f.coordinator.finish(first, false)
         assertEquals(AbemaRenewalReadinessCoordinator.Status.LAUNCH, f.coordinator.check("b", "route", "b").status)
     }
+    @Test fun unconfirmedCleanupKeepsGlobalReservationAfterFailureAndCooldown() {
+        val f = Fixture(); val first = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(first))
+        f.coordinator.finish(first, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, cleanupConfirmed = false)
+        f.now += 5000
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, f.coordinator.check("b", "other", "other").status)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
+        f.coordinator.finish(first, true) // A later no-op cannot confirm failed cleanup.
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, f.coordinator.check("b", "other", "other").status)
+        assertEquals(1, f.nonce)
+    }
+    @Test fun observerPollJoinsClaimedPublicationWithoutInvalidatingItsTicketOrReturningReady() {
+        val f = Fixture(); val ticket = checkNotNull(f.coordinator.check("a", "old-record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(ticket))
+        // Readiness polls this before looking at a tentatively published record.
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT,
+            f.coordinator.observeClaimed("a") { it == "private" }!!.status)
+        assertTrue(f.coordinator.current(ticket))
+        assertNull(f.coordinator.observeClaimed("a") { it == "another-owner" })
+        f.coordinator.finish(ticket, true)
+        assertNull(f.coordinator.observeClaimed("a") { true })
+    }
     @Test fun canceledOrFailedAttemptSuppressesImmediateResumeLoopAndLateSuccess() {
         for (claimed in listOf(false, true)) {
             val f = Fixture(); val first = checkNotNull(f.coordinator.check("a", "record", "a").ticket)

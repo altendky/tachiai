@@ -266,7 +266,9 @@ internal class AbemaAccountConnectionController(
             if (renewal != null && email == AbemaAccountEmailResult.INCONCLUSIVE)
                 throw AbemaAccountException(AbemaAccountFailure.TEMPORARY)
             if (email != AbemaAccountEmailResult.REGISTERED) throw AbemaAccountException(AbemaAccountFailure.REFUSED)
-            if (!session.acceptReplacement(grant, profile.id, prepared.storeRevision) {
+            if (!session.acceptReplacement(grant, profile.id, prepared.storeRevision,
+                canCommitLocally = { current(run) && binding.routeCurrent && emailLink === prepared && elapsedMs() < prepared.deadline &&
+                    (renewal == null || automaticRenewal === renewal && renewal.clock(elapsedMs(), wallMs())) }) {
                     same(run, prepared.owner) && emailLink === prepared && elapsedMs() < prepared.deadline &&
                         (renewal == null || automaticRenewal === renewal && renewal.clock(elapsedMs(), wallMs()))
                 }) throw AbemaAccountException(if (renewal != null && (!same(run, prepared.owner) || emailLink !== prepared ||
@@ -457,7 +459,9 @@ internal class AbemaAccountConnectionController(
                     if (profile !is AbemaAccountProfileResult.Identity || profile.id != result.grant.userId || profile.id == prepared.challenge.guestId)
                         throw AbemaAccountException(AbemaAccountFailure.REFUSED)
                     if (elapsedMs() >= deadline) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
-                    if (!session.acceptReplacement(result.grant, profile.id, prepared.storeRevision) { same(run, prepared.owner) && elapsedMs() < deadline })
+                    if (!session.acceptReplacement(result.grant, profile.id, prepared.storeRevision,
+                            canCommitLocally = { current(run) && binding.routeCurrent && elapsedMs() < deadline }) {
+                            same(run, prepared.owner) && elapsedMs() < deadline })
                         throw AbemaAccountException(if (elapsedMs() >= deadline) AbemaAccountFailure.EXPIRED else AbemaAccountFailure.STORAGE_FAILED)
                     post { if (current(run) && link === prepared) link = null }
                 }

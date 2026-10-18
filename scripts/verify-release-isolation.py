@@ -25,12 +25,12 @@ REQUIRED_COMPONENTS = {
         ".feature.connections.AbemaApprovalBrowserActivity",
         ".feature.connections.AbemaShareActivity",
         ".feature.connections.TwitchCatalogConnectionActivity",
-        ".provider.abema.account.AbemaAutomaticRenewalActivity",
     },
     "service": {
         ".provider.abema.AbemaEpisodeMetadataService",
         ".provider.abema.AbemaSeriesMetadataService",
         ".provider.abema.account.AbemaAccountReadinessService",
+        ".provider.abema.account.AbemaRenewalBrowserService",
         ".provider.abema.account.AbemaAccountBootstrapService",
         ".provider.abema.account.AbemaEmailGrantHandoffService",
         ".provider.abema.account.AbemaAccountAccessService",
@@ -115,6 +115,10 @@ def verify(manifest, asset_paths, source_manifests, application_id):
             nodes = present.get((kind, qualified(name, application_id)), [])
             if len(nodes) != 1 or nodes[0].get(ANDROID + "enabled") not in (None, "true"):
                 raise IsolationFailure("PRIMARY_COMPONENT")
+    browser = present[("service", application_id + ".provider.abema.account.AbemaRenewalBrowserService")][0]
+    if browser.get(ANDROID + "exported") != "false" or browser.get(ANDROID + "process") != ":abema_approval_browser" or \
+            browser.find("intent-filter") is not None:
+        raise IsolationFailure("RENEWAL_BROWSER_SERVICE")
     main = present[("activity", application_id + ".MainActivity")][0]
     launcher_categories = set()
     for intent in main.findall("intent-filter"):
@@ -158,11 +162,12 @@ def primary_content():
     launcher = ('<intent-filter><action android:name="android.intent.action.MAIN" />'
                 '<category android:name="android.intent.category.LAUNCHER" />'
                 '<category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent-filter>')
-    return "".join(
-        f'<{kind} android:name="{name}" android:exported="true">'
-        + (launcher if name == ".MainActivity" else "") + f'</{kind}>'
-        for kind, names in REQUIRED_COMPONENTS.items() for name in sorted(names)
-    )
+    def component(kind, name):
+        attributes = ('android:exported="false" android:process=":abema_approval_browser"'
+                      if name == ".provider.abema.account.AbemaRenewalBrowserService" else 'android:exported="true"')
+        return f'<{kind} android:name="{name}" {attributes}>' + (launcher if name == ".MainActivity" else "") + f'</{kind}>'
+
+    return "".join(component(kind, name) for kind, names in REQUIRED_COMPONENTS.items() for name in sorted(names))
 
 
 def fixture(content=None, attributes="", package="net.fstab.tachiai"):
@@ -191,6 +196,22 @@ class IsolationTests(unittest.TestCase):
         forbidden = forbidden_components(self.sources, "net.fstab.tachiai")
         self.assertNotIn("net.fstab.tachiai.MainActivity", forbidden)
         self.assertIn("net.fstab.tachiai.feature.diagnostic.BrowserLabActivity", forbidden)
+
+    def test_renewal_browser_requires_private_original_process_without_intent_filter(self):
+        for field, value in (("exported", "true"), ("exported", None), ("process", None),
+                             ("process", ":other_browser"), ("intent-filter", "added")):
+            with self.subTest(field=field, value=value):
+                tree = manifest_tree(fixture())
+                browser = next(node for node in tree.find("application")
+                               if node.get(ANDROID + "name") == ".provider.abema.account.AbemaRenewalBrowserService")
+                if field == "intent-filter":
+                    ET.SubElement(browser, "intent-filter")
+                elif value is None:
+                    browser.attrib.pop(ANDROID + field)
+                else:
+                    browser.set(ANDROID + field, value)
+                with self.assertRaises(IsolationFailure):
+                    self.check(ET.tostring(tree))
 
     def test_wrong_application_or_empty_product_refuse(self):
         for manifest in (fixture(package="net.fstab.tachiai.diagnostic"), fixture(content="")):

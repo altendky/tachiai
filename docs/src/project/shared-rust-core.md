@@ -69,9 +69,14 @@ than importing platform enums or provider/browser implementation details.
 
 ## Build and verification
 
-Use the pinned Rust/tooling configuration through mise. From the repository root:
+Use the pinned Rust/tooling configuration through mise. Provision the check tools
+and Wasm target explicitly on a fresh machine: mise selects the toolchain but
+does not necessarily install the components requested by `rust-toolchain.toml`.
+From the repository root:
 
 ```sh
+mise exec -- rustup component add rustfmt clippy
+mise exec -- rustup target add wasm32-unknown-unknown
 mise run core
 cargo run --locked -p tachiai-core --example seek
 ```
@@ -81,7 +86,14 @@ Wasm compilation and the JavaScript smoke test. Generated outputs are under
 ignored `build/core/`: native host/Android libraries, Kotlin/Swift sources and
 the web module. The compiler and generators are pinned; Cargo.lock is committed.
 
-In the documented Android SDK/NDK environment:
+Before building Android, provision its targets in the selected toolchain
+(before mounting that toolchain read-only in a build container):
+
+```sh
+mise exec -- rustup target add aarch64-linux-android x86_64-linux-android
+```
+
+Then, in the documented Android SDK/NDK environment:
 
 ```sh
 bash scripts/build-android-core.sh
@@ -111,6 +123,6 @@ native source companion also includes the Rust workspace and rebuild inputs.
 Rust and JNA native libraries must meet the application's ABI and 16 KiB page
 requirements, as well as its existing APK certificate checks.
 
-The PR must remain unmerged until the user has tried the updated application
-on the phone and its results have been reviewed. Build success or an automated
-binding test does not substitute for that acceptance.
+The user accepted the initial implementation after an in-place Pixel 6 phone
+trial. Automated binding checks complement that acceptance; they do not
+establish behavior on other platforms.

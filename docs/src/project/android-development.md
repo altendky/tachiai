@@ -28,6 +28,40 @@ boundaries apply on both devices.
 
 ## Local setup
 
+### Android TV development device
+
+[`dev-tv-device.toml`](../../../apps/android/dev-tv-device.toml) defines the
+separate persistent `tachiai-tv-dev` AVD: Android TV API 36, x86-64 image revision
+4, 1080p, 2048 MiB RAM, four cores and console port 5582. It shares the pinned
+SDK with the phone profile, but has independent userdata. The current APK
+supports x86-64 and arm64; this does not add 32-bit TV support.
+
+Use `mise run android-tv-setup` once. To switch from the phone emulator, run
+`mise run android-emulator-stop`, then `mise run android-tv-start`. TV startup
+is visible by default. `android-tv-status`, `android-tv-install` and
+`android-tv-stop` explicitly target the TV. Stop the TV before starting the
+phone profile again. No command wipes or copies either device's saved accounts
+or routes. An attached phone is never selected as a substitute.
+
+The underlying command accepts `--device phone` (the default) or `--device tv`
+before the operation, for example:
+
+```sh
+uv run scripts/android-dev-device.py --device tv start --cold-boot
+uv run scripts/android-dev-device.py --device tv install path/to/app-debug.apk
+```
+
+Startup refuses another ADB emulator, including offline devices, and refuses
+unregistered emulator processes during startup/shutdown. Start/stop commands
+share a per-user lock at `~/.local/share/tachiai/emulator.lock`, independent of
+`--state-dir`. A refusal never automatically stops an
+unknown AVD. Stop it explicitly or wait for shutdown, then rerun. TV preferences
+do not apply the phone-only navigation-bar overlay. Emulator results establish
+only bounded UI/input behavior; physical TV decoding, HDMI audio, DRM, provider
+sign-in and sustained route performance still require device evidence.
+
+### Phone development device
+
 Requirements are Linux x86-64, usable KVM, Java 17 or newer, the repository's
 `mise`/`uv` tools, disk space for the SDK/image/userdata, and a desktop session
 for the visible emulator. Android Studio is optional. The initial profile is a

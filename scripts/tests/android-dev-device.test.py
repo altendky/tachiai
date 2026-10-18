@@ -32,6 +32,60 @@ class DeviceTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.profile = tomllib.loads(module.PROFILE.read_text())
         self.device = module.Device(Path(self.folder.name), self.profile)
+        # Lifecycle tests use synthetic devices; dedicated guard tests below
+        # exercise ADB/process inventory without consulting this host's AVDs.
+        guard = patch.object(self.device, "refuse_other_emulators")
+        guard.start(); self.addCleanup(guard.stop)
+        processes = patch.object(module, "emulator_processes", return_value=[])
+        self.processes = processes.start(); self.addCleanup(processes.stop)
+
+    def test_other_emulator_even_offline_refused_without_touching_phone(self):
+        for state in ("device", "offline", "unauthorized"):
+            with patch.object(self.device, "run", return_value=Mock(stdout=
+                    f"List of devices attached\nphone\tdevice\nemulator-5582\t{state}\n")), \
+                    self.assertRaisesRegex(ValueError, "Another emulator"):
+                module.Device.refuse_other_emulators(self.device)
+
+    def test_selected_emulator_and_phone_are_allowed_by_adb_guard(self):
+        with patch.object(self.device, "run", return_value=Mock(stdout=
+                "List of devices attached\nphone\tdevice\nemulator-5580\tdevice\n")):
+            module.Device.refuse_other_emulators(self.device)
+
+    def test_unregistered_or_shutting_down_emulator_blocks_start(self):
+        self.populate()
+        self.processes.return_value = ["another-avd"]
+        with patch.object(self.device, "connected", return_value=False), \
+                patch("subprocess.Popen") as launch, self.assertRaisesRegex(ValueError, "process"):
+            self.device.start(False)
+        launch.assert_not_called()
+
+    def test_stop_waits_until_owned_process_exits_as_well_as_adb(self):
+        self.populate()
+        self.processes.side_effect = [["tachiai-dev"], []]
+        with patch.object(self.device, "connected", return_value=True), \
+                patch.object(self.device, "run", return_value=Mock(stdout="")), \
+                patch.object(self.device, "adb"), patch("time.sleep") as sleep:
+            self.device.stop()
+        sleep.assert_called_once_with(2)
+
+    def test_tv_uses_separate_avd_same_sdk_and_no_phone_navigation_overlay(self):
+        tv = module.Device(Path(self.folder.name), tomllib.loads(module.TV_PROFILE.read_text()))
+        self.assertEqual(tv.sdk, self.device.sdk)
+        self.assertNotEqual(tv.avd, self.device.avd)
+        self.assertEqual(tv.serial, "emulator-5582")
+        self.assertEqual(tv.spec["system_image"], "system-images;android-36;android-tv;x86_64")
+        with patch.object(tv, "ready"), patch.object(tv, "adb") as adb:
+            tv.configure()
+        adb.assert_called_once_with("shell", "cmd", "uimode", "night", "yes", timeout=15)
+
+    def test_cli_defaults_to_phone_and_selects_tv_explicitly(self):
+        for selection, name in (([], "tachiai-dev"), (["--device", "tv"], "tachiai-tv-dev")):
+            with patch("sys.argv", ["android-dev-device.py", *selection, "status"]), \
+                    patch.object(module.Device, "ready") as ready, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                module.main()
+            ready.assert_called_once_with()
+            self.assertIn(name, output.getvalue())
 
     def populate(self):
         device = self.device
@@ -700,6 +754,55 @@ class DeviceTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             device.bootstrap(None)
                         self.assertFalse(device.tools.exists())
+
+
+class EmulatorInventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()) / "agents")
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+
+    def process(self, name, command, arguments):
+        path = self.root / name
+        path.mkdir()
+        (path / "comm").write_text(command + "\n")
+        (path / "cmdline").write_bytes(arguments)
+        return path
+
+    def test_inventory_recognizes_launch_forms_and_ignores_unrelated_processes(self):
+        self.process("1", "qemu-system-x86", b"/sdk/emulator/qemu/x86\0-avd\0phone\0")
+        self.process("2", "emulator", b"/sdk/emulator/emulator\0@tv\0")
+        self.process("3", "bash", b"bash\0")
+        self.process("4", "qemu-system-x86", b"/usr/bin/qemu-system-x86_64\0-drive\0disk\0")
+        self.assertCountEqual(module.emulator_processes(self.root), ["phone", "tv"])
+
+    def test_unidentified_emulator_blocks_new_start(self):
+        self.process("1", "emulator", b"/sdk/emulator/emulator\0")
+        self.process("2", "qemu-system-x86", b"")
+        self.process("3", "emulator", b"truncated")
+        self.process("4", "qemu-system-x86", b"/sdk/emulator/qemu/x86\0-avd\0")
+        self.assertEqual(module.emulator_processes(self.root), ["unknown"] * 4)
+
+    def test_disappeared_process_is_ignored_but_permission_failure_is_not(self):
+        path = self.process("1", "emulator", b"emulator\0-avd\0tv\0")
+        (path / "cmdline").unlink()
+        self.assertEqual(module.emulator_processes(self.root), [])
+        (path / "cmdline").write_bytes(b"emulator\0-avd\0tv\0")
+        with patch.object(module, "bounded_proc_read", side_effect=PermissionError), self.assertRaises(PermissionError):
+            module.emulator_processes(self.root)
+
+    def test_cli_lock_blocks_both_profiles_even_with_different_state_directories(self):
+        lock_path = self.root / "emulator.lock"
+        with lock_path.open("a+") as lock:
+            module.fcntl.flock(lock, module.fcntl.LOCK_EX | module.fcntl.LOCK_NB)
+            for device in ("phone", "tv"):
+                with patch.object(module, "LIFECYCLE_LOCK", lock_path), \
+                        patch("sys.argv", ["android-dev-device.py", "--state-dir", str(self.root / device),
+                            "--device", device, "start"]), \
+                        patch.object(module.Device, "start") as start, self.assertRaises(BlockingIOError):
+                    module.main()
+                start.assert_not_called()
+                self.assertFalse((self.root / device).exists())
 
 
 if __name__ == "__main__":

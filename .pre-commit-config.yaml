@@ -63,7 +63,7 @@ repos:
         name: Persistent Android development device safety tests
         entry: uv run scripts/tests/android-dev-device.test.py
         language: system
-        files: '^scripts/(android-dev-device\.py|tests/android-dev-device\.test\.py)$|^apps/android/dev-device\.toml$'
+        files: '^scripts/(android-dev-device\.py|tests/android-dev-device\.test\.py)$|^apps/android/dev-(tv-)?device\.toml$'
         pass_filenames: false
 
       - id: release-isolation-tests

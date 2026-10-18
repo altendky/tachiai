@@ -62,3 +62,23 @@ run = "uv run scripts/android-dev-device.py install"
 [tasks.android-emulator-configure]
 description = "Apply the repo's dark-mode and navigation preferences to the owned emulator"
 run = "uv run scripts/android-dev-device.py configure"
+
+[tasks.android-tv-setup]
+description = "Create the persistent Android TV development device"
+run = "uv run scripts/android-dev-device.py --device tv setup"
+
+[tasks.android-tv-start]
+description = "Start the visible TV emulator after stopping the phone emulator"
+run = "uv run scripts/android-dev-device.py --device tv start"
+
+[tasks.android-tv-stop]
+description = "Shut down only the persistent TV emulator"
+run = "uv run scripts/android-dev-device.py --device tv stop"
+
+[tasks.android-tv-status]
+description = "Verify the persistent TV emulator identity and boot status"
+run = "uv run scripts/android-dev-device.py --device tv status"
+
+[tasks.android-tv-install]
+description = "Verify and update the debug APK on the TV emulator, preserving data"
+run = "uv run scripts/android-dev-device.py --device tv install"

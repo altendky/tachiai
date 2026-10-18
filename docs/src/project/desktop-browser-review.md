@@ -348,6 +348,7 @@ zero-install website.
 - [Native dependency and license inventory](https://github.com/altendky/tachiai/blob/97ab8c14fe82524a69601b34056046688f7bf53a/apps/android/routebridge/THIRD-PARTY-NOTICES.md)
 
 Related documents: [iOS review](ios-interface-review.md),
+[casting and screen mirroring](casting.md),
 [architecture](architecture.md), [provider integrations](provider-integrations.md),
 [native access evidence](native-access-experiments.md),
 [network routing](source-network-routing.md),

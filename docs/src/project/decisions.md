@@ -36,6 +36,11 @@
   preserves both provider sessions and playback surfaces.
 - Manual alignment controls are required in that two-feed experience.
 - Android phone/tablet and Android TV are the first implementation family.
+- On 2026-10-17 the user chose screen mirroring and full TV applications as the
+  useful television models. Preserve Tachiai's complete multi-feed layout,
+  audio mix and timing controls; single-feed handoff is outside the primary
+  requirements. [Casting research](casting.md) separates this product decision
+  from unverified platform, security and provider feasibility.
 - iPhone/iPad, Windows, macOS, and Linux are desired later targets.
 - Private sharing and sideloading are intended; Play Store publication and
   marketing are not current goals.

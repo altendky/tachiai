@@ -158,6 +158,9 @@ during global expansion. [Verification FAQ][verification-faq]
 
 ## Smallest useful validation sequence
 
+The [casting review](casting.md) separately covers screen mirroring and optional
+phone control of a complete TV-owned presentation.
+
 1. **Inventory the actual TV:** model, firmware/API, supported ABIs, RAM,
    WebView provider/version, required WebKit features, codec/DRM capability and
    installation/debugging options. Decide 64-bit-only scope versus an ARM32

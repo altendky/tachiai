@@ -159,6 +159,9 @@ off-store path to validate first. [Current EU terms][web-distribution]
 
 ## First experiments and decision gates
 
+The [casting review](casting.md) distinguishes screen mirroring from AirPlay
+player routing and from a complete TV application with optional phone control.
+
 | Priority | Smallest experiment | Evidence required |
 | --- | --- | --- |
 | Gate | On a Mac/Xcode, build an empty iOS target and tvOS target with the same generated Rust API | Separate device/Simulator framework slices link, timing fixtures agree, artifact versions match; record SDK/device/OS and signing/profile expiry |

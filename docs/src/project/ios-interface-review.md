@@ -253,6 +253,7 @@ The dependency catalogue and current native bridge are the inventory baseline:
 - [Android secret storage](https://github.com/altendky/tachiai/blob/97ab8c14fe82524a69601b34056046688f7bf53a/apps/android/app/src/main/kotlin/net/fstab/tachiai/platform/storage/AndroidPrivateSecretStore.kt)
 
 Related local documents: [architecture](architecture.md),
+[casting and screen mirroring](casting.md),
 [provider integrations](provider-integrations.md),
 [native access evidence](native-access-experiments.md),
 [route implementation and constraints](source-network-routing.md),

@@ -8,7 +8,73 @@
   "pre-commit": {
     "enabled": true
   },
+  // Preserve recommended exclusions and ignore generated Mise package metadata.
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "**/.mise/locks/**"
+  ],
+
   "packageRules": [
+    {
+      "description": "Keep Python on the selected minor release",
+      "matchManagers": [
+        "mise"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "allowedVersions": "/^3\\.14(?:\\.|$)/"
+    },
+    {
+      "description": "Keep Node on the selected major release",
+      "matchManagers": [
+        "mise"
+      ],
+      "matchDepNames": [
+        "node"
+      ],
+      "allowedVersions": "/^24(?:\\.|$)/"
+    },
+    {
+      "description": "Keep the Java build runtime on JDK 21",
+      "matchManagers": [
+        "mise",
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "java",
+        "java-jdk"
+      ],
+      "allowedVersions": "/^21(?:\\.|$)/"
+    },
+    {
+      "description": "Keep Go on the selected minor release",
+      "matchManagers": [
+        "mise"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "allowedVersions": "/^1\\.27(?:\\.|$)/"
+    },
+    {
+      "description": "Changing the supported Go minimum is a manual decision",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "enabled": false
+    },
+
     {
       "matchManagers": ["mise"],
       "postUpgradeTasks": {

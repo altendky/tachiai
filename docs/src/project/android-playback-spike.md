@@ -297,6 +297,14 @@ packages required dependency notices; the AAR remains generated/ignored under
 limit this debug APK to 64-bit ARM/x86 devices; 32-bit Android and Shield
 interoperability remain unverified. No emulated ARM compiler is used.
 
+The routebridge module's supported Go minimum remains 1.26.0, independently of
+the newer binding-build toolchain. Required CI runs its ordinary Go tests with
+`GOTOOLCHAIN=go1.26.0`, `GOWORK=off` and `-mod=readonly` before Android setup.
+The fixed toolchain cannot switch to a newer compiler to satisfy a dependency;
+it rejects an automatic increase in `go.mod` as well as source or dependency
+requirements above the supported minimum. Raising that minimum is a deliberate
+compatibility decision, including updating this CI check.
+
 Verify each APK separately with `apksigner verify --print-certs`, then inspect
 its application ID and merged launcher manifest. The fixture launcher should
 exist only in the diagnostic APK, and the provider launcher only in the regular

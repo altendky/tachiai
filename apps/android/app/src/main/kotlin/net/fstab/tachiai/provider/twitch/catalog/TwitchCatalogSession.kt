@@ -11,6 +11,7 @@ internal enum class TwitchCatalogSessionState {
     MISSING, UNVERIFIED, CONNECTED, PAUSED, TEMPORARY_FAILURE,
     RECONNECT_REQUIRED, STORAGE_FAILURE, SUPERSEDED,
 }
+internal enum class TwitchCatalogIdleViewerAdmission { ADMITTED, MAINTENANCE_REQUIRED, REFUSED }
 internal data class TwitchCatalogSessionSummary(
     val state: TwitchCatalogSessionState,
     val failure: TwitchCatalogAuthFailure? = null,
@@ -271,6 +272,39 @@ internal class TwitchCatalogSession(
     fun isCurrent(value: TwitchCatalogLease): Boolean =
         lease === value && monotonicMs() < value.deadlineMs &&
             !retentionExpired(value.grant) && allowed(value.localRevision, value.grant.revision) && store.isStoredCurrent(value.grant)
+
+    // One worker admission only: choose idle before fresh owner work. A flight
+    // or receipt appearing during owner/grant I/O returns to the unchanged
+    // waiting/adoption path rather than reusing an earlier owner observation.
+    fun admitIdleViewer(value: TwitchCatalogLease, canRead: () -> Boolean): TwitchCatalogIdleViewerAdmission =
+        synchronized(operationLock) {
+            fun local() = canRead() && isLocallyCurrent(value)
+            fun work(): TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState {
+                val coordinator = maintenance ?: return TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.IDLE
+                val attached = attachment.get() ?: return TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.REFUSED
+                return coordinator.viewerMaintenanceState(attached, value.grant)
+            }
+            fun nonIdle(state: TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState) = when (state) {
+                TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.IDLE -> TwitchCatalogIdleViewerAdmission.REFUSED
+                TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.WORK -> TwitchCatalogIdleViewerAdmission.MAINTENANCE_REQUIRED
+                TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.REFUSED -> TwitchCatalogIdleViewerAdmission.REFUSED
+            }
+            if (!local()) return@synchronized TwitchCatalogIdleViewerAdmission.REFUSED
+            val initial = work()
+            if (initial != TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.IDLE) return@synchronized nonIdle(initial)
+            if (!local() || !allowed(value.localRevision, value.grant.revision) || !local())
+                return@synchronized TwitchCatalogIdleViewerAdmission.REFUSED
+            val afterOwner = work()
+            if (afterOwner != TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.IDLE)
+                return@synchronized nonIdle(afterOwner)
+            if (!local()) return@synchronized TwitchCatalogIdleViewerAdmission.REFUSED
+            val stored = store.isStoredCurrent(value.grant)
+            if (!local()) return@synchronized TwitchCatalogIdleViewerAdmission.REFUSED
+            val afterRecord = work()
+            if (afterRecord != TwitchCatalogMaintenanceCoordinator.ViewerMaintenanceState.IDLE)
+                return@synchronized nonIdle(afterRecord)
+            if (stored && local()) TwitchCatalogIdleViewerAdmission.ADMITTED else TwitchCatalogIdleViewerAdmission.REFUSED
+        }
 
     // Queued UI publication only: no owner callback, protected store or HTTP.
     // This supplements, never replaces, worker-side durable ownership checks.

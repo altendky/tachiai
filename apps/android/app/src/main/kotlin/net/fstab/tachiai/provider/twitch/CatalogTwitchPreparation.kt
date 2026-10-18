@@ -61,14 +61,20 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
         return synchronized(storedLock) {
             if (!canContinue()) return false
             val current = runCatching {
-                if (!inBudget() || owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } != true ||
-                    !inBudget()) false
-                else {
-                    val connection = checkNotNull(session.get())
-                    val previous = checkNotNull(lease)
-                    val successor = connection.adoptSuccessor(previous, waitForExistingFlight = true, admissionStartedMs = began)
-                    if (successor != null) lease = successor.lease
-                    inBudget() && lease?.let(connection::isCurrent) == true && inBudget()
+                val connection = checkNotNull(session.get())
+                val previous = checkNotNull(lease)
+                when (connection.admitIdleViewer(previous) { inBudget() && canContinue() }) {
+                    TwitchCatalogIdleViewerAdmission.ADMITTED -> true
+                    TwitchCatalogIdleViewerAdmission.REFUSED -> false
+                    TwitchCatalogIdleViewerAdmission.MAINTENANCE_REQUIRED -> {
+                        if (!inBudget() || owner?.let { it.sameOwnership(checkNotNull(binding.get()).owner()) } != true ||
+                            !inBudget()) false
+                        else {
+                            val successor = connection.adoptSuccessor(previous, waitForExistingFlight = true, admissionStartedMs = began)
+                            if (successor != null) lease = successor.lease
+                            inBudget() && lease?.let(connection::isCurrent) == true && inBudget()
+                        }
+                    }
                 }
             }.getOrDefault(false)
             val admitted = current && canContinue() && inBudget()

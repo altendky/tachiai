@@ -2,11 +2,17 @@
 
 Reviewed 2026-10-17 against Android commit
 `97ab8c14fe82524a69601b34056046688f7bf53a`.
+Refreshed 2026-10-17 against commit
+`49a0fa6ae90ad6b90b751331a6e95714e21c8d37` for the broader platform investigation,
+including distribution outside official stores. The earlier review's Android
+permalinks below remain historical evidence, not current implementation claims.
 Scope: the whole Tachiai application in a desktop browser on Windows, macOS and
 Linux, including settings, provider accounts, catalogs, routes and two-feed
 playback. This is a source/documentation review, not a browser implementation or
 new playback experiment. No extension, companion, browser profile or provider
 session was installed, modified or tested for this review.
+Mobile browsers and TV browsers are separate targets; desktop findings do not
+establish their media, extension, installation or background behavior.
 
 The subsequent [shared Rust core](shared-rust-core.md) adds an initial timing
 library and browser/Wasm interface. It does not establish desktop provider
@@ -57,7 +63,8 @@ is selected by this review.
 | Current item or behavior | Browser equivalent | Fit and concerning gaps |
 | --- | --- | --- |
 | Compose screens, provider rows, tabs, drag handles, menus and dialogs | HTML/CSS/DOM with JavaScript/TypeScript and an optional UI framework | **Documented platform primitives.** The full settings/picker UI can be implemented here. Preserve accessibility, keyboard operation, stable layout and autosave behavior; no UI framework is selected. |
-| Source/provider identities, capabilities, state transitions and planners | Rust/Wasm with JavaScript bindings, Kotlin/JS shared module, or equivalent web implementation | **Documented toolchains; inferred extraction.** Both can expose shared logic to a JavaScript/TypeScript front end. Platform dependencies and export interfaces need separation. Sharing the core does not require sharing the UI. [Rust/Wasm bindings][wasm-bindgen], [Kotlin web targets][kotlin] |
+| Shared playback timing rules | Existing `tachiai-core` through `packages/core-web` / wasm-bindgen | **Implemented, bounded scope.** The timing core and JavaScript smoke test exist. Browser players must supply observations and execute plans; no whole web application exists. [Shared Rust core](shared-rust-core.md) |
+| Source/provider identities, capabilities, state transitions and other planners | Further Rust core extraction with JavaScript/TypeScript host adapters | **Inferred future reuse.** These behaviors have not all been extracted. Platform dependencies and export interfaces need separation. Sharing rules does not require sharing the UI. [Rust/Wasm bindings][wasm-bindgen] |
 | OkHttp metadata/catalog requests | Fetch API; extension-origin requests with host permissions where appropriate | **Partial equivalent.** Native endpoint access does not establish browser CORS access. Content-script requests and extension-origin requests have different permissions. [Fetch][fetch], [Extension networking][extension-network] |
 | Configured streams, provider order and preferences | IndexedDB, with small non-secret preferences in browser storage | **Documented.** Storage is origin/profile-bound and may be cleared or evicted. Add schema/version checks and explicit public-configuration export/import if durability requires it. [IndexedDB][idb], [Storage retention][storage] |
 | Profile-file imports and pasted public links | File input/drag-and-drop and normal text entry | **Documented.** Browser file access is user-mediated. Preserve bounded input validation; importing a route profile does not activate a tunnel. [File API][files] |
@@ -70,13 +77,35 @@ operations with available keys. Do not describe browser encryption or a
 non-extractable CryptoKey as proof of equivalent OS-protected grant storage.
 [Web Crypto][crypto]
 
-With migration cost explicitly not a deciding concern, the current recommendation
-is to investigate a Rust common core with native bindings for Android/iOS and
-Wasm bindings for the browser. Expose commands, events and state; keep browser
-effects in web adapters and the UI in web-native code. This does not grant Wasm
-native networking privileges or replace useful existing Go/native transports.
-No shared core has been implemented or selected as a settled architecture by
-this review. [UniFFI][uniffi], [wasm-bindgen][wasm-bindgen]
+The initial Rust timing extraction is now merged and used on Android, with
+UniFFI native bindings and a wasm-bindgen facade for JavaScript consumers.
+Continue to expose commands, events and state while keeping browser effects in
+web adapters and the UI in web-native code. Wasm gains no native networking
+privileges, player/CDM implementation or provider entitlement from that choice.
+Account, route, catalog, persistence and player adapters remain host work.
+[Shared Rust core](shared-rust-core.md), [UniFFI][uniffi],
+[wasm-bindgen][wasm-bindgen]
+
+### Candidate dependency boundary
+
+The smallest initial web stack is TypeScript plus HTML/CSS, the existing Wasm
+timing facade and provider-specific player adapters. React, Vue or Svelte are
+optional UI choices, not feasibility requirements; this review does not select
+one. Compile the pinned Rust workspace and matching wasm-bindgen glue as one
+versioned artifact; TypeScript declarations are an interface aid, not runtime
+validation of browser/provider data. Serve the Wasm asset with the proper MIME
+type and test the production host's CSP and asset paths.
+[Wasm deployment][wasm-deployment]
+
+hls.js (Apache-2.0), Shaka Player (Apache-2.0) and dash.js (BSD-3-Clause) are
+candidate app-owned playback dependencies. Their availability does not establish
+CDM access, all required codec rights or provider permission. Preserve notices for the selected
+version and its dependency closure; review native route licensing separately
+if shipping a companion. The browser supplies protected-media facilities;
+bundling an open-source player is not permission to redistribute Widevine or a
+guarantee that a browser package includes it.
+[hls.js license][hls-license], [Shaka license][shaka-license],
+[dash.js license][dash-license]
 
 ## Playback interfaces and libraries
 
@@ -242,6 +271,52 @@ the chosen origin/protocol. An extension/native-messaging design avoids some
 web-to-local endpoint issues while adding installation and extension-lifecycle
 requirements; neither is chosen here.
 
+## Distribution outside official app stores
+
+Distribution has two separate questions: can a user install the artifact, and
+can that artifact perform the required provider/account/route operations? The
+first is well documented for many desktop forms. The second remains the
+feasibility work above. Store-free hosting also does not remove provider terms,
+dependency obligations, signing services or operating-system permission checks.
+
+| Artifact and audience | Outside-store installation and updates | Consequence for Tachiai |
+| --- | --- | --- |
+| Ordinary HTTPS web application | **Documented.** Host the built assets on our own HTTPS origin or a chosen static host; users visit a URL. Deploy revised assets to that origin. No native installer, store listing or developer signing membership is needed for this form. | Easiest distribution of the interface. HTTPS hosting and an origin upgrade policy become part of the release infrastructure. It retains ordinary browser permissions and cross-origin restrictions. [Installability][pwa-installable] |
+| Installed desktop PWA | **Documented.** Chromium browsers offer web installation; Safari supports Add to Dock web apps on macOS Sonoma and later. Browser/OS installation details differ. Web assets and service-worker caches update through the web origin. | Still the same web security boundary. Version the UI/Wasm/assets together, retain compatible cache entries until an update activates and offer reload at a safe time; never reload an active two-feed session just to activate an update. Offline scope can cover shell/public configuration, not automatically provider playback, grants or DRM licenses. [PWA installation][pwa], [Safari web apps][safari-web-apps], [PWA updates][pwa-updates] |
+| Chrome extension, local development/personal use | **Documented.** Load a trusted unpacked extension through developer mode. | Useful for an engineering spike. Developer-mode installation is not evidence of a supported, durable public self-distribution channel. [Chrome distribution][chrome-distribution] |
+| Chrome extension, durable self-hosted release | **Documented restrictions.** On Windows/macOS, self-hosted installation requires enterprise policy; Linux permits manual installation of packed extensions outside the Chrome Web Store. Store-hosted releases are the normal unmanaged consumer path. | A consumer product requiring an extension cannot promise identical store-free installation on all three OSes. Other Chromium derivatives require their own current distribution/API checks; engine lineage alone is insufficient. [Chrome distribution][chrome-distribution] |
+| Firefox desktop extension | **Documented.** A Mozilla-signed XPI can be unlisted and distributed from our site or file. A manifest update URL can serve subsequent signed releases. Temporary development installs disappear on restart. | A practical outside-store-listing channel, but release signing still depends on Mozilla and applicable add-on policies. This does not establish ABEMA support in Firefox. [Firefox self-distribution][firefox-distribution], [Temporary installations][firefox-temporary] |
+| Safari extension on macOS | **Documented.** Package it in a containing Mac app; Apple explicitly supports Developer ID signing and notarization for distribution outside the Mac App Store. Unsigned-extension testing is a separate development mode. | Requires macOS/Xcode packaging and Apple signing/notarization infrastructure. This macOS option does not establish equivalent self-distribution for an iOS extension or proxy API parity. [Safari extension distribution][safari-distribution] |
+| Native companion on Windows | **Documented.** Direct-download executable/installer or signed MSIX outside Microsoft Store. A trusted signing identity improves the normal installation path; MSIX must be trusted. An `.appinstaller` file supports web-hosted package updates. | Own installation, update and rollback handling, native messaging host registration and uninstall cleanup. A downloaded helper does not attach browser media requests to its tunnels. [Windows distribution][windows-distribution], [Web-hosted MSIX][windows-web-install] |
+| Native companion on macOS | **Documented.** Developer ID-signed/notarized Mac application distributed directly, independently of Mac App Store. A native updater such as Sparkle is a candidate for signed updates. | Own update feed and signing keys as well as Apple notarization; produce/test Mac-native transport builds. Safari extension and companion can share an app package only after their permissions/lifetimes are designed. [Mac distribution][mac-distribution], [Sparkle][sparkle] |
+| Native companion on Linux | **Documented candidate.** Self-hosted signed Flatpak repository and `.flatpakref`, or a separately maintained native package/download channel. Flatpak does not require listing on Flathub. | Packaging choice must allow the intended native messaging registration, sockets and secret-store access; a sandboxed package's availability is not proof of those integrations. Updates/trust roots and distro/architecture support remain our responsibility. [Flatpak repository hosting][flatpak-hosting] |
+
+A self-hosted deployment should keep a stable application origin: changing the
+origin changes storage, service-worker scope and provider callback/allowlist
+relationships. A downloaded folder opened as `file://` is not equivalent to a
+supported HTTPS deployment. Public configuration may be exportable, but an
+installation/update process must never copy provider cookies or grants across
+devices as a shortcut.
+
+If a companion is necessary, use an explicitly versioned protocol with minimum
+compatible UI/helper versions, authenticated pairing and conservative failure
+behavior. An extension's allowed native-host origins and installed host manifest
+are part of that packaging. For a web-to-loopback design, current Chrome local
+network access is permission-gated for relevant secure-context requests; other
+browsers and request types must be checked separately. Consent is additional to
+CORS and application authentication, not a replacement for either. Do not base
+a release on disabling browser security flags.
+[Native messaging][native], [Local network permission][local-access]
+
+**Inferred practical order:** first distribute a plain HTTPS feasibility build
+with explicit capability limits. Prove the required provider player, account and
+route design before deciding whether ordinary consumer users need an extension
+and companion. If they do, treat the web UI, browser-specific extension and
+OS-specific companion as independently installable, versioned release products.
+Store-free distribution is straightforward for the website and desktop helper;
+Chrome extension distribution on unmanaged Windows/macOS is the clearest
+distribution constraint.
+
 ## Gap register and cheapest useful validation
 
 | Priority | Unresolved requirement | Smallest useful next check | Evidence required to proceed |
@@ -255,6 +330,7 @@ requirements; neither is chosen here.
 | High | Failure ownership | Kill/restart helper, extension and page; revoke permission and change network | Cleanup/admission decisions remain conservative; no stale grant publication or accidental direct connection |
 | High | Native portability and secret storage | Build/test each transport independently on target OSes | Supported profile subset, normal TLS, cancellation, OS storage failure behavior and matching license/source companion |
 | Medium | Browser and distribution matrix | Validate named browser/OS/CDM versions and installed forms | Recorded source/account/region/content/output conditions; passing controlled CI is separate from real provider acceptance |
+| Medium | Outside-store installation and update ownership | Serve one versioned HTTPS/Wasm fixture; independently install/update/uninstall a minimal signed extension/helper in each proposed channel | No mixed UI/Wasm versions, unexpected playback reload, stale proxy ownership or required developer mode hidden from consumers; packaging proof remains separate from provider/route proof |
 
 This supports a browser-first feasibility spike, not a commitment to a website
 with complete Android parity. Prefer the smallest deployment form that meets
@@ -279,9 +355,12 @@ Related documents: [iOS review](ios-interface-review.md),
 [security boundaries](security-and-privacy.md).
 
 [pwa]: https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Installing
-[kotlin]: https://kotlinlang.org/docs/web-overview.html
 [uniffi]: https://mozilla.github.io/uniffi-rs/latest/
 [wasm-bindgen]: https://rustwasm.github.io/docs/wasm-bindgen/
+[wasm-deployment]: https://rustwasm.github.io/docs/wasm-bindgen/reference/deployment.html
+[hls-license]: https://github.com/video-dev/hls.js/blob/master/LICENSE
+[shaka-license]: https://github.com/shaka-project/shaka-player/blob/main/LICENSE
+[dash-license]: https://github.com/Dash-Industry-Forum/dash.js/blob/development/LICENSE.md
 [fetch]: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch
 [extension-network]: https://developer.chrome.com/docs/extensions/develop/concepts/network-requests
 [idb]: https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API
@@ -319,3 +398,15 @@ Related documents: [iOS review](ios-interface-review.md),
 [local-access]: https://developer.chrome.com/blog/local-network-access
 [worker-life]: https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle
 [playwright]: https://playwright.dev/docs/browsers
+[pwa-installable]: https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable
+[safari-web-apps]: https://developer.apple.com/documentation/safari-release-notes/safari-17-release-notes
+[pwa-updates]: https://web.dev/learn/pwa/update
+[chrome-distribution]: https://developer.chrome.com/docs/extensions/how-to/distribute
+[firefox-distribution]: https://extensionworkshop.com/documentation/publish/self-distribution/
+[firefox-temporary]: https://extensionworkshop.com/documentation/develop/temporary-installation-in-firefox/
+[safari-distribution]: https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension
+[windows-distribution]: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path
+[windows-web-install]: https://learn.microsoft.com/en-us/windows/msix/app-installer/installing-windows10-apps-web
+[mac-distribution]: https://help.apple.com/xcode/mac/current/en.lproj/dev033e997ca.html
+[sparkle]: https://github.com/sparkle-project/Sparkle
+[flatpak-hosting]: https://docs.flatpak.org/en/latest/hosting-a-repository.html

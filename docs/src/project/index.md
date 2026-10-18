@@ -50,10 +50,13 @@ product integration: sustained decoding, supported ABEMA operation, login
 persistence, timing adjustment, and the durability and policy acceptability of
 the composition across devices and player transitions remain unverified.
 
-The first implementation target is one Android application supporting phones,
-tablets, and Android TV. The first device investigation should include the
-available NVIDIA Shield. iPhone/iPad and desktop platforms are desired after
-the Android feasibility spike establishes which logic can actually be shared.
+Android phone/tablet is the implemented baseline; Android TV/Google TV is the
+closest additional target. The available NVIDIA Shield still needs a named
+device investigation. The [cross-platform landscape](platforms.md) compares
+Android TV, iOS/iPadOS, Apple TV/tvOS and desktop web, including available
+interfaces/libraries, shared Rust boundaries, gaps and validation priorities.
+Its [distribution comparison](platform-distribution.md) includes installation
+outside official stores; research does not establish working ports.
 
 ## Product direction
 

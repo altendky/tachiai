@@ -14,6 +14,7 @@ import java.util.UUID
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.platform.media.NativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
@@ -69,6 +70,7 @@ internal enum class FailureCategory {
     ABEMA_CACHED_HTTP_REFUSED, ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED, ABEMA_CACHED_UNKNOWN,
     TRANSPORT_DNS, TRANSPORT_CONNECT, TRANSPORT_TIMEOUT, TRANSPORT_TLS, TRANSPORT_CANCELLED, TRANSPORT_UNKNOWN,
     MEDIA_REQUEST_DEADLINE, MEDIA_REQUEST_ADMISSION_REFUSED, MEDIA_PLAYBACK_INACTIVE,
+    PLAYER_RELEASE_TIMEOUT,
 }
 
 // An allowlist translates stack metadata into our own fixed vocabulary. There
@@ -209,6 +211,7 @@ internal data class SafeFailure(
                 value is TwitchHelixNetworkException -> providerCategory(value.category)
                 value is TwitchCatalogStoreException -> providerCategory(value.failure)
                 value is NativeMediaRequestException -> mediaCategory(value.failure)
+                value is NativePlayerReleaseTimeoutException -> FailureCategory.PLAYER_RELEASE_TIMEOUT
                 value is ProviderTransportException -> transportCategory(value.evidence)
                 value is java.util.concurrent.CancellationException -> FailureCategory.CANCELLED
                 value is IOException -> FailureCategory.IO

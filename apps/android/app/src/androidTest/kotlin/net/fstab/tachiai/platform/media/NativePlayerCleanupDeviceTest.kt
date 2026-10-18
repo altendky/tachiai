@@ -3,6 +3,7 @@ package net.fstab.tachiai.platform.media
 import android.content.Context
 import android.content.ContextWrapper
 import android.os.Looper
+import android.os.Handler
 
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.Player
@@ -22,6 +23,7 @@ import java.util.UUID
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.HttpsURLConnection
 import org.junit.Assert.*
 import org.junit.Test
@@ -333,6 +335,87 @@ class NativePlayerCleanupDeviceTest {
         assertEquals(1, releases); assertFalse(owner.confirmed)
         assertThrows(IOException::class.java) { owner.close() }
         assertEquals(1, releases)
+    }
+
+    @Test(timeout = 30_000) fun asyncVoidReleaseTimeoutReportsOnceAndContinuesEveryCleanupLane() {
+        assertAsyncRelease(timeout = true, uncertain = false)
+    }
+
+    @Test(timeout = 30_000) fun asyncSuccessfulReleaseAndUnrelatedUncertaintyNeverInventTimeout() {
+        assertAsyncRelease(timeout = false, uncertain = false)
+        assertAsyncRelease(timeout = false, uncertain = true)
+        assertAsyncRelease(timeout = false, uncertain = true, earlyTimeout = true)
+    }
+
+    private fun assertAsyncRelease(timeout: Boolean, uncertain: Boolean, earlyTimeout: Boolean = false) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val handler = Handler(Looper.getMainLooper())
+        val owner = NativeCleanupReceipt()
+        val calls = Collections.synchronizedList(mutableListOf<Pair<String, Thread>>())
+        val observations = Collections.synchronizedList(mutableListOf<Pair<NativeFailureStage, Throwable>>())
+        val complete = CountDownLatch(1)
+        val completions = AtomicInteger()
+        var listener: Player.Listener? = null
+        var now = 100L
+        var releases = 0
+        val player = Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { _, method, args ->
+            when (method.name) {
+                "addListener" -> { listener = args!![0] as Player.Listener; null }
+                "release" -> {
+                    releases++; calls += "player" to Thread.currentThread()
+                    if (timeout) repeat(2) { checkNotNull(listener).onPlayerError(
+                        PlaybackException("synthetic-private-provider-message", IOException("synthetic-private-cause"), 1003)) }
+                    now = 124L
+                    null // Media3's release returns void even after its timeout.
+                }
+                else -> throw AssertionError("Unexpected fixture player operation")
+            }
+        } as Player
+        val observer: NativeFailureObserver = { stage, error -> observations += stage to error }
+        val completed = { completions.incrementAndGet(); complete.countDown() }
+        instrumentation.runOnMainSync {
+            owner.own(10) {
+                calls += "before" to Thread.currentThread()
+                if (earlyTimeout) checkNotNull(listener).onPlayerError(PlaybackException("synthetic-private-queued", null, 1003))
+                else if (uncertain) owner.failed()
+            }
+            owner.ownPlayer(player, { true }, observer, { now })
+            owner.own(35) { calls += "after" to Thread.currentThread() }
+            owner.own(40, ownerThread = true) { calls += "quality" to Thread.currentThread() }
+            owner.seal()
+            owner.closePlayer(handler, observer, completed)
+            owner.closePlayer(handler, observer, completed)
+        }
+        awaitCleanup(complete)
+        instrumentation.runOnMainSync {
+            assertEquals(listOf("before", "player", "after", "quality"), calls.map { it.first })
+            assertNotSame(Looper.getMainLooper().thread, calls[0].second)
+            assertSame(Looper.getMainLooper().thread, calls[1].second)
+            assertNotSame(Looper.getMainLooper().thread, calls[2].second)
+            assertSame(Looper.getMainLooper().thread, calls[3].second)
+            assertEquals(1, releases); assertEquals(1, completions.get())
+            assertFalse(owner.pending); assertEquals(!timeout && !uncertain, owner.confirmed)
+            val timeouts = observations.map { it.second }.filterIsInstance<NativePlayerReleaseTimeoutException>()
+            assertEquals(if (timeout) 1 else 0, timeouts.size)
+            if (timeout) {
+                assertEquals(1003, timeouts.single().errorCode)
+                assertEquals(24L, timeouts.single().elapsedMs)
+                assertNull(timeouts.single().cause); assertTrue(timeouts.single().suppressed.isEmpty())
+                assertFalse(timeouts.single().toString().contains("synthetic-private"))
+            }
+            assertTrue(observations.all { it.first == NativeFailureStage.PLAYER_RELEASE })
+            val ordinary = observations.map { it.second }.filterNot { it is NativePlayerReleaseTimeoutException }
+            assertEquals(if (timeout || uncertain) 1 else 0, ordinary.size)
+            assertTrue(ordinary.all { it is IOException })
+            val reports = observations.size
+            if (timeout || uncertain) assertThrows(IOException::class.java) {
+                owner.closePlayer(handler, observer, completed)
+            } else owner.closePlayer(handler, observer, completed)
+            if (timeout) checkNotNull(listener).onPlayerError(PlaybackException("synthetic-private-late", null, 1003))
+            assertEquals(reports, observations.size)
+            assertEquals(1, releases); assertEquals(1, completions.get())
+            assertEquals(!timeout && !uncertain, owner.confirmed)
+        }
     }
 
     @Test fun refusedReleaseObserverRegistrationCannotConfirmRollbackRelease() {

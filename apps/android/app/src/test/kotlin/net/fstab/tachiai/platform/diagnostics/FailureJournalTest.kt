@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.platform.media.NativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
@@ -24,6 +25,28 @@ import org.junit.rules.TemporaryFolder
 class FailureJournalTest {
     @get:Rule val temporary = TemporaryFolder()
     private fun journalFile() = File(temporary.newFolder(), "failure-diagnostics.tsv")
+
+    @Test fun `typed release timeout survives v1 codec independently of generic cleanup uncertainty`() {
+        val file = journalFile()
+        val journal = FailureJournal(file)
+        val reporter = FailureReporter(journal::record, clock = { 100_000 })
+        val timeout = NativePlayerReleaseTimeoutException(521)
+        // Even accidental private metadata on the app-owned carrier is not a
+        // duration field or arbitrary text in the journal projection.
+        timeout.initCause(IOException("synthetic-private-cause"))
+        timeout.addSuppressed(IOException("synthetic-private-suppressed"))
+        reporter.report(FailureStage.PLAYER_RELEASE, timeout)
+        reporter.report(FailureStage.PLAYER_RELEASE, IOException("synthetic-private-uncertainty"))
+        val records = journal.read()
+        assertEquals(listOf(FailureCategory.PLAYER_RELEASE_TIMEOUT, FailureCategory.IO), records.map { it.failure.category })
+        assertEquals(listOf(FailureRelation.FIRST, FailureRelation.SECONDARY), records.map { it.relation })
+        assertEquals(records, FailureJournalCodec.decode(FailureJournalCodec.encode(records)))
+        assertEquals("tachiai-failure-diagnostics-v1", FailureJournalCodec.HEADER)
+        assertFalse(file.readText().contains("synthetic-private"))
+        assertThrows(Exception::class.java) {
+            FailureJournalCodec.decode(file.readText().replace("PLAYER_RELEASE_TIMEOUT", "PLAYER_RELEASE_private_secret").toByteArray())
+        }
+    }
 
     @Test fun `media origin remains first when independent cleanup fails and both round trip without secrets`() {
         val secret = "https://private.example/path?token=synthetic-secret"

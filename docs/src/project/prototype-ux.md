@@ -87,6 +87,14 @@ guards. Replacement sessions cannot inherit an older Play request, and unsafe
 cleanup still stops the presentation. This handles stale-window startup; it does
 not resolve the underlying sustained transfer failures tracked in issue #297.
 
+Twitch queues native events only when they deliver READY, a video frame, player
+failure, a limit or Stop to the session. Other events retain synchronous first
+failure capture and safe logging, while default manifest/media byte logging is
+omitted. The media source already deduplicates those byte events to at most two
+per player; this is bounded no-op dispatch cleanup, not a per-chunk speedup or a
+measured buffering fix. Transfer listeners and opt-in read-cost counters remain
+unchanged; #297 remains open.
+
 ## Main flow and settings — October 16
 
 Normal launches open **Choose two streams**. Development and inspection builds

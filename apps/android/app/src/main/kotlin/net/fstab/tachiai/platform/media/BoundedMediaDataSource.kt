@@ -32,6 +32,7 @@ internal class BoundedMediaRequests(
     private val onConnectionOwned: (HttpsURLConnection) -> Unit = {},
     private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
     private val openErrorInput: (HttpsURLConnection) -> InputStream? = { it.errorStream },
+    private val readCosts: NativeMediaReadCosts? = null,
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
@@ -58,12 +59,15 @@ internal class BoundedMediaRequests(
         private var responseHttp = 0
         private var transferOpen = false
         private var mediaBodyAccepted = false
+        private var costs: NativeMediaReadCosts.Request? = null
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
             if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
             // This boolean includes owner, acceptance deadline and provider
             // grant/admission checks. A refusal does not identify which failed.
-            if (!canRequest()) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
+            val admission = costs?.begin(NativeMediaReadCostPhase.ADMISSION)
+            val admitted = try { canRequest() } finally { costs?.end(admission) }
+            if (!admitted) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
             if (!mediaBodyAccepted && clockMs() - requestStarted >= 30_000)
                 throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_DEADLINE)
         }
@@ -87,6 +91,7 @@ internal class BoundedMediaRequests(
         // Android-free seam for deterministic transport tests, not a public player API.
         internal fun openUri(uri: URI, position: Long = 0, length: Long = C.LENGTH_UNSET.toLong(),
             transferSpec: DataSpec? = null): Long {
+            var openingCosts: NativeMediaReadCosts.Request? = null
             var failureObserved = false
             fun observeFailure(error: Exception) {
                 if (failureObserved || error is NativeMediaCleanupException) return
@@ -95,6 +100,12 @@ internal class BoundedMediaRequests(
             }
             try {
                 check(connection == null && !transferOpen)
+                openingCosts = readCosts?.open(when (type) {
+                    C.DATA_TYPE_MANIFEST -> NativeMediaReadCostType.MANIFEST
+                    C.DATA_TYPE_MEDIA -> NativeMediaReadCostType.MEDIA
+                    else -> NativeMediaReadCostType.OTHER
+                })
+                costs = openingCosts
                 mediaBodyAccepted = false
                 requestStarted = clockMs()
                 checkActive()
@@ -123,7 +134,8 @@ internal class BoundedMediaRequests(
                         Math.addExact(position, length - 1).toString()
                     request.setRequestProperty("Range", "bytes=$position-$end")
                 }
-                val status = request.responseCode
+                val headers = costs?.begin(NativeMediaReadCostPhase.HEADERS)
+                val status = try { request.responseCode } finally { costs?.end(headers) }
                 responseHttp = status
                 checkActive()
                 if (status !in listOf(200, 206)) {
@@ -165,7 +177,8 @@ internal class BoundedMediaRequests(
                     report(NativeMediaEvent.LIMIT_REACHED); throw IOException()
                 }
                 source = uri
-                input = openInput(request)
+                val acquireInput = costs?.begin(NativeMediaReadCostPhase.INPUT_OPEN)
+                input = try { openInput(request) } finally { costs?.end(acquireInput) }
                 readBytes = 0
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
                 checkActive() // Setup is still bounded, including input acquisition.
@@ -180,8 +193,11 @@ internal class BoundedMediaRequests(
                     transferOpen = true
                     transferStarted(transferSpec)
                 }
+                costs?.opened()
+                if (remaining == 0L) costs?.bodyComplete()
                 return remaining
             } catch (error: Exception) {
+                openingCosts?.openFailed()
                 observeFailure(error)
                 close(); report(NativeMediaEvent.REQUEST_FAILED)
                 // Neither URI nor provider exception is attached as a cause.
@@ -190,20 +206,35 @@ internal class BoundedMediaRequests(
         }
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
             if (length == 0) return 0
+            val reading = costs?.beginRead(length)
             try {
                 checkActive()
-                if (remaining == 0L) return C.RESULT_END_OF_INPUT
-                val count = checkNotNull(input).read(buffer, offset,
-                    if (remaining < 0) length else minOf(length.toLong(), remaining).toInt())
+                if (remaining == 0L) {
+                    costs?.bodyComplete()
+                    costs?.readFinished(reading, eof = true)
+                    return C.RESULT_END_OF_INPUT
+                }
+                val requested = if (remaining < 0) length else minOf(length.toLong(), remaining).toInt()
+                val inputReading = costs?.beginInput(requested)
+                val count = try { checkNotNull(input).read(buffer, offset, requested) }
+                    finally { costs?.end(inputReading) }
+                costs?.inputReturned(count)
                 checkActive()
-                if (count < 0) return C.RESULT_END_OF_INPUT
+                if (count < 0) {
+                    if (remaining < 0) costs?.bodyComplete()
+                    costs?.readFinished(reading, eof = true)
+                    return C.RESULT_END_OF_INPUT
+                }
                 readBytes += count
                 if (readBytes > limit) { report(NativeMediaEvent.LIMIT_REACHED); throw IOException() }
                 if (remaining >= 0) remaining -= count
                 if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)
+                if (remaining == 0L) costs?.bodyComplete()
+                costs?.readFinished(reading)
                 return count
             } catch (error: Exception) {
+                costs?.readFinished(reading, error = true)
                 reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, onFailure, nativeMediaRequestException(error))
                 close()
                 report(NativeMediaEvent.REQUEST_FAILED)
@@ -215,6 +246,7 @@ internal class BoundedMediaRequests(
             val stream = input
             var streamClosed = stream == null
             var disconnected = request == null
+            var cleanupFailed = false
             try { closeNativeResources(
                 { observeNativeFailure(NativeFailureStage.MEDIA_DISCONNECT, onFailure) {
                     stream?.close(); streamClosed = true
@@ -233,9 +265,13 @@ internal class BoundedMediaRequests(
                 }
                 },
             ) } catch (_: Throwable) {
+                cleanupFailed = true
                 // Loader cleanup catches IOException only. Keep the original
                 // privately observed/retained; never let its Error/text escape.
                 throw NativeMediaCleanupException()
+            } finally {
+                costs?.close(error = cleanupFailed || !streamClosed || !disconnected)
+                costs = null
             }
         }
     }

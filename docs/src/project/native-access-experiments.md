@@ -1,5 +1,68 @@
 # Native playback access experiments
 
+## Unattached remembered-session bootstrap prerequisite — 2026-10-18
+
+[Issue #324](https://github.com/altendky/tachiai/issues/324) separates browser
+bootstrap feasibility from [unobtrusive renewal #294](https://github.com/altendky/tachiai/issues/294).
+The existing approval WebView, isolated process/profile, selected route,
+candidate capture and confirmed cleanup now live in a shared runtime. The
+visible Activity still owns its foreground lifecycle, protected window and
+explicit sign-in controls. A rejected or completed host cannot pause another
+owner's process-wide WebView timers or service-worker networking.
+
+An opt-in, nonexported debug service hosts that runtime without an Activity or
+attached window. It uses a same-UID, closed request envelope, the original
+90-second deadline, application-context binding and Binder-death cancellation.
+The existing protected inbox receives a candidate only after browser/proxy/route
+cleanup; the test then verifies the original account and registered email through
+the native adapter. It compares the saved grant and never adopts the candidate.
+Release isolation excludes this service; ordinary capture/DevTools restrictions
+remain in place. No login scripts, native bridge, cookie copying or TLS bypass
+are introduced.
+
+The initial ordinary-debug run on persistent `tachiai-dev`, Android 16/API 36,
+x86-64, WebView 133.0.6943.137, passed one case in 28.837 seconds through the
+saved Windscribe route. It delivered a candidate, confirmed cleanup and validated
+the same account and email registration. The candidate extended the saved
+expiry, but the saved grant was still valid and remained unchanged. Every saved
+encrypted-file digest matched before and after the run; the launcher remained
+foreground. No provider page or protected media was captured, and the route's
+exit country was not independently measured.
+
+After a normal emulator restart and in-place update, both final fixtures passed
+in 31.012 seconds. The unattached host confirmed that rejecting a second host
+and calling its resume/pause methods left the owner's networking enabled. The
+visible automatic-return Activity delivered a same-account candidate after
+confirmed cleanup, passed native profile/email checks and closed its exact
+nonce-owned task. Both candidates extended the saved expiry; the original grant
+was still valid and remained unchanged. Every encrypted-file digest matched
+across installation and both checks, and the launcher was restored. No browser
+reset, credential entry or replacement-grant adoption occurred.
+
+This establishes remembered-session bootstrap on that emulator, not automatic
+renewal adoption, naturally expired-grant recovery, reliable minimized/closed-app
+execution, scheduling or physical-device acceptance. A missing candidate, timeout
+or network error does not establish that interactive sign-in is required.
+Those distinctions and operation-owned publication remain in #294.
+
+For an explicitly authorized remembered-account check, install the verified
+ordinary debug and instrumentation APKs on the named persistent emulator, stop
+playback, and run:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.abema.account.AbemaRenewalRuntimeProbeTest \
+  -e abemaRenewalProbe true \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Without that opt-in, the fixtures skip before reading saved accounts or opening
+a browser. If multiple ABEMA instances exist, supply the exact configured
+`abemaRenewalProbeInstanceId`. The fixture includes separate unattached-service
+and visible automatic-return Activity checks; the latter intentionally opens
+the existing protected account surface and closes only its nonce-owned task.
+It does not enter credentials, reset the browser session or save a replacement.
+
 ## Remembered-session renewal implementation — 2026-10-14
 
 The debug application now coalesces foreground ABEMA renewal before discovery

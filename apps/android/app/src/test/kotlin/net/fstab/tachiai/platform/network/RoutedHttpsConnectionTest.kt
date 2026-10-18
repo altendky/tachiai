@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.net.SocketFactory
 import javax.net.ssl.SSLSocket
@@ -23,6 +24,9 @@ import okhttp3.Call
 import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody.Companion.asResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.Response
+import okhttp3.Protocol
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import okio.ForwardingSource
@@ -41,6 +45,131 @@ class RoutedHttpsConnectionTest {
     private val realm = "fixture_local_realm"
     private val url = URL("https://127.0.0.1/fixture?token=synthetic")
 
+    private class SetupAlarm {
+        val now = AtomicLong(1_000)
+        val closes = AtomicInteger()
+        val scheduled = AtomicReference<(() -> Unit)?>()
+        fun create(cancel: () -> Unit) = MediaResponseSetupDeadline(cancel, now::get, { delay, action ->
+            assertEquals(30_000L, delay); scheduled.set(action)
+            AutoCloseable { closes.incrementAndGet() }
+        })
+        fun fire() { now.set(31_000); checkNotNull(scheduled.get()).invoke() }
+    }
+
+    @Test fun mediaOptInReplacesWholeCallDeadlineWithBoundedSetupAndDoesNotCancelAcceptedBody() {
+        for (media in listOf(false, true)) {
+            val alarm = SetupAlarm(); val timeout = AtomicLong(-1); val call = AtomicReference<Call>()
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                timeout.set(chain.call().timeout().timeoutNanos()); call.set(chain.call())
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                    .body("ok".toResponseBody()).build()
+            }.build()
+            val connection = RoutedHttpsConnection(url, client, { true },
+                allowProgressingMediaBody = true, setupDeadlineFactory = alarm::create)
+            try {
+                if (media) connection.requestProgressingBody()
+                assertEquals(200, connection.responseCode)
+                val input = connection.inputStream
+                if (media) {
+                    connection.acceptProgressingBody()
+                    assertEquals(1, alarm.closes.get())
+                    alarm.fire() // Even an already queued alarm cannot cancel an accepted body.
+                    assertFalse(call.get().isCanceled())
+                } else assertNull(alarm.scheduled.get())
+                assertEquals(TimeUnit.SECONDS.toNanos(if (media) 0L else 30L), timeout.get())
+                assertEquals('o'.code, input.read()); assertEquals('k'.code, input.read()); assertEquals(-1, input.read())
+            } finally { connection.disconnect() }
+            assertEquals(if (media) 1 else 0, alarm.closes.get())
+        }
+    }
+
+    @Test fun defaultFacadeRefusesMediaPolicyAndMediaOptInCannotBeAddedAfterDispatch() {
+        val ordinary = RoutedHttpsConnection(url, OkHttpClient(), { true })
+        assertThrows(IllegalStateException::class.java) { ordinary.requestProgressingBody() }
+        ordinary.disconnect()
+        ProxyFixture().use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true }, allowProgressingMediaBody = true)
+            assertEquals(200, connection.responseCode)
+            assertThrows(IllegalStateException::class.java) { connection.requestProgressingBody() }
+            connection.disconnect()
+        }
+    }
+
+    @Test fun mediaSetupAlarmCancelsBlockedHeadersAndReportsTimeoutRatherThanOwnerCancellation() {
+        ProxyFixture(blockHeaders = true).use { fixture ->
+            val alarm = SetupAlarm()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true },
+                allowProgressingMediaBody = true, setupDeadlineFactory = alarm::create)
+            connection.requestProgressingBody(); assertTrue(connection.observeFailures { })
+            val caught = AtomicReference<Throwable?>()
+            val worker = Thread { try { connection.responseCode } catch (error: Throwable) { caught.set(error) } }
+            try {
+                worker.start(); assertTrue(fixture.requestReceived.await(3, TimeUnit.SECONDS))
+                alarm.fire(); worker.join(3000)
+                assertFalse(worker.isAlive)
+                val error = caught.get() as ProviderTransportException
+                assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
+                assertFalse(error.evidence.localCancellationRequested); assertNull(error.cause)
+                assertEquals(RoutedHttpsFailureCategory.SOCKET_TIMEOUT, connection.failureDiagnostic?.category)
+                assertFalse(checkNotNull(connection.failureDiagnostic).localCancellationRequested)
+                assertEquals(1, alarm.closes.get())
+            } finally { connection.disconnect(); worker.join(3000) }
+        }
+    }
+
+    @Test fun mediaBodyMustBeAcceptedBeforeSetupDeadlineEvenWhenAlarmExecutionIsDelayed() {
+        ProxyFixture().use { fixture ->
+            val alarm = SetupAlarm()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true },
+                allowProgressingMediaBody = true, setupDeadlineFactory = alarm::create)
+            connection.requestProgressingBody()
+            try {
+                assertEquals(200, connection.responseCode); connection.inputStream
+                alarm.now.set(31_000)
+                val error = assertThrows(ProviderTransportException::class.java) { connection.acceptProgressingBody() }
+                assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
+                assertFalse(error.evidence.localCancellationRequested); assertNull(error.cause)
+                assertEquals(1, alarm.closes.get())
+            } finally { connection.disconnect() }
+        }
+    }
+
+    @Test fun acceptedMediaStillHasReadTimeoutAndItsSetupAlarmIsAlreadyReleased() {
+        ProxyFixture(slowBody = true).use { fixture ->
+            val alarm = SetupAlarm()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true },
+                allowProgressingMediaBody = true, setupDeadlineFactory = alarm::create)
+            connection.readTimeout = 500; connection.requestProgressingBody()
+            try {
+                assertEquals(200, connection.responseCode)
+                val input = connection.inputStream; connection.acceptProgressingBody()
+                assertEquals(1, alarm.closes.get())
+                val error = assertThrows(ProviderTransportException::class.java) { input.read() }
+                assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
+                assertEquals(ProviderTransportPhase.RESPONSE, error.evidence.phase)
+                assertFalse(error.evidence.localCancellationRequested)
+            } finally { connection.disconnect() }
+        }
+    }
+
+    @Test fun disconnectReleasesPendingMediaSetupAlarmWithoutTurningCancellationIntoTimeout() {
+        ProxyFixture(blockHeaders = true).use { fixture ->
+            val alarm = SetupAlarm()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true },
+                allowProgressingMediaBody = true, setupDeadlineFactory = alarm::create)
+            connection.requestProgressingBody()
+            val caught = AtomicReference<Throwable?>()
+            val worker = Thread { try { connection.responseCode } catch (error: Throwable) { caught.set(error) } }
+            try {
+                worker.start(); assertTrue(fixture.requestReceived.await(3, TimeUnit.SECONDS))
+                connection.disconnect(); alarm.fire(); worker.join(3000)
+                assertFalse(worker.isAlive)
+                assertEquals(ProviderTransportFailure.CANCELLED, providerTransportEvidence(checkNotNull(caught.get())).failure)
+                assertEquals(1, alarm.closes.get())
+            } finally { connection.disconnect(); worker.join(3000) }
+        }
+    }
+
     private inner class ProxyFixture(private val refusal: Boolean = false, private val block: Boolean = false,
         private val redirect: Boolean = false, private val user: String = username,
         private val secret: String = password, private val authRealm: String = realm,
@@ -51,6 +180,7 @@ class RoutedHttpsConnectionTest {
         private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         val port get() = server.localPort
         val accepted = CountDownLatch(1)
+        val requestReceived = CountDownLatch(1)
         val connectHeaders = AtomicReference<List<String>>()
         val originHeaders = AtomicReference<List<String>>()
         val originRequests = AtomicInteger()
@@ -90,6 +220,7 @@ class RoutedHttpsConnectionTest {
                 val origin = readHeaders(originInput)
                 originHeaders.set(origin)
                 originRequests.incrementAndGet()
+                requestReceived.countDown()
                 val length = origin.firstOrNull { it.startsWith("Content-Length:", true) }?.substringAfter(':')?.trim()?.toInt() ?: 0
                 val received = ByteArray(length)
                 var offset = 0

@@ -36,6 +36,19 @@ raw request details are added to the v1 journal, and unknown vocabulary still
 fails validation. This improves evidence for the sustained-playback investigation;
 it does not identify or fix the observed provider/network failures.
 
+Accepted playback MEDIA response bodies may progress beyond the old absolute
+30-second lifetime. Setup and manifests remain bounded to 30 seconds; connect
+and individual read timeouts, byte limits and before/after admission checks are
+unchanged. Only playback routes offer the explicit routed-media policy. A shared
+setup alarm remains active through headers and input acquisition, and body
+acceptance must beat its deadline even if the alarm callback is delayed. The
+atomic acceptance/expiry transition prevents a late queued alarm from canceling
+an accepted body. Completion, cancellation and failure release the alarm; a local
+setup timeout remains distinct from caller cancellation. Control-plane and DRM
+requests retain their existing whole-call deadlines. This removes an observed
+app-imposed media failure; low delivery throughput and sustained provider
+behavior still require separate verification.
+
 The first observed failure is retained as `FIRST`. Later distinct failures are
 `SECONDARY`; this ordering does not establish causation. For example, a Twitch
 404 and an ABEMA cleanup failure can be independent. Repeated blocked viewer

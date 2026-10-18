@@ -18,13 +18,14 @@ import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportPhase
+import net.fstab.tachiai.platform.network.ProgressingMediaResponse
 import org.junit.Assert.*
 import org.junit.Test
 
 @UnstableApi
 class BoundedMediaRequestsTest {
     private val uri = URI("https://media.ttvnw.net/fixture.m3u8?token=synthetic")
-    private class Connection(url: URL, val status: Int = 200, val length: Long = -1,
+    private open class Connection(url: URL, val status: Int = 200, val length: Long = -1,
         val body: ByteArray = "#EXTM3U\n".toByteArray(), val beforeResponse: () -> Unit = {},
         val stream: InputStream? = null, val errorBody: ByteArray? = null,
         val disconnectFailure: Exception? = null) : HttpsURLConnection(url) {
@@ -49,6 +50,89 @@ class BoundedMediaRequestsTest {
         clock: () -> Long = { 1_000L }, events: MutableList<NativeMediaEvent> = mutableListOf()) =
         BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { it.host == uri.host },
             { event, _ -> events += event }, canRequest, { connection }, clock)
+
+    @Test fun progressingMediaOutlivesThirtySecondsWhileManifestsKeepTheirTotalDeadline() {
+        for (media in listOf(false, true)) {
+            var now = 1_000L
+            val connection = Connection(uri.toURL(), stream = object : ByteArrayInputStream(ByteArray(8) { 1 }) {
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    now += 5_000
+                    return super.read(buffer, offset, length)
+                }
+            })
+            val source = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+                openConnection = { connection }, clockMs = { now })
+                .create(if (media) C.DATA_TYPE_MEDIA else C.DATA_TYPE_MANIFEST)
+            source.openUri(uri)
+            if (media) {
+                repeat(8) { assertEquals(1, source.read(ByteArray(1), 0, 1)) }
+                assertEquals(C.RESULT_END_OF_INPUT, source.read(ByteArray(1), 0, 1))
+                assertTrue(now >= 31_000)
+            } else {
+                repeat(5) { assertEquals(1, source.read(ByteArray(1), 0, 1)) }
+                assertThrows(IOException::class.java) { source.read(ByteArray(1), 0, 1) }
+            }
+            source.close(); assertTrue(connection.disconnected)
+            assertEquals(5_000, connection.connectTimeout); assertEquals(10_000, connection.readTimeout)
+        }
+    }
+
+    @Test fun onlyMediaExplicitlyRequestsRoutedProgressionAndOnlyAfterSetupPassesDoesItAcceptBody() {
+        for (type in listOf(C.DATA_TYPE_MEDIA, C.DATA_TYPE_MANIFEST)) {
+            var requested = 0; var accepted = 0
+            val connection = object : Connection(uri.toURL()), ProgressingMediaResponse {
+                override fun requestProgressingBody() { assertFalse(bodyRead); requested++ }
+                override fun acceptProgressingBody() { assertTrue(bodyRead); accepted++ }
+            }
+            val source = requests(connection).create(type)
+            source.openUri(uri); source.close()
+            assertEquals(if (type == C.DATA_TYPE_MEDIA) 1 else 0, requested)
+            assertEquals(requested, accepted)
+        }
+    }
+
+    @Test fun mediaBeyondThirtySecondsStillRejectsExpiredAdmissionAndStoppedPlaybackBeforeReading() {
+        for (stopped in listOf(false, true)) {
+            var now = 1_000L; var admitted = true; var reads = 0
+            val budget = NativePlaybackBudget.continuous({ true })
+            val connection = Connection(uri.toURL(), stream = object : InputStream() {
+                override fun read(): Int { reads++; return 1 }
+                override fun read(buffer: ByteArray, offset: Int, length: Int) = read()
+            })
+            val seen = mutableListOf<NativeMediaRequestFailure>()
+            val source = BoundedMediaRequests(budget, { true }, { _, _ -> }, canRequest = { admitted },
+                openConnection = { connection }, clockMs = { now },
+                onFailure = { _, error -> seen += (error as NativeMediaRequestException).failure }).create(C.DATA_TYPE_MEDIA)
+            source.openUri(uri)
+            now += 60_000
+            if (stopped) budget.stop() else admitted = false
+            assertThrows(IOException::class.java) { source.read(ByteArray(1), 0, 1) }
+            assertEquals(0, reads); assertTrue(connection.disconnected)
+            assertEquals(listOf(if (stopped) NativeMediaRequestFailure.PLAYBACK_INACTIVE
+                else NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED), seen)
+        }
+    }
+
+    @Test fun lateHeadersOrInputAcquisitionCannotTurnExpiredMediaSetupIntoAnAcceptedBody() {
+        for (lateInput in listOf(false, true)) {
+            var now = 1_000L; var accepted = false
+            val connection = object : Connection(uri.toURL(), beforeResponse = { if (!lateInput) now += 30_000 }),
+                ProgressingMediaResponse {
+                override fun requestProgressingBody() = Unit
+                override fun acceptProgressingBody() { accepted = true }
+            }
+            val seen = mutableListOf<NativeMediaRequestFailure>()
+            val source = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+                openConnection = { connection }, clockMs = { now }, openInput = {
+                    if (lateInput) now += 30_000
+                    it.inputStream
+                }, onFailure = { _, error -> seen += (error as NativeMediaRequestException).failure })
+                .create(C.DATA_TYPE_MEDIA)
+            assertThrows(IOException::class.java) { source.openUri(uri) }
+            assertFalse(accepted); assertTrue(connection.disconnected)
+            assertEquals(listOf(NativeMediaRequestFailure.REQUEST_DEADLINE), seen)
+        }
+    }
 
     @Test fun `originating open and read transport failures reach observers as safe categories`() {
         val secret = "https://private.example/path?token=synthetic-secret"
@@ -109,7 +193,7 @@ class BoundedMediaRequestsTest {
             val source = BoundedMediaRequests(budget, { true }, { _, _ -> }, canRequest = { admitted },
                 openConnection = { connection }, clockMs = { now }, onFailure = { stage, error ->
                     seen += stage to (error as NativeMediaRequestException).failure
-                }).create(C.DATA_TYPE_MEDIA)
+                }).create(if (expected == NativeMediaRequestFailure.REQUEST_DEADLINE) C.DATA_TYPE_MANIFEST else C.DATA_TYPE_MEDIA)
             source.openUri(uri)
             val error = assertThrows(IOException::class.java) { source.read(ByteArray(1), 0, 1) }
             assertEquals("Native media read failed", error.message)

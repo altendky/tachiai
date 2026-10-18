@@ -15,6 +15,7 @@ import java.net.CookieHandler
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.HttpsURLConnection
+import net.fstab.tachiai.platform.network.ProgressingMediaResponse
 
 private class NativeMediaCleanupException : IOException("Native media cleanup unconfirmed")
 
@@ -56,13 +57,15 @@ internal class BoundedMediaRequests(
         private var requestStarted = 0L
         private var responseHttp = 0
         private var transferOpen = false
+        private var mediaBodyAccepted = false
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
             if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
             // This boolean includes owner, acceptance deadline and provider
             // grant/admission checks. A refusal does not identify which failed.
             if (!canRequest()) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
-            if (clockMs() - requestStarted >= 30_000) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_DEADLINE)
+            if (!mediaBodyAccepted && clockMs() - requestStarted >= 30_000)
+                throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_DEADLINE)
         }
 
         override fun getUri(): Uri? = source?.toString()?.toUri()
@@ -92,6 +95,7 @@ internal class BoundedMediaRequests(
             }
             try {
                 check(connection == null && !transferOpen)
+                mediaBodyAccepted = false
                 requestStarted = clockMs()
                 checkActive()
                 if (type == C.DATA_TYPE_DRM) {
@@ -106,6 +110,7 @@ internal class BoundedMediaRequests(
                 onConnectionOwned(request)
                 active.add(request)
                 checkActive()
+                if (type == C.DATA_TYPE_MEDIA) (request as? ProgressingMediaResponse)?.requestProgressingBody()
                 request.instanceFollowRedirects = false // All redirects fail closed, before any next hop.
                 request.connectTimeout = 5_000
                 request.readTimeout = 10_000
@@ -163,6 +168,12 @@ internal class BoundedMediaRequests(
                 input = openInput(request)
                 readBytes = 0
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
+                checkActive() // Setup is still bounded, including input acquisition.
+                if (type == C.DATA_TYPE_MEDIA) {
+                    (request as? ProgressingMediaResponse)?.acceptProgressingBody()
+                    mediaBodyAccepted = true
+                    checkActive()
+                }
                 // Only real Media3 opens report transfers; openUri remains the
                 // Android-free transport seam used by existing policy fixtures.
                 if (transferSpec != null) {
@@ -215,6 +226,7 @@ internal class BoundedMediaRequests(
                 if (streamClosed) input = null
                 if (disconnected) { connection = null; if (request != null) active.remove(request) }
                 source = null
+                mediaBodyAccepted = false
                 if (transferOpen) {
                     transferOpen = false
                     transferEnded()

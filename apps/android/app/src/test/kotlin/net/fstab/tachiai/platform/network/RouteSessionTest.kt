@@ -23,6 +23,28 @@ import okio.ForwardingSource
 import okio.buffer
 
 class RouteSessionTest {
+    @Test fun onlyPlaybackRoutesAllowExplicitMediaResponseProgression() {
+        val profile = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
+        val playback = RouteSession.create(profile) { _, _ -> FakeBackend() }
+        try {
+            val connection = playback.open(URL("https://media.ttvnw.net/fixture")) as RoutedHttpsConnection
+            connection.requestProgressingBody() // Local policy only; no dispatch.
+            connection.disconnect()
+        } finally { playback.close() }
+        val metadata = RouteSession.createAbemaCatalog(null)
+        try {
+            val connection = metadata.open(URL("https://api.abema.io/v1/channels")) as RoutedHttpsConnection
+            assertThrows(IllegalStateException::class.java) { connection.requestProgressingBody() }
+            connection.disconnect()
+        } finally { metadata.close() }
+        val account = RouteSession.createTwitchContinueWatching(null)
+        try {
+            val connection = account.open(URL("https://gql.twitch.tv/gql")) as RoutedHttpsConnection
+            assertThrows(IllegalStateException::class.java) { connection.requestProgressingBody() }
+            connection.disconnect()
+        } finally { account.close() }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun ownedConnections(route: RouteSession): MutableSet<RoutedHttpsConnection> =
         RouteSession::class.java.getDeclaredField("connections").apply { isAccessible = true }

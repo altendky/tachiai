@@ -65,8 +65,10 @@ internal class RoutedHttpsConnection(
     url: URL,
     private val client: OkHttpClient,
     private val routeActive: () -> Boolean,
+    private val allowProgressingMediaBody: Boolean = false,
+    private val setupDeadlineFactory: (() -> Unit) -> MediaResponseSetupDeadline = { MediaResponseSetupDeadline(it) },
     private val onDisconnect: (RoutedHttpsConnection) -> Unit = {},
-) : HttpsURLConnection(url) {
+) : HttpsURLConnection(url), ProgressingMediaResponse {
     private val lock = Any()
     // OkHttp body streams are not safe for concurrent read/close. Cancellation
     // must happen outside this lock so it can interrupt the current reader.
@@ -77,6 +79,8 @@ internal class RoutedHttpsConnection(
     private var responseStream: InputStream? = null
     private var call: Call? = null
     private var reply: Response? = null
+    private var progressingBody = false
+    private var setupDeadline: MediaResponseSetupDeadline? = null
     private var failureObserver: ((RoutedHttpsFailureDiagnostic) -> Unit)? = null
     private val firstDiagnostic = AtomicReference<RoutedHttpsFailureDiagnostic?>()
     private val phase = AtomicReference(RoutedHttpsCallPhase.NOT_STARTED)
@@ -145,6 +149,21 @@ internal class RoutedHttpsConnection(
 
     override fun connect() { response() }
 
+    override fun requestProgressingBody() = synchronized(lock) {
+        writable()
+        check(allowProgressingMediaBody) { "Media response policy unavailable" }
+        progressingBody = true
+    }
+
+    override fun acceptProgressingBody() {
+        val deadline = synchronized(lock) {
+            check(progressingBody && connected && !disconnected && routeActive() && reply != null)
+            checkNotNull(setupDeadline)
+        }
+        if (!deadline.acceptBody())
+            throw ProviderTransportException(rememberDiagnostic(SocketTimeoutException("Media response setup ended")))
+    }
+
     private fun response(): Response {
         val pending = synchronized(lock) {
             if (disconnected || !routeActive()) throw IOException("Route is closed")
@@ -159,13 +178,14 @@ internal class RoutedHttpsConnection(
                 // adds gzip and transparently decompresses without caller consent.
                 if (headers.keys.none { it.equals("Accept-Encoding", true) }) builder.header("Accept-Encoding", "identity")
                 require(requestMethod in listOf("GET", "POST", "PUT", "OPTIONS", "HEAD"))
+                if (progressingBody) require(requestMethod == "GET" && !doOutput)
                 if (!doOutput) require(bytes.isEmpty())
                 builder.method(requestMethod, if (doOutput || requestMethod in listOf("POST", "PUT")) bytes.toRequestBody() else null).build()
             } finally { body.erase() }
             val configured = client.newBuilder()
                 .connectTimeout(connectTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
                 .readTimeout(readTimeout.takeIf { it > 0 }?.coerceAtMost(15_000)?.toLong() ?: 15_000L, TimeUnit.MILLISECONDS)
-                .callTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(if (progressingBody) 0L else 30L, TimeUnit.SECONDS)
             // Typed request evidence is always available, independent of the
             // optional diagnostic observer. Preserve an existing listener.
             run {
@@ -201,7 +221,16 @@ internal class RoutedHttpsConnection(
             connected = true
             activeClient.newCall(request).also { call = it }
         }
-        val result = try { pending.execute() } catch (error: Exception) {
+        val result = try {
+            if (synchronized(lock) { progressingBody }) {
+                val deadline = setupDeadlineFactory(pending::cancel)
+                val retained = synchronized(lock) {
+                    if (!disconnected) { setupDeadline = deadline; true } else false
+                }
+                if (!retained) { deadline.close(); throw IOException("Route is closed") }
+            }
+            pending.execute()
+        } catch (error: Exception) {
             val evidence = rememberDiagnostic(error)
             disconnect(); throw ProviderTransportException(evidence)
         }
@@ -215,6 +244,7 @@ internal class RoutedHttpsConnection(
 
     private fun rememberDiagnostic(error: Exception): ProviderTransportEvidence {
         val cancelled = synchronized(lock) { disconnected } || !runCatching(routeActive).getOrDefault(false)
+        val setupExpired = synchronized(lock) { setupDeadline?.expired == true }
         val observedPhase = if (!phaseAvailable.get()) ProviderTransportPhase.UNKNOWN else when (phase.get()) {
             RoutedHttpsCallPhase.DNS -> ProviderTransportPhase.DNS
             RoutedHttpsCallPhase.CONNECT -> ProviderTransportPhase.CONNECT
@@ -225,9 +255,10 @@ internal class RoutedHttpsConnection(
             else -> ProviderTransportPhase.UNKNOWN
         }
         val evidence = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
+            else if (setupExpired) ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT, observedPhase)
             else providerTransportEvidence(error).let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
         val observer = synchronized(lock) { failureObserver } ?: return evidence
-        val category = when (error) {
+        val category = if (setupExpired && !cancelled) RoutedHttpsFailureCategory.SOCKET_TIMEOUT else when (error) {
             is SSLHandshakeException -> RoutedHttpsFailureCategory.TLS_HANDSHAKE
             is SSLPeerUnverifiedException -> RoutedHttpsFailureCategory.TLS_PEER
             is SSLException -> RoutedHttpsFailureCategory.TLS_OTHER
@@ -248,13 +279,14 @@ internal class RoutedHttpsConnection(
     }
 
     override fun disconnect() {
-        val pending = synchronized(lock) {
+        val (pending, deadline) = synchronized(lock) {
             if (disconnectReported) return
             disconnected = true
             body.erase()
             headers.clear()
-            call
+            call to setupDeadline.also { setupDeadline = null }
         }
+        deadline?.close()
         pending?.cancel()
         withResponseBodyLock {
             closeResponseBody()

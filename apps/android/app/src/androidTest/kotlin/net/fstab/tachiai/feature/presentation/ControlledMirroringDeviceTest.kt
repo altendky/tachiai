@@ -7,6 +7,8 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.graphics.Rect
+import android.media.session.MediaController
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -157,12 +159,12 @@ class ControlledMirroringDeviceTest {
         report(fixture, "LIFECYCLE_COMPLETE")
     }
 
-    private fun awaitReady(fixture: Fixture) = await("two local replay timelines are READY", 15_000) {
+    internal fun awaitReady(fixture: Fixture) = await("two local replay timelines are READY", 15_000) {
         check(fixture.stopped.get() == null) { "Controlled fixture stopped before preparation completed" }
         main { fixture.samples().size == 2 && fixture.samples().all { it.ready } }
     }
 
-    private fun withFixture(test: (Fixture) -> Unit) {
+    internal fun withFixture(television: Boolean = false, test: (Fixture) -> Unit) {
         // Ordinary debug policy is intentional: inspect removes protections and
         // cannot establish ordinary-build mirroring behavior.
         val target = instrumentation.targetContext
@@ -170,6 +172,8 @@ class ControlledMirroringDeviceTest {
         // BuildConfig constants belong to the test's compile-time variant and
         // are inlined. Read the installed target's manifest flags instead.
         assumeTrue("Use the ordinary debug target", ordinaryDebugFlags(target.applicationInfo.flags))
+        if (television) assumeTrue("TV acceptance uses the actual television configuration",
+            isTelevision(target.resources.configuration))
         verifyMedia(instrumentation.context)
         var activity: ComponentActivity? = null
         var fixture: Fixture? = null
@@ -182,7 +186,7 @@ class ControlledMirroringDeviceTest {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val host = instrumentation.startActivitySync(intent) as ComponentActivity
             activity = host
-            val running = main { Fixture(host, instrumentation.context).also { it.start() } }
+            val running = main { Fixture(host, instrumentation.context, television).also { it.start() } }
             fixture = running
             test(running)
         } finally {
@@ -190,7 +194,7 @@ class ControlledMirroringDeviceTest {
         }
     }
 
-    private fun report(fixture: Fixture, phase: String) {
+    internal fun report(fixture: Fixture, phase: String) {
         val report = main { Bundle().apply {
             putString("controlledMirror", phase)
             putString("stopReason", fixture.stopped.get() ?: "RUNNING")
@@ -204,13 +208,13 @@ class ControlledMirroringDeviceTest {
         instrumentation.sendStatus(0, report)
     }
 
-    private fun <T> main(block: () -> T): T {
+    internal fun <T> main(block: () -> T): T {
         var result: Result<T>? = null
         instrumentation.runOnMainSync { result = runCatching(block) }
         return checkNotNull(result).getOrThrow()
     }
 
-    private fun await(description: String, timeoutMs: Long = 8_000, condition: () -> Boolean) {
+    internal fun await(description: String, timeoutMs: Long = 8_000, condition: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + timeoutMs
         while (!condition()) {
             check(SystemClock.elapsedRealtime() < end) { "Timed out: $description" }
@@ -242,10 +246,10 @@ class ControlledMirroringDeviceTest {
         }
     }
 
-    private data class Sample(val positionMs: Long, val ready: Boolean, val playing: Boolean,
+    internal data class Sample(val positionMs: Long, val ready: Boolean, val playing: Boolean,
         val renderedBuffers: Int, val volume: Float)
 
-    private class LocalMember(val player: ExoPlayer) : NativePairMember {
+    internal class LocalMember(val player: ExoPlayer) : NativePairMember {
         var released = false
             private set
 
@@ -300,9 +304,23 @@ class ControlledMirroringDeviceTest {
         }
     }
 
-    private class Fixture(private val activity: ComponentActivity, private val assets: Context) {
+    internal class Fixture(val activity: ComponentActivity, private val assets: Context,
+        private val television: Boolean = false) {
         val stopped = AtomicReference<String?>(null)
         val players = mutableListOf<LocalMember>()
+        private val slots = arrayOfNulls<LocalMember>(2)
+        private val surfaces = mutableListOf<PlayerView>()
+        private val localFailures = mutableSetOf<NativeMixedSide>()
+        var retries = 0
+            private set
+        var onReturnToPicker: (() -> Unit)? = null
+        lateinit var root: LinearLayout
+            private set
+        var mediaController: MediaController? = null
+            private set
+        private var mediaSession: ForegroundPairMediaSession? = null
+        var sessionReleased = false
+            private set
         var controller: PrototypePlaybackController? = null
             private set
         var viewer: NativePairViewer? = null
@@ -327,6 +345,11 @@ class ControlledMirroringDeviceTest {
                 try {
                     controller?.poll()
                     viewer?.refresh()
+                    mediaSession?.publish(when {
+                        samples().any { it.playing } -> PlaybackState.STATE_PLAYING
+                        controller?.playingRequested == true -> PlaybackState.STATE_BUFFERING
+                        else -> PlaybackState.STATE_PAUSED
+                    })
                     readback.text = "CONTROLLED LOCAL MEDIA · ${((deadlineMs - SystemClock.elapsedRealtime()) / 1_000).coerceAtLeast(0)} s\n" +
                         samples().mapIndexed { index, sample ->
                             "${if (index == 0) "A" else "B"} ${sample.positionMs} ms · frames ${sample.renderedBuffers} · gain ${sample.volume}"
@@ -340,12 +363,14 @@ class ControlledMirroringDeviceTest {
             check(Looper.myLooper() == Looper.getMainLooper())
             try {
                 activity.lifecycle.addObserver(lifecycle)
-                back = activity.onBackPressedDispatcher.addCallback(activity) { finish("BACK") }
+                back = activity.onBackPressedDispatcher.addCallback(activity) {
+                    if (!television || viewer?.handleBack() != true) returnToPicker("BACK")
+                }
                 audio = NativePlaybackAudioGroup(activity) { controller?.focusLost(); viewer?.refresh() }
                 controller = PrototypePlaybackController({ audio?.acquire() == true },
-                    admission = { member -> stopped.get() == null && players.any { it === member } },
+                    admission = { member -> stopped.get() == null && slots.any { it === member } },
                     playAllowed = { stopped.get() == null && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) })
-                val root = LinearLayout(activity).apply {
+                root = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
                     fitsSystemWindows = true
                     setBackgroundColor(Color.rgb(23, 26, 28))
@@ -363,38 +388,78 @@ class ControlledMirroringDeviceTest {
                 header.addView(readback, LinearLayout.LayoutParams(0, -2, 1f))
                 header.addView(stopButton, LinearLayout.LayoutParams(-2, -2))
                 root.addView(header, LinearLayout.LayoutParams(-1, -2))
-                val surfaces = NativeMixedSide.entries.map { side ->
-                    val member = LocalMember(ExoPlayer.Builder(activity).build())
-                    players.add(member)
-                    member.player.addListener(object : Player.Listener {
-                        override fun onPlayerError(error: PlaybackException) { finish("PLAYER_ERROR_${error.errorCode}") }
-                    })
-                    member.player.repeatMode = Player.REPEAT_MODE_ONE
-                    // AssetDataSource cannot fall through to a network request.
-                    val source = ProgressiveMediaSource.Factory { AssetDataSource(assets) }.createMediaSource(
-                        MediaItem.fromUri(Uri.parse("asset:///controlled-mirroring/${if (side == NativeMixedSide.A) "a" else "b"}.mp4")))
-                    member.player.setMediaSource(source)
-                    member.player.prepare()
-                    controller!!.setMember(side, member)
+                NativeMixedSide.entries.forEach { side ->
+                    val member = createMember(side)
                     (activity.layoutInflater.inflate(R.layout.native_viewer_player, root, false) as PlayerView).apply {
                         player = member.player; useController = false; keepScreenOn = true
-                    }
+                    }.also(surfaces::add)
                 }
                 viewer = NativePairViewer(activity, surfaces[0], surfaces[1], "A", "B", { controller?.pair },
                     { controller?.play() }, { controller?.pause() }, { controller?.shiftRelative(it) },
-                    { controller?.catchUp(it) }, { controller?.pause() }, { finish("STOP") },
+                    { controller?.catchUp(it) }, { controller?.pause() }, { returnToPicker("STOP") },
                     { landscape -> activity.requestedOrientation = if (landscape)
                         ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT },
                     setupLabel = "Pause controlled media", statusOverride = { controller?.status },
                     members = { NativeMixedSide.entries.map { controller?.member(it) } },
                     volumeRequest = { side, value -> controller?.setVolume(side, value) == true },
-                    onSources = { finish("BACK") }, playbackBusy = { controller?.busy == true })
+                    feedMessage = { side -> if (side in localFailures) "Controlled local slot stopped for retry." else null },
+                    feedRecovery = { side -> if (side in localFailures) ViewerFeedRecovery("Retry local ${side.name}") else null },
+                    onRecoverFeed = { side -> retryLocal(side) },
+                    onSources = { returnToPicker("BACK") }, playbackBusy = { controller?.busy == true })
                 root.addView(viewer, LinearLayout.LayoutParams(-1, 0, 1f))
                 activity.setContentView(root)
                 viewer!!.open()
+                if (television) {
+                    mediaSession = ForegroundPairMediaSession(activity,
+                        admitted = { stopped.get() == null && viewer?.isShown == true &&
+                            activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) },
+                        playingRequested = { controller?.playingRequested == true },
+                        play = { controller?.play(); viewer?.refresh() },
+                        pause = { controller?.pause(); viewer?.refresh() })
+                    mediaController = MediaController(activity, checkNotNull(mediaSession).token)
+                    activity.mediaController = mediaController
+                }
                 deadlineMs = SystemClock.elapsedRealtime() + 20_000
                 handler.post(ticker)
             } catch (error: Throwable) { close("START_FAILED"); throw error }
+        }
+
+        private fun createMember(side: NativeMixedSide): LocalMember {
+            val member = LocalMember(ExoPlayer.Builder(activity).build())
+            players.add(member); slots[side.ordinal] = member
+            member.player.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) { finish("PLAYER_ERROR_${error.errorCode}") }
+            })
+            member.player.repeatMode = Player.REPEAT_MODE_ONE
+            // Test assets only: no HTTP factory or provider adapter can run.
+            val source = ProgressiveMediaSource.Factory { AssetDataSource(assets) }.createMediaSource(
+                MediaItem.fromUri(Uri.parse("asset:///controlled-mirroring/${if (side == NativeMixedSide.A) "a" else "b"}.mp4")))
+            member.player.setMediaSource(source)
+            if (television) member.player.seekTo(15_000)
+            member.player.prepare()
+            controller!!.setMember(side, member)
+            return member
+        }
+
+        fun currentMember(side: NativeMixedSide) = slots[side.ordinal]
+        fun playerSurface(side: NativeMixedSide) = surfaces[side.ordinal]
+
+        fun injectLocalFailure(side: NativeMixedSide) {
+            check(television && stopped.get() == null && side !in localFailures)
+            val member = checkNotNull(slots[side.ordinal])
+            controller!!.setMember(side, null)
+            surfaces[side.ordinal].player = null
+            slots[side.ordinal] = null
+            member.close()
+            localFailures.add(side)
+            viewer!!.refresh()
+        }
+
+        private fun retryLocal(side: NativeMixedSide) {
+            if (!television || stopped.get() != null || !localFailures.remove(side)) return
+            retries++
+            surfaces[side.ordinal].player = createMember(side).player
+            viewer!!.refresh()
         }
 
         fun beginObservation(seconds: Int) {
@@ -402,11 +467,17 @@ class ControlledMirroringDeviceTest {
             deadlineMs = SystemClock.elapsedRealtime() + seconds * 1_000L
         }
 
-        fun samples(): List<Sample> = if (stopped.get() != null) finalSamples else players.map { it.sample() }
+        fun samples(): List<Sample> = if (stopped.get() != null) finalSamples else slots.map {
+            it?.sample() ?: Sample(0, false, false, 0, 0f)
+        }
 
         fun finishHost() { activity.finish() }
 
         private fun finish(reason: String) { close(reason); activity.finish() }
+        private fun returnToPicker(reason: String) {
+            if (television && onReturnToPicker != null) { close(reason); onReturnToPicker?.invoke() }
+            else finish(reason)
+        }
 
         fun close(reason: String) {
             check(Looper.myLooper() == Looper.getMainLooper())
@@ -415,7 +486,11 @@ class ControlledMirroringDeviceTest {
             fun release(owner: String, action: () -> Unit) {
                 try { action() } catch (_: Throwable) { cleanupFailures.add(owner) }
             }
-            release("SAMPLES") { finalSamples = players.map { it.sample() } }
+            release("SAMPLES") { finalSamples = slots.map { it?.sample() ?: Sample(0, false, false, 0, 0f) } }
+            release("MEDIA_SESSION") {
+                if (television && activity.mediaController === mediaController) activity.mediaController = null
+                mediaSession?.close(); if (television) sessionReleased = true
+            }
             release("VIEWER") { viewer?.endSession() }
             release("CONTROLLER") { controller?.close() }
             players.forEach { release("PLAYER") { it.close() } }
@@ -427,8 +502,9 @@ class ControlledMirroringDeviceTest {
         fun assertReleased() {
             assertNotNull(stopped.get())
             assertEquals(emptyList<String>(), cleanupFailures)
-            assertEquals(2, players.size)
+            if (television) assertTrue(players.size >= 2) else assertEquals(2, players.size)
             assertTrue(players.all { it.released && it.player.isReleased })
+            if (television) assertTrue(sessionReleased)
         }
 
         @Suppress("DEPRECATION")

@@ -741,11 +741,16 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             var confirmed = startupRemoved && mainClose {
                 var failed = false
                 for (close in listOf<() -> Unit>(
-                    { session?.close() }, { basePreparation?.close() }, { identityResolver?.close() },
+                    { session?.close() },
                     { view?.player = null },
-                ) + catalogSessions.map { catalog -> { catalog.close() } })
+                ))
                     try { close() } catch (_: Throwable) { failed = true }
                 if (failed) throw Refusal()
+            }
+            // Preparation and resolver shutdown may disconnect live requests.
+            // Keep that work off the main looper and await its actual receipt.
+            for (resource in listOfNotNull<AutoCloseable>(basePreparation, identityResolver) + catalogSessions) {
+                if (!CloseReceipt(resource, AutoCloseable::close).await(cleanupEnd)) confirmed = false
             }
             connections.forEach { it.startClose() }
             preparationSettled = !resolveStarted.get() || try { resolveFinished.await(
@@ -753,6 +758,7 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             workerTerminated = sessionWorker?.let { worker -> try {
                 worker.isShutdown && worker.awaitTermination((cleanupEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
             } catch (_: Throwable) { false } } ?: (session == null)
+            while (session?.cleanupPending == true && SystemClock.elapsedRealtime() < cleanupEnd) Thread.sleep(10)
             nativeConfirmed = mainClose { admit(session?.cleanupConfirmed != false, Failure.CLEANUP) }
             confirmed = confirmed && preparationSettled && workerTerminated && nativeConfirmed
             transports.forEach { transport -> if (!CloseReceipt(transport, OwnedTwitchCatalogTransport::close).await(cleanupEnd)) confirmed = false }

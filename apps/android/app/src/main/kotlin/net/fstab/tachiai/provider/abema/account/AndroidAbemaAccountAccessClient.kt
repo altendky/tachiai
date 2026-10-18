@@ -14,12 +14,13 @@ import java.util.concurrent.locks.ReentrantLock
 // Worker acquisition/checks; main admission is RAM/clock only. The ordinary
 // process owns the durable record. This client retains only its private lease.
 internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: String, ownerProof: String,
-    sourceProof: String, deadlineElapsedMs: Long, playback: Boolean, private val canUse: () -> Boolean) : AutoCloseable {
+    sourceProof: String, deadlineElapsedMs: Long, playback: Boolean, continuousPlayback: Boolean = false,
+    private val canUse: () -> Boolean) : AutoCloseable {
     companion object { private val retained = ConcurrentLinkedQueue<Any>() }
     private val application = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val request = AbemaAccountAccessIpc.Request(UUID.randomUUID().toString().replace("-", ""),
-        instanceId, ownerProof, sourceProof, deadlineElapsedMs, playback)
+        instanceId, ownerProof, sourceProof, deadlineElapsedMs, playback, continuousPlayback)
     private val began = SystemClock.elapsedRealtime()
     private val closed = AtomicBoolean()
     private val acquired = AtomicBoolean()
@@ -43,7 +44,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     }
     private fun live(): Boolean {
         val now = SystemClock.elapsedRealtime()
-        return !closed.get() && !revoked.get() && !poisoned.get() && now >= began && now < request.deadline &&
+        return !closed.get() && !revoked.get() && !poisoned.get() &&
+            AbemaAccountAccessIpc.sessionCurrent(request, began, now, acquired.get()) &&
             runCatching(canUse).getOrDefault(false)
     }
     fun current(): Boolean {
@@ -62,8 +64,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             val seq = fields["sequence"] as? Long ?: return
             if (!AbemaAccountAccessIpc.matches(fields, request, seq)) return
             when (message.what) {
-                AbemaAccountAccessIpc.READY -> if (seq == 1L && fields.size == 7 && live()) ready.countDown()
-                AbemaAccountAccessIpc.REVOKED -> if (fields.size == 7) { revoked.set(true); close() }
+                AbemaAccountAccessIpc.READY -> if (seq == 1L && fields.keys == AbemaAccountAccessIpc.base(request, seq).keys && live()) ready.countDown()
+                AbemaAccountAccessIpc.REVOKED -> if (fields.keys == AbemaAccountAccessIpc.base(request, seq).keys) { revoked.set(true); close() }
                 AbemaAccountAccessIpc.CLOSED -> {
                     if (fields.keys != AbemaAccountAccessIpc.base(request, seq).keys + "confirmed" || fields["confirmed"] !is Boolean) return
                     val confirmed = fields["confirmed"] == true

@@ -3,15 +3,12 @@ package net.fstab.tachiai.provider.twitch
 import android.content.Context
 import java.io.IOException
 import java.net.URL
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.feature.connections.*
 import net.fstab.tachiai.platform.net.AccessProbeHttp
+import net.fstab.tachiai.platform.media.closeNativeResources
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.twitch.catalog.*
@@ -34,15 +31,12 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val startupValidation: TwitchCatalogReadOnlyValidation? = null,
 ) : TwitchPlaybackPreparation {
-    companion object {
-        private val cancellationWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
-            ArrayBlockingQueue(32), { task -> Thread(task, "twitch-playback-cancel").apply { isDaemon = true } })
-    }
     private val valid = AtomicBoolean(true)
     private val started = AtomicBoolean()
     private val binding = AtomicReference<TwitchCatalogConnectionBinding?>()
     private val session = AtomicReference<TwitchCatalogSession?>()
     private val access = AtomicReference<AccessProbeHttp?>()
+    private val cleanup = TwitchPreparationCleanup()
     @Volatile private var owner: TwitchCatalogConnectionOwner? = null
     @Volatile private var lease: TwitchCatalogLease? = null
     private val storedLock = Any()
@@ -124,7 +118,7 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
                 if (!checkStored(force = true) || lease !== requestLease || monotonicMs() >= acceptanceDeadlineMs)
                     throw IOException("Playback connection ended")
                 return selected
-            } finally { access.compareAndSet(request, null); request.close() }
+            } finally { access.compareAndSet(request, null); cleanup.close(request) }
         } catch (error: Exception) {
             close()
             throw error
@@ -144,18 +138,16 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
         }
     }
 
-    // No protected reads or route joins on lifecycle callbacks. The HTTP worker
-    // owns final disconnect; cancellation schedules an early disconnect attempt.
+    // Worker-only. The session tracks this cancellation and the resolve worker's
+    // finally block before confirming shutdown or releasing its selected route.
     override fun close() {
         valid.set(false)
-        try { session.getAndSet(null)?.close() }
-        finally {
-            try { binding.getAndSet(null)?.close() }
-            finally { access.getAndSet(null)?.let { request ->
-                try { cancellationWorkers.execute { request.close() } }
-                catch (_: RejectedExecutionException) { /* Admission is already ended; the bounded worker closes in finally. */ }
-            } }
-        }
+        closeNativeResources(
+            { cleanup.close(access.getAndSet(null)) },
+            { cleanup.close(session.getAndSet(null)) },
+            { cleanup.close(binding.getAndSet(null)) },
+        )
+        cleanup.requireConfirmed()
     }
     override fun toString() = "CatalogTwitchPreparation(redacted)"
 }

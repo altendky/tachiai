@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.twitch
 import androidx.media3.common.util.UnstableApi
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import android.os.Looper
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -32,6 +33,91 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PrototypeTwitchSessionDeviceTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+
+    @Test fun closeKeepsPreparationFinallyPendingAndCancelsTransportOffMain() {
+        val entered = CountDownLatch(1)
+        val holding = CountDownLatch(1)
+        val finalizing = CountDownLatch(1)
+        val releaseFinally = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val settled = CountDownLatch(1)
+        lateinit var session: PrototypeTwitchSession
+        fun awaitFinallyRelease() {
+            while (true) {
+                try { check(releaseFinally.await(10, TimeUnit.SECONDS)); return }
+                catch (_: InterruptedException) { /* Shutdown is not a completed finally block. */ }
+            }
+        }
+        val preparation = object : TwitchPlaybackPreparation {
+            override val acceptanceDeadlineMs = Long.MAX_VALUE
+            override fun canContinue() = false
+            override fun checkStored(force: Boolean) = false
+            override fun resolve(replay: Boolean, resource: String,
+                onStatus: (String, Int) -> Unit): TwitchPlaybackSource {
+                try {
+                    entered.countDown()
+                    holding.await()
+                    throw IOException("Fixture preparation ended")
+                } finally {
+                    finalizing.countDown()
+                    awaitFinallyRelease()
+                }
+            }
+            override fun close() {
+                check(Looper.myLooper() != Looper.getMainLooper())
+                cancelled.countDown()
+            }
+        }
+        instrumentation.runOnMainSync {
+            session = PrototypeTwitchSession(instrumentation.targetContext, true, "789", { true }, {},
+                authorization = authorization(), preparationFactory = { preparation },
+                onCleanupChanged = { if (session.cleanupConfirmed) settled.countDown() })
+            session.prepare(NativePlaybackBudget(60_000L, { true }))
+        }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            instrumentation.runOnMainSync { session.close() }
+            assertTrue(cancelled.await(5, TimeUnit.SECONDS))
+            assertTrue(finalizing.await(5, TimeUnit.SECONDS))
+            assertTrue(session.cleanupPending)
+            assertFalse(session.cleanupConfirmed)
+            assertFalse(session.cleanupFailed)
+            releaseFinally.countDown()
+            assertTrue(settled.await(5, TimeUnit.SECONDS))
+            assertFalse(session.cleanupPending)
+            assertTrue(session.cleanupConfirmed)
+        } finally {
+            holding.countDown(); releaseFinally.countDown()
+            instrumentation.runOnMainSync { session.close() }
+        }
+    }
+
+    @Test fun failedBackgroundPreparationCloseCannotBecomeConfirmed() {
+        val settled = CountDownLatch(1)
+        lateinit var session: PrototypeTwitchSession
+        val preparation = object : TwitchPlaybackPreparation {
+            override val acceptanceDeadlineMs = Long.MAX_VALUE
+            override fun canContinue() = false
+            override fun checkStored(force: Boolean) = false
+            override fun resolve(replay: Boolean, resource: String,
+                onStatus: (String, Int) -> Unit): TwitchPlaybackSource = error("Must not prepare")
+            override fun close() {
+                check(Looper.myLooper() != Looper.getMainLooper())
+                throw IOException("Fixture cancellation failed")
+            }
+        }
+        instrumentation.runOnMainSync {
+            session = PrototypeTwitchSession(instrumentation.targetContext, true, "789", { true }, {},
+                authorization = authorization(), preparationFactory = { preparation },
+                onCleanupChanged = { if (session.cleanupFailed && !session.cleanupPending) settled.countDown() })
+            session.close()
+        }
+        assertTrue(settled.await(5, TimeUnit.SECONDS))
+        assertTrue(session.cleanupFailed)
+        assertFalse(session.cleanupConfirmed)
+        instrumentation.runOnMainSync { session.close() }
+        assertFalse(session.cleanupConfirmed)
+    }
     private class Memory : PrivateSecretStore {
         private var bytes: ByteArray? = null
         @Synchronized override fun read() = bytes?.copyOf()
@@ -101,8 +187,13 @@ class PrototypeTwitchSessionDeviceTest {
             worker.submit(Runnable {}).get(5, TimeUnit.SECONDS)
         }
         fun close() {
+            check(Looper.myLooper() != Looper.getMainLooper())
             instrumentation.runOnMainSync { session.close() }
             media.forEach { it.disconnect() }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (session.cleanupPending && System.nanoTime() < deadline) Thread.sleep(10)
+            assertFalse("Fixture cleanup is still pending", session.cleanupPending)
+            assertTrue("Fixture cleanup was not confirmed", session.cleanupConfirmed)
         }
     }
 

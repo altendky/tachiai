@@ -37,7 +37,10 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -55,6 +58,7 @@ import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.platform.media.awaitOpaqueResponse
+import net.fstab.tachiai.platform.media.closePlayer
 import net.fstab.tachiai.platform.network.RouteSession
 import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
@@ -103,11 +107,14 @@ internal class CachedPrototypeAbemaSession(
     // Historical guest live playback has no account/resource owner, but still
     // belongs to the viewer's immutable provider route scope.
     private val routeOwnership: AbemaEpisodePlaybackOwnership? = null,
+    private val cleanupExecutor: Executor = transportCleanupWorkers,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
             Thread(task, "abema-playback-account-release").apply { isDaemon = true }
         }
+        private val transportCleanupWorkers = ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(32), { task -> Thread(task, "abema-playback-transport-release").apply { isDaemon = true } })
     }
     init {
         require(episodeResource == null || replay && supportedConfiguredAbemaEpisode(episodeResource) && route != null && ownership != null)
@@ -148,6 +155,9 @@ internal class CachedPrototypeAbemaSession(
     }
     private val transportFinalizing = AtomicBoolean()
     private val transportFinalized = AtomicBoolean()
+    private val transportCancellationPending = AtomicBoolean()
+    private val cleanupSetupComplete = AtomicBoolean()
+    private val helperFinalized = AtomicBoolean()
     private val accountCleanupPending = AtomicBoolean()
     private val slotProfileCleanupPending = AtomicBoolean()
     private val slotProfile = AtomicReference<AbemaBorrowedSlotProfile?>()
@@ -166,7 +176,8 @@ internal class CachedPrototypeAbemaSession(
     private val accountLock = Any()
     private val privateInitialization = AtomicReference<ByteArray?>()
     val cleanupPending get() = worker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
-        (closed.get() && !transportFinalized.get())
+        transportCancellationPending.get() || nativeCleanup?.pending == true ||
+        (closed.get() && (!transportFinalized.get() || !helperFinalized.get()))
     private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { cleanupFailed = true; onCleanupChanged() }
     @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
     private val closed = AtomicBoolean(false)
@@ -184,6 +195,7 @@ internal class CachedPrototypeAbemaSession(
     @Volatile private var nativeHost: BoundedNativeDashPlayer? = null
     @Volatile private var budget: NativePlaybackBudget? = null
     @Volatile private var deadline = 0L
+    private val playbackAvailability = AtomicReference<AbemaPlaybackAvailability?>()
     private var started = false
     private var documentStarted = false
     private var preparingNative = false
@@ -215,12 +227,14 @@ internal class CachedPrototypeAbemaSession(
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
     private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
         budget?.active == true && ownership?.canContinue() != false && routeOwnership?.canContinue() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.current() == true) && slotPremiumCurrent(run) && slotChaseCurrent(run)
+        (!accountAdmitted.get() || accountClient.get()?.current() == true) &&
+        playbackAvailability.get()?.current() != false && slotPremiumCurrent(run) && slotChaseCurrent(run)
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
     private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
         (routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker()) &&
         (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
+        playbackAvailability.get()?.current() != false &&
         slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
     private fun slotPremiumCurrent(run: Long): Boolean {
         return slotLinearAdmission.current {
@@ -366,12 +380,12 @@ internal class CachedPrototypeAbemaSession(
         if (started || closed.get()) return
         started = true
         this.budget = budget
-        deadline = SystemClock.elapsedRealtime() + budget.remainingMs
+        deadline = budget.deadlineAt(SystemClock.elapsedRealtime())
         if (!active() || !budget.active) { fail(); return }
         emit(PrototypeFeedEvent.PREPARING)
         val run = revision.incrementAndGet()
         val readinessDeadline = minOf(deadline, SystemClock.elapsedRealtime() + 45_000)
-        handler.postDelayed({ if (!closed.get() && revision.get() == run)
+        if (budget.isTimeBounded) handler.postDelayed({ if (!closed.get() && revision.get() == run)
             fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }, budget.remainingMs)
         handler.postDelayed({ if (!closed.get() && revision.get() == run && !preparingNative) {
             if (!preparationAdmitted(run)) fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED), admissionLost = true)
@@ -411,7 +425,9 @@ internal class CachedPrototypeAbemaSession(
                     val proof = MessageDigest.getInstance("SHA-256").digest(sourceBinding.toByteArray(Charsets.UTF_8))
                         .joinToString("") { "%02x".format(it.toInt() and 255) }
                     val client = AndroidAbemaAccountAccessClient(application, selectedOwner.instanceId,
-                        selectedOwner.ownerProof, proof, deadline, playback = true, canUse = {
+                        selectedOwner.ownerProof, proof,
+                        if (budget.isTimeBounded) deadline else minOf(deadline, SystemClock.elapsedRealtime() + 30_000),
+                        playback = true, continuousPlayback = !budget.isTimeBounded, canUse = {
                             !closed.get() && revision.get() == run && active() && budget.active &&
                                 SystemClock.elapsedRealtime() < deadline && selectedOwner.canContinue()
                         })
@@ -785,6 +801,7 @@ internal class CachedPrototypeAbemaSession(
                         C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build(),
                 openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
                 onCleanupOwner = { nativeCleanup = it },
+                onCleanupChanged = ::nativeCleanupChanged,
                 onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })
             nativeHost = created
             nativePreparationEvidence.observe(AbemaNativePreparationPhase.HOST_CREATED, true)
@@ -800,10 +817,13 @@ internal class CachedPrototypeAbemaSession(
         check(sourcePending.compareAndSet(null, completion))
         handler.post {
             if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
-            else view.evaluateJavascript("window['$name']?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null") { raw ->
+            else view.evaluateJavascript("(() => { const h = window['$name']; return JSON.stringify({" +
+                "binding: h?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null," +
+                "availability: h?.playbackAvailability() || null}); })()") { raw ->
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
-                    val selected = quoted(raw, 12_000)
+                    val projection = runCatching { org.json.JSONObject(quoted(raw, 24_000) ?: "") }.getOrNull()
+                    val selected = projection?.opt("binding") as? String
                     val slotBinding = if (slotResource != null)
                         parseAbemaSlotPlaybackBinding(selected, slotChannelId, slotId,
                             allowLinear = continuousSlotPlayback, modernChannelContext = modernChannelPreparation) else null
@@ -820,7 +840,10 @@ internal class CachedPrototypeAbemaSession(
                             record("cdnReview=UNAVAILABLE"); completion.complete(null); return@evaluateJavascript
                         }
                     }
-                    val allowed = uri != null && if (slotBinding?.linear == true)
+                    val availability = uri?.let { parseAbemaPlaybackAvailability(
+                        projection?.opt("availability") as? String, it,
+                        requireExpiry = replay && slotBinding?.linear != true, wallMs = System.currentTimeMillis()) }
+                    val allowed = uri != null && availability != null && if (slotBinding?.linear == true)
                         AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = slotChannelId,
                             modernChannelContext = modernChannelPreparation)
                     else if (slotResource != null) allowsAbemaSlotSource(uri, slotChannelId, slotId)
@@ -852,7 +875,8 @@ internal class CachedPrototypeAbemaSession(
                         }
                         record("sourcePolicy=$category shape=$shape")
                     }
-                    completion.complete(uri?.takeIf { allowed })
+                    if (allowed) playbackAvailability.compareAndSet(null, availability)
+                    completion.complete(uri?.takeIf { allowed && playbackAvailability.get()?.current() == true })
                 }
             }
         }
@@ -987,13 +1011,85 @@ internal class CachedPrototypeAbemaSession(
         finish(PrototypeFeedEvent.STOPPED)
     }
 
-    private fun finishTransportCleanup() {
-        if (!closed.get() || worker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
-            !transportFinalizing.compareAndSet(false, true)) return
+    private fun nativeCleanupChanged() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (!handler.post(::nativeCleanupChanged)) { cleanupFailed = true; onCleanupChanged() }
+            return
+        }
+        if (nativeCleanup?.confirmed == true) nativeHost = null
+        finishTransportCleanup()
+        finishHelperCleanup()
+        onCleanupChanged()
+    }
+
+    private fun cancelTransports() {
+        // Interrupt reads promptly, but this task is only a cancellation attempt.
+        // The tracked preparation finally and final receipt still own confirmation.
+        transportCancellationPending.set(true)
         try {
-            if (slotProfile.get()?.cleanupConfirmed == false) cleanupFailed = true
-            if (!diagnostics.cleanupAll(FailureStage.SOURCE_REQUESTS_CLOSE) { transportCleanup.close() }) cleanupFailed = true
-        } finally { transportFinalized.set(true); onCleanupChanged() }
+            cleanupExecutor.execute {
+                try {
+                    for ((stage, close) in listOf<Pair<FailureStage, () -> Unit>>(
+                        FailureStage.BUNDLE_TRANSPORT_CLOSE to {
+                            val owned = bundleTransport.get(); owned?.close(); bundleTransport.compareAndSet(owned, null)
+                        },
+                        FailureStage.SOURCE_REQUESTS_CLOSE to {
+                            val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)
+                        },
+                    )) {
+                        if (!diagnostics.cleanupAll(stage, close)) cleanupFailed = true
+                    }
+                } finally {
+                    transportCancellationPending.set(false)
+                    finishTransportCleanup()
+                    onCleanupChanged()
+                }
+            }
+        } catch (error: Throwable) {
+            cleanupFailed = true
+            transportCancellationPending.set(false)
+            diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
+        }
+    }
+
+    private fun finishTransportCleanup() {
+        // A queued worker can settle synchronously during shutdownNow. Do not
+        // finalize while main is still sealing/cancelling the other owners.
+        if (!closed.get() || !cleanupSetupComplete.get() || worker.pending || accountCleanupPending.get() ||
+            slotProfileCleanupPending.get() || transportCancellationPending.get() || nativeCleanup?.pending == true ||
+            !transportFinalizing.compareAndSet(false, true)) return
+        if (slotProfile.get()?.cleanupConfirmed == false) cleanupFailed = true
+        try {
+            transportCleanup.closeAsync(cleanupExecutor, Executor { task ->
+                if (Looper.myLooper() == Looper.getMainLooper()) task.run()
+                else check(handler.post(task)) { "ABEMA cleanup dispatch rejected" }
+            }, onComplete = {
+                transportFinalized.set(true)
+                finishHelperCleanup()
+                onCleanupChanged()
+            }, onFailure = { error ->
+                cleanupFailed = true
+                diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
+            })
+        } catch (error: Throwable) {
+            cleanupFailed = true
+            transportFinalized.set(true)
+            diagnostics.report(FailureStage.SOURCE_REQUESTS_CLOSE, error)
+            finishHelperCleanup()
+            onCleanupChanged()
+        }
+    }
+
+    private fun finishHelperCleanup() {
+        if (!closed.get() || !cleanupSetupComplete.get() || !transportFinalized.get() ||
+            nativeCleanup?.pending == true || helperFinalized.get()) return
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (!handler.post(::finishHelperCleanup)) { cleanupFailed = true; helperFinalized.set(true); onCleanupChanged() }
+            return
+        }
+        try {
+            if (!helperCleanup.destroy() || helperCleanup.cleanupFailed) cleanupFailed = true
+        } finally { helperFinalized.set(true); onCleanupChanged() }
     }
 
     private fun finish(event: PrototypeFeedEvent) {
@@ -1034,28 +1130,24 @@ internal class CachedPrototypeAbemaSession(
         transportCleanup.seal()
         revision.incrementAndGet()
         routeCurrent.set(false)
+        budget?.stop()
         handler.removeCallbacksAndMessages(null)
         sourcePending.getAndSet(null)?.complete(null)
         pending.getAndSet(null)?.complete(null)
-        var nativeClosed = nativeHost == null
+        cancelTransports()
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
-            FailureStage.BUNDLE_TRANSPORT_CLOSE to {
-                val owned = bundleTransport.get(); owned?.close(); bundleTransport.compareAndSet(owned, null)
-            },
-            FailureStage.SOURCE_REQUESTS_CLOSE to {
-                val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)
-            },
             FailureStage.HELPER_STOP to { if (allows(view.url)) view.evaluateJavascript("window['$name']?.stop()", null) },
-            FailureStage.NATIVE_HOST_CLOSE to { nativeHost?.close(); nativeCleanup?.close(); nativeClosed = true },
-            FailureStage.WEBVIEW_DESTROY to {
-                if (!helperCleanup.destroy() || helperCleanup.cleanupFailed) cleanupFailed = true
+            FailureStage.NATIVE_HOST_CLOSE to {
+                val host = nativeHost
+                if (host != null) host.close()
+                else nativeCleanup?.closePlayer(handler, diagnostics.nativeObserver(), ::nativeCleanupChanged)
             },
             FailureStage.RESOURCES_CLEAR to { ownedResources = emptyMap(); privateInitialization.getAndSet(null)?.fill(0) },
             FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
         )) {
             if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }
-        if (nativeClosed) nativeHost = null
+        cleanupSetupComplete.set(true)
         finishTransportCleanup()
         emit(event)
     }

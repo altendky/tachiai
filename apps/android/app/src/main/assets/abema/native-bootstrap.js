@@ -30,6 +30,8 @@
   let slotChaseExpiry;
   let selectedChase = false;
   let selectedLinear = false;
+  let sourceExpiry;
+  let sourceWall;
   let continuousSlotPlayback = false;
   let operation;
   let response;
@@ -52,6 +54,7 @@
     response?.fill(0);
     response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
     accountExpiry = accountWall = slotPremiumExpiry = slotPremiumCandidate = slotChaseCandidate = slotChaseExpiry = undefined;
+    sourceExpiry = sourceWall = undefined;
     selectedChase = selectedLinear = false;
     ramClear?.(); ramClear = undefined;
     if (modernContext) delete window.__CLIENT_REGION__;
@@ -61,6 +64,13 @@
   window.addEventListener('unhandledrejection', event => { event.preventDefault(); stop(true); });
   window.__LOADABLE_LOADED_CHUNKS__ = [];
   const alive = () => {
+    if (sourceExpiry !== undefined) {
+      const now = Date.now();
+      if (!Number.isSafeInteger(now) || now < sourceWall || now >= sourceExpiry) {
+        remember('TIMER_EXPIRED'); throw new Error();
+      }
+      sourceWall = now;
+    }
     if (accountExpiry !== undefined) {
       const now = Date.now();
       if (!Number.isSafeInteger(now) || now < accountWall || now >= accountExpiry ||
@@ -424,6 +434,12 @@
       status: () => { usable(); return state; },
       metadata: () => stringify({ phase, modules: count, lastModule, http, failure }),
       selectedSource: () => usable() && state === 'READY' ? selected : null,
+      playbackAvailability: () => {
+        if (!usable() || state !== 'READY') return null;
+        const expiries = [sourceExpiry, accountExpiry, slotPremiumExpiry, slotChaseExpiry]
+          .filter(value => value !== undefined);
+        return stringify({ uri: selected, expiresAtMs: expiries.length ? Math.min(...expiries) : null });
+      },
       sourceBinding: () => usable() && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       channelBinding: () => usable() && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
       slotBinding: () => usable() && state === 'READY' && configuredSlot ?
@@ -546,10 +562,11 @@
       }, 512 * 1024);
       // This is deliberately narrower than the provider's general entitlement
       // model. Require explicit free/unrestricted metadata, not DTO-coerced
-      // truthiness, and a free window covering the entire bounded session.
+      // truthiness. Publish the selected availability window for the native host
+      // to enforce after helper takeover; it is not a fixed app session limit.
       // Current free-end/term consumers use epoch seconds. Milliseconds refuse.
       const future = value => Number.isSafeInteger(value) && value < 100000000000 &&
-        value * 1000 > Date.now() + 300000;
+        value * 1000 > Date.now();
       phase = 'REPLAY_FREE';
       const mediaStatus = metadata?.mediaStatus;
       // Provider drm=false/omitted can select Clear Key, not unencrypted media.
@@ -609,6 +626,10 @@
           !Object.hasOwn(term, 'onDemandType') || !Object.hasOwn(term, 'endAt')))) throw new Error();
       if (metadata.terms !== undefined && (!Array.isArray(metadata.terms) || metadata.terms.some(term =>
           ![3, 'VIDEO_ON_DEMAND_TYPE_ADVERTISING'].includes(term?.onDemandType) || !future(term.endAt)))) throw new Error();
+      sourceExpiry = Math.min(metadata.freeEndAt, ...(!configured ? [metadata.endAt] : []),
+        ...(metadata.terms ?? []).map(term => term.endAt)) * 1000;
+      sourceWall = Date.now();
+      alive();
       phase = 'CONTENT';
       const program = load(91060).OW.fromJSON(metadata);
       if (program.id !== episodeId || typeof metadata.playback?.arin !== 'string' ||
@@ -813,7 +834,7 @@
     const slot = raw.slot;
     if (!record(slot) || slot.id !== slotId || slot.channelId !== channelId) refuseResponse();
     const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
-    const future = value => seconds(value) && value * 1000 > Date.now() + 300000;
+    const future = value => seconds(value) && value * 1000 > Date.now();
     if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt) throw new Error();
     const now = Date.now();
     const chase = slot.startAt * 1000 <= now && now < slot.endAt * 1000;
@@ -865,12 +886,19 @@
         !slot.chasePlayFeatureAuthorityIds.some(id => slotChaseCandidate.authorityIds.includes(id)) ||
         !(premium ? future(slot.timeshiftEndAt) : future(slot.timeshiftFreeEndAt))) throw new Error();
       slotChaseExpiry = slotChaseCandidate.expiresAtMs;
+      sourceExpiry = (premium ? slot.timeshiftEndAt : slot.timeshiftFreeEndAt) * 1000;
+      sourceWall = Date.now();
       alive();
     } else {
       // Ended ordinary catch-up keeps its existing independent Free/Premium
       // windows. Unused Chase candidates never grant or truncate this arm.
       if (!future(slot.timeshiftEndAt) || (!premium && slot.timeshiftFreeEndAt !== undefined &&
         slot.timeshiftFreeEndAt !== 0 && !future(slot.timeshiftFreeEndAt))) throw new Error();
+      sourceExpiry = Math.min(slot.timeshiftEndAt,
+        ...(!premium && slot.timeshiftFreeEndAt !== undefined && slot.timeshiftFreeEndAt !== 0
+          ? [slot.timeshiftFreeEndAt] : [])) * 1000;
+      sourceWall = Date.now();
+      alive();
     }
     const playlists = chase ? slot.chasePlayback : slot.playback;
     phase = 'SOURCE';

@@ -10,27 +10,44 @@ internal enum class NativeMediaEvent {
 }
 
 // A media budget, not an OAuth/token expiry promise. No credential held here.
-internal class NativePlaybackBudget(
-    remainingRetentionMs: Long,
+internal class NativePlaybackBudget private constructor(
     private val canContinue: () -> Boolean,
-    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
-    maximumDurationMs: Long = 120_000L,
+    private val clockMs: () -> Long,
+    private val duration: Long?,
 ) {
-    init { require(maximumDurationMs in 1..300_000L) }
+    // Historical probes and tests explicitly retain their finite observation window.
+    constructor(remainingRetentionMs: Long, canContinue: () -> Boolean,
+        clockMs: () -> Long = { System.nanoTime() / 1_000_000 }, maximumDurationMs: Long = 120_000L) :
+        this(canContinue, clockMs, minOf(maximumDurationMs, maxOf(0L, remainingRetentionMs))) {
+        require(maximumDurationMs in 1..300_000L)
+    }
+    companion object {
+        fun continuous(canContinue: () -> Boolean,
+            clockMs: () -> Long = { System.nanoTime() / 1_000_000 }): NativePlaybackBudget =
+            NativePlaybackBudget(canContinue, clockMs, null)
+    }
+    val isTimeBounded get() = duration != null
     private val started = clockMs()
-    private val duration = minOf(maximumDurationMs, maxOf(0L, remainingRetentionMs))
     private val stopped = AtomicBoolean(false)
     val active: Boolean get() = !stopped.get() && canContinue() &&
-        clockMs() >= started && clockMs() - started < duration
+        clockMs() >= started && (duration == null || clockMs() - started < duration)
+    // Continuous ownership has no elapsed-time deadline. Do not add this sentinel
+    // to a clock or schedule a Handler task with it; use deadlineAt/isTimeBounded.
     val remainingMs: Long get() {
         val now = clockMs()
         if (stopped.get() || !canContinue() || now < started) return 0
-        return (duration - (now - started)).coerceAtLeast(0)
+        return duration?.let { (it - (now - started)).coerceAtLeast(0) } ?: Long.MAX_VALUE
+    }
+    fun deadlineAt(nowMs: Long): Long {
+        require(nowMs >= 0)
+        val remaining = remainingMs
+        return if (remaining > Long.MAX_VALUE - nowMs) Long.MAX_VALUE else nowMs + remaining
     }
     // Temporary request groups own their child, not the shared presentation.
     // Parent invalidation/expiry still gates it; creating a child never renews time.
-    fun child(): NativePlaybackBudget = NativePlaybackBudget(remainingMs, { active }, clockMs,
-        maximumDurationMs = 300_000)
+    fun child(): NativePlaybackBudget = if (isTimeBounded)
+        NativePlaybackBudget(remainingMs, { active }, clockMs, maximumDurationMs = 300_000)
+        else continuous({ active }, clockMs)
     fun stop() { stopped.set(true) }
     fun check() { if (!active) throw IOException("Playback budget ended") }
 }

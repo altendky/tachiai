@@ -12,13 +12,14 @@ internal class NativeMixedPair(
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val requireCurrentLiveWindowOnPlay: Boolean = false,
     private val admission: (NativePairMember) -> Boolean = { true },
+    initialAdjustmentValid: Boolean = true,
 ) : AutoCloseable {
     var status = "Prepared paused; press Play."
         private set
     // Positive = A requested later relative to B, not measured synchronization.
     var requestedAdjustmentMs = 0L
         private set
-    var requestedAdjustmentValid = true
+    var requestedAdjustmentValid = initialAdjustmentValid
         private set
     var busy = false
         private set
@@ -65,7 +66,7 @@ internal class NativeMixedPair(
             else "Audio focus lost; pause refused; Stop required."
     }
 
-    fun play(): Boolean {
+    fun play(playAdmission: () -> Boolean = { true }, onStaleLive: ((Set<NativeMixedSide>) -> Boolean)? = null): Boolean {
         if (closed) return false
         if (busy && !pause()) return false
         val sa = snapshot(a)
@@ -81,13 +82,20 @@ internal class NativeMixedPair(
             return duration > 0 && position >= 0 && position <= duration
         }
         if (requireCurrentLiveWindowOnPlay && (!inLiveWindow(sa) || !inLiveWindow(sb))) {
+            // The presentation owner may retire just the affected sessions.
+            // Return immediately: that callback can detach or close this pair.
+            if (onStaleLive != null) return onStaleLive(buildSet {
+                if (!inLiveWindow(sa)) add(NativeMixedSide.A)
+                if (!inLiveWindow(sb)) add(NativeMixedSide.B)
+            })
             val held = pause()
             status = if (held) "Play refused: live point outside/unknown current window; explicit catch-up required."
                 else "Play refused: stale live point and pause refused; Stop required."
             return false
         }
         val focused = try { acquireFocus() } catch (_: Exception) { false }
-        if (!focused) { pause(); status = "Audio focus denied; pause requested for both."; return false }
+        val admitted = try { playAdmission() } catch (_: Exception) { false }
+        if (!focused || !admitted) { pause(); status = "Audio focus or playback admission denied; pause requested for both."; return false }
         val pa = playing(a, true)
         val pb = playing(b, true)
         if (!pa || !pb) { pause(); status = "Play refused; pause requested for both."; return false }

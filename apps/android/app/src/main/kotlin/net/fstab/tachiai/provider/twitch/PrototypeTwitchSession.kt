@@ -22,6 +22,8 @@ import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
+import net.fstab.tachiai.platform.media.TrackedCleanupWorker
+import net.fstab.tachiai.platform.media.closePlayer
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
@@ -60,6 +62,11 @@ internal class PrototypeTwitchSession(
     preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
     private val onCleanupChanged: () -> Unit = {},
 ) : PrototypeFeedSession {
+    companion object {
+        private val cancellationExecutor = Executors.newFixedThreadPool(2) { task ->
+            Thread(task, "twitch-playback-cleanup").apply { isDaemon = true }
+        }
+    }
     init {
         if (broadcasterResource == null) {
             require(liveIdentityResolverFactory == null)
@@ -74,10 +81,13 @@ internal class PrototypeTwitchSession(
     }
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val preparationWorker = TrackedCleanupWorker(worker, onCleanupChanged)
+    private val cancellationWorker = TrackedCleanupWorker(cancellationExecutor, onCleanupChanged)
     private val closed = AtomicBoolean()
     private val started = AtomicBoolean()
     private val firstFailure = PrototypeFeedFailureLatch()
     private val identityResolver = AtomicReference<TwitchLiveIdentityResolver?>()
+    private val resolverCleanup = TwitchPreparationCleanup()
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     @Volatile override var cleanupFailed: Boolean = false
         private set
@@ -85,7 +95,8 @@ internal class PrototypeTwitchSession(
         ?: NativePairTwitchPreparation(context, { !closed.get() && active() }, openConnection, authorization)
     private var host: BoundedNativePlayer? = null
     @Volatile private var nativeCleanup: net.fstab.tachiai.platform.media.NativeCleanupReceipt? = null
-    val cleanupConfirmed get() = closed.get() && !cleanupFailed && nativeCleanup?.confirmed != false
+    val cleanupPending get() = preparationWorker.pending || cancellationWorker.pending || nativeCleanup?.pending == true
+    val cleanupConfirmed get() = closed.get() && !cleanupFailed && !cleanupPending && nativeCleanup?.confirmed != false
     override val providerView: View? = null
     override val member: NativePairMember? get() = host
     override val player: Player? get() = host?.player
@@ -93,7 +104,7 @@ internal class PrototypeTwitchSession(
     override fun prepare(budget: NativePlaybackBudget) {
         check(started.compareAndSet(false, true))
         onEvent(PrototypeFeedEvent.PREPARING)
-        worker.execute {
+        preparationWorker.execute {
             try {
                 var identity: TwitchLiveIdentity? = null
                 val resolver = liveIdentityResolverFactory?.invoke()?.also {
@@ -134,7 +145,8 @@ internal class PrototypeTwitchSession(
                     }
                 }
                 handler.post {
-                    if (closed.get() || !active() || !budget.active) { releaseIdentityResolver(); return@post }
+                    if (closed.get()) return@post
+                    if (!active() || !budget.active) { schedulePreparationCleanup(); return@post }
                     if (!preparation.canContinue()) {
                         fail(PrototypeFeedFailure(PrototypeFailureReason.LOGIN_EXPIRED))
                         return@post
@@ -154,10 +166,11 @@ internal class PrototypeTwitchSession(
                     try {
                         val created = BoundedNativePlayer(context, budget, preparation.acceptanceDeadlineMs,
                             allowedUri = { allowedTwitchMediaUri(it, observedReplayCdn = replay) },
-                            handleAudioFocus = false, canRequest = { preparation.checkStored() },
+                            handleAudioFocus = false, canRequest = { !closed.get() && active() && preparation.checkStored() },
                             openConnection = openConnection,
                             onCleanupOwner = { nativeCleanup = it },
                             onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() },
+                            onCleanupChanged = onCleanupChanged,
                             onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
@@ -190,8 +203,13 @@ internal class PrototypeTwitchSession(
                 if (!closed.get() && active() && budget.active) diagnostics.report(FailureStage.TWITCH_PREPARE, error)
                 handler.post {
                     if (!closed.get() && active() && budget.active) fail()
-                    else releaseIdentityResolver()
+                    else if (!closed.get()) schedulePreparationCleanup()
                 }
+            } finally {
+                // A cancellation may have run before this worker installed its
+                // resources. Settle those late owners on this worker, and keep
+                // the receipt pending until all of its finally work returns.
+                if (closed.get()) closePreparation()
             }
         }
     }
@@ -214,7 +232,21 @@ internal class PrototypeTwitchSession(
 
     private fun releaseIdentityResolver() {
         identityResolver.getAndSet(null)?.let {
-            if (!diagnostics.cleanup(FailureStage.CATALOG_CLOSE) { it.close() }) cleanupFailed = true
+            if (!diagnostics.cleanupAll(FailureStage.CATALOG_CLOSE) { resolverCleanup.close(it) }) cleanupFailed = true
+        }
+    }
+
+    private fun closePreparation() {
+        if (!diagnostics.cleanupAll(FailureStage.TWITCH_PREPARATION_CLOSE, { preparation.close() })) cleanupFailed = true
+        releaseIdentityResolver()
+    }
+
+    private fun schedulePreparationCleanup() {
+        try { cancellationWorker.execute(::closePreparation) }
+        catch (error: Throwable) {
+            cleanupFailed = true
+            diagnostics.report(FailureStage.TWITCH_PREPARATION_CLOSE, error)
+            onCleanupChanged()
         }
     }
 
@@ -250,12 +282,15 @@ internal class PrototypeTwitchSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        releaseIdentityResolver()
+        schedulePreparationCleanup()
         var nativeClosed = host == null
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
-            FailureStage.TWITCH_PREPARATION_CLOSE to { preparation.close() },
-            FailureStage.NATIVE_HOST_CLOSE to { host?.close(); nativeCleanup?.close(); nativeClosed = true },
-            FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
+            FailureStage.NATIVE_HOST_CLOSE to {
+                host?.close()
+                nativeCleanup?.closePlayer(handler, diagnostics.nativeObserver(), onCleanupChanged)
+                nativeClosed = true
+            },
+            FailureStage.WORKER_SHUTDOWN to { preparationWorker.shutdownNow() },
         )) {
             if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }

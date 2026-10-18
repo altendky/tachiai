@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
@@ -25,9 +26,11 @@ import java.util.concurrent.TimeUnit
 import org.hamcrest.Matcher
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePairMember
+import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.platform.media.NativeTimingSnapshot
+import net.fstab.tachiai.presentation.ViewerQualityReadback
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,10 +41,13 @@ class NativePairViewerDismissTest {
     private class Member(private val playing: Boolean) : NativePairMember {
         var gain = 0f
         var volumeCalls = 0
+        var transportCalls = 0
         override fun timingSnapshot() = NativeTimingSnapshot(20_000, 60_000, 30_000, null, null, null,
             false, false, true, true, false, playing, playing, 3, 1f)
-        override fun seekToMs(targetMs: Long) = NativeSeekPlan(NativeSeekOutcome.REQUESTED, targetMs)
-        override fun setTimingPlaying(playing: Boolean) = true
+        override fun seekToMs(targetMs: Long): NativeSeekPlan {
+            transportCalls++; return NativeSeekPlan(NativeSeekOutcome.REQUESTED, targetMs)
+        }
+        override fun setTimingPlaying(playing: Boolean): Boolean { transportCalls++; return true }
         override fun setVolume(volume: Float): Boolean { gain = volume; volumeCalls++; return true }
         override fun close() {}
     }
@@ -51,17 +57,26 @@ class NativePairViewerDismissTest {
         val b = Member(playing)
         val pair = NativeMixedPair(a, b, { true }, {})
         var commands = 0
+        var exits = 0
         val context = activity.createConfigurationContext(Configuration(activity.resources.configuration).apply {
             orientation = if (landscape) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT
         })
         val playerA = PlayerView(context)
         val playerB = PlayerView(context)
         val viewer = NativePairViewer(context, playerA, playerB, "A", "B", { pair },
-            { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ })
+            { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ }, { commands++ },
+            qualityState = { _, _ -> ViewerQualityReadback(NativeQualityRequest.auto, null) },
+            onQualityOverride = { _, _, _ -> commands++ },
+            onSaveQuality = { _, _ -> commands++ }, onResetQuality = { _, _ -> commands++ })
         val stage get() = viewer.getChildAt(0) as ViewGroup
         val dock get() = viewer.getChildAt(1) as ViewGroup
         val scroller get() = dock.getChildAt(0)
-        init { activity.setContentView(viewer); viewer.refresh() }
+        init {
+            activity.setContentView(viewer); viewer.refresh()
+            activity.onBackPressedDispatcher.addCallback(activity) {
+                if (!viewer.handleBack()) exits++
+            }
+        }
         fun layout() {
             val landscape = context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
             viewer.measure(View.MeasureSpec.makeMeasureSpec(if (landscape) 2400 else 1080, View.MeasureSpec.EXACTLY),
@@ -69,6 +84,113 @@ class NativePairViewerDismissTest {
             viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
         }
         fun close() { viewer.endSession(); pair.close() }
+    }
+
+    @Test fun systemBackClosesEachPanelBeforeReturningToSourcesWithoutChangingPlayback() {
+        for (playing in listOf(false, true)) for (panel in listOf("Audio", "Timing", "Quality", "Status")) {
+            withFixture(playing) { scenario, fixture ->
+                // Retain a user mix choice while visiting every other panel too.
+                scenario.onActivity {
+                    button(fixture.viewer, "Audio").performClick()
+                    button(fixture.viewer, "Mute A").performClick()
+                    button(fixture.viewer, "Audio").performClick()
+                }
+                openPanel(panel)
+                var volumeCalls = 0
+                var transportCalls = 0
+                var gainB = 0f
+                lateinit var primary: View
+                lateinit var secondary: View
+                scenario.onActivity {
+                    assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                    volumeCalls = fixture.a.volumeCalls + fixture.b.volumeCalls
+                    transportCalls = fixture.a.transportCalls + fixture.b.transportCalls
+                    gainB = fixture.b.gain
+                    primary = fixture.stage.getChildAt(0)
+                    secondary = fixture.stage.getChildAt(1)
+                }
+                pressBack()
+                scenario.onActivity {
+                    assertEquals("$panel Back closes the panel", View.GONE, fixture.scroller.visibility)
+                    assertEquals(View.VISIBLE, fixture.dock.visibility)
+                    assertEquals(View.VISIBLE, fixture.viewer.visibility)
+                    assertEquals(0, fixture.exits)
+                    assertEquals(0, fixture.commands)
+                    assertEquals(transportCalls, fixture.a.transportCalls + fixture.b.transportCalls)
+                    assertEquals(volumeCalls, fixture.a.volumeCalls + fixture.b.volumeCalls)
+                    assertEquals(0f, fixture.a.gain, 0f)
+                    assertEquals(gainB, fixture.b.gain, 0f)
+                    assertSame(primary, fixture.stage.getChildAt(0))
+                    assertSame(secondary, fixture.stage.getChildAt(1))
+                    assertEquals(if (playing) "Pause" else "Play", button(fixture.viewer,
+                        if (playing) "Pause" else "Play").text.toString())
+                    button(fixture.viewer, "Audio").performClick()
+                    assertEquals("Unmute A", button(fixture.viewer, "Unmute A").text.toString())
+                    button(fixture.viewer, "Audio").performClick()
+                }
+                pressBack()
+                scenario.onActivity { assertEquals("Back without a panel returns to the host", 1, fixture.exits) }
+            }
+        }
+    }
+
+    @Test fun systemBackDismissesMenuThenPanelBeforeReturningToSources() {
+        withFixture(true) { scenario, fixture ->
+            openPanel("Audio")
+            onView(withText("More")).perform(click())
+            pressBack()
+            onView(withText("Playback status")).check(doesNotExist())
+            scenario.onActivity {
+                assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                assertEquals(0, fixture.exits)
+                assertEquals(0, fixture.commands)
+            }
+            pressBack()
+            scenario.onActivity {
+                assertEquals(View.GONE, fixture.scroller.visibility)
+                assertEquals(0, fixture.exits)
+                assertEquals(0, fixture.commands)
+            }
+            pressBack()
+            scenario.onActivity { assertEquals(1, fixture.exits) }
+        }
+    }
+
+    @Test fun dispatcherBackDismissesAnActiveMenuWithoutInvokingItsAction() {
+        withFixture(false) { scenario, fixture ->
+            openPanel("Audio")
+            onView(withText("More")).perform(click())
+            scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            onView(withText("Playback status")).check(doesNotExist())
+            scenario.onActivity {
+                assertEquals(View.VISIBLE, fixture.scroller.visibility)
+                assertEquals(0, fixture.exits)
+                assertEquals(0, fixture.commands)
+            }
+        }
+    }
+
+    @Test fun systemBackCancelsHeldMixArrowWithoutStoppingPlayback() {
+        withFixture(true) { scenario, fixture ->
+            var calls = 0
+            val settled = CountDownLatch(1)
+            scenario.onActivity {
+                button(fixture.viewer, "Audio").performClick()
+                assertTrue(button(fixture.viewer, "◀").performLongClick())
+            }
+            pressBack()
+            scenario.onActivity {
+                calls = fixture.a.volumeCalls + fixture.b.volumeCalls
+                fixture.viewer.postDelayed({ settled.countDown() }, 400)
+            }
+            assertTrue("Delayed main-thread check ran", settled.await(3, TimeUnit.SECONDS))
+            scenario.onActivity {
+                assertEquals(calls, fixture.a.volumeCalls + fixture.b.volumeCalls)
+                assertEquals(View.GONE, fixture.scroller.visibility)
+                assertEquals(0, fixture.exits)
+                assertEquals(0, fixture.commands)
+            }
+        }
     }
 
     @Test fun primaryDismissesEitherPanelPausedOrPlayingAndRevealsOnlyTray() {
@@ -261,6 +383,14 @@ class NativePairViewerDismissTest {
             scenario.onActivity { fixture = Fixture(it, playing, landscape) }
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             try { test(scenario, fixture) } finally { scenario.onActivity { fixture.close() } }
+        }
+    }
+
+    private fun openPanel(panel: String) {
+        if (panel in listOf("Audio", "Timing")) onView(withText(panel)).perform(click())
+        else {
+            onView(withText("More")).perform(click())
+            onView(withText(if (panel == "Status") "Playback status" else panel)).perform(click())
         }
     }
 

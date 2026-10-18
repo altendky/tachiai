@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -39,6 +40,8 @@ import net.fstab.tachiai.presentation.ViewerTimingStep
 import net.fstab.tachiai.presentation.twoFeedBounds
 import kotlin.math.abs
 
+internal data class ViewerFeedRecovery(val label: String, val enabled: Boolean = true)
+
 // Generic two-feed presentation. The caller owns lifecycle, sources and guarded playback.
 @UnstableApi
 // English-only debug presentation, including existing controller diagnostic
@@ -63,6 +66,8 @@ internal class NativePairViewer(
     private val members: () -> List<NativePairMember?> = { listOf(pair()?.a, pair()?.b) },
     private val volumeRequest: (NativeMixedSide, Float) -> Boolean = { side, value -> pair()?.setVolume(side, value) == true },
     private val feedMessage: (NativeMixedSide) -> String? = { null },
+    private val feedRecovery: (NativeMixedSide) -> ViewerFeedRecovery? = { null },
+    private val onRecoverFeed: (NativeMixedSide) -> Unit = {},
     private val onSources: (() -> Unit)? = null,
     private val qualityState: (NativeMixedSide, NativeQualityKind) -> ViewerQualityReadback? = { _, _ -> null },
     private val onQualityOverride: (NativeMixedSide, NativeQualityKind, NativeQualityRequest?) -> Unit = { _, _, _ -> },
@@ -445,7 +450,7 @@ internal class NativePairViewer(
         (advanceA + advanceB).forEach { it.isEnabled = current != null && !current.busy }
         val adjustment = when {
             current == null -> "Relative timing requires two playable feeds."
-            !current.requestedAdjustmentValid -> "Timing anchor invalid; realign after catch-up."
+            !current.requestedAdjustmentValid -> "Timing anchor invalid; realign after recovery."
             else -> "Requested A relative to B: ${current.requestedAdjustmentMs / 1_000.0} s (not measured)."
         }
         val playbackStatus = statusOverride() ?: current?.status ?: "Use setup to prepare playback."
@@ -479,6 +484,19 @@ internal class NativePairViewer(
         }
         if (wasPlaying != requestedPlaying) showControls()
         if (available.all { it == null }) suspendControls()
+    }
+    // System Back unwinds the visible controls before the Activity stops playback.
+    // Popup windows normally consume Back themselves; also handle dispatcher
+    // delivery here without invoking any menu action or playback command.
+    fun handleBack(): Boolean {
+        if (!isAttachedToWindow || visibility != VISIBLE) return false
+        if (activeMenu != null) {
+            dismissMenu(); showControls()
+            return true
+        }
+        val current = panel ?: return false
+        togglePanel(current)
+        return true
     }
     fun open() { visibility = VISIBLE; showControls(); refresh() }
     fun endSession() { suspendControls(); stage.unbindPlayers(); observedPair = null; visibility = GONE }
@@ -548,8 +566,9 @@ internal class NativePairViewer(
         private fun aspect(size: VideoSize) = if (size.width > 0 && size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 16f / 9f
         private val paneA = pane(a, labelA, true)
         private val paneB = pane(b, labelB, false)
-        private val noticeA = notice(paneA)
-        private val noticeB = notice(paneB)
+        private val noticeA = notice(paneA, NativeMixedSide.A)
+        private val noticeB = notice(paneB, NativeMixedSide.B)
+        private inner class FeedNotice(val scroll: ScrollView, val message: TextView, val recovery: Button)
         init {
             setOnClickListener { toggleControls() }
             addView(paneA); addView(paneB)
@@ -563,21 +582,41 @@ internal class NativePairViewer(
             requestLayout()
             return true
         }
-        private fun notice(pane: FrameLayout): TextView {
-            val notice = text("").apply {
-                setPadding(dp(12), dp(36), dp(12), dp(12))
+        private fun notice(pane: FrameLayout, side: NativeMixedSide): FeedNotice {
+            val notice = text("")
+            val recover = button("") { control ->
+                if (control.isEnabled && feedMessage(side) != null && feedRecovery(side)?.enabled == true) {
+                    control.isEnabled = false
+                    onRecoverFeed(side)
+                    refresh()
+                }
+            }
+            val body = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(36), dp(12), dp(8))
+                addView(notice, LinearLayout.LayoutParams(-1, -2))
+                addView(recover, LinearLayout.LayoutParams(-2, -2))
             }
             val scroll = object : ScrollView(context) {
                 private val slop = ViewConfiguration.get(context).scaledTouchSlop
                 private var downX = 0f
                 private var downY = 0f
                 private var tap = false
+                private var recoveryGesture = false
                 override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                     when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> { downX = event.x; downY = event.y; tap = true }
+                        MotionEvent.ACTION_DOWN -> {
+                            downX = event.x; downY = event.y; tap = true
+                            val bounds = Rect()
+                            recover.getDrawingRect(bounds)
+                            offsetDescendantRectToMyCoords(recover, bounds)
+                            // Reserve disabled actions too: tapping Retry during cleanup
+                            // must not unexpectedly swap the floating feed.
+                            recoveryGesture = recover.visibility == VISIBLE && bounds.contains(event.x.toInt(), event.y.toInt())
+                        }
                         MotionEvent.ACTION_MOVE -> if (abs(event.x - downX) > slop || abs(event.y - downY) > slop) tap = false
                         MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> tap = false
-                        MotionEvent.ACTION_UP -> if (tap && abs(event.x - downX) <= slop && abs(event.y - downY) <= slop) {
+                        MotionEvent.ACTION_UP -> if (!recoveryGesture && tap && abs(event.x - downX) <= slop && abs(event.y - downY) <= slop) {
                             tap = false
                             // Finish native touch handling before forwarding one pane click.
                             // Scrolling keeps its normal event stream and never swaps feeds.
@@ -592,20 +631,25 @@ internal class NativePairViewer(
             }.apply {
                 setOnClickListener { pane.performClick() }
                 setBackgroundColor(context.getColor(R.color.prototype_background))
-                addView(notice, LayoutParams(-1, -2))
+                addView(body, LayoutParams(-1, -2))
                 visibility = GONE
             }
             // Keep the source label above the scrollable preparation/error panel.
             pane.addView(scroll, 1, LayoutParams(-1, -1))
-            return notice
+            return FeedNotice(scroll, notice, recover)
         }
         fun updateMessages() {
-            fun update(side: NativeMixedSide, player: PlayerView, label: String, notice: TextView) {
+            fun update(side: NativeMixedSide, player: PlayerView, label: String, notice: FeedNotice) {
                 val message = feedMessage(side)
-                notice.text = message.orEmpty()
-                (notice.parent as View).visibility = if (message == null) GONE else VISIBLE
+                val recovery = if (message == null) null else feedRecovery(side)
+                notice.message.text = message.orEmpty()
+                notice.scroll.visibility = if (message == null) GONE else VISIBLE
                 player.visibility = if (message == null) VISIBLE else GONE
-                notice.contentDescription = "$label: ${message.orEmpty()}"
+                notice.message.contentDescription = "$label: ${message.orEmpty()}"
+                notice.recovery.text = recovery?.label.orEmpty()
+                notice.recovery.contentDescription = "${side.name} · $label · ${recovery?.label.orEmpty()}"
+                notice.recovery.visibility = if (recovery == null) GONE else VISIBLE
+                notice.recovery.isEnabled = recovery?.enabled == true
             }
             update(NativeMixedSide.A, a, labelA, noticeA)
             update(NativeMixedSide.B, b, labelB, noticeB)

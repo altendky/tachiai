@@ -26,6 +26,18 @@ display names, never copied keys/credentials. Conflicting earlier stream/feed
 route settings require explicit review; unsupported or failed routes stop before provider
 preparation instead of falling back to the system network.
 
+## Normal playback lifetime — 2026-10-17
+
+The user requested removal of the primary viewer's experimental five-minute
+session cutoff. Normal playback uses continuous foreground ownership rather than
+a fixed observation window. Historical probes and bounded tests retain their
+explicit limits. Preparation, IPC and individual network operations still have
+finite deadlines; an acquired continuous ABEMA playback lease remains subject
+to provider grant expiry, selected-account/route ownership and revocation.
+Provider replay availability deadlines remain independently enforced after the
+initial helper exchange. This changes local session duration, not entitlement,
+DRM exchange/renewal, TLS policy or media-origin approvals.
+
 ## General provider integration approval — 2026-10-10
 
 The user approved general ABEMA and Twitch discovery, account/session access and

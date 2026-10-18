@@ -17,12 +17,15 @@ import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
+import net.fstab.tachiai.feature.presentation.isTelevision
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -1063,5 +1066,38 @@ class StreamManagementScreenTest {
         all.performKeyInput { pressKey(Key.DirectionRight) }
         compose.onNodeWithText("Following").assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle { assertTrue(fixture.calls.contains("collection:following")) }
+    }
+
+    @Test fun televisionRemoteTraversesDiscoveryTabsAndSubmitsSearchWithIme() {
+        assumeTrue("TV remote acceptance uses a television configuration", isTelevision(
+            InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration))
+        val fixture = Fixture(PrototypeService.TWITCH)
+        fixture.state = fixture.state.copy(configured = emptyList(), entries = listOf(fixture.offline),
+            nextCursor = null, capabilities = fixture.state.capabilities!!.copy(browseTitle = "Channels"))
+        lateinit var inputMode: InputModeManager
+        compose.setContent {
+            inputMode = LocalInputModeManager.current
+            fixture.Render()
+        }
+        compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
+        val channels = compose.onNodeWithText("Channels")
+        val following = compose.onNodeWithText("Following")
+        channels.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        channels.assertIsFocused().assertIsSelected().performKeyInput { pressKey(Key.DirectionRight) }
+        following.assertIsFocused().performKeyInput { pressKey(Key.DirectionCenter) }
+        following.assertIsFocused().assertIsSelected()
+        compose.runOnIdle { assertEquals(listOf("collection:following"), fixture.calls) }
+        following.performKeyInput { pressKey(Key.DirectionLeft) }
+        channels.assertIsFocused().performKeyInput { pressKey(Key.DirectionCenter) }
+        channels.assertIsFocused().assertIsSelected()
+        compose.runOnIdle { assertEquals(listOf("collection:following", "all"), fixture.calls) }
+        channels.performKeyInput { pressKey(Key.DirectionDown) }
+        val search = compose.onNode(hasText("Search streams") and hasSetTextAction())
+        search.assertIsFocused().performTextInput("Offline")
+        search.performImeAction()
+        compose.runOnIdle {
+            assertEquals(listOf("collection:following", "all", "search:Offline"), fixture.calls)
+            assertEquals("Offline", fixture.state.query.search)
+        }
     }
 }

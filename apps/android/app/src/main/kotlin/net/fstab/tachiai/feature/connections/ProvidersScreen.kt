@@ -10,6 +10,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.RemoteOutlinedButton as OutlinedButton
+import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
+import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
+import net.fstab.tachiai.feature.presentation.RemoteRadioButton as RadioButton
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
+import net.fstab.tachiai.feature.presentation.tvFocusIndicator
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -73,7 +81,7 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
         ?.map { id -> instances.single { it.id == id } } ?: instances
     val actionsEnabled = !busy && !drag.busy
     BackHandler(enabled = editing != null && !busy) { editing = null }
-    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().testTag("Providers list").onGloballyPositioned { drag.viewport = it },
+    LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!busy, ids).testTag("Providers list").onGloballyPositioned { drag.viewport = it },
         state = list, contentPadding = PaddingValues(16.dp)) {
         item(key = "heading") {
         SettingsPageHeader("Providers", if (editing == null) onBack else ({ editing = null }),
@@ -140,7 +148,7 @@ private fun ProviderInstanceRow(entry: ProviderInstance, index: Int, count: Int,
         Column(Modifier.graphicsLayer { translationY = drag.translation(entry.id) }) {
             Surface(color = if (drag.draggedId == entry.id) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).testTag("Provider row ${entry.id}")
-                    .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Configure ${entry.name}", onClick = onOpen)
+                    .tvFocusIndicator().clickable(enabled = enabled, role = Role.Button, onClickLabel = "Configure ${entry.name}", onClick = onOpen)
                     .semantics {
                         customActions = if (!enabled || !canDrag) emptyList() else buildList {
                             if (index > 0) add(CustomAccessibilityAction("Move earlier") { onMove(-1); true })

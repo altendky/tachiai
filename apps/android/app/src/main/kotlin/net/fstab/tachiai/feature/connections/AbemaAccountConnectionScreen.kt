@@ -4,6 +4,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
+import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +55,8 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
             }
         }
     }
-    Column(Modifier.fillMaxWidth().testTag("abema-account-section"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.fillMaxWidth().then(if (onBack != null) Modifier.tvFocusGroup(ready && enabled) else Modifier)
+        .testTag("abema-account-section"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (onBack == null) SettingsSection("ABEMA account", help, actions = actions)
         else SettingsPageHeader("ABEMA account", onBack, "Back to providers", help, actions,
             backEnabled = enabled && state.progress != AbemaAccountProgress.FORGETTING)

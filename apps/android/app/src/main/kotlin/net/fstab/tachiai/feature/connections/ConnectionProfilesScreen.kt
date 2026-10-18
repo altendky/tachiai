@@ -10,11 +10,12 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import net.fstab.tachiai.feature.presentation.RemoteButton as Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
+import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +39,8 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
     var input by remember { mutableStateOf("") } // Never save configuration in Bundle/saveable state.
     var name by remember(draft) { mutableStateOf("") }
     var removal by remember { mutableStateOf<ConnectionSummary?>(null) }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
+    Column(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!busy, profiles.map { it.id })
+        .verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SettingsPageHeader("Routes", onClose, help = "Import and save ${routeProtocols.titles} route configurations, then assign one in Providers. Saving does not connect or change your system VPN; the native viewer opens the selected route at playback.", backEnabled = !busy)
         message?.let { Text(it) }

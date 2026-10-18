@@ -33,6 +33,38 @@ cost. Shared Rust timing rules can serve TV hosts, while capture/display APIs,
 media sessions, route execution and input remain platform responsibilities.
 See the [platform landscape](platforms.md).
 
+## Android Chromecast implementation plan
+
+[Issue #303](https://github.com/altendky/tachiai/issues/303) tracks this work:
+
+1. [Setup entry, #304](https://github.com/altendky/tachiai/issues/304): the
+   source picker's **More options → Screen sharing** opens compact guidance,
+   the normal Google Home launcher or Android Cast settings. Start sharing,
+   return to the picker, then tap Watch. This entry is included in ordinary
+   builds independently of developer tools. Missing/restricted launch handlers
+   leave guidance and the other action available.
+2. [Physical acceptance, #305](https://github.com/altendky/tachiai/issues/305),
+   dependent on #304: verify complete output, audio, routes and lifecycle on a
+   named phone/Chromecast pair before claiming playback support.
+
+There is no current documented public Cast SDK entry established here for
+starting Google's native screen mirroring from Tachiai. The deprecated Remote
+Display API's support check always returns false. Android's public Cast settings
+action opens configuration, takes no input and returns no connection result.
+Launch success is not a Connected state. Google Home/Android owns device
+selection, sharing consent, transport and stopping; no private activity names,
+media-URL handoff or app-managed capture/encode service is introduced.
+[Cast settings][cast-settings], [Remote Display status][remote-display]
+
+The native viewer currently disposes playback on pause. Opening Home/settings
+while playing would stop the feeds, so the initial workflow establishes sharing
+before playback. It retains existing account/window protections, audio policy
+and viewer-only keep-awake behavior. Seamless setup during playback and
+background/locked-phone continuity remain unimplemented, not promises implied
+by the new menu action. Ordinary viewer screens do not set Tachiai's secure
+window flag; protected provider/account windows and independent DRM restrictions
+remain separate. No new receiver acceptance was performed for the setup change.
+
 ## Mirroring candidates and limits
 
 | Path | Documented availability | Tachiai fit and unknowns |
@@ -113,3 +145,5 @@ a screenshot of settings earns none of the two-feed playback milestones.
 [miracast]: https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/wireless-projection-implementing-over-miracast
 [secure-window]: https://developer.android.com/security/fraud-prevention/activities
 [secure-display]: https://developer.android.com/reference/android/view/Display#FLAG_SECURE
+[cast-settings]: https://developer.android.com/reference/android/provider/Settings#ACTION_CAST_SETTINGS
+[remote-display]: https://developers.google.com/android/reference/com/google/android/gms/cast/CastRemoteDisplay

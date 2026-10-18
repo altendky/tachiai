@@ -32,6 +32,7 @@ import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -55,6 +56,53 @@ class PrototypeSourcePickerTest {
         compose.onNodeWithText("Developer tools").performClick()
         compose.onNodeWithText("Developer tools").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, developerTools); assertFalse(watched) }
+    }
+
+    @Test fun screenSharingWithoutDeveloperToolsPreservesChoicesAndDoesNotStartPlayback() {
+        val launches = mutableListOf<ScreenSharingTarget>()
+        var opened: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, onScreenSharing = { launches += it; true }, onWatch = { opened = it })
+        } }
+        assignment(PrototypeSource.ABEMA_REPLAY, "B").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Developer tools").assertDoesNotExist()
+        compose.onNodeWithText("Screen sharing").performClick()
+        compose.onNodeWithText("Open Google Home").performClick()
+        compose.onNodeWithText("Open Google Home").assertDoesNotExist()
+        compose.runOnIdle { assertNull(opened); assertEquals(listOf(ScreenSharingTarget.GOOGLE_HOME), launches) }
+        compose.onNodeWithText("Watch").performClick()
+        compose.runOnIdle { assertEquals(expected(PrototypeSource.ABEMA_LIVE, PrototypeSource.ABEMA_REPLAY), opened) }
+    }
+
+    @Test fun unavailableHomeKeepsCastSettingsAndHelpAvailableWithoutConnectedClaim() {
+        val launches = mutableListOf<ScreenSharingTarget>()
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, onScreenSharing = { launches += it; it == ScreenSharingTarget.CAST_SETTINGS }, onWatch = {})
+        } }
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Screen sharing").performClick()
+        compose.onNodeWithText("Open Google Home").performClick()
+        compose.onNodeWithText("Google Home could not open. Try Cast settings, or install/open Google Home yourself.").assertExists()
+        compose.onNodeWithText("Connected").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Info about Screen sharing").assertExists()
+        compose.onNodeWithText("Cast settings").performClick()
+        compose.onNodeWithText("Open Google Home").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(listOf(ScreenSharingTarget.GOOGLE_HOME, ScreenSharingTarget.CAST_SETTINGS), launches) }
+    }
+
+    @Test fun unavailableSettingsAndClosingGuidanceLeaveAssignmentsIntact() {
+        var opened: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme {
+            PrototypeSourcePicker(null, onScreenSharing = { false }, onWatch = { opened = it })
+        } }
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Screen sharing").performClick()
+        compose.onNodeWithText("Cast settings").performClick()
+        compose.onNodeWithText("Cast settings could not open. Try Google Home or your phone's screen-sharing controls.").assertExists()
+        compose.onNodeWithText("Close").performClick()
+        compose.onNodeWithText("Watch").performClick()
+        compose.runOnIdle { assertEquals(expected(PrototypeSource.ABEMA_LIVE, PrototypeSource.TWITCH_LIVE), opened) }
     }
 
     @Test fun savedOfflineBroadcasterCanRequestFreshAssessmentWithoutChangingItsIdentity() {

@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -35,7 +36,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
-import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePairMember
@@ -56,6 +56,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ControlledMirroringDeviceTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+
+    @Test fun buildGateRejectsReleaseAndInspectionRuntimeFlags() {
+        assertFalse(ordinaryDebugFlags(0))
+        assertTrue(ordinaryDebugFlags(ApplicationInfo.FLAG_DEBUGGABLE))
+        assertFalse(ordinaryDebugFlags(ApplicationInfo.FLAG_TEST_ONLY))
+        assertFalse(ordinaryDebugFlags(ApplicationInfo.FLAG_DEBUGGABLE or ApplicationInfo.FLAG_TEST_ONLY))
+    }
 
     @Test fun twoLocalPlayersRenderAdvanceAndApplyViewerMixTimingThenStop() = withFixture { fixture ->
         awaitReady(fixture)
@@ -156,9 +163,11 @@ class ControlledMirroringDeviceTest {
     private fun withFixture(test: (Fixture) -> Unit) {
         // Ordinary debug policy is intentional: inspect removes protections and
         // cannot establish ordinary-build mirroring behavior.
-        assumeTrue("Use the ordinary debug target", BuildConfig.BUILD_TYPE == "debug" && !BuildConfig.LOCAL_INSPECTION)
         val target = instrumentation.targetContext
         check(target.packageName == "net.fstab.tachiai")
+        // BuildConfig constants belong to the test's compile-time variant and
+        // are inlined. Read the installed target's manifest flags instead.
+        assumeTrue("Use the ordinary debug target", ordinaryDebugFlags(target.applicationInfo.flags))
         verifyMedia(instrumentation.context)
         var activity: ComponentActivity? = null
         var fixture: Fixture? = null
@@ -417,6 +426,9 @@ class ControlledMirroringDeviceTest {
     }
 
     private companion object {
+        fun ordinaryDebugFlags(flags: Int): Boolean =
+            flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 && flags and ApplicationInfo.FLAG_TEST_ONLY == 0
+
         fun descendants(view: View): List<View> = listOf(view) + if (view is ViewGroup)
             (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
         fun button(view: View, label: String) = descendants(view).filterIsInstance<Button>().single { it.text == label }

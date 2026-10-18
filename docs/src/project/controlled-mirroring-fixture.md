@@ -15,6 +15,10 @@ activity to a production/debug manifest or changes window, DRM, network or
 capture policy. The existing blank `androidx.activity.ComponentActivity` host
 comes from the debug UI-test manifest dependency.
 
+The gate reads the installed target's runtime manifest flags: debuggable and
+not test-only. It does not trust compile-time build constants from the test APK.
+Separate negative cases cover release and inspection flag combinations.
+
 Two actual Media3 players decode locally generated, unprotected H.264 baseline
 640×360/24-fps video with mono AAC audio. Each 60-second clip loops. A has a
 440-Hz tone pulse at each second; B has an 880-Hz pulse shifted by half a second

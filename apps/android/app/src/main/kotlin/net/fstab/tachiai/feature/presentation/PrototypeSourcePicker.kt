@@ -65,12 +65,14 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     onAssignmentsChanged: (ConfiguredFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
     onDeveloperTools: (() -> Unit)? = null,
+    onScreenSharing: ((ScreenSharingTarget) -> Boolean)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
     playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
     var a by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
     var b by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
+    var sharingSetupOpen by rememberSaveable { mutableStateOf(false) }
     val assignments = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
     val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
     fun assign(slot: PrototypeSlot, choice: ConfiguredFeedChoice, checked: Boolean) {
@@ -90,19 +92,28 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
             verticalAlignment = Alignment.CenterVertically) {
             Text("Tachiai", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.primary, maxLines = 1)
-            onDeveloperTools?.let { action ->
+            if (onDeveloperTools != null || onScreenSharing != null) {
                 Box {
                     IconButton(onClick = { moreExpanded = true },
                         modifier = Modifier.semantics { contentDescription = "More options" }) { Text("⋮") }
                     DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
-                        DropdownMenuItem(text = { Text("Developer tools") }, onClick = {
-                            moreExpanded = false
-                            action()
-                        })
+                        onScreenSharing?.let {
+                            DropdownMenuItem(text = { Text("Screen sharing") }, onClick = {
+                                moreExpanded = false
+                                sharingSetupOpen = true
+                            })
+                        }
+                        onDeveloperTools?.let { action ->
+                            DropdownMenuItem(text = { Text("Developer tools") }, onClick = {
+                                moreExpanded = false
+                                action()
+                            })
+                        }
                     }
                 }
             }
         }
+        if (sharingSetupOpen && onScreenSharing != null) ScreenSharingSetupDialog(onScreenSharing) { sharingSetupOpen = false }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             onConnections?.let { action -> Button(onClick = action,

@@ -275,6 +275,8 @@ open class PrototypeActivity : ComponentActivity() {
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = { pickerAssignments = it },
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
+            onScreenSharing = { target -> openScreenSharingTarget(target,
+                { packageManager.getLaunchIntentForPackage(GOOGLE_HOME_PACKAGE) }, ::startActivity) },
             onDeveloperTools = if (BuildConfig.DEBUG) ({ startActivity(Intent(this, net.fstab.tachiai.MainActivity::class.java)
                 .putExtra("net.fstab.tachiai.extra.NATIVE_ACCESS_PROBE", true)) }) else null,
             obsoleteSetup = obsoleteSetup, onResetStreamSettings = ::resetStreamSettings,

@@ -89,8 +89,8 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         var resolved: TwitchCatalogRouteOwner? = null
         val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false }) { expected ->
             runCatching {
-                captureTwitchCatalogRouteOwner(instanceId,
-                    { instances.read { legacyProviderSettings(application) } },
+                captureTwitchCatalogSystemRegistryOwner(instanceId, instances,
+                    { legacyProviderSettings(application) },
                     profiles::snapshot, expected,
                     onInstanceObserved = displayInstance::set).also { resolved = it }.proof
             }

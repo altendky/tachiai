@@ -263,6 +263,73 @@ wrote its complete bounded observation but exited 143; the repeat exited zero.
 The intermittent cleanup uncertainty remains tracked in #334 under #297. These
 observations do not establish that idle admission caused or fixed that failure.
 
+## Twitch committed System route registry snapshots
+
+Android Twitch additionally opts into a fresh committed-registry snapshot when
+the validated entire saved route pool is nonempty and entirely System network.
+That pool has no profile file: its single authenticated, decoded registry record
+is an explicit one-file linearization point. The store supplies committed versus
+legacy-derived provenance from that same read under its existing in-process and
+OS file locks; no file-existence precheck or remembered snapshot is used. Snapshot
+collections are immutable. Locks end before proof callbacks or grant access.
+
+The generic two-registry/two-profile reconciliation remains the default and is
+retained for imported/mixed pools and legacy-derived views. Its first sample is
+reused only inside that invocation, avoiding an extra third registry read.
+Corruption still refuses instead of becoming absence or System network. Both
+paths use identical full-pool/candidate/cleanup proof construction, and a mixed
+pool's selected System candidate does not qualify for the shortcut.
+
+This explicitly narrows the SYSTEM-only capture's within-call change-observation
+window; neither path is a cross-store atomic transaction or an ABA guarantee.
+Every media admission still performs fresh owner and durable grant checks before
+and after input reads, with unchanged exact expiry, Forget and caller-budget
+guards. The next gate observes a committed route change; an observed mismatch
+remains revoked even if the old configuration is restored. Reduced encrypted-read
+count alone does not establish a playback or performance improvement.
+
+The older `CatalogAdmissionCostDeviceTest` retains a historical ten-read model
+with default key loading. It does not model current production admission. Use
+the actual `TwitchMediaReadCostDeviceTest` for current measurements; its
+`initialRegistryCommitted` field describes only the initial setup sample's
+provenance, not a later transaction or cached authority.
+
+On 2026-10-18, the actual configured muted Twitch replay/System-network fixture
+passed in 47.293 seconds on persistent `tachiai-dev`, Android 16/API 36 x86-64,
+installed WebView 133.0.6943.137, with its existing catalog account. The initial
+registry was committed. A frame rendered, all 159 samples reported playing with
+none buffering, and position advanced 39.533 seconds. Body admission averaged
+6.239 ms across 5,675 checks; 12,201,388 input bytes arrived in 2,834 positive
+reads. Admission still consumed 35.404 of 35.844 seconds measured in datasource
+reads, versus 0.236 seconds inside input reads. The final SDK delivery estimate
+was 2,699,296 bit/s and selected video was 1,409,040 bit/s. Earlier runs used
+different evolving network/rendition conditions; this is a bounded sequential
+observation, not controlled throughput attribution or sustained-pair acceptance.
+Cleanup, source identity and every saved encrypted record were preserved; the
+original 16 picker assignments were verified after returning to the app. The
+installed app/test APK hashes matched the verified build. All 2,266 JVM cases,
+lint, isolation and app/test/unsigned-release assemblies passed, with stable
+development signing and 16 KiB alignment.
+
+A following 390.0-second observation used the configured ABEMA News live stream
+through its saved Windscribe route and the same Twitch replay through System
+network, with both local builders stopped. Telemetry began at Watch, excluding
+older session context; each feed reported its first video frame. ABEMA had 74
+playing samples over 372.612 seconds, with content time advancing 368.190 seconds.
+Twitch had 64 playing and 11 buffering samples over 377.576 seconds, advancing
+289.381 seconds. Its final video remained 852×480 AVC at about 1,409 kbit/s,
+against a final SDK estimate of 1,055 kbit/s. No terminal feed failure occurred,
+but intermittent buffering remains unresolved in #297; sampled playing states
+do not prove continuous acoustic or physical-device output.
+
+Normal Back/Stop returned to the picker, all 16 original assignments were
+restored, and every saved encrypted-record digest still matched. No uncertain
+cleanup, recovery block or release-timeout projection was observed. ABEMA
+retained three unknown transport-open observations while continuing; Stop added
+the separate admission-refused/inactive observations. Their distinction does
+not establish a transport root cause. Exit country was not independently
+remeasured, and no provider page, private request or protected media was captured.
+
 ## Twitch protected-store read-key reuse
 
 Twitch catalog admission retains its registry/profile store wrappers and opts

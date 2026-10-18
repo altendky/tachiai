@@ -26,6 +26,81 @@ class ProviderInstanceStoreTest {
         "12345678-1234-1234-1234-123456789abc", "Japan")
     private fun defaults() = legacyProviderSetups(defaultSourceSetups())
 
+    @Test fun typedSnapshotProvenanceComesFromTheSameReadAndNeverFallsBackOnCorruption() {
+        val committed = Memory()
+        ProviderInstanceStore(committed).save(defaultProviderInstanceId(PrototypeService.TWITCH), null,
+            SourceRouteChoice.system, ::defaults)
+        val memory = Memory()
+        var reads = 0
+        var legacyReads = 0
+        val storage = object : PrivateSecretStore {
+            override fun read(): ByteArray? { reads++; return memory.read() }
+            override fun write(plaintext: ByteArray) = memory.write(plaintext)
+        }
+        val store = ProviderInstanceStore(storage)
+        val derived = store.readSnapshot {
+            legacyReads++
+            // A committed file appearing after the read cannot change the
+            // provenance of that already captured null result.
+            memory.bytes = committed.bytes!!.copyOf()
+            defaults()
+        }
+        assertFalse(derived.committed); assertEquals(1, reads); assertEquals(1, legacyReads)
+        val saved = store.readSnapshot { error("Committed snapshot must not consult legacy") }
+        assertTrue(saved.committed); assertEquals(2, reads)
+        assertEquals(derived.instances, saved.instances)
+        for (bytes in listOf(byteArrayOf(1, 2, 3), ByteArray(PRIVATE_SECRET_LIMIT + 1))) {
+            memory.bytes = bytes
+            val before = reads
+            assertThrows(Exception::class.java) { store.readSnapshot { legacyReads++; defaults() } }
+            assertEquals(before + 1, reads); assertEquals(1, legacyReads)
+            assertArrayEquals(bytes, memory.bytes)
+        }
+        val failure = IllegalStateException("Synthetic authenticated-read refusal")
+        val unreadable = ProviderInstanceStore(object : PrivateSecretStore {
+            override fun read(): ByteArray? = throw failure
+            override fun write(plaintext: ByteArray) = error("No writes")
+        })
+        assertSame(failure, assertThrows(IllegalStateException::class.java) {
+            unreadable.readSnapshot { error("Read failure is not absence") }
+        })
+    }
+
+    @Test fun typedSnapshotHoldsTheExistingFileLockAndFreezesEveryReturnedCollection() {
+        val file = temporary.newFile("snapshot.lock")
+        val memory = Memory()
+        var reads = 0
+        fun held() = RandomAccessFile(file, "rw").use { handle ->
+            assertThrows(OverlappingFileLockException::class.java) { handle.channel.tryLock() }
+        }
+        val store = ProviderInstanceStore(object : PrivateSecretStore {
+            override fun read(): ByteArray? { held(); reads++; return memory.read() }
+            override fun write(plaintext: ByteArray) { held(); memory.write(plaintext) }
+        }, file)
+        val previous = mutableListOf(japan)
+        val legacy = store.readSnapshot {
+            held()
+            defaults() + (PrototypeService.TWITCH to ProviderSetup(SourceRouteChoice.system, previous))
+        }
+        assertFalse(legacy.committed); assertEquals(1, reads)
+        previous.clear()
+        assertEquals(listOf(japan), legacy.instances.last().setup.previousRoutes)
+        assertThrows(UnsupportedOperationException::class.java) { (legacy.instances as MutableList<*>).clear() }
+        assertThrows(UnsupportedOperationException::class.java) {
+            (legacy.instances.last().setup.previousRoutes as MutableList<*>).clear()
+        }
+        store.saveRoutes(defaultProviderInstanceId(PrototypeService.TWITCH), null,
+            listOf(SourceRouteChoice.system, japan), ::defaults)
+        val before = reads
+        val saved = store.readSnapshot { error("No legacy read") }
+        assertTrue(saved.committed); assertEquals(before + 1, reads)
+        assertThrows(UnsupportedOperationException::class.java) {
+            (saved.instances.last().setup.fallbackRoutes as MutableList<*>).clear()
+        }
+        RandomAccessFile(file, "rw").use { it.channel.tryLock().use { lock -> assertNotNull(lock) } }
+        assertEquals("ProviderInstanceRegistrySnapshot(redacted)", saved.toString())
+    }
+
     @Test fun migrationIsReadOnlyAndFirstExplicitWritePreservesPendingChoicesAndLegacyBytes() {
         val sourcesMemory = Memory(); val sources = SourceSetupStore(sourcesMemory)
         sources.save(PrototypeSource.ABEMA_REPLAY, SourceSetup("My sumo", japan))

@@ -63,9 +63,13 @@ internal fun readTwitchCatalogRouteOwner(instanceId: String, readInstances: () -
     captureTwitchCatalogRouteOwner(instanceId, readInstances, { ids -> ids.associateWith(readProfile) })
 
 internal fun captureTwitchCatalogRouteOwner(instanceId: String, readInstances: () -> List<ProviderInstance>,
-    readProfiles: (Set<String>) -> Map<String, ConnectionProfile>, expectedProof: String? = null): TwitchCatalogRouteOwner =
+    readProfiles: (Set<String>) -> Map<String, ConnectionProfile>, expectedProof: String? = null,
+    onInstanceObserved: (ProviderInstance) -> Unit = {}): TwitchCatalogRouteOwner =
     TwitchCatalogRouteOwner(captureProviderRoutePool(instanceId, PrototypeService.TWITCH,
-        readInstances, readProfiles).resolve(expectedProof))
+        { readInstances().also { instances ->
+            instances.singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH }
+                ?.let(onInstanceObserved)
+        } }, readProfiles).resolve(expectedProof))
 
 internal fun androidTwitchCatalogConnectionBinding(context: Context,
     instanceId: String, canUse: () -> Boolean = { true }, expectedOwnerProof: String? = null): TwitchCatalogConnectionBinding {
@@ -81,11 +85,10 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         var resolved: TwitchCatalogRouteOwner? = null
         val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false }) { expected ->
             runCatching {
-                displayInstance.set(checkNotNull(providerInstanceStore(application).read { legacyProviderSettings(application) }
-                    .singleOrNull { it.id == instanceId && it.service == PrototypeService.TWITCH }))
                 captureTwitchCatalogRouteOwner(instanceId,
                     { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-                    connectionProfileStore(application)::snapshot, expected).also { resolved = it }.proof
+                    connectionProfileStore(application)::snapshot, expected,
+                    onInstanceObserved = displayInstance::set).also { resolved = it }.proof
             }
                 .onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrNull()
         }

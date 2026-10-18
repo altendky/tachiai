@@ -167,6 +167,72 @@ Do this while playback is stopped to avoid racing a writer. Clearing diagnostic
 history does not clear a playback/route failure flag, routes, authorization or
 provider data. No automatic upload or external telemetry is added.
 
+## Twitch idle maintenance admission
+
+Each Twitch media check probes the session's maintenance state before owner
+I/O. An idle check still performs one complete fresh owner reconciliation and
+one durable grant read. Budget, original lease expiry, retention, lifecycle and
+revision checks surround that work. Maintenance state is checked again after
+owner I/O and after the grant read. Work or a receipt appearing at either point
+returns to the existing owner/wait/adopt/currentness path; refusal still stops
+the operation. The idle result is never retained across checks.
+
+This removes duplicate owner reconciliation when no maintenance is underway.
+The route pool retains its own before/after snapshot rereads, every network
+read retains its admission checks before and after input, and the grant is
+authenticated afresh for every admitted check. No admission interval, plaintext
+cache, skipped expiry/Forget check or new transport request is introduced.
+Registry/profile locks are not held across grant I/O.
+
+### Idle-admission observation — 2026-10-18
+
+On persistent `tachiai-dev`, Android 16/API 36 x86-64, with WebView
+133.0.6943.137 installed, the same configured muted Twitch replay/System-network
+fixture passed in 47.570 seconds (47.536 seconds inside its operation). The
+selected video remained 1,409,040 bit/s. The sequential observations compare as
+follows; each sampled approximately 40 seconds:
+
+| Observation | Mean body admission | Playing/buffering samples | Position advance |
+| --- | ---: | ---: | ---: |
+| Original measurement (#326) | 15.875 ms | 111/49 | 27.860 s |
+| Key-handle reuse (#328) | 13.820 ms | 130/29 | 32.404 s |
+| Idle admission (#331) | 9.125 ms | 159/0 | 39.544 s |
+
+The idle run delivered 8,717,936 media bytes in 2,088 positive input reads.
+Its 4,181 body-admission checks took 38.151 seconds, underlying input reads
+took 0.188 seconds, and total datasource reads took 38.505 seconds. The final
+SDK bandwidth estimate was 1,687,018 bit/s. Frame rendering, unchanged encrypted
+records/source identity and confirmed cleanup passed; no terminal failure was
+observed. All 2,228 JVM cases, lint, release isolation and app/test/release
+assemblies passed, with the stable debug/test certificate and 16 KiB alignment.
+
+This demonstrates a useful local cost reduction and no sampled buffering in
+one short single-feed run. It is not a controlled CPU/network benchmark or
+evidence that two-feed buffering, ABEMA failures, acoustic output or physical
+devices are resolved. No protected-media capture or account/route change was
+involved.
+
+Two fresh configured ABEMA News live/Windscribe and Twitch replay/System-network
+runs each continued through a 390.2-second observation, with no terminal feed
+failure. The first run sampled ABEMA playing 79/79 times and Twitch playing
+39/80 times, with 41 buffering samples; their content/replay advances were
+391.320 and 212.311 seconds. The repeat sampled ABEMA playing 79/79 times and
+Twitch playing 50/80 times, with 30 buffering samples; advances were 394.796 and
+238.685 seconds. The state samples include a short pre-observation context,
+covering approximately 399–404 seconds. ABEMA uses content time because its
+live-window position moves. Twitch's final SDK estimates were 745 and 860 kbit/s,
+so the two-feed buffering remains unresolved.
+
+Normal Stop after the first run produced the cleanup recovery dialog. The
+validated journal recorded feed A `PLAYER_RELEASE / IO / MAIN`, followed by
+`FEED_CLEANUP_UNCONFIRMED`; it does not establish a release-timeout cause. The
+built-in restart restored the picker. Normal Stop after the fresh repeat
+returned to the picker successfully. Both runs restored all original assignment
+controls and preserved every saved encrypted-record digest. The first collector
+wrote its complete bounded observation but exited 143; the repeat exited zero.
+The intermittent cleanup uncertainty remains tracked in #334 under #297. These
+observations do not establish that idle admission caused or fixed that failure.
+
 ## Twitch protected-store read-key reuse
 
 Twitch catalog admission retains its registry/profile store wrappers and opts

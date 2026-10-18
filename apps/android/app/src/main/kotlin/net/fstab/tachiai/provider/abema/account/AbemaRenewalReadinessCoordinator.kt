@@ -15,6 +15,7 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         var released = false
         var finished: Long? = null
         var terminal = Status.FAILURE
+        var cleanupRefused = false
     }
     private val entries = mutableListOf<Entry<T>>()
     private var lastElapsed = 0L
@@ -62,13 +63,27 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
             it.finished == null && now >= it.began && now < it.deadline
         } == true
     }
+    // An observer must join claimed work before interpreting a record that its
+    // CAS has published tentatively. Returning READY or invalidating that ticket
+    // in this interval could expose or roll back an unaccepted replacement.
+    @Synchronized fun observeClaimed(instance: String, matches: (T) -> Boolean): Decision? {
+        val now = now() ?: return Decision(Status.FAILURE)
+        val entry = entries.firstOrNull { it.instance == instance && it.claimed && !it.released && matches(it.value) }
+            ?: return null
+        if (entry.finished == null && now >= entry.deadline) {
+            entry.finished = now; entry.terminal = Status.TEMPORARY_FAILURE
+        }
+        return Decision(if (entry.finished == null) Status.WAIT else entry.terminal)
+    }
     fun finish(ticket: String, success: Boolean) = finish(ticket, if (success) Status.READY else Status.FAILURE)
-    @Synchronized fun finish(ticket: String, result: Status) {
+    @Synchronized fun finish(ticket: String, result: Status, cleanupConfirmed: Boolean = true) {
         val now = now() ?: 0
         val entry = entries.singleOrNull { it.ticket == ticket } ?: return
-        entry.released = true
+        if (!cleanupConfirmed) entry.cleanupRefused = true
+        entry.released = cleanupConfirmed && !entry.cleanupRefused
         if (entry.finished != null) return
         entry.terminal = when {
+            !cleanupConfirmed -> Status.TEMPORARY_FAILURE
             refusedClock -> Status.FAILURE
             now >= entry.deadline -> Status.TEMPORARY_FAILURE
             result == Status.READY && !entry.claimed -> Status.FAILURE

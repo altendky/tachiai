@@ -34,9 +34,8 @@
         </activity>
 
         <service android:name=".provider.abema.account.AbemaAccountReadinessService" android:exported="false" />
-        <activity android:name=".provider.abema.account.AbemaAutomaticRenewalActivity"
-            android:theme="@style/Theme.Tachiai.Prototype" android:exported="false"
-            android:excludeFromRecents="true" />
+        <service android:name=".provider.abema.account.AbemaRenewalBrowserService"
+            android:exported="false" android:process=":abema_approval_browser" />
         <activity
             android:name=".feature.connections.AbemaShareActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

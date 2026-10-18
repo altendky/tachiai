@@ -231,6 +231,20 @@ internal class TwitchCatalogMaintenanceCoordinator(
         return value.done.count == 0L && attached.live() && timeCurrent(began, deadline)
     }
 
+    internal enum class ViewerMaintenanceState { IDLE, WORK, REFUSED }
+
+    // This is a momentary operation-local probe, never authorization or an
+    // adoption receipt. Unmatched/starting work stays on the existing slow path.
+    internal fun viewerMaintenanceState(attached: Attachment, expected: TwitchCatalogStoredGrant): ViewerMaintenanceState {
+        if (!attached.admitted()) return ViewerMaintenanceState.REFUSED
+        return synchronized(lock) {
+            if (poisoned || attached !in attachments || !attached.isOpen || attached.origin?.matches(expected) != true)
+                ViewerMaintenanceState.REFUSED
+            else if (flight != null || attached.pending != null) ViewerMaintenanceState.WORK
+            else ViewerMaintenanceState.IDLE
+        }
+    }
+
     // A viewer may wait for one already owned flight, never start or join work.
     // Only its attachment's published proof is an adoption receipt; the flight's
     // result is deliberately not consulted, even after its cleanup has ended.

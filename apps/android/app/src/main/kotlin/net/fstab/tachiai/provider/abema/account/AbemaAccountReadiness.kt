@@ -25,8 +25,8 @@ internal fun normalizedAbemaReadinessTargets(targets: List<AbemaReadinessTarget>
     return distinct
 }
 
-// A resumed host owns a logical request only. Browser handoff invalidates this
-// client; the host creates a new bounded operation when it resumes.
+// A resumed host owns an observation only. Pausing detaches it; any admitted
+// application-owned renewal keeps its original deadline and independent scope.
 internal class AbemaAccountReadiness(private val activity: ComponentActivity) : AutoCloseable {
     companion object { private val retained = ConcurrentLinkedQueue<Any>() }
     private val main = Handler(Looper.getMainLooper())
@@ -72,22 +72,12 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
                         AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED -> finish(AbemaAccountReadinessResult.INTERACTION_REQUIRED)
                         AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE -> finish(AbemaAccountReadinessResult.STORAGE_FAILURE)
                         AbemaRenewalReadinessCoordinator.Status.LAUNCH -> {
+                            // Reservations are claimed internally by the service.
+                            // A stale/invalid LAUNCH reply must never open UI.
                             val ticket = checkNotNull(decision.ticket)
-                            val callback = complete
-                            if (!runCatching { finish(AbemaAccountReadinessResult.HANDOFF) }.getOrDefault(false)) {
-                                cancelTicket(ticket); clearLateSender(); return
-                            }
-                            // Host stores its logical request before Android pauses it.
-                            if (!resumed || closed || generation != run || activity.isFinishing || activity.isDestroyed) {
-                                cancelTicket(ticket); clearLateSender(); return
-                            }
-                            try { activity.startActivity(Intent(activity, AbemaAutomaticRenewalActivity::class.java)
-                                .putExtra(AbemaAutomaticRenewalActivity.TICKET, ticket)) }
-                            catch (_: Throwable) {
-                                cancelTicket(ticket)
-                                if (resumed && !closed && generation == run) callback(AbemaAccountReadinessResult.FAILURE)
-                            }
+                            cancelTicket(ticket)
                             clearLateSender()
+                            finish(AbemaAccountReadinessResult.FAILURE)
                         }
                     }
                 } catch (_: Throwable) { finish(AbemaAccountReadinessResult.FAILURE) }

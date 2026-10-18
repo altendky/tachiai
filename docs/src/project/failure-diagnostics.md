@@ -167,6 +167,89 @@ Do this while playback is stopped to avoid racing a writer. Clearing diagnostic
 history does not clear a playback/route failure flag, routes, authorization or
 provider data. No automatic upload or external telemetry is added.
 
+## Twitch protected-store read-key reuse
+
+Twitch catalog admission retains its registry/profile store wrappers and opts
+those stores and its catalog grant store into opaque Android Keystore key-handle
+reuse. Other stores keep the default behavior. Each read still opens the current
+bounded AtomicFile envelope and performs fresh authenticated decryption with a
+new Cipher and its original binding. Plaintext, envelopes, Ciphers, grants and
+admission results are not cached. Route ownership, expiry, Forget and adoption
+checks retain their existing ordering and frequency.
+
+Key loading is serialized per store; file reads and decryption are independent.
+File/key/decrypt failures invalidate the applicable handle and propagate the
+original failure without retry or key creation. A failed older read cannot evict
+a newer handle. Writes use their normal fresh key lookup and invalidate the
+read handle before and after the operation, including a failed write.
+
+The opt-in AndroidKeyStore fixture uses only newly reserved UUID bindings with
+synthetic payloads. It checks cross-wrapper replacement reads, ciphertext/AAD
+refusal, deleted-key and alias-replacement refusal, and concurrent reads. It
+removes only proven-owned fixture files/aliases and compares the pre-existing
+encrypted records and alias inventory afterward. Uncertain ownership/cleanup
+retains the affected fixture for investigation. With playback stopped on the
+verified persistent ordinary-debug emulator:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.platform.storage.PrivateReadKeyReuseDeviceTest \
+  -e privateReadKeyReuse true \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Without the opt-in it skips before private storage access. JVM race tests do not
+establish Android Keystore revocation behavior; the device fixture and an actual
+media-read observation are needed before making a device/performance claim.
+
+### Key-handle observation — 2026-10-18
+
+The fixture passed on persistent `tachiai-dev`, Android 16/API 36 x86-64, in
+0.170 seconds (149 ms inside its observation). Replacement reads, corruption/AAD
+refusal, deleted-key refusal without regeneration, stale-store refusal after
+alias replacement and 48 concurrent reads passed. All original encrypted-file
+digests and the full alias inventory matched afterward; no fixture resource
+remained. This establishes behavior only on this emulator/OS. Earlier Android
+Keystore implementations and physical secure hardware remain unmeasured.
+
+With the same existing replay, System network route and 1,409,040 bit/s selected
+video, the configured-read fixture passed in 48.595 seconds after this change.
+Across 159 samples, 130 reported playing and 29 buffering; position advanced
+from zero to 32.404 seconds. It delivered 5,950,200 media bytes in 1,401 positive
+input reads. Its 2,806 body-admission checks took 38.779 seconds (13.820 ms mean),
+compared with 15.875 ms mean before the change. Underlying input reads took
+0.113 seconds; total datasource reads took 39.002 seconds. Admission still
+accounted for approximately 99.4% of that measured time. The final SDK bandwidth
+estimate was 1,185,947 bit/s. Frame rendering, confirmed cleanup and unchanged
+encrypted records/source identity passed, with no observed terminal failure.
+
+This is a modest measured reduction in per-check cost; it does not resolve the
+replay's buffering. The observations occurred sequentially, without a controlled
+network or CPU benchmark. Request sizes, buffering samples and bandwidth may
+vary between runs. The remaining repeated fresh-decryption cost and the
+independent ABEMA errors remain under #297.
+
+The actual configured ABEMA News live/Windscribe and Twitch replay/System-network
+comparison first encountered the already observed ABEMA preparation refusal
+(`CACHED_ABEMA_SOURCE_PREPARE`, `ILLEGAL_STATE`), before native player creation.
+Twitch continued for the 390.6-second observation: 52 playing/23 buffering
+samples, advancing 266.880 seconds across a 379.426-second sample span. This
+attempt does not establish two-feed playback.
+
+A fresh attempt with the same pair prepared both feeds. Its 390.4-second
+observation included preceding context already playing; 85 samples per feed
+spanned about 430 seconds. ABEMA reported playing in all 85 samples and its
+content timestamp advanced 423.327 seconds. Twitch reported 28 playing/57
+buffering samples and advanced 146.858 seconds, ending at a 483 kbit/s SDK
+bandwidth estimate. Neither feed reported a terminal failure. ABEMA recorded two
+unknown transport-open exceptions while continuing to play, so that cause
+remains unresolved. No acoustic or physical-device acceptance is claimed.
+
+Both attempts ended through normal Back/Stop. All 16 original picker assignment
+controls were restored, every saved encrypted-file digest still matched the
+pre-installation baseline, and no uncertain-cleanup/recovery block was reported.
+No browser/account reset, credentials or protected-media capture was involved.
+
 ## Optional native media read timing
 
 [Issue #326](https://github.com/altendky/tachiai/issues/326) adds an explicitly

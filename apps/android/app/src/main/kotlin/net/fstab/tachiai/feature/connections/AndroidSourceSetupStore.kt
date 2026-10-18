@@ -15,8 +15,8 @@ internal fun providerSetupStore(context: Context): ProviderSetupStore = Provider
     File(context.noBackupFilesDir, "provider-setup.lock"),
 )
 
-internal fun providerInstanceStore(context: Context): ProviderInstanceStore = ProviderInstanceStore(
-    AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.PROVIDER_INSTANCES),
+internal fun providerInstanceStore(context: Context, reuseReadKey: Boolean = false): ProviderInstanceStore = ProviderInstanceStore(
+    AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.PROVIDER_INSTANCES, reuseReadKey),
     File(context.noBackupFilesDir, "provider-instances.lock"),
 )
 

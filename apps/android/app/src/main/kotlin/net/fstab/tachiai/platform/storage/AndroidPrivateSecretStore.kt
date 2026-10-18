@@ -13,8 +13,10 @@ import javax.crypto.SecretKey
 
 // No export/backup, SharedPreferences, plaintext fallback, password or browser
 // session access. All key/file I/O is invoked from the worker, never Compose.
-internal class AndroidPrivateSecretStore private constructor(context: Context, bindingName: String) : PrivateSecretStore {
-    constructor(context: Context, slot: PrivateAuthorizationSlot) : this(context, slot.bindingName)
+internal class AndroidPrivateSecretStore private constructor(context: Context, bindingName: String,
+    reuseReadKey: Boolean = false) : PrivateSecretStore {
+    constructor(context: Context, slot: PrivateAuthorizationSlot, reuseReadKey: Boolean = false) :
+        this(context, slot.bindingName, reuseReadKey)
     companion object {
         // Worker-only retirement of the removed app registration. Do not read,
         // decrypt or convert its grant, or touch any provider/Smart TV binding.
@@ -37,13 +39,14 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
         fun configuredProviderInstance(context: Context, id: String): AndroidPrivateSecretStore {
             return AndroidPrivateSecretStore(context, configuredProviderInstanceBindingName(id))
         }
-        fun twitchCatalogInstance(context: Context, id: String): AndroidPrivateSecretStore {
-            return AndroidPrivateSecretStore(context, twitchCatalogInstanceBindingName(id))
+        fun twitchCatalogInstance(context: Context, id: String, reuseReadKey: Boolean = false): AndroidPrivateSecretStore {
+            return AndroidPrivateSecretStore(context, twitchCatalogInstanceBindingName(id), reuseReadKey)
         }
     }
     private val file = AtomicFile(File(context.noBackupFilesDir, "$bindingName.enc"))
     private val alias = "tachiai.$bindingName.v1"
     private val binding = "${context.packageName}:$bindingName:v1".toByteArray()
+    private val readKey = if (reuseReadKey) ReadKeyHandle { key(create = false) } else null
 
     private fun key(create: Boolean): SecretKey {
         val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -57,7 +60,11 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
         return generator.generateKey()
     }
 
-    override fun read(): ByteArray? {
+    override fun read(): ByteArray? = if (readKey == null) {
+        readEnvelope()?.let { decryptPrivateSecret(key(create = false), binding, it) }
+    } else readKey.read(::readEnvelope) { key, bytes -> decryptPrivateSecret(key, binding, bytes) }
+
+    private fun readEnvelope(): ByteArray? {
         val input = try { file.openRead() } catch (error: FileNotFoundException) {
             // openRead first allows AtomicFile's backup recovery. A remaining
             // base/backup or unreadable directory is not an absent credential.
@@ -76,18 +83,23 @@ internal class AndroidPrivateSecretStore private constructor(context: Context, b
             }
             output.toByteArray()
         }
-        return decryptPrivateSecret(key(create = false), binding, bytes)
+        return bytes
     }
 
     override fun write(plaintext: ByteArray) {
-        val encrypted = encryptPrivateSecret(key(create = true), binding, plaintext)
-        val output = file.startWrite()
+        readKey?.invalidate()
         try {
-            output.write(encrypted)
-            file.finishWrite(output)
-        } catch (error: Exception) {
-            file.failWrite(output)
-            throw error // Caller reports a fixed category, never exception text.
+            val encrypted = encryptPrivateSecret(key(create = true), binding, plaintext)
+            val output = file.startWrite()
+            try {
+                output.write(encrypted)
+                file.finishWrite(output)
+            } catch (error: Exception) {
+                file.failWrite(output)
+                throw error // Caller reports a fixed category, never exception text.
+            }
+        } finally {
+            readKey?.invalidate()
         }
     }
 }

@@ -5,7 +5,7 @@ import java.io.File
 import net.fstab.tachiai.platform.storage.AndroidPrivateSecretStore
 import net.fstab.tachiai.platform.storage.PrivateAuthorizationSlot
 
-internal fun connectionProfileStore(context: Context) = ConnectionProfileStore(
-    AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.CONNECTION_PROFILES),
+internal fun connectionProfileStore(context: Context, reuseReadKey: Boolean = false) = ConnectionProfileStore(
+    AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.CONNECTION_PROFILES, reuseReadKey),
     File(context.noBackupFilesDir, "connection-profiles.lock"),
 )

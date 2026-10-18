@@ -76,6 +76,10 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
     val application = context.applicationContext
     AndroidPrivateSecretStore.removeRetiredTwitchRegistration(application)
     val diagnostics = FailureDiagnostics.create(application)
+    // Retain wrappers and key handles only. Each reconciliation still reads
+    // the current encrypted files and performs fresh authenticated decryption.
+    val instances = providerInstanceStore(application, reuseReadKey = true)
+    val profiles = connectionProfileStore(application, reuseReadKey = true)
     class Snapshot(val presentation: TwitchCatalogConnectionOwner, val profile: ConnectionProfile?, val proof: String? = null)
     val routeAdmission = ProviderRouteAdmission(expectedOwnerProof)
     val sharedMaintenance = AtomicReference<TwitchCatalogMaintenanceRegistry.Handle?>()
@@ -86,8 +90,8 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false }) { expected ->
             runCatching {
                 captureTwitchCatalogRouteOwner(instanceId,
-                    { providerInstanceStore(application).read { legacyProviderSettings(application) } },
-                    connectionProfileStore(application)::snapshot, expected,
+                    { instances.read { legacyProviderSettings(application) } },
+                    profiles::snapshot, expected,
                     onInstanceObserved = displayInstance::set).also { resolved = it }.proof
             }
                 .onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrNull()
@@ -205,7 +209,7 @@ internal fun awaitTwitchCatalogStartupCleanup(instanceId: String, deadlineElapse
     awaitReady(instanceId, deadlineElapsedMs, canUse) == ProviderStartupCleanupAdmission.READY) && canUse()
 
 private fun androidTwitchCatalogGrantStore(context: Context, instanceId: String) =
-    TwitchCatalogGrantStore(AndroidPrivateSecretStore.twitchCatalogInstance(context, instanceId),
+    TwitchCatalogGrantStore(AndroidPrivateSecretStore.twitchCatalogInstance(context, instanceId, reuseReadKey = true),
         instanceId, File(context.noBackupFilesDir, "twitch-catalog-$instanceId.lock"))
 
 // Explicit failed-clear recovery needs neither a readable registry nor a route.

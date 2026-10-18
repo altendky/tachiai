@@ -18,6 +18,7 @@ import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.media.BoundedNativePlayer
 import net.fstab.tachiai.platform.media.NativeMediaEvent
+import net.fstab.tachiai.platform.media.NativeMediaReadCosts
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
@@ -61,6 +62,7 @@ internal class PrototypeTwitchSession(
     private val liveIdentityResolverFactory: (() -> TwitchLiveIdentityResolver)? = null,
     preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
     private val onCleanupChanged: () -> Unit = {},
+    private val readCosts: NativeMediaReadCosts? = null,
 ) : PrototypeFeedSession {
     companion object {
         private val cancellationExecutor = Executors.newFixedThreadPool(2) { task ->
@@ -171,6 +173,7 @@ internal class PrototypeTwitchSession(
                             onCleanupOwner = { nativeCleanup = it },
                             onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() },
                             onCleanupChanged = onCleanupChanged,
+                            readCosts = readCosts,
                             onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")

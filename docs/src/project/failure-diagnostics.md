@@ -167,6 +167,89 @@ Do this while playback is stopped to avoid racing a writer. Clearing diagnostic
 history does not clear a playback/route failure flag, routes, authorization or
 provider data. No automatic upload or external telemetry is added.
 
+## Optional native media read timing
+
+[Issue #326](https://github.com/altendky/tachiai/issues/326) adds an explicitly
+owned, in-memory observer for actual native datasource boundaries. It aggregates
+fixed manifest/media/other counters for setup, admission checks, response headers,
+input acquisition and body reads, with requested/returned byte counts and five
+fixed size bins. The observation window is at most 90 seconds. It retains no
+URI, request identifier, headers, body, provider text, credentials or exception.
+It does not write the failure journal or add telemetry.
+
+The observer is absent by default, with no diagnostic clock or aggregation work.
+Clock/observer failures disable evidence rather than changing playback. Existing
+admission, expiry, revocation, route, timeout and cleanup checks remain in their
+original order. Summed durations may exceed wall time across concurrent loaders;
+they are not a utilization percentage. Setup residual time excludes separately
+measured admission/header/input-acquisition spans. A boundary completing after
+the fixed window is omitted, so in-flight requests may remain unclassified.
+
+The opt-in `TwitchMediaReadCostDeviceTest` uses the production configured replay
+startup receipt, preparation, route and player. It adds no per-read transport
+wrappers or protected-store checks that would distort input-read wall time.
+It requires ordinary debug on verified persistent `tachiai-dev`, one Twitch
+instance whose entire route pool is System network, and an existing supported
+configured replay. It freezes that source without writing assignments, mutes
+playback, samples numeric state/quality for at most 40 seconds and reserves
+bounded cleanup time within its original 90-second operation. It verifies saved
+encrypted records and source identity afterward. No provider UI or protected
+media is captured.
+
+With playback stopped and the verified ordinary app/test APKs installed:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.twitch.TwitchMediaReadCostDeviceTest \
+  -e twitchMediaReadCosts true \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Without the opt-in, it skips before private reads. A completed diagnostic can
+describe a playback failure if bytes and valid timings were captured and cleanup
+and preservation passed; it is not a positive playback-acceptance test. Compare
+admission and input-read durations plus returned sizes to distinguish local
+admission amplification from transport wait. Header/setup costs, player samples
+and bandwidth estimates provide additional context. Input-read wall time includes
+the platform stream implementation, not just network transfer; admission time
+includes storage and lock waits, not just CPU. Requested bytes are buffer demand,
+not delivered traffic. Enabled-observer overhead is included in the timings.
+One muted replay observation
+does not establish sustained two-feed, acoustic or physical-device behavior.
+
+### Configured replay observation — 2026-10-18
+
+The first opt-in run passed in 48.686 seconds on persistent `tachiai-dev`,
+Android 16/API 36, x86-64, with WebView 133.0.6943.137 installed. This was one
+existing configured Twitch replay through its saved catalog connection and
+explicit System network route; the production read-only startup validation was
+used. No ABEMA feed or provider WebView ran in this fixture. Exit-country
+geolocation was not independently measured, and audio was muted.
+
+The player rendered a frame. Across 160 samples over approximately 40 seconds,
+111 reported playing and 49 buffering; position advanced from zero to 27.860
+seconds. Selected video was 1,409,040 bit/s and the final SDK bandwidth estimate
+was 994,315 bit/s. These are bounded samples, not continuous output proof.
+
+The media datasource returned 4,872,862 bytes in 1,231 positive input reads,
+averaging about 3,958 bytes per read. Its 2,465 body-admission checks took
+39.132 seconds, compared with 0.103 seconds inside underlying input reads and
+39.327 seconds of total datasource-read time. Admission therefore accounted for
+about 99.5% of measured body-read time in this run. Returned-size bins were 45
+at up to 256 bytes, 136 at 257–1,024, 472 at 1,025–4,096 and 578 at 4,097–16,384;
+none exceeded 16,384. Media response headers took 0.857 seconds; four manifest
+opens took 2.028 seconds in response headers and 0.495 seconds in body admission.
+
+This establishes local admission work as the immediate measured bottleneck for
+that replay, without proving pure CPU cost, unrestricted CDN capacity or the
+cause of the separate ABEMA errors in #297. Normal Stop can contribute aborted
+requests/read failures to the final counters; the fixture reported no terminal
+playback failure. Cleanup completed, the exact configured source and provider
+were preserved, every encrypted-record digest matched across update and probe,
+and the launcher was restored. No account renewal, assignment write, credentials,
+private request data or media capture was involved. #297 remains open for the
+appropriate optimization and wider sustained/failure-recovery acceptance.
+
 ## Verification boundaries
 
 JVM tests inject multiple cleanup exceptions, malformed/secret-bearing exception

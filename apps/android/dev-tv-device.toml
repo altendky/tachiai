@@ -1,0 +1,28 @@
+# Separate persistent TV data; SDK and single-emulator lock shared with phone.
+[device]
+name = "tachiai-tv-dev"
+hardware = "tv_1080p"
+system_image = "system-images;android-36;android-tv;x86_64"
+ram_mb = 2048
+cores = 4
+port = 5582
+keyboard = true
+
+[runtime]
+gpu = "software"
+
+[preferences]
+night_mode = "yes"
+# TV has no phone navigation-bar overlay.
+navigation = "none"
+
+[sdk]
+command_line_version = "19.0"
+bootstrap_url = "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
+bootstrap_sha1 = "5fdcc763663eefb86a5b8879697aa6088b041e70"
+
+[sdk.revisions]
+emulator = "37.2.12"
+platform-tools = "37.0.1"
+"system-images;android-36;android-tv;x86_64" = "4"
+"build-tools;37.0.0" = "37.0.0"

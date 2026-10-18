@@ -7,6 +7,7 @@
 
 import argparse
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +26,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "apps/android/dev-device.toml"
+TV_PROFILE = ROOT / "apps/android/dev-tv-device.toml"
+LIFECYCLE_LOCK = Path.home() / ".local/share/tachiai/emulator.lock"
 CERTIFICATE = "A258F5F71E7D828F51A3AAF6AA94F97B9DBFBD64E0CE08394A59C120914A7A17"
 APPLICATION = "net.fstab.tachiai"
 PROCESS_MEMORY = ("VmRSS", "VmHWM", "RssAnon", "RssFile", "RssShmem", "VmSwap", "VmSize", "VmPeak")
@@ -228,6 +231,35 @@ def properties(path):
     )
 
 
+def emulator_processes(proc=Path("/proc")):
+    """Return AVD names only, including emulators not yet registered with ADB."""
+    names = []
+    for process in proc.iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid():
+                continue
+            command = (process / "comm").read_text().strip()
+            if not command.startswith(("qemu-system", "emulator")):
+                continue
+            raw = bounded_proc_read(process / "cmdline")
+            if not raw or not raw.endswith(b"\0"):
+                names.append("unknown")
+                continue
+            arguments = raw.decode().split("\0")[:-1]
+            if "-avd" in arguments:
+                position = arguments.index("-avd") + 1
+                names.append(arguments[position] if position < len(arguments) else "unknown")
+            elif any(argument.startswith("@") for argument in arguments[1:]):
+                names.append(next(argument[1:] or "unknown" for argument in arguments[1:] if argument.startswith("@")))
+            elif command.startswith("emulator") or "/emulator/" in arguments[0]:
+                names.append("unknown")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return names
+
+
 class Device:
     def __init__(self, state, profile):
         self.state = state.resolve()
@@ -347,7 +379,8 @@ class Device:
                        "hw.cpu.ncore": str(self.spec["cores"]),
                        "hw.keyboard": "yes" if self.spec["keyboard"] else "no"})
         config.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
-        (self.avd / "tachiai-profile.toml").write_bytes(PROFILE.read_bytes())
+        profile_file = TV_PROFILE if self.spec["name"] == "tachiai-tv-dev" else PROFILE
+        (self.avd / "tachiai-profile.toml").write_bytes(profile_file.read_bytes())
         self.verify_avd()
         print(f"Created {self.spec['name']}; persistent data: {self.avd}")
 
@@ -388,20 +421,30 @@ class Device:
             result = {"status": "UNAVAILABLE", "reason": memory_reason(error)}
         return {"utc": utc, **result}
 
+    def refuse_other_emulators(self):
+        output = self.run(self.sdk / "platform-tools/adb", "devices", capture=True, timeout=10).stdout
+        for line in output.splitlines():
+            fields = line.split()
+            if fields and fields[0].startswith("emulator-") and fields[0] != self.serial:
+                raise ValueError("Another emulator is present; stop it explicitly before starting this profile.")
+
     def start(self, headless, cold_boot=False, gpu=None):
         selected_gpu = gpu if gpu is not None else self.profile["runtime"]["gpu"]
         if selected_gpu not in ("auto", "host", "software", "swiftshader", "swangle", "lavapipe"):
             raise ValueError("Unsupported graphics backend; emulator was not started.")
         self.verify_sdk()
         self.verify_avd()
+        self.refuse_other_emulators()
         if self.connected():
             if gpu is not None or cold_boot:
                 raise ValueError("Emulator is already running; stop it before changing renderer or cold-booting.")
             self.configure()
             print(f"Already running: {self.serial}")
             return
+        if emulator_processes():
+            raise ValueError("An emulator process is starting or stopping; wait for it to exit before starting another.")
         self.run(self.sdk / "emulator/emulator", "-accel-check")
-        log = self.state / "emulator.log"
+        log = self.state / (self.spec["name"] + "-emulator.log")
         with log.open("a") as output:
             process = subprocess.Popen(
                 [str(self.sdk / "emulator/emulator"), "-avd", self.spec["name"],
@@ -435,7 +478,8 @@ class Device:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             output = self.run(self.sdk / "platform-tools/adb", "devices", capture=True, timeout=10).stdout
-            if not any(line.split() and line.split()[0] == self.serial for line in output.splitlines()):
+            if not any(line.split() and line.split()[0] == self.serial for line in output.splitlines()) and \
+                    self.spec["name"] not in emulator_processes():
                 return
             time.sleep(2)
         raise ValueError("Emulator is still shutting down; left intact, without forced termination.")
@@ -444,12 +488,13 @@ class Device:
         preferences = self.profile["preferences"]
         night = preferences["night_mode"]
         navigation = preferences["navigation"]
-        if night not in ("yes", "no", "auto") or navigation not in ("threebutton", "gestural"):
+        if night not in ("yes", "no", "auto") or navigation not in ("threebutton", "gestural", "none"):
             raise ValueError("Unsupported Android preferences; no settings were applied.")
         self.ready()
         self.adb("shell", "cmd", "uimode", "night", night, timeout=15)
-        self.adb("shell", "cmd", "overlay", "enable-exclusive", "--user", "0", "--category",
-                 "com.android.internal.systemui.navbar." + navigation, timeout=15)
+        if navigation != "none":
+            self.adb("shell", "cmd", "overlay", "enable-exclusive", "--user", "0", "--category",
+                     "com.android.internal.systemui.navbar." + navigation, timeout=15)
 
     def install(self, apk):
         self.ready()
@@ -465,7 +510,8 @@ class Device:
             raise ValueError("APK application ID is not Tachiai's development application.")
         self.adb("install", "-r", apk.resolve())
         self.adb("shell", "am", "start", "-a", "android.intent.action.MAIN",
-                 "-c", "android.intent.category.LAUNCHER", "-n", APPLICATION + "/.MainActivity")
+                 "-c", "android.intent.category.LEANBACK_LAUNCHER" if self.spec["name"] == "tachiai-tv-dev"
+                 else "android.intent.category.LAUNCHER", "-n", APPLICATION + "/.MainActivity")
 
 
 def main():
@@ -473,6 +519,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
     parser.add_argument("--state-dir", type=Path, default=base / "tachiai/android")
+    parser.add_argument("--device", choices=("phone", "tv"), default="phone")
     commands = parser.add_subparsers(dest="command", required=True)
     setup = commands.add_parser("setup")
     setup.add_argument("--seed-sdk", type=Path, help="Reuse matching command-line tools and accepted licenses only")
@@ -490,13 +537,25 @@ def main():
     install.add_argument("apk", nargs="?", type=Path,
                          default=ROOT / "apps/android/app/build/outputs/apk/debug/app-debug.apk")
     args = parser.parse_args()
-    device = Device(args.state_dir, tomllib.loads(PROFILE.read_text()))
+    profile = TV_PROFILE if args.device == "tv" else PROFILE
+    device = Device(args.state_dir, tomllib.loads(profile.read_text()))
+    # Canonical per-user location, independent of --state-dir and device choice.
+    # Hold through boot/shutdown so concurrent invocations cannot race inventory.
+    if args.command in ("start", "stop"):
+        LIFECYCLE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        if LIFECYCLE_LOCK.is_symlink():
+            raise ValueError("Emulator lifecycle lock is redirected; refusing access.")
+        with LIFECYCLE_LOCK.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if LIFECYCLE_LOCK.is_symlink() or os.fstat(lock.fileno()).st_ino != LIFECYCLE_LOCK.stat().st_ino:
+                raise ValueError("Emulator lifecycle lock changed; refusing access.")
+            if args.command == "start":
+                device.start(args.headless, args.cold_boot, args.gpu)
+            else:
+                device.stop()
+        return
     if args.command == "setup":
         device.setup(args.seed_sdk)
-    elif args.command == "start":
-        device.start(args.headless, args.cold_boot, args.gpu)
-    elif args.command == "stop":
-        device.stop()
     elif args.command == "status":
         device.ready()
         print(f"Ready: {device.spec['name']} ({device.serial}); data: {device.avd}")

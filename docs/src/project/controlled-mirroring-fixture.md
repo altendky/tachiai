@@ -105,7 +105,8 @@ adb -s "$VERIFIED_DEVICE_SERIAL" shell am instrument -w -r \
 ```
 
 The first check requires two READY players, increasing content clocks and
-increasing rendered-buffer counters. It uses real viewer mute/balance/centre
+increasing rendered-buffer counters. It checks that the three-line readback and
+Stop button are fully visible below the status bar. It uses real viewer mute/balance/centre
 controls, checks actual player gains, requests a one-second relative timing
 change through the production controls and waits for real paused seek
 settlement. It then presses the visible Stop button and verifies both actual

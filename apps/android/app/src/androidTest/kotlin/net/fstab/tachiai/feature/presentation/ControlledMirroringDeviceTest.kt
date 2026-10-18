@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -77,6 +78,7 @@ class ControlledMirroringDeviceTest {
             } }
         }
         main {
+            fixture.assertHeaderVisible()
             val viewer = checkNotNull(fixture.viewer)
             button(viewer, "Audio").performClick()
             assertEquals(0.5f, fixture.players[0].player.volume, 0f)
@@ -345,10 +347,15 @@ class ControlledMirroringDeviceTest {
                     playAllowed = { stopped.get() == null && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) })
                 val root = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
+                    fitsSystemWindows = true
                     setBackgroundColor(Color.rgb(23, 26, 28))
                 }
-                val header = LinearLayout(activity)
-                readback = TextView(activity).apply { setTextColor(Color.WHITE); textSize = 12f }
+                val header = LinearLayout(activity).apply { isBaselineAligned = false }
+                readback = TextView(activity).apply {
+                    setTextColor(Color.WHITE); textSize = 12f
+                    text = "CONTROLLED LOCAL MEDIA\nA preparing\nB preparing"
+                    setLines(3)
+                }
                 stopButton = Button(activity).apply {
                     text = "Stop fixture"; isAllCaps = false
                     setOnClickListener { finish("STOP") }
@@ -422,6 +429,20 @@ class ControlledMirroringDeviceTest {
             assertEquals(emptyList<String>(), cleanupFailures)
             assertEquals(2, players.size)
             assertTrue(players.all { it.released && it.player.isReleased })
+        }
+
+        @Suppress("DEPRECATION")
+        fun assertHeaderVisible() {
+            val topInset = activity.window.decorView.rootWindowInsets?.systemWindowInsetTop ?: 0
+            for (view in listOf(readback, stopButton)) {
+                val position = IntArray(2)
+                view.getLocationOnScreen(position)
+                assertTrue("Fixture header must sit below the status bar", position[1] >= topInset)
+                val visible = Rect()
+                assertTrue(view.getGlobalVisibleRect(visible))
+                assertEquals("Fixture header must not be clipped", view.height, visible.height())
+            }
+            assertEquals(3, readback.layout.lineCount)
         }
     }
 

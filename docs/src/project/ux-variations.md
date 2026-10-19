@@ -32,7 +32,8 @@ to extend it. Merging this document does not approve its rows.
 No exception has an explicit approval reference recorded in this initial audit.
 When the user approves a specific deviation, move its row here with the exact
 scope, affected implementations, approval date and a durable reference to that
-discussion. A changed scope requires its own approval. Unimplemented proposals,
+discussion. Mark approved designs that are not implemented yet as pending
+implementation. A changed scope requires its own approval. Unapproved proposals,
 ordinary shared behavior, accidental bugs and platform research do not belong
 in this register.
 

@@ -150,9 +150,14 @@ or Open account, fits its label and aligns right beside the status. Its normal
 visual height is 40dp, with a minimum 48dp touch target and a consistent gap before
 the next section divider. Labels may wrap at larger text sizes without moving
 neighboring sections; Sign in again, Check connection and confirmed Forget account
-live in the overflow menu. Finish connection and Cancel remain inside the active
-connection flow, outside the scrolling settings content. Status changes do not
-insert or remove settings rows. Section help uses info icons.
+live in the overflow menu. Opening sign-in and checking the returned account use
+the existing status row without a progress dialog. After half a second, an inline
+spinner appears in reserved status space and the primary action becomes Cancel;
+repeat connection clicks stay disabled during the handoff. Back can cancel a
+pending foreground connection even when its settings row is scrolled away.
+A mounted dialog outside the scrolling content remains only when a returned
+grant actually enables manual Finish connection. Status changes do not insert
+or remove settings rows. Section help uses info icons.
 
 Search uses a trailing icon inside the field and the keyboard Search action;
 both submit the same provider-wide query and respect loading and storage guards.

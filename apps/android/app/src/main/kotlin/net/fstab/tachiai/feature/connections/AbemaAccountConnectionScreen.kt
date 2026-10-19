@@ -21,14 +21,22 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.delay
 import net.fstab.tachiai.provider.abema.account.*
 
 @Composable
 internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, onConnect: () -> Unit,
     onValidate: () -> Unit, onForget: () -> Unit, ready: Boolean = true,
-    onSignInAgain: (() -> Unit)? = null, enabled: Boolean = true, onBack: (() -> Unit)? = null) {
+    onSignInAgain: (() -> Unit)? = null, enabled: Boolean = true, onBack: (() -> Unit)? = null,
+    onCancelConnection: (() -> Unit)? = null) {
     val reading = state.progress == AbemaAccountProgress.READING
-    val idleActions = enabled && ready && !reading && !state.busy
+    val connectionPending = onCancelConnection != null
+    var showPending by remember(connectionPending) { mutableStateOf(false) }
+    LaunchedEffect(connectionPending) {
+        if (connectionPending) { delay(500); showPending = true }
+    }
+    val idleActions = enabled && ready && !reading && !state.busy && !connectionPending
     val canForget = enabled && ready && state.progress != AbemaAccountProgress.FORGETTING
     var menuOpen by remember { mutableStateOf(false) }
     var confirmingForget by remember { mutableStateOf(false) }
@@ -67,13 +75,16 @@ internal fun AbemaAccountConnectionScreen(state: AbemaAccountConnectionState, on
         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).heightIn(min = statusHeight + 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f).height(statusHeight), contentAlignment = Alignment.CenterStart) {
-                Text(compactAccountStatus(state, ready), style = MaterialTheme.typography.bodyMedium,
+                Text(compactAccountStatus(state, ready), Modifier.padding(end = 24.dp), style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (showPending && !state.canContinue) CircularProgressIndicator(
+                    Modifier.align(Alignment.CenterEnd).size(16.dp).testTag("abema-connection-progress"), strokeWidth = 2.dp)
             }
             Box(Modifier.weight(1.6f), contentAlignment = Alignment.CenterEnd) {
-                Button(onConnect, enabled = idleActions,
+                Button({ if (showPending) onCancelConnection?.invoke() else onConnect() },
+                    enabled = if (showPending) enabled && ready && state.progress != AbemaAccountProgress.FORGETTING else idleActions,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) {
-                    Text(if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
+                    Text(if (showPending) "Cancel" else if (state.status == AbemaAccountStatus.CONNECTED) "Open account" else "Connect by email",
                         style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center)
                 }
@@ -94,7 +105,11 @@ internal fun AbemaAccountConnectionHost(state: AbemaAccountConnectionState, flow
     onContinue: () -> Unit, onCancel: () -> Unit, ready: Boolean = true, enabled: Boolean = true,
     content: @Composable () -> Unit) {
     content()
-    if (flowActive && foreground) AbemaAccountConnectionFlow(state, onContinue, onCancel, ready, enabled)
+    // Opening and verification are status updates, not decisions. Only retain
+    // the mounted dialog when a returned grant actually needs manual finishing.
+    BackHandler(enabled = flowActive && foreground && !state.canContinue && ready && enabled &&
+        state.progress != AbemaAccountProgress.FORGETTING, onBack = onCancel)
+    if (flowActive && foreground && state.canContinue) AbemaAccountConnectionFlow(state, onContinue, onCancel, ready, enabled)
 }
 
 @Composable

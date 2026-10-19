@@ -133,13 +133,16 @@ class NativePairViewerRemoteTest {
         }
     }
 
-    @Test fun systemRemoteBackDismissesOnlyTheMenuThenThePanelAndRestoresTheirAnchors() = withFixture { scenario, fixture ->
+    @Test fun systemRemoteBackDismissesMenuPanelAndToolbarBeforeReturningToSources() = withFixture { scenario, fixture ->
         focus(scenario, fixture, "Audio"); key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         focus(scenario, fixture, "More"); key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         onView(withText("Playback status")).check(androidx.test.espresso.assertion.ViewAssertions.matches(
             androidx.test.espresso.matcher.ViewMatchers.isDisplayed()))
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         idle()
+        // Synchronize with the popup window disappearing before injecting the
+        // next system Back; an idle Activity alone does not settle that window.
+        onView(withText("Playback status")).check(doesNotExist())
         scenario.onActivity {
             assertEquals(View.VISIBLE, fixture.scroller.visibility)
             assertTrue(button(fixture.viewer, "More").isFocused)
@@ -152,6 +155,24 @@ class NativePairViewerRemoteTest {
             assertTrue(button(fixture.viewer, "Audio").isFocused)
             assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
         }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        idle()
+        scenario.onActivity {
+            assertEquals(View.GONE, fixture.dock.visibility)
+            assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
+        }
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
+        scenario.onActivity {
+            assertEquals(View.VISIBLE, fixture.dock.visibility)
+            assertTrue(button(fixture.viewer, "Play").isFocused)
+            assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
+        }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        idle()
+        scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility); assertEquals(0, fixture.exits) }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        idle()
+        scenario.onActivity { assertEquals(1, fixture.exits) }
     }
 
     @Test fun nativeNudgeLongPressStopsAtKeyReleaseAndFocusLoss() = withFixture { scenario, fixture ->

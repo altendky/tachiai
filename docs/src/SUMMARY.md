@@ -15,6 +15,8 @@
   - [Connected Twitch catalog prototype](project/twitch-connected-catalog.md)
   - [Provider watch-history access](project/provider-history-access.md)
   - [Cross-platform implementation landscape](project/platforms.md)
+  - [UX variation register](project/ux-variations.md)
+  - [Implementation difference ledger](project/implementation-differences.md)
   - [Casting: screen mirroring and TV applications](project/casting.md)
   - [Controlled mirroring media fixture](project/controlled-mirroring-fixture.md)
   - [Android TV and Google TV review](project/android-tv-interface-review.md)

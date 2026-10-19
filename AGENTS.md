@@ -16,6 +16,38 @@ The first concrete pairing is ABEMA's Grand Sumo coverage with the
 `midnightsumo` Twitch channel, but the product model must remain a generic
 multi-stream presentation capable of live and replay sources.
 
+## Common UX across implementations
+
+Treat Tachiai as one product with a common UX across phone, tablet, TV and future
+Apple/web implementations. Keep equivalent capabilities, navigation, labels,
+defaults, controls and state transitions consistent. Shared responsive rules may
+adapt to screen size and input within the approved common design; a
+platform-specific UX rule is an exception,
+not permission to redesign the product for that platform.
+
+Before introducing or changing a user-visible difference between implementations,
+discuss the exact deviation, affected implementations, reason and tradeoffs
+directly with the user and wait for their explicit approval. Platform convention,
+API limitations, implementation convenience, a generic request to support a
+platform, generic issue/PR approval or passing tests do not establish that approval.
+Reuse approval already given for the same scoped design; do not ask again for
+ordinary implementation steps that stay within it.
+
+Read and update the [UX variation register](docs/src/project/ux-variations.md)
+when working across implementations. Record the specific approved exception and
+its approval evidence. Existing differences without such evidence stay explicitly
+unconfirmed; recording them or merging the register does not approve them.
+Keep proposals in their issue/PR discussion until the user approves the deviation.
+Do not introduce or extend an unconfirmed exception without that discussion.
+
+Behind-the-scenes mechanisms may differ where systems require it without a
+separate UX approval, provided they preserve the common user-facing design.
+Record implemented differences in the
+[implementation difference ledger](docs/src/project/implementation-differences.md).
+If a technical constraint changes the visible flow, behavior or available
+controls, its UX consequence still requires explicit approval. Keep speculative
+platform research separate from both factual registers.
+
 ## Default development device
 
 Use the persistent `tachiai-dev` Android emulator for routine local deployment,

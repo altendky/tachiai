@@ -59,6 +59,7 @@ class NativePairViewerDismissTest {
         var commands = 0
         var exits = 0
         val context = activity.createConfigurationContext(Configuration(activity.resources.configuration).apply {
+            uiMode = uiMode and Configuration.UI_MODE_TYPE_MASK.inv() or Configuration.UI_MODE_TYPE_NORMAL
             orientation = if (landscape) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT
         })
         val playerA = PlayerView(context)
@@ -86,7 +87,7 @@ class NativePairViewerDismissTest {
         fun close() { viewer.endSession(); pair.close() }
     }
 
-    @Test fun systemBackClosesEachPanelBeforeReturningToSourcesWithoutChangingPlayback() {
+    @Test fun systemBackClosesEachPanelThenToolbarBeforeReturningToSourcesWithoutChangingPlayback() {
         for (playing in listOf(false, true)) for (panel in listOf("Audio", "Timing", "Quality", "Status")) {
             withFixture(playing) { scenario, fixture ->
                 // Retain a user mix choice while visiting every other panel too.
@@ -129,12 +130,28 @@ class NativePairViewerDismissTest {
                     button(fixture.viewer, "Audio").performClick()
                 }
                 pressBack()
-                scenario.onActivity { assertEquals("Back without a panel returns to the host", 1, fixture.exits) }
+                scenario.onActivity {
+                    assertEquals(View.GONE, fixture.dock.visibility)
+                    assertEquals(0, fixture.exits); assertEquals(0, fixture.commands)
+                    assertEquals(transportCalls, fixture.a.transportCalls + fixture.b.transportCalls)
+                    assertEquals(volumeCalls, fixture.a.volumeCalls + fixture.b.volumeCalls)
+                    assertSame(primary, fixture.stage.getChildAt(0)); assertSame(secondary, fixture.stage.getChildAt(1))
+                    fixture.stage.getChildAt(0).performClick()
+                    assertEquals("Phone video tap reveals the toolbar", View.VISIBLE, fixture.dock.visibility)
+                    assertEquals(View.GONE, fixture.scroller.visibility)
+                    button(fixture.viewer, "Audio").performClick()
+                    assertEquals("Unmute A", button(fixture.viewer, "Unmute A").text.toString())
+                    button(fixture.viewer, "Audio").performClick()
+                }
+                pressBack()
+                scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility); assertEquals(0, fixture.exits) }
+                pressBack()
+                scenario.onActivity { assertEquals("Back with controls hidden returns to the host", 1, fixture.exits) }
             }
         }
     }
 
-    @Test fun systemBackDismissesMenuThenPanelBeforeReturningToSources() {
+    @Test fun systemBackDismissesMenuThenPanelThenToolbarBeforeReturningToSources() {
         withFixture(true) { scenario, fixture ->
             openPanel("Audio")
             onView(withText("More")).perform(click())
@@ -150,6 +167,11 @@ class NativePairViewerDismissTest {
                 assertEquals(View.GONE, fixture.scroller.visibility)
                 assertEquals(0, fixture.exits)
                 assertEquals(0, fixture.commands)
+            }
+            pressBack()
+            scenario.onActivity {
+                assertEquals(View.GONE, fixture.dock.visibility)
+                assertEquals(0, fixture.exits); assertEquals(0, fixture.commands)
             }
             pressBack()
             scenario.onActivity { assertEquals(1, fixture.exits) }

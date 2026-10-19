@@ -108,6 +108,26 @@ class AndroidTvFlowTest {
                 assertNativeFocus(fixture, "Pause")
             }
 
+            val playingBeforeBack = media.main { fixture.samples() }
+            key(KeyEvent.KEYCODE_BACK)
+            media.main {
+                val viewer = checkNotNull(fixture.viewer)
+                assertEquals(View.VISIBLE, viewer.visibility)
+                assertEquals(View.GONE, viewer.getChildAt(1).visibility)
+                assertNull(fixture.stopped.get())
+            }
+            media.await("both actual players continue while Back hides the controls") {
+                media.main { fixture.samples().zip(playingBeforeBack).all { (now, old) ->
+                    now.playing && now.positionMs - old.positionMs >= 500 && now.renderedBuffers > old.renderedBuffers
+                } }
+            }
+            key(KeyEvent.KEYCODE_DPAD_CENTER)
+            media.main {
+                assertEquals(View.VISIBLE, fixture.viewer!!.getChildAt(1).visibility)
+                assertNativeFocus(fixture, "Pause")
+                assertTrue(fixture.samples().all { it.playing })
+            }
+
             // Actual remote commands, with readback from the two real players.
             reachNative(fixture, "Audio"); key(KeyEvent.KEYCODE_DPAD_CENTER)
             media.main { assertEquals("Back to playback controls", fixture.viewer!!.findFocus()?.contentDescription) }

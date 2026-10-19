@@ -33,8 +33,9 @@ controls are described below; integrated TV acceptance is a separate work item.
 On TV, D-pad/Select reveals hidden controls and consumes that first press before
 activating anything. Focus starts on Play/Pause, has a contrasting outline, and
 keeps the control tray visible. Audio, Timing and More retain their opening
-controls for focus restoration. Back closes a menu, then a panel, before leaving
-playback. Held mix adjustment stops on release, cancellation, focus/window loss,
+controls for focus restoration. Back closes a menu, then a panel, then the button
+bar; another Back with all controls hidden leaves playback. Held mix adjustment
+stops on release, cancellation, focus/window loss,
 panel dismissal and session suspension. More offers floating-feed corner and
 Small/Medium/Large presets plus swap, retaining the same player surfaces. TV omits
 the phone orientation toggle; phone drag and default floating geometry remain.
@@ -477,8 +478,20 @@ Hide and video/background taps retain their explicit dismissal behavior.
 
 System Back dismisses an open More menu first, then an Audio, Timing, Quality or
 Status panel. Dismissing a panel keeps playback, volume/mute state and pane
-selection unchanged and cancels any held adjustment button. With no menu or
-panel open, Back retains its stop-and-return-to-sources behavior.
+selection unchanged and cancels any held adjustment button. On both phone and
+TV, the next Back hides the button bar without stopping playback. Back with
+all controls already hidden stops and returns to sources. The explicit Back to
+sources button remains available; phone video taps and TV remote navigation
+can reveal the hidden controls again.
+
+The October 18 shared Back update passed ten phone-mode dismissal tests and
+seven TV remote tests on the named API 36 TV emulator. Phone-mode fixtures
+explicitly select normal UI mode; they are not physical-phone evidence. Both
+existing local two-player TV flow cases passed, including a system Back that
+hid the controls while both content clocks and rendered-frame counters kept
+advancing, then Select revealed controls without pausing. Saved encrypted setup
+was unchanged across installation and these checks. No provider media or
+protected-video capture was involved.
 
 Stopping a viewer ends request admission immediately. Network disconnect and
 stream closure run on cleanup workers; player and quality release remain on the

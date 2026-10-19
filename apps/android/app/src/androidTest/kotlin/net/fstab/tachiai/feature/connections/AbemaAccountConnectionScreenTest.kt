@@ -185,6 +185,74 @@ class AbemaAccountConnectionScreenTest {
         compose.runOnIdle { assertEquals(1, cancels) }
     }
 
+    @Test fun openingStaysInlineAndOnlySlowConnectionsShowProgressAndCancelWithoutMovingSections() {
+        var pending by mutableStateOf(false)
+        var state by mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.IDLE))
+        var cancels = 0; var connects = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionHost(state, pending, true, {}, { pending = false }) {
+                AbemaAccountConnectionScreen(state, { connects++ }, {}, {},
+                    onCancelConnection = if (pending) {{ cancels++; pending = false }} else null)
+            }
+        } }
+        val before = compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        try {
+            // Even the preceding IDLE snapshot must not produce a modal flash.
+            compose.runOnIdle { pending = true }
+            compose.mainClock.advanceTimeByFrame()
+            compose.onNode(isDialog()).assertDoesNotExist()
+            compose.onNodeWithText("Connect by email").assertIsNotEnabled()
+            compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.PREPARING, busy = true) }
+            compose.mainClock.advanceTimeBy(400)
+            compose.onNodeWithTag("abema-connection-progress").assertDoesNotExist()
+            compose.onNodeWithText("Cancel").assertDoesNotExist()
+            compose.runOnIdle { pending = false }
+            compose.mainClock.advanceTimeByFrame()
+            compose.runOnIdle { pending = true }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeBy(400)
+            compose.onNodeWithTag("abema-connection-progress").assertDoesNotExist()
+            compose.mainClock.advanceTimeBy(150)
+            compose.onNodeWithTag("abema-connection-progress").assertIsDisplayed()
+            assertEquals(before, compose.onNodeWithTag("abema-account-section").fetchSemanticsNode().boundsInRoot)
+            compose.onNodeWithText("Cancel").assertIsEnabled().performClick()
+            compose.mainClock.advanceTimeByFrame()
+            compose.onNodeWithTag("abema-connection-progress").assertDoesNotExist()
+            compose.onNodeWithText("Cancel").assertDoesNotExist()
+            compose.runOnIdle { assertEquals(1, cancels); assertEquals(0, connects) }
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
+    @Test fun hostDoesNotShowAModalUntilThereIsAnActionableManualFinish() {
+        var state by mutableStateOf(AbemaAccountConnectionState(progress = AbemaAccountProgress.PREPARING, busy = true))
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionHost(state, true, true, {}, {}) { Text("Account settings") }
+        } }
+        for (progress in listOf(AbemaAccountProgress.PREPARING, AbemaAccountProgress.WAITING_APPROVAL,
+            AbemaAccountProgress.CHECKING, AbemaAccountProgress.IDLE)) {
+            compose.runOnIdle { state = state.copy(progress = progress) }
+            compose.onNode(isDialog()).assertDoesNotExist()
+        }
+        compose.runOnIdle { state = state.copy(progress = AbemaAccountProgress.WAITING_APPROVAL, busy = false, canContinue = true) }
+        compose.onNodeWithText("Finish connection").assertIsEnabled()
+    }
+
+    @Test fun systemBackCancelsPendingOpeningWithoutMountedAccountContent() {
+        var pending by mutableStateOf(true)
+        var cancels = 0
+        compose.setContent { TachiaiPrototypeTheme {
+            AbemaAccountConnectionHost(
+                AbemaAccountConnectionState(progress = AbemaAccountProgress.PREPARING, busy = true),
+                pending, true, {}, { cancels++; pending = false }) {
+                Text("Account section is off-screen")
+            }
+        } }
+        compose.onNode(isDialog()).assertDoesNotExist()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.runOnIdle { assertEquals(1, cancels); assertFalse(pending) }
+    }
+
     @Test fun mountedFlowSurvivesLazyAccountContentDisposalAndProviderPauseReturn() {
         var includeSection by mutableStateOf(true); var foreground by mutableStateOf(true); var flow by mutableStateOf(true)
         var cancels = 0

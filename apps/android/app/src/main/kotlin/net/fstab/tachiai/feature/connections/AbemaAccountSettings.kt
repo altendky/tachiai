@@ -95,7 +95,10 @@ internal fun AbemaAccountSettings(instanceId: String, onAccountAction: () -> Uni
             AbemaAccountConnectionScreen(state,
                 { connect(false) }, { act { it.revalidate() } },
                 { act { owner.connectionFlow = false; owner.browserOpened = false; it.forget() } }, ready = current != null,
-                onSignInAgain = { connect(true) }, enabled = enabled, onBack = onBack)
+                onSignInAgain = { connect(true) }, enabled = enabled, onBack = onBack,
+                onCancelConnection = if (owner.connectionFlow && owner.foreground) {
+                    { act { owner.connectionFlow = false; owner.browserOpened = false; it.cancelAction() } }
+                } else null)
         }
     }
 }

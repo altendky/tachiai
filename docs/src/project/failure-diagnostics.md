@@ -496,6 +496,47 @@ and the launcher was restored. No account renewal, assignment write, credentials
 private request data or media capture was involved. #297 remains open for the
 appropriate optimization and wider sustained/failure-recovery acceptance.
 
+### Twitch bounded read batching — 2026-10-18
+
+The Twitch adapter now opts into combining short media input reads within the
+buffer Media3 has already requested. Each delivery is capped at 16 KiB and 16
+input fragments; after 100 ms no additional fragment starts. An individual
+blocking read retains its existing ten-second socket timeout. No additional
+buffer, read-ahead or authorization cache is retained. Fresh durable admission
+still brackets each delivery, before accepted-byte callbacks; activity and
+loader interruption are checked between fragments. Partial failures and final
+admission refusal discard the delivery and close the request. Manifests and
+ABEMA retain their existing read behavior.
+
+Before this change, a fresh production fixture on persistent `tachiai-dev`
+(Android 16/API 36, x86-64, WebView 133.0.6943.137 installed) delivered 12,201,388
+bytes from an existing configured Twitch Rocket League replay through its saved
+catalog connection and explicit System route. Its 5,713 body-admission checks
+took 36.293 seconds of 36.742 seconds in datasource reads; actual input reads
+took 0.241 seconds. The replay played in all 159 samples, with selected video
+at 1,409,040 bit/s. A separate paired run with ABEMA News live through saved
+Windscribe Tokyo-Shinkansen lost about 29 seconds of replay progress within a
+153.896-second sampled span, with seven of 31 Twitch samples buffering.
+
+After batching, the same isolated production fixture passed in 47.492 seconds.
+It delivered 16,929,964 bytes, with 3,629 body-admission checks taking 22.413
+seconds of 23.187 seconds in datasource reads; 4,009 actual input reads took
+0.589 seconds. This is approximately 54% fewer admission checks per delivered
+byte and 5.84 rather than 2.66 Mb/s of measured datasource delivery. Auto selected
+2,277,638 bit/s video; all 159 samples reported playing, none buffering, and
+position advanced from zero to 39.336 seconds. Auto's selected bitrate differed,
+so this is a bounded production-path comparison rather than a controlled
+fixed-rendition benchmark or a raw WAN capacity measurement.
+
+Both fixtures rendered a frame and confirmed cleanup, exact source/provider
+identity and unchanged encrypted saved-record digests. Audio was muted; exit
+country was not independently measured. No provider WebView, private request
+logging, credentials, media capture or account renewal was involved. JVM tests
+cover byte/range/time/fragment bounds, zero/EOF, source reuse, interruption,
+revocation and sanitized partial failures; device transfer-listener tests verify
+that rejected batches do not publish bytes. The separate quality-switch
+admission refusal and broader sustained-failure acceptance remain under #297.
+
 ## Verification boundaries
 
 JVM tests inject multiple cleanup exceptions, malformed/secret-bearing exception

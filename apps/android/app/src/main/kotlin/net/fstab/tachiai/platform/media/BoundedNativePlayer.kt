@@ -51,6 +51,7 @@ internal class BoundedNativePlayer(
     onCleanupUnconfirmed: () -> Unit = {},
     private val onCleanupChanged: () -> Unit = {},
     readCosts: NativeMediaReadCosts? = null,
+    coalesceMediaReads: Boolean = false,
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
@@ -64,7 +65,7 @@ internal class BoundedNativePlayer(
         onFailure = { stage, error ->
             if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
             onFailure(stage, error)
-        }, readCosts = readCosts)
+        }, readCosts = readCosts, coalesceMediaReads = coalesceMediaReads)
         .also { owned -> cleanup.own(10) { owned.close() } }
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {

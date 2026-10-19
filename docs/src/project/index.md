@@ -63,6 +63,15 @@ outside official stores; research does not establish working ports.
 
 ## Product direction
 
+Keep a common UX across implementations. The always-loaded
+[agent guidance](../../../AGENTS.md#common-ux-across-implementations) requires
+direct discussion and explicit user approval before platform-specific UX
+deviations. The [UX variation register](ux-variations.md) records concrete
+exceptions and their approval evidence; the separate
+[implementation difference ledger](implementation-differences.md) records
+system integration mechanisms. Existing unconfirmed variations are not
+retroactively approved by being documented.
+
 The agreed preliminary interaction model is:
 
 - Select two sources, including two copies of the same source, then explicitly

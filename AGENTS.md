@@ -33,9 +33,10 @@ platform, generic issue/PR approval or passing tests do not establish that appro
 Reuse approval already given for the same scoped design; do not ask again for
 ordinary implementation steps that stay within it.
 
-Read and update the [UX variation register](docs/src/project/ux-variations.md)
-when working across implementations. Record the specific approved exception and
-its approval evidence. Existing differences without such evidence stay explicitly
+Read the [UX variation register](docs/src/project/ux-variations.md) when working
+across implementations. Update it only when a concrete exception or its approval
+record changes, recording the specific scope and approval evidence. Existing
+differences without such evidence stay explicitly
 unconfirmed; recording them or merging the register does not approve them.
 Keep proposals in their issue/PR discussion until the user approves the deviation.
 Do not introduce or extend an unconfirmed exception without that discussion.

@@ -188,6 +188,7 @@ internal class PrototypeTwitchSession(
                             onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() },
                             onCleanupChanged = onCleanupChanged,
                             readCosts = readCosts,
+                            coalesceMediaReads = true,
                             onFailure = diagnostics.nativeObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")

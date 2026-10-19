@@ -33,6 +33,7 @@ internal class BoundedMediaRequests(
     private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
     private val openErrorInput: (HttpsURLConnection) -> InputStream? = { it.errorStream },
     private val readCosts: NativeMediaReadCosts? = null,
+    private val coalesceMediaReads: Boolean = false,
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
@@ -59,6 +60,7 @@ internal class BoundedMediaRequests(
         private var responseHttp = 0
         private var transferOpen = false
         private var mediaBodyAccepted = false
+        private var inputEnded = false
         private var costs: NativeMediaReadCosts.Request? = null
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
@@ -180,6 +182,7 @@ internal class BoundedMediaRequests(
                 val acquireInput = costs?.begin(NativeMediaReadCostPhase.INPUT_OPEN)
                 input = try { openInput(request) } finally { costs?.end(acquireInput) }
                 readBytes = 0
+                inputEnded = false
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
                 checkActive() // Setup is still bounded, including input acquisition.
                 if (type == C.DATA_TYPE_MEDIA) {
@@ -208,18 +211,20 @@ internal class BoundedMediaRequests(
             if (length == 0) return 0
             val reading = costs?.beginRead(length)
             try {
+                require(offset >= 0 && length > 0 && offset <= buffer.size - length)
+                val coalesce = coalesceMediaReads && type == C.DATA_TYPE_MEDIA
+                if (coalesce) checkReadActivity()
                 checkActive()
-                if (remaining == 0L) {
-                    costs?.bodyComplete()
+                if (remaining == 0L || inputEnded) {
+                    if (remaining <= 0L) costs?.bodyComplete()
                     costs?.readFinished(reading, eof = true)
                     return C.RESULT_END_OF_INPUT
                 }
                 val requested = if (remaining < 0) length else minOf(length.toLong(), remaining).toInt()
-                val inputReading = costs?.beginInput(requested)
-                val count = try { checkNotNull(input).read(buffer, offset, requested) }
-                    finally { costs?.end(inputReading) }
-                costs?.inputReturned(count)
+                val count = if (coalesce) readMediaBatch(buffer, offset, requested)
+                    else readInput(buffer, offset, requested)
                 checkActive()
+                if (coalesce) checkReadActivity()
                 if (count < 0) {
                     if (remaining < 0) costs?.bodyComplete()
                     costs?.readFinished(reading, eof = true)
@@ -230,7 +235,7 @@ internal class BoundedMediaRequests(
                 if (remaining >= 0) remaining -= count
                 if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)
-                if (remaining == 0L) costs?.bodyComplete()
+                if (remaining == 0L || (inputEnded && remaining < 0L)) costs?.bodyComplete()
                 costs?.readFinished(reading)
                 return count
             } catch (error: Exception) {
@@ -240,6 +245,45 @@ internal class BoundedMediaRequests(
                 report(NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")
             }
+        }
+
+        private fun readInput(buffer: ByteArray, offset: Int, length: Int): Int {
+            val inputReading = costs?.beginInput(length)
+            val count = try { checkNotNull(input).read(buffer, offset, length) }
+                finally { costs?.end(inputReading) }
+            costs?.inputReturned(count)
+            return count
+        }
+
+        private fun checkReadActivity() {
+            if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
+            if (Thread.currentThread().isInterrupted)
+                throw NativeMediaRequestException(NativeMediaRequestFailure.CANCELLED)
+        }
+
+        private fun readMediaBatch(buffer: ByteArray, offset: Int, length: Int): Int {
+            // Fill only the caller's current buffer: no read-ahead or retained
+            // authorization. Fresh durable admission brackets the entire batch,
+            // before any accepted-byte callback or return to Media3.
+            val requested = minOf(length, 16 * 1024)
+            val started = clockMs()
+            var total = 0
+            repeat(16) {
+                checkReadActivity()
+                // Bounds starting another fragment, not an in-flight socket
+                // read (which retains the existing ten-second timeout).
+                if (total > 0 && clockMs() - started !in 0L until 100L) return total
+                val count = readInput(buffer, offset + total, requested - total)
+                checkReadActivity()
+                if (count < 0) {
+                    inputEnded = true
+                    return if (total == 0) C.RESULT_END_OF_INPUT else total
+                }
+                if (count == 0) return total
+                total += count
+                if (total == requested) return total
+            }
+            return total
         }
         override fun close() {
             val request = connection

@@ -67,15 +67,52 @@ class BoundedMediaTransferTest {
             record(source, dataSpec, isNetwork, "end")
     }
 
-    private fun requests(connection: Connection, canRequest: () -> Boolean = { true }) =
+    private fun requests(connection: Connection, coalesceMediaReads: Boolean = false,
+        canRequest: () -> Boolean = { true }) =
         BoundedMediaRequests(
             NativePlaybackBudget(120_000, { true }, clockMs = { 1_000 }),
             { it.host == "media.example.test" }, { _, _ -> }, canRequest,
             openConnection = { connection }, clockMs = { 1_000 },
+            coalesceMediaReads = coalesceMediaReads,
         )
 
     private fun spec(position: Long = 0, length: Long = C.LENGTH_UNSET.toLong()) =
         DataSpec.Builder().setUri(uri).setPosition(position).setLength(length).build()
+
+    @Test fun coalescedFragmentsReportAcceptedBytesOnceOrNoneWhenFinalAdmissionFails() {
+        for (revoke in listOf(false, true)) {
+            var reads = 0
+            var admitted = true
+            val stream = object : ByteArrayInputStream(byteArrayOf(1, 2, 3, 4, 5)) {
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    reads++
+                    if (revoke && reads == 3) admitted = false
+                    return super.read(buffer, offset, minOf(length, 2))
+                }
+            }
+            val connection = Connection(URL(uri.toString()), stream = stream)
+            val requests = requests(connection, coalesceMediaReads = true) { admitted }
+            val source = requests.create(C.DATA_TYPE_MEDIA)
+            val spec = spec()
+            val transfers = Transfers(spec)
+            source.addTransferListener(transfers)
+            try {
+                source.open(spec)
+                if (revoke) {
+                    assertThrows(IOException::class.java) { source.read(ByteArray(8), 1, 6) }
+                    assertTrue(transfers.byteCounts.isEmpty())
+                } else {
+                    assertEquals(5, source.read(ByteArray(8), 1, 6))
+                    assertEquals(C.RESULT_END_OF_INPUT, source.read(ByteArray(8), 1, 6))
+                    assertEquals(listOf(5), transfers.byteCounts)
+                }
+                assertEquals(3, reads)
+                source.close()
+                assertTrue(connection.disconnected)
+                assertEquals(1, transfers.events.count { it == "end" })
+            } finally { source.close(); requests.close() }
+        }
+    }
 
     @Test fun successfulReadReportsOnlyAcceptedPositiveBytesAndEndsOnce() {
         val connection = Connection(URL(uri.toString()))

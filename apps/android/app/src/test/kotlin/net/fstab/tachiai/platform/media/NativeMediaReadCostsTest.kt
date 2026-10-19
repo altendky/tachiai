@@ -51,11 +51,13 @@ class NativeMediaReadCostsTest {
             override fun getContentLengthLong() = if (knownLength) declaredLength else -1L
             override fun getInputStream(): InputStream { clock.nanos += 5_000_000; return body }
         }
-        fun source(costs: NativeMediaReadCosts? = null, type: Int = C.DATA_TYPE_MEDIA) =
+        fun source(costs: NativeMediaReadCosts? = null, type: Int = C.DATA_TYPE_MEDIA,
+            coalesceMediaReads: Boolean = false) =
             BoundedMediaRequests(NativePlaybackBudget.continuous({ true }, { 0L }), { true },
                 { event, _ -> events += event }, canRequest = {
                     admissions++; clock.nanos += 2_000_000; admit()
-                }, openConnection = { clock.nanos += 1_000_000; connection }, clockMs = { 1_000L }, readCosts = costs)
+                }, openConnection = { clock.nanos += 1_000_000; connection }, clockMs = { 1_000L },
+                readCosts = costs, coalesceMediaReads = coalesceMediaReads)
                 .create(type)
     }
 
@@ -109,6 +111,27 @@ class NativeMediaReadCostsTest {
         assertEquals(32L, actual.requestedBytes); assertEquals(12L, actual.inputRequestedBytes)
         assertEquals(1L, actual.readEofCount); assertEquals(0L, actual.inputEofCount)
         assertEquals(1L, actual.completedCount)
+    }
+
+    @Test fun coalescingKeepsActualInputCostsButBracketsMultipleFragmentsWithOneAdmissionPair() {
+        for (declared in listOf(7L, 12L)) {
+            val fixture = Fixture(knownLength = true, declaredLength = declared)
+            val costs = NativeMediaReadCosts(clockNanos = fixture.clock::now)
+            val source = fixture.source(costs, coalesceMediaReads = true)
+            source.openUri(uri)
+            assertEquals(7, source.read(ByteArray(16), 0, 16))
+            assertEquals(C.RESULT_END_OF_INPUT, source.read(ByteArray(16), 0, 16))
+            source.close()
+            val actual = costs.snapshot().media
+            assertEquals(8, fixture.admissions)
+            assertEquals(3L, actual.readAdmissionCount)
+            assertEquals(6_000_000L, actual.readAdmissionNanos)
+            assertEquals(2L, actual.readCount)
+            assertEquals(if (declared == 7L) 3L else 4L, actual.inputReadCount)
+            assertEquals(7L, actual.inputReturnedBytes)
+            assertEquals(if (declared == 7L) 1L else 0L, actual.completedCount)
+            assertEquals(if (declared == 7L) 0L else 1L, actual.abortedCount)
+        }
     }
 
     @Test fun illegalSecondOpenDoesNotReplaceTheOwnedRequestDiagnostics() {

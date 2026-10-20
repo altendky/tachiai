@@ -112,10 +112,10 @@ checksum = "sha256:158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e
 url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
 
 [[tools."pipx:pre-commit"]]
-version = "4.6.2"
+version = "4.7.0"
 backend = "pipx:pre-commit"
-specifiers = ["4.6.2"]
-uv = { path = ".mise/locks/pipx-pre-commit/4.6.2", digest = "sha256:46c493df71948951532ebdd07f9bca5bf849c9a387785b4fee0ad28e148b3da7" }
+specifiers = ["4.7.0"]
+uv = { path = ".mise/locks/pipx-pre-commit/4.7.0", digest = "sha256:d3b6ab6020734a179e44f0de6d12af323110b69f2c06f64c9e0527d3a56d1cc9" }
 
 [[tools.python]]
 version = "3.14.8"

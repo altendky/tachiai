@@ -11,7 +11,7 @@ jna = "5.19.1"
 kotlin = "2.4.21"
 lifecycle = "2.11.0"
 media3 = "1.11.1"
-okhttp = "5.5.0"
+okhttp = "5.5.1"
 webkit = "1.18.0"
 zxing = "3.5.4"
 

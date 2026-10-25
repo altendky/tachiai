@@ -2,7 +2,7 @@ module net.fstab.tachiai/routebridge
 
 go 1.26.0
 
-require golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
+require golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 
 require (
 	golang.org/x/mod v0.42.0 // indirect

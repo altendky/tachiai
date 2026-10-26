@@ -4,17 +4,30 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { webcrypto } = require('node:crypto');
 
-async function prepareGuestRequest(assetDirectory = '/proof') {
-  const context = vm.createContext({ crypto: webcrypto, TextEncoder, TextDecoder, URL, atob, btoa },
+function createProviderContext(assetDirectory = '/proof', navigator, sourceCompatibility = false) {
+  const globals = { crypto: webcrypto, TextEncoder, TextDecoder, URL, atob, btoa };
+  if (sourceCompatibility) Object.assign(globals, { URLSearchParams, navigator, EventTarget });
+  const context = vm.createContext({ ...globals, __sourceCompatibility: sourceCompatibility },
     { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(`
     globalThis.window = globalThis; globalThis.self = globalThis;
     globalThis.__LOADABLE_LOADED_CHUNKS__ = [];
     globalThis.__refused = false; globalThis.__wire = null;
+    if (__sourceCompatibility) {
+      // Imported diagnostics may bind methods/register unload listeners. These
+      // process-local facilities discard output and cannot reach host logging,
+      // storage or a browser page. No lifecycle event is dispatched.
+      const target = new EventTarget();
+      globalThis.addEventListener = (...args) => target.addEventListener(...args);
+      globalThis.removeEventListener = (...args) => target.removeEventListener(...args);
+    }
     for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'Worker',
-      'document', 'localStorage', 'sessionStorage', 'console']) {
+      'document', 'localStorage', 'sessionStorage']) {
       Object.defineProperty(globalThis, name, { value: undefined, configurable: false });
     }
+    Object.defineProperty(globalThis, 'console', { configurable: false, value: __sourceCompatibility ?
+      Object.freeze({ log(){}, debug(){}, info(){}, warn(){}, error(){} }) : undefined });
+    delete globalThis.__sourceCompatibility;
   `, context, { timeout: 1000 });
   for (const name of ['support.js', 'utilities.js', 'application.js', 'legacy.js']) {
     const bytes = fs.readFileSync(assetDirectory + '/' + name);
@@ -59,12 +72,17 @@ async function prepareGuestRequest(assetDirectory = '/proof') {
       load.d(getter, { a: getter }); return getter; };
     globalThis.__load = load;
   } catch { __refused = true; }`, context, { timeout: 2000 });
+  return context;
+}
+
+async function prepareGuestRequest(assetDirectory = '/proof') {
+  const context = createProviderContext(assetDirectory);
   // The enclosing process deadline also bounds asynchronous continuations.
   await vm.runInContext(`(async () => { try {
     if (__refused || typeof __load !== 'function') throw new Error();
     const helper = __load(2833), deviceId = crypto.randomUUID();
     const webDeviceType = __load(50052).bq.DEVICE_TYPE_WEB;
-    if (webDeviceType !== 3 || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(deviceId))
+    if (webDeviceType !== 'DEVICE_TYPE_WEB' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(deviceId))
       throw new Error();
     const applicationKeySecret = await helper.b2(deviceId, helper.B9());
     if (typeof applicationKeySecret !== 'string' || applicationKeySecret.length < 1 || applicationKeySecret.length > 8192 ||
@@ -89,4 +107,4 @@ if (require.main === module) {
   process.on('unhandledRejection', () => { process.exitCode = 1; });
   prepareGuestRequest().then(wire => process.stdout.write(wire)).catch(() => { process.exitCode = 1; });
 }
-module.exports = { prepareGuestRequest };
+module.exports = { prepareGuestRequest, createProviderContext };

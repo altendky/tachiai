@@ -147,7 +147,7 @@ repos:
         name: Web ABEMA backend bootstrap safety tests
         entry: uv run scripts/tests/web-abema-backend-bootstrap.test.py
         language: system
-        files: '^apps/web/scripts/abema-(backend-bootstrap\.py|guest-helper\.cjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source)\.py|(guest|source)-helper\.cjs|browser-snapshot\.mjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
         pass_filenames: false
 
       - id: abema-opaque-broker-tests

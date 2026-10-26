@@ -65,6 +65,7 @@ internal class BoundedNativeDashPlayer(
     onCleanupOwner: (NativeCleanupReceipt) -> Unit = {},
     onCleanupUnconfirmed: () -> Unit = {},
     private val onCleanupChanged: () -> Unit = {},
+    transportObserver: NativeMediaTransportObserver? = null,
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
@@ -74,12 +75,14 @@ internal class BoundedNativeDashPlayer(
     private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
-        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) })
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) },
+        transportObserver = transportObserver)
         .also { owned -> cleanup.own(10) { owned.close() } }
     private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
-        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) })
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) },
+        transportObserver = transportObserver)
         .also { owned -> cleanup.own(20) { owned.close() } }
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {

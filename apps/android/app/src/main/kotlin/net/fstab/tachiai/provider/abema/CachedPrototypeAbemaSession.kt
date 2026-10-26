@@ -79,6 +79,7 @@ import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureCategory
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.diagnostics.nativeObserver
+import net.fstab.tachiai.platform.diagnostics.nativeTransportObserver
 
 // Minimal app-owned bootstrap, not a provider player page. Each slot owns its
 // unchanged cached helper, instance account lease and fresh one-exchange CDM.
@@ -800,6 +801,7 @@ internal class CachedPrototypeAbemaSession(
                     .setDrmInitData(DrmInitData(C.CENC_TYPE_cenc, DrmInitData.SchemeData(
                         C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build(),
                 openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
+                transportObserver = diagnostics.nativeTransportObserver(),
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,
                 onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })

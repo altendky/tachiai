@@ -11,6 +11,11 @@ import java.net.URI
 import java.net.URL
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.net.Proxy
+import java.net.ProtocolException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.security.cert.Certificate
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLHandshakeException
@@ -19,6 +24,10 @@ import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportPhase
 import net.fstab.tachiai.platform.network.ProgressingMediaResponse
+import net.fstab.tachiai.platform.network.RoutedHttpsConnection
+import net.fstab.tachiai.platform.network.RoutedHttpsFailureCategory
+import net.fstab.tachiai.platform.network.RoutedHttpsCallPhase
+import okhttp3.OkHttpClient
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -50,6 +59,74 @@ class BoundedMediaRequestsTest {
         clock: () -> Long = { 1_000L }, events: MutableList<NativeMediaEvent> = mutableListOf()) =
         BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { it.host == uri.host },
             { event, _ -> events += event }, canRequest, { connection }, clock)
+
+    @Test fun ownedRoutedRequestsAttachBeforeDispatchAndRetainIndependentObserversWithinTheCap() {
+        val seen = mutableListOf<NativeMediaTransportDiagnostic>()
+        var original = 0
+        var owned = false
+        val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor {
+            assertTrue(owned)
+            throw ProtocolException("private signed URL and header detail")
+        }.build()
+        val requests = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+            openConnection = { url -> RoutedHttpsConnection(url, client, { true }, allowProgressingMediaBody = true).also {
+                owned = false
+                assertTrue(it.observeFailures { original++ })
+            } }, onConnectionOwned = { owned = true }, transportObserver = { seen += it })
+        repeat(20) {
+            val source = requests.create(if (it % 2 == 0) C.DATA_TYPE_MANIFEST else C.DATA_TYPE_MEDIA)
+            val error = assertThrows(IOException::class.java) { source.openUri(uri) }
+            assertNull(error.cause); source.close()
+        }
+        assertEquals(20, original)
+        assertEquals(NativeMediaTransportDiagnostics.MAXIMUM_OBSERVATIONS, seen.size)
+        assertEquals(setOf(NativeMediaRequestType.MANIFEST, NativeMediaRequestType.MEDIA), seen.map { it.type }.toSet())
+        assertTrue(seen.all { it.category == RoutedHttpsFailureCategory.PROTOCOL && it.phase == RoutedHttpsCallPhase.CALL })
+        assertFalse(seen.toString().contains("private"))
+        requests.close()
+    }
+
+    @Test fun aThrowingTransportSinkCannotReplaceTheOriginatingRequestFailureOrSkipCleanup() {
+        val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor { throw IOException("private origin") }.build()
+        lateinit var connection: RoutedHttpsConnection
+        var disconnected = 0
+        var observations = 0
+        val source = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+            openConnection = { url -> RoutedHttpsConnection(url, client, { true }, allowProgressingMediaBody = true,
+                onDisconnect = { disconnected++ })
+                .also { connection = it } },
+            transportObserver = { observations++; error("private sink failure") }).create(C.DATA_TYPE_MEDIA)
+        val error = assertThrows(IOException::class.java) { source.openUri(uri) }
+        assertEquals("Native media request failed", error.message); assertNull(error.cause)
+        assertEquals(1, observations); assertEquals(1, disconnected)
+        assertEquals(RoutedHttpsFailureCategory.IO, connection.failureDiagnostic?.category)
+    }
+
+    @Test fun sourceRetirementAndStoppedBudgetRefuseLateTransportObservations() {
+        for (stopBudget in listOf(false, true)) {
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val caught = AtomicReference<Throwable?>()
+            val seen = mutableListOf<NativeMediaTransportDiagnostic>()
+            val budget = NativePlaybackBudget.continuous({ true })
+            val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor {
+                entered.countDown()
+                check(release.await(3, TimeUnit.SECONDS))
+                throw IOException("private late failure")
+            }.build()
+            val source = BoundedMediaRequests(budget, { true }, { _, _ -> },
+                openConnection = { RoutedHttpsConnection(it, client, { true }, allowProgressingMediaBody = true) },
+                transportObserver = { seen += it })
+                .create(C.DATA_TYPE_MEDIA)
+            val worker = Thread { try { source.openUri(uri) } catch (error: Throwable) { caught.set(error) } }
+            try {
+                worker.start(); assertTrue(entered.await(3, TimeUnit.SECONDS))
+                if (stopBudget) budget.stop() else source.close()
+                release.countDown(); worker.join(3_000)
+                assertFalse(worker.isAlive); assertTrue(caught.get() is IOException)
+                assertTrue(seen.isEmpty())
+            } finally { release.countDown(); worker.join(3_000); source.close() }
+        }
+    }
 
     @Test fun progressingMediaOutlivesThirtySecondsWhileManifestsKeepTheirTotalDeadline() {
         for (media in listOf(false, true)) {

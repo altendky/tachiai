@@ -160,7 +160,7 @@ test('ongoing selected broadcast opens modern continuous channel without Chase m
     '/v1/media/slots/fixture-slot', '/v1/media/deviceTypeId', '/v1/channels']);
   assert.equal(value.requests[4].uri.origin, 'https://api.p-c3-e.abema-tv.com');
   assert.equal(value.requests[4].request.headers, undefined);
-  assert.equal(new Headers(value.requests[3].request.headers).get('Authorization'), 'Bearer ACCOUNT_BEARER');
+  assert.equal(new Headers(value.requests[3].request.headers).get('Authorization'), 'bearer ACCOUNT_BEARER');
   const binding = JSON.parse(value.evaluate(`window['${name}'].slotBinding()`));
   assert.deepEqual(Object.keys(binding), ['channelId', 'slotId', 'uri', 'linear']);
   assert.equal(binding.channelId, 'sumo'); assert.equal(binding.slotId, 'fixture-slot'); assert.equal(binding.linear, true);
@@ -475,7 +475,7 @@ function fixture(options = {}) {
         }
         const request = new Request(url, { method: fake.deviceMethod || 'GET',
           credentials: fake.deviceCredentials || 'same-origin', headers: { Authorization:
-            'Bearer ' + (fake.deviceBearer || localStorage.getItem('SYNTHETIC_TOKEN_KEY')) } });
+            (fake.deviceScheme ?? 'bearer') + ' ' + (fake.deviceBearer || localStorage.getItem('SYNTHETIC_TOKEN_KEY')) } });
         const reply = await window.fetch(request);
         observed.deviceReplies.push(reply.status);
         if (reply.status === 401) { observed.refresh++; await window.fetch('https://auth.abema.tv/accessToken'); }
@@ -832,7 +832,7 @@ test('modern source-only context binds fresh region device bearer anonymous chan
     assert.deepEqual(value.requests.map(({ uri }) => uri.pathname), ['/v1/media/token', '/now-on-air/abema-news',
       '/v1/media/deviceTypeId', '/v1/channels']);
     const device = value.requests[2]; const channels = value.requests[3];
-    assert.equal(new Headers(device.request.headers).get('Authorization'), 'Bearer ' + savedAccount().bearer);
+    assert.equal(new Headers(device.request.headers).get('Authorization'), 'bearer ' + savedAccount().bearer);
     assert.equal(device.request.credentials, 'same-origin'); assert.equal(device.request.redirect, 'error');
     assert.deepEqual([...device.uri.searchParams], [['os', 'unknown'], ['osVersion', '16'], ['drm', 'unknown']]);
     assert.equal(channels.uri.origin, 'https://api.p-c3-e.abema-tv.com');
@@ -854,6 +854,15 @@ test('modern source-only context binds fresh region device bearer anonymous chan
     assert.equal(value.evaluate("localStorage.getItem('SYNTHETIC_TOKEN_KEY')"), null);
     assert.equal(value.evaluate("Object.hasOwn(window, '__CLIENT_REGION__')"), false);
     assert.throws(() => value.evaluate("localStorage.setItem('late', 'value')"));
+  }
+});
+
+test('modern device authorization accepts scheme casing while preserving the exact token', async () => {
+  for (const deviceScheme of ['Bearer', 'bEaReR']) {
+    const value = fixture(modernChannelOptions({ deviceScheme }));
+    value.startChannel('fixture-one'); await waitFor(value, 'READY');
+    assert.equal(new Headers(value.requests[2].request.headers).get('Authorization'), deviceScheme + ' ' + savedAccount().bearer);
+    value.stop();
   }
 });
 
@@ -924,7 +933,9 @@ test('modern unexpected401 and other statuses cannot reach provider refresh or a
 });
 
 test('modern strict device Request scope rejects changed bearer endpoints queries methods or credentials before HTTP', async () => {
-  for (const extra of [{ deviceBearer: 'WRONG' }, { deviceMethod: 'POST' }, { deviceCredentials: 'include' },
+  for (const extra of [{ deviceBearer: 'WRONG' }, { deviceBearer: savedAccount().bearer.toLowerCase() },
+    { deviceScheme: 'Basic' }, { deviceScheme: 'bearer ' }, { deviceScheme: 'bearer\t' },
+    { deviceMethod: 'POST' }, { deviceCredentials: 'include' },
     { deviceOs: 'Android' }, { deviceDrm: 'clear' }, { deviceVersion: 'x'.repeat(65) },
     { deviceURL: 'https://unapproved.invalid/v1/media/deviceTypeId?os=unknown&osVersion=16&drm=unknown' },
     { deviceURL: 'https://api.p-c3-e.abema-tv.com/v1/media/deviceTypeId?os=unknown&osVersion=16&drm=unknown&extra=1' },

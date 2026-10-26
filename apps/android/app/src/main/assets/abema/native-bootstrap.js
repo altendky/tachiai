@@ -212,6 +212,7 @@
     const request = new Request(input, options);
     const url = new URL(request.url);
     const keys = [...url.searchParams.keys()];
+    const authorization = request.headers.get('Authorization') || '';
     if (request.method !== 'GET' || url.origin !== 'https://api.p-c3-e.abema-tv.com' || url.username || url.password ||
       url.hash || url.pathname !== '/v1/media/deviceTypeId' || url.pathname !== decodeURIComponent(url.pathname) ||
       keys.length !== 3 || [...keys].sort().join(',') !== 'drm,os,osVersion' ||
@@ -219,7 +220,8 @@
       !['Widevine', 'FairPlay', 'PlayReady', 'unknown'].includes(url.searchParams.get('drm')) ||
       url.searchParams.get('osVersion').length > 64 || !/^[\x20-\x7e]*$/.test(url.searchParams.get('osVersion')) ||
       url.search !== '?' + url.searchParams.toString() || request.credentials !== 'same-origin' ||
-      request.headers.get('Authorization') !== 'Bearer ' + user.accessToken || ++deviceRequests !== 1) refuseContext();
+      authorization.slice(0, 7).toLowerCase() !== 'bearer ' || authorization.slice(7) !== user.accessToken ||
+      ++deviceRequests !== 1) refuseContext();
     const controller = new AbortController(); controllers.add(controller);
     http = 0;
     let received = false;

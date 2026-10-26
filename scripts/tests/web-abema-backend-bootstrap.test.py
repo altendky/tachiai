@@ -536,6 +536,42 @@ class SourceProofTests(unittest.TestCase):
             with self.assertRaises((source_module.Refused, ValueError)):
                 self.validate(self.binding(self.uri + query))
 
+    def test_binding_preserves_exact_fresh_advertised_query_pairs_with_full_session_checks(self):
+        self.channel["playback"]["yospace"] = {"dash": ""}
+        self.assertEqual(source_module.advertised_playlists(self.channel), [self.uri])
+        self.assertEqual(self.validate(self.binding()), source_module.ORIGIN_FAMILY)
+        self.channel["playback"]["dash"] = self.uri + "?context=" + PRIVATE + "&metadata=a%20b%2Fc"
+        uri = self.uri + "?context=" + PRIVATE + "&metadata=a+b%2Fc&t=" + PRIVATE + "&enc=clear&dt=pc_chrome&ut=1"
+        self.assertEqual(self.validate(self.binding(uri)), source_module.ORIGIN_FAMILY)
+        self.assertEqual(source_module.selected_advertised_playlist(uri, self.channel), self.channel["playback"]["dash"])
+        for changed in (uri.replace("context=" + PRIVATE, "context=mutated"),
+                        uri.replace("context=" + PRIVATE + "&", ""), uri + "&new=unadvertised",
+                        uri.replace("context=", "%63ontext="), uri + "&context=" + PRIVATE,
+                        uri.replace("metadata=a+b%2Fc", "metadata=%FF"),
+                        uri.replace("&t=" + PRIVATE, "&t=stale"), uri.replace("enc=clear", "enc=wv"),
+                        uri.replace("dt=pc_chrome", "dt=pc_unknown"), uri.replace("ut=1", "ut=2"), uri + "&sw=1"):
+            with self.assertRaises((source_module.Refused, ValueError, UnicodeError)):
+                self.validate(self.binding(changed))
+
+    def test_advertisement_rejects_ambiguous_roots_reserved_collisions_and_malformed_pairs(self):
+        session = "&t=" + PRIVATE + "&enc=clear&dt=pc_chrome&ut=1"
+        for query in ("context=a&context=a", "%63ontext=a", "context=%", "context=%FF", "context=", "=value",
+                      "&context=a", "context=a&", "&".join("field" + str(i) + "=x" for i in range(65)),
+                      *(name + "=collision" for name in source_module.SESSION_QUERY_NAMES)):
+            self.channel["playback"] = {"dash": self.uri + "?" + query}
+            with self.assertRaises((source_module.Refused, ValueError, UnicodeError)):
+                self.validate(self.binding(self.uri + "?" + query + session))
+        self.channel["playback"] = {"dash": self.uri + "?context=a", "yospace": {"dash": self.uri + "?context=b"}}
+        with self.assertRaises(source_module.Refused):
+            self.validate(self.binding(self.uri + "?context=a" + session))
+        self.channel["playback"] = {"dash": self.uri, "yospace": {"dash": self.uri}}
+        with self.assertRaises(source_module.Refused):
+            self.validate(self.binding())
+        for name in source_module.SESSION_QUERY_NAMES:
+            self.channel["playback"] = {"dash": self.uri + "?" + name + "=collision"}
+            with self.assertRaises(source_module.Refused):
+                self.validate(self.binding())
+
     def test_private_stdin_is_bounded_piped_and_not_in_arguments_or_stderr(self):
         result = module.run_command([sys.executable, "-c", "import sys; data=sys.stdin.buffer.read(); sys.stdout.write(str(len(data)))"], 3, 64, input_data=PRIVATE.encode())
         self.assertEqual(result.output, str(len(PRIVATE)).encode())

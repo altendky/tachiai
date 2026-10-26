@@ -7,25 +7,57 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
 export const bodyLimit = 512 * 1024;
+export const inputLimit = 16 * 1024;
 const mimeValues = { 'application/dash+xml': 'DASH_XML', 'application/xml': 'APPLICATION_XML', 'text/xml': 'TEXT_XML' };
+const sessionQueryNames = new Set(['t', 'enc', 'dt', 'ut', 'sw']);
 
-export function validateInput(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input) ||
-    Object.keys(input).sort().join(',') !== 'nonce,uri' || typeof input.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(input.nonce) ||
-    typeof input.uri !== 'string' || input.uri.length < 1 || input.uri.length > 2048 ||
-    /[\u0000-\u0020\\#]/.test(input.uri)) throw new Error();
-  const raw = input.uri.split('?')[0], url = new URL(input.uri);
+function playlist(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || /[\u0000-\u0020\\#]/.test(value)) throw new Error();
+  const raw = value.split('?')[0], url = new URL(value);
   if (raw.includes('%') || raw.split('/').some(part => part === '.' || part === '..') ||
     url.protocol !== 'https:' || url.username || url.password || url.port || url.hash ||
     !/^[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net$/.test(url.hostname) ||
     !url.pathname.startsWith('/channel/abema-news/') || !url.pathname.endsWith('.mpd') ||
-    !/^[A-Za-z0-9_./~$-]+$/.test(url.pathname) || url.href !== input.uri) throw new Error();
-  const allowed = new Set(['t', 'enc', 'dt', 'ut', 'sw']), names = [...url.searchParams.keys()];
-  if (new Set(names).size !== names.length || names.some(name => !allowed.has(name)) ||
-    url.search.slice(1).split('&').some(pair => !pair.includes('=') || !allowed.has(pair.split('=')[0]) || !pair.slice(pair.indexOf('=') + 1)) ||
-    !/^[\x21-\x7e]{1,8192}$/.test(url.searchParams.get('t') || '') ||
-    url.searchParams.get('enc') !== 'clear' || url.searchParams.get('dt') !== 'pc_chrome' ||
-    url.searchParams.get('ut') !== '1' || (url.searchParams.has('sw') && url.searchParams.get('sw') !== '0')) throw new Error();
+    !/^[A-Za-z0-9_./~$-]+$/.test(url.pathname) || url.href !== value) throw new Error();
+  return url;
+}
+
+function queryPairs(query) {
+  const pairs = new Map();
+  if (!query) return pairs;
+  const parts = query.split('&');
+  if (parts.length > 64) throw new Error();
+  for (const part of parts) {
+    const separator = part.indexOf('=');
+    if (separator < 1) throw new Error();
+    const rawName = part.slice(0, separator);
+    // decodeURIComponent rejects malformed escapes and invalid UTF-8, unlike
+    // URLSearchParams' replacement decoding. '+' retains standard query meaning.
+    const name = decodeURIComponent(rawName.replace(/\+/g, ' '));
+    const value = decodeURIComponent(part.slice(separator + 1).replace(/\+/g, ' '));
+    if (name !== rawName || !value || pairs.has(name)) throw new Error();
+    pairs.set(name, value);
+  }
+  return pairs;
+}
+
+export function validateInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+    Object.keys(input).sort().join(',') !== 'advertisedUris,mediaToken,nonce,uri' ||
+    typeof input.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(input.nonce) ||
+    typeof input.mediaToken !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(input.mediaToken) ||
+    !Array.isArray(input.advertisedUris) || input.advertisedUris.length < 1 || input.advertisedUris.length > 2 ||
+    input.advertisedUris.some(value => typeof value !== 'string' || value.length < 1 || value.length > 2048)) throw new Error();
+  const url = playlist(input.uri), base = input.uri.split('?')[0];
+  const matches = input.advertisedUris.filter(value => value.split('?')[0] === base);
+  if (matches.length !== 1) throw new Error();
+  const advertised = queryPairs(playlist(matches[0]).search.slice(1));
+  if ([...advertised.keys()].some(name => sessionQueryNames.has(name))) throw new Error();
+  const pairs = queryPairs(url.search.slice(1));
+  const additional = new Map([...pairs].filter(([name]) => !sessionQueryNames.has(name)));
+  if (additional.size !== advertised.size || [...advertised].some(([name, value]) => additional.get(name) !== value) ||
+    pairs.get('t') !== input.mediaToken || pairs.get('enc') !== 'clear' || pairs.get('dt') !== 'pc_chrome' ||
+    pairs.get('ut') !== '1' || (pairs.has('sw') && pairs.get('sw') !== '0')) throw new Error();
   return input;
 }
 
@@ -79,7 +111,7 @@ export async function fetchManifest(page, input) {
       try { if (reader) await reader.cancel(); else await response?.body?.cancel(); } catch {}
       clearTimeout(timer);
     }
-  }, { ...input, maximum: bodyLimit, mimes: mimeValues });
+  }, { uri: input.uri, nonce: input.nonce, maximum: bodyLimit, mimes: mimeValues });
 }
 
 async function readInput() {
@@ -87,7 +119,7 @@ async function readInput() {
   let size = 0;
   for await (const chunk of process.stdin) {
     size += chunk.length;
-    if (size > 8192) throw new Error();
+    if (size > inputLimit) throw new Error();
     chunks.push(chunk);
   }
   return validateInput(JSON.parse(Buffer.concat(chunks).toString('utf8')));

@@ -28,6 +28,8 @@ Refused = bootstrap.Refused
 CHANNEL = "abema-news"
 CHANNEL_LIMIT = 512 * 1024
 ORIGIN_FAMILY = "APPROVED_ABEMA_AKAMAI_SINGLE_LABEL"
+SESSION_QUERY_NAMES = {"t", "enc", "dt", "ut", "sw"}
+QUERY_PAIR_LIMIT = 64
 
 
 class CatalogueRefused(Refused):
@@ -126,25 +128,51 @@ def validate_browser(raw):
     return nav
 
 
+def playlist_query(query):
+    """Strict standard decoding, with literal unique names and bounded pairs."""
+    if re.search(r"%(?![A-Fa-f0-9]{2})", query):
+        raise Refused()
+    pairs = urllib.parse.parse_qsl(query, keep_blank_values=True, strict_parsing=True,
+                                  errors="strict", max_num_fields=QUERY_PAIR_LIMIT)
+    names = [name for name, _ in pairs]
+    if len(set(names)) != len(names) or any(not name or not item or part.split("=", 1)[0] != name
+                                          for part, (name, item) in zip(query.split("&"), pairs)):
+        raise Refused()
+    return dict(pairs)
+
+
+def advertised_playlists(channel):
+    """The fresh selected DTO's candidates only; no synthesized alternative."""
+    roots = [channel["playback"]["dash"]]
+    if isinstance(channel["playback"].get("yospace"), dict):
+        alternate = channel["playback"]["yospace"].get("dash")
+        if isinstance(alternate, str) and alternate:
+            roots.append(alternate)
+    return roots
+
+
+def selected_advertised_playlist(uri, channel):
+    """Additional pairs must come unchanged from one fresh advertisement."""
+    parsed = usable_playlist(uri)
+    matches = [root for root in advertised_playlists(channel)
+               if uri.split("?", 1)[0] == root.split("?", 1)[0]]
+    if len(matches) != 1:
+        raise Refused()
+    advertised_query = playlist_query(usable_playlist(matches[0]).query)
+    if SESSION_QUERY_NAMES & advertised_query.keys():
+        raise Refused()
+    query = playlist_query(parsed.query)
+    if {name: item for name, item in query.items() if name not in SESSION_QUERY_NAMES} != advertised_query:
+        raise Refused()
+    return matches[0]
+
+
 def validate_binding(raw, nonce, media_token, channel):
     value = bootstrap.strict_json(raw, 8192)
     if not isinstance(value, dict) or set(value) != {"nonce", "channelId", "uri", "browser"} or value["nonce"] != nonce or value["channelId"] != CHANNEL or value["browser"] != {"name": "Chrome", "major": "156", "os": "Linux", "engine": "Blink"}:
         raise Refused()
-    parsed = usable_playlist(value["uri"])
-    # Bind the unchanged selector's choice to an advertised playlist, preserving
-    # its decision rather than guessing or retrying a plain/ad-free alternative.
-    roots = [channel["playback"]["dash"]]
-    if isinstance(channel["playback"].get("yospace"), dict):
-        roots.append(channel["playback"]["yospace"].get("dash"))
-    if value["uri"].split("?", 1)[0] not in [root.split("?", 1)[0] for root in roots if isinstance(root, str)]:
-        raise Refused()
-    if re.search(r"%(?![A-Fa-f0-9]{2})", parsed.query):
-        raise Refused()
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict")
-    names = [name for name, _ in pairs]
-    if len(set(names)) != len(names) or set(names) - {"t", "enc", "dt", "ut", "sw"} or any(not item or part.split("=", 1)[0] != name for part, (name, item) in zip(parsed.query.split("&"), pairs)):
-        raise Refused()
-    query = dict(pairs)
+    selected_advertised_playlist(value["uri"], channel)
+    query = playlist_query(usable_playlist(value["uri"]).query)
     if query.get("t") != media_token or query.get("enc") != "clear" or query.get("ut") != "1" or query.get("dt") != "pc_chrome" or "sw" in query and query["sw"] != "0":
         raise Refused()
     return ORIGIN_FAMILY

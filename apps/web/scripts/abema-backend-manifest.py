@@ -30,6 +30,7 @@ cleanup_owned_browser = source.owned_browser.cleanup_owned_browser
 _process_stat = source.owned_browser._process_stat
 _live_group = source.owned_browser._live_group
 MPD_LIMIT = 512 * 1024
+BROWSER_INPUT_LIMIT = 16 * 1024
 REQUEST_SECONDS = 10
 MIMES = {"application/dash+xml": "DASH_XML", "application/xml": "APPLICATION_XML", "text/xml": "TEXT_XML"}
 MIME_VALUES = set(MIMES.values()) | {"UNSUPPORTED", "NOT_CHECKED"}
@@ -176,7 +177,11 @@ class BrowserManifestTransport:
             raise Refused()
         self.used = True
         binding = bootstrap.strict_json(fields["binding"], 8192)
-        private_input = json.dumps({"uri": binding["uri"], "nonce": fields["nonce"]}).encode("utf8")
+        private_input = json.dumps({"uri": binding["uri"], "nonce": fields["nonce"],
+                                    "mediaToken": fields["media_token"],
+                                    "advertisedUris": source.advertised_playlists(fields["channel"])}).encode("utf8")
+        if len(private_input) > BROWSER_INPUT_LIMIT:
+            raise Refused()
         runtime = Path(tempfile.mkdtemp(prefix="tachiai-browser-manifest-"))
         try:
             source.owned_browser.validate_runtime_path(runtime)

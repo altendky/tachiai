@@ -14,6 +14,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 import time
 from types import SimpleNamespace
@@ -362,7 +363,9 @@ class BrowserManifestTests(unittest.TestCase):
             self.assertTrue(Path(args[-1]).is_dir())
             self.assertNotIn(PRIVATE, repr(args))
             self.assertNotIn(URI, repr(args))
-            self.assertEqual(json.loads(kwargs["input_data"]), {"uri": BOUND_URI, "nonce": NONCE})
+            self.assertEqual(json.loads(kwargs["input_data"]), {"uri": BOUND_URI, "nonce": NONCE,
+                "mediaToken": PRIVATE, "advertisedUris": [URI]})
+            self.assertLessEqual(len(kwargs["input_data"]), module.BROWSER_INPUT_LIMIT)
             self.assertTrue(kwargs["display"])
             return module.bootstrap.CommandResult(0, encoded(self.packet()))
         transport = module.BrowserManifestTransport(runner)
@@ -377,6 +380,44 @@ class BrowserManifestTests(unittest.TestCase):
     def test_browser_binding_refusal_happens_before_any_process_or_fetch(self):
         with self.assertRaises(module.Refused):
             module.BrowserManifestTransport(lambda *args, **kwargs: self.fail("must not start")).request(fields(media_token="stale"), 1)
+
+    @unittest.skipUnless(shutil.which("node"), "Node needed only for private-envelope refusal fixture")
+    def test_browser_private_envelope_byte_limit_refuses_before_launch_without_echoing_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            oversized = (PRIVATE.encode() * (module.BROWSER_INPUT_LIMIT // len(PRIVATE) + 1))
+            result = subprocess.run([shutil.which("node"), str(SOURCE.with_name("abema-browser-manifest.mjs")),
+                "--owned-runtime", str(runtime)], input=oversized, capture_output=True, timeout=5)
+            self.assertEqual(json.loads(result.stdout), {"refused": True, "cleanupConfirmed": True})
+            self.assertEqual(result.stderr, b"")
+            self.assertNotIn(PRIVATE.encode(), result.stdout)
+            self.assertFalse((runtime / "launch-started.json").exists())
+
+    def test_manifest_repeats_complete_advertisement_binding_and_browser_receives_only_private_context(self):
+        advertised = URI + "?context=" + PRIVATE
+        bound = advertised + "&t=" + PRIVATE + "&enc=clear&dt=pc_chrome&ut=1"
+        alternate = URI.replace("manifest.mpd", "alternate.mpd")
+        channel = {**CHANNEL, "playback": {"dash": advertised, "yospace": {"dash": alternate}}}
+        binding = encoded({"uri": bound, "channelId": "abema-news", "nonce": NONCE, "browser": BROWSER})
+        data = fields(channel=channel, binding=binding)
+        self.assertEqual(module.manifest_request_spec(data).full_url, bound)
+        calls = []
+        def runner(args, timeout, limit, **kwargs):
+            calls.append(args)
+            self.assertNotIn(PRIVATE, repr(args)); self.assertNotIn(URI, repr(args))
+            self.assertEqual(json.loads(kwargs["input_data"]), {"uri": bound, "nonce": NONCE,
+                "mediaToken": PRIVATE, "advertisedUris": [advertised, alternate]})
+            return module.bootstrap.CommandResult(0, encoded(self.packet(status=403, accepted=False, body="")))
+        reply = module.BrowserManifestTransport(runner).request(data, 20)
+        self.assertEqual(reply.status, 403); self.assertEqual(len(calls), 1)
+        self.assertFalse(Path(calls[0][-1]).exists())
+        for changed in (bound.replace("context=" + PRIVATE, "context=mutated"),
+                        bound.replace("context=" + PRIVATE + "&", ""), bound + "&new=unadvertised"):
+            bad = fields(channel=channel, binding=encoded({"uri": changed, "channelId": "abema-news", "nonce": NONCE, "browser": BROWSER}))
+            with self.assertRaises(module.Refused):
+                module.manifest_request_spec(bad)
+            with self.assertRaises(module.Refused):
+                module.BrowserManifestTransport(lambda *a, **kw: self.fail("must not start")).request(bad, 1)
 
     def test_browser_cancellation_removes_owned_runtime_and_preserves_termination(self):
         paths = []

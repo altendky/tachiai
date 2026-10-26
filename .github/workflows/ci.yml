@@ -216,7 +216,7 @@ jobs:
           rustup component add rustfmt clippy
           rustup target add wasm32-unknown-unknown
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes ffmpeg xvfb
 
       - name: Install browser test dependencies
         working-directory: apps/web
@@ -226,11 +226,12 @@ jobs:
 
       - run: mise run web
 
-      - name: Test local browser manifest CORS and detached cleanup
+      - name: Test local browser manifest CORS and owned snapshot cleanup
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
           uv run scripts/tests/web-abema-backend-manifest.test.py
+          xvfb-run --auto-servernum uv run scripts/tests/web-abema-browser-snapshot.test.py
           node --test scripts/tests/web-abema-browser-manifest.test.mjs
 
   all:

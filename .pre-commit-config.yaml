@@ -147,7 +147,7 @@ repos:
         name: Web ABEMA backend bootstrap safety tests
         entry: uv run scripts/tests/web-abema-backend-bootstrap.test.py
         language: system
-        files: '^apps/web/scripts/abema-(backend-(bootstrap|source)\.py|(guest|source)-helper\.cjs|browser-snapshot\.mjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source)\.py|owned-browser\.py|(guest|source)-helper\.cjs|browser-snapshot\.mjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
         pass_filenames: false
 
       - id: abema-opaque-broker-tests
@@ -161,14 +161,21 @@ repos:
         name: Web ABEMA exact manifest safety tests
         entry: uv run scripts/tests/web-abema-backend-manifest.test.py
         language: system
-        files: '^apps/web/scripts/abema-backend-(bootstrap|source|manifest)\.py$|^scripts/tests/web-abema-backend-manifest\.test\.py$'
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source|manifest)|owned-browser)\.py$|^scripts/tests/web-abema-backend-manifest\.test\.py$'
         pass_filenames: false
 
       - id: web-abema-browser-manifest-tests
         name: Web ABEMA browser manifest protocol tests
         entry: node --test scripts/tests/web-abema-browser-manifest.test.mjs
         language: system
-        files: '^apps/web/scripts/abema-browser-manifest\.mjs$|^scripts/tests/web-abema-browser-manifest\.test\.mjs$'
+        files: '^apps/web/scripts/abema-browser-(manifest|snapshot)\.mjs$|^scripts/tests/web-abema-browser-manifest\.test\.mjs$'
+        pass_filenames: false
+
+      - id: web-abema-browser-snapshot-tests
+        name: Web ABEMA owned snapshot safety tests
+        entry: uv run scripts/tests/web-abema-browser-snapshot.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source)|owned-browser)\.py$|^apps/web/scripts/abema-browser-(manifest|snapshot)\.mjs$|^scripts/tests/web-abema-browser-snapshot\.test\.py$'
         pass_filenames: false
 
       - id: twitch-session-tests

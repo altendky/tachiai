@@ -95,8 +95,9 @@ The optional `observedAtPositionMs` is that event's bounded media-timeline
 position, not a shared clock or a freshness guarantee. An unbuffered seek/gap
 does not erase the last observation: Shaka need not emit a new event when the
 same format becomes buffered again.
-The controlled HLS trial reports AAC and channel count but omits sample rate and
-video bitrate; the DASH trial supplies them. Known fixture properties and an
+The local controlled HLS trial reports AAC and channel count but omits sample
+rate and video bitrate; the CI HLS observation also omits channel count.
+The DASH trial supplies these properties. Known fixture properties and an
 aggregate HLS variant bitrate do not fill those gaps.
 Independent decoded-frame checks establish video dimensions separately; neither
 mechanism establishes decoded audio, audible output or acoustic quality.

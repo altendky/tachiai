@@ -27,15 +27,18 @@ for (const manifest of ['a/manifest.mpd', 'a/master.m3u8']) {
     expect(result.state.playheadFormats).toMatchObject({
       basis: 'last-sdk-buffered-playhead',
       video: { kind: 'video', codec: 'AVC', width: 640, height: 360, frameRate: 24 },
-      audio: { kind: 'audio', codec: 'AAC', channelCount: 1 },
+      audio: { kind: 'audio', codec: 'AAC' },
     });
     // The packaged HLS stream's SDK observation omits sample rate. Do not
     // substitute the known fixture property for unavailable runtime metadata.
     expect(result.state.playheadFormats.audio!.sampleRateHz).toBe(manifest.endsWith('.mpd') ? 48000 : undefined);
     if (manifest.endsWith('.mpd')) {
+      expect(result.state.playheadFormats.audio!.channelCount).toBe(1);
       expect(result.state.playheadFormats.video!.declaredBitrateBps).toBeGreaterThan(0);
       expect(result.state.playheadFormats.audio!.declaredBitrateBps).toBeGreaterThan(0);
     } else {
+      const channelCount = result.state.playheadFormats.audio!.channelCount;
+      if (channelCount !== undefined) expect(channelCount).toBe(1);
       expect(result.state.playheadFormats.video!.declaredBitrateBps).toBeUndefined();
       // An aggregate HLS variant bitrate cannot fabricate per-kind bitrates.
       const audioBitrate = result.state.playheadFormats.audio!.declaredBitrateBps;

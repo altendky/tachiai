@@ -49,9 +49,13 @@ integration, and generic CI/Chrome success does not establish other engines.
 - [#365](https://github.com/altendky/tachiai/issues/365): Twitch account-bound HLS
   playback through Tachiai-owned media, including browser request/session rules.
 - [#366](https://github.com/altendky/tachiai/issues/366): ABEMA browser CDM,
-  source/session/entitlement binding and opaque licensing behavior.
+  source/session/entitlement binding and opaque licensing behavior. The initial
+  [bootstrap investigation](web-abema-feasibility.md) records direct-origin
+  restrictions and bounded anonymous backend viability, not ABEMA playback support.
 - [#367](https://github.com/altendky/tachiai/issues/367): account persistence,
-  full route coverage and whether an extension or companion is needed.
+  full route coverage and whether an extension or companion is needed. The
+  [account/route assessment](web-accounts-and-routes.md) records the request matrix,
+  extension-free backend candidate and decisions needed before retention/deployment.
 - [#368](https://github.com/altendky/tachiai/issues/368): the common picker and
   two-feed viewer, followed by combined provider and acoustic acceptance.
 

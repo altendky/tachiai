@@ -143,6 +143,13 @@ repos:
         files: 'scripts/(abema-helper-runtime\.cjs|tests/abema-helper-runtime\.test\.cjs)$'
         pass_filenames: false
 
+      - id: web-abema-backend-bootstrap-tests
+        name: Web ABEMA backend bootstrap safety tests
+        entry: uv run scripts/tests/web-abema-backend-bootstrap.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-bootstrap\.py|guest-helper\.cjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
+        pass_filenames: false
+
       - id: abema-opaque-broker-tests
         name: ABEMA opaque broker fixture tests
         entry: node scripts/tests/abema-opaque-broker.test.cjs

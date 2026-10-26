@@ -4,5 +4,6 @@ export default defineConfig({
   // Exercise a non-root production deployment, including the generated Wasm.
   base: '/harness/',
   publicDir: 'build/public',
-  build: { outDir: 'build/dist', emptyOutDir: true },
+  build: { outDir: 'build/dist', emptyOutDir: true,
+    rollupOptions: { input: { harness: 'index.html', twitchProof: 'twitch-proof.html' } } },
 });

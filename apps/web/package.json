@@ -10,6 +10,9 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "probe:abema": "node scripts/probe-abema.mjs",
     "probe:abema:backend": "uv run scripts/abema-backend-bootstrap.py",
+    "probe:twitch": "node scripts/probe-twitch.mjs",
+    "test:twitch:offline": "playwright test --config playwright.twitch-offline.config.ts",
+    "test:twitch:owned": "playwright test --config playwright.twitch-owned.config.ts",
     "test": "playwright test"
   },
   "dependencies": {

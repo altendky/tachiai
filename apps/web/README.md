@@ -66,3 +66,10 @@ dependency notices accompany the generated site under `licenses/`.
   separate provider investigations.
 
 See the [web evidence and next steps](../../docs/src/project/web-client.md).
+
+The separate opt-in [Twitch provider diagnostic](../../docs/src/project/web-twitch-proof.md)
+uses this harness's pinned player, Wasm and fixture test pipeline without
+broadening `BrowserPlayer`'s controlled-source contract. Its synthetic session
+and Chrome tests are `npm run test:twitch:offline` and `npm run test:twitch:owned`.
+Actual provider authorization/playback requires the documented explicit network
+command and fresh user-controlled activation; it is not part of ordinary tests.

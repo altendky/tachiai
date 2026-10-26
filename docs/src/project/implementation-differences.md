@@ -43,6 +43,20 @@ account, route, DRM and lifecycle findings do not approve a web UX exception.
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/pair.ts>
 
+### Controlled browser fixture formats
+
+The provider-free browser fixture now reports bounded audio/video format
+observations in its existing Playback status. Android uses Media3 input-format
+callbacks; the browser adapter enables Shaka 5.3.2's quality observer and projects
+`mediaqualitychanged` metadata associated with buffered content at its polled
+playhead. The browser explicitly identifies this `last-sdk-buffered-playhead` basis,
+keeps it separate from requested/selected tracks and omits unsupported or unknown
+numeric properties. Neither the event nor selected tracks establish decoder or
+acoustic output. This mechanism adds no Quality controls, saved preferences,
+provider requests or approved UX exception. Its
+[fixture scope and limits](web-pair-fixture.md#buffered-format-observations)
+remain distinct from product/provider acceptance.
+
 [media-session]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/PrototypeActivity.kt#L888-L900
 [manifest]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/AndroidManifest.xml#L9-L33
 [detection]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/TelevisionPresentation.kt#L23-L26

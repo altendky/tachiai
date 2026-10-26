@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tachiai controlled pair fixture</title>
+  </head>
+  <body>
+    <header class="diagnostic">
+      <strong>Diagnostic · controlled pair fixture</strong>
+      <button id="back">Back</button>
+      <a href="./">Single-player harness</a>
+    </header>
+    <main>
+      <section id="picker">
+        <h1>Choose two streams</h1>
+        <p>Owned local fixtures only. This controller milestone is not the product client, provider integration or acoustic acceptance.</p>
+        <table aria-label="Controlled sources">
+          <thead><tr><th scope="col">Source</th><th scope="col">A</th><th scope="col">B</th></tr></thead>
+          <tbody id="source-list"></tbody>
+        </table>
+        <button id="watch" disabled>Watch</button>
+        <p>Duplicate selections use independent players. Quality, manual orientation and complete product settings/navigation remain pending.</p>
+      </section>
+      <section id="viewer" hidden aria-label="Controlled pair viewer">
+        <div id="stage">
+          <div id="pane-A" class="pane" data-side="A">
+            <div id="mount-A" class="mount"></div>
+            <span id="chip-A" class="chip"></span>
+            <div id="message-A" class="message"><span></span><button id="retry-A" hidden>Retry</button></div>
+          </div>
+          <div id="pane-B" class="pane" data-side="B">
+            <div id="mount-B" class="mount"></div>
+            <span id="chip-B" class="chip"></span>
+            <div id="message-B" class="message"><span></span><button id="retry-B" hidden>Retry</button></div>
+          </div>
+        </div>
+        <div id="dock">
+          <section id="audio-panel" hidden aria-label="Audio">
+            <label>Overall volume <input id="overall" type="range" min="0" max="100" step="1" value="50"></label>
+            <label>Mix A ↔ B <input id="balance" type="range" min="0" max="100" step="1" value="50"></label>
+            <div>
+              <button id="toward-A">Mix toward A</button>
+              <button id="centre">Centre mix</button>
+              <button id="toward-B">Mix toward B</button>
+              <button id="mute-A" aria-pressed="false">Mute A</button>
+              <button id="mute-B" aria-pressed="false">Mute B</button>
+            </div>
+          </section>
+          <section id="timing-panel" hidden aria-label="Timing">
+            <p>Advance a named feed relative to the other. Both remain paused. Requested shifts are not measured synchronization.</p>
+            <div id="advance-A"><strong>Advance A</strong></div>
+            <div id="advance-B"><strong>Advance B</strong></div>
+            <p id="adjustment"></p>
+          </section>
+          <section id="status-panel" hidden aria-label="Playback status"><pre id="observations"></pre></section>
+          <div id="more-menu" hidden role="menu" aria-label="More">
+            <button id="swap" role="menuitem">Swap primary feed</button>
+            <button id="status" role="menuitem">Playback status</button>
+          </div>
+          <nav aria-label="Playback controls">
+            <button id="sources">Sources</button>
+            <button id="transport">Pause</button>
+            <button id="audio">Audio</button>
+            <button id="timing">Timing</button>
+            <button id="more">More</button>
+            <button id="hide">Hide</button>
+          </nav>
+        </div>
+      </section>
+      <p id="pair-result" role="status">Loading timing core…</p>
+      <p class="fixture-note">Fixture scope: controller, media and Wasm checks. Full responsive product controls, provider accounts/routes, quality and orientation controls require their own implementation and acceptance.</p>
+    </main>
+    <script type="module" src="/src/pair-main.ts"></script>
+  </body>
+</html>

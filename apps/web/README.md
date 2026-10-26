@@ -67,6 +67,21 @@ dependency notices accompany the generated site under `licenses/`.
 
 See the [web evidence and next steps](../../docs/src/project/web-client.md).
 
+## Controlled pair fixture
+
+`/harness/pair.html` adds a separate provider-free controller milestone with
+explicit A/B assignment and Watch, independent duplicate sessions, common
+mix/mutes, retained primary/floating geometry, full-step relative timing and
+individual retry. Watch requests playback as each feed becomes ready. The
+existing single-player diagnostic page is retained.
+
+This is not the full product picker/viewer or provider acceptance. Complete
+quality/orientation/settings controls and provider/account/route integration
+remain pending. See the [fixture scope and remaining acceptance](
+../../docs/src/project/web-pair-fixture.md). Issue #368 remains open.
+
+## Twitch provider diagnostic
+
 The separate opt-in [Twitch provider diagnostic](../../docs/src/project/web-twitch-proof.md)
 uses this harness's pinned player, Wasm and fixture test pipeline without
 broadening `BrowserPlayer`'s controlled-source contract. Its synthetic session

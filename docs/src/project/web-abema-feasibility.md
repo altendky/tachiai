@@ -160,6 +160,45 @@ networking was used; exit region and provider-specific routing were not measured
 This establishes bounded anonymous source preparation without an extension,
 not playback acceptance, browser-direct bootstrap or a selected deployment design.
 
+### Advertised query provenance
+
+A separate October 26 diagnostic compared the legacy catalogue with the modern
+public catalogue in the fresh page-selected GLOBAL division. Both advertised
+the exact News channel, but their advertised DASH and HLS strings differed.
+The modern metadata query deliberately omitted device context; it was a public
+metadata subset, not completion of the provider's device flow or entitlement
+validation. A subsequent fresh modern source attempt stopped before the MPD
+because the owned query whitelist refused a component preserved from that
+advertisement by the unchanged selector.
+
+One grant-free modern-catalogue observation then exercised the unchanged pinned
+selector with an actual headed Chrome 156/Linux navigator, a synthetic ASCII
+media token and a fresh nonce in a network-disabled container. The wire, source,
+nonce, browser and synthetic-token checks passed; the additional query component
+matched the fresh advertisement. No guest, media-token, device, MPD, CDM or
+license request occurred in that diagnosis. Only closed booleans/statuses were
+retained, and cleanup was confirmed.
+
+The owned binding now requires one unambiguous advertised origin/path candidate
+from the fresh exact-channel metadata. Strict standard query decoding permits
+additional name/value pairs only when they equal that candidate's complete
+advertised query. Missing, changed or newly introduced pairs, duplicate or
+encoded names, malformed escapes/UTF-8, empty names/values and more than 64 total
+pairs are refused. Advertisements cannot supply reserved session parameters.
+The fresh-token, nonce, channel, browser, approved-origin and known session-value
+checks remain mandatory. The selector and its advertisement decisions are
+unchanged; no query component is removed or rewritten to satisfy this guard.
+
+Before the browser fetch, Python repeats the binding checks and sends the
+selected URI, nonce, full fresh token and at most two advertised candidates over
+private stdin bounded to 16 KiB. The browser helper independently checks the
+same advertisement and token relationship. Only the validated URI and nonce
+reach its owned page's fetch function. This context enters no command argument,
+file or diagnostic output. An advertisement without additional query pairs
+continues to use the same session checks. Offline regressions establish the
+binding behavior; no new MPD, licensing or playback acceptance follows from
+this correction.
+
 ## Manifest-only diagnostic gate
 
 The separate development-only manifest proof preserves the source-only command's

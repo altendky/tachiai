@@ -95,6 +95,35 @@ class TwitchCatalogStartupTest {
         assertEquals(writes, f.memory.writes); assertArrayEquals(before, f.memory.bytes)
         f.startup.close(); assertEquals(listOf(1, 1), f.bindings.map { it.closes }); assertEquals(1, f.catalogs.single().closes)
     }
+    @Test fun readOnlyStartupMayPersistFiniteExpiryForTheSameLocallyRetainedPairWithoutRefreshing() {
+        val f = Fixture(saved = false)
+        val cap = f.wall + TWITCH_CATALOG_LOCAL_RETENTION_MS
+        val original = checkNotNull(f.store.commitConnection(f.store.beginConnection(), TwitchCatalogReplacement(
+            TwitchCatalogCredentials("fixture-access", "fixture-refresh", TWITCH_CATALOG_LOCAL_RETENTION_MS),
+            TwitchCatalogValidation("123", setOf(TWITCH_CATALOG_SCOPE), null), TWITCH_CATALOG_LOCAL_RETENTION_MS,
+            localRetentionUntilMs = cap, savedAtMs = f.wall)))
+        val before = checkNotNull(f.memory.bytes).copyOf(); val writes = f.memory.writes
+        f.onValidate = { validation().also { f.wall += 250; f.mono += 250 } }
+        try {
+            val ready = f.prepare() as ProviderStartupResult.Ready
+            assertEquals(SourceRouteChoice.system, ready.owner.choice)
+            assertNotNull((ready.value as TwitchCatalogStartupReceipt).startupValidation)
+            val tightened = checkNotNull(f.store.read())
+            assertEquals(TwitchCatalogGrantState.READY, tightened.state)
+            assertEquals(original.generation, tightened.generation); assertEquals(original.revision, tightened.revision)
+            assertEquals(original.userId, tightened.userId); assertEquals(original.savedAtMs, tightened.savedAtMs)
+            assertEquals(original.credentials!!.accessToken, tightened.credentials!!.accessToken)
+            assertEquals(original.credentials.refreshToken, tightened.credentials.refreshToken)
+            assertEquals(cap, tightened.localRetentionUntilMs)
+            assertEquals(1_000_000L + 7_200_000L, tightened.providerExpiresAtMs)
+            assertEquals(tightened.providerExpiresAtMs, tightened.expiresAtMs)
+            assertTrue(checkNotNull(tightened.expiresAtMs) < checkNotNull(original.expiresAtMs))
+            assertEquals(writes + 1, f.memory.writes); assertFalse(before.contentEquals(f.memory.bytes))
+            ready.value.browse(CatalogQuery())
+            assertEquals(writes + 1, f.memory.writes)
+            assertEquals(1, f.bindings.single().validations); assertEquals(0, f.bindings.single().posts)
+        } finally { f.startup.close(); before.fill(0) }
+    }
     @Test fun missingExpiredAnd401HoldTheirCandidateWithoutAnyPostOrFallback() {
         for (kind in 0..2) {
             val f = Fixture(saved = kind != 0)

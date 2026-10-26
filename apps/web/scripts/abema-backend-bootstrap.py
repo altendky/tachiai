@@ -104,7 +104,7 @@ def completing_cleanup():
                 raise Terminated()
 
 
-def strict_json(raw, limit=RESPONSE_LIMIT):
+def strict_json(raw, limit=RESPONSE_LIMIT, max_nodes=4096, max_depth=16):
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= limit:
         raise Refused()
 
@@ -123,7 +123,7 @@ def strict_json(raw, limit=RESPONSE_LIMIT):
     def visit(item, depth=0):
         nonlocal nodes
         nodes += 1
-        if depth > 16 or nodes > 4096 or isinstance(item, list) and len(item) > 1000:
+        if depth > max_depth or nodes > max_nodes or isinstance(item, list) and len(item) > 1000:
             raise Refused()
         if isinstance(item, dict):
             for key, child in item.items():
@@ -185,6 +185,8 @@ def request_spec(operation, fields):
             query = urllib.parse.urlencode({"osName": "pc", "osVersion": "1.0.0", "osLang": "en-US",
                                           "osTimezone": "UTC", "appVersion": "v26.1001.1"})
             url = "https://api.p-c3-e.abema-tv.com/v1/media/token?" + query
+    elif operation == "CHANNELS" and fields == {}:
+        url = "https://api.abema.io/v1/channels"
     else:
         raise Refused()
     return urllib.request.Request(url, data=body, headers=headers, method="POST" if body else "GET")
@@ -207,7 +209,7 @@ def native_exchange(operation, fields, opener):
             raise Refused()
         if status != 200:
             return status, b""  # Never consume arbitrary refusal bodies/redirect targets.
-        maximum = ASSET_LIMIT if operation == "ASSET" else RESPONSE_LIMIT
+        maximum = ASSET_LIMIT if operation == "ASSET" else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT
         length = response.headers.get("Content-Length")
         if length is not None and (not length.isascii() or not length.isdecimal() or int(length) > maximum):
             raise Refused()
@@ -271,7 +273,7 @@ class NativeTransport:
             if not isinstance(reply, dict) or set(reply) != {"status", "body"} or type(reply["status"]) is not int or not 100 <= reply["status"] <= 599 or not isinstance(reply["body"], str):
                 raise Refused()
             body = base64.b64decode(reply["body"], validate=True)
-            if len(body) > (ASSET_LIMIT if operation == "ASSET" else RESPONSE_LIMIT):
+            if len(body) > (ASSET_LIMIT if operation == "ASSET" else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT):
                 raise Refused()
             return reply["status"], body
         finally:
@@ -299,22 +301,41 @@ class CommandResult:
         return "CommandResult(redacted)"
 
 
-def run_command(args, timeout, limit=32768):
+def run_command(args, timeout, limit=32768, input_data=None, display=False):
+    if input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > 32768):
+        raise Refused()
     process = None
     streams = selectors.DefaultSelector()
     output, stderr_size = bytearray(), 0
     end = time.monotonic() + timeout
+    environment = {"PATH": os.defpath, "LANG": "C.UTF-8"}
+    if display:
+        for name in ("DISPLAY", "XAUTHORITY"):
+            if name in os.environ:
+                environment[name] = os.environ[name]
     try:
         with completing_cleanup():
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       env={"PATH": os.defpath, "LANG": "C.UTF-8"})
+            process = subprocess.Popen(args, stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       env=environment, start_new_session=display)
             for stream in (process.stdout, process.stderr):
                 streams.register(stream, selectors.EVENT_READ)
+            if input_data is not None:
+                os.set_blocking(process.stdin.fileno(), False)
+                streams.register(process.stdin, selectors.EVENT_WRITE)
+                pending = memoryview(input_data)
         while streams.get_map():
             remaining = end - time.monotonic()
             if remaining <= 0:
                 raise Refused()
             for key, _ in streams.select(min(0.5, remaining)):
+                if key.fileobj is process.stdin:
+                    if pending:
+                        pending = pending[os.write(process.stdin.fileno(), pending):]
+                    if not pending:
+                        streams.unregister(process.stdin)
+                        process.stdin.close()
+                    continue
                 chunk = os.read(key.fileobj.fileno(), 4096)
                 if not chunk:
                     streams.unregister(key.fileobj)
@@ -331,26 +352,43 @@ def run_command(args, timeout, limit=32768):
         with completing_cleanup():
             streams.close()
             if process is not None:
+                if display:
+                    # A timed-out browser launcher may have Chrome descendants.
+                    # The fresh process group belongs solely to this command.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
                 process.stdout.close()
                 process.stderr.close()
+                if process.stdin is not None:
+                    process.stdin.close()
 
 
 class OwnedContainer:
-    def __init__(self, runtime, config, runner=run_command, deadline=None):
+    def __init__(self, runtime, config, runner=run_command, deadline=None, helper="abema-guest-helper.cjs", private=False):
         self.runtime, self.config, self.runner = runtime, config, runner
         self.deadline = deadline
+        if helper not in {"abema-guest-helper.cjs", "abema-source-helper.cjs"}:
+            raise Refused()
+        self.helper, self.private = helper, private
         self.nonce = uuid.uuid4().hex
         self.name = "tachiai-abema-bootstrap-" + self.nonce
 
-    def command(self, *args, timeout=15, limit=32768, cleanup=False):
+    def command(self, *args, timeout=15, limit=32768, cleanup=False, input_data=None):
         if not cleanup and self.deadline is not None:
             timeout = min(timeout, self.deadline - time.monotonic())
             if timeout <= 0:
                 raise Refused()
-        return self.runner(["docker", "--config", str(self.config), *args], timeout, limit)
+        command = ["docker", "--config", str(self.config), *args]
+        if input_data is not None:
+            if not self.private:
+                raise Refused()
+            return self.runner(command, timeout, limit, input_data=input_data)
+        return self.runner(command, timeout, limit)
 
     def inspect(self, identity, cleanup=False):
         result = self.command("inspect", "--format", "{{json .}}", identity, limit=65536, cleanup=cleanup)
@@ -391,11 +429,12 @@ class OwnedContainer:
             # ownership; killing its client first can race daemon-side creation.
             with completing_cleanup():
                 result = self.command("create", "--pull", "never", "--name", self.name, "--label", OWNER_LABEL + "=" + self.nonce,
+                                      *( ["--interactive", "--ulimit", "core=0:0"] if self.private else [] ),
                                       "--network", "none", "--read-only", "--cap-drop", "ALL", "--log-driver", "none",
                                       "--security-opt", "no-new-privileges", "--user", "65534:65534", "--pids-limit", "64",
                                       "--memory", "256m", "--cpus", "1", "--mount",
                                       "type=bind,src=" + str(self.runtime) + ",dst=/proof,readonly", "--workdir", "/proof",
-                                      "--entrypoint", "node", IMAGE, "/proof/abema-guest-helper.cjs", limit=1024)
+                                      "--entrypoint", "node", IMAGE, "/proof/" + self.helper, limit=1024)
             identity = result.output.decode("ascii").strip()
             if result.code != 0 or result.stderr or not re.fullmatch(r"[0-9a-f]{64}", identity):
                 raise Refused()
@@ -406,6 +445,8 @@ class OwnedContainer:
             if len(mounts) != 1 or mounts[0]["Source"] != str(self.runtime) or mounts[0]["Destination"] != "/proof" or mounts[0]["RW"]:
                 raise Refused()
             if host["Memory"] != 256 * 1024 * 1024 or host["NanoCpus"] != 1_000_000_000 or host["PidsLimit"] != 64:
+                raise Refused()
+            if self.private and (not config.get("OpenStdin") or not any(item.get("Name") == "core" and item.get("Soft") == 0 and item.get("Hard") == 0 for item in host.get("Ulimits", []))):
                 raise Refused()
             yield identity
         finally:
@@ -421,6 +462,9 @@ class Attempt:
     def report(self, outcome, **fields):
         self.output.write(json.dumps({"phase": self.phase, "outcome": outcome, **fields}) + "\n")
         self.output.flush()
+
+    def complete(self, media_token):
+        self.report("ANONYMOUS_BOOTSTRAP_ACCEPTED", grantsPersisted=False, sourceRequests=False, mediaRequests=False, licenseRequests=False)
 
     def request(self, operation, fields):
         remaining = self.deadline - time.monotonic()
@@ -497,9 +541,9 @@ class Attempt:
             media = strict_json(self.request("MEDIA_TOKEN", {"bearer": bearer}))
             if not isinstance(media, dict) or not bounded_token(media.get("token")):
                 raise Refused()
-            media.clear()
             user_id = bearer = None
-            self.report("ANONYMOUS_BOOTSTRAP_ACCEPTED", grantsPersisted=False, sourceRequests=False, mediaRequests=False, licenseRequests=False)
+            self.complete(media["token"])
+            media.clear()
             return 0
         except Terminated:
             self.report("TERMINATED")

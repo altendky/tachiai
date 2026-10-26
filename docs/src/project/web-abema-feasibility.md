@@ -59,7 +59,7 @@ the origin restriction here. CORS decisions belong to the responding server;
 
 ## Extension-free backend result
 
-On the same date, a bounded native-HTTPS workflow fetched all four approved public
+On the same date, an initial ad-hoc bounded native-HTTPS workflow fetched all four approved public
 bundles and verified their existing sizes/SHA-256 hashes. Only required unchanged
 guest helper/DTO modules executed inside a disposable Node 24.15.0 container,
 using the pinned diagnostic image
@@ -82,6 +82,84 @@ It does not prove browser-direct access, account login, selected-source/DRM
 playback, route equivalence or a hosted deployment. An installed backend on every
 viewer's machine would be a companion; this development proof does not select one.
 
+The first source-proof execution of the reusable diagnostic later stopped before
+its guest POST. Review found an inherited guard mismatch: the pinned provider
+module's web-device enum is the string `DEVICE_TYPE_WEB`; the unchanged provider
+DTO serializer converts that enum to numeric wire value `3`. The reusable helper
+had incorrectly required the enum itself to be numeric. Its synthetic fixture
+had modeled the same incorrect type. The owned guard and fixture were corrected,
+while retaining the exact numeric DTO check and the guest runtime's original
+absent browser globals. A local, networkless execution of the unchanged pinned
+guest factories then prepared an accepted DTO. The earlier successful ad-hoc
+experiment is distinct from that corrected reusable version's live result below.
+
+## Bounded selected-source proof
+
+The next development diagnostic extends that fresh chain with exactly one
+cookie-free GET of the existing legacy channel catalogue, bounded to 512 KiB.
+It requires exactly `abema-news`, positively opened viewing, valid optional
+`status.drm` metadata and an advertised DASH URL under the approved single-label
+ABEMA Akamai family. Present DRM flags must be boolean false; absence remains
+absent in the projected metadata. As in the current Android adapter, the
+unchanged selector receives `isDrm: channel.status?.drm === true`; absence makes
+that selector input false, without establishing that media is unencrypted or
+entitled. These are preparation guards, not evidence of media
+encryption, entitlement or playback. Malformed, missing, duplicate, closed or
+incompatible metadata stops the attempt; no alternate channel/protocol/context
+or ad-free fallback is attempted.
+
+A fresh headed desktop Chrome context supplies its actual navigator input.
+All its page network routes are blocked; it opens no provider page. The unchanged
+pinned UA classifier must identify Chrome 156, Blink and Linux. Headless Chrome
+has a distinct provider classification and is refused rather than given a
+replacement user agent. The unchanged source selector receives only the exact
+channel's playlists, the fresh media token and that browser classification, with
+`preferDashPlaylist=true` and `enforcePlainStream=false`. Its static dependencies
+include DRM names/constants; no detection or licensing operation is invoked.
+Imported diagnostics receive process-local event registration and console
+methods that discard arguments, without DOM, storage or network facilities.
+
+This second helper runs in its own verified networkless, read-only, non-root
+container with capabilities dropped, logging disabled and core dumps disabled.
+Only the minimal selected-channel/browser/token context and a fresh attempt
+nonce cross bounded stdin; its private result crosses bounded stdout. Neither
+enters command arguments, files or logs. The HTTPS owner separately verifies the
+nonce, exact channel, advertised playlist choice, fresh token, closed query
+schema and approved origin family. It then discards the result without fetching
+the MPD or any media/license resource or creating a MediaKeySession. Public
+runtime files and owned containers are removed on both acceptance and refusal;
+unconfirmed cleanup fails closed. Host loss or a hard kill cannot prove cleanup.
+
+The unchanged pinned source helper passed a synthetic-input container trial
+with actual headed Chrome 156.0.8078.47 on Linux. The 32 offline guest/source tests
+cover selection/refusal, query/session/browser binding, unchanged selector
+arguments, discard-only diagnostics, bounded private pipes and owned cleanup.
+
+After pre-execution review and the guest guard correction, a fresh-chain trial
+reached the catalogue's HTTP 200 response but refused at the metadata stage. That
+version required an explicitly false DRM flag. A separately approved single
+grant-free catalogue GET then reported only closed diagnostics: `DRM` refusal,
+`statusPresent=true`, `drmPresent=false`, with neither an explicit true nor false.
+No raw catalogue or URL was printed or retained. Offline comparison established
+that the extra explicit-false requirement was stricter than the existing Android
+and unchanged provider-selector contract. The corrected projection preserves
+absence and retains the existing rejection of present true/nonboolean flags.
+
+The final reviewed fresh-chain source-only trial on October 25, 2026
+(October 26 UTC) succeeded:
+guest POST 200, matching-profile GET 200 (`identityMatched=true`), shape-valid
+media-token GET 200, and one channel-catalogue GET 200. It accepted exactly
+`abema-news` with `statusPresent=true` and `drmPresent=false`. The unchanged
+selector then returned an advertised source whose channel, attempt nonce and
+fresh token passed independent validation (`sourceMatched`, `sessionMatched`
+and `tokenMatched` all true). The public destination classification was
+`APPROVED_ABEMA_AKAMAI_SINGLE_LABEL`; the private URI was discarded.
+No MPD, media, license or MediaKeySession operation followed, no fallback was
+tried, and cleanup was confirmed with no grants persisted. Default host
+networking was used; exit region and provider-specific routing were not measured.
+This establishes bounded anonymous source preparation without an extension,
+not playback acceptance, browser-direct bootstrap or a selected deployment design.
+
 ## Android comparison and remaining gates
 
 The current Android DASH host explicitly selects `C.CLEARKEY_UUID` with
@@ -95,7 +173,8 @@ with native request hosting. An ordinary website cannot adopt another site's
 origin. Moving the page to localhost, installing a PWA, adding Wasm or selecting
 Shaka does not supply that hosting behavior or grant source entitlement.
 
-The direct-browser blocker and limited backend proof leave source/account/session binding, manifests/segments,
+The direct-browser blocker and bounded anonymous source proof leave account
+authorization, browser DRM/session binding, manifests/segments,
 opaque license exchange, live/replay controls, required advertising, renewal,
 quality, sustained two-feed output and acoustic acceptance untested. No account
 grant was adopted or persisted. The probe closes its fresh context/browser and
@@ -142,6 +221,27 @@ The offline regression command uses synthetic replies/containers only; it runs
 in repository checks and does not contact providers or run real Docker jobs.
 Cooperative termination attempts owned cleanup; a hard process kill or host loss
 cannot establish cleanup. Unconfirmed helper cleanup refuses the guest stage.
+
+The separate source-only proof is explicitly opted into with:
+
+```sh
+mise exec -- uv run apps/web/scripts/abema-backend-source.py --run-source
+```
+
+It requires the same preinstalled diagnostic image, web npm dependencies and a
+working desktop display for fresh headed Chrome. It accepts no supplied token,
+URL, account or source. Without exactly `--run-source`, it performs no browser,
+provider or Docker work. It makes no manifest, media, license or key request and
+must remain outside routine CI. Core dumps are disabled for its owner and
+private workers as well as the private-input container. The offline test command
+above covers both proofs without real provider/Docker/browser jobs.
+
+The separate `--check-catalogue` mode performs just one cookie-free, grant-free
+GET of that fixed public catalogue. It opens no browser/container and does not
+invoke the source selector. It emits only closed refusal categories
+(`SIZE`, `JSON`, `SCHEMA`, `EXACT_MATCH`, `OPEN`, `STATUS`, `DRM`, `PLAYLIST`)
+or acceptance, plus optional metadata-presence booleans. Transport refusals remain
+fixed outcomes. This mode also requires explicit opt-in and stays outside CI.
 
 ## Next decision
 

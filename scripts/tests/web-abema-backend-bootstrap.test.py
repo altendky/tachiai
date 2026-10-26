@@ -647,7 +647,14 @@ class SourceProofTests(unittest.TestCase):
                 return result
         for stale in (False, True):
             docker, output, calls = SourceDocker(stale), io.StringIO(), []
-            attempt = source_module.SourceAttempt(output, runner=docker)
+            hooks = []
+            test = self
+            class HookAttempt(source_module.SourceAttempt):
+                def bound_source(self, binding, nonce, media_token, channel):
+                    test.assertFalse(docker.created)  # Helper closed before any extension I/O.
+                    source_module.validate_binding(binding, nonce, media_token, channel)
+                    hooks.append(True)
+            attempt = HookAttempt(output, runner=docker)
             def request(operation, fields):
                 calls.append((operation, fields))
                 return encoded({"channels": [self.channel]}) if operation == "CHANNELS" else ASSET_BYTES
@@ -665,6 +672,7 @@ class SourceProofTests(unittest.TestCase):
             self.assertNotIn(PRIVATE, output.getvalue())
             self.assertNotIn(self.uri, output.getvalue())
             self.assertEqual("SOURCE_BINDING_ACCEPTED" in output.getvalue(), not stale)
+            self.assertEqual(len(hooks), 0 if stale else 1)
 
 
 if __name__ == "__main__":

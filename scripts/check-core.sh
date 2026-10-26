@@ -8,8 +8,5 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 bash scripts/build-core-bindings.sh
-cargo build --locked --release -p tachiai-core-web --target wasm32-unknown-unknown
-mkdir -p build/core/web
-wasm-bindgen "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/tachiai_core_web.wasm" \
-  --target web --out-dir build/core/web --out-name tachiai_core_web
+bash scripts/build-web-core.sh
 node packages/core-web/smoke.mjs

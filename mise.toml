@@ -34,9 +34,15 @@ run = "bash scripts/check-core.sh"
 description = "Build the shared native library and generate Kotlin/Swift bindings"
 run = "bash scripts/build-core-bindings.sh"
 
+[tasks.web]
+description = "Build and test the controlled browser playback harness"
+depends = ["core"]
+dir = "apps/web"
+run = ["npm ci --ignore-scripts", "npm run prepare:assets", "npm run build", "npm test"]
+
 [tasks.check]
 description = "Run the local validation suite"
-depends = ["pre-commit", "core"]
+depends = ["pre-commit", "web"]
 run = "mise run android"
 
 [tasks.android-emulator-setup]

@@ -23,6 +23,7 @@
   - [iOS interface and library review](project/ios-interface-review.md)
   - [Apple TV / tvOS review](project/tvos-interface-review.md)
   - [Desktop browser interface and library review](project/desktop-browser-review.md)
+  - [Web client implementation](project/web-client.md)
   - [Cross-platform distribution](project/platform-distribution.md)
   - [Cross-platform validation roadmap](project/platform-validation-plan.md)
   - [Security and privacy](project/security-and-privacy.md)

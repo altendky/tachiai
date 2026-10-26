@@ -32,12 +32,12 @@ function codec(value: unknown, kind: 'video' | 'audio'): FormatCodec {
     if (/^(vp8|vp8\.0|vp08\.[0-9.]+)$/.test(name)) return 'VP8';
     if (/^(vp9|vp9\.0|vp09\.[0-9.]+)$/.test(name)) return 'VP9';
   } else {
-    if (/^mp4a\.40\.[0-9]+$/.test(name)) return 'AAC';
+    if (/^mp4a\.40\.(2|5|29)$/.test(name)) return 'AAC';
     if (name === 'opus') return 'OPUS';
     if (name === 'vorbis') return 'VORBIS';
     if (name === 'ac-3') return 'AC3';
     if (name === 'ec-3') return 'EAC3';
-    if (name === 'mp3' || /^mp4a\.(69|6b)$/.test(name)) return 'MP3';
+    if (name === 'mp3' || name === 'mp4a.40.34' || /^mp4a\.(69|6b)$/.test(name)) return 'MP3';
   }
   return 'OTHER';
 }

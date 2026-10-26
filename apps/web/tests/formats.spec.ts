@@ -70,13 +70,19 @@ test('format projection excludes metadata, refuses invalid numbers and returns i
     const bounded = player.observe().playheadFormats;
     for (const malformed of [null, [], { contentType: 'text', codecs: 'avc1.42c01e', width: 123 }, 'private-token']) send(malformed);
     send({ contentType: 'audio', get codecs() { throw new Error('private-getter'); } });
-    return { isolated, bounded, afterIgnored: player.observe().playheadFormats };
+    const afterIgnored = player.observe().playheadFormats;
+    const codecs = ['mp4a.40.2', 'mp4a.40.5', 'mp4a.40.29', 'mp4a.40.34', 'mp4a.69', 'mp4a.6b', 'mp4a.40.999'].map((codecs) => {
+      send({ contentType: 'audio', codecs });
+      return player.observe().playheadFormats.audio!.codec;
+    });
+    return { isolated, bounded, afterIgnored, codecs };
   });
   expect(result.isolated.audio).toEqual({ kind: 'audio', codec: 'AAC', declaredBitrateBps: 64000,
     channelCount: 2, sampleRateHz: 32000, observedAtPositionMs: 1250 });
   expect(result.bounded.video).toEqual({ kind: 'video', codec: 'OTHER' });
   expect(result.bounded.audio).toEqual({ kind: 'audio', codec: 'AAC' });
   expect(result.afterIgnored).toEqual(result.bounded);
+  expect(result.codecs).toEqual(['AAC', 'AAC', 'AAC', 'MP3', 'MP3', 'MP3', 'OTHER']);
   expect(JSON.stringify(result)).not.toContain('private-');
 });
 

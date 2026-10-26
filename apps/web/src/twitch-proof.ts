@@ -55,7 +55,9 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
 export type PollResult = 'waiting' | 'pending' | 'slow-down' | 'authorized' | 'denied' | 'expired';
 export type TwitchDiagnosticStage = 'idle' | 'device-challenge' | 'token-poll' | 'token-validation' |
   'source-access' | 'player-attach' | 'player-load' | 'player-ready' | 'player-playback' | 'player-cleanup';
-export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number }
+export type TwitchPollRefusal = 'cancelled' | 'deadline' | 'token-type' |
+  'expiry-missing' | 'expiry-zero' | 'expiry-invalid';
+export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchPollRefusal }
 type Dependencies = { fetch?: typeof fetch; now?: () => number };
 
 export class TwitchProofSession {
@@ -75,6 +77,7 @@ export class TwitchProofSession {
   private cleanup?: Promise<'revoked' | 'unconfirmed' | 'no-grant-held'>;
   private phase: TwitchDiagnosticStage = 'idle';
   private http?: number;
+  private pollRefusal?: TwitchPollRefusal;
 
   constructor(dependencies: Dependencies = {}) {
     this.fetcher = dependencies.fetch ?? createClosedBrowserFetch(admittedTwitchApi);
@@ -83,12 +86,18 @@ export class TwitchProofSession {
   }
 
   private active(): void {
-    if (this.lifetime.signal.aborted || this.now() >= this.deadline) throw refused();
+    if (this.lifetime.signal.aborted || this.now() >= this.deadline) {
+      if (this.phase === 'token-poll') this.pollRefusal ??= this.lifetime.signal.aborted ? 'cancelled' : 'deadline';
+      throw refused();
+    }
   }
 
-  diagnostic(): TwitchDiagnostic { return { stage: this.phase, ...(this.http === undefined ? {} : { http: this.http }) }; }
+  diagnostic(): TwitchDiagnostic {
+    return { stage: this.phase, ...(this.http === undefined ? {} : { http: this.http }),
+      ...(this.pollRefusal === undefined ? {} : { reason: this.pollRefusal }) };
+  }
 
-  private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; }
+  private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; this.pollRefusal = undefined; }
 
   private observed(response: Response): void {
     this.http = Number.isSafeInteger(response.status) && response.status >= 100 && response.status <= 599
@@ -167,8 +176,13 @@ export class TwitchProofSession {
           return code === 'access_denied' ? 'denied' : 'expired';
         }
       }
-      if (response.status !== 200 || !this.grant || body.token_type !== 'bearer' ||
-          !integer(body.expires_in, 365 * 86400)) throw refused();
+      if (response.status !== 200 || !this.grant) throw refused();
+      if (body.token_type !== 'bearer') { this.pollRefusal = 'token-type'; throw refused(); }
+      if (!integer(body.expires_in, 365 * 86400)) {
+        this.pollRefusal = !Object.hasOwn(body, 'expires_in') ? 'expiry-missing' :
+          body.expires_in === 0 ? 'expiry-zero' : 'expiry-invalid';
+        throw refused();
+      }
       await this.validate();
       this.deviceCode = undefined;
       this.state = 'authorized';

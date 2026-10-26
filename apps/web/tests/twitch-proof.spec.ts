@@ -54,7 +54,8 @@ test('diagnostic adoption intentionally refuses absent or zero server expiry and
       ...(lifetime === undefined ? {} : { expires_in: lifetime }) }), new Response(null)]);
     await token.session.begin(); token.advance(5000);
     await expect(token.session.poll()).rejects.toThrow();
-    expect(token.session.diagnostic()).toEqual({ stage: 'token-poll', http: 200 });
+    expect(token.session.diagnostic()).toEqual({ stage: 'token-poll', http: 200,
+      reason: lifetime === undefined ? 'expiry-missing' : 'expiry-zero' });
     expect(await token.session.close()).toBe('revoked');
 
     const validated = setup([challenge(), grant(), response({ client_id: TWITCH_PROOF_CLIENT,
@@ -63,6 +64,58 @@ test('diagnostic adoption intentionally refuses absent or zero server expiry and
     await expect(validated.session.poll()).rejects.toThrow();
     expect(validated.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200 });
     expect(await validated.session.close()).toBe('revoked');
+  }
+});
+
+test('closed token refusal reasons preserve strict type and expiry checks through cleanup', async () => {
+  const cases = [
+    { changes: { token_type: 'Bearer' }, reason: 'token-type' },
+    { changes: { token_type: undefined }, reason: 'token-type' },
+    { changes: { token_type: null }, reason: 'token-type' },
+    ...[null, '3600', 0.5, -1, 365 * 86400 + 1].map((expires_in) => ({
+      changes: { expires_in }, reason: 'expiry-invalid',
+    })),
+  ];
+  for (const { changes, reason } of cases) {
+    const { session, calls, advance } = setup([challenge(), response({
+      access_token: 'synthetic-private-grant', token_type: 'bearer', expires_in: 3600,
+      private_extra: 'must-not-leave-the-session', ...changes,
+    }), new Response(null)]);
+    await session.begin(); advance(5000);
+    await expect(session.poll()).rejects.toThrow('Twitch diagnostic refused');
+    expect(session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason });
+    expect(await session.close()).toBe('revoked');
+    expect(session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason });
+    expect(calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'revoke']);
+  }
+});
+
+test('positive boundary expiries remain accepted without a refusal reason', async () => {
+  for (const expires_in of [1, 365 * 86400]) {
+    const { session, advance } = setup([challenge(), response({ access_token: 'synthetic-access-grant',
+      token_type: 'bearer', expires_in }), validation({ expires_in }), new Response(null)]);
+    await session.begin(); advance(5000);
+    expect(await session.poll()).toBe('authorized');
+    expect(session.diagnostic()).toEqual({ stage: 'token-validation', http: 200 });
+    expect(await session.close()).toBe('revoked');
+  }
+});
+
+test('a late fresh response distinguishes cancellation from the session deadline and still revokes', async () => {
+  for (const cause of ['cancelled', 'deadline']) {
+    let release!: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const { session, calls, advance } = setup([challenge(), () => pending, new Response(null)]);
+    await session.begin(); advance(5000);
+    const polling = session.poll();
+    if (cause === 'cancelled') session.cancel();
+    else advance(15 * 60000);
+    release(grant());
+    await expect(polling).rejects.toThrow('Twitch diagnostic refused');
+    expect(session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason: cause });
+    expect(await session.close()).toBe('revoked');
+    expect(session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason: cause });
+    expect(calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'revoke']);
   }
 });
 

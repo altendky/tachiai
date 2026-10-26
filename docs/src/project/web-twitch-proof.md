@@ -130,6 +130,34 @@ failed. Original preparation failure stages survive subsequent cleanup. Provider
 strings, response fields, token shapes and raw player/network errors do not
 enter this diagnostic result.
 
+The token-poll stage also exposes only a fixed refusal reason: `cancelled`,
+`deadline`, `token-type`, `expiry-missing`, `expiry-zero` or `expiry-invalid`.
+These identify the existing post-response checks without returning the token
+type, expiry value, access/refresh grant or other response fields. The CLI
+independently allowlists the reason, and cleanup preserves the failed observation.
+The exact lowercase bearer and finite positive expiry policy is unchanged.
+
+### Activated browser trial: October 26, 2026
+
+The fresh user-activated trial on revision
+`f099c590cd363ac6d1b2483407916e6dca777c19` used Linux x86-64 and Chrome
+156.0.8078.47, a new browser context and default host networking. Exit country
+was not independently measured. The selected sequence was Virtual Japan live,
+then the documented replay, stopping on any refusal without an alternative.
+
+After activation, token polling received HTTP 200 and captured this run's fresh
+access grant. The diagnostic refused while still at `token-poll`, before account
+validation, source preparation or media playback. Cleanup reported `destroyed`
+and `revoked`; the listener ended and the loopback server was absent afterward.
+No grant, provider body, account identifier, signed URL or media capture was
+retained. No selected playback case was reached.
+
+That revision reported no individual refusal reason. Cancellation/deadline,
+the exact token-type check and the finite-expiry check remain candidates; this
+observation does not establish which failed or justify changing the acceptance
+policy. The fixed reasons above prepare a further fresh trial to distinguish
+those cases. The revoked grant and old activation code must not be reused.
+
 ## Offline verification and outstanding acceptance
 
 ```sh

@@ -24,12 +24,14 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
   const output = (value) => console.log(JSON.stringify(value));
   const stages = new Set(['idle', 'device-challenge', 'token-poll', 'token-validation', 'source-access',
     'player-attach', 'player-load', 'player-ready', 'player-playback', 'player-cleanup']);
+  const reasons = new Set(['cancelled', 'deadline', 'token-type', 'expiry-missing', 'expiry-zero', 'expiry-invalid']);
   const diagnostic = async () => {
     try {
       const value = await page?.evaluate(() => window.twitchProof?.diagnostic());
       if (!value || !stages.has(value.stage)) return { stage: 'unavailable' };
       return { stage: value.stage, ...(Number.isSafeInteger(value.http) && value.http >= 100 && value.http <= 599
-        ? { http: value.http } : {}) };
+        ? { http: value.http } : {}),
+      ...(value.stage === 'token-poll' && reasons.has(value.reason) ? { reason: value.reason } : {}) };
     } catch { return { stage: 'unavailable' }; }
   };
   const deadline = setTimeout(cancel, 15 * 60_000);

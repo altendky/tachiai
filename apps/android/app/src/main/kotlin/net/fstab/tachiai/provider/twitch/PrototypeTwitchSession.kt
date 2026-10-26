@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.twitch
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.platform.diagnostics.nativeObserver
+import net.fstab.tachiai.platform.diagnostics.nativeTransportObserver
 
 import android.content.Context
 import android.os.Handler
@@ -190,6 +191,7 @@ internal class PrototypeTwitchSession(
                             readCosts = readCosts,
                             coalesceMediaReads = true,
                             onFailure = diagnostics.nativeObserver(),
+                            transportObserver = diagnostics.nativeTransportObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
                             }, onEvent = mediaEvents::dispatch)

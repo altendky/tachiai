@@ -266,6 +266,7 @@ internal class FailureReporter(
     }
     fun newSession(): FailureReporter = FailureReporter(sink, clock, thread, fallback, slot = slot)
     fun forSlot(value: FailureSlot): FailureReporter = FailureReporter(sink, clock, thread, fallback, sessionId, value)
+    internal val diagnosticSlot: FailureSlot get() = slot
     fun report(stage: FailureStage, error: Throwable? = null, reason: PrototypeFailureReason? = null) =
         record(stage, { SafeFailure.capture(error) }, false, reason)
     // Typed app-owned evidence has no throwable, stack, causes or arbitrary text.

@@ -39,7 +39,7 @@ internal enum class RoutedHttpsCallPhase {
 }
 internal data class RoutedHttpsFailureDiagnostic(val category: RoutedHttpsFailureCategory,
     val phase: RoutedHttpsCallPhase, val proxyPresent: Boolean, val localCancellationRequested: Boolean,
-    val phaseAvailable: Boolean)
+    val phaseAvailable: Boolean, val routeInactiveObserved: Boolean = false)
 
 // Per-client CONNECT credentials, never a JVM-wide Authenticator or origin header.
 // OkHttp synthesizes a preemptive CONNECT challenge; real retries must also match
@@ -82,6 +82,7 @@ internal class RoutedHttpsConnection(
     private var progressingBody = false
     private var setupDeadline: MediaResponseSetupDeadline? = null
     private var failureObserver: ((RoutedHttpsFailureDiagnostic) -> Unit)? = null
+    private var additionalFailureObserver: ((RoutedHttpsFailureDiagnostic) -> Unit)? = null
     private val firstDiagnostic = AtomicReference<RoutedHttpsFailureDiagnostic?>()
     private val phase = AtomicReference(RoutedHttpsCallPhase.NOT_STARTED)
     private val phaseAvailable = AtomicBoolean()
@@ -89,6 +90,12 @@ internal class RoutedHttpsConnection(
     fun observeFailures(observer: (RoutedHttpsFailureDiagnostic) -> Unit): Boolean = synchronized(lock) {
         if (connected || disconnected || failureObserver != null) false
         else { failureObserver = observer; true }
+    }
+    // One additional, independent diagnostic consumer. Never replace an earlier
+    // observer or allow late/unbounded registration on a dispatched request.
+    fun observeAdditionalFailures(observer: (RoutedHttpsFailureDiagnostic) -> Unit): Boolean = synchronized(lock) {
+        if (connected || disconnected || additionalFailureObserver != null) false
+        else { additionalFailureObserver = observer; true }
     }
     private val headers = linkedMapOf<String, MutableList<String>>()
     private val body = object : ByteArrayOutputStream() {
@@ -243,7 +250,11 @@ internal class RoutedHttpsConnection(
     }
 
     private fun rememberDiagnostic(error: Exception): ProviderTransportEvidence {
-        val cancelled = synchronized(lock) { disconnected } || !runCatching(routeActive).getOrDefault(false)
+        val localCancellation = synchronized(lock) { disconnected }
+        // Match the existing short-circuit admission check. An explicit local
+        // disconnect does not establish whether the route is still active.
+        val routeActivity = if (localCancellation) null else runCatching(routeActive).getOrNull()
+        val cancelled = localCancellation || routeActivity != true
         val setupExpired = synchronized(lock) { setupDeadline?.expired == true }
         val observedPhase = if (!phaseAvailable.get()) ProviderTransportPhase.UNKNOWN else when (phase.get()) {
             RoutedHttpsCallPhase.DNS -> ProviderTransportPhase.DNS
@@ -257,7 +268,8 @@ internal class RoutedHttpsConnection(
         val evidence = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
             else if (setupExpired) ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT, observedPhase)
             else providerTransportEvidence(error).let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
-        val observer = synchronized(lock) { failureObserver } ?: return evidence
+        val observers = synchronized(lock) { failureObserver to additionalFailureObserver }
+        if (observers.first == null && observers.second == null) return evidence
         val category = if (setupExpired && !cancelled) RoutedHttpsFailureCategory.SOCKET_TIMEOUT else when (error) {
             is SSLHandshakeException -> RoutedHttpsFailureCategory.TLS_HANDSHAKE
             is SSLPeerUnverifiedException -> RoutedHttpsFailureCategory.TLS_PEER
@@ -271,9 +283,10 @@ internal class RoutedHttpsConnection(
             else -> RoutedHttpsFailureCategory.OTHER
         }
         val snapshot = RoutedHttpsFailureDiagnostic(category, phase.get(), usingProxy(),
-            synchronized(lock) { disconnected }, phaseAvailable.get())
+            localCancellation, phaseAvailable.get(), routeActivity == false)
         if (firstDiagnostic.compareAndSet(null, snapshot)) {
-            try { observer(snapshot) } catch (_: Throwable) { }
+            try { observers.first?.invoke(snapshot) } catch (_: Throwable) { }
+            try { observers.second?.invoke(snapshot) } catch (_: Throwable) { }
         }
         return evidence
     }

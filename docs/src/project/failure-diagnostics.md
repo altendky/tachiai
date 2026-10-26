@@ -106,6 +106,42 @@ is left intact for investigation and is not silently overwritten. Recording
 failure produces only the fixed `JOURNAL_UNAVAILABLE` marker and never replaces
 the original error or skips the remaining cleanup.
 
+## Bounded native transport-phase observations
+
+Ordinary debug HLS and cached DASH players now opt into a separate,
+memory-only native-media observer. It attaches after connection ownership and
+before dispatch; each routed connection retains at most its first failure.
+The additional observer preserves any existing request observer and OkHttp
+listener. A throwing observer cannot replace a request failure, skip the other
+observer or alter cleanup. Each request group attempts at most 16 observations;
+DASH's separate manifest and media groups each have their own cap. Release
+provider callers do not install this observer.
+
+The debug-only `TachiaiNativeTransport` log projects the fixed feed slot,
+request type, transport exception category, operational phase and four booleans:
+phase availability, HTTP-proxy configuration, explicit local-disconnect request
+and observed route inactivity. It contains no Throwable, connection, URL,
+provider identity, headers or response contents. An existing OkHttp listener is
+not replaced; in that case `phaseAvailable=false` and the phase is `NOT_STARTED`,
+not an inferred phase. A proxy-present flag describes configuration, not proof
+that every account/media/license request follows the route.
+
+Explicit disconnection and route inactivity remain distinct: the former means
+this connection's disconnect was requested. The latter means its route-active
+check returned false while no local disconnect had been observed. A throwing
+route check retains existing fail-closed cancellation behavior but does not
+establish route inactivity. A false flag therefore does not confirm an active
+route or identify why the route ended. When local disconnect is already
+known, the diagnostic does not probe route activity again. Stopped playback
+budgets and retired source generations refuse late native-media observations;
+normal source close invalidates observation before disconnecting. These bounded
+logs therefore do not guarantee an observation for every cancelled request.
+
+This does not change the persisted v1 journal, network/TLS policy, timeouts,
+provider entitlement, admission, retries or recovery decisions. Local fixture
+tests establish observation boundaries only. No new device/provider trial or
+cause for the intermittent failures in #297 is established by this change.
+
 ## Cached ABEMA helper evidence
 
 Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first

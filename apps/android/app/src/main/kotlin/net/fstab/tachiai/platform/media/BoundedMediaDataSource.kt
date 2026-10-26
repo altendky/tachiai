@@ -14,8 +14,10 @@ import java.net.URL
 import java.net.CookieHandler
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.network.ProgressingMediaResponse
+import net.fstab.tachiai.platform.network.RoutedHttpsConnection
 
 private class NativeMediaCleanupException : IOException("Native media cleanup unconfirmed")
 
@@ -34,9 +36,11 @@ internal class BoundedMediaRequests(
     private val openErrorInput: (HttpsURLConnection) -> InputStream? = { it.errorStream },
     private val readCosts: NativeMediaReadCosts? = null,
     private val coalesceMediaReads: Boolean = false,
+    transportObserver: NativeMediaTransportObserver? = null,
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
+    private val transportDiagnostics = transportObserver?.let(::NativeMediaTransportDiagnostics)
     fun report(event: NativeMediaEvent, http: Int = 0) {
         if (reported.add(event)) onEvent(event, http)
     }
@@ -62,6 +66,7 @@ internal class BoundedMediaRequests(
         private var mediaBodyAccepted = false
         private var inputEnded = false
         private var costs: NativeMediaReadCosts.Request? = null
+        private val diagnosticOwner = transportDiagnostics?.let { AtomicReference<Any?>() }
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
         private fun checkActive() {
             if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
@@ -122,6 +127,16 @@ internal class BoundedMediaRequests(
                 connection = request
                 onConnectionOwned(request)
                 active.add(request)
+                transportDiagnostics?.let { diagnostics ->
+                    val owner = Any().also { diagnosticOwner?.set(it) }
+                    (request as? RoutedHttpsConnection)?.observeAdditionalFailures { diagnostic ->
+                        diagnostics.record(when (type) {
+                            C.DATA_TYPE_MANIFEST -> NativeMediaRequestType.MANIFEST
+                            C.DATA_TYPE_MEDIA -> NativeMediaRequestType.MEDIA
+                            else -> NativeMediaRequestType.OTHER
+                        }, diagnostic) { budget.active && diagnosticOwner?.get() === owner && active.contains(request) }
+                    }
+                }
                 checkActive()
                 if (type == C.DATA_TYPE_MEDIA) (request as? ProgressingMediaResponse)?.requestProgressingBody()
                 request.instanceFollowRedirects = false // All redirects fail closed, before any next hop.
@@ -286,6 +301,7 @@ internal class BoundedMediaRequests(
             return total
         }
         override fun close() {
+            diagnosticOwner?.set(null)
             val request = connection
             val stream = input
             var streamClosed = stream == null

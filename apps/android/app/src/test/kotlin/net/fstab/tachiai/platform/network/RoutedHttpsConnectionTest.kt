@@ -562,6 +562,56 @@ class RoutedHttpsConnectionTest {
         }
     }
 
+    @Test fun boundedAdditionalObserverPreservesTheOriginalObserverAndIsolatesBothFailures() {
+        ProxyFixture(refusal = true).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            val first = mutableListOf<RoutedHttpsFailureDiagnostic>()
+            val additional = mutableListOf<RoutedHttpsFailureDiagnostic>()
+            assertTrue(connection.observeFailures { first += it; error("private first observer") })
+            assertTrue(connection.observeAdditionalFailures { additional += it; error("private additional observer") })
+            assertFalse(connection.observeAdditionalFailures { fail("Duplicate additional observer") })
+            val error = assertThrows(IOException::class.java) { connection.responseCode }
+            assertNull(error.cause)
+            assertSame(first.single(), additional.single())
+            assertSame(first.single(), connection.failureDiagnostic)
+            assertFalse(connection.observeAdditionalFailures { fail("Late additional observer") })
+            connection.disconnect()
+            assertThrows(IOException::class.java) { connection.responseCode }
+            assertEquals(1, first.size); assertEquals(1, additional.size)
+        }
+    }
+
+    @Test fun protocolAndGenericIoRemainDistinctAndRouteInactivityIsNotAnExplicitDisconnect() {
+        for (protocol in listOf(false, true)) for (mode in listOf("active", "inactive", "throwing")) {
+            val active = AtomicBoolean(true)
+            val throwing = AtomicBoolean(false)
+            val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor {
+                if (mode == "inactive") active.set(false)
+                if (mode == "throwing") throwing.set(true)
+                if (protocol) throw java.net.ProtocolException("private protocol detail")
+                else throw IOException("private IO detail")
+            }.build()
+            val connection = RoutedHttpsConnection(url, client, {
+                if (throwing.get()) error("private route activity failure")
+                active.get()
+            })
+            val seen = mutableListOf<RoutedHttpsFailureDiagnostic>()
+            assertTrue(connection.observeAdditionalFailures(seen::add))
+            val error = assertThrows(IOException::class.java) { connection.responseCode }
+            val diagnostic = seen.single()
+            assertEquals(if (protocol) RoutedHttpsFailureCategory.PROTOCOL else RoutedHttpsFailureCategory.IO,
+                diagnostic.category)
+            assertEquals(RoutedHttpsCallPhase.CALL, diagnostic.phase)
+            assertTrue(diagnostic.phaseAvailable); assertFalse(diagnostic.proxyPresent)
+            assertFalse(diagnostic.localCancellationRequested)
+            assertEquals(mode == "inactive", diagnostic.routeInactiveObserved)
+            assertEquals(if (mode != "active") ProviderTransportFailure.CANCELLED else ProviderTransportFailure.UNKNOWN,
+                providerTransportEvidence(error).failure)
+            assertNull(error.cause); assertFalse(diagnostic.toString().contains("private"))
+            connection.disconnect()
+        }
+    }
+
     @Test fun responseHeaderTimeoutRetainsCompletedRequestWithoutClaimingResponseOrLocalCancellation() {
         ProxyFixture(blockHeaders = true).use { fixture ->
             val connection = RoutedHttpsConnection(url, fixture.client(), { true })
@@ -594,6 +644,7 @@ class RoutedHttpsConnectionTest {
                 assertNull(caught.get()?.cause)
                 val diagnostic = checkNotNull(connection.failureDiagnostic)
                 assertTrue(diagnostic.localCancellationRequested)
+                assertFalse(diagnostic.routeInactiveObserved)
                 assertEquals(RoutedHttpsCallPhase.CONNECT, diagnostic.phase)
                 assertTrue(diagnostic.proxyPresent); assertTrue(diagnostic.phaseAvailable)
                 connection.disconnect(); assertThrows(IOException::class.java) { connection.responseCode }

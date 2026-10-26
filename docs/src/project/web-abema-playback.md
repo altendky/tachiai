@@ -2,8 +2,9 @@
 
 This implements the next local diagnostic for
 [#366](https://github.com/altendky/tachiai/issues/366). Controlled owned media
-decodes through the new transport in ordinary Chrome. Actual ABEMA decoded-frame
-acceptance remains pending a separate fresh provider trial. The earlier
+decodes through the new transport in ordinary Chrome. The first fresh ABEMA trial
+stopped in the MPD's auxiliary-feature audit before decoder preparation; actual
+ABEMA decoded-frame acceptance remains unverified. The earlier
 [preparation and MPD observations](web-abema-feasibility.md) do not prove clear
 media or decoder/CDM acceptance.
 
@@ -62,6 +63,35 @@ still clears on retirement.
 This remains a bounded Linux development-browser observation. Linux is not an
 ABEMA-listed desktop environment; this command does not establish support on
 Linux, Windows/macOS, other browsers, other sources or a deployed product.
+
+### First provider trial: October 26, 2026
+
+The command above ran against signed revision
+`80007e371c37b7f02b8add2028aeb5bc439bc2cf` on Linux x86-64 with ordinary headed
+Chrome 156.0.8078.47, a fresh anonymous guest and the exact `abema-news` live
+source. Default host networking was used; exit country was not independently
+measured. The fresh provider page selected allowed GLOBAL division 1. The
+selected-region, guest, matching-profile, media-token and channel requests
+succeeded, and the unchanged selector's source, session and token bindings
+passed. This is the public modern catalogue subset described above, without
+device/account authorization or an entitlement conclusion.
+
+The actual browser manifest Fetch returned HTTP 200. Its raw XML audit refused
+with `boundary=AUXILIARY` and `publicationStage=IDLE`, before returning the MPD to
+Shaka. The manifest counter increments only after that audit succeeds, so its
+zero value does not mean no MPD was fetched. All initialization, media-segment,
+denied-DRM and decoded-frame counters were zero; no advancing playback or positive
+dimensions were observed. No license request or MediaKeySession was created.
+Browser, server, container and private-runtime cleanup was confirmed, with no
+grant persisted.
+
+The current closed report groups UTC timing, SegmentBase/index, steering/patch,
+XLink/XInclude and changed-Location refusals under the same auxiliary boundary.
+The trial did not retain the MPD or identify which individual feature triggered
+it. A smallest next diagnostic step is to distinguish these fixed audit reasons
+without retaining provider XML or URLs, then verify the indicated feature before
+considering any admission change. This result establishes neither a DRM blocker
+nor an extension requirement. No second provider trial or fallback followed.
 
 ## Transport and lifecycle boundary
 

@@ -157,6 +157,20 @@ repos:
         files: 'opaque-broker\.js$|abema-opaque-broker\.test\.cjs$|Abema(?:Replay|News)NativePlayback\.kt$'
         pass_filenames: false
 
+      - id: web-abema-backend-manifest-tests
+        name: Web ABEMA exact manifest safety tests
+        entry: uv run scripts/tests/web-abema-backend-manifest.test.py
+        language: system
+        files: '^apps/web/scripts/abema-backend-(bootstrap|source|manifest)\.py$|^scripts/tests/web-abema-backend-manifest\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-browser-manifest-tests
+        name: Web ABEMA browser manifest protocol tests
+        entry: node --test scripts/tests/web-abema-browser-manifest.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-browser-manifest\.mjs$|^scripts/tests/web-abema-browser-manifest\.test\.mjs$'
+        pass_filenames: false
+
       - id: twitch-session-tests
         name: Twitch full embed session tests
         entry: node --test scripts/tests/twitch-session.test.cjs

@@ -31,7 +31,8 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
       if (!value || !stages.has(value.stage)) return { stage: 'unavailable' };
       return { stage: value.stage, ...(Number.isSafeInteger(value.http) && value.http >= 100 && value.http <= 599
         ? { http: value.http } : {}),
-      ...(value.stage === 'token-poll' && reasons.has(value.reason) ? { reason: value.reason } : {}) };
+      ...((value.stage === 'token-poll' || value.stage === 'token-validation') && reasons.has(value.reason) &&
+        (value.reason !== 'token-type' || value.stage === 'token-poll') ? { reason: value.reason } : {}) };
     } catch { return { stage: 'unavailable' }; }
   };
   const deadline = setTimeout(cancel, 15 * 60_000);

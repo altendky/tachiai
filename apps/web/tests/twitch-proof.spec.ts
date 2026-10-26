@@ -48,23 +48,124 @@ test('session diagnostics retain only the failed closed phase and bounded HTTP s
   await disconnected.close();
 });
 
-test('diagnostic adoption intentionally refuses absent or zero server expiry and revokes the fresh grant', async () => {
-  for (const lifetime of [undefined, 0]) {
-    const token = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer',
-      ...(lifetime === undefined ? {} : { expires_in: lifetime }) }), new Response(null)]);
-    await token.session.begin(); token.advance(5000);
-    await expect(token.session.poll()).rejects.toThrow();
-    expect(token.session.diagnostic()).toEqual({ stage: 'token-poll', http: 200,
-      reason: lifetime === undefined ? 'expiry-missing' : 'expiry-zero' });
-    expect(await token.session.close()).toBe('revoked');
-
+test('zero issuance expiry and absent, zero or invalid validation expiry remain refused and revoked', async () => {
+  const token = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer',
+    expires_in: 0 }), new Response(null)]);
+  await token.session.begin(); token.advance(5000);
+  await expect(token.session.poll()).rejects.toThrow();
+  expect(token.session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason: 'expiry-zero' });
+  expect(await token.session.close()).toBe('revoked');
+  expect(token.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'revoke']);
+  for (const lifetime of [undefined, 0, null, '3600', -1, 0.5, 365 * 86400 + 1]) {
     const validated = setup([challenge(), grant(), response({ client_id: TWITCH_PROOF_CLIENT,
       scopes: [TWITCH_PROOF_SCOPE], user_id: '12345', ...(lifetime === undefined ? {} : { expires_in: lifetime }) }), new Response(null)]);
     await validated.session.begin(); validated.advance(5000);
     await expect(validated.session.poll()).rejects.toThrow();
-    expect(validated.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200 });
+    expect(validated.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200,
+      reason: lifetime === undefined ? 'expiry-missing' : lifetime === 0 ? 'expiry-zero' : 'expiry-invalid' });
     expect(await validated.session.close()).toBe('revoked');
+    expect(validated.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'revoke']);
   }
+});
+
+test('omitted issuance expiry needs immediate finite, exact-bound validation before authorization', async () => {
+  for (const finite of [1, 365 * 86400]) {
+    const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
+      validation({ expires_in: finite }), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000);
+    expect(await flow.session.poll()).toBe('authorized');
+    expect(flow.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200 });
+    expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate']);
+    expect(await flow.session.close()).toBe('revoked');
+  }
+  for (const invalid of [{ expires_in: 0 }, { expires_in: undefined }, { client_id: 'other-client' }, { scopes: [] }]) {
+    const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
+      validation(invalid), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000);
+    await expect(flow.session.poll()).rejects.toThrow();
+    expect(await flow.session.close()).toBe('revoked');
+    expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'revoke']);
+  }
+});
+
+test('a positive issuance expiry caps larger validation and rejects a delayed token response', async () => {
+  for (const delayToken of [false, true]) {
+    let afterRequest = () => {};
+    const flow = setup([challenge(), async () => {
+      afterRequest();
+      return response({ access_token: 'synthetic-access-grant', token_type: 'bearer', expires_in: 1 });
+    }, ...(delayToken ? [] : [validation()]), new Response(null)]);
+    afterRequest = () => { if (delayToken) flow.advance(1000); };
+    await flow.session.begin(); flow.advance(5000);
+    if (delayToken) {
+      await expect(flow.session.poll()).rejects.toThrow();
+      expect(flow.session.diagnostic()).toEqual({ stage: 'token-poll', http: 200, reason: 'deadline' });
+    } else {
+      expect(await flow.session.poll()).toBe('authorized');
+      flow.advance(1000);
+      await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+    }
+    expect(await flow.session.close()).toBe('revoked');
+    expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(
+      delayToken ? ['device', 'token', 'revoke'] : ['device', 'token', 'validate', 'revoke']);
+  }
+});
+
+test('validation expiry starts before the request, not after its delayed response', async () => {
+  for (const delayMs of [9000, 10000]) {
+    let afterRequest = () => {};
+    const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
+      async () => { afterRequest(); return validation({ expires_in: 10 }); }, new Response(null)]);
+    afterRequest = () => flow.advance(delayMs);
+    await flow.session.begin(); flow.advance(5000);
+    if (delayMs === 10000) {
+      await expect(flow.session.poll()).rejects.toThrow();
+      expect(flow.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200, reason: 'deadline' });
+    } else {
+      expect(await flow.session.poll()).toBe('authorized');
+      flow.advance(1000);
+      await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+    }
+    expect(await flow.session.close()).toBe('revoked');
+    expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'revoke']);
+  }
+});
+
+test('fractional monotonic clock readings retain a valid bounded request timeout', async () => {
+  let afterRequest = () => {};
+  const flow = setup([challenge(), async () => {
+    afterRequest();
+    return response({ access_token: 'synthetic-access-grant', token_type: 'bearer', expires_in: 1 });
+  }, validation(), new Response(null)]);
+  afterRequest = () => flow.advance(0.25);
+  await flow.session.begin(); flow.advance(5000);
+  expect(await flow.session.poll()).toBe('authorized');
+  expect(await flow.session.close()).toBe('revoked');
+  expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'revoke']);
+});
+
+test('revalidation never extends the earlier grant cap or permits late source access', async () => {
+  let afterRequest = () => {};
+  const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
+    validation({ expires_in: 10 }), async () => { afterRequest(); return validation(); }, new Response(null)]);
+  afterRequest = () => flow.advance(10000);
+  await flow.session.begin(); flow.advance(5000);
+  expect(await flow.session.poll()).toBe('authorized');
+  await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+  expect(flow.session.diagnostic()).toEqual({ stage: 'token-validation', http: 200, reason: 'deadline' });
+  expect(await flow.session.close()).toBe('revoked');
+  expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'validate', 'revoke']);
+});
+
+test('omitted issuance expiry never extends the memory-only session beyond fifteen minutes', async () => {
+  const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
+    validation({ expires_in: 365 * 86400 }), new Response(null)]);
+  await flow.session.begin(); flow.advance(5000);
+  expect(await flow.session.poll()).toBe('authorized');
+  flow.advance(15 * 60000);
+  await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+  expect(await flow.session.close()).toBe('revoked');
+  expect(flow.calls.map((call) => call.url.split('/').at(-1))).toEqual(['device', 'token', 'validate', 'revoke']);
 });
 
 test('closed token refusal reasons preserve strict type and expiry checks through cleanup', async () => {

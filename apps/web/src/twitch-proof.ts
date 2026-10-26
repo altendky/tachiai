@@ -55,9 +55,11 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
 export type PollResult = 'waiting' | 'pending' | 'slow-down' | 'authorized' | 'denied' | 'expired';
 export type TwitchDiagnosticStage = 'idle' | 'device-challenge' | 'token-poll' | 'token-validation' |
   'source-access' | 'player-attach' | 'player-load' | 'player-ready' | 'player-playback' | 'player-cleanup';
-export type TwitchPollRefusal = 'cancelled' | 'deadline' | 'token-type' |
+export type TwitchRefusalReason = 'cancelled' | 'deadline' | 'token-type' |
   'expiry-missing' | 'expiry-zero' | 'expiry-invalid';
-export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchPollRefusal }
+export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchRefusalReason }
+const expiryRefusal = (body: Record<string, unknown>): TwitchRefusalReason =>
+  !Object.hasOwn(body, 'expires_in') ? 'expiry-missing' : body.expires_in === 0 ? 'expiry-zero' : 'expiry-invalid';
 type Dependencies = { fetch?: typeof fetch; now?: () => number };
 
 export class TwitchProofSession {
@@ -77,7 +79,7 @@ export class TwitchProofSession {
   private cleanup?: Promise<'revoked' | 'unconfirmed' | 'no-grant-held'>;
   private phase: TwitchDiagnosticStage = 'idle';
   private http?: number;
-  private pollRefusal?: TwitchPollRefusal;
+  private refusalReason?: TwitchRefusalReason;
 
   constructor(dependencies: Dependencies = {}) {
     this.fetcher = dependencies.fetch ?? createClosedBrowserFetch(admittedTwitchApi);
@@ -87,17 +89,19 @@ export class TwitchProofSession {
 
   private active(): void {
     if (this.lifetime.signal.aborted || this.now() >= this.deadline) {
-      if (this.phase === 'token-poll') this.pollRefusal ??= this.lifetime.signal.aborted ? 'cancelled' : 'deadline';
+      if (this.phase === 'token-poll' || this.phase === 'token-validation') {
+        this.refusalReason ??= this.lifetime.signal.aborted ? 'cancelled' : 'deadline';
+      }
       throw refused();
     }
   }
 
   diagnostic(): TwitchDiagnostic {
     return { stage: this.phase, ...(this.http === undefined ? {} : { http: this.http }),
-      ...(this.pollRefusal === undefined ? {} : { reason: this.pollRefusal }) };
+      ...(this.refusalReason === undefined ? {} : { reason: this.refusalReason }) };
   }
 
-  private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; this.pollRefusal = undefined; }
+  private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; this.refusalReason = undefined; }
 
   private observed(response: Response): void {
     this.http = Number.isSafeInteger(response.status) && response.status >= 100 && response.status <= 599
@@ -110,7 +114,8 @@ export class TwitchProofSession {
     const response = await this.fetcher(`https://id.twitch.tv/oauth2/${path}`, {
       credentials: 'omit', redirect: 'error', cache: 'no-store',
       signal: cleanup ? AbortSignal.timeout(10_000) :
-        AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(Math.max(1, Math.min(10_000, this.deadline - this.now())))]),
+        AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(Math.max(1,
+          Math.floor(Math.min(10_000, this.deadline - this.now(), authorization ? this.grantDeadline - this.now() : Infinity))))]),
       method: values ? 'POST' : 'GET',
       headers: values ? { 'Content-Type': 'application/x-www-form-urlencoded' } :
         authorization ? { Authorization: `OAuth ${authorization}` } : {},
@@ -159,13 +164,17 @@ export class TwitchProofSession {
     this.nextPoll = this.now() + this.intervalMs;
     try {
       this.enter('token-poll');
+      const startedAt = this.now();
       const response = await this.request('token', { client_id: TWITCH_PROOF_CLIENT, scopes: TWITCH_PROOF_SCOPE,
         device_code: this.deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' });
       this.observed(response);
       const body = await boundedJson(response);
       // Capture only this newly returned access grant before any subsequent
       // validation can fail, so cleanup can revoke it. Never adopt refresh data.
-      if (response.status === 200 && tokenString(body.access_token)) this.grant = body.access_token;
+      if (response.status === 200 && tokenString(body.access_token)) {
+        this.grant = body.access_token;
+        this.grantDeadline = this.deadline;
+      }
       this.active();
       if (response.status === 400) {
         const code = body.error ?? body.message;
@@ -177,12 +186,17 @@ export class TwitchProofSession {
         }
       }
       if (response.status !== 200 || !this.grant) throw refused();
-      if (body.token_type !== 'bearer') { this.pollRefusal = 'token-type'; throw refused(); }
-      if (!integer(body.expires_in, 365 * 86400)) {
-        this.pollRefusal = !Object.hasOwn(body, 'expires_in') ? 'expiry-missing' :
-          body.expires_in === 0 ? 'expiry-zero' : 'expiry-invalid';
+      if (body.token_type !== 'bearer') { this.refusalReason = 'token-type'; throw refused(); }
+      if (Object.hasOwn(body, 'expires_in') && !integer(body.expires_in, 365 * 86400)) {
+        this.refusalReason = expiryRefusal(body);
         throw refused();
       }
+      if (integer(body.expires_in, 365 * 86400)) {
+        this.grantDeadline = Math.min(this.grantDeadline, startedAt + body.expires_in * 1000);
+      }
+      if (this.now() >= this.grantDeadline) { this.refusalReason = 'deadline'; throw refused(); }
+      // Omission is not an unknown-lifetime authorization: validation below
+      // must supply a finite expiry and exact binding before state changes.
       await this.validate();
       this.deviceCode = undefined;
       this.state = 'authorized';
@@ -194,16 +208,20 @@ export class TwitchProofSession {
   private async validate(): Promise<void> {
     if (!this.grant) throw refused();
     this.enter('token-validation');
+    const startedAt = this.now();
+    if (startedAt >= this.grantDeadline) { this.refusalReason = 'deadline'; throw refused(); }
     const response = await this.request('validate', undefined, this.grant);
     this.observed(response);
     const body = await boundedJson(response);
     if (response.status !== 200 || body.client_id !== TWITCH_PROOF_CLIENT ||
         !Array.isArray(body.scopes) || body.scopes.length !== 1 || body.scopes[0] !== TWITCH_PROOF_SCOPE ||
         typeof body.user_id !== 'string' || !/^[1-9][0-9]{0,31}$/.test(body.user_id) ||
-        this.user !== undefined && this.user !== body.user_id || !integer(body.expires_in, 365 * 86400)) throw refused();
+        this.user !== undefined && this.user !== body.user_id) throw refused();
+    if (!integer(body.expires_in, 365 * 86400)) { this.refusalReason = expiryRefusal(body); throw refused(); }
     this.active();
+    this.grantDeadline = Math.min(this.grantDeadline, this.deadline, startedAt + body.expires_in * 1000);
+    if (this.now() >= this.grantDeadline) { this.refusalReason = 'deadline'; throw refused(); }
     this.user ??= body.user_id;
-    this.grantDeadline = this.now() + body.expires_in * 1000;
   }
 
   // The signed URL never leaves the browser host. Request/response ownership is
@@ -226,7 +244,8 @@ export class TwitchProofSession {
       this.enter('source-access');
       const response = await this.fetcher('https://gql.twitch.tv/gql', {
         credentials: 'omit', redirect: 'error', cache: 'no-store', method: 'POST',
-        signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]),
+        signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(Math.max(1,
+          Math.floor(Math.min(10_000, this.deadline - this.now(), this.grantDeadline - this.now()))))]),
         // Deliberate parity with Android resolveTwitchPlayback's authenticated
         // blankTwitchClientHeader comparison. No client substitution/retry.
         headers: { 'Content-Type': 'application/json', Authorization: `OAuth ${this.grant}`, 'Client-ID': '' },

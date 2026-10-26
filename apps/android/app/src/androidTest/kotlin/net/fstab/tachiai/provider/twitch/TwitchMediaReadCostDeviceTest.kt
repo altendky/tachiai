@@ -31,6 +31,8 @@ import net.fstab.tachiai.platform.media.*
 import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
+import net.fstab.tachiai.platform.storage.AndroidPrivateSecretStore
+import net.fstab.tachiai.platform.storage.twitchCatalogInstanceBindingName
 import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.twitch.catalog.*
 import org.junit.Assume.assumeTrue
@@ -41,6 +43,33 @@ import org.junit.Test
 // the optional production collector only records numeric boundary timings.
 @UnstableApi
 class TwitchMediaReadCostDeviceTest {
+    private enum class ObservationPhase {
+        INITIAL_SETUP, SOURCE_SELECTED, HOST_READY, STARTUP_VALIDATION, STARTUP_ADMITTED,
+        RECEIPT_ACQUISITION, ROUTE_CREATION, PREPARATION_CREATION, COLLECTOR_ALLOCATION,
+        PLAYER_PREPARATION, SAMPLING, COMPLETE,
+    }
+    private enum class StartupOutcome { NOT_ATTEMPTED, IN_PROGRESS, READY, HELD_FOR_MUTATION, FAILED }
+    private enum class RecordMutation { UNCHANGED, EXPECTED_EXPIRY_TIGHTENING, UNCLASSIFIED_MUTATION }
+
+    // In-process comparison only. No credential, account, generation, deadline
+    // or encrypted filename is reported. This classifies a final transition,
+    // not the cause of an earlier startup/playback failure.
+    private fun samePairExpiryTightened(before: TwitchCatalogStoredGrant?, after: TwitchCatalogStoredGrant?): Boolean {
+        if (before == null || after == null || before.state != TwitchCatalogGrantState.READY ||
+            after.state != TwitchCatalogGrantState.READY) return false
+        val a = before.credentials ?: return false
+        val b = after.credentials ?: return false
+        val cap = before.localRetentionUntilMs ?: return false
+        val provider = after.providerExpiresAtMs ?: return false
+        val saved = before.savedAtMs ?: return false
+        val originalExpiry = before.expiresAtMs ?: return false
+        return before.generation == after.generation && before.revision == after.revision &&
+            before.userId == after.userId && a.accessToken == b.accessToken && a.refreshToken == b.refreshToken &&
+            after.savedAtMs == saved && after.localRetentionUntilMs == cap && provider > saved &&
+            (before.providerExpiresAtMs == null || provider < before.providerExpiresAtMs) &&
+            after.expiresAtMs == minOf(provider, cap) && checkNotNull(after.expiresAtMs) <= originalExpiry &&
+            a.expiresInMs == originalExpiry - saved && b.expiresInMs == checkNotNull(after.expiresAtMs) - saved
+    }
     companion object {
         private const val WORK_MS = 70_000L
         private const val CLEANUP_MS = 20_000L
@@ -146,12 +175,29 @@ class TwitchMediaReadCostDeviceTest {
         var identityPreserved = false
         var captured = false
         var initialRegistryCommitted = false
+        val phase = AtomicReference(ObservationPhase.INITIAL_SETUP)
+        var failurePhase: ObservationPhase? = null
+        val playerFailurePhase = AtomicReference<ObservationPhase?>()
+        var startupOutcome = StartupOutcome.NOT_ATTEMPTED
+        val startupProgress = AtomicReference<ProviderStartupPhase?>()
+        val startupFailure = AtomicReference<ProviderStartupFailure?>()
+        var finalStartupProgress: ProviderStartupPhase? = null
+        var finalStartupFailure: ProviderStartupFailure? = null
+        var receiptAvailable = false
+        var recordMutation = RecordMutation.UNCLASSIFIED_MUTATION
+        var grantStore: TwitchCatalogGrantStore? = null
+        var originalGrant: TwitchCatalogStoredGrant? = null
+        var grantRecord: String? = null
         try {
             before = encryptedRecords(context.noBackupFilesDir)
             val registrySnapshot = providerInstanceStore(context).readSnapshot { legacyProviderSettings(context) }
             initialRegistryCommitted = registrySnapshot.committed
             val instances = registrySnapshot.instances
             val owner = instances.single { it.service == PrototypeService.TWITCH }.also { instance = it }
+            grantStore = TwitchCatalogGrantStore(AndroidPrivateSecretStore.twitchCatalogInstance(context, owner.id),
+                owner.id, File(context.noBackupFilesDir, "twitch-catalog-${owner.id}.lock"))
+            originalGrant = runCatching { checkNotNull(grantStore).read() }.getOrNull()
+            grantRecord = "${twitchCatalogInstanceBindingName(owner.id)}.enc"
             val pool = captureProviderRoutePool(owner.id, PrototypeService.TWITCH,
                 { providerInstanceStore(context).read { legacyProviderSettings(context) } }, connectionProfileStore(context)::snapshot)
             check(pool.candidates.isNotEmpty() && pool.candidates.all {
@@ -166,6 +212,7 @@ class TwitchMediaReadCostDeviceTest {
             val feed = resolved.selection.a
             check(feed.instanceId == owner.id && feed.resource == source.entry.resource &&
                 feed.service == PrototypeService.TWITCH && feed.kind == PrototypePlaybackKind.REPLAY)
+            phase.set(ObservationPhase.SOURCE_SELECTED)
             // The blank ui-test-manifest host has no application startup/account
             // work. Explicit NEW_TASK launch also avoids clearing existing tasks.
             val host = instrumentation.startActivitySync(Intent()
@@ -179,16 +226,32 @@ class TwitchMediaReadCostDeviceTest {
                 host.findViewById<ViewGroup>(android.R.id.content).addView(view,
                     ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }
+            phase.set(ObservationPhase.HOST_READY)
             check(current())
             check(ProviderStartupScopeCleanup.awaitReady(owner.id, workDeadline, ::current) == ProviderStartupCleanupAdmission.READY)
-            startup = androidProviderRouteStartup(context, pool)
-            val accepted = prepareAndroidTwitchCatalogStartup(context, owner.id, checkNotNull(startup), ::current)
-                as? ProviderStartupResult.Ready<*> ?: error("Read-only startup refused")
+            startup = androidProviderRouteStartup(context, pool) { progress ->
+                startupProgress.set(progress.phase)
+                progress.failure?.let(startupFailure::set)
+            }
+            phase.set(ObservationPhase.STARTUP_VALIDATION)
+            startupOutcome = StartupOutcome.IN_PROGRESS
+            val startupResult = prepareAndroidTwitchCatalogStartup(context, owner.id, checkNotNull(startup), ::current)
+            startupOutcome = when (startupResult) {
+                is ProviderStartupResult.Ready -> StartupOutcome.READY
+                is ProviderStartupResult.HeldForMutation -> StartupOutcome.HELD_FOR_MUTATION
+                is ProviderStartupResult.Failed -> StartupOutcome.FAILED.also { startupFailure.set(startupResult.failure.reason) }
+            }
+            val accepted = startupResult as? ProviderStartupResult.Ready<*> ?: error("Read-only startup refused")
+            phase.set(ObservationPhase.STARTUP_ADMITTED)
+            phase.set(ObservationPhase.RECEIPT_ACQUISITION)
             val validation = (accepted.value as? TwitchCatalogStartupReceipt)?.startupValidation
                 ?: error("Startup receipt unavailable")
+            receiptAvailable = true
             check(current() && accepted.owner.profile == null && accepted.owner.choice.mode == SourceRouteMode.SYSTEM)
+            phase.set(ObservationPhase.ROUTE_CREATION)
             route = RouteSession.createRetained(accepted.owner.profile, routePreparation, ownBackend = { it })
             val ownedRoute = checkNotNull(route)
+            phase.set(ObservationPhase.PREPARATION_CREATION)
             preparation = CatalogTwitchPreparation(context, owner.id, accepted.owner.profile, accepted.owner.choice,
                 ::current, ownedRoute::open, expectedOwnerProof = accepted.owner.proof, startupValidation = validation)
             val ownedPreparation = checkNotNull(preparation)
@@ -197,9 +260,11 @@ class TwitchMediaReadCostDeviceTest {
                 override fun read(): ByteArray? = error("Legacy authorization unavailable")
                 override fun write(plaintext: ByteArray) = error("Legacy authorization unavailable")
             }, profile = TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL)
+            phase.set(ObservationPhase.COLLECTOR_ALLOCATION)
             costs = NativeMediaReadCosts(maximumDurationMs = 90_000, clockNanos = System::nanoTime)
             budget = NativePlaybackBudget((workDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0), ::current,
                 maximumDurationMs = WORK_MS)
+            phase.set(ObservationPhase.PLAYER_PREPARATION)
             instrumentation.runOnMainSync {
                 session = PrototypeTwitchSession(checkNotNull(activity.get()), true, feed.resource.identity,
                     ::current, { event ->
@@ -210,11 +275,13 @@ class TwitchMediaReadCostDeviceTest {
                                     qualityApplied = session?.member?.setQualityPreferences(source.quality) == true
                                     muted = session?.member?.setVolume(0f) == true
                                     check(qualityApplied && muted && session?.member?.setTimingPlaying(true) == true)
-                                } catch (_: Throwable) { failed.set(true) }
+                                } catch (_: Throwable) { playerFailurePhase.compareAndSet(null, phase.get()); failed.set(true) }
                                 ready.countDown()
                             }
                             PrototypeFeedEvent.VIDEO_FRAME -> frame.set(true)
-                            PrototypeFeedEvent.FAILED -> { failed.set(true); ready.countDown() }
+                            PrototypeFeedEvent.FAILED -> {
+                                playerFailurePhase.compareAndSet(null, phase.get()); failed.set(true); ready.countDown()
+                            }
                             else -> Unit
                         }
                     }, openConnection = ownedRoute::open, authorization = noLegacy,
@@ -225,6 +292,7 @@ class TwitchMediaReadCostDeviceTest {
                 session!!.prepare(checkNotNull(budget))
             }
             check(ready.await((workDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0), TimeUnit.MILLISECONDS))
+            phase.set(ObservationPhase.SAMPLING)
             val observeEnd = minOf(workDeadline, SystemClock.elapsedRealtime() + 40_000)
             while (current() && !failed.get() && SystemClock.elapsedRealtime() < observeEnd) {
                 instrumentation.runOnMainSync {
@@ -245,8 +313,11 @@ class TwitchMediaReadCostDeviceTest {
                 if (pause > 0) Thread.sleep(pause)
             }
             captured = samples > 0 && qualityApplied && muted && checkNotNull(costs).snapshot().media.inputReturnedBytes > 0
-        } catch (_: Throwable) { failed.set(true) }
+            phase.set(ObservationPhase.COMPLETE)
+        } catch (_: Throwable) { failurePhase = phase.get(); failed.set(true) }
         finally {
+            // Cleanup may publish cancellation; retain the observation's result.
+            finalStartupProgress = startupProgress.get(); finalStartupFailure = startupFailure.get()
             active.set(false); budget?.stop()
             val cleanupDeadline = minOf(operationDeadline, SystemClock.elapsedRealtime() + CLEANUP_MS)
             fun mainClose(action: () -> Unit): Boolean {
@@ -283,10 +354,20 @@ class TwitchMediaReadCostDeviceTest {
             if (!mainClose { if (registered) lifecycle.removeLifecycleCallback(callback) }) confirmed = false
             cleanupConfirmed = confirmed && !cleanupFailed.get()
             try {
+                val finalGrant = runCatching { grantStore?.read() }.getOrNull()
                 val after = encryptedRecords(context.noBackupFilesDir)
                 try { preserved = before?.let { original -> original.keys == after.keys && original.all { (name, digest) ->
                     after[name]?.let { MessageDigest.isEqual(digest, it) } == true
-                } } == true } finally { after.values.forEach { it.fill(0) } }
+                } } == true
+                    recordMutation = when {
+                        preserved -> RecordMutation.UNCHANGED
+                        before?.let { original -> original.keys == after.keys && original.filter { (name, digest) ->
+                            after[name]?.let { !MessageDigest.isEqual(digest, it) } == true
+                        }.keys == setOf(grantRecord) } == true && samePairExpiryTightened(originalGrant, finalGrant) ->
+                            RecordMutation.EXPECTED_EXPIRY_TIGHTENING
+                        else -> RecordMutation.UNCLASSIFIED_MUTATION
+                    }
+                } finally { after.values.forEach { it.fill(0) } }
                 val savedInstance = instance?.let { original -> providerInstanceStore(context).read {
                     legacyProviderSettings(context)
                 }.singleOrNull { it.id == original.id && it == original } }
@@ -296,12 +377,19 @@ class TwitchMediaReadCostDeviceTest {
                         .singleOrNull { it.choice == selected?.choice } == selected
                 } == true
             } catch (_: Throwable) { preserved = false; identityPreserved = false }
-            finally { before?.values?.forEach { it.fill(0) } }
+            finally { before?.values?.forEach { it.fill(0) }; originalGrant = null; grantStore = null }
             if (!cleanupConfirmed) synchronized(retained) {
                 retained.add(listOfNotNull(session, preparation, startup, route, routePreparation, activity.get(), view, callback))
             }
         }
         report.putBoolean("captured", captured)
+        report.putString("lastObservationPhase", phase.get().name)
+        report.putString("failurePhase", (failurePhase ?: playerFailurePhase.get())?.name ?: "NONE")
+        report.putString("startupOutcome", startupOutcome.name)
+        report.putString("startupProgress", finalStartupProgress?.name ?: "NONE")
+        report.putString("startupFailure", finalStartupFailure?.name ?: "NONE")
+        report.putBoolean("startupReceiptAvailable", receiptAvailable)
+        report.putString("recordMutation", recordMutation.name)
         report.putBoolean("initialRegistryCommitted", initialRegistryCommitted)
         report.putBoolean("playbackFailed", failed.get())
         report.putBoolean("frame", frame.get())

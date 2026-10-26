@@ -330,6 +330,56 @@ the actual `TwitchMediaReadCostDeviceTest` for current measurements; its
 `initialRegistryCommitted` field describes only the initial setup sample's
 provenance, not a later transaction or cached authority.
 
+The fixture also reports closed `lastObservationPhase`/`failurePhase`,
+`startupOutcome`, `startupProgress`, `startupFailure` and
+`startupReceiptAvailable` fields. These distinguish setup, startup validation,
+returned admission, receipt acquisition, route/preparation creation and collector
+allocation without retaining exception messages, provider URLs or account data.
+The startup wrapper performs enrollment and receipt export internally; a
+`REVOKED` result does not distinguish those internal refusal points. Cleanup's
+cancellation progress does not replace the captured startup result.
+
+Read-only startup means no refresh/device-authorization exchange; it can still
+persist a tighter provider expiry for a locally retained grant or mark certain
+invalid/expired grants for reconnection. The fixture keeps its strict
+`recordsUnchanged` pass condition. Its additional `recordMutation` reports
+`EXPECTED_EXPIRY_TIGHTENING` only when in-process before/after comparisons prove
+the sole changed ciphertext is the selected catalog record, with the same
+account, token pair, generation, revision, saved time and local-retention cap,
+and only a newly finite or reduced provider bound with non-increasing effective
+expiry. It otherwise reports `UNCHANGED` or `UNCLASSIFIED_MUTATION`. Those
+protected comparisons add one grant read before startup and one after cleanup;
+no compared values or filenames leave the app. Classification describes the
+final transition, not every intermediate write or the cause of startup failure,
+and it never changes the strict preservation assertion.
+
+On October 26, 2026, a bounded observation on persistent `tachiai-dev`, Android
+16/API 36 x86-64 with WebView 133.0.6943.137, stopped before player creation.
+The first older-fixture attempt took 2.329 seconds, captured no frame or samples,
+confirmed cleanup and configured-source identity, but changed one Twitch-prefixed
+ciphertext. Its unclassified report cannot establish whether expiry tightening
+caused that change or why startup failed. No original grant snapshot was captured
+by that version, so the transition cannot be reconstructed from its digest.
+
+After adding the closed fields, one retry took 2.250 seconds and reported
+`failurePhase=STARTUP_VALIDATION`, `startupOutcome=HELD_FOR_MUTATION`,
+`startupProgress=HELD_FOR_MUTATION`, `startupFailure=NONE` and no startup receipt.
+It retained `recordMutation=UNCHANGED`, confirmed cleanup and configured-source
+identity, and all eight encrypted-record digests matched its immediate baseline.
+It captured no frame, samples, media costs or throughput estimate. The test
+correctly failed its playback acceptance check; this is a startup-maintenance
+finding, not evidence of network starvation or a need for interactive sign-in.
+Read-only startup cannot perform the required authorization mutation; the normal
+application's refresh path requires separate observation.
+
+Both APKs used the shared development signer. The installed production code was
+unchanged from the transport-diagnostic candidate; only the retry's test APK
+added the stage fields. The final test APK SHA-256 was
+`3e06edad369c7e166e97af2d01363a4d33a70c44f88438deec12a88133ad3d17`.
+Audio was muted, the existing configured replay and System network were retained,
+and exit region was not measured. No provider page, credential, private URL,
+protected-media capture, physical device or acoustic output was observed.
+
 On 2026-10-18, the actual configured muted Twitch replay/System-network fixture
 passed in 47.293 seconds on persistent `tachiai-dev`, Android 16/API 36 x86-64,
 installed WebView 133.0.6943.137, with its existing catalog account. The initial

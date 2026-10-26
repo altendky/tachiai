@@ -4,12 +4,48 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { validateInput, fetchManifest, bodyLimit } from '../../apps/web/scripts/abema-browser-manifest.mjs';
+import { validateInput, fetchManifest, bodyLimit, validateOwnedRuntimePath } from '../../apps/web/scripts/abema-browser-manifest.mjs';
+import { captureSnapshot } from '../../apps/web/scripts/abema-browser-snapshot.mjs';
 
 const privateFixture = 'PRIVATE_SYNTHETIC_BROWSER_MANIFEST';
 const nonce = 'a'.repeat(32);
 const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=' + privateFixture + '&enc=clear&dt=pc_chrome&ut=1';
 const mpd = '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period/></MPD>';
+
+test('owned launcher preflights the pinned Unix socket byte budget before launch', () => {
+  const suffix = '/pw-00000000/browser/0000000000000000.sock';
+  validateOwnedRuntimePath('/' + 'a'.repeat(103 - suffix.length - 1));
+  assert.throws(() => validateOwnedRuntimePath('/' + 'a'.repeat(103 - suffix.length)));
+  assert.throws(() => validateOwnedRuntimePath('/' + 'é'.repeat(35)));
+  assert.throws(() => validateOwnedRuntimePath('relative'));
+});
+
+test('snapshot keeps real navigator values, blocks all network and returns cleanup only after both browser owners close', async () => {
+  const navigator = { userAgent: 'actual desktop identity', platform: 'Linux x86_64', maxTouchPoints: 0,
+    userAgentData: { mobile: false, platform: 'Linux' } };
+  for (const failedCleanup of [false, true]) {
+    const closed = [];
+    let blocked = false;
+    const output = await captureSnapshot('/owned/runtime', async (...args) => {
+      assert.deepEqual(args, ['/owned/runtime']); // No headless or identity override.
+      return {
+        browser: { version: () => '156.0.0.0', close: async () => { closed.push('browser'); },
+          newContext: async options => {
+            assert.deepEqual(options, { serviceWorkers: 'block' });
+            return { close: async () => { closed.push('context'); if (failedCleanup) throw new Error(privateFixture); },
+              route: async (pattern, handler) => {
+                assert.equal(pattern, '**/*'); await handler({ abort: async () => { blocked = true; } });
+              }, newPage: async () => ({ evaluate: async fn =>
+                vm.runInNewContext('(' + fn.toString() + ')()', { window: { navigator } }) }) };
+          } },
+        browserServer: { close: async () => { closed.push('server'); } },
+      };
+    });
+    assert.equal(blocked, true); assert.deepEqual(closed, ['context', 'browser', 'server']);
+    assert.deepEqual(JSON.parse(JSON.stringify(output)), { version: '156.0.0.0', navigator, cleanupConfirmed: !failedCleanup });
+    assert.equal(JSON.stringify(output).includes(privateFixture), false);
+  }
+});
 
 function fixture({ status = 200, mime = 'application/dash+xml', length = null, bytes = new TextEncoder().encode(mpd), refused = false } = {}) {
   const observed = { reads: 0, canceled: false, options: null };

@@ -93,7 +93,15 @@ async function readInput() {
   return validateInput(JSON.parse(Buffer.concat(chunks).toString('utf8')));
 }
 
+export function validateOwnedRuntimePath(runtime) {
+  // Pinned Playwright 1.64.1 shortens an over-budget socket name to 16 hex
+  // characters under TMPDIR/pw-8hex/browser. Reject before any launch marker.
+  if (typeof runtime !== 'string' || !isAbsolute(runtime) || resolve(runtime) !== runtime ||
+    Buffer.byteLength(runtime + '/pw-00000000/browser/0000000000000000.sock') > 103) throw new Error();
+}
+
 export async function launchOwnedBrowser(runtime, { headless = false } = {}) {
+  validateOwnedRuntimePath(runtime);
   if (process.platform !== 'linux') throw new Error();
   process.env.TMPDIR = runtime;
   await writeFile(runtime + '/launch-started.json', '{"started":true}', { flag: 'wx', mode: 0o600 });

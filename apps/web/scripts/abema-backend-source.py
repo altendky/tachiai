@@ -20,6 +20,10 @@ _spec = importlib.util.spec_from_file_location("web_abema_bootstrap", Path(__fil
 bootstrap = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = bootstrap  # The native transport's spawn target is importable.
 _spec.loader.exec_module(bootstrap)
+_owned_spec = importlib.util.spec_from_file_location("web_abema_owned_browser", Path(__file__).with_name("abema-owned-browser.py"))
+owned_browser = importlib.util.module_from_spec(_owned_spec)
+sys.modules[_owned_spec.name] = owned_browser
+_owned_spec.loader.exec_module(owned_browser)
 Refused = bootstrap.Refused
 CHANNEL = "abema-news"
 CHANNEL_LIMIT = 512 * 1024
@@ -147,14 +151,57 @@ def validate_binding(raw, nonce, media_token, channel):
 
 
 class SourceAttempt(bootstrap.Attempt):
+    def __init__(self, output, transport=None, runner=bootstrap.run_command):
+        super().__init__(output, transport, runner)
+        self.retained_snapshot_runtime = None
+        self.snapshot_used = False
+
     def bound_source(self, binding, nonce, media_token, channel):
         """Private extension point; the source-only proof performs no more I/O."""
 
     def browser_snapshot(self):
-        result = self.runner([shutil.which("node"), str(Path(__file__).with_name("abema-browser-snapshot.mjs")), "--snapshot"], 20, 4096, display=True)
-        if result.code != 0 or result.stderr:
+        if not self.cleanup_confirmed or self.retained_snapshot_runtime is not None:
+            raise bootstrap.CleanupUnconfirmed()
+        if self.snapshot_used:
             raise Refused()
-        return validate_browser(result.output)
+        self.snapshot_used = True
+        # Keep the caller's chosen temp root, with a short allocation name for
+        # Playwright's bounded Unix socket path; never fall back to another root.
+        runtime = Path(tempfile.mkdtemp(prefix="s-"))
+        uncertain = False
+        try:
+            owned_browser.validate_runtime_path(runtime)
+            remaining = self.deadline - bootstrap.time.monotonic()
+            if remaining <= 0:
+                raise Refused()
+            result = self.runner([shutil.which("node"), str(Path(__file__).with_name("abema-browser-snapshot.mjs")),
+                                  "--snapshot", "--owned-runtime", str(runtime)], min(20, remaining), 4096, display=True)
+            try:
+                packet = bootstrap.strict_json(result.output, 4096)
+            except BaseException:
+                uncertain = True
+                raise bootstrap.CleanupUnconfirmed() from None
+            if not isinstance(packet, dict) or packet.get("cleanupConfirmed") is not True:
+                uncertain = True
+                raise bootstrap.CleanupUnconfirmed()
+            if result.code != 0 or result.stderr or set(packet) != {"version", "navigator", "cleanupConfirmed"}:
+                raise Refused()
+            return validate_browser(json.dumps({"version": packet["version"], "navigator": packet["navigator"]}).encode())
+        finally:
+            with bootstrap.completing_cleanup():
+                try:
+                    owned_browser.cleanup_owned_browser(runtime)
+                except BaseException:
+                    uncertain = True
+                if not uncertain:
+                    try:
+                        shutil.rmtree(runtime)
+                    except BaseException:
+                        uncertain = True
+                if uncertain:
+                    self.cleanup_confirmed = False
+                    self.retained_snapshot_runtime = runtime
+                    raise bootstrap.CleanupUnconfirmed() from None
 
     def source(self, media_token, navigator):
         self.phase = "CHANNELS"
@@ -211,8 +258,16 @@ class SourceAttempt(bootstrap.Attempt):
             self.phase = "BROWSER"
             self.navigator = self.browser_snapshot()
             self.report("BROWSER_VERIFIED", browser="Chrome", major=156, os="Linux")
-        except BaseException:
-            self.report("REFUSED")
+        except BaseException as error:
+            if isinstance(error, bootstrap.CleanupUnconfirmed):
+                self.cleanup_confirmed = False
+                self.report("CLEANUP_UNCONFIRMED")
+            elif isinstance(error, bootstrap.Terminated):
+                self.report("TERMINATED")
+            else:
+                self.report("REFUSED")
+            self.phase = "CLEANUP"
+            self.report("FINISHED", cleanupConfirmed=self.cleanup_confirmed, grantsPersisted=False)
             return 1
         return super().run()
 

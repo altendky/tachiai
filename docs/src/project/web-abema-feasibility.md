@@ -254,16 +254,39 @@ ownership before any forced group cleanup and removes that runtime only after
 termination is confirmed. Interrupted/unverified launches retain it and fail
 closed. No private URI, token or debugging endpoint enters those records.
 
+The canonical source proof's initial desktop-browser snapshot now uses this same
+owned Chrome launcher and shared parent-side process verification, before any
+guest/account or provider work. It keeps the actual desktop navigator values,
+blocks all page requests and service workers, and closes both connected browser
+and browser server before returning a closed cleanup receipt. The Python parent
+independently verifies teardown and removes the fresh runtime. Missing/false or
+unparsable completed receipts and unverified interrupted launches remain sticky
+`CLEANUP_UNCONFIRMED`, retain that runtime for review and prevent provider setup;
+they do not become ordinary `REFUSED` results or later confirmed cleanup.
+An interrupted/timed-out launcher whose ownership and teardown can be verified
+keeps its original termination/refusal classification.
+
+Snapshot runtimes use a short allocation prefix under the caller's selected
+temporary root. Both launcher sides reject paths that cannot fit the pinned
+Playwright 1.64.1 Unix socket's 103-byte budget before launching Chrome. A long
+caller root is refused; there is no alternate-root, path-alias, profile, HOME,
+environment or browser-security workaround. The shared cleanup module loads
+after the canonical bootstrap so source exceptions and spawned native workers
+keep their original module identity.
+
 ```sh
 mise exec -- uv run apps/web/scripts/abema-backend-manifest.py --run-browser-manifest
 TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- uv run scripts/tests/web-abema-backend-manifest.test.py
+TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- uv run scripts/tests/web-abema-browser-snapshot.test.py
 TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- node --test scripts/tests/web-abema-browser-manifest.test.mjs
 ```
 
 The first command is the separately opted-in provider trial. The latter commands
 use synthetic data/local servers only: actual CORS rejection/readability,
 credential omission, redirect refusal and detached-browser cancellation with an
-unrelated process left untouched. Repository hooks run browser-free protocol
+unrelated process left untouched. The snapshot checks additionally exercise the
+actual sanitized command environment, unchanged desktop classification, normal
+teardown, interruption and timeout without provider operations. Repository hooks run browser-free protocol
 tests; the web CI job also runs these local Chrome regressions after installing
 its browser dependencies. Neither CI path invokes a provider command.
 

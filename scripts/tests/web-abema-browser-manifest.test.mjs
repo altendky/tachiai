@@ -10,6 +10,8 @@ import { captureSnapshot } from '../../apps/web/scripts/abema-browser-snapshot.m
 const privateFixture = 'PRIVATE_SYNTHETIC_BROWSER_MANIFEST';
 const nonce = 'a'.repeat(32);
 const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=' + privateFixture + '&enc=clear&dt=pc_chrome&ut=1';
+const advertisedUri = uri.split('?')[0];
+const privateInput = changes => ({ uri, nonce, mediaToken: privateFixture, advertisedUris: [advertisedUri], ...changes });
 const mpd = '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period/></MPD>';
 
 test('owned launcher preflights the pinned Unix socket byte budget before launch', () => {
@@ -75,18 +77,52 @@ function fixture({ status = 200, mime = 'application/dash+xml', length = null, b
   return { page, observed };
 }
 
-test('private CLI input is an exact closed source URI and nonce, without URL argument support', () => {
-  assert.deepEqual(validateInput({ uri, nonce }), { uri, nonce });
-  for (const input of [{ uri, nonce, token: privateFixture }, { uri, nonce: 'stale' },
-    { uri: uri.replace('https:', 'http:'), nonce }, { uri: uri.replace('linear-abematv.akamaized.net', 'private.invalid'), nonce },
-    { uri: uri.replace('abema-news/', 'another/'), nonce }, { uri: uri + '&t=stale', nonce },
-    { uri: uri + '#', nonce }, { uri: uri.replace('enc=clear', 'enc=wv'), nonce }])
+test('private CLI input binds the complete advertisement and fresh token without URL argument support', () => {
+  assert.deepEqual(validateInput(privateInput()), privateInput());
+  for (const input of [{ uri, nonce }, privateInput({ token: privateFixture }), privateInput({ nonce: 'stale' }),
+    privateInput({ mediaToken: 'stale' }), privateInput({ advertisedUris: [] }), privateInput({ advertisedUris: [advertisedUri.repeat(100)] }),
+    privateInput({ uri: uri.replace('https:', 'http:') }), privateInput({ uri: uri.replace('linear-abematv.akamaized.net', 'private.invalid') }),
+    privateInput({ uri: uri.replace('abema-news/', 'another/') }), privateInput({ uri: uri + '&t=stale' }),
+    privateInput({ uri: uri + '#' }), privateInput({ uri: uri.replace('enc=clear', 'enc=wv') })])
     assert.throws(() => validateInput(input));
+});
+
+test('only the exact fresh advertised additional pairs pass alongside unchanged session predicates', () => {
+  const advertised = advertisedUri + '?context=' + privateFixture + '&metadata=a%20b%2Fc';
+  const bound = advertisedUri + '?context=' + privateFixture + '&metadata=a+b%2Fc&' + uri.split('?')[1];
+  const input = privateInput({ uri: bound, advertisedUris: [advertised] });
+  assert.deepEqual(validateInput(input), input);
+  const alternate = advertisedUri.replace('manifest.mpd', 'alternate.mpd') + '?context=' + privateFixture;
+  const alternateInput = privateInput({ uri: alternate + '&' + uri.split('?')[1], advertisedUris: [advertisedUri, alternate] });
+  assert.deepEqual(validateInput(alternateInput), alternateInput);
+  for (const changed of [bound.replace('context=' + privateFixture, 'context=mutated'),
+    bound.replace('context=' + privateFixture + '&', ''), bound + '&new=unadvertised',
+    bound.replace('context=', '%63ontext='), bound + '&context=' + privateFixture,
+    bound.replace('metadata=a+b%2Fc', 'metadata=%FF'), bound.replace('&t=' + privateFixture, '&t=stale'),
+    bound.replace('enc=clear', 'enc=wv'), bound.replace('dt=pc_chrome', 'dt=pc_unknown'),
+    bound.replace('ut=1', 'ut=2'), bound + '&sw=1'])
+    assert.throws(() => validateInput({ ...input, uri: changed }));
+});
+
+test('advertised ambiguity, reserved collisions, malformed query and envelope floods refuse', () => {
+  for (const query of ['context=a&context=a', '%63ontext=a', 'context=%', 'context=%FF', 'context=', '=value',
+    '&context=a', 'context=a&', Array.from({ length: 65 }, (_, i) => 'field' + i + '=x').join('&')]) {
+    const advertised = advertisedUri + '?' + query;
+    assert.throws(() => validateInput(privateInput({ advertisedUris: [advertised], uri: advertised + '&' + uri.split('?')[1] })));
+  }
+  for (const name of ['t', 'enc', 'dt', 'ut', 'sw'])
+    assert.throws(() => validateInput(privateInput({ advertisedUris: [advertisedUri + '?' + name + '=collision'] })));
+  for (const candidates of [[advertisedUri, advertisedUri], [advertisedUri, advertisedUri + '?context=a'],
+    [advertisedUri, advertisedUri, advertisedUri], [advertisedUri.replace('manifest', 'unadvertised')]])
+    assert.throws(() => validateInput(privateInput({ advertisedUris: candidates })));
 });
 
 test('fetch uses normal CORS, omit credentials, error redirects and no-store with bounded private output', async () => {
   const { page, observed } = fixture();
-  const value = await fetchManifest(page, { uri, nonce });
+  const value = await fetchManifest({ evaluate: (fn, input) => {
+    assert.equal('advertisedUris' in input, false); assert.equal('mediaToken' in input, false);
+    return page.evaluate(fn, input);
+  } }, privateInput());
   assert.equal(value.browserReadable, true);
   assert.equal(value.corsPermission, 'CORS_READABLE');
   assert.equal(value.accepted, true);

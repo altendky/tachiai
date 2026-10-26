@@ -50,6 +50,10 @@ product integration: sustained decoding, supported ABEMA operation, login
 persistence, timing adjustment, and the durability and policy acceptability of
 the composition across devices and player transitions remain unverified.
 
+The initial [web playback harness](web-client.md) implements controlled HLS/DASH
+playback and shared Rust/Wasm timing integration. The complete web client and its
+provider/account/route integration remain separate work.
+
 Android phone/tablet is the implemented baseline. The same application now has
 an Android TV/Google TV presentation with remote controls and bounded TV-emulator
 local-media acceptance, recorded in the [TV implementation review](android-tv-interface-review.md).

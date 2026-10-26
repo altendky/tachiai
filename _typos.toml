@@ -2,6 +2,10 @@
 # Exact public provider identifiers, not prose or credentials.
 extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b', '\b9FYQvU4hBaZZy1\b']
 
+[default.extend-words]
+# HTMLMediaElement event name.
+seeked = "seeked"
+
 [files]
 # Upstream notices, copyright names and patch context must remain verbatim.
 extend-exclude = ['apps/android/routebridge/licenses/**', 'apps/android/openconnect-fixture/notices/**', 'apps/android/openconnect-fixture/COPYING.LGPL', 'apps/android/openconnect-fixture/patches/**']

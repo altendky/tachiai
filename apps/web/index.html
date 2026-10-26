@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tachiai playback harness</title>
+  </head>
+  <body>
+    <main>
+      <h1>Tachiai playback harness</h1>
+      <p>Local controlled media for browser integration checks.</p>
+      <label>Fixture
+        <select id="source">
+          <option value="a/manifest.mpd">A · DASH</option>
+          <option value="a/master.m3u8">A · HLS</option>
+          <option value="b/manifest.mpd">B · DASH</option>
+          <option value="b/master.m3u8">B · HLS</option>
+        </select>
+      </label>
+      <button id="load">Load fixture</button>
+      <div id="surface"></div>
+      <div class="controls">
+        <button id="play">Play</button>
+        <button id="pause">Pause</button>
+        <button id="backward">−5 seconds</button>
+        <button id="forward">+5 seconds</button>
+        <button id="stop">Stop</button>
+        <label>Volume <input id="volume" type="range" min="0" max="1" step="0.01" value="1"></label>
+        <label><input id="muted" type="checkbox" checked>Muted</label>
+        <label>Quality <select id="quality"><option value="">Auto</option></select></label>
+      </div>
+      <p id="result" role="status">Loading timing core…</p>
+      <pre id="observation" aria-label="Playback observations"></pre>
+      <p><a href="licenses/shaka-player/LICENSE">Shaka Player license</a></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

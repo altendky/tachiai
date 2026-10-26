@@ -147,6 +147,9 @@ def validate_binding(raw, nonce, media_token, channel):
 
 
 class SourceAttempt(bootstrap.Attempt):
+    def bound_source(self, binding, nonce, media_token, channel):
+        """Private extension point; the source-only proof performs no more I/O."""
+
     def browser_snapshot(self):
         result = self.runner([shutil.which("node"), str(Path(__file__).with_name("abema-browser-snapshot.mjs")), "--snapshot"], 20, 4096, display=True)
         if result.code != 0 or result.stderr:
@@ -193,6 +196,7 @@ class SourceAttempt(bootstrap.Attempt):
             self.report("SOURCE_BINDING_ACCEPTED", sourceMatched=True, sessionMatched=True, tokenMatched=True,
                         originClassification=classification, manifestRequests=False, mediaRequests=False,
                         licenseRequests=False, mediaKeySessions=False, grantsPersisted=False)
+            self.bound_source(result.output, nonce, media_token, channel)
         finally:
             with bootstrap.completing_cleanup():
                 try:

@@ -20,13 +20,30 @@ application, Kotlin provider/player/storage code and Rust timing core.
 
 ## Other implementations
 
-No iOS, tvOS or web application implementation differences are established by
-this initial ledger. Library choices, feasibility gaps and proposed adapters
-remain in the [platform research](platforms.md) until implemented. Add factual
-mechanism differences here as implementations arrive; do not turn research
+No iOS or tvOS application implementation differences are established here.
+Library choices, feasibility gaps and proposed adapters remain in the
+[platform research](platforms.md) until implemented. Do not turn research
 assumptions into implemented behavior or approved UX exceptions.
 
-### Controlled browser fixture
+### Browser diagnostic infrastructure
+
+The [web harness and controlled pair](web-client.md) are implemented diagnostic
+infrastructure, rather than a complete web product. Each browser feed owns an
+HTML video element and Shaka instance; Android owns a Media3 player. Browser
+timing calls the generated Rust/Wasm facade, while Android uses the generated
+native bindings. Both retain the same Rust seek rules, with media observation,
+dispatch and settlement owned by their platform hosts.
+
+These are factual playback mechanisms. Controlled-media tests establish neither
+provider playback nor equivalent product coverage. The separate Twitch diagnostic
+and ABEMA preparation/manifest experiments remain bounded investigations; their
+account, route, DRM and lifecycle findings do not approve a web UX exception.
+
+<https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
+
+<https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/pair.ts>
+
+### Controlled browser fixture formats
 
 The provider-free browser fixture now reports bounded audio/video format
 observations in its existing Playback status. Android uses Media3 input-format

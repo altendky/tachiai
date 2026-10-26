@@ -160,6 +160,147 @@ networking was used; exit region and provider-specific routing were not measured
 This establishes bounded anonymous source preparation without an extension,
 not playback acceptance, browser-direct bootstrap or a selected deployment design.
 
+## Manifest-only diagnostic gate
+
+The separate development-only manifest proof preserves the source-only command's
+stop boundary. Its private post-binding continuation can make one additional
+cookie-free, authorization-header-free GET of the exact freshly selected MPD.
+Before dispatch, the native owner repeats channel, attempt nonce, fresh-token,
+advertised-playlist, query and approved-origin validation. It accepts no supplied
+URL, redirect, arbitrary fetch, fallback or reusable session. The request has a
+10-second worker deadline and a 512 KiB response bound; non-200 bodies are never
+consumed. Status and MIME classification are closed diagnostics.
+
+A 200 response with an admitted XML MIME type is parsed locally using Python's
+standard ElementTree parser with UTF-8/document/tree limits, rejecting DTD/entity
+declarations and XInclude. No external resource loader or inclusion expansion is
+used. The only content evidence is namespaced MPD acceptance and structural
+`cencPresent`/`psshPresent` booleans. IDs, attribute values, representation URLs and
+PSSH text are not inspected or decoded. MPD bytes remain in bounded private IPC
+and memory, then are discarded. No initialization data, segments, CDM, license
+adapter or response filter is requested or invoked.
+
+After pre-execution review, one fresh-chain manifest-only trial on October 26,
+2026 at approximately 04:36 UTC used Linux x86-64 and the default host connection.
+Headed Chrome 156.0.8078.47 supplied source-selection identity only. The MPD GET
+used native Python urllib HTTPS, its default User-Agent, and no Origin or Referer
+header; it was not a browser-origin request or CORS observation. Guest, matching profile,
+media-token and exact News catalogue requests returned 200; the unchanged source
+helper's channel, attempt nonce and fresh-token binding checks passed. The single
+exact MPD GET then returned 403 with `sourceBound=true`,
+`mime=NOT_CHECKED` and `manifestAccepted=false`. Its refusal body was not read,
+so no cenc/pssh presence observation was made. The status alone does not establish
+whether region, entitlement or another provider request policy caused refusal;
+exit region and provider-specific routing were not measured.
+
+The attempt stopped without fallback, retry, initialization/segment requests,
+CDM or licensing operations. Owned browser/container/worker/public-runtime cleanup
+was confirmed and no grants, private URI or MPD body were persisted. This is
+evidence of CDN refusal for that request context, not regional diagnosis or
+license/playback acceptance. The implementation's offline binding, MIME/size,
+redirect-body, XML entity, privacy and worker teardown checks passed.
+
+```sh
+mise exec -- uv run scripts/tests/web-abema-backend-manifest.test.py
+mise exec -- uv run apps/web/scripts/abema-backend-manifest.py --run-manifest
+```
+
+Only the second command contacts providers, and only with the exact opt-in flag.
+It requires the source proof's same preinstalled image, dependencies and fresh
+headed Chrome environment. Keep it outside routine CI. No additional provider
+JavaScript is packaged by this gate.
+
+### Separate browser-origin MPD gate
+
+The explicit `--run-browser-manifest` command repeats the fresh chain and source
+binding, then performs its sole MPD GET through actual headed Chrome on an owned
+dynamic loopback origin. It uses a fresh profile with service workers blocked and
+normal fetch CORS, credentials omitted, redirects refused, cache disabled and a
+10-second/512 KiB bound. No request interception, fabricated preflight, native
+response/header bypass, provider page or automatic native fallback is installed.
+Chrome supplies its real User-Agent, Origin and Referer behavior.
+
+Python revalidates the full binding before passing only the private URI and
+attempt nonce through bounded stdin. The browser result and optional MPD bytes
+return through bounded private stdout. A readable CORS response can report
+`browserReadable=true`, `corsPermission=CORS_READABLE`, status and admitted MIME.
+A rejected fetch reports `UNESTABLISHED` without inferring a hidden HTTP status
+or distinguishing CORS from network/TLS/redirect failures. Non-200 bodies remain
+unread; admitted XML uses the same structural-only parser.
+
+After separate pre-execution review, one fresh browser-origin trial on October
+26, 2026 at approximately 05:04 UTC used headed Chrome 156.0.8078.47 on Linux
+x86-64 with the default host connection and a fresh owned loopback page. Guest,
+matching profile, media-token and exact News catalogue requests returned 200;
+fresh source, attempt nonce and token binding passed. The sole browser MPD GET
+returned a readable 403: `sourceBound=true`, `browserReadable=true`,
+`corsPermission=CORS_READABLE`, `mime=NOT_CHECKED`, `manifestAccepted=false`.
+Normal Chrome CORS permitted reading this particular response from that origin;
+HTTP access was refused. Its body was not consumed, so cenc/pssh presence remains
+unobserved. Region, entitlement and other provider request policy remain possible
+unresolved causes; exit region/provider routing were not measured. This result
+does not extend the CORS finding to other endpoints or origins.
+
+No retry, fallback, initialization/segment, CDM or license operation followed.
+Browser/server/container/worker/runtime cleanup was confirmed, with no grants,
+private URI or MPD persisted. The native and browser observations independently
+establish refusal in their tested request contexts, without identifying its
+cause or demonstrating license/playback acceptance.
+
+The Node owner closes its loopback server/browser. Because Playwright detaches
+Chrome, public process ownership records additionally bind its documented PID,
+start time, process group and profile path to the fresh runtime. Python verifies
+ownership before any forced group cleanup and removes that runtime only after
+termination is confirmed. Interrupted/unverified launches retain it and fail
+closed. No private URI, token or debugging endpoint enters those records.
+
+```sh
+mise exec -- uv run apps/web/scripts/abema-backend-manifest.py --run-browser-manifest
+TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- uv run scripts/tests/web-abema-backend-manifest.test.py
+TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- node --test scripts/tests/web-abema-browser-manifest.test.mjs
+```
+
+The first command is the separately opted-in provider trial. The latter commands
+use synthetic data/local servers only: actual CORS rejection/readability,
+credential omission, redirect refusal and detached-browser cancellation with an
+unrelated process left untouched. Repository hooks run browser-free protocol
+tests; the web CI job also runs these local Chrome regressions after installing
+its browser dependencies. Neither CI path invokes a provider command.
+
+## Public runtime interface and regional context
+
+An anonymous public entry-page review located the opaque adapter missing from
+the initial four bundles. The page-identified
+[ABEMA DASH library](https://abema.tv/assets/compat/62ff7b58b1651206.abema-dashjs.js)
+contains module 58482, reports version 4.7.2-abema.4, and measured 617,926 bytes
+with SHA-256
+`988f8bc1a196ae74faf5c9650ddce0d1104c4816a663e9ab534c6b2a1c87cab8`.
+Module 9065 was found in the page-identified
+[support library](https://abema.tv/assets/compat/7459be98c1074c5c.youboralib.js),
+160,733 bytes with SHA-256
+`c7c1b2c250b5f526ebefc7085a54b50e338d636421729d5a2ead3d5315640fea`,
+matching the existing Android CSAI support pin. No provider JavaScript was
+packaged in the application or added to its runtime pin list by this review.
+
+One isolated DOM-free Node interface check could not load module 58482 despite
+complete static dependencies. A separate fresh headed Chrome 156/Linux blank-page
+check loaded both modules and verified FactoryMaker and the named ClearKey factory
+lookup. Auto-creation was disabled before loading, all page routes and service
+workers were blocked, no network request was attempted, and cleanup was confirmed.
+No factory instance, player, CDM, response filter or licensing method was invoked.
+This establishes browser interface availability; opaque response compatibility
+with a fresh browser CDM remains untested.
+
+After the manifest trials, two separate credential-free status-only checks used
+the same direct host connection, normal TLS, no ambient proxy, no redirects and
+no response-body consumption. The already approved global regional gate
+`https://ds-glb-linear-abematv.akamaized.net/region` returned 200; the separate
+domestic gate `https://ds-linear-abematv.akamaized.net/region` returned 403.
+The [documented provider regional check](media-origin-approvals.md) treats 403 as
+regional refusal. The domestic gate therefore refused this request context even
+though the global gate accepted it. This does not measure the exit country or
+prove that regional refusal is the sole cause of the selected MPD's 403.
+
 ## Android comparison and remaining gates
 
 The current Android DASH host explicitly selects `C.CLEARKEY_UUID` with
@@ -174,9 +315,9 @@ origin. Moving the page to localhost, installing a PWA, adding Wasm or selecting
 Shaka does not supply that hosting behavior or grant source entitlement.
 
 The direct-browser blocker and bounded anonymous source proof leave account
-authorization, browser DRM/session binding, manifests/segments,
+authorization, browser DRM/session binding, successful manifest/segment access,
 opaque license exchange, live/replay controls, required advertising, renewal,
-quality, sustained two-feed output and acoustic acceptance untested. No account
+quality, sustained two-feed output and acoustic acceptance unestablished. No account
 grant was adopted or persisted. The probe closes its fresh context/browser and
 owned loopback server after success or failure; it does not exercise media-player
 cleanup, which has separate controlled-fixture coverage.
@@ -244,6 +385,13 @@ or acceptance, plus optional metadata-presence booleans. Transport refusals rema
 fixed outcomes. This mode also requires explicit opt-in and stays outside CI.
 
 ## Next decision
+
+Before another MPD or CDM attempt, compare the current provider/native source
+context against the legacy-chain proof and establish one known working domestic
+route and entitlement context. Reproduce the selected source in that context
+before deciding whether extra backend transport is necessary. The observed
+manifest and domestic-gate refusals do not themselves require an extension or
+justify changing origin, entitlement or TLS enforcement.
 
 The user's October 25 direction strongly prefers avoiding an extension, with one
 potentially acceptable only if needed. This is not approval to install one or to

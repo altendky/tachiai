@@ -226,6 +226,13 @@ jobs:
 
       - run: mise run web
 
+      - name: Test local browser manifest CORS and detached cleanup
+        env:
+          TACHIAI_LOCAL_CHROME_TEST: "1"
+        run: |
+          uv run scripts/tests/web-abema-backend-manifest.test.py
+          node --test scripts/tests/web-abema-browser-manifest.test.mjs
+
   all:
     name: all
     if: ${{ !cancelled() }}

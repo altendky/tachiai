@@ -27,6 +27,7 @@
   - [Controlled two-feed browser fixture](project/web-pair-fixture.md)
   - [Twitch browser diagnostic](project/web-twitch-proof.md)
   - [ABEMA web bootstrap feasibility](project/web-abema-feasibility.md)
+  - [Bounded ABEMA browser decoder diagnostic](project/web-abema-playback.md)
   - [Web account and route assessment](project/web-accounts-and-routes.md)
   - [Cross-platform distribution](project/platform-distribution.md)
   - [Cross-platform validation roadmap](project/platform-validation-plan.md)

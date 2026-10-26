@@ -88,3 +88,14 @@ broadening `BrowserPlayer`'s controlled-source contract. Its synthetic session
 and Chrome tests are `npm run test:twitch:offline` and `npm run test:twitch:owned`.
 Actual provider authorization/playback requires the documented explicit network
 command and fresh user-controlled activation; it is not part of ordinary tests.
+
+## ABEMA no-license decoder diagnostic
+
+The separate [bounded ABEMA diagnostic](../../docs/src/project/web-abema-playback.md)
+reuses the pinned web pipeline and owned browser lifecycle while keeping the
+controlled `BrowserPlayer` unchanged. Its opt-in Python entry creates a fresh
+GLOBAL context and anonymous source, then attempts owned Shaka init/media decode
+with encrypted-media disabled and no license transport. It is excluded from
+ordinary tests. `npm run test:abema:local` tests owned fixtures and loopback
+network boundaries on port 4186; browser-free Python/Node protocol tests are
+listed in its guide. Actual provider decode acceptance remains pending.

@@ -178,6 +178,20 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|source)|owned-browser)\.py$|^apps/web/scripts/abema-browser-(manifest|snapshot)\.mjs$|^scripts/tests/web-abema-browser-snapshot\.test\.py$'
         pass_filenames: false
 
+      - id: web-abema-backend-playback-tests
+        name: Web ABEMA closed playback protocol safety tests
+        entry: uv run scripts/tests/web-abema-backend-playback.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source|manifest|playback)|modern-context|owned-browser)\.py$|^scripts/tests/web-abema-backend-playback\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-browser-playback-tests
+        name: Web ABEMA private playback and mapper protocol tests
+        entry: node --test scripts/tests/web-abema-browser-playback.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-(browser-(manifest|playback)\.mjs|(region|guest)-helper\.cjs)$|^scripts/tests/web-abema-browser-playback\.test\.mjs$'
+        pass_filenames: false
+
       - id: twitch-session-tests
         name: Twitch full embed session tests
         entry: node --test scripts/tests/twitch-session.test.cjs

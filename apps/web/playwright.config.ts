@@ -2,6 +2,8 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
+  // The ABEMA transport suite needs its denied-EME loopback fixture server.
+  testIgnore: 'abema-playback.spec.ts',
   outputDir: 'build/test-results',
   workers: 1,
   use: {

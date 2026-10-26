@@ -234,6 +234,14 @@ jobs:
           xvfb-run --auto-servernum uv run scripts/tests/web-abema-browser-snapshot.test.py
           node --test scripts/tests/web-abema-browser-manifest.test.mjs
 
+      - name: Test bounded ABEMA playback with controlled local media only
+        env:
+          TACHIAI_LOCAL_CHROME_TEST: "1"
+        run: |
+          uv run scripts/tests/web-abema-backend-playback.test.py
+          node --test scripts/tests/web-abema-browser-playback.test.mjs
+          npm run test:abema:local --prefix apps/web
+
   all:
     name: all
     if: ${{ !cancelled() }}

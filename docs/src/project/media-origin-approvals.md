@@ -24,6 +24,27 @@ not an access grant or proof of provider ownership/entitlement.
 The dated decisions below describe the historical cached prototype. They do
 not establish a complete endpoint inventory for the approved general integration.
 
+### Bounded web GLOBAL News decoder diagnostic
+
+The separate [no-license decoder diagnostic](web-abema-playback.md) adds fixed
+cookie-free region/context operations at `https://abema.tv/now-on-air/abema-news`,
+the exact GLOBAL selected-region destination
+`https://ds-glb-linear-abematv.akamaized.net/region`, and
+`https://api.p-c3-e.abema-tv.com/v1/channels?division=1`. Region extraction and
+the unchanged pinned division mapper must agree before the current catalogue
+can feed the existing fresh guest/profile/token/source checks. These are closed
+metadata operations; no URL broker, provider login, origin spoofing or CORS relay
+is introduced.
+
+The separate owned browser admits the exact fresh advertised MPD plus declared
+SDK init/media reference URI/range/stream tuples at that manifest's exact HTTPS
+origin, within the existing checked ABEMA CDN family. No generic directory,
+other advertised origin, media query, redirects or license destination is
+admitted. All media uses ordinary browser CORS with credentials omitted.
+Manifest declaration is provenance evidence, not entitlement or proof of clear
+media. Actual provider decoder acceptance remains unverified. This diagnostic
+does not broaden the cached Android policy or change existing MPD-only commands.
+
 ### Public ABEMA channel metadata
 
 The Channels adapter uses anonymous GET to

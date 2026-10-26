@@ -66,3 +66,16 @@ dependency notices accompany the generated site under `licenses/`.
   separate provider investigations.
 
 See the [web evidence and next steps](../../docs/src/project/web-client.md).
+
+## Controlled pair fixture
+
+`/harness/pair.html` adds a separate provider-free controller milestone with
+explicit A/B assignment and Watch, independent duplicate sessions, common
+mix/mutes, retained primary/floating geometry, full-step relative timing and
+individual retry. Watch requests playback as each feed becomes ready. The
+existing single-player diagnostic page is retained.
+
+This is not the full product picker/viewer or provider acceptance. Complete
+quality/orientation/settings controls and provider/account/route integration
+remain pending. See the [fixture scope and remaining acceptance](
+../../docs/src/project/web-pair-fixture.md). Issue #368 remains open.

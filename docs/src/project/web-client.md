@@ -12,6 +12,11 @@ development and production-test commands. Generated assets are served under a
 non-root `/harness/` base path, including the matching JavaScript/Wasm pair and
 dependency notices. Tests exercise the production build with ordinary Chrome.
 
+The [controlled two-feed fixture](web-pair-fixture.md) adds independent A/B
+assignment, retained layout, joint transport, shared mix and relative timing.
+Its diagnostic milestone is implemented under #368; full product and provider
+acceptance remain open.
+
 ## Implemented boundary
 
 One adapter owns each video element, Shaka player, observations, transport/gain/

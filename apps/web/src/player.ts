@@ -1,5 +1,6 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { milliseconds } from './timing';
+import { playheadFormat, type PlayheadFormats } from './formats';
 
 export type TimingCore = typeof import('../../../build/core/web/tachiai_core_web.js');
 export type SessionState = 'loading' | 'ready' | 'failed' | 'disposed';
@@ -29,6 +30,7 @@ export interface Observation {
   seekable: boolean;
   qualities: number[];
   activeQuality?: number;
+  playheadFormats: PlayheadFormats;
 }
 
 export interface PlayerAdapter {
@@ -54,6 +56,7 @@ export class BrowserPlayer implements PlayerAdapter {
   private state: SessionState = 'loading';
   private disposal?: Promise<void>;
   private readonly lifetime = new AbortController();
+  private formats: PlayheadFormats = { basis: 'last-sdk-buffered-playhead' };
 
   constructor(
     readonly source: Source,
@@ -70,13 +73,27 @@ export class BrowserPlayer implements PlayerAdapter {
     this.player.addEventListener('error', () => {
       if (this.state !== 'disposed') {
         this.state = 'failed';
+        this.formats = { basis: 'last-sdk-buffered-playhead' };
         this.video.pause();
         this.publish();
       }
     });
+    this.player.addEventListener('mediaqualitychanged', (event) => {
+      if (this.lifetime.signal.aborted || this.state === 'failed' || this.state === 'disposed') return;
+      // Buffered format at Shaka's playhead, not decoder output or acoustic proof.
+      let format;
+      try {
+        const observed = event as Event & { mediaQuality?: unknown; position?: unknown };
+        format = playheadFormat(observed.mediaQuality, observed.position);
+      } catch { return; } // Retain the last safe observation; never log an SDK object/error.
+      if (!format) return;
+      if (format.kind === 'video') this.formats.video = format;
+      else this.formats.audio = format;
+      this.publish();
+    });
     this.player.configure({
       manifest: { retryParameters: { maxAttempts: 1 } },
-      streaming: { retryParameters: { maxAttempts: 1 } },
+      streaming: { retryParameters: { maxAttempts: 1 }, observeQualityChanges: true },
     });
   }
 
@@ -97,6 +114,7 @@ export class BrowserPlayer implements PlayerAdapter {
     } catch {
       if (this.lifetime.signal.aborted) return 'cancelled';
       this.state = 'failed';
+      this.formats = { basis: 'last-sdk-buffered-playhead' };
       this.publish();
       return 'failed';
     }
@@ -119,6 +137,9 @@ export class BrowserPlayer implements PlayerAdapter {
       seekable: Boolean(range && range.end > range.start),
       qualities: tracks.map((track) => track.id),
       activeQuality: tracks.find((track) => track.active)?.id,
+      playheadFormats: { basis: this.formats.basis,
+        video: this.formats.video ? { ...this.formats.video } : undefined,
+        audio: this.formats.audio ? { ...this.formats.audio } : undefined },
     };
   }
 
@@ -245,6 +266,7 @@ export class BrowserPlayer implements PlayerAdapter {
   dispose(): Promise<void> {
     if (!this.disposal) {
       this.state = 'disposed';
+      this.formats = { basis: 'last-sdk-buffered-playhead' };
       this.lifetime.abort();
       this.video.pause();
       this.disposal = this.player.destroy().then(() => {

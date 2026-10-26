@@ -74,14 +74,49 @@ traces. The 60-second fixtures contain H.264 video and AAC audio; fixture A has
 a 440 Hz tone and fixture B an 880 Hz tone. Advancing clocks, decoded frames and
 gain readback are distinct from acoustic confirmation.
 
+### Buffered format observations
+
+The existing Playback status includes independent `playheadFormats` for each
+feed, separate from selected SDK track IDs and requested quality. The pinned
+Shaka player enables `streaming.observeQualityChanges` and projects its
+`mediaqualitychanged` events into bounded video dimensions/frame rate, audio
+channel count/sample rate, declared bitrate and closed codec names. Unknown or
+invalid numbers are omitted; unknown codecs become `OTHER`. No raw SDK format,
+track/representation identifier, label, language, role, URL, token or DRM data
+enters these new fields. Declared bitrate describes the stream's metadata; it is
+not measured transfer throughput or a bandwidth estimate.
+
+The `last-sdk-buffered-playhead` basis means Shaka observed a format associated with
+buffered content at its polled playhead. These are the last such observations,
+not decoder callbacks or proof of continuous consumption. They can lag, remain
+unchanged while paused, or be absent when that playback path supplies no quality
+events. Selected tracks are never substituted for missing observations.
+The optional `observedAtPositionMs` is that event's bounded media-timeline
+position, not a shared clock or a freshness guarantee. An unbuffered seek/gap
+does not erase the last observation: Shaka need not emit a new event when the
+same format becomes buffered again.
+The controlled HLS trial reports AAC and channel count but omits sample rate and
+video bitrate; the DASH trial supplies them. Known fixture properties and an
+aggregate HLS variant bitrate do not fill those gaps.
+Independent decoded-frame checks establish video dimensions separately; neither
+mechanism establishes decoded audio, audible output or acoustic quality.
+Failure, disposal and replacement clear observations, and retired SDK callbacks
+cannot repopulate a failed/disposed session or its successor. Mix/mute, pane
+movement and swaps retain the observations with their original player.
+
 ## Remaining acceptance
 
-Full responsive control-dock/Fit video behavior, Quality preferences and actual
-format readback, manual orientation, complete product picker/settings/navigation,
+Full responsive control-dock/Fit video behavior, Quality preferences, manual
+orientation, complete product picker/settings/navigation,
 browser history integration, provider accounts/routes and other full-client
 features remain pending. This fixture neither removes those requirements nor
 approves a platform-specific substitute. Any concrete UX deviation still needs
 the explicit discussion required by the common design instructions.
+
+Buffered-format observations establish only the Shaka mechanism above. Separate
+video/audio preference controls, multiple-rendition switching and actual-provider
+format/decoder behavior remain unverified; this does not complete Quality
+acceptance or promise independent choices for coupled audio/video streams.
 
 Actual ABEMA/Twitch live/live, live/replay and replay/replay combinations,
 provider-bound duplicate sessions, DRM, complete route coverage, entitlement,

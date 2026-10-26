@@ -36,10 +36,16 @@ export interface PlayerAdapter {
   observe(): Observation;
   play(): Promise<CommandResult>;
   pause(): void;
-  seekRelative(deltaMs: bigint): Promise<CommandResult>;
+  seekRelative(deltaMs: bigint, fullStep?: boolean, dispatched?: () => void): Promise<CommandResult>;
   setGain(volume: number, muted: boolean): void;
   setQuality(id?: number): CommandResult;
   dispose(): Promise<void>;
+}
+
+export interface RelativePlan {
+  readonly outcome: CommandResult | 'requested' | 'clamped';
+  readonly targetMs?: bigint;
+  readonly originMs?: number;
 }
 
 export class BrowserPlayer implements PlayerAdapter {
@@ -64,6 +70,7 @@ export class BrowserPlayer implements PlayerAdapter {
     this.player.addEventListener('error', () => {
       if (this.state !== 'disposed') {
         this.state = 'failed';
+        this.video.pause();
         this.publish();
       }
     });
@@ -119,7 +126,7 @@ export class BrowserPlayer implements PlayerAdapter {
     if (this.state !== 'ready') return 'unavailable';
     try {
       await this.video.play();
-      return this.lifetime.signal.aborted ? 'cancelled' : 'completed';
+      return this.lifetime.signal.aborted ? 'cancelled' : this.state === 'ready' ? 'completed' : 'failed';
     } catch (error) {
       if (this.lifetime.signal.aborted) return 'cancelled';
       return error instanceof DOMException && error.name === 'NotAllowedError' ? 'blocked' : 'failed';
@@ -149,8 +156,8 @@ export class BrowserPlayer implements PlayerAdapter {
     return 'completed';
   }
 
-  async seekRelative(deltaMs: bigint): Promise<CommandResult> {
-    if (this.state !== 'ready') return 'unavailable';
+  relativePlan(deltaMs: bigint): RelativePlan {
+    if (this.state !== 'ready') return { outcome: 'unavailable' };
     const observation = this.observe();
     const integer = (value?: number) => value === undefined ? undefined : BigInt(value);
     const context = new this.core.SeekContext(
@@ -162,30 +169,47 @@ export class BrowserPlayer implements PlayerAdapter {
       const plan = context.planRelativeSeek(deltaMs);
       try {
         switch (plan.kind) {
-          case this.core.SeekPlanKind.NoChange: return 'unchanged';
-          case this.core.SeekPlanKind.Unavailable: return 'unavailable';
-          case this.core.SeekPlanKind.Unsupported: return 'unsupported';
-          case this.core.SeekPlanKind.AdBlocked: return 'ad-blocked';
-          case this.core.SeekPlanKind.OutsideWindow: return 'outside-window';
+          case this.core.SeekPlanKind.NoChange: return { outcome: 'unchanged' };
+          case this.core.SeekPlanKind.Unavailable: return { outcome: 'unavailable' };
+          case this.core.SeekPlanKind.Unsupported: return { outcome: 'unsupported' };
+          case this.core.SeekPlanKind.AdBlocked: return { outcome: 'ad-blocked' };
+          case this.core.SeekPlanKind.OutsideWindow: return { outcome: 'outside-window' };
           default: {
             const target = plan.targetMs;
             if (target === undefined || target > BigInt(Number.MAX_SAFE_INTEGER) ||
-                target < BigInt(Number.MIN_SAFE_INTEGER)) return 'invalid';
-            const origin = observation.live ? (observation.windowStartMs ?? 0) / 1000 : 0;
-            return await this.seekTo(origin + Number(target) / 1000);
+                target < BigInt(Number.MIN_SAFE_INTEGER)) return { outcome: 'invalid' };
+            return {
+              outcome: plan.kind === this.core.SeekPlanKind.Requested ? 'requested' : 'clamped',
+              targetMs: target, originMs: observation.live ? observation.windowStartMs : 0,
+            };
           }
         }
       } finally {
         plan.free();
       }
     } catch {
-      return this.lifetime.signal.aborted ? 'cancelled' : 'invalid';
+      return { outcome: this.lifetime.signal.aborted ? 'cancelled' : 'invalid' };
     } finally {
       context.free();
     }
   }
 
-  private seekTo(seconds: number): Promise<CommandResult> {
+  async seekRelative(deltaMs: bigint, fullStep = false, dispatched?: () => void): Promise<CommandResult> {
+    const plan = this.relativePlan(deltaMs);
+    if (plan.outcome !== 'requested' && plan.outcome !== 'clamped') return plan.outcome;
+    if (fullStep && plan.outcome !== 'requested') return 'outside-window';
+    if (plan.targetMs === undefined || plan.originMs === undefined) return 'unavailable';
+    if (!Number.isSafeInteger(plan.originMs)) return 'invalid';
+    const absoluteMs = BigInt(plan.originMs) + plan.targetMs;
+    if (absoluteMs < 0n || absoluteMs > BigInt(Number.MAX_SAFE_INTEGER)) return 'invalid';
+    const movement = Number(deltaMs < 0n ? -deltaMs : deltaMs);
+    if (!Number.isSafeInteger(movement)) return 'invalid';
+    // A 100 ms nudge cannot settle at its unchanged starting position.
+    const toleranceMs = Math.min(100, movement / 2);
+    return this.seekTo(Number(absoluteMs) / 1000, toleranceMs, dispatched);
+  }
+
+  private seekTo(seconds: number, toleranceMs: number, dispatched?: () => void): Promise<CommandResult> {
     return new Promise((resolve) => {
       let settled = false;
       const finish = (result: CommandResult) => {
@@ -194,19 +218,26 @@ export class BrowserPlayer implements PlayerAdapter {
         clearTimeout(timer);
         this.video.removeEventListener('seeked', seeked);
         this.video.removeEventListener('error', failed);
+        this.player.removeEventListener('error', failed);
         this.lifetime.signal.removeEventListener('abort', cancelled);
         resolve(result);
       };
-      const seeked = () => finish(Math.abs(this.video.currentTime - seconds) < 0.25 ? 'completed' : 'failed');
+      const seeked = () => finish(this.state === 'ready' && !this.video.seeking &&
+        Math.abs(this.video.currentTime - seconds) <= toleranceMs / 1000 ? 'completed' : 'failed');
       const failed = () => finish('failed');
       const cancelled = () => finish('cancelled');
       const timer = window.setTimeout(() => finish('failed'), 5000);
       this.video.addEventListener('seeked', seeked);
       this.video.addEventListener('error', failed);
+      this.player.addEventListener('error', failed);
       this.lifetime.signal.addEventListener('abort', cancelled, { once: true });
       if (this.lifetime.signal.aborted) cancelled();
       else {
-        try { this.video.currentTime = seconds; } catch { failed(); }
+        try {
+          this.video.currentTime = seconds;
+          // Accepted request accounting precedes settlement, as in NativeMixedPair.
+          dispatched?.();
+        } catch { failed(); }
       }
     });
   }
@@ -232,6 +263,8 @@ export class Harness {
   current?: BrowserPlayer;
   private generation = 0;
   private teardown: Promise<void> = Promise.resolve();
+  private failedCleanup = false;
+  get cleanupFailed(): boolean { return this.failedCleanup; }
 
   constructor(private readonly core: TimingCore, private readonly mount: HTMLElement,
     private readonly changed: () => void) {}
@@ -241,7 +274,7 @@ export class Harness {
     const old = this.current;
     this.current = undefined;
     if (old) this.teardown = this.teardown.then(() => old.dispose());
-    try { await this.teardown; } catch { return 'failed'; }
+    try { await this.teardown; } catch { this.failedCleanup = true; return 'failed'; }
     if (generation !== this.generation) return 'cancelled';
     const session = new BrowserPlayer(source, this.core, () => {
       if (this.current === session && generation === this.generation) this.changed();
@@ -257,7 +290,7 @@ export class Harness {
     const old = this.current;
     this.current = undefined;
     if (old) this.teardown = this.teardown.then(() => old.dispose());
-    await this.teardown;
+    try { await this.teardown; } catch { this.failedCleanup = true; throw new Error('Player cleanup failed.'); }
     if (generation !== this.generation) return;
     this.mount.replaceChildren();
     this.changed();

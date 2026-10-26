@@ -25,6 +25,7 @@
   - [Desktop browser interface and library review](project/desktop-browser-review.md)
   - [Web client implementation](project/web-client.md)
   - [Controlled two-feed browser fixture](project/web-pair-fixture.md)
+  - [Twitch browser diagnostic](project/web-twitch-proof.md)
   - [ABEMA web bootstrap feasibility](project/web-abema-feasibility.md)
   - [Web account and route assessment](project/web-accounts-and-routes.md)
   - [Cross-platform distribution](project/platform-distribution.md)

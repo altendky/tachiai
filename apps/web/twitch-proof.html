@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://id.twitch.tv https://gql.twitch.tv https://ttvnw.net https://*.ttvnw.net https://twitchcdn.net https://*.twitchcdn.net https://dgeft87wbj63p.cloudfront.net; media-src blob:; worker-src blob:; base-uri 'none'; form-action 'none'">
+    <title>Tachiai Twitch diagnostic</title>
+  </head>
+  <body>
+    <p>Local opt-in Twitch playback diagnostic. No saved accounts or routes.</p>
+    <button id="play" type="button" disabled>Play diagnostic</button>
+    <div id="surface"></div>
+    <script type="module" src="/src/twitch-proof-entry.ts"></script>
+  </body>
+</html>

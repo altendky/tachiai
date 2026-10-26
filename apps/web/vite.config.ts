@@ -8,7 +8,11 @@ export default defineConfig({
   build: {
     outDir: 'build/dist', emptyOutDir: true,
     rollupOptions: {
-      input: { harness: fileURLToPath(new URL('index.html', import.meta.url)), pair: fileURLToPath(new URL('pair.html', import.meta.url)) },
+      input: {
+        harness: fileURLToPath(new URL('index.html', import.meta.url)),
+        pair: fileURLToPath(new URL('pair.html', import.meta.url)),
+        twitchProof: fileURLToPath(new URL('twitch-proof.html', import.meta.url)),
+      },
     },
   },
 });

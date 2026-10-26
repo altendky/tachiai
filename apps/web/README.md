@@ -79,3 +79,12 @@ This is not the full product picker/viewer or provider acceptance. Complete
 quality/orientation/settings controls and provider/account/route integration
 remain pending. See the [fixture scope and remaining acceptance](
 ../../docs/src/project/web-pair-fixture.md). Issue #368 remains open.
+
+## Twitch provider diagnostic
+
+The separate opt-in [Twitch provider diagnostic](../../docs/src/project/web-twitch-proof.md)
+uses this harness's pinned player, Wasm and fixture test pipeline without
+broadening `BrowserPlayer`'s controlled-source contract. Its synthetic session
+and Chrome tests are `npm run test:twitch:offline` and `npm run test:twitch:owned`.
+Actual provider authorization/playback requires the documented explicit network
+command and fresh user-controlled activation; it is not part of ordinary tests.

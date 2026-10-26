@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://abema-media.invalid; media-src blob:; worker-src blob:; base-uri 'none'; form-action 'none'">
+    <title>Bounded ABEMA playback diagnostic</title>
+  </head>
+  <body><button id="play">Play diagnostic</button><div id="surface"></div><script type="module" src="/src/abema-playback-entry.ts"></script></body>
+</html>

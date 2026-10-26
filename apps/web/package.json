@@ -13,6 +13,7 @@
     "probe:twitch": "node scripts/probe-twitch.mjs",
     "test:twitch:offline": "playwright test --config playwright.twitch-offline.config.ts",
     "test:twitch:owned": "playwright test --config playwright.twitch-owned.config.ts",
+    "test:abema:local": "playwright test --config playwright.abema.config.ts",
     "test": "playwright test"
   },
   "dependencies": {

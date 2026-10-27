@@ -5,13 +5,30 @@ import { Readable } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { privateInput, proofServer, suppressDiagnosticConsole } from '../../apps/web/scripts/abema-browser-playback.mjs';
+import { auxiliaryEvidence, privateInput, proofServer, suppressDiagnosticConsole } from '../../apps/web/scripts/abema-browser-playback.mjs';
 
 const nonce = 'a'.repeat(32), secret = 'PRIVATE_SYNTHETIC_PLAYBACK';
 const base = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd';
 const envelope = changes => ({ uri: base + '?context=fixture&t=' + secret + '&enc=clear&dt=pc_chrome&ut=1',
   nonce, mediaToken: secret, advertisedUris: [base + '?context=fixture'], remainingMs: 20000, ...changes });
 const input = value => Readable.from([Buffer.from(JSON.stringify(value))]);
+
+test('auxiliary output admits only fixed reasons and consistent bounded UTC scheme classes', () => {
+  assert.deepEqual(auxiliaryEvidence({ boundary: 'AUXILIARY' }), {}); // Earlier report compatibility.
+  for (const auxiliaryReason of ['SEGMENT_BASE', 'CONTENT_STEERING', 'PATCH_LOCATION', 'XLINK', 'XINCLUDE',
+    'CHANGED_LOCATION', 'TEMPLATE_INDEX', 'REQUEST_TYPE', 'DISPATCH_TYPE']) {
+    const safe = auxiliaryEvidence({ boundary: 'AUXILIARY', auxiliaryReason, value: secret, url: secret });
+    assert.deepEqual(safe, { auxiliaryReason }); assert.ok(!JSON.stringify(safe).includes(secret));
+  }
+  for (const utcScheme of ['DIRECT', 'HTTP_HEAD', 'HTTP_XSDATE', 'OTHER'])
+    assert.deepEqual(auxiliaryEvidence({ boundary: 'AUXILIARY', auxiliaryReason: 'UTC_TIMING', utcScheme }),
+      { auxiliaryReason: 'UTC_TIMING', utcScheme });
+  for (const extra of [{ auxiliaryReason: secret }, { auxiliaryReason: null }, { auxiliaryReason: [] },
+    { auxiliaryReason: 'UTC_TIMING' }, { utcScheme: 'DIRECT' }, { auxiliaryReason: 'SEGMENT_BASE', utcScheme: 'DIRECT' },
+    { auxiliaryReason: 'UTC_TIMING', utcScheme: secret }, { auxiliaryReason: 'UTC_TIMING', utcScheme: null },
+    { boundary: 'NONE', auxiliaryReason: 'SEGMENT_BASE' }])
+    assert.throws(() => auxiliaryEvidence({ boundary: 'AUXILIARY', ...extra }), { name: 'Error' });
+});
 
 test('private playback envelope independently repeats fresh advertisement/token/nonce validation', async () => {
   const value = await privateInput(input(envelope()));

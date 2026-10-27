@@ -14,6 +14,7 @@ const deliveryWindow = 'selected-preparation-plus-up-to-250ms-delivery';
 const failure = () => ({ type: 'Fetch', requestId: secret, timestamp: 123, errorText: secret,
   corsErrorStatus: { corsError: 'MissingAllowOriginHeader', get failedParameter() { throw Error(secret); } },
   get url() { throw Error(secret); }, get headers() { throw Error(secret); } });
+const identifiedFailure = requestId => { const event = failure(); event.requestId = requestId; return event; };
 
 function syntheticSession(options = {}) {
   const session = new EventEmitter(), calls = [];
@@ -54,6 +55,118 @@ test('independent output boundary refuses inconsistent setup/observation/first a
   for (const window of ['selected-preparation', deliveryWindow]) assert.deepEqual(browserFailureOutput({
     window, setup: 'ready', teardown: 'confirmed', observed: 'none' }), {
     window, association: 'unattributed', setup: 'ready', teardown: 'confirmed', observed: 'none' });
+});
+
+test('HTTP projection snapshots only a bounded numeric value once and never exposes malformed/private values', () => {
+  for (const http of [100, 200, 403, 599, undefined, null, true, '403', 99, 600, NaN, Infinity, 200.5, {}, secret]) {
+    const output = browserFailureOutput({ setup: 'ready', teardown: 'confirmed', observed: 'one',
+      first: { resource: 'Fetch', http, requestId: secret } });
+    assert.equal(output.first.http, [100, 200, 403, 599].includes(http) ? http : undefined);
+    assert.equal(JSON.stringify(output).includes(secret), false);
+  }
+  let reads = 0;
+  const output = browserFailureOutput({ setup: 'ready', teardown: 'confirmed', observed: 'one',
+    first: { get http() { return ++reads === 1 ? 403 : secret; } } });
+  assert.equal(reads, 1); assert.equal(output.first.http, 403);
+  const unreadable = browserFailureOutput({ setup: 'ready', teardown: 'confirmed', observed: 'one',
+    first: { resource: 'Fetch', get http() { throw Error(secret); } } });
+  assert.equal(unreadable.observed, 'one'); assert.equal(unreadable.first.resource, 'Fetch');
+  assert.equal(unreadable.first.http, undefined);
+});
+
+test('both event orders correlate only the first failure ID without reading extra-info private fields', async () => {
+  for (const extraFirst of [false, true]) {
+    const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+    let idReads = 0, statusReads = 0, failureIdReads = 0;
+    const extra = { get requestId() { return ++idReads === 1 ? 'owned.1' : secret; },
+      get statusCode() { return ++statusReads === 1 ? 403 : secret; },
+      get headers() { throw Error(secret); }, get blockedCookies() { throw Error(secret); },
+      get headersText() { throw Error(secret); }, get url() { throw Error(secret); } };
+    session.emit('Network.responseReceivedExtraInfo', { requestId: 'unrelated', statusCode: 200 });
+    if (extraFirst) session.emit('Network.responseReceivedExtraInfo', extra);
+    const failed = failure(); Object.defineProperty(failed, 'requestId', {
+      get() { return ++failureIdReads === 1 ? 'owned.1' : secret; } });
+    session.emit('Network.loadingFailed', failed);
+    if (!extraFirst) session.emit('Network.responseReceivedExtraInfo', extra);
+    session.emit('Network.loadingFailed', identifiedFailure('unrelated'));
+    assert.equal(collector.summary().first.http, 403); assert.equal(idReads, 1); assert.equal(statusReads, 1); assert.equal(failureIdReads, 1);
+    await collector.close(); assert.equal(collector.summary().first.http, 403);
+    assert.equal(JSON.stringify(collector.summary()).includes(secret), false);
+  }
+});
+
+test('duplicate/reused IDs are permanently ambiguous, including malformed status before or after a valid status', async () => {
+  for (const sequence of [[200, 200], [302, 403], [undefined, 403], [403, undefined], ['403', 403],
+    [403, '403'], [403, 0], [null, 403], [403, null]]) {
+    const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+    session.emit('Network.loadingFailed', identifiedFailure('owned'));
+    for (const statusCode of sequence) session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode });
+    session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 200 });
+    assert.equal(collector.summary().first.http, undefined); await collector.close();
+  }
+  for (const throwFirst of [false, true]) {
+    const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+    session.emit('Network.loadingFailed', identifiedFailure('owned'));
+    const malformed = { requestId: 'owned', get statusCode() { throw Error(secret); } };
+    if (!throwFirst) session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 200 });
+    session.emit('Network.responseReceivedExtraInfo', malformed);
+    if (throwFirst) session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 403 });
+    assert.equal(collector.summary().first.http, undefined); await collector.close();
+  }
+});
+
+test('invalid IDs and unrelated responses never attach HTTP, and map overflow permanently drops prior status', async () => {
+  for (const requestId of [undefined, null, 1, true, {}, [], '', 'x'.repeat(129), 'bad\nidentifier']) {
+    const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+    session.emit('Network.responseReceivedExtraInfo', { requestId, statusCode: 403 });
+    session.emit('Network.loadingFailed', identifiedFailure(requestId));
+    session.emit('Network.responseReceivedExtraInfo', { requestId: 'unrelated', statusCode: 200 });
+    assert.equal(collector.summary().observed, 'one'); assert.equal(collector.summary().first.http, undefined); await collector.close();
+  }
+  const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+  session.emit('Network.loadingFailed', identifiedFailure('owned'));
+  session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 403 });
+  assert.equal(collector.summary().first.http, 403);
+  for (let i = 0; i < 15; i++) session.emit('Network.responseReceivedExtraInfo', { requestId: 'other.' + i, statusCode: 200 });
+  assert.equal(collector.summary().first.http, 403); // Sixteen unique IDs fit.
+  session.emit('Network.responseReceivedExtraInfo', { requestId: 'seventeenth', statusCode: 200 });
+  session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 403 });
+  assert.equal(collector.summary().first.http, undefined); assert.equal(collector.summary().observed, 'one');
+  await collector.close(); assert.equal(JSON.stringify(collector.summary()).includes('owned'), false);
+});
+
+test('freeze/cancellation retains only matched numeric status and ignores all late extra-info access', async () => {
+  for (const end of ['disarm', 'abort', 'close']) {
+    const { session, page } = syntheticSession(), collector = await openBrowserFailures(page);
+    session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 200 }); // Unarmed: not retained.
+    collector.arm(); session.emit('Network.loadingFailed', identifiedFailure('owned'));
+    assert.equal(collector.summary().first.http, undefined);
+    session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 403 });
+    const late = session.listeners('Network.responseReceivedExtraInfo')[0], lifetime = new AbortController();
+    const waiting = collector.drain(lifetime.signal);
+    if (end === 'abort') lifetime.abort(); else if (end === 'close') await collector.close(); else collector.disarm();
+    await waiting;
+    late({ get requestId() { throw Error(secret); }, get statusCode() { throw Error(secret); } });
+    assert.equal(collector.summary().first.http, 403); await collector.close();
+    assert.equal(session.listenerCount('Network.responseReceivedExtraInfo'), 0);
+  }
+});
+
+test('expired extra-info cannot populate an existing failure before a delayed timeout task runs', async () => {
+  const { session, page } = syntheticSession(), collector = await openBrowserFailures(page); collector.arm();
+  session.emit('Network.loadingFailed', identifiedFailure('owned'));
+  const waiting = collector.drain(new AbortController().signal), until = performance.now() + 275;
+  while (performance.now() < until) { /* bounded synthetic event-loop delay */ }
+  session.emit('Network.responseReceivedExtraInfo', { requestId: 'owned', statusCode: 403 });
+  await waiting; assert.equal(collector.summary().first.http, undefined); await collector.close();
+});
+
+test('both listeners are independently removed even if removing the failure listener throws', async () => {
+  const { session, page } = syntheticSession(), collector = await openBrowserFailures(page);
+  const remove = session.removeListener.bind(session);
+  session.removeListener = (name, callback) => { if (name === 'Network.loadingFailed') throw Error(secret); return remove(name, callback); };
+  await collector.close(); assert.equal(session.listenerCount('Network.responseReceivedExtraInfo'), 0);
+  assert.equal(collector.summary().teardown, 'confirmed');
 });
 
 test('one-shot bounded delivery observes a delayed callback that immediate freeze omits', async () => {
@@ -140,7 +253,7 @@ test('an expired callback cannot beat a delayed timeout when the event loop was 
   await collector.close();
 });
 
-for (const kind of ['cors', 'redirect', 'tcp', 'success', 'default', 'drain-failure', 'cancel', 'watchdog']) {
+for (const kind of ['cors', 'cors403', 'redirect', 'tcp', 'reset', 'success', 'default', 'drain-failure', 'cancel', 'watchdog']) {
   test(`actual runner normal local Fetch delivery and independent cleanup: ${kind}`, { timeout: 25000 }, async () => {
     const child = spawn(process.execPath, ['--experimental-vm-modules',
       fileURLToPath(new URL('./fixtures/twitch-failure-delivery.mjs', import.meta.url)), kind], {
@@ -168,8 +281,13 @@ for (const kind of ['cors', 'redirect', 'tcp', 'success', 'default', 'drain-fail
       assert.equal(result.browserFailure.association, 'unattributed'); assert.equal(result.browserFailure.teardown, 'confirmed');
       assert.equal(result.drainCalls, kind === 'success' ? 0 : 1);
       assert.equal(result.browserFailure.window, ['success', 'drain-failure', 'watchdog'].includes(kind) ? 'selected-preparation' : deliveryWindow);
-      if (['cors', 'redirect', 'tcp'].includes(kind)) assert.equal(result.browserFailure.observed, 'one');
-      if (kind === 'cors') assert.equal(result.browserFailure.first.cors, 'MissingAllowOriginHeader');
+      if (['cors', 'cors403', 'redirect', 'tcp', 'reset'].includes(kind)) assert.equal(result.browserFailure.observed, 'one');
+      if (['cors', 'cors403'].includes(kind)) {
+        assert.equal(result.browserFailure.first.cors, 'MissingAllowOriginHeader');
+        assert.equal(result.browserFailure.first.http, kind === 'cors' ? 200 : 403);
+      }
+      if (kind === 'redirect') assert.equal(result.browserFailure.first.http, 302);
+      if (['tcp', 'reset'].includes(kind)) assert.equal(result.browserFailure.first.http, undefined);
       if (kind === 'tcp') assert.equal(result.browserFailure.first.network, 'connection-refused');
       if (kind === 'success') assert.equal(result.browserFailure.observed, 'none');
     }
@@ -199,6 +317,7 @@ test('only armed generation observes failures; first observation survives overfl
   collector.arm(); callback({ errorText: secret }); // Closed generations cannot restart.
   assert.equal(collector.summary().teardown, 'confirmed');
   assert.equal(session.listenerCount('Network.loadingFailed'), 0);
+  assert.equal(session.listenerCount('Network.responseReceivedExtraInfo'), 0);
   assert.deepEqual(calls, [{ method: 'Network.enable', parameters: { maxPostDataSize: 0 } },
     { method: 'Network.disable', parameters: undefined }, { method: 'detach' }]);
   assert.equal(JSON.stringify(collector.summary()).includes(secret), false);

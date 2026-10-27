@@ -1,4 +1,5 @@
-// Passive, opt-in diagnostic only. Never retain protocol events or identifiers.
+// Passive, opt-in diagnostic. Retain no protocol events; bounded correlation IDs
+// exist only inside the active collector and never enter output.
 const cors = new Set(['DisallowedByMode', 'InvalidResponse', 'WildcardOriginNotAllowed',
   'MissingAllowOriginHeader', 'MultipleAllowOriginValues', 'InvalidAllowOriginValue',
   'AllowOriginMismatch', 'InvalidAllowCredentials', 'CorsDisabledScheme',
@@ -28,6 +29,8 @@ const resource = new Set(['Fetch', 'XHR', 'Preflight']);
 const networkValues = new Set(network.values());
 const preparationWindow = 'selected-preparation';
 const deliveryWindow = 'selected-preparation-plus-up-to-250ms-delivery';
+const validId = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+const validHttp = value => Number.isSafeInteger(value) && value >= 100 && value <= 599;
 const enumValue = (value, values) => value === undefined ? 'absent' : values.has(value) ? value : 'other';
 const bounded = (promise, late = () => {}) => {
   let timer, expired = false;
@@ -70,6 +73,9 @@ export function browserFailureOutput(value) {
         cors: ['absent', 'other'].includes(first.cors) ? first.cors : cors.has(first.cors) ? first.cors : 'other',
         blocked: first.blocked === 'absent' ? 'absent' : blocked.has(first.blocked) ? first.blocked : 'other',
         network: networkValues.has(first.network) ? first.network : 'other' };
+      let http;
+      try { http = first.http; } catch {}
+      if (validHttp(http)) result.first.http = http;
     }
     return result;
   } catch { return { window: 'selected-preparation', association: 'unattributed',
@@ -79,15 +85,50 @@ export function browserFailureOutput(value) {
 export async function openBrowserFailures(page) {
   let session, active = false, armed = false, count = 0, first, closing;
   let window = preparationWindow, draining, finishDrain, deliveryDeadline;
+  const statuses = new Map(); // ID -> one valid status, or null permanently ambiguous.
+  let firstFailureId, correlation = true;
+  const clearIds = () => { statuses.clear(); firstFailureId = undefined; };
+  const onExtra = event => {
+    if (!active) return;
+    if (deliveryDeadline !== undefined && performance.now() >= deliveryDeadline) { disarm(); return; }
+    if (!correlation) return;
+    let id, http;
+    // Snapshot only these two properties. A throwing/malformed status poisons a
+    // valid ID so a later event cannot masquerade as its first response.
+    try { id = event.requestId; http = event.statusCode; } catch {}
+    if (!validId(id)) return;
+    if (!statuses.has(id) && statuses.size === 16) {
+      correlation = false; clearIds();
+      if (first) delete first.http;
+      return;
+    }
+    const status = statuses.has(id) || !validHttp(http) ? null : http;
+    statuses.set(id, status);
+    if (first && id === firstFailureId) {
+      if (status === null) delete first.http;
+      else first.http = status;
+    }
+  };
   let setup = 'unavailable', teardown = 'unconfirmed';
   const onFailure = event => {
     if (!active) return;
     if (deliveryDeadline !== undefined && performance.now() >= deliveryDeadline) { disarm(); return; }
     // Saturate after 16 observations; retain only the first closed projection.
     if (count < 17) count++;
-    if (!first) first = projectBrowserFailure(event);
+    if (!first) {
+      first = projectBrowserFailure(event);
+      if (correlation) {
+        let id;
+        try { id = event.requestId; } catch {}
+        if (validId(id)) {
+          firstFailureId = id;
+          const status = statuses.get(id);
+          if (validHttp(status)) first.http = status;
+        }
+      }
+    }
   };
-  const disarm = () => { active = false; finishDrain?.(); };
+  const disarm = () => { active = false; clearIds(); finishDrain?.(); };
   const drain = signal => {
     // One delivery window per collector; unavailable, unarmed, cancelled and
     // retired collectors never wait or open a later generation.
@@ -104,7 +145,7 @@ export async function openBrowserFailures(page) {
         clearTimeout(timer);
         signal.removeEventListener('abort', disarm);
         finishDrain = undefined;
-        active = false;
+        active = false; clearIds();
         resolve();
       };
       finishDrain = finish;
@@ -117,6 +158,7 @@ export async function openBrowserFailures(page) {
     return closing ??= (async () => {
       if (!session) return;
       try { session.removeListener('Network.loadingFailed', onFailure); } catch {}
+      try { session.removeListener('Network.responseReceivedExtraInfo', onExtra); } catch {}
       let disabled = false, detached = false;
       try { await bounded(session.send('Network.disable')); disabled = true; } catch {}
       try { await bounded(session.detach()); detached = true; } catch {}
@@ -128,6 +170,7 @@ export async function openBrowserFailures(page) {
       void lateSession.detach().catch(() => {});
     });
     session.on('Network.loadingFailed', onFailure);
+    session.on('Network.responseReceivedExtraInfo', onExtra);
     await bounded(session.send('Network.enable', { maxPostDataSize: 0 }));
     setup = 'ready';
   } catch { await close(); }

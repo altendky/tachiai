@@ -18,7 +18,7 @@ process.stdin.on('end', async () => {
       const technology = Object.keys(mapping.STREAMING_TECHNOLOGY_MAPPING).find(key => mapping.STREAMING_TECHNOLOGY_MAPPING[key]==='dash');
       const make = drm => ({ useCase:protocol.PlaybackResourceUseCase.USE_CASE_VOD, streamingTechnology:technology,
         deviceCapability:protocol.PlaybackResourceDeviceCapability.CONSERVATIVE,
-        drm:{systemId:mapping.DRM_SYSTEMID_MAPPING[drm],license:{urlTemplate:'https://license.p-c3-e.abema-tv.com/abematv-dash?t={t}&ct={ct}&cid={cid}'}},
+        drm:{systemId:mapping.DRM_SYSTEMID_MAPPING[drm],license:{urlTemplate:'https://license.p-c3-e.abema-tv.com/fixture/{ct}/{cid}?t={t}'}},
         manifests:[{arin:'SYNTHETIC_MANIFEST_'+drm,url:'https://vod-abematv.akamaized.net/program/'+id+'/manifest.mpd?advertised=original%2Bvalue',
           adInsertion:{mode:protocol.PlaybackResourceAdInsertionMode.AD_INSERTION_MODE_NONE}}] });
       return JSON.stringify({metadata,end,widevine:make('widevine'),custom:make('custom')});

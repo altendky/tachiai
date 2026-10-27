@@ -210,11 +210,17 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
         for role, item in (("TEMPLATE", template), ("RESULT", license_uri)):
             if item.scheme != "https": refuse("CONFIGURATION", "PARENT_" + role + "_SCHEME")
             if item.netloc != "license.p-c3-e.abema-tv.com": refuse("CONFIGURATION", "PARENT_" + role + "_HOST")
-            if item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", item.path) or any(part in {".", ".."} for part in item.path.split("/")): refuse("CONFIGURATION", "PARENT_" + role + "_PATH")
-        if license_uri.path != template.path: refuse("CONFIGURATION", "PARENT_PATH_BINDING")
+            # Expand only the two nonsecret, exact source-context markers. No
+            # generic URI-template evaluation or token-bearing path is admitted.
+            path = item.path.replace("{ct}", "program").replace("{cid}", EPISODE) if role == "TEMPLATE" else item.path
+            if item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", path) or any(part in {".", ".."} for part in path.split("/")): refuse("CONFIGURATION", "PARENT_" + role + "_PATH")
+        expected_path = template.path.replace("{ct}", "program").replace("{cid}", EPISODE)
+        if license_uri.path != expected_path: refuse("CONFIGURATION", "PARENT_PATH_BINDING")
         template_query, license_query = source.playlist_query(template.query), source.playlist_query(license_uri.query)
         replacements = {"t": media_token, "ct": "program", "cid": EPISODE}
-        if set(template_query) - {"t", "ct", "cid", "tt", "tk", "dt"} or any(template_query.get(key) != "{" + key + "}" for key in replacements) or any("{" in item or "}" in item for key, item in template_query.items() if key not in replacements): refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+        path_context = {key for key in ("ct", "cid") if "{" + key + "}" in template.path}
+        required_query = set(replacements) - path_context
+        if set(template_query) - {"t", "ct", "cid", "tt", "tk", "dt"} or any(template_query.get(key) != "{" + key + "}" for key in required_query) or any(template_query[key] != "{" + key + "}" for key in path_context & template_query.keys()) or any("{" in item or "}" in item for key, item in template_query.items() if key not in replacements): refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
         if license_query != {key: replacements.get(key, item) for key, item in template_query.items()}: refuse("CONFIGURATION", "PARENT_LICENSE_QUERY")
     except EpisodeRefused: raise
     except (KeyError, TypeError, ValueError, IndexError, Refused): refuse("BINDING")

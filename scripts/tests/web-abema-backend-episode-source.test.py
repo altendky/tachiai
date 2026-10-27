@@ -147,6 +147,40 @@ class EpisodeTests(unittest.TestCase):
         for reason, check in (("BINDING", "PARENT_LICENSE_QUERY"), ("CONFIGURATION", PRIVATE), ("CONFIGURATION", [])):
             with self.assertRaises(module.Refused): module.EpisodeRefused(reason, check)
 
+    def test_nonsecret_path_context_is_exact_and_query_context_remains_explicit(self):
+        origin = "https://license.p-c3-e.abema-tv.com"
+        def check(template, result):
+            data, packet = gateway(), binding()
+            data["streams"][0]["drm"]["license"]["urlTemplate"] = origin + template
+            packet["licenseUri"] = origin + result
+            module.validate_binding(packet, "selection", NONCE, metadata(), END * 1000, data, PRIVATE)
+        path = "/fixture/program/" + EPISODE
+        for template, result in (
+            ("/fixture/{ct}/{cid}?t={t}", path + "?t=" + PRIVATE),
+            ("/fixture/{ct}?t={t}&cid={cid}", "/fixture/program?t=" + PRIVATE + "&cid=" + EPISODE),
+            ("/fixture/{cid}?t={t}&ct={ct}", "/fixture/" + EPISODE + "?t=" + PRIVATE + "&ct=program"),
+            ("/fixture/{ct}/{cid}?t={t}&ct={ct}&cid={cid}&tk=literal%2Bvalue",
+             path + "?t=" + PRIVATE + "&ct=program&cid=" + EPISODE + "&tk=literal%2Bvalue")):
+            check(template, result)
+        cases = [
+            ("PARENT_LICENSE_TEMPLATE", "/fixture/{ct}?t={t}", "/fixture/program?t=" + PRIVATE),
+            ("PARENT_LICENSE_TEMPLATE", path + "?t={t}", path + "?t=" + PRIVATE),
+            ("PARENT_LICENSE_TEMPLATE", "/fixture/{ct}/{cid}", path),
+            ("PARENT_LICENSE_TEMPLATE", "/fixture/{ct}/{cid}?t=literal", path + "?t=literal"),
+            ("PARENT_LICENSE_TEMPLATE", "/fixture/{ct}/{cid}?t={t}&ct=program", path + "?t=" + PRIVATE + "&ct=program"),
+            ("PARENT_PATH_BINDING", "/fixture/{ct}/{cid}?t={t}", "/fixture/slot/" + EPISODE + "?t=" + PRIVATE),
+            ("PARENT_PATH_BINDING", "/fixture/{ct}/{cid}?t={t}", "/fixture/program/" + PRIVATE + "?t=" + PRIVATE),
+            ("PARENT_LICENSE_QUERY", "/fixture/{ct}/{cid}?t={t}&cid={cid}", path + "?t=" + PRIVATE + "&cid=other"),
+            ("PARENT_LICENSE_QUERY", "/fixture/{ct}/{cid}?t={t}&tk=literal", path + "?t=" + PRIVATE + "&tk=changed"),
+            ("PARENT_RESULT_PATH", "/fixture/{ct}/{cid}?t={t}", "/fixture/{ct}/" + EPISODE + "?t=" + PRIVATE),
+        ]
+        for bad in ("{t}", "{pt}", "{unknown}", "{+cid}", "{cid:3}", "%7Bcid%7D", "../{cid}", "{ct}/../{cid}", "%2e%2e/{cid}"):
+            cases.append(("PARENT_TEMPLATE_PATH", "/fixture/" + bad + "?t={t}&ct={ct}&cid={cid}", path + "?t=" + PRIVATE))
+        for expected, template, result in cases:
+            with self.subTest(expected=expected), self.assertRaises(module.EpisodeRefused) as caught: check(template, result)
+            self.assertEqual((caught.exception.reason, caught.exception.configuration_check), ("CONFIGURATION", expected))
+            self.assertNotIn(PRIVATE, str(caught.exception)); self.assertNotIn("https://", str(caught.exception))
+
     def test_endpoint_checks_distinguish_template_and_result_without_private_values(self):
         cases = [
             ("PARENT_TEMPLATE_TEXT", TEMPLATE.replace("/abematv-dash", "/private path"), None),

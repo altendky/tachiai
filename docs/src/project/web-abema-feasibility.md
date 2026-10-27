@@ -504,11 +504,19 @@ All fresh advertised query pairs must survive unchanged in decoded meaning;
 duplicates, encoded/reserved names, malformed escapes and reserved collisions
 refuse. The license URL is validated as configuration only and is never fetched.
 The supported configuration template is intentionally narrow: the existing
-known ABEMA license host, a bounded canonical path exactly preserved from the
-fresh selected template, exact token/program/content placeholders and unchanged
-bounded optional fields. It does not assume a native custom-protection path for
-Widevine. A different fresh contract refuses rather than expanding origins or
-adding helper calls. `configurationMatched` covers the key-system/license-URL
+known ABEMA license host and a bounded canonical path. A literal template path
+must survive exactly; a path containing only the exact nonsecret `{ct}` and
+`{cid}` markers is checked after substituting `program` and the exact episode.
+The complete final path must match. Each content value must be explicitly bound
+by its exact query placeholder or path marker; when present in both places,
+both must match. The fresh media token remains mandatory as the exact `{t}`
+query placeholder. Token/ticket path markers, unknown expressions, percent
+escapes and traversal paths refuse; no general template evaluator is added.
+Other query-name, constant-value and origin restrictions remain unchanged.
+It does not assume a native custom-protection path for Widevine. This validates
+configuration metadata, not permission to request the resulting route. A
+different fresh contract refuses rather than expanding origins or adding helper
+calls. `configurationMatched` covers the key-system/license-URL
 subset only; certificates, license response handling and adapter compatibility
 remain unverified.
 
@@ -554,7 +562,10 @@ TACHIAI_ABEMA_PINNED_TEST=1 TACHIAI_ABEMA_PINNED_ASSETS=/path/to/verified-public
 This gate executed the new repository helper and immutable frozen-GET plumbing
 in both phases. With synthetic gateway inputs, the actual pinned comparator
 selected Widevine with either input order and retained custom for a custom-only
-input; the independent parent accepted all three bindings. These are agent-run
+input; the independent parent accepted all three bindings. The current fixture
+also exercises exact `{ct}`/`{cid}` path expansion through the unchanged factory
+in the repository helper and repeats the final path/context binding in the
+parent. These are agent-run
 software fixture observations, not provider eligibility or physical-device
 measurements.
 
@@ -582,10 +593,22 @@ not identify the individual condition, actual endpoint or selected protection.
 No response, template or URL was retained; the result cannot establish a provider
 license rejection or browser DRM incompatibility.
 
-Both attempts used a fresh anonymous guest and owned blank headed browser,
+A third fresh attempt on signed
+`1d4f0ed20f1e748e06c6e25113eed6eda260be28` again passed fresh exact-program
+eligibility, DTO and gateway checks, then refused specifically at
+`PARENT_TEMPLATE_PATH`. Cleanup was confirmed with no grant persisted and no
+MPD, media, certificate, license or CDM operation. The unchanged public builder
+binds nonsecret content values `ct` and `cid` while expanding its template;
+requiring the unexpanded path to contain only literal canonical characters did
+not account for that interface. The narrow path-marker validation above is
+tested with synthetic inputs. The private template was not retained: this
+result identifies the raw-path guard, not the actual template expression or
+selected protection, and no fresh acceptance of the new validation is claimed.
+
+All three attempts used a fresh anonymous guest and owned blank headed browser,
 the fixed legacy replay seed and default host networking. Exit country was not
 independently measured. No GLOBAL News catalogue result was used as replay
-entitlement. Both confirmed owned cleanup with no grant persisted and performed
+entitlement. All confirmed owned cleanup with no grant persisted and performed
 no MPD, media, certificate, license or CDM operation. The next prerequisite is
 verification of the browser endpoint/configuration contract before any admission
 change or protected playback trial.

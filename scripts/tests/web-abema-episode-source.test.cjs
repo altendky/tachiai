@@ -146,3 +146,14 @@ test('configuration checkpoint output is closed and does not expose factory erro
     } finally { Date.now = originalNow; }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('the repository helper retains nonsecret content markers for its unchanged configuration factory', async () => {
+  const directory = fixture();
+  try {
+    const input = envelope();
+    input.gateway.streams[0].drm.license.urlTemplate = 'https://license.p-c3-e.abema-tv.com/fixture/{ct}/{cid}?t={t}';
+    const result = JSON.parse(await proveEpisode(input, directory));
+    assert.ok(!result.outcome && new URL(result.licenseUri).pathname === '/fixture/program/' + EPISODE);
+    assert.ok(new URL(result.licenseUri).searchParams.get('t') === PRIVATE);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

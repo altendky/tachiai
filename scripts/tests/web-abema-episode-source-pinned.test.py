@@ -56,6 +56,7 @@ class PinnedTests(unittest.TestCase):
                         self.assertTrue("outcome" not in item[key], "Actual pinned phase refused")
                         module.validate_binding(item[key], phase, "a" * 32, item["metadata"], item[key]["expiresAtMs"],
                             item["gateway"] if phase == "selection" else None, "SYNTHETIC_TOKEN")
+                    self.assertTrue(module.urllib.parse.urlsplit(item["binding"]["licenseUri"]).path == "/fixture/program/" + module.EPISODE, "Pinned content path did not bind")
                     selections.append(item["binding"]["drm"])
                 self.assertEqual(selections, ["WIDEVINE", "WIDEVINE", "CUSTOM"])
 

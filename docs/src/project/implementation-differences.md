@@ -43,8 +43,11 @@ The separate [ABEMA decoder diagnostic](web-abema-playback.md) now implements a
 bounded fresh GLOBAL metadata/bootstrap entry and an owned Shaka DASH transport
 whose exact SDK references admit init/media bytes. Its page disables encrypted
 media; Android's verified native initial licensing path is not ported. Controlled
-fixture decoding verifies this mechanism locally; actual ABEMA decoding remains
-pending. This adds no product controls or platform UX exception.
+fixture decoding verifies this mechanism locally. Validated inline direct UTC
+timing is parsed without a timing request; a fresh anonymous News source decoded
+for about five seconds with confirmed cleanup. Protected sources, Sumo/replay,
+sustained operation and acoustic output remain unverified. This adds no product
+controls or platform UX exception.
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
 

@@ -116,10 +116,41 @@ unestablished.
 This identifies the first refusal as an inline direct UTC timing declaration;
 it does not establish that its value is valid or that admitting it would complete
 parsing or playback. Its raw value was not retained. The bounded direct-only
-admission below has controlled fixture verification; no fresh provider trial has
-tested it.
+admission below has controlled fixture verification and the fresh observation
+that follows.
 Neither trial establishes a DRM blocker or extension requirement. No fallback
 followed.
+
+### First decoded provider observation
+
+A fresh trial on signed revision
+`780554673dda1167a2356cd97548c4984bf290c3` used Linux x86-64, headed Chrome
+156.0.8078.47, a fresh anonymous GLOBAL News live source, owned dynamic loopback
+origin and default host networking. Exit country was not independently measured.
+Fresh context, guest/profile, media token, exact channel, pinned assets and
+unchanged selector binding passed again. The valid inline direct declaration
+passed without altering the MPD or adding a timing request.
+
+The owned Shaka/MSE player decoded 156 frames at 1280×720 and advanced 5,172 ms,
+with boundary `NONE`, readable HTTP 200 and publication stage `PUBLISH`. The
+accepted counters were two manifests, two initialization requests and 19 media
+requests. Buffered-playhead observations reported AVC video and AAC audio;
+decoded dimensions and advancement were numeric observations, not captured
+pixels. Playback was muted and acoustic output was not tested. This is a bounded
+observation, not sustained playback, manual quality or alignment acceptance.
+
+Normal browser CORS/TLS, omitted credentials, refused redirects, exact reference
+ownership, source/lifetime limits and protection denial remained active. No
+license request or MediaKeySession was created. Owned cleanup was confirmed,
+with no grant persisted. No provider embed, extension or media relay was used;
+fresh source preparation still used the documented local backend/isolated helper,
+so this does not establish website-origin-only bootstrap or select deployment.
+No manifest, timing value, signed URL, provider body or media capture was retained.
+
+This establishes this anonymous News source's bounded browser decoding. It does
+not establish Grand Sumo, replay, entitled/protected sources, browser EME/opaque
+licensing, advertising completeness, renewal or a complete product integration.
+The full provider device flow and entitlement remain unestablished.
 
 ## Transport and lifecycle boundary
 

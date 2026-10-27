@@ -4,8 +4,8 @@ The first implemented slice is a local browser playback harness in `apps/web`,
 tracked by [#364](https://github.com/altendky/tachiai/issues/364) under the
 [web client tracker, #363](https://github.com/altendky/tachiai/issues/363).
 It uses TypeScript, Vite and Shaka Player with the existing Rust/Wasm timing
-facade. This is controlled-media integration infrastructure, not a complete
-web application or demonstrated ABEMA/Twitch playback.
+facade. This controlled-media slice is integration infrastructure, not a complete
+web application or provider acceptance.
 
 The [harness README](../../../apps/web/README.md) provides clean-checkout build,
 development and production-test commands. Generated assets are served under a
@@ -16,6 +16,12 @@ The [controlled two-feed fixture](web-pair-fixture.md) adds independent A/B
 assignment, retained layout, joint transport, shared mix and relative timing.
 Its diagnostic milestone is implemented under #368; full product and provider
 acceptance remain open.
+
+The separate [ABEMA diagnostic](web-abema-playback.md#first-decoded-provider-observation)
+has decoded anonymous GLOBAL News live for about five seconds in the owned
+browser player, after local backend source preparation and without an embed,
+extension or media relay. Sumo, replay, protected playback, sustained operation
+and acoustic output remain unverified; Twitch decoding remains unresolved.
 
 ## Implemented boundary
 

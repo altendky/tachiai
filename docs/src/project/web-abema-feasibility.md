@@ -521,6 +521,17 @@ renewal or product UX approval. Owned container cleanup must settle before its
 result is adopted; uncertainty refuses and retains only the public runtime for
 ownership review.
 
+A CONFIGURATION refusal also carries a fixed `configurationCheck` enum. Its
+HELPER prefix distinguishes factory execution, key-system comparison, license/
+source output types, the one-call guard and output assembly; PARENT distinguishes
+protection/ad-mode validation and fresh-resource association, call count, license
+endpoint, template and resulting query checks. These are owned guard/checkpoint
+labels, never provider error messages, field names or values. The private reader
+independently requires the CONFIGURATION reason and a helper-only enum for a
+helper refusal; other reasons cannot retain this field. The classification does
+not change admission, guard order, selected protection, URL construction or any
+lifetime/cleanup rule.
+
 Browser-free synthetic regressions run in repository hooks:
 
 ```sh
@@ -542,8 +553,19 @@ in both phases. With synthetic gateway inputs, the actual pinned comparator
 selected Widevine with either input order and retained custom for a custom-only
 input; the independent parent accepted all three bindings. These are agent-run
 software fixture observations, not provider eligibility or physical-device
-measurements. No fresh exact-episode provider trial has been performed for this
-diagnostic.
+measurements.
+
+The first fresh exact-episode trial at signed
+`df0d60eeca5b0a3631c0cc1321358930d8515975` verified headed Chrome156/Linux,
+the four public pins, fresh guest/profile/media-token HTTP200, exact program
+HTTP200 and conservative eligibility, the pinned DTO pass and gateway HTTP200.
+It then refused at SOURCE_CONFIG with the broad CONFIGURATION reason. Cleanup
+was confirmed and no grant persisted; no manifest, media, certificate, license
+or CDM operation occurred. No private response, URI or template was retained,
+so the failing predicate and helper/parent origin cannot be reconstructed from
+that result. The fixed subreason diagnostic above is the next bounded step;
+this result does not justify guessing a template/DRM mismatch or loosening a
+guard.
 
 ## Next decision
 

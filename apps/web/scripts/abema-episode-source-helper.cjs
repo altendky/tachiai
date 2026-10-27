@@ -5,6 +5,8 @@ const { createProviderContext } = require('./abema-guest-helper.cjs');
 const EPISODE = '394-72_s10_p8529';
 const REASONS = new Set(['SCHEMA', 'IDENTITY', 'FREE', 'WINDOW', 'RESTRICTION', 'DTO', 'GATEWAY', 'SELECTION',
   'SOURCE_MODE', 'SOURCE_URI', 'CONFIGURATION', 'BINDING', 'CALL_CAP', 'LIFETIME', 'RUNTIME']);
+const CONFIGURATION_CHECKS = new Set(['HELPER_FACTORY', 'HELPER_KEY_SYSTEM', 'HELPER_LICENSE_TYPE',
+  'HELPER_SOURCE_TYPE', 'HELPER_CALL_CAP', 'HELPER_OUTPUT']);
 
 // Duplicate-key and structural validation before any downloaded factory runs.
 function strictJson(text, maximum = 2 * 1024 * 1024) {
@@ -55,7 +57,7 @@ function strictJson(text, maximum = 2 * 1024 * 1024) {
 }
 
 async function proveEpisode(input, directory = '/proof') {
-  let reason = 'SCHEMA';
+  let reason = 'SCHEMA', configurationCheck;
   try {
     const keys = ['context', 'episodeId', 'expiresAtMs', 'metadata', 'navigator', 'nonce', 'phase'];
     if (input?.phase === 'selection') keys.push('gateway');
@@ -78,7 +80,11 @@ async function proveEpisode(input, directory = '/proof') {
       { uri: gatewayUri, body: JSON.stringify(input.phase === 'selection' ? input.gateway : {}) });
     provider.__inputWire = JSON.stringify(input);
     // Every stage label below is owned, never taken from provider data/errors.
-    provider.__stage = value => { if (REASONS.has(value)) reason = value; };
+    provider.__stage = (value, check) => {
+      if (REASONS.has(value) && (value !== 'CONFIGURATION' || CONFIGURATION_CHECKS.has(check))) {
+        reason = value; configurationCheck = value === 'CONFIGURATION' ? check : undefined;
+      }
+    };
     const packet = await vm.runInContext(`(async () => {
       const input = JSON.parse(__inputWire); delete globalThis.__inputWire;
       const browser = __load(60506).N;
@@ -133,19 +139,27 @@ async function proveEpisode(input, directory = '/proof') {
       if (query.length !== 0) throw new Error(); // Current Chrome VOD contract adds only the session fields below.
       const uri = __load(65364).createMediaURL({ playbackURL: url.href, content,
         query: { t: identity.mediaToken, enc: chosen.drm === 'widevine' ? 'wv' : 'clear', dtid: content.source.deviceTypeId } });
-      __stage('CONFIGURATION');
+      __stage('CONFIGURATION', 'HELPER_FACTORY');
       const config = __load(73418).createConfiguration(chosen.drm, chosen.licenseTemplateURL, chosen.certificateTemplateURL, info, content);
+      __stage('CONFIGURATION', 'HELPER_KEY_SYSTEM');
       const systems = __load(75284), drm = chosen.drm === 'widevine' ? 'WIDEVINE' : 'CUSTOM';
-      if (config?.keySystemId !== (drm === 'WIDEVINE' ? systems.WIDEVINE_KEY_SYSTEM_ID : systems.CUSTOM_KEY_SYSTEM_ID) ||
-          typeof config.licenseUrl !== 'string' || typeof uri !== 'string' || __episodeCalls !== 1 || __episodeViolation) throw new Error();
+      if (config?.keySystemId !== (drm === 'WIDEVINE' ? systems.WIDEVINE_KEY_SYSTEM_ID : systems.CUSTOM_KEY_SYSTEM_ID)) throw new Error();
+      __stage('CONFIGURATION', 'HELPER_LICENSE_TYPE');
+      if (typeof config.licenseUrl !== 'string') throw new Error();
+      __stage('CONFIGURATION', 'HELPER_SOURCE_TYPE');
+      if (typeof uri !== 'string') throw new Error();
+      __stage('CONFIGURATION', 'HELPER_CALL_CAP');
+      if (__episodeCalls !== 1 || __episodeViolation) throw new Error();
+      __stage('CONFIGURATION', 'HELPER_OUTPUT');
       return { ...common, ...matches[0], uri, licenseUri: config.licenseUrl, drm, keySystem: drm, adMode, gatewayCalls: __episodeCalls };
     })()`, provider, { timeout: 5000 });
-    if (input.expiresAtMs <= Date.now()) { reason = 'LIFETIME'; throw new Error(); }
+    if (input.expiresAtMs <= Date.now()) { reason = 'LIFETIME'; configurationCheck = undefined; throw new Error(); }
     // A JSON boundary strips prototypes/getters. Only the parent consumes this private packet.
     const output = JSON.stringify(packet);
     if (Buffer.byteLength(output) > 16384) throw new Error();
     return output;
-  } catch { return JSON.stringify({ outcome: 'REFUSED', reason }); }
+  } catch { return JSON.stringify({ outcome: 'REFUSED', reason,
+    ...(reason === 'CONFIGURATION' ? { configurationCheck } : {}) }); }
 }
 
 if (require.main === module) {

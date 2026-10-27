@@ -25,6 +25,7 @@ function fixture() {
       async fetchAvailableStreams(useCase) {
         const reply = await fetch('https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/'+this.content.source.arin, {mode:'cors',headers:{accept:'application/json'}});
         const data = await reply.json();
+        globalThis.__configBehavior = data.fixtureConfig;
         if (data.fixtureForbidden) __load(14405);
         if (data.fixtureRepeat) await fetch('https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/'+this.content.source.arin, {mode:'cors',headers:{accept:'application/json'}});
         if (data.fixtureFeature) this.filter.flags.getValue('unverified','false');
@@ -33,10 +34,16 @@ function fixture() {
       }
     }; },
     32025(m) { m.exports.getManifestQuery = () => []; },
-    65364(m) { m.exports.createMediaURL = ({playbackURL,query}) => { const url=new URL(playbackURL);for(const [key,value] of Object.entries(query)) if(value!==undefined) url.searchParams.append(key,value); return url.href; }; },
+    65364(m) { m.exports.createMediaURL = ({playbackURL,query}) => { if(globalThis.__configBehavior==='source-type') return 1; const url=new URL(playbackURL);for(const [key,value] of Object.entries(query)) if(value!==undefined) url.searchParams.append(key,value); return url.href; }; },
     75284(m) { m.exports.WIDEVINE_KEY_SYSTEM_ID='fixture-widevine';m.exports.CUSTOM_KEY_SYSTEM_ID='fixture-custom'; },
-    73418(m) { m.exports.createConfiguration = (drm,template,certificate,info,content) => ({keySystemId:drm==='widevine'?'fixture-widevine':'fixture-custom',
-      licenseUrl:template.replace('{t}',info.user.mediaToken).replace('{ct}','program').replace('{cid}',content.source.programId)}); },
+    73418(m) { m.exports.createConfiguration = (drm,template,certificate,info,content) => {
+      const behavior=globalThis.__configBehavior;
+      if(behavior==='factory') throw new Error('${PRIVATE}');
+      if(behavior==='call-cap') { try { __episodeRefuse(); } catch {} }
+      return {keySystemId:behavior==='key-system'?'${PRIVATE}':drm==='widevine'?'fixture-widevine':'fixture-custom',
+        licenseUrl:behavior==='license-type'?null:behavior==='output'?'${PRIVATE}'.repeat(2000):
+          template.replace('{t}',info.user.mediaToken).replace('{ct}','program').replace('{cid}',content.source.programId)};
+    }; },
     14405() { globalThis.__forbiddenFactoryExecuted = true; },
   }]);`;
   fs.writeFileSync(path.join(directory, 'application.js'), application);
@@ -116,5 +123,26 @@ test('both private phases bind original identity and first selected configuratio
     const first = envelope(); first.gateway.streams[0].fixtureRawKey = true;
     first.gateway.streams.push({ ...first.gateway.streams[0], fixtureRawKey: false });
     assert.equal(JSON.parse(await proveEpisode(first, directory)).outcome, 'REFUSED');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('configuration checkpoint output is closed and does not expose factory errors or private values', async () => {
+  const directory = fixture();
+  try {
+    for (const [behavior, check] of [['factory', 'HELPER_FACTORY'], ['key-system', 'HELPER_KEY_SYSTEM'],
+      ['license-type', 'HELPER_LICENSE_TYPE'], ['source-type', 'HELPER_SOURCE_TYPE'],
+      ['call-cap', 'HELPER_CALL_CAP'], ['output', 'HELPER_OUTPUT']]) {
+      const input = envelope(); input.gateway.fixtureConfig = behavior;
+      const result = await proveEpisode(input, directory);
+      assert.deepEqual(JSON.parse(result), { outcome: 'REFUSED', reason: 'CONFIGURATION', configurationCheck: check });
+      assert.ok(!result.includes(PRIVATE) && !result.includes('https://'));
+    }
+    const expired = envelope(); expired.expiresAtMs = 1;
+    assert.deepEqual(JSON.parse(await proveEpisode(expired, directory)), { outcome: 'REFUSED', reason: 'SCHEMA' });
+    const late = envelope(), originalNow = Date.now, start = originalNow(); let calls = 0;
+    try {
+      Date.now = () => ++calls >= 4 ? late.expiresAtMs : start;
+      assert.deepEqual(JSON.parse(await proveEpisode(late, directory)), { outcome: 'REFUSED', reason: 'LIFETIME' });
+    } finally { Date.now = originalNow; }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

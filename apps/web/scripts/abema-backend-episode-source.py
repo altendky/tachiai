@@ -31,6 +31,9 @@ GATEWAY = "https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/"
 LIMIT = 512 * 1024
 REASONS = {"SCHEMA", "IDENTITY", "FREE", "WINDOW", "RESTRICTION", "DTO", "GATEWAY", "SELECTION",
            "SOURCE_MODE", "SOURCE_URI", "CONFIGURATION", "BINDING", "CALL_CAP", "LIFETIME", "RUNTIME"}
+HELPER_CONFIGURATION_CHECKS = {"HELPER_FACTORY", "HELPER_KEY_SYSTEM", "HELPER_LICENSE_TYPE", "HELPER_SOURCE_TYPE", "HELPER_CALL_CAP", "HELPER_OUTPUT"}
+CONFIGURATION_CHECKS = HELPER_CONFIGURATION_CHECKS | {"PARENT_PROTECTION", "PARENT_AD_MODE", "PARENT_CALL_CAP",
+    "PARENT_PROTECTION_ASSOCIATION", "PARENT_AD_MODE_ASSOCIATION", "PARENT_LICENSE_ENDPOINT", "PARENT_LICENSE_TEMPLATE", "PARENT_LICENSE_QUERY"}
 # Public system identifiers from the same pinned provider mapping, not keys.
 DRM_SYSTEMS = {"WIDEVINE": "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed", "CUSTOM": "81376844-f976-481e-a84e-cc25d39b0b33"}
 AD_MODES = {0: "NONE", 1: "ABEMA_DEFAULT", 4: "CSAI", "AD_INSERTION_MODE_NONE": "NONE",
@@ -38,12 +41,14 @@ AD_MODES = {0: "NONE", 1: "ABEMA_DEFAULT", 4: "CSAI", "AD_INSERTION_MODE_NONE": 
 
 
 class EpisodeRefused(Refused):
-    def __init__(self, reason):
+    def __init__(self, reason, configuration_check=None):
         if type(reason) is not str or reason not in REASONS: raise Refused()
+        if configuration_check is not None and (reason != "CONFIGURATION" or type(configuration_check) is not str or configuration_check not in CONFIGURATION_CHECKS): raise Refused()
         self.reason = reason
+        self.configuration_check = configuration_check
 
 
-def refuse(reason): raise EpisodeRefused(reason)
+def refuse(reason, configuration_check=None): raise EpisodeRefused(reason, configuration_check)
 
 
 def arin_value(value):
@@ -179,14 +184,17 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
     selected = {"uri", "licenseUri", "streamIndex", "manifestIndex", "drm", "keySystem", "adMode", "gatewayCalls"}
     if not isinstance(value, dict) or set(value) != common | (selected if phase == "selection" else set()) or value["nonce"] != nonce or value["episodeId"] != EPISODE or value["arin"] != metadata["playback"]["arin"] or type(value["expiresAtMs"]) is not int or value["expiresAtMs"] != expiry or value["browser"] != {"name": "Chrome", "major": "156", "os": "Linux", "engine": "Blink"}: refuse("BINDING")
     if phase == "metadata": return
-    if type(value["drm"]) is not str or value["drm"] not in {"WIDEVINE", "CUSTOM"} or value["keySystem"] != value["drm"] or type(value["adMode"]) is not str or value["adMode"] not in {"NONE", "CSAI", "ABEMA_DEFAULT"} or type(value["gatewayCalls"]) is not int or value["gatewayCalls"] != 1: refuse("CONFIGURATION")
+    if type(value["drm"]) is not str or value["drm"] not in {"WIDEVINE", "CUSTOM"} or value["keySystem"] != value["drm"]: refuse("CONFIGURATION", "PARENT_PROTECTION")
+    if type(value["adMode"]) is not str or value["adMode"] not in {"NONE", "CSAI", "ABEMA_DEFAULT"}: refuse("CONFIGURATION", "PARENT_AD_MODE")
+    if type(value["gatewayCalls"]) is not int or value["gatewayCalls"] != 1: refuse("CONFIGURATION", "PARENT_CALL_CAP")
     try:
         streams = gateway["streams"]
         index, position = value["streamIndex"], value["manifestIndex"]
         if type(index) is not int or type(position) is not int or not 0 <= index < len(streams) or not 0 <= position < len(streams[index]["manifests"]): refuse("BINDING")
         stream = streams[index]; manifest = stream["manifests"][position]
         mode = manifest["adInsertion"]["mode"]
-        if stream["drm"]["systemId"] != DRM_SYSTEMS[value["drm"]] or type(mode) not in {int, str} or AD_MODES.get(mode) != value["adMode"]: refuse("CONFIGURATION")
+        if stream["drm"]["systemId"] != DRM_SYSTEMS[value["drm"]]: refuse("CONFIGURATION", "PARENT_PROTECTION_ASSOCIATION")
+        if type(mode) not in {int, str} or AD_MODES.get(mode) != value["adMode"]: refuse("CONFIGURATION", "PARENT_AD_MODE_ASSOCIATION")
         if sum(item.get("arin") == manifest["arin"] for candidate in streams for item in candidate.get("manifests", [])) != 1: refuse("BINDING")
         advertised = media_uri(manifest["url"])
         uri = media_uri(value["uri"])
@@ -195,10 +203,11 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
         if reserved & base_query.keys() or uri[:3] != advertised[:3] or query != {**base_query, "t": media_token, "enc": "wv" if value["drm"] == "WIDEVINE" else "clear"}: refuse("BINDING")
         template = urllib.parse.urlsplit(stream["drm"]["license"]["urlTemplate"])
         license_uri = urllib.parse.urlsplit(value["licenseUri"])
-        if any(not isinstance(item, str) or len(item) > 4096 or re.search(r"[\x00-\x20\\#]", item) for item in (stream["drm"]["license"]["urlTemplate"], value["licenseUri"])) or any(item.scheme != "https" or item.netloc != "license.p-c3-e.abema-tv.com" or item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", item.path) or any(part in {".", ".."} for part in item.path.split("/")) for item in (template, license_uri)) or license_uri.path != template.path: refuse("CONFIGURATION")
+        if any(not isinstance(item, str) or len(item) > 4096 or re.search(r"[\x00-\x20\\#]", item) for item in (stream["drm"]["license"]["urlTemplate"], value["licenseUri"])) or any(item.scheme != "https" or item.netloc != "license.p-c3-e.abema-tv.com" or item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", item.path) or any(part in {".", ".."} for part in item.path.split("/")) for item in (template, license_uri)) or license_uri.path != template.path: refuse("CONFIGURATION", "PARENT_LICENSE_ENDPOINT")
         template_query, license_query = source.playlist_query(template.query), source.playlist_query(license_uri.query)
         replacements = {"t": media_token, "ct": "program", "cid": EPISODE}
-        if set(template_query) - {"t", "ct", "cid", "tt", "tk", "dt"} or any(template_query.get(key) != "{" + key + "}" for key in replacements) or any("{" in item or "}" in item for key, item in template_query.items() if key not in replacements) or license_query != {key: replacements.get(key, item) for key, item in template_query.items()}: refuse("CONFIGURATION")
+        if set(template_query) - {"t", "ct", "cid", "tt", "tk", "dt"} or any(template_query.get(key) != "{" + key + "}" for key in replacements) or any("{" in item or "}" in item for key, item in template_query.items() if key not in replacements): refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+        if license_query != {key: replacements.get(key, item) for key, item in template_query.items()}: refuse("CONFIGURATION", "PARENT_LICENSE_QUERY")
     except EpisodeRefused: raise
     except (KeyError, TypeError, ValueError, IndexError, Refused): refuse("BINDING")
 
@@ -276,7 +285,11 @@ class EpisodeAttempt(source.SourceAttempt):
             private = None
             if result.stderr or result.code not in {0, 1}: refuse("RUNTIME")
             value = bootstrap.strict_json(result.output, 16384)
-            if isinstance(value, dict) and set(value) == {"outcome", "reason"} and value["outcome"] == "REFUSED": refuse(value["reason"])
+            if isinstance(value, dict) and value.get("outcome") == "REFUSED":
+                if set(value) == {"outcome", "reason", "configurationCheck"} and value["reason"] == "CONFIGURATION" and type(value["configurationCheck"]) is str and value["configurationCheck"] in HELPER_CONFIGURATION_CHECKS:
+                    refuse(value["reason"], value["configurationCheck"])
+                if set(value) != {"outcome", "reason"} or value["reason"] == "CONFIGURATION": refuse("RUNTIME")
+                refuse(value["reason"])
             if result.code != 0: refuse("RUNTIME")
         self.alive(envelope["expiresAtMs"])
         return value
@@ -311,7 +324,8 @@ class EpisodeAttempt(source.SourceAttempt):
                     adMode=binding["adMode"], manifestRequests=False, mediaRequests=False, licenseRequests=False,
                     certificateRequests=False, mediaKeySessions=False, deviceFlowCompleted=False, entitlementEstablished=False)
         except EpisodeRefused as failure:
-            self.report("EPISODE_REFUSED", reason=failure.reason)
+            self.report("EPISODE_REFUSED", reason=failure.reason,
+                **({"configurationCheck": failure.configuration_check} if failure.configuration_check is not None else {}))
             raise
         finally:
             context.clear()

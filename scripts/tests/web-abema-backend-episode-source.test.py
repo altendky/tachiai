@@ -128,6 +128,25 @@ class EpisodeTests(unittest.TestCase):
             broken = {**packet, "licenseUri": packet["licenseUri"].replace("/fixture-widevine?", changed + "?")}
             with self.assertRaises(module.EpisodeRefused): validate(broken, data)
 
+    def test_configuration_checks_are_fixed_precise_and_preserve_first_guard(self):
+        cases = [("PARENT_PROTECTION", {"keySystem": PRIVATE}, None),
+            ("PARENT_PROTECTION", {"keySystem": PRIVATE, "gatewayCalls": 0}, None),
+            ("PARENT_AD_MODE", {"adMode": PRIVATE}, None), ("PARENT_CALL_CAP", {"gatewayCalls": 0}, None),
+            ("PARENT_PROTECTION_ASSOCIATION", {"drm": "CUSTOM", "keySystem": "CUSTOM"}, None),
+            ("PARENT_AD_MODE_ASSOCIATION", {"adMode": "CSAI"}, None),
+            ("PARENT_LICENSE_ENDPOINT", {"licenseUri": binding()["licenseUri"].replace("license.p-c3-e.abema-tv.com", "private.invalid")}, None),
+            ("PARENT_LICENSE_TEMPLATE", {}, TEMPLATE + "&extra=" + PRIVATE),
+            ("PARENT_LICENSE_QUERY", {"licenseUri": binding()["licenseUri"].replace(PRIVATE, "STALE")}, None)]
+        for expected, changes, template in cases:
+            raw = gateway()
+            if template: raw["streams"][0]["drm"]["license"]["urlTemplate"] = template
+            with self.subTest(expected=expected), self.assertRaises(module.EpisodeRefused) as caught:
+                module.validate_binding({**binding(), **changes}, "selection", NONCE, metadata(), END * 1000, raw, PRIVATE)
+            self.assertEqual((caught.exception.reason, caught.exception.configuration_check), ("CONFIGURATION", expected))
+            self.assertNotIn(PRIVATE, str(caught.exception))
+        for reason, check in (("BINDING", "PARENT_LICENSE_QUERY"), ("CONFIGURATION", PRIVATE), ("CONFIGURATION", [])):
+            with self.assertRaises(module.Refused): module.EpisodeRefused(reason, check)
+
     def test_old_completion_never_receives_private_context_and_option_device_is_original_request(self):
         class Transport:
             def request(self, operation, fields, timeout):
@@ -177,9 +196,10 @@ class EpisodeTests(unittest.TestCase):
                 self.assert_context = set(envelope["context"]) == {"userId", "deviceId", "mediaToken"}
                 packet = binding(); packet["nonce"] = envelope["nonce"]
                 if envelope["phase"] == "metadata": return {key: packet[key] for key in ("nonce", "episodeId", "arin", "expiresAtMs", "browser")}
-                if self.attack: packet["uri"] = packet["uri"].replace(PRIVATE, "STALE")
+                if self.attack is True: packet["uri"] = packet["uri"].replace(PRIVATE, "STALE")
+                elif self.attack == "configuration": packet["keySystem"] = PRIVATE
                 return packet
-        for attack in (False, True):
+        for attack in (False, True, "configuration"):
             output, transport = io.StringIO(), Metadata()
             attempt = Attempt(output, metadata=transport); attempt.phases = []; attempt.attack = attack
             attempt.navigator = {"platform": "Linux x86_64"}
@@ -193,6 +213,7 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(transport.calls, [("EPISODE", {"bearer"}), ("GATEWAY", {"arin"})])
             self.assertNotIn(PRIVATE, output.getvalue()); self.assertNotIn("https://", output.getvalue())
             self.assertEqual("EPISODE_SOURCE_CONFIG_ACCEPTED" in output.getvalue(), not attack)
+            self.assertEqual('"configurationCheck": "PARENT_PROTECTION"' in output.getvalue(), attack == "configuration")
 
     def test_helper_cleanup_precedes_adoption_and_late_result_refuses(self):
         events = []
@@ -262,6 +283,26 @@ class EpisodeTests(unittest.TestCase):
         result = module.episode_command(command, 2, input_data=data)
         self.assertEqual((result.code, result.output, result.stderr), (0, b"32769\n", False))
         with self.assertRaises(module.Refused): module.episode_command(command, 2, input_data=b"x" * (2 * 1024 * 1024 + 1))
+
+    def test_private_helper_refusal_diagnostics_have_independent_association_guard(self):
+        class Container:
+            def __init__(self, *args, **kwargs): pass
+            @contextmanager
+            def opened(self):
+                try: yield "owned"
+                finally: retired.append(True)
+            def command(self, *args, **kwargs): return bootstrap.CommandResult(0, wire(reply))
+        attempt = module.EpisodeAttempt(io.StringIO())
+        valid = {"outcome": "REFUSED", "reason": "CONFIGURATION", "configurationCheck": "HELPER_FACTORY"}
+        for reply in (valid, {**valid, "configurationCheck": PRIVATE}, {**valid, "configurationCheck": []},
+                      {**valid, "configurationCheck": "PARENT_LICENSE_QUERY"}, {**valid, "reason": "BINDING"},
+                      {**valid, "private": PRIVATE}, {"outcome": "REFUSED", "reason": "CONFIGURATION"}):
+            retired = []
+            with patch.object(bootstrap, "OwnedContainer", Container), patch.object(bootstrap.time, "time", return_value=NOW / 1000):
+                with self.assertRaises(module.EpisodeRefused) as caught: attempt.helper(None, None, {"expiresAtMs": END * 1000})
+            expected = ("CONFIGURATION", "HELPER_FACTORY") if reply == valid else ("RUNTIME", None)
+            self.assertEqual((caught.exception.reason, caught.exception.configuration_check), expected)
+            self.assertEqual(retired, [True]); self.assertNotIn(PRIVATE, str(caught.exception))
 
     def test_metadata_worker_cleanup_precedes_reply_on_timeout_cancel_and_uncertainty(self):
         for mode in ("ok", "timeout", "cancel", "uncertain"):

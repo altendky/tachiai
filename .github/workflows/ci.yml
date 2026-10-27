@@ -242,6 +242,9 @@ jobs:
           node --test scripts/tests/web-abema-browser-playback.test.mjs
           npm run test:abema:local --prefix apps/web
 
+      - name: Test Twitch media diagnostic boundaries with local fixtures
+        run: npm run test:twitch:media --prefix apps/web
+
   all:
     name: all
     if: ${{ !cancelled() }}

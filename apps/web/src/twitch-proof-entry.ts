@@ -2,7 +2,8 @@ import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { TwitchProofSession, TWITCH_CASES, isTwitchCase, allowedTwitchMedia, type TwitchCase, type TwitchDiagnostic } from './twitch-proof';
 import type { TimingCore } from './player';
 import { TwitchOwnedLifetime } from './twitch-owned-lifetime';
-import { installTwitchMediaTransport } from './twitch-shaka-transport';
+import { installTwitchMediaTransport, twitchMediaRequest } from './twitch-shaka-transport';
+import { TwitchMediaDiagnostics, TwitchMediaObservers, ownedMediaObserver } from './twitch-media-diagnostic';
 
 // Separate provider host: BrowserPlayer's fixture-only source type and origin
 // assumptions are intentionally not broadened. Reuse the harness's pinned
@@ -22,11 +23,11 @@ const ownership = new TwitchOwnedLifetime();
 let generation = 0;
 let mediaDiagnostic: TwitchDiagnostic | undefined;
 let failedDiagnostic: TwitchDiagnostic | undefined;
+let mediaEvidence: TwitchMediaDiagnostics | undefined;
+const mediaObservers = new TwitchMediaObservers();
 const play = document.getElementById('play') as HTMLButtonElement;
 installTwitchMediaTransport((uri) => !stopped && !ownership.retiring && selected !== undefined &&
-  allowedTwitchMedia(uri, TWITCH_CASES[selected].kind === 'replay'), (http) => {
-  if (!stopped && !ownership.retiring && mediaDiagnostic) mediaDiagnostic = { ...mediaDiagnostic, http };
-});
+  allowedTwitchMedia(uri, TWITCH_CASES[selected].kind === 'replay'), (request) => mediaObservers.take(request));
 
 function stopPlayer(): Promise<void> {
   ++generation;
@@ -49,17 +50,20 @@ function stopPlayer(): Promise<void> {
 const proof = {
   begin: () => session.begin(),
   poll: () => session.poll(),
-  diagnostic: (): TwitchDiagnostic => ({ ...(failedDiagnostic ?? mediaDiagnostic ?? session.diagnostic()) }),
+  diagnostic: (): TwitchDiagnostic => ({ ...(failedDiagnostic ?? mediaDiagnostic ?? session.diagnostic()),
+    ...(mediaEvidence ? { media: mediaEvidence.snapshot() } : {}) }),
   async prepare(value: string): Promise<'ready' | 'refused'> {
     if (stopped || preparing || !isTwitchCase(value) || !ownership.acquire()) return 'refused';
     const preparation = ++generation;
     preparing = true;
     failedDiagnostic = undefined;
     mediaDiagnostic = undefined;
+    mediaEvidence = undefined;
     try {
       const uri = await session.source(value);
       if (stopped || preparation !== generation || ownership.retiring) throw new Error();
       mediaDiagnostic = { stage: 'player-attach' };
+      const evidence = mediaEvidence = new TwitchMediaDiagnostics();
       if (typeof MediaSource === 'undefined' || !shaka.Player.isBrowserSupported()) throw new Error();
       selected = value;
       failure = false;
@@ -70,10 +74,11 @@ const proof = {
       document.getElementById('surface')!.append(video);
       const owned = new shaka.Player();
       player = owned;
-      owned.addEventListener('error', () => {
-        if (!stopped && player === owned && !ownership.retiring) {
+      owned.addEventListener('error', (event) => {
+        if (!stopped && player === owned && preparation === generation && !ownership.retiring) {
           failure = true;
-          failedDiagnostic = { ...(mediaDiagnostic ?? { stage: 'player-playback' }),
+          evidence.sdk((event as Event & { detail?: unknown }).detail);
+          failedDiagnostic ??= { ...(mediaDiagnostic ?? { stage: 'player-playback' }),
             stage: mediaDiagnostic?.stage === 'player-ready' ? 'player-playback' : mediaDiagnostic?.stage ?? 'player-playback' };
         }
       });
@@ -82,9 +87,20 @@ const proof = {
           useNativeHlsForFairPlay: false, fallbackToNativeHlsOnMseError: false } });
       await owned.attach(video);
       if (stopped || preparation !== generation || player !== owned || ownership.retiring) throw new Error();
-      owned.getNetworkingEngine()!.registerRequestFilter((_type, request) => {
+      owned.getNetworkingEngine()!.registerRequestFilter((type, request) => {
+        const identity = twitchMediaRequest(type, request.method);
+        // Binding occurs before the filter→plugin async gap, never against the
+        // player that happens to be current when a delayed plugin starts.
+        const observe = ownedMediaObserver(() => !stopped && !ownership.retiring && player === owned && preparation === generation,
+          evidence, (http) => { if (mediaDiagnostic) mediaDiagnostic = { ...mediaDiagnostic, http }; },
+          () => { if (mediaDiagnostic) failedDiagnostic ??= { ...mediaDiagnostic }; });
+        mediaObservers.bind(request, observe);
+        observe({ checkpoint: 'request-filter', ...identity });
         if (stopped || player !== owned || !request.uris.length ||
-            request.uris.some((raw) => !allowedTwitchMedia(raw, TWITCH_CASES[value].kind === 'replay'))) throw new Error();
+            request.uris.some((raw) => !allowedTwitchMedia(raw, TWITCH_CASES[value].kind === 'replay'))) {
+          observe({ checkpoint: 'request-filter', refusal: 'policy', ...identity });
+          throw new Error();
+        }
         request.allowCrossSiteCredentials = false;
         // Access grant is confined to OAuth/GraphQL; never put it on CDN media.
         request.headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() === 'range'));
@@ -93,7 +109,10 @@ const proof = {
       mediaDiagnostic = { stage: 'player-load' };
       try {
         await Promise.race([owned.load(uri), new Promise((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error()), 30_000);
+          timer = setTimeout(() => {
+            if (!stopped && !ownership.retiring && player === owned && preparation === generation) evidence.loadTimeout();
+            reject(new Error());
+          }, 30_000);
         })]);
       } finally { clearTimeout(timer); }
       if (stopped || preparation !== generation || player !== owned || ownership.retiring || failure ||
@@ -101,7 +120,8 @@ const proof = {
       play.disabled = false;
       mediaDiagnostic = { ...mediaDiagnostic, stage: 'player-ready' };
       return 'ready';
-    } catch {
+    } catch (error) {
+      if (preparation === generation && !ownership.retiring && !stopped) mediaEvidence?.sdk(error);
       failedDiagnostic ??= { ...(mediaDiagnostic ?? session.diagnostic()) };
       await stopPlayer().catch(() => { failure = true; });
       return 'refused';

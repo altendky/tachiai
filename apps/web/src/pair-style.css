@@ -28,4 +28,8 @@ video { object-fit: contain; pointer-events: none; }
 #dock section > div { margin: .3rem; }
 #more-menu { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .4rem; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem; }
+#quality-fields { align-items: stretch !important; }
+#quality-fields fieldset { min-width: 0; flex: 1 1 300px; }
+#quality-fields select { max-width: 100%; }
+#quality-fields p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fixture-note { font-size: .85rem; color: #c1c3c7; }

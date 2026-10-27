@@ -20,7 +20,7 @@
           <tbody id="source-list"></tbody>
         </table>
         <button id="watch" disabled>Watch</button>
-        <p>Duplicate selections use independent players. Quality, manual orientation and complete product settings/navigation remain pending.</p>
+        <p>Duplicate selections use independent players. Saved quality defaults apply only to these controlled fixtures. Manual orientation and complete product settings/navigation remain pending.</p>
       </section>
       <section id="viewer" hidden aria-label="Controlled pair viewer">
         <div id="stage">
@@ -54,9 +54,15 @@
             <p id="adjustment"></p>
           </section>
           <section id="status-panel" hidden aria-label="Playback status"><pre id="observations"></pre></section>
+          <section id="quality-panel" hidden aria-label="Quality">
+            <p>Feed overrides last for this session. Save stream defaults explicitly. Auto retains audio-first selection and device constraints.</p>
+            <div id="quality-fields"></div>
+            <p id="quality-message"></p>
+          </section>
           <div id="more-menu" hidden role="menu" aria-label="More">
             <button id="swap" role="menuitem">Swap primary feed</button>
             <button id="status" role="menuitem">Playback status</button>
+            <button id="quality" role="menuitem">Quality</button>
           </div>
           <nav aria-label="Playback controls">
             <button id="sources">Sources</button>
@@ -69,7 +75,7 @@
         </div>
       </section>
       <p id="pair-result" role="status">Loading timing core…</p>
-      <p class="fixture-note">Fixture scope: controller, media and Wasm checks. Full responsive product controls, provider accounts/routes, quality and orientation controls require their own implementation and acceptance.</p>
+      <p class="fixture-note">Fixture scope: controller, controlled quality, media and Wasm checks. Full responsive product controls, provider accounts/routes, provider quality and orientation controls require their own implementation and acceptance.</p>
     </main>
     <script type="module" src="/src/pair-main.ts"></script>
   </body>

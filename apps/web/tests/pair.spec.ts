@@ -85,7 +85,7 @@ test('centre-unity mixing, mute restoration and fine arrows preserve the other c
 
 test('one source list assigns A and B independently with 48 px checkbox targets', async ({ page }) => {
   await expect(page.getByRole('table', { name: 'Controlled sources' })).toHaveCount(1);
-  await expect(page.getByRole('checkbox')).toHaveCount(8);
+  await expect(page.getByRole('checkbox')).toHaveCount(10);
   await page.locator('#source-A-a-dash').check();
   await page.locator('#source-B-a-dash').check();
   await page.locator('#source-A-b-hls').check();

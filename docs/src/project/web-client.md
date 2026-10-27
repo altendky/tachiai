@@ -32,11 +32,14 @@ the browser host dispatches them and checks observed settlement. Clocks are
 checked integer milliseconds with unknown values left absent. Source-specific
 authentication, DRM exchanges and network effects stay outside Rust.
 
-Both HLS and DASH fixtures are packaged locally, using FFmpeg stream copy, from
+The original A/B HLS and DASH fixtures are packaged locally, using FFmpeg stream copy, from
 the repository's [owned controlled media](controlled-mirroring-fixture.md).
 Their committed hashes are checked before packaging. They have no provider
 sessions, advertisements or protected content. The diagnostic controls are not
 an alternate web product design.
+A separate [controlled quality ladder](web-pair-fixture.md#controlled-quality-preferences)
+encodes owned A media into two video and two comparable audio renditions for
+the pair's common Quality preferences and observed-format checks.
 
 ## Verification scope
 

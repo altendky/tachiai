@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareQualityFixture } from './prepare-quality-fixture.mjs';
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(app, '../..');
@@ -33,6 +34,7 @@ for (const name of ['a', 'b']) {
   provenance.push({ name, sha256: hash });
 }
 writeFileSync(resolve(output, 'media/provenance.json'), JSON.stringify(provenance, null, 2) + '\n');
+prepareQualityFixture(root, output);
 
 // Include the selected package's upstream notices with every build.
 const notices = resolve(output, 'licenses/shaka-player');

@@ -1,6 +1,7 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { milliseconds } from './timing';
 import { playheadFormat, type PlayheadFormats } from './formats';
+import { PlayerQuality, type QualityPreferences, type QualitySnapshot } from './quality';
 
 export type TimingCore = typeof import('../../../build/core/web/tachiai_core_web.js');
 export type SessionState = 'loading' | 'ready' | 'failed' | 'disposed';
@@ -31,6 +32,7 @@ export interface Observation {
   qualities: number[];
   activeQuality?: number;
   playheadFormats: PlayheadFormats;
+  quality: QualitySnapshot;
 }
 
 export interface PlayerAdapter {
@@ -57,6 +59,7 @@ export class BrowserPlayer implements PlayerAdapter {
   private disposal?: Promise<void>;
   private readonly lifetime = new AbortController();
   private formats: PlayheadFormats = { basis: 'last-sdk-buffered-playhead' };
+  private readonly quality = new PlayerQuality();
 
   constructor(
     readonly source: Source,
@@ -73,6 +76,7 @@ export class BrowserPlayer implements PlayerAdapter {
     this.player.addEventListener('error', () => {
       if (this.state !== 'disposed') {
         this.state = 'failed';
+        this.quality.close();
         this.formats = { basis: 'last-sdk-buffered-playhead' };
         this.video.pause();
         this.publish();
@@ -92,6 +96,8 @@ export class BrowserPlayer implements PlayerAdapter {
       this.publish();
     });
     this.player.configure({
+      abrFactory: this.quality.factory(this.player.getConfiguration().abrFactory),
+      abr: { allowAudioFallback: false, restrictToScreenSize: true, restrictToElementSize: false },
       manifest: { retryParameters: { maxAttempts: 1 } },
       streaming: { retryParameters: { maxAttempts: 1 }, observeQualityChanges: true },
     });
@@ -114,6 +120,7 @@ export class BrowserPlayer implements PlayerAdapter {
     } catch {
       if (this.lifetime.signal.aborted) return 'cancelled';
       this.state = 'failed';
+      this.quality.close();
       this.formats = { basis: 'last-sdk-buffered-playhead' };
       this.publish();
       return 'failed';
@@ -137,6 +144,7 @@ export class BrowserPlayer implements PlayerAdapter {
       seekable: Boolean(range && range.end > range.start),
       qualities: tracks.map((track) => track.id),
       activeQuality: tracks.find((track) => track.active)?.id,
+      quality: this.quality.snapshot(),
       playheadFormats: { basis: this.formats.basis,
         video: this.formats.video ? { ...this.formats.video } : undefined,
         audio: this.formats.audio ? { ...this.formats.audio } : undefined },
@@ -175,6 +183,22 @@ export class BrowserPlayer implements PlayerAdapter {
     this.player.configure({ abr: { enabled: false } });
     this.player.selectVariantTrack(track, false);
     return 'completed';
+  }
+
+  setQualityPreferences(preferences: QualityPreferences): CommandResult {
+    if (this.state !== 'ready') return 'unavailable';
+    if (this.quality.matches(preferences)) return 'completed';
+    if (!this.quality.request(preferences)) return 'invalid';
+    try {
+      // Configure re-runs the SDK's current support/content criteria before our
+      // ABR boundary. Dispatch accepts a request, never confirms consumption.
+      if (!this.player.configure({ abr: { enabled: true } })) return 'failed';
+      this.quality.dispatch();
+      this.quality.committed();
+      this.publish();
+      return 'completed';
+    } catch { return 'failed'; }
+    finally { this.quality.cancelDispatch(); }
   }
 
   relativePlan(deltaMs: bigint): RelativePlan {
@@ -266,6 +290,7 @@ export class BrowserPlayer implements PlayerAdapter {
   dispose(): Promise<void> {
     if (!this.disposal) {
       this.state = 'disposed';
+      this.quality.close();
       this.formats = { basis: 'last-sdk-buffered-playhead' };
       this.lifetime.abort();
       this.video.pause();

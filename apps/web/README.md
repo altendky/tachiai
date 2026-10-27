@@ -9,9 +9,10 @@ provider/account implementation or a provider playback acceptance result.
 ## Build and run
 
 Use the repository's pinned mise tools. Install the Wasm target, FFmpeg and an
-ordinary Google Chrome executable. FFmpeg only packages the existing owned MP4
-fixtures with stream copy; no provider media is downloaded and no new media is
-encoded. If FFmpeg is not on PATH, set `FFMPEG=/path/to/ffmpeg` for preparation.
+ordinary Google Chrome executable. FFmpeg packages the existing owned A/B MP4
+fixtures with stream copy and encodes a separate owned quality ladder from A.
+No provider media is downloaded. If FFmpeg is not on PATH, set
+`FFMPEG=/path/to/ffmpeg` for preparation.
 
 From the repository root:
 
@@ -60,7 +61,8 @@ dependency notices accompany the generated site under `licenses/`.
 - Error payloads stay inside the player; application results use closed values.
   There are no provider credentials, authentication adapters, network brokers,
   routing changes, public URL import or provider media in this slice.
-- Fixtures have one rendition and no advertisements. Their timing/gain behavior
+- A/B fixtures have one rendition; the separate DASH quality fixture has two
+  video and two comparable audio renditions. All are ad-free. Timing/gain behavior
   does not establish provider quality, ad policy, DRM, live-window support or
   acoustic output. Actual live sources and their capability binding need their
   separate provider investigations.
@@ -73,10 +75,15 @@ See the [web evidence and next steps](../../docs/src/project/web-client.md).
 explicit A/B assignment and Watch, independent duplicate sessions, common
 mix/mutes, retained primary/floating geometry, full-step relative timing and
 individual retry. Watch requests playback as each feed becomes ready. The
-existing single-player diagnostic page is retained.
+existing single-player diagnostic page is retained. More → Quality adds the
+common separate video/audio preferences, independent feed overrides and explicit
+saved fixture defaults. Runtime requests remain separate from buffered-playhead
+format observations. Defaults contain only closed fixture identity and bounded
+numeric descriptors in a separate versioned IndexedDB record, without accounts,
+grants, URLs or SDK identifiers.
 
 This is not the full product picker/viewer or provider acceptance. Complete
-quality/orientation/settings controls and provider/account/route integration
+orientation/settings controls and provider/account/route/quality integration
 remain pending. See the [fixture scope and remaining acceptance](
 ../../docs/src/project/web-pair-fixture.md). Issue #368 remains open.
 

@@ -50,21 +50,35 @@ The device flow pins public client `ue6666qo983tsx6so1t0vnawi233wa` and exactly
 identifier, not Tachiai's application registration or a supported playback
 contract. Scope selection alone is not playback entitlement. The first successful
 validation pins the user ID in browser memory; revalidation must preserve exact
-client, user, scope and a positive expiry before each source request. Account IDs
+client, user, scope and accepted lifetime shape before each source request. Account IDs
 never leave that runtime. Refresh data is ignored and never retained.
 
-This diagnostic deliberately requires a finite positive `expires_in` of at most
-365 days in both the token grant and validation response. This is stricter than
-the selected Android Smart TV catalogue flow: `parseTwitchCatalogToken` can
-accept an omitted token expiry, while validation explicitly using
-`allowUnspecifiedLifetime` accepts zero as unknown and relies on its separately
-bounded local retention policy. That Android path still refuses missing
-validation expiry and zero token-grant expiry. The web diagnostic does not
-silently import its retention policy or interpret missing/zero as a proven
-provider expiration. Such a response causes refusal and revocation of the fresh
-grant. An actual manual trial may establish that this finite-expiry requirement
-is incompatible with the selected client; that would be a diagnostic policy
-finding, requiring a reviewed browser lifetime policy before adoption is relaxed.
+An issuance response may omit `expires_in`, as the second activated trial below
+observed. Omission permits only immediate validation; authorization still needs
+the exact client/user/scope binding. Validation accepts a finite positive expiry
+of at most 365 days or a present numeric zero under the local policy below.
+Present zero or malformed issuance expiry and missing/malformed validation expiry
+are refused. OAuth permits omitted issuance expiry when expiry is supplied
+another way, and Twitch documents validation as a source of remaining lifetime:
+[OAuth token response](https://www.rfc-editor.org/rfc/rfc6749.html#section-5.1),
+[Twitch validation](https://dev.twitch.tv/docs/authentication/validate-tokens/).
+
+Issuance and validation deadlines are anchored before their requests. The hard
+grant cap is the minimum of the fixed 15-minute session deadline, any positive
+issuance deadline, the earlier cap and any new positive validation deadline. Responses
+after that cap are refused; revalidation never extends it. Authorized request
+timeouts also respect the cap. Cleanup revokes the fresh grant on refusal or
+completion; no token/refresh persistence or refresh operation is added.
+
+A present numeric zero, observed in the third activated trial below, supplies no
+provider deadline. It leaves the earlier cap and fixed local session deadline
+intact; a later positive validation can only shorten that cap. This is unknown
+provider lifetime with at most 15 minutes of local memory retention, not a claim
+of expiration, non-expiration or entitlement. Exact binding and revalidation
+before every selected source still apply. This matches the selected Android
+catalogue's `allowUnspecifiedLifetime` classification without importing its
+persistent retention policy. Twitch's HTTP 200 establishes current validation;
+its documentation does not establish what this client's zero means over time.
 
 OAuth requests use the documented
 [device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow),
@@ -130,6 +144,59 @@ failed. Original preparation failure stages survive subsequent cleanup. Provider
 strings, response fields, token shapes and raw player/network errors do not
 enter this diagnostic result.
 
+The token-poll/validation stages also expose only a fixed refusal reason: `cancelled`,
+`deadline`, `token-type`, `expiry-missing`, `expiry-zero` or `expiry-invalid`.
+These identify the existing post-response checks without returning the token
+type, expiry value, access/refresh grant or other response fields. The CLI
+independently allowlists the reason, and cleanup preserves the failed observation.
+The CLI admits `token-type` only at token polling. Lowercase bearer remains
+required; issuance omission and numeric zero validation use only the bounded
+policy above.
+
+### Activated browser trial: October 26, 2026
+
+The fresh user-activated trial on revision
+`f099c590cd363ac6d1b2483407916e6dca777c19` used Linux x86-64 and Chrome
+156.0.8078.47, a new browser context and default host networking. Exit country
+was not independently measured. The selected sequence was Virtual Japan live,
+then the documented replay, stopping on any refusal without an alternative.
+
+After activation, token polling received HTTP 200 and captured this run's fresh
+access grant. The diagnostic refused while still at `token-poll`, before account
+validation, source preparation or media playback. Cleanup reported `destroyed`
+and `revoked`; the listener ended and the loopback server was absent afterward.
+No grant, provider body, account identifier, signed URL or media capture was
+retained. No selected playback case was reached.
+
+That revision reported no individual refusal reason. Cancellation/deadline,
+the exact token-type check and the finite-expiry check remain candidates; this
+observation does not establish which failed or justify changing the acceptance
+policy. The fixed reasons above prepare a further fresh trial to distinguish
+those cases. The revoked grant and old activation code must not be reused.
+
+The next fresh user-activated trial ran on signed diagnostic revision
+`cb2cc0f0288cd9dc7c77dd264dd10398c73c8d6c`, in the same bounded Linux/Chrome
+environment with a new browser context and default networking. It received
+HTTP 200 at token polling and reported `reason=expiry-missing`: the issuance
+response omitted the expiry field. It still stopped before validation, source
+preparation or playback, then reported media destroyed and grant revoked. The
+listener ended and its loopback server was absent. No raw response/grant was
+retained. This identifies the omitted issuance field; it does not establish the
+validation response's lifetime, account binding or playback acceptance.
+
+The third fresh trial ran on signed revision
+`66d09e2d0742ee4b90e59a1cddf07383d7bc2e8e`, with the omission-only policy and
+monotonic deadlines, in the same bounded Linux/Chrome environment and a fresh
+browser context. It reached validation HTTP 200 with the exact client, scope and
+valid user binding checks passed, then refused with `reason=expiry-zero`.
+This establishes the returned numeric zero, not a provider expiration meaning.
+No source or media request followed. Media destruction and fresh-grant revocation
+were confirmed; the listener ended and the loopback server was absent.
+
+The zero-as-unknown local policy above is the resulting bounded compatibility
+change. Controlled regressions do not substitute for another fresh activated
+provider trial; no revoked grant or old device code is reused.
+
 ## Offline verification and outstanding acceptance
 
 ```sh
@@ -157,6 +224,7 @@ it is not evidence of provider CORS or redirect behavior.
 
 These tests cannot establish actual consent, CORS acceptance, provider entitlement,
 advertisements, signed manifest/CDN behavior, live-window operation, audio or
-renewal. One reviewed opt-in runtime trial and user-controlled activation remain
-necessary. No live provider authorization or playback trial was performed as
-part of implementing this diagnostic.
+renewal. The separate activated observations above reached validation but stopped
+before source preparation or playback. A further reviewed, fresh activated trial
+is needed for the bounded unknown-lifetime policy; local test success is not
+provider acceptance.

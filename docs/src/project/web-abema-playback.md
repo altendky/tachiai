@@ -98,11 +98,26 @@ grant persisted.
 That revision grouped UTC timing, SegmentBase/index, steering/patch,
 XLink/XInclude and changed-Location refusals under the same auxiliary boundary.
 The trial did not retain the MPD or identify which individual feature triggered
-it. The next diagnostic now distinguishes those fixed audit reasons and UTC
-scheme classes without retaining provider XML or URLs. No second provider trial
-has verified a particular reason. The indicated feature would still need separate
-verification before considering any admission change. This result establishes
-neither a DRM blocker nor an extension requirement; no fallback followed.
+it. The diagnostic now distinguishes those fixed audit reasons and UTC scheme
+classes without retaining provider XML or URLs.
+
+A second fresh trial on signed revision
+`579a7618c95211e972768fda79efb1e645f5da51` used the same Linux/headed Chrome
+156.0.8078.47, anonymous GLOBAL News source, owned loopback origin and default
+host connection. Fresh context, guest/profile, media-token, exact channel,
+verified assets and unchanged source-selector binding passed. The browser MPD
+GET returned readable HTTP 200, then the XML audit reported
+`AUXILIARY / UTC_TIMING / DIRECT`, with publication stage `IDLE`. No
+initialization/media requests, decoded frames, license requests or
+MediaKeySessions followed. Cleanup was confirmed with no grant persisted. Exit
+country was not independently measured; full device flow and entitlement remain
+unestablished.
+
+This identifies the first refusal as an inline direct UTC timing declaration;
+it does not establish that admitting it would complete parsing or playback. The
+pinned parser's handling still needs verification before any admission change.
+Neither trial establishes a DRM blocker or extension requirement. No fallback
+followed.
 
 ## Transport and lifecycle boundary
 

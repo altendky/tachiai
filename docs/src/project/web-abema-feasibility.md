@@ -740,6 +740,49 @@ physical-device acceptance.
 
 ## Next decision
 
+The opt-in `AbemaLocalConfiguredContextDeviceTest` grounds the default Android
+ABEMA instance without launching an Activity, opening a route, contacting a
+provider or invoking account readiness/renewal. It reports bounded configured
+resource-kind counts, exact legacy-replay/News membership comparisons, configured
+first-candidate route category, unchanged owner and the existing local account
+expiry-readiness enum. Registry provenance and the configured-store fallback
+callback distinguish committed records from a read-only legacy-derived view.
+No resource IDs, titles, account/grant values, route proofs or record hashes are
+emitted. It requires the verified persistent `tachiai-dev`, ordinary debug build
+and main instrumentation process, and skips before private reads without opt-in:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.abema.AbemaLocalConfiguredContextDeviceTest \
+  -e tachiaiReadOnlyAbemaConfiguredContext true \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Success requires target-app no-backup records and legacy/shared-preference
+inventory/digests to remain unchanged; incomplete encrypted writes and preference
+backups refuse before store access. Any recovery,
+maintenance or concurrent mutation fails preservation and is never restored.
+Normal store reads retain their locking behavior. The projection explicitly
+leaves picker assignments, effective networking and entitlement UNKNOWN: list
+membership is not a selection, local expiry is not provider validation, and the
+configured first route is not an observed startup winner or exit country. This
+adds a local evidence fixture, not a new provider result or explanation of403.
+
+One opted-in observation on the persistent `tachiai-dev` passed in 0.206 seconds
+on Android 16/API 36 with ordinary app version 0.1.0. Only the shared-signed test
+APK was updated; its SHA-256 was
+`3ee87afffd778b4fc5a719fddd1373afe8de142b0d5399ba4c096d1cd3ff726c`.
+The committed registry/configured list contained three entries: one channel,
+one episode and one collection, including exactly one copy of the web probe's
+legacy replay and News. The configured first route was a saved connection,
+ownership remained stable and local account readiness was EXPIRED_READY.
+Protected records were unchanged; the fixture made no provider request or
+Activity launch. Picker assignments, effective networking, region and entitlement
+remained unknown, and no browser engine or media was exercised. The emulator
+was shut down normally with saved data preserved. This confirms context
+differences from the fresh-guest/default-network web trial without identifying
+the cause of its HTTP 403.
+
 Before another MPD or CDM attempt, compare the current provider/native source
 context against the legacy-chain proof and establish one known working domestic
 route and entitlement context. Reproduce the selected source in that context

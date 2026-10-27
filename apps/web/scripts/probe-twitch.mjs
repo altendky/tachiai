@@ -10,11 +10,12 @@ import { twitchDiagnosticOutput } from './twitch-diagnostic-output.mjs';
 const arguments_ = process.argv.slice(2);
 const cases = arguments_.filter((value) => value.startsWith('--case=')).map((value) => value.slice(7));
 const allowedCases = new Set(['live:virtualjapan', 'replay:2080217716']);
+const headed = arguments_.includes('--headed');
 if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !== cases.length ||
     cases.some((value) => !allowedCases.has(value)) ||
-    arguments_.some((value) => value !== '--network' && !value.startsWith('--case='))) {
+    arguments_.some((value) => value !== '--network' && value !== '--headed' && !value.startsWith('--case='))) {
   console.log(JSON.stringify({ event: 'trial', outcome: 'not-started',
-    usage: 'probe:twitch -- --network --case=live:virtualjapan --case=replay:2080217716' }));
+    usage: 'probe:twitch -- --network [--headed] --case=live:virtualjapan --case=replay:2080217716' }));
   process.exitCode = 2;
 } else {
   let server;
@@ -36,7 +37,10 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     server = await preview({ root: app, logLevel: 'silent',
       preview: { host: '127.0.0.1', port: 4173, strictPort: true } });
-    browser = await chromium.launch({ channel: 'chrome' });
+    // This runner owns cancellation and must keep the page alive through its
+    // media/grant cleanup receipt before closing Chrome in finally.
+    browser = await chromium.launch({ channel: 'chrome', headless: !headed,
+      handleSIGINT: false, handleSIGTERM: false });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     // No interception: real Chromium CORS/preflight behavior remains observable.
     // Owned API/media Fetch transports enforce admission, omit and redirect:error.
@@ -50,7 +54,7 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     await page.goto('http://127.0.0.1:4173/harness/twitch-proof.html');
     await page.waitForFunction(() => Boolean(window.twitchProof));
     const challenge = await page.evaluate(() => window.twitchProof.begin());
-    output({ event: 'activation', browser: browser.version(), userCode: challenge.userCode,
+    output({ event: 'activation', browser: browser.version(), mode: headed ? 'headed' : 'headless', userCode: challenge.userCode,
       expiresIn: challenge.expiresIn, destination: 'Twitch Activate', account: 'fresh-browser-local-grant-required' });
     const challengeDeadline = Date.now() + Math.min(challenge.expiresIn * 1000, 15 * 60_000);
     let authorized = false;

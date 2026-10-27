@@ -139,6 +139,13 @@ internal object AndroidAbemaRenewalReadiness {
     fun finish(ticket: String, result: AbemaRenewalReadinessCoordinator.Status) = coordinator.finish(ticket, result)
     fun cancelUnclaimed(ticket: String) = coordinator.cancelUnclaimed(ticket)
 
+    // In-process, closed observation only: no readiness request or grant leaves
+    // this process, and a different owner/predecessor cannot satisfy the probe.
+    fun completion(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Completion {
+        val scope = Scope(ownerProof, expected)
+        return coordinator.completion(instance) { Scope(it.owner.proof(), it.expected) == scope }
+    }
+
     private fun start(context: Context, ticket: String) {
         val work = claim(ticket)
         if (work == null) { coordinator.finish(ticket, false); return }

@@ -6,6 +6,7 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
     private val ticket: () -> String, private val lifetimeMs: Long = 90_000,
     private val cooldownMs: Long = 60_000) {
     enum class Status { READY, LAUNCH, WAIT, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
+    enum class Completion { ABSENT, PENDING, CLEANUP_UNCONFIRMED, READY, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
     class Decision(val status: Status, val ticket: String? = null) {
         override fun toString() = "AbemaRenewalDecision(${status.name})"
     }
@@ -74,6 +75,22 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
             entry.finished = now; entry.terminal = Status.TEMPORARY_FAILURE
         }
         return Decision(if (entry.finished == null) Status.WAIT else entry.terminal)
+    }
+    // Read-only evidence of the existing completion boundary. In particular,
+    // do not call now(), prune entries or turn a published record into READY.
+    @Synchronized fun completion(instance: String, matches: (T) -> Boolean): Completion {
+        val entry = entries.filter { it.instance == instance && matches(it.value) }.singleOrNull()
+            ?: return Completion.ABSENT
+        if (entry.cleanupRefused) return Completion.CLEANUP_UNCONFIRMED
+        if (entry.finished == null || !entry.released) return Completion.PENDING
+        return when (entry.terminal) {
+            Status.READY -> if (entry.claimed) Completion.READY else Completion.FAILURE
+            Status.FAILURE -> Completion.FAILURE
+            Status.TEMPORARY_FAILURE -> Completion.TEMPORARY_FAILURE
+            Status.INTERACTION_REQUIRED -> Completion.INTERACTION_REQUIRED
+            Status.STORAGE_FAILURE -> Completion.STORAGE_FAILURE
+            else -> Completion.FAILURE
+        }
     }
     fun finish(ticket: String, success: Boolean) = finish(ticket, if (success) Status.READY else Status.FAILURE)
     @Synchronized fun finish(ticket: String, result: Status, cleanupConfirmed: Boolean = true) {

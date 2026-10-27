@@ -95,6 +95,92 @@ test('XML preflight, auxiliary request types and source expiry fail before netwo
   expect(result.expired).toBe('EXPIRED');
 });
 
+test('each auxiliary XML refusal has a fixed latched reason and UTC retains only a scheme class', async ({ page }) => {
+  await page.goto('./');
+  const results = await page.evaluate(() => import('/harness/src/abema-dash-policy.ts').then(({ AbemaDashPolicy }) => {
+    const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=synthetic';
+    const privateValue = 'PRIVATE_AUXILIARY_VALUE';
+    const cases = ['<SegmentBase/>', '<ContentSteering/>', '<PatchLocation/>',
+      '<Period xmlns:x="http://www.w3.org/1999/xlink" x:href="' + privateValue + '"/>',
+      '<xi:include xmlns:xi="http://www.w3.org/2001/XInclude" href="' + privateValue + '"/>',
+      '<Location>' + privateValue + '</Location>', '<SegmentTemplate index="' + privateValue + '"/>',
+      ...['direct:2014', 'direct:2012', 'http-head:2014', 'http-head:2012', 'http-xsdate:2014', 'http-xsdate:2012', 'unknown:2014', ''].map(
+        scheme => '<UTCTiming schemeIdUri="' + (scheme ? 'urn:mpeg:dash:utc:' + scheme : '') + '" value="' + privateValue + '"/>')];
+    const audit = (body: string) => {
+      const policy = new AbemaDashPolicy(uri, 'a'.repeat(32), 10000);
+      try { policy.audit(new TextEncoder().encode('<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">' + body + '</MPD>')); } catch {}
+      policy.close(); // Retirement and later failure must not relabel the first refusal.
+      try { policy.audit(new TextEncoder().encode('<UTCTiming/>')); } catch {}
+      return { boundary: policy.boundary, reason: policy.auxiliaryReason, scheme: policy.utcScheme,
+        ended: policy.lifetime.signal.aborted, counts: policy.counts };
+    };
+    return { denied: cases.map(audit), unchanged: audit('<Location>' + uri + '</Location><SegmentTemplate/>'),
+      protection: audit('<UTCTiming xmlns:cenc="urn:mpeg:cenc:2013" cenc:default_KID="' + privateValue + '"/>') };
+  }));
+  expect(results.denied.map(item => item.reason)).toEqual(['SEGMENT_BASE', 'CONTENT_STEERING', 'PATCH_LOCATION',
+    'XLINK', 'XINCLUDE', 'CHANGED_LOCATION', 'TEMPLATE_INDEX', ...Array(8).fill('UTC_TIMING')]);
+  expect(results.denied.slice(7).map(item => item.scheme)).toEqual(['DIRECT', 'DIRECT', 'HTTP_HEAD', 'HTTP_HEAD', 'HTTP_XSDATE', 'HTTP_XSDATE', 'OTHER', 'OTHER']);
+  for (const item of results.denied) {
+    expect(item.boundary).toBe('AUXILIARY'); expect(item.ended).toBe(true);
+    expect(item.counts).toEqual({ manifest: 0, initialization: 0, segment: 0, deniedDrm: 0 });
+  }
+  expect(results.unchanged.boundary).toBe('CANCELLED'); expect(results.unchanged.reason).toBeUndefined();
+  expect(results.protection.boundary).toBe('PROTECTION'); expect(results.protection.reason).toBeUndefined();
+  expect(JSON.stringify(results)).not.toContain('PRIVATE_AUXILIARY_VALUE');
+});
+
+test('non-XML auxiliary admission and dispatch mismatch are distinguished before Fetch', async ({ page }) => {
+  await page.goto('./');
+  const result = await page.evaluate(async () => {
+    const { AbemaDashPolicy } = await import('/harness/src/abema-dash-policy.ts');
+    const shaka = (await import('/harness/tests/abema-sdk.ts')).default;
+    const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=synthetic';
+    const request = () => ({ method: 'GET', body: null, uris: [uri], headers: {} });
+    const admission = new AbemaDashPolicy(uri, 'a'.repeat(32), 10000);
+    try { await admission.admit(shaka.net.NetworkingEngine.RequestType.TIMING, request() as any); } catch {}
+    const dispatch = new AbemaDashPolicy(uri, 'a'.repeat(32), 10000), pending = request();
+    await dispatch.admit(shaka.net.NetworkingEngine.RequestType.MANIFEST, pending as any);
+    const register = shaka.net.NetworkingEngine.registerScheme, fetch = window.fetch;
+    let plugin: any, fetches = 0;
+    try {
+      shaka.net.NetworkingEngine.registerScheme = ((scheme: string, callback: any) => { if (scheme === 'https') plugin = callback; }) as any;
+      window.fetch = (() => { fetches++; throw new Error('Unexpected synthetic Fetch'); }) as any;
+      dispatch.install();
+      try { await plugin(uri, pending, shaka.net.NetworkingEngine.RequestType.SEGMENT, () => {}, () => {}).promise; } catch {}
+    } finally { shaka.net.NetworkingEngine.registerScheme = register; window.fetch = fetch; }
+    return { admission: [admission.boundary, admission.auxiliaryReason], dispatch: [dispatch.boundary, dispatch.auxiliaryReason],
+      fetches, counts: dispatch.counts };
+  });
+  expect(result).toEqual({ admission: ['AUXILIARY', 'REQUEST_TYPE'], dispatch: ['AUXILIARY', 'DISPATCH_TYPE'], fetches: 0,
+    counts: { manifest: 0, initialization: 0, segment: 0, deniedDrm: 0 } });
+});
+
+test('actual controlled MPD audit reason survives owned preparation failure and cleanup', async ({ page }) => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/dash+xml' });
+    response.end('<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-head:2014" value="PRIVATE_AUXILIARY_VALUE"/></MPD>');
+  });
+  await new Promise<void>(yes => server.listen(0, '127.0.0.1', yes));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error();
+  try {
+    await page.goto('./');
+    const result = await page.evaluate(async manifest => {
+      const { AbemaPlayback } = await import('/harness/src/abema-playback.ts');
+      const proof = new AbemaPlayback(document.body, { manifest, media: () => false });
+      const prepared = await proof.prepare(manifest, 'a'.repeat(32), 10000);
+      const before = proof.evidence(), cleanup = await proof.close(), after = proof.evidence();
+      return { prepared, cleanup, before, after };
+    }, 'http://127.0.0.1:' + address.port + '/manifest.mpd');
+    expect(result.prepared).toBe('refused'); expect(result.cleanup).toBe('confirmed');
+    expect(result.after).toEqual(result.before);
+    expect(result.after).toMatchObject({ boundary: 'AUXILIARY', auxiliaryReason: 'UTC_TIMING', utcScheme: 'HTTP_HEAD',
+      http: 200, publicationStage: 'IDLE', frames: 0, counts: { manifest: 0, initialization: 0, segment: 0, deniedDrm: 0 } });
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_AUXILIARY_VALUE'); expect(requests).toBe(1);
+  } finally { server.closeAllConnections(); await new Promise<void>(yes => server.close(() => yes())); }
+});
+
 test('exact SDK reference/range/stream ownership, two snapshots and early index refusal are enforced', async ({ page }) => {
   await page.goto('./');
   const observed = await page.evaluate(async () => {

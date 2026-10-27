@@ -10,6 +10,17 @@ export function suppressDiagnosticConsole() {
   for (const name of ['log', 'debug', 'info', 'warn', 'error', 'assert']) console[name] = () => {};
 }
 
+// Independent output guard: never forward XML attributes or provider strings.
+export function auxiliaryEvidence(value) {
+  const reasons = ['UTC_TIMING', 'SEGMENT_BASE', 'CONTENT_STEERING', 'PATCH_LOCATION', 'XLINK', 'XINCLUDE',
+    'CHANGED_LOCATION', 'TEMPLATE_INDEX', 'REQUEST_TYPE', 'DISPATCH_TYPE'];
+  const { auxiliaryReason, utcScheme } = value;
+  if (auxiliaryReason !== undefined && (!reasons.includes(auxiliaryReason) || value.boundary !== 'AUXILIARY') ||
+      utcScheme !== undefined && (!['DIRECT', 'HTTP_HEAD', 'HTTP_XSDATE', 'OTHER'].includes(utcScheme) || auxiliaryReason !== 'UTC_TIMING') ||
+      auxiliaryReason === 'UTC_TIMING' && utcScheme === undefined) throw new Error();
+  return { ...(auxiliaryReason === undefined ? {} : { auxiliaryReason }), ...(utcScheme === undefined ? {} : { utcScheme }) };
+}
+
 export async function privateInput(stream) {
   const chunks = []; let size = 0;
   for await (const chunk of stream) { size += chunk.length; if (size > inputLimit) throw new Error(); chunks.push(chunk); }
@@ -70,8 +81,10 @@ async function main() {
     const evidence = await page.evaluate(() => window.abemaProof.evidence());
     const mediaCleanup = await page.evaluate(() => window.abemaProof.close());
     if (mediaCleanup !== 'confirmed') cleanupConfirmed = false;
+    const auxiliary = auxiliaryEvidence(evidence);
+    const { auxiliaryReason: _reason, utcScheme: _scheme, ...existingEvidence } = evidence;
     output = { nonce, outcome: evidence.frames >= 2 && evidence.advancedMs >= 1000 && evidence.width > 0 && evidence.height > 0 &&
-      evidence.boundary === 'NONE' ? 'DECODED' : 'BOUNDARY', ...evidence, mediaKeySessions: false };
+      evidence.boundary === 'NONE' ? 'DECODED' : 'BOUNDARY', ...existingEvidence, ...auxiliary, mediaKeySessions: false };
   } catch {
     output = { nonce, outcome: 'REFUSED', stage, publicationStage: 'IDLE', boundary: 'RESOURCE', frames: 0, advancedMs: 0,
       width: 0, height: 0, counts: { manifest: 0, initialization: 0, segment: 0, deniedDrm: 0 },

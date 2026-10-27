@@ -87,10 +87,16 @@ def map_division(attempt, region):
 def playback_report(raw, nonce):
     try: value = bootstrap.strict_json(raw, 8192)
     except BaseException: raise bootstrap.CleanupUnconfirmed() from None
-    expected = {"nonce", "outcome", "stage", "publicationStage", "boundary", "http", "sdkCode", "frames", "advancedMs", "width", "height", "counts", "formats", "mediaKeySessions", "cleanupConfirmed"}
+    expected = {"nonce", "outcome", "stage", "publicationStage", "boundary", "auxiliaryReason", "utcScheme", "http", "sdkCode", "frames", "advancedMs", "width", "height", "counts", "formats", "mediaKeySessions", "cleanupConfirmed"}
     if not isinstance(value, dict) or set(value) - expected or value.get("nonce") != nonce or value.get("cleanupConfirmed") is not True: raise bootstrap.CleanupUnconfirmed()
-    if not (expected - {"http", "sdkCode"}) <= set(value): raise Refused()
+    if not (expected - {"http", "sdkCode", "auxiliaryReason", "utcScheme"}) <= set(value): raise Refused()
     if value.get("outcome") not in {"DECODED", "BOUNDARY", "REFUSED"} or value.get("stage") not in {"idle", "input", "browser", "page", "prepare", "ready", "play", "cleanup"} or value.get("publicationStage") not in {"IDLE", "STREAMS", "INDEX", "REFERENCES", "FILTER", "PUBLISH"} or value.get("boundary") not in {"NONE", "EXPIRED", "CANCELLED", "MANIFEST", "PROTECTION", "AUXILIARY", "EARLY_INDEX", "UNDECLARED", "RESOURCE", "LIMIT", "HTTP", "NETWORK"} or value.get("mediaKeySessions") is not False: raise Refused()
+    if "auxiliaryReason" in value and (type(value["auxiliaryReason"]) is not str or value["boundary"] != "AUXILIARY" or value["auxiliaryReason"] not in {
+            "UTC_TIMING", "SEGMENT_BASE", "CONTENT_STEERING", "PATCH_LOCATION", "XLINK", "XINCLUDE",
+            "CHANGED_LOCATION", "TEMPLATE_INDEX", "REQUEST_TYPE", "DISPATCH_TYPE"}): raise Refused()
+    if "utcScheme" in value and (type(value["utcScheme"]) is not str or value.get("auxiliaryReason") != "UTC_TIMING" or value["utcScheme"] not in {
+            "DIRECT", "HTTP_HEAD", "HTTP_XSDATE", "OTHER"}): raise Refused()
+    if value.get("auxiliaryReason") == "UTC_TIMING" and "utcScheme" not in value: raise Refused()
     for name, maximum in (("http", 599), ("sdkCode", 100000), ("frames", 1000000), ("advancedMs", 120000), ("width", 16384), ("height", 16384)):
         if name in value and (type(value[name]) is not int or not 0 <= value[name] <= maximum): raise Refused()
     if "http" in value and value["http"] < 100: raise Refused()

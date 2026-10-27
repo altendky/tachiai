@@ -3,6 +3,9 @@ import { createClosedBrowserFetch } from './twitch-transport';
 
 export type AbemaBoundary = 'NONE' | 'EXPIRED' | 'CANCELLED' | 'MANIFEST' | 'PROTECTION' |
   'AUXILIARY' | 'EARLY_INDEX' | 'UNDECLARED' | 'RESOURCE' | 'LIMIT' | 'HTTP' | 'NETWORK';
+export type AbemaAuxiliaryReason = 'UTC_TIMING' | 'SEGMENT_BASE' | 'CONTENT_STEERING' | 'PATCH_LOCATION' |
+  'XLINK' | 'XINCLUDE' | 'CHANGED_LOCATION' | 'TEMPLATE_INDEX' | 'REQUEST_TYPE' | 'DISPATCH_TYPE';
+export type AbemaUtcScheme = 'DIRECT' | 'HTTP_HEAD' | 'HTTP_XSDATE' | 'OTHER';
 type Entry = { stream: shaka.extern.Stream; kind: 'init' | 'media'; uri: string; start: number; end: number | null };
 type Snapshot = { entries: Entry[]; streams: Set<shaka.extern.Stream> };
 type Receipt = { kind: 'manifest' | 'init' | 'media'; uris: string; headers: string;
@@ -23,6 +26,8 @@ export function abemaMediaUri(raw: string): boolean {
 
 export class AbemaDashPolicy {
   boundary: AbemaBoundary = 'NONE';
+  auxiliaryReason?: AbemaAuxiliaryReason;
+  utcScheme?: AbemaUtcScheme;
   http?: number;
   publicationStage: 'IDLE' | 'STREAMS' | 'INDEX' | 'REFERENCES' | 'FILTER' | 'PUBLISH' = 'IDLE';
   readonly lifetime = new AbortController();
@@ -51,6 +56,14 @@ export class AbemaDashPolicy {
     if (this.boundary === 'NONE') this.boundary = boundary;
     this.lifetime.abort();
     throw new Error('Playback policy refused');
+  }
+
+  private auxiliary(reason: AbemaAuxiliaryReason, utcScheme?: AbemaUtcScheme): never {
+    if (this.boundary === 'NONE') {
+      this.auxiliaryReason = reason;
+      this.utcScheme = utcScheme;
+    }
+    return this.fail('AUXILIARY');
   }
 
   active(): void {
@@ -87,11 +100,18 @@ export class AbemaDashPolicy {
       if (['contentprotection', 'pssh', 'pro', 'laurl', 'license', 'protectionheader'].includes(name) ||
           element.namespaceURI === 'urn:mpeg:cenc:2013' || [...element.attributes].some((a) =>
             ['default_kid', 'kid'].includes(a.localName.toLowerCase()) || a.namespaceURI === 'urn:mpeg:cenc:2013')) this.fail('PROTECTION');
-      if (['utctiming', 'segmentbase', 'contentsteering', 'patchlocation'].includes(name) ||
-          [...element.attributes].some((a) => a.namespaceURI === 'http://www.w3.org/1999/xlink') ||
-          element.namespaceURI === 'http://www.w3.org/2001/XInclude' ||
-          name === 'location' && element.textContent?.trim() !== this.manifest ||
-          name === 'segmenttemplate' && element.hasAttribute('index')) this.fail('AUXILIARY');
+      if (name === 'utctiming') {
+        const scheme = element.getAttribute('schemeIdUri');
+        const matches = (method: string) => ['2012', '2014'].some((year) => scheme === 'urn:mpeg:dash:utc:' + method + ':' + year);
+        this.auxiliary('UTC_TIMING', matches('direct') ? 'DIRECT' : matches('http-head') ? 'HTTP_HEAD' : matches('http-xsdate') ? 'HTTP_XSDATE' : 'OTHER');
+      }
+      if (name === 'segmentbase') this.auxiliary('SEGMENT_BASE');
+      if (name === 'contentsteering') this.auxiliary('CONTENT_STEERING');
+      if (name === 'patchlocation') this.auxiliary('PATCH_LOCATION');
+      if ([...element.attributes].some((a) => a.namespaceURI === 'http://www.w3.org/1999/xlink')) this.auxiliary('XLINK');
+      if (element.namespaceURI === 'http://www.w3.org/2001/XInclude') this.auxiliary('XINCLUDE');
+      if (name === 'location' && element.textContent?.trim() !== this.manifest) this.auxiliary('CHANGED_LOCATION');
+      if (name === 'segmenttemplate' && element.hasAttribute('index')) this.auxiliary('TEMPLATE_INDEX');
       for (const child of element.children) nodes.push([child, depth + 1]);
     }
   }
@@ -200,7 +220,7 @@ export class AbemaDashPolicy {
     const types = shaka.net.NetworkingEngine.RequestType;
     if (type !== types.MANIFEST && type !== types.SEGMENT) {
       if ([types.LICENSE, types.KEY, types.SERVER_CERTIFICATE].includes(type)) { this.counts.deniedDrm++; this.fail('PROTECTION'); }
-      this.fail('AUXILIARY');
+      this.auxiliary('REQUEST_TYPE');
     }
     if (request.method !== 'GET' || request.body !== null || !request.uris.length) this.fail('RESOURCE');
     if (type === types.MANIFEST) {
@@ -252,7 +272,7 @@ export class AbemaDashPolicy {
           if (!receipt) this.fail('UNDECLARED');
           if (receipt.kind !== 'manifest') await this.settled();
           this.unchanged(request, receipt, uri);
-          if (_type !== (receipt.kind === 'manifest' ? shaka.net.NetworkingEngine.RequestType.MANIFEST : shaka.net.NetworkingEngine.RequestType.SEGMENT)) this.fail('AUXILIARY');
+          if (_type !== (receipt.kind === 'manifest' ? shaka.net.NetworkingEngine.RequestType.MANIFEST : shaka.net.NetworkingEngine.RequestType.SEGMENT)) this.auxiliary('DISPATCH_TYPE');
           if (++this.requests > 64) this.fail('LIMIT');
           owned = true;
           if (++this.activeRequests > 4) this.fail('LIMIT');

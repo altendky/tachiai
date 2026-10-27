@@ -60,6 +60,16 @@ later failure preserves the observed decoding history while remaining a boundary
 outcome. Retired callbacks cannot change these observations; active format state
 still clears on retirement.
 
+An auxiliary refusal can also report one fixed `auxiliaryReason`: `UTC_TIMING`,
+`SEGMENT_BASE`, `CONTENT_STEERING`, `PATCH_LOCATION`, `XLINK`, `XINCLUDE`,
+`CHANGED_LOCATION`, `TEMPLATE_INDEX`, `REQUEST_TYPE` or `DISPATCH_TYPE`.
+`UTC_TIMING` additionally reports only `utcScheme` values `DIRECT`, `HTTP_HEAD`,
+`HTTP_XSDATE` or `OTHER`; recognized classes match the exact 2012/2014 DASH scheme
+identifiers. No UTC value, timestamp, URL or unknown scheme string is retained.
+These fields describe the first existing refusal and survive retirement. They
+grant no auxiliary request or feature admission. Node and Python independently
+check the fixed values and their boundary/reason association before output.
+
 This remains a bounded Linux development-browser observation. Linux is not an
 ABEMA-listed desktop environment; this command does not establish support on
 Linux, Windows/macOS, other browsers, other sources or a deployed product.
@@ -85,13 +95,14 @@ dimensions were observed. No license request or MediaKeySession was created.
 Browser, server, container and private-runtime cleanup was confirmed, with no
 grant persisted.
 
-The current closed report groups UTC timing, SegmentBase/index, steering/patch,
+That revision grouped UTC timing, SegmentBase/index, steering/patch,
 XLink/XInclude and changed-Location refusals under the same auxiliary boundary.
 The trial did not retain the MPD or identify which individual feature triggered
-it. A smallest next diagnostic step is to distinguish these fixed audit reasons
-without retaining provider XML or URLs, then verify the indicated feature before
-considering any admission change. This result establishes neither a DRM blocker
-nor an extension requirement. No second provider trial or fallback followed.
+it. The next diagnostic now distinguishes those fixed audit reasons and UTC
+scheme classes without retaining provider XML or URLs. No second provider trial
+has verified a particular reason. The indicated feature would still need separate
+verification before considering any admission change. This result establishes
+neither a DRM blocker nor an extension requirement; no fallback followed.
 
 ## Transport and lifecycle boundary
 
@@ -158,6 +169,8 @@ These use only synthetic protocol values, controlled owned fixtures and loopback
 servers. They cover closed input/output, fresh context, no-provider refusal,
 cleanup receipts, exact reference/range/stream ownership, templates/BaseURL,
 snapshot eviction, early index refusal, source expiry, denied protection types,
+each fixed auxiliary refusal and UTC scheme class, refusal preservation after
+cleanup, independent invalid/private auxiliary-output rejection,
 actual CORS/redirect/credential behavior, frame advancement and shared/failed
 retirement. The browser suite uses port 4186 and retains no capture artifacts.
 Browser-free protocol tests run in repository hooks; CI adds local Chrome tests.

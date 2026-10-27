@@ -110,6 +110,7 @@ export class AbemaPlayback {
     const advance = this.lastDecoded && this.firstMs !== undefined ? this.lastDecoded.positionMs - this.firstMs : 0;
     return { stage: this.stage, boundary: this.policy?.boundary ?? this.refusedBoundary ?? 'NONE' as AbemaBoundary, http: this.policy?.http,
       publicationStage: this.policy?.publicationStage ?? 'IDLE',
+      auxiliaryReason: this.policy?.auxiliaryReason, utcScheme: this.policy?.utcScheme,
       sdkCode: this.sdkCode, frames: this.frames, advancedMs: Number.isSafeInteger(advance) && advance >= 0 && advance <= 120000 ? advance : 0,
       width: this.lastDecoded?.width ?? 0, height: this.lastDecoded?.height ?? 0,
       counts: { ...this.policy?.counts }, formats: { basis: this.formats.basis,

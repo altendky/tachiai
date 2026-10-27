@@ -213,6 +213,24 @@ class ContextTests(unittest.TestCase):
 
 
 class PlaybackTests(unittest.TestCase):
+    def test_auxiliary_reasons_and_utc_classes_are_closed_optional_consistent_output(self):
+        base = observation(outcome="BOUNDARY", boundary="AUXILIARY", frames=0)
+        for reason in ("SEGMENT_BASE", "CONTENT_STEERING", "PATCH_LOCATION", "XLINK", "XINCLUDE",
+                       "CHANGED_LOCATION", "TEMPLATE_INDEX", "REQUEST_TYPE", "DISPATCH_TYPE"):
+            safe = module.playback_report(wire({**base, "auxiliaryReason": reason}), NONCE)
+            self.assertEqual(safe["auxiliaryReason"], reason)
+            self.assertNotIn(PRIVATE, json.dumps(safe))
+        for scheme in ("DIRECT", "HTTP_HEAD", "HTTP_XSDATE", "OTHER"):
+            safe = module.playback_report(wire({**base, "auxiliaryReason": "UTC_TIMING", "utcScheme": scheme}), NONCE)
+            self.assertEqual(safe["utcScheme"], scheme)
+        for extra in ({"auxiliaryReason": PRIVATE}, {"auxiliaryReason": None}, {"auxiliaryReason": []},
+                      {"auxiliaryReason": "UTC_TIMING"}, {"utcScheme": "DIRECT"},
+                      {"auxiliaryReason": "UTC_TIMING", "utcScheme": PRIVATE},
+                      {"auxiliaryReason": "UTC_TIMING", "utcScheme": {}},
+                      {"auxiliaryReason": "SEGMENT_BASE", "utcScheme": "DIRECT"},
+                      {"boundary": "PROTECTION", "auxiliaryReason": "SEGMENT_BASE"}):
+            with self.assertRaises(module.Refused): module.playback_report(wire({**base, **extra}), NONCE)
+
     def test_safe_decode_receipt_contains_no_private_binding(self):
         safe = module.playback_report(wire(observation()), NONCE)
         self.assertEqual(safe["outcome"], "DECODED"); self.assertNotIn("nonce", safe)

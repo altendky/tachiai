@@ -707,8 +707,21 @@ not a secure-erasure claim for JavaScript strings. Owned cleanup must settle
 before adoption; uncertainty remains fatal with the owned runtime retained for
 review. Ad handling is always `UNKNOWN`. No initialization, segment, ad,
 certificate, license, CDM or renewal operation occurs. This diagnostic does not
-establish source entitlement or protected replay playback, and no fresh provider
-MPD trial of this slice has been performed.
+establish source entitlement or protected replay playback.
+
+One fresh trial on signed
+`1c36cc4b9f2898fb136f2897a3adb045a93cb8b6` repeated source/configuration
+acceptance with CUSTOM protection and CSAI ad mode, then made the one browser
+MPD GET. The browser read HTTP403 under normal CORS; the refusal body was not
+read, MIME was not checked and no XML graph was inspected. Cleanup was confirmed
+with no grant persisted. No initialization, media, ad, certificate, licensing or
+CDM operation followed. The conditions were Linux x86-64, owned headed
+Chrome156.0.8078.47, a fresh anonymous guest, the code-defined legacy replay seed
+and default host networking; exit country was not independently measured.
+This is a CORS-readable refusal in that context, not evidence of its cause,
+provider entitlement, browser DRM incompatibility or a need for an extension or
+media relay. Compare the source/request/route/account contract before another
+provider attempt; do not alter query parameters or relax admission by guesswork.
 
 Browser-free protocol/ownership tests run in hooks. The optional owned Chrome
 group uses loopback fixtures only and is also registered in web CI:

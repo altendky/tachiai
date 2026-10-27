@@ -301,8 +301,8 @@ class CommandResult:
         return "CommandResult(redacted)"
 
 
-def run_command(args, timeout, limit=32768, input_data=None, display=False):
-    if input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > 32768):
+def run_command(args, timeout, limit=32768, input_data=None, display=False, input_limit=32768):
+    if type(input_limit) is not int or not 0 < input_limit <= 2 * 1024 * 1024 or input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > input_limit):
         raise Refused()
     process = None
     streams = selectors.DefaultSelector()
@@ -372,7 +372,7 @@ class OwnedContainer:
     def __init__(self, runtime, config, runner=run_command, deadline=None, helper="abema-guest-helper.cjs", private=False):
         self.runtime, self.config, self.runner = runtime, config, runner
         self.deadline = deadline
-        if helper not in {"abema-guest-helper.cjs", "abema-source-helper.cjs"}:
+        if helper not in {"abema-guest-helper.cjs", "abema-source-helper.cjs", "abema-episode-source-helper.cjs"} or helper == "abema-episode-source-helper.cjs" and not private:
             raise Refused()
         self.helper, self.private = helper, private
         self.nonce = uuid.uuid4().hex
@@ -454,6 +454,8 @@ class OwnedContainer:
 
 
 class Attempt:
+    private_completion = False
+
     def __init__(self, output, transport=None, runner=run_command):
         self.output, self.transport, self.runner = output, transport or NativeTransport(), runner
         self.phase, self.cleanup_confirmed = "START", True
@@ -465,6 +467,9 @@ class Attempt:
 
     def complete(self, media_token):
         self.report("ANONYMOUS_BOOTSTRAP_ACCEPTED", grantsPersisted=False, sourceRequests=False, mediaRequests=False, licenseRequests=False)
+
+    def complete_private(self, context):
+        raise Refused()
 
     def request(self, operation, fields):
         remaining = self.deadline - time.monotonic()
@@ -521,6 +526,7 @@ class Attempt:
     def run(self):
         try:
             body = self.prepare()
+            device_id = strict_json(validate_guest_request(body), 16384)["device_id"] if self.private_completion is True else None
             self.phase = "GUEST"
             guest = strict_json(self.request("GUEST", {"body": body}))
             body = None
@@ -541,9 +547,16 @@ class Attempt:
             media = strict_json(self.request("MEDIA_TOKEN", {"bearer": bearer}))
             if not isinstance(media, dict) or not bounded_token(media.get("token")):
                 raise Refused()
-            user_id = bearer = None
-            self.complete(media["token"])
-            media.clear()
+            if self.private_completion is True:
+                context = {"userId": user_id, "bearer": bearer, "deviceId": device_id, "mediaToken": media["token"]}
+                user_id = bearer = device_id = None
+                media.clear()
+                try: self.complete_private(context)
+                finally: context.clear()
+            else:
+                user_id = bearer = None
+                self.complete(media["token"])
+                media.clear()
             return 0
         except Terminated:
             self.report("TERMINATED")

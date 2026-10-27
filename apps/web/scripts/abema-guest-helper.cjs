@@ -4,10 +4,16 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { webcrypto } = require('node:crypto');
 
-function createProviderContext(assetDirectory = '/proof', navigator, sourceCompatibility = false) {
+function createProviderContext(assetDirectory = '/proof', navigator, sourceCompatibility = false, episodeReply) {
+  if (episodeReply !== undefined && (!sourceCompatibility || !episodeReply ||
+    Object.keys(episodeReply).sort().join(',') !== 'body,uri' || typeof episodeReply.uri !== 'string' ||
+    !/^https:\/\/streaming-api-cf\.p-c2-x\.abema-tv\.com\/v1\/playbackResources\/[A-Za-z0-9_:.~-]{1,256}$/.test(episodeReply.uri) ||
+    ['.', '..'].includes(episodeReply.uri.split('/').at(-1)) || new URL(episodeReply.uri).href !== episodeReply.uri ||
+    typeof episodeReply.body !== 'string' || Buffer.byteLength(episodeReply.body) > 512 * 1024)) throw new Error();
   const globals = { crypto: webcrypto, TextEncoder, TextDecoder, URL, atob, btoa };
   if (sourceCompatibility) Object.assign(globals, { URLSearchParams, navigator, EventTarget });
-  const context = vm.createContext({ ...globals, __sourceCompatibility: sourceCompatibility },
+  const context = vm.createContext({ ...globals, __sourceCompatibility: sourceCompatibility,
+    __episodeReply: episodeReply === undefined ? null : JSON.stringify(episodeReply) },
     { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(`
     globalThis.window = globalThis; globalThis.self = globalThis;
@@ -21,12 +27,36 @@ function createProviderContext(assetDirectory = '/proof', navigator, sourceCompa
       globalThis.addEventListener = (...args) => target.addEventListener(...args);
       globalThis.removeEventListener = (...args) => target.removeEventListener(...args);
     }
-    for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'Worker',
+    (() => {
+    const episodeMode = __episodeReply !== null;
+    let episodeCalls = 0, episodeViolation = false;
+    Object.defineProperties(globalThis, {
+      __episodeMode: { value: episodeMode },
+      __episodeCalls: { get: () => episodeCalls },
+      __episodeViolation: { get: () => episodeViolation },
+      __episodeRefuse: { value: () => { episodeViolation = true; throw new Error('Episode operation refused'); } },
+    });
+    if (episodeMode) {
+      const reply = JSON.parse(__episodeReply);
+      const fetch = async (url, options) => {
+        if (++episodeCalls !== 1 || String(url) !== reply.uri || options?.mode !== 'cors' ||
+            options?.method !== undefined || options?.body !== undefined ||
+            Object.keys(options).sort().join(',') !== 'headers,mode' ||
+            Object.keys(options.headers).join(',') !== 'accept' || options.headers.accept !== 'application/json') {
+          episodeViolation = true; throw new Error('Frozen request refused');
+        }
+        return Object.freeze({ status: 200, json: async () => JSON.parse(reply.body) });
+      };
+      Object.defineProperty(globalThis, 'fetch', { value: fetch, configurable: false });
+    } else Object.defineProperty(globalThis, 'fetch', { value: undefined, configurable: false });
+    delete globalThis.__episodeReply;
+    })();
+    for (const name of ['XMLHttpRequest', 'WebSocket', 'Worker',
       'document', 'localStorage', 'sessionStorage']) {
       Object.defineProperty(globalThis, name, { value: undefined, configurable: false });
     }
     Object.defineProperty(globalThis, 'console', { configurable: false, value: __sourceCompatibility ?
-      Object.freeze({ log(){}, debug(){}, info(){}, warn(){}, error(){} }) : undefined });
+      Object.freeze({ log(){}, debug(){}, info(){}, warn(){}, error(){}, assert(){} }) : undefined });
     delete globalThis.__sourceCompatibility;
   `, context, { timeout: 1000 });
   for (const name of ['support.js', 'utilities.js', 'application.js', 'legacy.js']) {
@@ -49,6 +79,9 @@ function createProviderContext(assetDirectory = '/proof', navigator, sourceCompa
       }
     }
     function load(id) {
+      if (__episodeMode && [14405, 2833, 44680, 47994, 58482, 89206].includes(Number(id))) {
+        __episodeRefuse();
+      }
       if (Object.hasOwn(cache, id)) return cache[id].exports;
       if (!Object.hasOwn(factories, id) || ++count > 4096) throw new Error();
       const module = { exports: {} }; cache[id] = module;

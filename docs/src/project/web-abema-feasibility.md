@@ -446,6 +446,212 @@ invoke the source selector. It emits only closed refusal categories
 or acceptance, plus optional metadata-presence booleans. Transport refusals remain
 fixed outcomes. This mode also requires explicit opt-in and stays outside CI.
 
+## Exact-episode SOURCE/CONFIG diagnostic
+
+The separate episode diagnostic stops before requesting a manifest, media,
+certificate or license and creates no MediaKeySession. Its fixed source is the
+code-defined legacy catalogue seed `394-72_s10_p8529`; that identity is neither
+a saved user selection nor evidence of current availability or eligibility.
+It does not inherit the anonymous GLOBAL News context as replay entitlement.
+The following command performs fresh provider operations and requires explicit
+opt-in; it is excluded from routine checks:
+
+```sh
+mise exec -- uv run apps/web/scripts/abema-backend-episode-source.py --run-episode-source
+```
+
+Every other argument combination is inert. The command accepts no episode,
+URL, token, existing account/profile or browser-storage input. It uses the
+existing owned fresh headed Chrome/Linux navigator snapshot and fresh guest,
+profile and media token. The device identifier is bound to the original guest
+request, independently of the returned user identifier. The old bootstrap,
+source and manifest commands retain their token-only completion path; only this
+new private completion hook receives the short-lived guest context.
+
+The parent makes one authenticated GET for that exact program. Before any
+gateway operation, it requires exact identity, an explicit free label, a future
+free window and nonempty unexpired advertising terms. It conservatively refuses
+rental, precedence, device, trial and partner/authority restrictions. A true DRM
+metadata flag is retained as protected-content metadata, not interpreted as clear
+playback. A separate unchanged pinned DTO pass must preserve the program and
+ARIN identities. Only then can the parent make one GET of that fresh ARIN's
+fixed playback-resource gateway. Eligibility expiry and the original attempt
+deadline apply before and after these operations and both helper passes. The
+window is also anchored to the metadata request-start wall/monotonic clocks;
+its immutable minimum with the attempt deadline prevents clock rollback or a
+delayed response from extending eligibility.
+
+Both private helper phases run the same four hash-verified public bundles in
+the existing network-disabled, read-only, unprivileged owned container. Private
+inputs and results use bounded pipes, with core dumps and container logging
+disabled; only public runtime files are mounted. The metadata phase has no
+gateway consumption. The selection phase supplies the fresh gateway JSON to
+the unchanged gateway factory through one immutable, exact-URI frozen GET.
+Repeated/foreign requests, retries, feature evaluation and response, guest,
+device or player helper factories refuse in both phases. VM globals are an
+additional guard; the container's disabled network is the isolation boundary.
+
+The unchanged Chrome browser filter/comparator selects its first stream and
+first manifest. Widevine remains preferred when the provider comparator chooses
+it; custom protection is not substituted as a fallback. The original URL and
+configuration factories build the candidate, with Widevine mapped to `wv` and
+custom mapped to `clear` as in the pinned caller. This mapping alone establishes
+no unencrypted-playback claim. Session/ad modes outside the supported direct
+NONE/CSAI/ABEMA_DEFAULT modes and any unexpected manifest-query additions refuse.
+The parent independently binds the returned nonce, exact program, fresh ARIN,
+selected raw stream/manifest, protection, fresh media token and configuration.
+All fresh advertised query pairs must survive unchanged in decoded meaning;
+duplicates, encoded/reserved names, malformed escapes and reserved collisions
+refuse. The license URL is validated as configuration only and is never fetched.
+The supported configuration template is intentionally narrow: the existing
+known ABEMA license host and a bounded canonical path. A literal template path
+must survive exactly; a path containing only the exact nonsecret `{ct}` and
+`{cid}` markers is checked after substituting `program` and the exact episode.
+The complete final path must match. Each content value must be explicitly bound
+by its exact query placeholder, supported scalar query variable or path marker;
+when present in multiple places, all must match. The fresh media token remains
+mandatory as the exact `{t}` query placeholder or supported query variable.
+Token/ticket path markers, unknown expressions, percent
+escapes and traversal paths refuse; no general template evaluator is added.
+Other query-name, constant-value and origin restrictions remain unchanged.
+It does not assume a native custom-protection path for Widevine. This validates
+configuration metadata, not permission to request the resulting route. A
+different fresh contract refuses rather than expanding origins or adding helper
+calls. `configurationMatched` covers the key-system/license-URL
+subset only; certificates, license response handling and adapter compatibility
+remain unverified.
+
+The independent query validator also recognizes one terminal RFC6570 query
+expression, with only unique scalar `t`, `pt`, `ct` and `cid` variables. A
+`{?...}` expression requires no existing literal query; `{&...}` must extend a
+nonempty literal query whose pairs satisfy the existing placeholder/constant
+rules. Collisions between literal pairs and expression variables refuse.
+The current caller has no ticket token: an expression's undefined `pt` is
+omitted and must remain absent in the final query; no literal ticket pair is
+adopted. The final decoded query map must exactly preserve the fresh template's
+constants and current token/content values. Nonterminal/multiple expressions,
+unknown variables, prefix/explode modifiers and other operators refuse. This
+is a standards-based validation subset, not a copy of the provider expander or
+a general template processor. The terminal expression is separated before URI
+splitting, so its `?` is not mistaken for a literal query delimiter inside a
+path. [RFC6570 query expansion](https://www.rfc-editor.org/rfc/rfc6570.html#section-3.2.8)
+and [continuation](https://www.rfc-editor.org/rfc/rfc6570.html#section-3.2.9)
+define the underlying named-scalar and undefined-variable behavior.
+
+Output contains fixed phases/refusal reasons, bounded HTTP status and boolean
+binding/cleanup evidence, plus closed protection/ad-mode enums. It excludes
+guest/account/device identifiers, ARINs, tokens, URLs, metadata and configuration
+payloads. Even SOURCE/CONFIG acceptance establishes no device flow, account
+entitlement, provider playback, browser key-system support, license adapter,
+renewal or product UX approval. Owned container cleanup must settle before its
+result is adopted; uncertainty refuses and retains only the public runtime for
+ownership review.
+
+A CONFIGURATION refusal also carries a fixed `configurationCheck` enum. Its
+HELPER prefix distinguishes factory execution, key-system comparison, license/
+source output types, the one-call guard and output assembly; PARENT distinguishes
+protection/ad-mode validation and fresh-resource association, call count, license
+endpoint, template and resulting query checks. These are owned guard/checkpoint
+labels, never provider error messages, field names or values. The private reader
+independently requires the CONFIGURATION reason and a helper-only enum for a
+helper refusal; other reasons cannot retain this field. The classification does
+not change admission, guard order, selected protection, URL construction or any
+lifetime/cleanup rule.
+Template/result text, HTTPS scheme, host and canonical-path checks have separate
+PARENT_TEMPLATE/PARENT_RESULT labels; PARENT_PATH_BINDING reports unequal paths.
+These labels describe existing predicates without returning an endpoint.
+
+Browser-free synthetic regressions run in repository hooks:
+
+```sh
+mise exec -- uv run scripts/tests/web-abema-backend-episode-source.test.py
+mise exec -- node --test scripts/tests/web-abema-episode-source.test.cjs
+```
+
+An additional opt-in local gate uses already available, hash-verified public
+assets, owned blank headed Chrome and network-disabled Docker. It never
+downloads assets or calls providers:
+
+```sh
+TACHIAI_ABEMA_PINNED_TEST=1 TACHIAI_ABEMA_PINNED_ASSETS=/path/to/verified-public-assets \
+  mise exec -- uv run scripts/tests/web-abema-episode-source-pinned.test.py
+```
+
+This gate executed the new repository helper and immutable frozen-GET plumbing
+in both phases. With synthetic gateway inputs, the actual pinned comparator
+selected Widevine with either input order and retained custom for a custom-only
+input. The current fixture repeats those three selections for literal-query,
+terminal query-expansion and query-continuation forms, including exact content
+path markers, fixed query provenance and omitted `pt`. The unchanged factories
+produce all nine bindings; the independent parent checks their final paths,
+queries and context. These are agent-run
+software fixture observations, not provider eligibility or physical-device
+measurements.
+
+The first fresh exact-episode trial at signed
+`df0d60eeca5b0a3631c0cc1321358930d8515975` verified headed Chrome
+156.0.8078.47 on Linux x86-64,
+the four public pins, fresh guest/profile/media-token HTTP200, exact program
+HTTP200 and conservative eligibility, the pinned DTO pass and gateway HTTP200.
+It then refused at SOURCE_CONFIG with the broad CONFIGURATION reason. Cleanup
+was confirmed and no grant persisted; no manifest, media, certificate, license
+or CDM operation occurred. No private response, URI or template was retained,
+so the failing predicate and helper/parent origin cannot be reconstructed from
+that result. The fixed subreason diagnostic above is the next bounded step;
+this result does not justify guessing a template/DRM mismatch or loosening a
+guard.
+
+A second fresh attempt on signed
+`9c062b1c1de9b493aca646638ee333f9554b85b5` passed the same guest/profile/token,
+exact-program eligibility and DTO chain, and again received gateway HTTP 200.
+The first configuration refusal was specifically `PARENT_LICENSE_ENDPOINT`.
+At that revision, the grouped check covered bounded URI/type/character validation,
+HTTPS and the known license host, canonical template/output paths and path
+equality. The report does
+not identify the individual condition, actual endpoint or selected protection.
+No response, template or URL was retained; the result cannot establish a provider
+license rejection or browser DRM incompatibility.
+
+A third fresh attempt on signed
+`1d4f0ed20f1e748e06c6e25113eed6eda260be28` again passed fresh exact-program
+eligibility, DTO and gateway checks, then refused specifically at
+`PARENT_TEMPLATE_PATH`. Cleanup was confirmed with no grant persisted and no
+MPD, media, certificate, license or CDM operation. The unchanged public builder
+binds nonsecret content values `ct` and `cid` while expanding its template;
+requiring the unexpanded path to contain only literal canonical characters did
+not account for that interface. The narrow path-marker validation above is
+tested with synthetic inputs. The private template was not retained: this
+result identifies the raw-path guard, not the actual template expression or
+selected protection, and no fresh acceptance of the new validation is claimed.
+
+A fourth fresh attempt on signed
+`5fd1a4843881d4fe7179547c622cfc16193fa797` still refused at
+`PARENT_TEMPLATE_PATH` after fresh eligibility, DTO and gateway success, with
+cleanup confirmed and no grant persisted. It made no MPD, media, certificate,
+license or CDM request. The template was not retained. Static inspection of the
+pinned generic builder established query-expression capability, and the
+standards-based subset above is covered only by synthetic fixtures so far;
+neither the actual template form nor fresh acceptance is inferred.
+
+A fifth fresh attempt on signed
+`2571d1835d7f230ab0371c80b0c6361ffca68aad` passed the independent
+SOURCE/CONFIG binding after fresh program eligibility, DTO and gateway success.
+The unchanged browser factory selected `CUSTOM` protection and `CSAI` ad mode.
+Exact source, session, token and the key-system/license-URL configuration subset
+matched. The template was not retained, and this does not identify its syntax
+or establish that the selected protection/advertising path can run in a browser.
+No manifest, media, certificate, licensing or MediaKeySession operation occurred;
+device flow and entitlement remained unestablished. Cleanup was confirmed with
+no grant persisted. This source-only result does not establish replay playback.
+
+All five attempts used a fresh anonymous guest and owned blank headed browser,
+the fixed legacy replay seed and default host networking. Exit country was not
+independently measured. No GLOBAL News catalogue result was used as replay
+entitlement. All confirmed owned cleanup with no grant persisted and performed
+no MPD, media, certificate, license or CDM operation. The next prerequisite is
+verification of the browser endpoint/configuration contract before any admission
+change or protected playback trial.
+
 ## Next decision
 
 Before another MPD or CDM attempt, compare the current provider/native source

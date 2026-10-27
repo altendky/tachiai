@@ -150,6 +150,20 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|source)\.py|owned-browser\.py|(guest|source)-helper\.cjs|browser-snapshot\.mjs)$|^scripts/tests/web-abema-backend-bootstrap\.test\.py$'
         pass_filenames: false
 
+      - id: web-abema-backend-episode-source-tests
+        name: Web ABEMA exact episode source safety tests
+        entry: uv run scripts/tests/web-abema-backend-episode-source.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source|episode-source)\.py|(guest|episode-source)-helper\.cjs)$|^scripts/tests/web-abema-backend-episode-source\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-episode-source-helper-tests
+        name: Web ABEMA private episode factory protocol tests
+        entry: node --test scripts/tests/web-abema-episode-source.test.cjs
+        language: system
+        files: '^apps/web/scripts/abema-(guest|episode-source)-helper\.cjs$|^scripts/tests/web-abema-episode-source(?:-pinned)?(?:\.test)?\.cjs$'
+        pass_filenames: false
+
       - id: abema-opaque-broker-tests
         name: ABEMA opaque broker fixture tests
         entry: node scripts/tests/abema-opaque-broker.test.cjs

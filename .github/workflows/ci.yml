@@ -232,7 +232,7 @@ jobs:
         run: |
           uv run scripts/tests/web-abema-backend-manifest.test.py
           xvfb-run --auto-servernum uv run scripts/tests/web-abema-browser-snapshot.test.py
-          node --test scripts/tests/web-abema-browser-manifest.test.mjs
+          xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-manifest.test.mjs scripts/tests/web-abema-browser-episode-manifest.test.mjs
 
       - name: Test bounded ABEMA playback with controlled local media only
         env:

@@ -329,6 +329,10 @@ class EpisodeAttempt(source.SourceAttempt):
         self.alive(envelope["expiresAtMs"])
         return value
 
+    def bound_episode(self, binding, nonce, metadata, expiry, gateway, media_token):
+        # Source-only mode remains inert at the manifest/media/DRM boundary.
+        pass
+
     def complete_private(self, context):
         try:
             if set(context) != {"userId", "bearer", "deviceId", "mediaToken"} or not bootstrap.FRESH_UUID.fullmatch(context["deviceId"]): refuse("IDENTITY")
@@ -358,6 +362,7 @@ class EpisodeAttempt(source.SourceAttempt):
                     sessionMatched=True, tokenMatched=True, configurationMatched=True, protection=binding["drm"],
                     adMode=binding["adMode"], manifestRequests=False, mediaRequests=False, licenseRequests=False,
                     certificateRequests=False, mediaKeySessions=False, deviceFlowCompleted=False, entitlementEstablished=False)
+                self.bound_episode(binding, nonce, metadata, expiry, gateway, context["mediaToken"])
         except EpisodeRefused as failure:
             self.report("EPISODE_REFUSED", reason=failure.reason,
                 **({"configurationCheck": failure.configuration_check} if failure.configuration_check is not None else {}))

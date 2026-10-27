@@ -153,6 +153,26 @@ The CLI admits `token-type` only at token polling. Lowercase bearer remains
 required; issuance omission and numeric zero validation use only the bounded
 policy above.
 
+Media stages additionally expose a closed `media` snapshot: checkpoint/refusal,
+normalized `manifest`/`segment`/`other` request kind, `GET`/`HEAD`/`OTHER` method,
+and optional integer SDK category (1–10) and code (1–99999). No SDK error object,
+message, data, cause, stack, header, URL or provider body is returned. The CLI
+independently allowlists every field/value and admits media evidence only at
+player stages. The request filter binds an observer to its owned request before
+the asynchronous scheme-plugin dispatch; later callbacks keep that original
+player/generation. First refusal survives concurrent responses and cleanup, while
+numeric SDK annotations may explain it without replacing it.
+
+Checkpoints separate SDK-only load, request filtering, plugin/Fetch admission,
+Fetch, response headers, body reading and completion. Refusals distinguish local
+policy, Fetch rejection, the existing ten-second transport timeout, owned abort,
+readable HTTP rejection, body reading/size, processing and SDK failure. The host's
+existing thirty-second load deadline has an explicit `load-timeout` marker.
+`fetch-rejected` does not identify CORS: redirects, CSP, DNS/TLS and other network
+failures can produce the same unreadable result. No HTTP value means none was
+observed before the latched failure, not proof that no request occurred. A known
+HTTP value is still only the latest readable response before failure.
+
 ### Activated browser trial: October 26, 2026
 
 The fresh user-activated trial on revision
@@ -197,12 +217,23 @@ The zero-as-unknown local policy above is the resulting bounded compatibility
 change. Controlled regressions do not substitute for another fresh activated
 provider trial; no revoked grant or old device code is reused.
 
+The fourth fresh trial on signed revision
+`2452d11a14cf8dbc6ff1e9aaedd18856465b9b88` validated authorization, then refused
+the selected `live:virtualjapan` source at `player-load`, with no readable media
+HTTP status in that revision's diagnostic. No decoding or replay case followed.
+Media destruction and fresh-grant revocation were confirmed. The runner ended
+normally after reporting the refusal; exit zero was not playback acceptance.
+This result does not identify CORS or distinguish local admission, unreadable
+Fetch, timeout or pre-request SDK failure. The closed media observations above
+are the next diagnostic step; they do not relax any security or playback policy.
+
 ## Offline verification and outstanding acceptance
 
 ```sh
 mise exec -- npm run build --prefix apps/web
 mise exec -- npm run test:twitch:offline --prefix apps/web
 mise exec -- npm run test:twitch:owned --prefix apps/web
+mise exec -- npm run test:twitch:media --prefix apps/web
 ```
 
 The session tests use only synthetic responses. They cover exact client/scope/
@@ -219,8 +250,22 @@ An additional ordinary-browser test uses two real loopback HTTP servers without
 request interception. It confirms that a denied CORS preflight reaches the
 server and prevents POST, an accepted preflight permits POST, cookies are omitted
 and not adopted, and a redirect's forbidden destination receives no request.
-Only the explicitly synthetic provider/fixture test uses intercepted responses;
+Only explicitly synthetic host/fixture tests use intercepted responses;
 it is not evidence of provider CORS or redirect behavior.
+
+The media boundary suite uses a separate loopback fixture server on port 4190.
+It invokes the same production plugin factory with an owned HTTP admission
+callback; only fixture tests register HTTP, while production installation stays
+HTTPS-only. Real local Fetch tests use no interception for CORS refusal, redirect
+refusal, a closed TCP endpoint, readable 403, body-read interruption, ten-second
+timeout, abort, bad-playlist HTTP 200 and delayed generation callbacks. SDK-only
+failure and a clearly synthetic host stall verify the SDK/error projection and
+thirty-second marker. The host-stall test intercepts synthetic OAuth/GraphQL
+only and starts no media request. These tests retain no screenshots, recordings,
+traces or unrestricted errors; all provider endpoints remain synthetic or blocked.
+The deferred response/reader-cancellation races use synthetic in-page Fetch
+responses to hold cleanup while another response arrives. They test latching,
+and are distinct from the actual loopback CORS/redirect/TCP/body/timeout checks.
 
 These tests cannot establish actual consent, CORS acceptance, provider entitlement,
 advertisements, signed manifest/CDN behavior, live-window operation, audio or

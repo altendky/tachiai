@@ -1,4 +1,5 @@
 import { admittedTwitchApi, createClosedBrowserFetch } from './twitch-transport';
+import type { TwitchMediaDiagnostic } from './twitch-media-diagnostic';
 
 // Opt-in, memory-only provider diagnostic. No browser/account persistence API.
 export const TWITCH_PROOF_CLIENT = 'ue6666qo983tsx6so1t0vnawi233wa'; // gitleaks:allow public client identifier
@@ -57,7 +58,7 @@ export type TwitchDiagnosticStage = 'idle' | 'device-challenge' | 'token-poll' |
   'source-access' | 'player-attach' | 'player-load' | 'player-ready' | 'player-playback' | 'player-cleanup';
 export type TwitchRefusalReason = 'cancelled' | 'deadline' | 'token-type' |
   'expiry-missing' | 'expiry-zero' | 'expiry-invalid';
-export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchRefusalReason }
+export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchRefusalReason; media?: TwitchMediaDiagnostic }
 const expiryRefusal = (body: Record<string, unknown>): TwitchRefusalReason =>
   !Object.hasOwn(body, 'expires_in') ? 'expiry-missing' : body.expires_in === 0 ? 'expiry-zero' : 'expiry-invalid';
 type Dependencies = { fetch?: typeof fetch; now?: () => number };

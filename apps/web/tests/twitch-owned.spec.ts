@@ -40,7 +40,9 @@ for (const lifetime of ['finite', 'bounded-unknown'] as const) test(`owned provi
   await page.evaluate(() => (window as any).twitchProof.begin());
   await expect.poll(() => page.evaluate(() => (window as any).twitchProof.poll())).toBe('authorized');
   expect(await page.evaluate(() => (window as any).twitchProof.prepare('replay:2080217716'))).toBe('ready');
-  expect(await page.evaluate(() => (window as any).twitchProof.diagnostic())).toEqual({ stage: 'player-ready', http: 200 });
+  const readyDiagnostic = await page.evaluate(() => (window as any).twitchProof.diagnostic());
+  expect(readyDiagnostic).toMatchObject({ stage: 'player-ready', http: 200, media: { method: 'GET' } });
+  expect(readyDiagnostic.media.refusal).toBeUndefined(); // Buffering can already have another request in flight.
   await page.getByRole('button', { name: 'Play diagnostic' }).click();
   await expect.poll(() => page.evaluate(() => (window as any).twitchProof.sample().seconds)).toBeGreaterThan(0.25);
   const sample = await page.evaluate(() => (window as any).twitchProof.sample());
@@ -51,7 +53,8 @@ for (const lifetime of ['finite', 'bounded-unknown'] as const) test(`owned provi
   await page.evaluate(() => (window as any).twitchProof.stopPlayer());
   await page.route('https://usher.ttvnw.net/**', (route) => route.fulfill({ status: 403, body: 'synthetic-private-response' }));
   expect(await page.evaluate(() => (window as any).twitchProof.prepare('replay:2080217716'))).toBe('refused');
-  expect(await page.evaluate(() => (window as any).twitchProof.diagnostic())).toEqual({ stage: 'player-load', http: 403 });
+  expect(await page.evaluate(() => (window as any).twitchProof.diagnostic())).toMatchObject({ stage: 'player-load', http: 403,
+    media: { checkpoint: 'response', refusal: 'http-status', requestKind: 'manifest', method: 'GET', sdkCategory: 1, sdkCode: 1002 } });
   expect(await page.evaluate(() => (window as any).twitchProof.close())).toEqual({ media: 'destroyed', grant: 'revoked' });
   expect(await page.evaluate(() => (window as any).twitchProof.close())).toEqual({ media: 'destroyed', grant: 'revoked' });
   expect(await page.evaluate(() => (window as any).twitchProof.prepare('replay:2080217716'))).toBe('refused');

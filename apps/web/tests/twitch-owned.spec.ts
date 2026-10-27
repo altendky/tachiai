@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE } from '../src/twitch-proof';
 
-test('owned provider host decodes only synthetic intercepted fixture media and cleans up its fresh synthetic grant', async ({ page, baseURL }) => {
+for (const lifetime of ['finite', 'bounded-unknown'] as const) test(`owned provider host decodes only synthetic fixture media and cleans up (${lifetime})`, async ({ page, baseURL }) => {
   let revocations = 0;
   let unexpected = 0;
   await page.route('**/*', async (route) => {
@@ -14,9 +14,11 @@ test('owned provider host decodes only synthetic intercepted fixture media and c
       await json({ device_code: 'synthetic-device', user_code: 'TEST1234',
         verification_uri: 'https://www.twitch.tv/activate', expires_in: 600, interval: 1 });
     } else if (uri.href === 'https://id.twitch.tv/oauth2/token') {
-      await json({ access_token: 'synthetic-browser-grant', token_type: 'bearer', expires_in: 3600 });
+      await json({ access_token: 'synthetic-browser-grant', token_type: 'bearer',
+        ...(lifetime === 'finite' ? { expires_in: 3600 } : {}) });
     } else if (uri.href === 'https://id.twitch.tv/oauth2/validate') {
-      await json({ client_id: TWITCH_PROOF_CLIENT, scopes: [TWITCH_PROOF_SCOPE], user_id: '12345', expires_in: 3600 });
+      await json({ client_id: TWITCH_PROOF_CLIENT, scopes: [TWITCH_PROOF_SCOPE], user_id: '12345',
+        expires_in: lifetime === 'finite' ? 3600 : 0 });
     } else if (uri.href === 'https://id.twitch.tv/oauth2/revoke') {
       revocations++;
       await route.fulfill({ status: 200, body: '' });

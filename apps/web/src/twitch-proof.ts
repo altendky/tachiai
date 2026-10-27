@@ -195,8 +195,8 @@ export class TwitchProofSession {
         this.grantDeadline = Math.min(this.grantDeadline, startedAt + body.expires_in * 1000);
       }
       if (this.now() >= this.grantDeadline) { this.refusalReason = 'deadline'; throw refused(); }
-      // Omission is not an unknown-lifetime authorization: validation below
-      // must supply a finite expiry and exact binding before state changes.
+      // Omission adds no provider deadline. Validation must establish exact
+      // binding before authorization; the fixed local cap always remains.
       await this.validate();
       this.deviceCode = undefined;
       this.state = 'authorized';
@@ -217,9 +217,13 @@ export class TwitchProofSession {
         !Array.isArray(body.scopes) || body.scopes.length !== 1 || body.scopes[0] !== TWITCH_PROOF_SCOPE ||
         typeof body.user_id !== 'string' || !/^[1-9][0-9]{0,31}$/.test(body.user_id) ||
         this.user !== undefined && this.user !== body.user_id) throw refused();
-    if (!integer(body.expires_in, 365 * 86400)) { this.refusalReason = expiryRefusal(body); throw refused(); }
+    let validationCap = this.deadline;
+    if (integer(body.expires_in, 365 * 86400)) validationCap = startedAt + body.expires_in * 1000;
+    else if (body.expires_in !== 0) { this.refusalReason = expiryRefusal(body); throw refused(); }
+    // The observed numeric zero supplies no provider TTL. It cannot erase an
+    // earlier finite cap or extend this memory-only session's local deadline.
     this.active();
-    this.grantDeadline = Math.min(this.grantDeadline, this.deadline, startedAt + body.expires_in * 1000);
+    this.grantDeadline = Math.min(this.grantDeadline, this.deadline, validationCap);
     if (this.now() >= this.grantDeadline) { this.refusalReason = 'deadline'; throw refused(); }
     this.user ??= body.user_id;
   }

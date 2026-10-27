@@ -17,15 +17,22 @@ access and each exact catalogue case must be selected explicitly:
 ```sh
 mise exec -- npm run probe:twitch --prefix apps/web
 mise exec -- npm run probe:twitch --prefix apps/web -- --network --case=live:virtualjapan --case=replay:2080217716
+mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --case=live:virtualjapan --case=replay:2080217716
 ```
 
-The second command starts a fresh ordinary Chrome context and local production
+The network commands start a fresh automated Chrome context and local production
 preview server on 127.0.0.1:4173. It prints a short-lived activation code for the
 provider's Twitch Activate page. The user controls provider login and consent in
 their own browser; the diagnostic never opens or instruments that login page.
 No provider credentials, cookies, saved Android grants, imported browser profile,
 client secret, refresh operation or new application registration is used.
 Do not approve an old code: each run owns one fresh challenge and its deadline.
+
+The default launch explicitly uses headless Chrome; `--headed` opens headed
+Chrome while preserving the same transport, profile and authorization rules.
+The activation event reports the selected launch mode. A headed automated
+browser remains different from an ordinary user-controlled browsing session.
+The flag alone does not authorize network access or select any playback case.
 
 Only the two named existing catalogue samples are admitted. A refused selected
 case ends the playback sequence; it does not try a different channel/replay,
@@ -36,12 +43,19 @@ families match Android's existing experimental `ttvnw.net`/`twitchcdn.net` polic
 These bounds establish neither current availability nor entitlement of a sample.
 
 The run stops after at most 15 minutes, plus bounded in-flight work and cleanup.
-Ctrl-C cancels current browser requests, retires the owned player and attempts
+The runner handles SIGINT and SIGTERM itself and disables Playwright's automatic
+handlers for those signals, keeping Chrome available until its finally block
+attempts the owned page's cleanup receipt. Sending either signal to the verified
+owned Node runner cancels current browser requests, retires the owned player and attempts
 revocation of this run's fresh access grant. Closing the page or losing the
 browser/network can prevent confirmed revocation; `unconfirmed` is a failure to
 establish cleanup, never a claim of revoked authorization. `no-grant-held` means
 no access grant was adopted in browser memory, not that the provider could not
 have issued an unread response during an interrupted request.
+For automated execution, target only the verified owned Node process when
+cancelling. A process-group interrupt, another signal or a hard kill can still
+close Chrome before the runner confirms media retirement and revocation. The
+handler change does not make an `unconfirmed` receipt successful.
 
 ## Account and source ownership
 
@@ -227,7 +241,37 @@ This result does not identify CORS or distinguish local admission, unreadable
 Fetch, timeout or pre-request SDK failure. The closed media observations above
 are the next diagnostic step; they do not relax any security or playback policy.
 
+The refreshed instrumented trial on signed revision
+`21ad5a5853763251a0827df9c9e7a6dc2bdb2b08` validated authorization, then refused
+the same live source at `player-load`. Its first media failure was manifest GET,
+checkpoint `fetch`, refusal `fetch-rejected`, SDK category 1 and code 1002. No
+HTTP response was exposed, decoding was not reached and the replay case was not
+attempted. The player was destroyed, the fresh grant revoked and the loopback
+server closed. This narrows the boundary to Fetch but does not distinguish CORS,
+redirects, CSP, DNS/TLS or another network failure. Exit zero remains normal
+completion after reporting a refusal, not playback success.
+
+That trial used the default automated launch. A separate owned blank-page
+control with Chrome 156.0.8078.47 verified that the default launch was headless;
+explicit `headless: false` was headed. Both reported webdriver, and neither
+control made provider requests. A headed comparison has not yet established
+provider behavior. The earlier instrumented listener was interrupted when the
+user requested a fresh prompt and returned media/grant `unconfirmed`. Its exact
+cleanup cause was not isolated: a process-group interrupt or Playwright's former
+automatic signal handler could have closed Chrome before revocation. Its original
+receipt remains unresolved and is not changed by the refreshed trial's confirmed
+cleanup or the subsequent signal-ownership fix.
+
 ## Offline verification and outstanding acceptance
+
+The media test command also executes the actual runner source with real Chrome
+and a clearly synthetic proof page on a dynamic loopback port. This fixture has
+no provider/OAuth requests, real grant, media APIs or capture. It signals only
+the owned Node PID, separately with SIGINT and SIGTERM, and requires completion
+of a delayed synthetic media/grant cleanup receipt before Chrome/server closure.
+A negative control restoring Playwright's old automatic SIGINT handling exits
+without that receipt. This verifies runner signal ownership, not actual provider
+revocation or the cause of the earlier interruption.
 
 ```sh
 mise exec -- npm run build --prefix apps/web

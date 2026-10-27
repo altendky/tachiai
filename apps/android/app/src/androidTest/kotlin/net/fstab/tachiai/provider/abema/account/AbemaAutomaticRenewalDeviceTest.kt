@@ -11,6 +11,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.feature.connections.ManageStreamsActivity
 import net.fstab.tachiai.feature.connections.StreamManagementController
 import net.fstab.tachiai.presentation.PrototypeService
@@ -27,6 +30,7 @@ import org.junit.Test
 // change, fabricated expiry, browser reset, Forget or configured-source write.
 // Default instrumentation skips before private reads, binding or navigation.
 class AbemaAutomaticRenewalDeviceTest {
+    companion object { private val retained = mutableListOf<Any>() }
     @Test fun optInLocalExpiryReadinessWithoutProviderAccess() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiAutomaticAbemaRenewal") == "preflight")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -65,84 +69,144 @@ class AbemaAutomaticRenewalDeviceTest {
             size <= 128 && String(bytes, 0, size, Charsets.UTF_8).trim() == "tachiai-dev"
         }
         assumeTrue("Requires verified persistent tachiai-dev", verifiedAvd)
-        try { observe() }
-        catch (_: Throwable) { throw AssertionError("Automatic renewal observation did not satisfy closed account, discovery and preservation checks") }
+        observe()
     }
 
     private fun observe() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val began = SystemClock.elapsedRealtime()
         val deadline = began + 120_000
-        val before = protectedRecords(context.noBackupFilesDir, File(context.applicationInfo.dataDir, "shared_prefs"))
-        val instance = defaultProviderInstanceId(PrototypeService.ABEMA)
-        val binding = androidAbemaAccountConnectionBinding(context, instance)
-        val owner = binding.owner()
-        check(owner.profile != null && owner.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION)
-        val expected = binding.store.readSnapshot()
-        val old = checkNotNull(expected.record)
-        check(binding.sameOwner(owner) && binding.store.usable(expected.revision))
-        check(abemaRenewalSnapshotMatches(expected, expected, System.currentTimeMillis()))
-        val accountFile = "no_backup/abema-account-$instance.enc"
-        check(accountFile in before)
+        val evidence = AbemaRenewalProbeEvidence()
+        var before: Map<String, ByteArray>? = null
+        var accountFile: String? = null
+        var scenario: ActivityScenario<ManageStreamsActivity>? = null
+        var hostLaunchAttempted = false
+        var observation: AbemaRenewalObservation? = null
         var replaced = false
         var discovery = false
         var hostClosed = false
+        var preservationChecked = false
+        var otherRecordsUnchanged = false
+        var changedAccount = false
+        var resourcesRetained = false
         var refusal: AbemaAccountReadinessResult? = null
-        val scenario = ActivityScenario.launch<ManageStreamsActivity>(Intent(context, ManageStreamsActivity::class.java)
-            .putExtra(ManageStreamsActivity.INSTANCE_ID, instance))
         try {
-            while (SystemClock.elapsedRealtime() < deadline) {
-                val current = binding.store.readSnapshot()
-                val record = current.record
-                if (record != null && current.revision > expected.revision) {
-                    check(binding.sameOwner(owner) && binding.store.usable(current.revision))
-                    check(record.generation == old.generation + 1 && record.grant.userId == old.grant.userId)
-                    check(record.grant.bearer != old.grant.bearer && record.grant.expiresAtMs > old.grant.expiresAtMs)
-                    check(record.acceptedWallMs >= old.acceptedWallMs && record.grant.expiresAtMs > System.currentTimeMillis())
-                    check(decodedAbemaGrant(record.grant.bearer, record.grant.userId, System.currentTimeMillis()).expiresAtMs == record.grant.expiresAtMs)
-                    replaced = true
-                    break
+            val instance = defaultProviderInstanceId(PrototypeService.ABEMA)
+            accountFile = "no_backup/abema-account-$instance.enc"
+            val baseline = protectedRecords(context.noBackupFilesDir, File(context.applicationInfo.dataDir, "shared_prefs"))
+            before = baseline
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.OWNER
+            val binding = androidAbemaAccountConnectionBinding(context, instance)
+            val owner = binding.owner()
+            evidence.require(owner.profile != null && owner.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION,
+                AbemaRenewalProbeEvidence.Guard.ROUTE)
+            val expected = binding.store.readSnapshot()
+            evidence.require(expected.record != null, AbemaRenewalProbeEvidence.Guard.SNAPSHOT)
+            evidence.require(binding.sameOwner(owner) && binding.store.usable(expected.revision), AbemaRenewalProbeEvidence.Guard.OWNER)
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.EXPIRED_INPUT
+            evidence.require(abemaRenewalSnapshotMatches(expected, expected, System.currentTimeMillis()), AbemaRenewalProbeEvidence.Guard.EXPIRED_INPUT)
+            evidence.require(accountFile in baseline, AbemaRenewalProbeEvidence.Guard.ACCOUNT_FILE)
+            val probe = AbemaRenewalObservation(expected,
+                { AndroidAbemaRenewalReadiness.completion(instance, owner.proof(), expected) },
+                { binding.sameOwner(owner) }, binding.store::readSnapshot, binding.store::usable,
+                { abemaReplacementReceiptCurrent(binding.store, it) }, System::currentTimeMillis)
+            observation = probe
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.HOST_LAUNCH
+            hostLaunchAttempted = true
+            val host = ActivityScenario.launch<ManageStreamsActivity>(Intent(context, ManageStreamsActivity::class.java)
+                .putExtra(ManageStreamsActivity.INSTANCE_ID, instance))
+            scenario = host
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.COMPLETION
+            while (SystemClock.elapsedRealtime() < deadline && !replaced && refusal == null) {
+                when (probe.poll()) {
+                    AbemaRenewalObservation.Step.REPLACED -> replaced = true
+                    AbemaRenewalObservation.Step.REFUSED -> evidence.require(false, AbemaRenewalProbeEvidence.Guard.COMPLETION)
+                    AbemaRenewalObservation.Step.WAIT -> Unit
                 }
-                check(binding.sameOwner(owner) && binding.store.usable(expected.revision))
-                scenario.onActivity { activity ->
+                host.onActivity { activity ->
                     val text = ManageStreamsActivity::class.java.getDeclaredField("message\$delegate")
                         .apply { isAccessible = true }.get(activity).let { it as MutableState<*> }.value as? String
                     refusal = abemaRenewalTerminalReadiness(text)
                 }
-                if (refusal != null) break
-                Thread.sleep(100)
+                if (!replaced && refusal == null) Thread.sleep(100)
             }
-            check(replaced || refusal != null)
+            if (!replaced && refusal == null) probe.deadline()
+            evidence.require(refusal == null, AbemaRenewalProbeEvidence.Guard.HOST_REFUSAL)
+            evidence.require(replaced, AbemaRenewalProbeEvidence.Guard.DEADLINE)
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.DISCOVERY
             while (replaced && SystemClock.elapsedRealtime() < deadline && !discovery) {
-                scenario.onActivity { activity ->
+                host.onActivity { activity ->
                     val state = controller(activity)?.state?.value
                     discovery = state != null && state.instance.id == instance && !state.loading && !state.saving &&
                         !state.storageFailed && state.failure == null && state.capabilities != null && state.entries.isNotEmpty()
                 }
                 if (!discovery) Thread.sleep(100)
             }
-            check((!replaced || discovery) && binding.sameOwner(owner))
+            evidence.require(discovery, AbemaRenewalProbeEvidence.Guard.DISCOVERY)
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.FINAL_REPLACEMENT
+            evidence.require(probe.poll() == AbemaRenewalObservation.Step.REPLACED, AbemaRenewalProbeEvidence.Guard.COMPLETION)
+            evidence.require(SystemClock.elapsedRealtime() in began until deadline, AbemaRenewalProbeEvidence.Guard.DEADLINE)
+        } catch (_: Throwable) {
+            evidence.fail(AbemaRenewalProbeEvidence.Guard.EXCEPTION)
         } finally {
-            scenario.close()
-            hostClosed = true
+            evidence.finish(close = {
+                val owned = scenario
+                if (owned == null) {
+                    hostClosed = !hostLaunchAttempted
+                    evidence.require(hostClosed, AbemaRenewalProbeEvidence.Guard.HOST_CLOSE)
+                }
+                else {
+                    hostClosed = boundedProbeCheck(10_000, {
+                        synchronized(retained) { retained.add(owned) }
+                        resourcesRetained = true
+                    }) { owned.close(); true } == true
+                    evidence.require(hostClosed, AbemaRenewalProbeEvidence.Guard.HOST_CLOSE)
+                }
+            }, preservation = {
+                val baseline = before
+                val selected = accountFile
+                val comparison = boundedProbeCheck(5_000, { resourcesRetained = true }) {
+                    val after = protectedRecords(context.noBackupFilesDir, File(context.applicationInfo.dataDir, "shared_prefs"))
+                    if (baseline != null && selected != null) {
+                        val unchanged = baseline.keys == after.keys && baseline.filterKeys { it != selected }.all { (name, digest) ->
+                            after[name]?.let { MessageDigest.isEqual(digest, it) } == true
+                        }
+                        val changed = baseline[selected]?.let { old -> after[selected]?.let { !MessageDigest.isEqual(old, it) } ?: true }
+                            ?: after.containsKey(selected)
+                        Preservation(unchanged, changed, !replaced || observation?.poll() == AbemaRenewalObservation.Step.REPLACED)
+                    } else null
+                }
+                preservationChecked = comparison != null
+                otherRecordsUnchanged = comparison?.otherRecordsUnchanged == true
+                changedAccount = comparison?.accountRecordChanged == true
+                evidence.require(preservationChecked && otherRecordsUnchanged && comparison?.replacementCurrent == true &&
+                    (if (replaced) changedAccount else !changedAccount), AbemaRenewalProbeEvidence.Guard.PRESERVATION)
+                evidence.require(SystemClock.elapsedRealtime() in began until deadline, AbemaRenewalProbeEvidence.Guard.DEADLINE)
+            })
+            Log.i("TachiaiAbemaRenewalProbe", "outcome=${if (evidence.firstFailedGuard == AbemaRenewalProbeEvidence.Guard.NONE) "PASS" else "FAIL"} " +
+                "firstFailedPhase=${if (evidence.firstFailedGuard == AbemaRenewalProbeEvidence.Guard.NONE) "NONE" else evidence.firstFailedPhase.name} " +
+                "firstFailedGuard=${evidence.firstFailedGuard.name} completion=${observation?.observedCompletion?.name ?: "NOT_OBSERVED"} " +
+                "replacementGuard=${observation?.firstFailedGuard?.name ?: "NONE"} replacementVerified=$replaced " +
+                "originalDiscoveryReady=$discovery hostClosed=$hostClosed preservationChecked=$preservationChecked " +
+                "otherRecordsUnchanged=$otherRecordsUnchanged accountRecordChanged=$changedAccount " +
+                "readiness=${refusal?.name ?: "NONE"} cleanupUnknown=${!hostClosed} " +
+                "hostOwnershipMissing=${hostLaunchAttempted && scenario == null} resourcesRetained=$resourcesRetained")
         }
-        val after = protectedRecords(context.noBackupFilesDir, File(context.applicationInfo.dataDir, "shared_prefs"))
-        val unchanged = before.keys == after.keys && before.filterKeys { it != accountFile }.all { (name, digest) ->
-            after[name]?.let { MessageDigest.isEqual(digest, it) } == true
+        if (evidence.firstFailedGuard != AbemaRenewalProbeEvidence.Guard.NONE)
+            throw AssertionError("Automatic renewal observation did not satisfy closed completion, account, discovery and preservation checks")
+    }
+
+    private class Preservation(val otherRecordsUnchanged: Boolean, val accountRecordChanged: Boolean, val replacementCurrent: Boolean)
+    private fun <T> boundedProbeCheck(timeoutMs: Long, retainedResource: () -> Unit, action: () -> T): T? {
+        val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "abema-probe-cleanup").apply { isDaemon = true } }
+        val result = worker.submit(Callable { action() })
+        worker.shutdown()
+        return try { result.get(timeoutMs, TimeUnit.MILLISECONDS) }
+        catch (_: Throwable) {
+            retainedResource()
+            synchronized(retained) { retained.add(worker); retained.add(result) }
+            null
         }
-        val changedAccount = after[accountFile]?.let { !MessageDigest.isEqual(checkNotNull(before[accountFile]), it) } == true
-        if (!replaced) {
-            check(refusal != null && unchanged && !changedAccount && hostClosed &&
-                SystemClock.elapsedRealtime() < deadline && binding.sameOwner(owner) && binding.store.usable(expected.revision) &&
-                abemaRenewalSnapshotMatches(expected, binding.store.readSnapshot(), System.currentTimeMillis()))
-            check(SystemClock.elapsedRealtime() in began until deadline)
-            Log.i("TachiaiAbemaRenewalProbe", "outcome=RENEWAL_REFUSED readiness=${refusal!!.name} " +
-                "savedRecordsUnchanged=true count=${before.size} hostClosed=$hostClosed")
-            throw AssertionError("Same-account renewal was not observed")
-        }
-        check(unchanged && changedAccount && hostClosed && SystemClock.elapsedRealtime() < deadline && binding.sameOwner(owner))
-        Log.i("TachiaiAbemaRenewalProbe", "outcome=SAME_ACCOUNT_RENEWED_NO_CLICKS originalDiscoveryReady=$discovery " +
-            "otherRecordsUnchanged=$unchanged count=${before.size} hostClosed=$hostClosed routeMode=${owner.instance.setup.route!!.mode.name}")
     }
 
     @Suppress("UNCHECKED_CAST")

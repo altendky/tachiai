@@ -43,6 +43,30 @@ publication behavior or reliable closed-app execution. Those remain in
 observations below used still-valid saved grants and did not adopt replacements;
 they establish bootstrap feasibility, not acceptance of this production operation.
 
+The expired-grant instrumentation fixture now observes the existing operation's
+completed coordinator entry, matched to the original instance, owner proof and
+exact predecessor projection. Only a claimed, finished, cleanup-confirmed READY
+entry admits successor checks. Its read-only query does not advance the clock,
+start work, prune entries or extend receipt retention. Missing/pruned completion
+evidence refuses acceptance; neither a higher revision nor stable disk reads
+establish commitment. The fixture then verifies the same account, generation,
+token/expiry transition, exact current successor, owner and resumed discovery.
+Closed first-failure phase/guard fields survive independent bounded host closure
+and record-preservation attempts, including early assertion failures. This is
+diagnostic test infrastructure, not a change to renewal/adoption behavior.
+
+On October 27, 2026, one observation using the earlier fixture on verified
+`tachiai-dev`, Android 16/API 36 and WebView 133.0.6943.137, failed its generic
+assertion after 21.754 seconds. Local-only preflight changed from EXPIRED_READY
+before the attempt to UNEXPIRED afterward. The eight encrypted record names were
+unchanged; exactly the ABEMA account ciphertext changed and the other seven
+matched. No success/refusal summary was emitted. Those observations do not prove
+same-account adoption, generation, discovery resumption or the failing guard.
+Static analysis found possible predecessor-revision polling and tentative-write
+races, but neither is established as this run's cause. No forced expiry, grant
+rollback or provider retry followed; the next real observation must wait for
+natural expiry. Physical and background acceptance remain open.
+
 The opt-in production-host fixture uses the actual Service/client, verifies the
 same account and registered email after cleanup, and compares encrypted records
 and task metadata without adoption. It permits a still-valid saved grant and

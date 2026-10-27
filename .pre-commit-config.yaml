@@ -164,6 +164,20 @@ repos:
         files: '^apps/web/scripts/abema-(guest|episode-source)-helper\.cjs$|^scripts/tests/web-abema-episode-source(?:-pinned)?(?:\.test)?\.cjs$'
         pass_filenames: false
 
+      - id: web-abema-episode-manifest-tests
+        name: Web ABEMA program MPD metadata safety tests
+        entry: uv run scripts/tests/web-abema-backend-episode-manifest.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|source|episode-source|episode-manifest)|owned-browser)\.py$|^scripts/tests/web-abema-backend-episode-manifest\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-browser-episode-manifest-tests
+        name: Web ABEMA program MPD browser protocol tests
+        entry: node --test scripts/tests/web-abema-browser-episode-manifest.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-browser-(manifest|episode-manifest)\.mjs$|^apps/web/scripts/abema-episode-source-helper\.cjs$|^scripts/tests/web-abema-browser-episode-manifest\.test\.mjs$'
+        pass_filenames: false
+
       - id: abema-opaque-broker-tests
         name: ABEMA opaque broker fixture tests
         entry: node scripts/tests/abema-opaque-broker.test.cjs

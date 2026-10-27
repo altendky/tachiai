@@ -652,6 +652,79 @@ no MPD, media, certificate, license or CDM operation. The next prerequisite is
 verification of the browser endpoint/configuration contract before any admission
 change or protected playback trial.
 
+## Program-bound replay MPD diagnostic
+
+The separate diagnostic below makes at most one replay MPD GET after the same
+fresh episode eligibility, DTO, gateway and SOURCE/CONFIG proof. It is opt-in
+provider work and remains excluded from routine CI:
+
+```sh
+mise exec -- uv run apps/web/scripts/abema-backend-episode-manifest.py --run-episode-manifest
+```
+
+Other arguments are inert. The source-only command still stops before MPD
+access. The new sibling does not relax the News path/query validators. Parent
+and child independently bind the exact episode, nonce, selected original
+gateway manifest, complete advertised query, fresh token, protection and ad
+mode. Only the selected source subset crosses the private pipe; no bearer,
+user/device identity or license URL is sent to the MPD browser. A separate owned
+blank headed Chrome156/Linux context makes ordinary Fetch with CORS, omitted
+credentials, refused redirects and no-store. There is no request interception,
+provider page, fallback, retry, arbitrary-fetch HTTP endpoint or media player.
+
+The deadline remains the original minimum of attempt and program free-window
+limits. Python rounds it down and passes an absolute Linux CLOCK_MONOTONIC
+deadline; Node checks its corresponding hrtime clock rather than restarting a
+duration after launch. After browser startup, a renderer performance sample
+taken before the Node clock read yields a conservative local deadline. A
+one-use owned Fetch wrapper rechecks it at dispatch and combines deadline abort
+with the caller's abort signal. Wall expiry is an additional check, never the
+only lifetime clock. Fetch/classification and parent adoption after cleanup
+recheck lifetime. Requests retain the ten-second body limit and 512KiB cap;
+the whole owned child is bounded by the remaining source lifetime or 30 seconds.
+This clock bridge is Linux-specific and is verified by a Node/POSIX fixture;
+the public Node API alone does not promise a cross-platform shared epoch.
+[Python monotonic clocks](https://docs.python.org/3/library/time.html#time.monotonic),
+[Node24 hrtime implementation](https://github.com/nodejs/node/blob/v24.21.0/src/node_process_methods.cc)
+and [libuv1.52.1 Linux precise clock](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/linux.c)
+provide the implementation evidence.
+
+The MPD remains transient. An inert, unattached DOMParser rejects NUL,
+DTD/entity declarations, malformed XML, XInclude and bounded node/depth/attribute
+overruns. It returns only exact-namespace/case DASH counts and segment-model
+classification; ContentProtection/CENC/PSSH-presence flags; recognized CENC
+`default_KID` metadata presence; and closed auxiliary/reference flags. No ID or
+PSSH value is decoded or emitted. Reference coverage is explicitly
+`DECLARED_SUBSET`: absolute HTTPS references are classified as same/other origin,
+while relative or templated references remain unresolved. It does not resolve
+the DASH graph, infer origin approval, fetch permission, advertisement identity,
+clear media or a valid CDM contract. Foreign-namespace lookalikes do not count as
+DASH structures. No declared reference is followed.
+
+Only bounded status/enums/booleans/counts leave the child. MPD-body references
+are dropped before browser cleanup and no body reaches child stdout; this is
+not a secure-erasure claim for JavaScript strings. Owned cleanup must settle
+before adoption; uncertainty remains fatal with the owned runtime retained for
+review. Ad handling is always `UNKNOWN`. No initialization, segment, ad,
+certificate, license, CDM or renewal operation occurs. This diagnostic does not
+establish source entitlement or protected replay playback, and no fresh provider
+MPD trial of this slice has been performed.
+
+Browser-free protocol/ownership tests run in hooks. The optional owned Chrome
+group uses loopback fixtures only and is also registered in web CI:
+
+```sh
+mise exec -- uv run scripts/tests/web-abema-backend-episode-manifest.test.py
+mise exec -- node --test scripts/tests/web-abema-browser-episode-manifest.test.mjs
+TACHIAI_LOCAL_CHROME_TEST=1 mise exec -- node --test scripts/tests/web-abema-browser-episode-manifest.test.mjs
+```
+
+The loopback group uses actual Fetch without interception for CORS, redirect,
+credential omission, size and dispatch/body-expiry controls. Inert XML fixtures
+with external stylesheet/image/XLink/DTD/XInclude references produce no extra
+HTTP requests. These are software-fixture observations, not provider or
+physical-device acceptance.
+
 ## Next decision
 
 Before another MPD or CDM attempt, compare the current provider/native source

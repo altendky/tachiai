@@ -508,9 +508,10 @@ known ABEMA license host and a bounded canonical path. A literal template path
 must survive exactly; a path containing only the exact nonsecret `{ct}` and
 `{cid}` markers is checked after substituting `program` and the exact episode.
 The complete final path must match. Each content value must be explicitly bound
-by its exact query placeholder or path marker; when present in both places,
-both must match. The fresh media token remains mandatory as the exact `{t}`
-query placeholder. Token/ticket path markers, unknown expressions, percent
+by its exact query placeholder, supported scalar query variable or path marker;
+when present in multiple places, all must match. The fresh media token remains
+mandatory as the exact `{t}` query placeholder or supported query variable.
+Token/ticket path markers, unknown expressions, percent
 escapes and traversal paths refuse; no general template evaluator is added.
 Other query-name, constant-value and origin restrictions remain unchanged.
 It does not assume a native custom-protection path for Widevine. This validates
@@ -519,6 +520,23 @@ different fresh contract refuses rather than expanding origins or adding helper
 calls. `configurationMatched` covers the key-system/license-URL
 subset only; certificates, license response handling and adapter compatibility
 remain unverified.
+
+The independent query validator also recognizes one terminal RFC6570 query
+expression, with only unique scalar `t`, `pt`, `ct` and `cid` variables. A
+`{?...}` expression requires no existing literal query; `{&...}` must extend a
+nonempty literal query whose pairs satisfy the existing placeholder/constant
+rules. Collisions between literal pairs and expression variables refuse.
+The current caller has no ticket token: an expression's undefined `pt` is
+omitted and must remain absent in the final query; no literal ticket pair is
+adopted. The final decoded query map must exactly preserve the fresh template's
+constants and current token/content values. Nonterminal/multiple expressions,
+unknown variables, prefix/explode modifiers and other operators refuse. This
+is a standards-based validation subset, not a copy of the provider expander or
+a general template processor. The terminal expression is separated before URI
+splitting, so its `?` is not mistaken for a literal query delimiter inside a
+path. [RFC6570 query expansion](https://www.rfc-editor.org/rfc/rfc6570.html#section-3.2.8)
+and [continuation](https://www.rfc-editor.org/rfc/rfc6570.html#section-3.2.9)
+define the underlying named-scalar and undefined-variable behavior.
 
 Output contains fixed phases/refusal reasons, bounded HTTP status and boolean
 binding/cleanup evidence, plus closed protection/ad-mode enums. It excludes
@@ -562,10 +580,11 @@ TACHIAI_ABEMA_PINNED_TEST=1 TACHIAI_ABEMA_PINNED_ASSETS=/path/to/verified-public
 This gate executed the new repository helper and immutable frozen-GET plumbing
 in both phases. With synthetic gateway inputs, the actual pinned comparator
 selected Widevine with either input order and retained custom for a custom-only
-input; the independent parent accepted all three bindings. The current fixture
-also exercises exact `{ct}`/`{cid}` path expansion through the unchanged factory
-in the repository helper and repeats the final path/context binding in the
-parent. These are agent-run
+input. The current fixture repeats those three selections for literal-query,
+terminal query-expansion and query-continuation forms, including exact content
+path markers, fixed query provenance and omitted `pt`. The unchanged factories
+produce all nine bindings; the independent parent checks their final paths,
+queries and context. These are agent-run
 software fixture observations, not provider eligibility or physical-device
 measurements.
 
@@ -605,7 +624,16 @@ tested with synthetic inputs. The private template was not retained: this
 result identifies the raw-path guard, not the actual template expression or
 selected protection, and no fresh acceptance of the new validation is claimed.
 
-All three attempts used a fresh anonymous guest and owned blank headed browser,
+A fourth fresh attempt on signed
+`5fd1a4843881d4fe7179547c622cfc16193fa797` still refused at
+`PARENT_TEMPLATE_PATH` after fresh eligibility, DTO and gateway success, with
+cleanup confirmed and no grant persisted. It made no MPD, media, certificate,
+license or CDM request. The template was not retained. Static inspection of the
+pinned generic builder established query-expression capability, and the
+standards-based subset above is covered only by synthetic fixtures so far;
+neither the actual template form nor fresh acceptance is inferred.
+
+All four attempts used a fresh anonymous guest and owned blank headed browser,
 the fixed legacy replay seed and default host networking. Exit country was not
 independently measured. No GLOBAL News catalogue result was used as replay
 entitlement. All confirmed owned cleanup with no grant persisted and performed

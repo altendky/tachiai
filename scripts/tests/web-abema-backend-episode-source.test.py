@@ -202,6 +202,48 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual((caught.exception.reason, caught.exception.configuration_check), ("CONFIGURATION", expected))
             self.assertNotIn(PRIVATE, str(caught.exception))
 
+    def test_terminal_scalar_query_expression_preserves_exact_provenance_and_omits_only_unset_ticket(self):
+        origin, path = "https://license.p-c3-e.abema-tv.com", "/fixture/program/" + EPISODE
+        query = "t=" + PRIVATE + "&ct=program&cid=" + EPISODE
+        def check(template, result):
+            data, packet = gateway(), binding()
+            data["streams"][0]["drm"]["license"]["urlTemplate"] = origin + template
+            packet["licenseUri"] = origin + result
+            module.validate_binding(packet, "selection", NONCE, metadata(), END * 1000, data, PRIVATE)
+        for template, result in (
+            ("/fixture{?t,pt,ct,cid}", "/fixture?" + query),
+            ("/fixture{?pt,cid,t,ct}", "/fixture?" + query),
+            ("/fixture/{ct}/{cid}{?t,pt}", path + "?t=" + PRIVATE),
+            ("/fixture/{ct}/{cid}?tk=literal%2Bvalue{&t,pt,ct,cid}", path + "?tk=literal%2Bvalue&" + query),
+            ("/fixture?ct={ct}&cid={cid}{&t,pt}", "/fixture?" + query),
+            ("/fixture?t={t}&ct={ct}&cid={cid}{&pt}", "/fixture?" + query)):
+            check(template, result)
+        invalid = ["/fixture{?t,ct,cid", "/fixture{?t,ct,cid}/tail", "/fixture{?t,ct,cid,unknown}",
+            "/fixture{?t*,ct,cid}", "/fixture{?t:1,ct,cid}", "/fixture{?%74,ct,cid}", "/fixture{?t,ct,cid,}",
+            "/fixture{?t,t,ct,cid}", "/fixture{?}",
+            "/fixture?tk=literal{?t,ct,cid}", "/fixture{&t,ct,cid}", "/fixture?{&t,ct,cid}",
+            "/fixture?tk=literal&{&t,ct,cid}", "/fixture?t={t}{&t,ct,cid}",
+            "/fixture?ct={ct}{&t,ct,cid}", "/fixture?pt=literal{&t,pt,ct,cid}",
+            "/fixture?tk=literal{&t,ct,cid}{&pt}", "/fixture?tk={?t}{&ct,cid}",
+            "/fixture?unknown=literal{&t,ct,cid}", "/fixture{?t,pt,ct}", "/fixture{?pt,ct,cid}"]
+        for template in invalid:
+            with self.assertRaises(module.EpisodeRefused) as caught: check(template, "/fixture?" + query)
+            self.assertEqual(caught.exception.configuration_check, "PARENT_LICENSE_TEMPLATE")
+            self.assertNotIn(PRIVATE, str(caught.exception)); self.assertNotIn("https://", str(caught.exception))
+        with self.assertRaises(module.EpisodeRefused) as caught: check("/fixture{?t, pt,ct,cid}", "/fixture?" + query)
+        self.assertEqual(caught.exception.configuration_check, "PARENT_TEMPLATE_TEXT")
+        for suffix in ("&pt=", "&pt=" + PRIVATE, "&dt=unadvertised", "&t=duplicate"):
+            with self.assertRaises(module.EpisodeRefused): check("/fixture{?t,pt,ct,cid}", "/fixture?" + query + suffix)
+        for altered in (query.replace(PRIVATE, "STALE"), query.replace("ct=program", "ct=slot"), query.replace(EPISODE, "other")):
+            with self.assertRaises(module.EpisodeRefused) as caught: check("/fixture{?t,pt,ct,cid}", "/fixture?" + altered)
+            self.assertEqual(caught.exception.configuration_check, "PARENT_LICENSE_QUERY")
+        with self.assertRaises(module.EpisodeRefused):
+            check("/fixture?tk=literal{&t,pt,ct,cid}", "/fixture?tk=changed&" + query)
+        for path_template in ("/fixture/{t}{?t,ct,cid}", "/fixture/{pt}{?t,ct,cid}",
+                              "/fixture/../{ct}{?t,cid}", "/fixture/%7Bct%7D{?t,ct,cid}", "/fixture{+t}"):
+            with self.assertRaises(module.EpisodeRefused) as caught: check(path_template, "/fixture?" + query)
+            self.assertEqual(caught.exception.configuration_check, "PARENT_TEMPLATE_PATH")
+
     def test_old_completion_never_receives_private_context_and_option_device_is_original_request(self):
         class Transport:
             def request(self, operation, fields, timeout):

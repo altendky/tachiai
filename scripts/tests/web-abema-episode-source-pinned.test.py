@@ -49,16 +49,21 @@ class PinnedTests(unittest.TestCase):
                     timeout=20, limit=65536, input_data=json.dumps(navigator).encode())
                 self.assertTrue(result.code == 0 and not result.stderr, "Pinned synthetic helper refused")
                 packet = module.bootstrap.strict_json(result.output, 65536, max_nodes=16000, max_depth=32)
-                self.assertTrue(isinstance(packet, dict) and set(packet) == {"cases"} and len(packet["cases"]) == 3, "Pinned synthetic wire refused")
-                selections = []
+                self.assertTrue(isinstance(packet, dict) and set(packet) == {"cases"} and len(packet["cases"]) == 9, "Pinned synthetic wire refused")
+                selections, forms = [], []
                 for item in packet["cases"]:
                     for phase, key in (("metadata", "dto"), ("selection", "binding")):
                         self.assertTrue("outcome" not in item[key], "Actual pinned phase refused")
                         module.validate_binding(item[key], phase, "a" * 32, item["metadata"], item[key]["expiresAtMs"],
                             item["gateway"] if phase == "selection" else None, "SYNTHETIC_TOKEN")
-                    self.assertTrue(module.urllib.parse.urlsplit(item["binding"]["licenseUri"]).path == "/fixture/program/" + module.EPISODE, "Pinned content path did not bind")
+                    license_uri = module.urllib.parse.urlsplit(item["binding"]["licenseUri"])
+                    expected_path = "/fixture" if item["form"] == "QUERY" else "/fixture/program/" + module.EPISODE
+                    self.assertTrue(license_uri.path == expected_path, "Pinned content path did not bind")
+                    self.assertTrue("pt" not in module.source.playlist_query(license_uri.query), "Unset ticket was not omitted")
+                    forms.append(item["form"])
                     selections.append(item["binding"]["drm"])
-                self.assertEqual(selections, ["WIDEVINE", "WIDEVINE", "CUSTOM"])
+                self.assertEqual(forms, ["LITERAL"] * 3 + ["QUERY"] * 3 + ["CONTINUATION"] * 3)
+                self.assertEqual(selections, ["WIDEVINE", "WIDEVINE", "CUSTOM"] * 3)
 
 
 if __name__ == "__main__": unittest.main()

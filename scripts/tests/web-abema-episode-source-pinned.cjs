@@ -24,13 +24,20 @@ process.stdin.on('end', async () => {
       return JSON.stringify({metadata,end,widevine:make('widevine'),custom:make('custom')});
     })()`, context, { timeout: 5000 });
     const { metadata, end, widevine, custom } = JSON.parse(fixture), cases = [];
-    for (const streams of [[custom, widevine], [widevine, custom], [custom]]) {
+    const templates = [
+      ['LITERAL', 'https://license.p-c3-e.abema-tv.com/fixture/{ct}/{cid}?t={t}'],
+      ['QUERY', 'https://license.p-c3-e.abema-tv.com/fixture{?t,pt,ct,cid}'],
+      ['CONTINUATION', 'https://license.p-c3-e.abema-tv.com/fixture/{ct}/{cid}?tk=fixed%2Bvalue{&t,pt,ct,cid}'],
+    ];
+    for (const [form, template] of templates) for (const streams of [[custom, widevine], [widevine, custom], [custom]]) {
       const envelope = { phase:'metadata',episodeId:metadata.id,metadata,navigator,expiresAtMs:end*1000,nonce:'a'.repeat(32),
         context:{userId:'SYNTHETIC_USER',deviceId:'00000000-0000-4000-8000-000000000000',mediaToken:'SYNTHETIC_TOKEN'} };
       const dto = JSON.parse(await proveEpisode(envelope));
-      const gateway = {streams}; envelope.phase='selection'; envelope.gateway=gateway;
+      const gateway = { streams: streams.map(stream => ({ ...stream, drm: { ...stream.drm,
+        license: { ...stream.drm.license, urlTemplate: template } } })) };
+      envelope.phase='selection'; envelope.gateway=gateway;
       const binding = JSON.parse(await proveEpisode(envelope));
-      cases.push({dto,binding,metadata,gateway});
+      cases.push({form,dto,binding,metadata,gateway});
     }
     // This wire is private synthetic IPC. The Python parent validates and emits
     // only its test result, never the input metadata, URIs or configuration.

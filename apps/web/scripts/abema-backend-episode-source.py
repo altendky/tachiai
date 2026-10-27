@@ -180,6 +180,22 @@ def media_uri(value):
     return uri
 
 
+def license_query_expression(value):
+    """Recognize one terminal RFC6570 scalar query expression, not an evaluator."""
+    match = re.search(r"\{([?&])([^{}]*)\}$", value)
+    if match is None:
+        if "{?" in value or "{&" in value: refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+        return value, ()
+    prefix, operator, variables = value[:match.start()], match[1], match[2].split(",")
+    if not 1 <= len(variables) <= 4 or len(set(variables)) != len(variables) or set(variables) - {"t", "pt", "ct", "cid"} or "{?" in prefix or "{&" in prefix:
+        refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+    # A new query cannot follow a literal query. Continuation must extend a
+    # nonempty literal query; its individual pairs are validated separately.
+    if operator == "?" and "?" in prefix or operator == "&" and ("?" not in prefix or not prefix.split("?", 1)[1] or prefix.endswith("&")):
+        refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+    return prefix, tuple(variables)
+
+
 def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token):
     if phase not in {"metadata", "selection"}: refuse("BINDING")
     common = {"nonce", "episodeId", "arin", "expiresAtMs", "browser"}
@@ -203,10 +219,11 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
         base_query, query = source.playlist_query(advertised.query), source.playlist_query(uri.query)
         reserved = {"t", "enc", "dtid"}
         if reserved & base_query.keys() or uri[:3] != advertised[:3] or query != {**base_query, "t": media_token, "enc": "wv" if value["drm"] == "WIDEVINE" else "clear"}: refuse("BINDING")
-        template = urllib.parse.urlsplit(stream["drm"]["license"]["urlTemplate"])
-        license_uri = urllib.parse.urlsplit(value["licenseUri"])
         for role, item in (("TEMPLATE", stream["drm"]["license"]["urlTemplate"]), ("RESULT", value["licenseUri"])):
             if not isinstance(item, str) or len(item) > 4096 or re.search(r"[\x00-\x20\\#]", item): refuse("CONFIGURATION", "PARENT_" + role + "_TEXT")
+        template_text, query_variables = license_query_expression(stream["drm"]["license"]["urlTemplate"])
+        template = urllib.parse.urlsplit(template_text)
+        license_uri = urllib.parse.urlsplit(value["licenseUri"])
         for role, item in (("TEMPLATE", template), ("RESULT", license_uri)):
             if item.scheme != "https": refuse("CONFIGURATION", "PARENT_" + role + "_SCHEME")
             if item.netloc != "license.p-c3-e.abema-tv.com": refuse("CONFIGURATION", "PARENT_" + role + "_HOST")
@@ -217,6 +234,10 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
         expected_path = template.path.replace("{ct}", "program").replace("{cid}", EPISODE)
         if license_uri.path != expected_path: refuse("CONFIGURATION", "PARENT_PATH_BINDING")
         template_query, license_query = source.playlist_query(template.query), source.playlist_query(license_uri.query)
+        if template_query.keys() & set(query_variables): refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")
+        # The current caller supplies no ticket token. Only an expression's
+        # undefined pt may be omitted; a literal pt pair is never adopted.
+        template_query.update({key: "{" + key + "}" for key in query_variables if key != "pt"})
         replacements = {"t": media_token, "ct": "program", "cid": EPISODE}
         path_context = {key for key in ("ct", "cid") if "{" + key + "}" in template.path}
         required_query = set(replacements) - path_context

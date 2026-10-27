@@ -157,3 +157,13 @@ test('the repository helper retains nonsecret content markers for its unchanged 
     assert.ok(new URL(result.licenseUri).searchParams.get('t') === PRIVATE);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('an extra ticket token cannot enter the fixed private source context', async () => {
+  const directory = fixture();
+  try {
+    const input = envelope(); input.context.ticketToken = PRIVATE;
+    const result = await proveEpisode(input, directory);
+    assert.deepEqual(JSON.parse(result), { outcome: 'REFUSED', reason: 'SCHEMA' });
+    assert.ok(!result.includes(PRIVATE));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

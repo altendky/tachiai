@@ -633,7 +633,18 @@ pinned generic builder established query-expression capability, and the
 standards-based subset above is covered only by synthetic fixtures so far;
 neither the actual template form nor fresh acceptance is inferred.
 
-All four attempts used a fresh anonymous guest and owned blank headed browser,
+A fifth fresh attempt on signed
+`2571d1835d7f230ab0371c80b0c6361ffca68aad` passed the independent
+SOURCE/CONFIG binding after fresh program eligibility, DTO and gateway success.
+The unchanged browser factory selected `CUSTOM` protection and `CSAI` ad mode.
+Exact source, session, token and the key-system/license-URL configuration subset
+matched. The template was not retained, and this does not identify its syntax
+or establish that the selected protection/advertising path can run in a browser.
+No manifest, media, certificate, licensing or MediaKeySession operation occurred;
+device flow and entitlement remained unestablished. Cleanup was confirmed with
+no grant persisted. This source-only result does not establish replay playback.
+
+All five attempts used a fresh anonymous guest and owned blank headed browser,
 the fixed legacy replay seed and default host networking. Exit country was not
 independently measured. No GLOBAL News catalogue result was used as replay
 entitlement. All confirmed owned cleanup with no grant persisted and performed

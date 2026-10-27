@@ -15,9 +15,15 @@ const fixtureMode = process.argv[2] === '--synthetic-signal-child';
 async function fixtureChild(legacySignalControl) {
   const { chromium } = createRequire(new URL('../../apps/web/package.json', import.meta.url))('@playwright/test');
   const { twitchDiagnosticOutput } = await import('../../apps/web/scripts/twitch-diagnostic-output.mjs');
+  const { openBrowserFailures } = await import('../../apps/web/scripts/twitch-browser-failures.mjs');
+  const browserFailuresEnabled = process.argv.includes('--browser-failures');
+  const detachRefusal = process.argv.includes('--synthetic-detach-refusal');
+  const detachPending = process.argv.includes('--synthetic-detach-pending');
   let browser, page, server, origin, timedOut = false;
   const state = { synthetic: true, browserAliveForReceipt: false, pageCleanupCompleted: false,
-    browserClosed: false, serverClosed: false, unexpectedPageRequests: false, runnerOwnsSignals: false };
+    browserClosed: false, serverClosed: false, unexpectedPageRequests: false, runnerOwnsSignals: false,
+    cdpSessions: 0, cdpDetachedBeforeReceipt: false };
+  let detached = 0;
   const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
   const watchdog = setTimeout(() => { timedOut = true; void browser?.close().catch(() => {}); }, 25000);
   watchdog.unref();
@@ -25,13 +31,18 @@ async function fixtureChild(legacySignalControl) {
     const html = `<!doctype html><title>Synthetic Twitch signal fixture; no provider authorization</title>
       <button>Play diagnostic</button><script>
       window.syntheticState = { closeCalls: 0, cleanupCompleted: false, cancelled: false };
+      let finishPreparation;
       window.twitchProof = {
         begin: async () => ({ userCode: 'SYNTHETIC-NO-OAUTH', expiresIn: 600 }),
-        poll: async () => 'authorized', prepare: async () => 'ready',
+        poll: async () => 'authorized', prepare: async () => {
+          const pending = new Promise(resolve => { finishPreparation = resolve; });
+          await window.syntheticPrepareReady(); await pending; return 'ready';
+        },
         sample: () => ({ state: 'owned', width: 0, height: 0, frames: 0, seconds: 0 }),
-        diagnostic: () => ({ stage: 'player-ready' }), cancel: () => { syntheticState.cancelled = true; },
+        diagnostic: () => ({ stage: 'player-ready' }), cancel: () => { syntheticState.cancelled = true; finishPreparation?.(); },
         close: async () => {
           syntheticState.closeCalls++;
+          await window.syntheticCleanupStarted();
           await new Promise(resolve => setTimeout(resolve, 200));
           syntheticState.cleanupCompleted = true;
           return { media: 'destroyed', grant: 'revoked' }; // Synthetic receipt, no real grant exists.
@@ -54,11 +65,26 @@ async function fixtureChild(legacySignalControl) {
       const newContext = browser.newContext.bind(browser), close = browser.close.bind(browser);
       browser.newContext = async (...args) => {
         const context = await newContext(...args), newPage = context.newPage.bind(context);
+        const newCDPSession = context.newCDPSession.bind(context);
+        context.newCDPSession = async selected => {
+          state.cdpSessions++;
+          const session = await newCDPSession(selected), detach = session.detach.bind(session);
+          session.detach = async () => {
+            await detach(); detached++;
+            if (detachRefusal) throw Error('SYNTHETIC-PRIVATE');
+            if (detachPending) await new Promise(() => {});
+          };
+          return session;
+        };
         context.on('request', request => {
           if (new URL(request.url()).origin !== origin) state.unexpectedPageRequests = true;
         });
         context.newPage = async (...pageArgs) => {
           page = await newPage(...pageArgs);
+          await page.exposeFunction('syntheticPrepareReady', () => emit({ event: 'synthetic-preparation-started', synthetic: true }));
+          await page.exposeFunction('syntheticCleanupStarted', () => {
+            state.cdpDetachedBeforeReceipt = detached === (browserFailuresEnabled ? 1 : 0);
+          });
           const goto = page.goto.bind(page);
           page.goto = (url, options) => {
             assert.equal(url, 'http://127.0.0.1:4173/harness/twitch-proof.html');
@@ -87,7 +113,8 @@ async function fixtureChild(legacySignalControl) {
       assert.equal(source.split(fixed).length, 2);
       source = source.replace(fixed, 'handleSIGINT: true, handleSIGTERM: true');
     }
-    process.argv = [process.execPath, fileURLToPath(runnerUrl), '--network', '--case=live:virtualjapan'];
+    process.argv = [process.execPath, fileURLToPath(runnerUrl), '--network', '--case=live:virtualjapan',
+      ...(browserFailuresEnabled ? ['--browser-failures'] : [])];
     const context = vm.createContext({ console, process, AbortController, setTimeout, clearTimeout });
     const module = new vm.SourceTextModule(source, { context, identifier: runnerUrl.href,
       initializeImportMeta: meta => { meta.url = runnerUrl.href; } });
@@ -96,6 +123,7 @@ async function fixtureChild(legacySignalControl) {
       'node:timers/promises': await import('node:timers/promises'),
       '@playwright/test': { chromium: ownedChromium }, vite: { preview },
       './twitch-diagnostic-output.mjs': { twitchDiagnosticOutput },
+      './twitch-browser-failures.mjs': { openBrowserFailures },
     };
     await module.link(async name => {
       const namespace = namespaces[name]; assert.ok(namespace, 'Unexpected fixture dependency');
@@ -122,15 +150,21 @@ if (fixtureMode) {
   await fixtureChild(process.argv[3] === '--legacy-control');
 } else {
   for (const signal of ['SIGINT', 'SIGTERM']) test(`actual runner owns ${signal} through a synthetic page cleanup receipt`, { timeout: 40000 }, async () => {
-    const result = await signalRun(signal);
+    const result = await signalRun(signal, false, signal === 'SIGTERM');
     assert.equal(result.signalSent, true); assert.equal(result.code, 0); assert.equal(result.signal, null);
     assert.equal(result.stderrBytes, 0);
     assert.ok(result.events.some(value => value.event === 'activation' && value.mode === 'headless' && value.userCode === 'SYNTHETIC-NO-OAUTH'));
     assert.ok(result.events.some(value => value.event === 'trial' && value.outcome === 'cancelled'));
     assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
+    if (signal === 'SIGTERM') {
+      assert.deepEqual(result.events.find(value => value.event === 'preparation').browserFailure, {
+        window: 'selected-preparation', association: 'unattributed', setup: 'ready', teardown: 'confirmed', observed: 'none',
+      });
+    } else assert.equal(result.events.some(value => value.browserFailure !== undefined), false);
     assert.deepEqual(result.events.find(value => value.event === 'synthetic-signal-fixture'), {
       event: 'synthetic-signal-fixture', synthetic: true, browserAliveForReceipt: true, pageCleanupCompleted: true,
-      browserClosed: true, serverClosed: true, unexpectedPageRequests: false, runnerOwnsSignals: true, timedOut: false,
+      browserClosed: true, serverClosed: true, unexpectedPageRequests: false, runnerOwnsSignals: true,
+      cdpSessions: signal === 'SIGTERM' ? 1 : 0, cdpDetachedBeforeReceipt: true, timedOut: false,
     });
   });
   test('negative control: previous Playwright SIGINT ownership cannot complete the synthetic receipt', { timeout: 40000 }, async () => {
@@ -138,11 +172,30 @@ if (fixtureMode) {
     assert.equal(result.signalSent, true); assert.equal(result.code, 130); assert.equal(result.signal, null);
     assert.equal(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'), false);
   });
+  test('CDP teardown refusal does not skip the actual runner synthetic cleanup receipt', { timeout: 40000 }, async () => {
+    const result = await signalRun('SIGTERM', false, true, true);
+    assert.equal(result.code, 0); assert.equal(result.stderrBytes, 0);
+    assert.ok(result.events.some(value => value.event === 'preparation' &&
+      value.browserFailure?.teardown === 'unconfirmed' && value.browserFailure.association === 'unattributed'));
+    assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
+    assert.equal(result.events.find(value => value.event === 'synthetic-signal-fixture').cdpDetachedBeforeReceipt, true);
+    assert.equal(JSON.stringify(result.events).includes('SYNTHETIC-PRIVATE'), false);
+  });
+  test('pending CDP teardown times out and still reaches actual runner synthetic cleanup', { timeout: 40000 }, async () => {
+    const result = await signalRun('SIGTERM', false, true, false, true);
+    assert.equal(result.code, 0); assert.equal(result.stderrBytes, 0);
+    assert.ok(result.events.some(value => value.event === 'preparation' && value.browserFailure?.teardown === 'unconfirmed'));
+    assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
+    const fixture = result.events.find(value => value.event === 'synthetic-signal-fixture');
+    assert.equal(fixture.cdpDetachedBeforeReceipt, true);
+    assert.equal(fixture.browserClosed, true); assert.equal(fixture.serverClosed, true); assert.equal(fixture.timedOut, false);
+  });
 }
 
-async function signalRun(signal, legacy = false) {
+async function signalRun(signal, legacy = false, browserFailures = false, detachRefusal = false, detachPending = false) {
   const child = spawn(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url),
-    '--synthetic-signal-child', ...(legacy ? ['--legacy-control'] : [])], {
+    '--synthetic-signal-child', ...(legacy ? ['--legacy-control'] : []), ...(browserFailures ? ['--browser-failures'] : []),
+    ...(detachRefusal ? ['--synthetic-detach-refusal'] : []), ...(detachPending ? ['--synthetic-detach-pending'] : [])], {
     env: { ...process.env, NODE_NO_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const events = []; let pending = '', bytes = 0, stderrBytes = 0, signalSent = false;
@@ -154,7 +207,7 @@ async function signalRun(signal, legacy = false) {
     while (pending.includes('\n')) {
       const end = pending.indexOf('\n'), line = pending.slice(0, end); pending = pending.slice(end + 1);
       const value = JSON.parse(line); events.push(value);
-      if (!signalSent && value.event === 'preparation' && value.outcome === 'ready') {
+      if (!signalSent && value.event === 'synthetic-preparation-started') {
         signalSent = child.kill(signal); // Exact owned Node PID, never a group signal.
       }
     }

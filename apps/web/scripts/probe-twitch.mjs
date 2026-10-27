@@ -6,23 +6,27 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from '@playwright/test';
 import { preview } from 'vite';
 import { twitchDiagnosticOutput } from './twitch-diagnostic-output.mjs';
+import { openBrowserFailures } from './twitch-browser-failures.mjs';
 
 const arguments_ = process.argv.slice(2);
 const cases = arguments_.filter((value) => value.startsWith('--case=')).map((value) => value.slice(7));
 const allowedCases = new Set(['live:virtualjapan', 'replay:2080217716']);
 const headed = arguments_.includes('--headed');
+const browserFailuresEnabled = arguments_.includes('--browser-failures');
 if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !== cases.length ||
     cases.some((value) => !allowedCases.has(value)) ||
-    arguments_.some((value) => value !== '--network' && value !== '--headed' && !value.startsWith('--case='))) {
+    arguments_.some((value) => value !== '--network' && value !== '--headed' && value !== '--browser-failures' && !value.startsWith('--case='))) {
   console.log(JSON.stringify({ event: 'trial', outcome: 'not-started',
-    usage: 'probe:twitch -- --network [--headed] --case=live:virtualjapan --case=replay:2080217716' }));
+    usage: 'probe:twitch -- --network [--headed] [--browser-failures] --case=live:virtualjapan --case=replay:2080217716' }));
   process.exitCode = 2;
 } else {
   let server;
   let browser;
   let page;
+  let browserFailures;
+  let browserFailureEvidence;
   const lifetime = new AbortController();
-  const cancel = () => { lifetime.abort(); void page?.evaluate(() => window.twitchProof?.cancel()).catch(() => {}); };
+  const cancel = () => { browserFailures?.disarm(); lifetime.abort(); void page?.evaluate(() => window.twitchProof?.cancel()).catch(() => {}); };
   const output = (value) => console.log(JSON.stringify(value));
   const diagnostic = async () => {
     try {
@@ -67,8 +71,21 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     if (!authorized) output({ event: 'trial', outcome: lifetime.signal.aborted ? 'cancelled' : 'authorization-unconfirmed', ...await diagnostic() });
     if (authorized) for (const selected of cases) {
       if (lifetime.signal.aborted) break;
-      const outcome = await page.evaluate((value) => window.twitchProof.prepare(value), selected);
-      output({ event: 'preparation', selected, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic() });
+      browserFailureEvidence = undefined;
+      let outcome;
+      try {
+        if (browserFailuresEnabled) browserFailures = await openBrowserFailures(page);
+        if (lifetime.signal.aborted) break;
+        browserFailures?.arm();
+        outcome = await page.evaluate((value) => window.twitchProof.prepare(value), selected);
+      } finally {
+        browserFailures?.disarm();
+        await browserFailures?.close();
+        browserFailureEvidence = browserFailures?.summary();
+        browserFailures = undefined;
+      }
+      output({ event: 'preparation', selected, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
+        ...(browserFailureEvidence ? { browserFailure: browserFailureEvidence } : {}) });
       if (outcome !== 'ready') break; // No alternate case on refusal.
       await page.getByRole('button', { name: 'Play diagnostic', exact: true }).click();
       const first = await page.evaluate(() => window.twitchProof.sample());
@@ -88,9 +105,13 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
       await page.evaluate(() => window.twitchProof.stopPlayer());
     }
   } catch {
-    output({ event: 'trial', outcome: lifetime.signal.aborted ? 'cancelled' : 'refused', ...await diagnostic() });
+    browserFailures?.disarm();
+    output({ event: 'trial', outcome: lifetime.signal.aborted ? 'cancelled' : 'refused', ...await diagnostic(),
+      ...(browserFailureEvidence ? { browserFailure: browserFailureEvidence } : {}) });
     if (!lifetime.signal.aborted) process.exitCode = 1;
   } finally {
+    browserFailures?.disarm();
+    await browserFailures?.close();
     clearTimeout(deadline);
     process.removeListener('SIGINT', cancel);
     process.removeListener('SIGTERM', cancel);

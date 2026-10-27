@@ -34,6 +34,46 @@ The activation event reports the selected launch mode. A headed automated
 browser remains different from an ordinary user-controlled browsing session.
 The flag alone does not authorize network access or select any playback case.
 
+The separate `--browser-failures` flag enables a passive Chrome diagnostic only
+during each selected preparation. The default runner creates no additional CDP
+session. This flag also requires `--network` and an exact selected case; it does
+not initiate authorization by itself. For example:
+
+```sh
+mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --browser-failures --case=live:virtualjapan
+```
+
+Only the fresh owned diagnostic page gets a CDP session, with an application
+listener for `Network.loadingFailed`. No provider/login page is instrumented.
+The diagnostic makes no request, response-body, header or cookie queries and
+does not change Fetch, interception, caching or security behavior. However,
+`Network.enable` is domain-wide: URL/header-bearing protocol metadata can
+traverse the automation client even without application listeners. This is a
+closed collector/output boundary, not a metadata-free automation transport.
+
+The separate `browserFailure` result always says `window=selected-preparation`
+and `association=unattributed`. It reports setup/teardown availability, a bounded
+none/one/multiple/overflow observation category and only the first observed
+failure's allowlisted resource, cancellation, CORS, blocked and network-error
+categories. After sixteen observations the count saturates at overflow; no event
+list is retained. Arbitrary error text is compared only against exact known
+constants and discarded; unknown values become `other`. Request identifiers,
+timestamps and `failedParameter` are neither retained nor returned. The
+collector independently checks the output shape. Setup and teardown failures
+remain closed results and do not skip media/grant cleanup.
+
+This observation is not bound to the media manifest request. Source APIs,
+preflights, other requests and delayed events can overlap preparation. The
+listener disarms synchronously on runner cancellation or preparation settlement
+and before runner cleanup/replacement, then disables its Network domain and
+detaches. Preparation can internally retire a refused player before settling;
+events from that retirement can appear in this unattributed window.
+Production does not wait for late failure events: a missing observation or an
+absent CORS field is unavailable evidence, never CORS success. Generic network
+failure does not prove a redirect or HTTP status. The existing request-owned
+`media` diagnostic stays separate. This diagnostic has no provider observation
+yet.
+
 Only the two named existing catalogue samples are admitted. A refused selected
 case ends the playback sequence; it does not try a different channel/replay,
 client identity, unauthenticated access, provider embed, route or media relay.
@@ -254,13 +294,24 @@ completion after reporting a refusal, not playback success.
 That trial used the default automated launch. A separate owned blank-page
 control with Chrome 156.0.8078.47 verified that the default launch was headless;
 explicit `headless: false` was headed. Both reported webdriver, and neither
-control made provider requests. A headed comparison has not yet established
-provider behavior. The earlier instrumented listener was interrupted when the
+control made provider requests. The subsequent headed comparison below reached
+the same Fetch refusal. The earlier instrumented listener was interrupted when the
 user requested a fresh prompt and returned media/grant `unconfirmed`. Its exact
 cleanup cause was not isolated: a process-group interrupt or Playwright's former
 automatic signal handler could have closed Chrome before revocation. Its original
 receipt remains unresolved and is not changed by the refreshed trial's confirmed
 cleanup or the subsequent signal-ownership fix.
+
+The fresh headed comparison on signed revision
+`5474d0d9cf9b5125b9cddba811ed24680e00fd1a` used Linux x86-64 and Chrome
+156.0.8078.47 with a fresh context and default host networking; exit country was
+not independently measured. Authorization validated, then `live:virtualjapan`
+refused at `player-load`: manifest GET, checkpoint `fetch`, refusal
+`fetch-rejected`, SDK category 1/code 1002 and no readable HTTP status. No replay
+or decoding followed. Media destruction and fresh-grant revocation were
+confirmed, and the owned runner/server ended. This matches the headless failure
+boundary without identifying its cause. That revision did not have the passive
+CDP opt-in above; this change adds no new provider trial or active grant.
 
 ## Offline verification and outstanding acceptance
 
@@ -272,6 +323,21 @@ of a delayed synthetic media/grant cleanup receipt before Chrome/server closure.
 A negative control restoring Playwright's old automatic SIGINT handling exits
 without that receipt. This verifies runner signal ownership, not actual provider
 revocation or the cause of the earlier interruption.
+
+The passive failure suite uses real Chrome and dynamic loopback servers for
+missing-ACAO CORS, `redirect:error`, a refused TCP connection and successful Fetch.
+It verifies closed failure categories without intercepting requests or reading
+bodies; the redirect destination remains unrequested and credentials absent.
+Unlike production's immediate freeze, the fixture briefly waits for the expected
+CDP event to verify its schema; it does not establish provider event timing.
+Synthetic tests cover private-property sentinels, unknown enums, first-observed
+latching, overflow, malformed output associations, stale generations and bounded
+protocol failure, including never-settling disable/detach operations and their
+late completion without changing frozen evidence. The runner signal fixture
+also verifies that the opt-in session
+detaches before the delayed synthetic cleanup receipt and that a CDP teardown
+refusal or timeout does not prevent that receipt. Its default case creates no
+CDP session.
 
 ```sh
 mise exec -- npm run build --prefix apps/web
@@ -313,7 +379,6 @@ and are distinct from the actual loopback CORS/redirect/TCP/body/timeout checks.
 
 These tests cannot establish actual consent, CORS acceptance, provider entitlement,
 advertisements, signed manifest/CDN behavior, live-window operation, audio or
-renewal. The separate activated observations above reached validation but stopped
-before source preparation or playback. A further reviewed, fresh activated trial
-is needed for the bounded unknown-lifetime policy; local test success is not
-provider acceptance.
+renewal. The latest activated observations reached source preparation and stopped
+at media Fetch refusal before playback. Any further provider diagnostic needs a
+fresh reviewed trial; local test success is not provider acceptance.

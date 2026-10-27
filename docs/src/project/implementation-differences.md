@@ -67,6 +67,22 @@ provider requests or approved UX exception. Its
 [fixture scope and limits](web-pair-fixture.md#buffered-format-observations)
 remain distinct from product/provider acceptance.
 
+### Controlled browser quality preferences
+
+The controlled pair now uses the common More → Quality labels, defaults and
+override/save/reset behavior. Its browser policy delegates to Shaka's configured
+ABR manager after SDK content/support filtering, retaining exact comparable audio
+while video adapts. Android uses Media3 track-selection overrides and bandwidth
+meters. Both distinguish numeric requests from observed formats; browser format
+events retain the buffered-playhead qualification above.
+
+Browser fixture defaults use a separate bounded/versioned IndexedDB record with
+transactional per-kind writes and cross-tab/focus refresh. Android configured
+streams use its encrypted configured-source store. The browser record accepts
+only public fixture identity and numeric preferences; it stores no grants or
+provider metadata and establishes no account-storage or hosting decision.
+These mechanisms preserve the common scopes without adding a UX exception.
+
 [media-session]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/PrototypeActivity.kt#L888-L900
 [manifest]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/AndroidManifest.xml#L9-L33
 [detection]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/TelevisionPresentation.kt#L23-L26

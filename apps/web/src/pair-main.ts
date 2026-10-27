@@ -1,6 +1,7 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { type TimingCore } from './player';
 import { PairFixture, SIDES, TIMING_STEPS, pairBounds, type Side } from './pair';
+import { qualityTitle, observedQualityTitle, qualityExplanation, sameRequest } from './quality';
 import './pair-style.css';
 
 declare global { interface Window { pair: PairFixture } }
@@ -12,6 +13,7 @@ const fixtures = [
   { id: 'a-hls', label: 'Fixture A · HLS', manifest: `${base}media/a/master.m3u8`, kind: 'fixture' },
   { id: 'b-dash', label: 'Fixture B · DASH', manifest: `${base}media/b/manifest.mpd`, kind: 'fixture' },
   { id: 'b-hls', label: 'Fixture B · HLS', manifest: `${base}media/b/master.m3u8`, kind: 'fixture' },
+  { id: 'quality-dash', label: 'Quality fixture · DASH', manifest: `${base}media/quality/manifest.mpd`, kind: 'fixture' },
 ] as const;
 const core: TimingCore = await import(/* @vite-ignore */ `${base}core/tachiai_core_web.js`);
 await core.default();
@@ -19,7 +21,7 @@ shaka.polyfill.installAll();
 if (!shaka.Player.isBrowserSupported()) throw new Error('Browser media support is unavailable.');
 
 let controls = true;
-let panel: 'audio' | 'timing' | 'status' | undefined;
+let panel: 'audio' | 'timing' | 'status' | 'quality' | undefined;
 let menu = false;
 let idle: number | undefined;
 let repeat: number | undefined;
@@ -62,7 +64,7 @@ const render = () => {
   const state = pair.observe();
   element('picker').hidden = state.mode !== 'sources';
   element('viewer').hidden = state.mode !== 'viewer';
-  element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed';
+  element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed' || state.qualityStore !== 'ready' || state.savingQuality;
   for (const source of fixtures) for (const side of SIDES) {
     element<HTMLInputElement>(`source-${side}-${source.id}`).checked = state.selected[side] === source.id;
   }
@@ -70,6 +72,7 @@ const render = () => {
   element('audio-panel').hidden = panel !== 'audio';
   element('timing-panel').hidden = panel !== 'timing';
   element('status-panel').hidden = panel !== 'status';
+  element('quality-panel').hidden = panel !== 'quality';
   element('more-menu').hidden = !menu;
   element('transport').textContent = state.desiredPlaying ? 'Pause' : 'Play';
   element<HTMLButtonElement>('transport').disabled = state.busy;
@@ -89,12 +92,53 @@ const render = () => {
     element(`mute-${side}`).textContent = `${muted ? 'Unmute' : 'Mute'} ${side}`;
     element(`mute-${side}`).setAttribute('aria-pressed', String(muted));
     for (const button of element(`advance-${side}`).querySelectorAll('button')) {
-      button.disabled = state.busy || !SIDES.every((candidate) => state.feeds[candidate]?.state === 'ready');
+      button.disabled = state.busy || state.savingQuality || !SIDES.every((candidate) => state.feeds[candidate]?.state === 'ready');
+    }
+    for (const kind of ['video', 'audio'] as const) {
+      const field = `quality-${side}-${kind}`, read = pair.readQuality(side, kind), control = feed?.quality[kind];
+      const select = element<HTMLSelectElement>(field);
+      const options = control?.options ?? [];
+      const signature = JSON.stringify([read.streamDefault, options]);
+      if (select.dataset.options !== signature) {
+        select.replaceChildren(new Option(`Use stream default (${qualityTitle(read.streamDefault)})`, 'inherit'),
+          new Option('Auto for this feed', 'auto'), ...options.map((option, index) => new Option(qualityTitle(option), String(index))));
+        select.dataset.options = signature;
+      }
+      const index = read.feedOverride ? options.findIndex(option => sameRequest(option, read.feedOverride!)) : -1;
+      if (read.feedOverride && index < 0) {
+        let unavailable = select.querySelector('option[value="unavailable"]');
+        if (!unavailable) { unavailable = new Option(`Unavailable request · ${qualityTitle(read.feedOverride)}`, 'unavailable'); select.append(unavailable); }
+      } else select.querySelector('option[value="unavailable"]')?.remove();
+      select.value = read.feedOverride === undefined ? 'inherit' : read.feedOverride === null ? 'auto' : index < 0 ? 'unavailable' : String(index);
+      const title = kind === 'video' ? 'Video' : 'Audio';
+      select.setAttribute('aria-label', `${side} · ${label} ${title} quality`);
+      const observed = feed?.playheadFormats[kind];
+      element(`${field}-readback`).textContent = `${read.scope} · requested: ${qualityTitle(read.effective)}\n` +
+        `Observed ${title} (buffered at playhead): ${observedQualityTitle(observed)}`;
+      const refused = state.qualityApplication[side] && state.qualityApplication[side] !== 'completed';
+      element(`${field}-capability`).textContent = (control ? qualityExplanation(control) : 'Waiting for this feed’s supported tracks; no quality change confirmed') + '. ' +
+        (options.length <= 1 ? 'No separate quality alternatives exposed; bundled tracks may be coupled.' :
+          'Supported alternatives in the current content group; independent audio/video changes are not guaranteed.') +
+        (control?.omitted ? ` ${control.omitted} additional options omitted.` : '') +
+        (refused ? ' Quality request refused; actual playback is shown separately.' : '');
+      const enabled = !state.busy && !state.savingQuality && state.qualityStore === 'ready';
+      select.disabled = !enabled;
+      element<HTMLButtonElement>(`${field}-save`).disabled = !enabled;
+      element<HTMLButtonElement>(`${field}-reset`).disabled = !enabled;
     }
   }
   element('adjustment').textContent = `${state.adjustmentValid ? 'Requested adjustment' : 'Timing anchor invalid after recovery'}: ${state.requestedAdjustmentMs} ms · not measured synchronization.`;
   element('observations').textContent = JSON.stringify(state, null, 2);
-  element('pair-result').textContent = state.mode === 'sources' && state.status === 'stopped' ? 'Timing core ready' : state.status;
+  element('pair-result').textContent = state.qualityStore === 'loading' ? 'Reading fixture quality defaults…' :
+    state.qualityStore === 'failed' ? 'Fixture quality defaults could not be read. Nothing was replaced. Close and reopen to retry.' :
+      state.mode === 'sources' && state.status === 'stopped' ? 'Timing core ready' : state.status;
+  element('quality-message').textContent = state.savingQuality ? 'Saving stream quality…' :
+    state.qualityMessage === 'save-failed' ? 'Stream quality could not be saved. Saved preferences were not replaced.' :
+      state.qualityMessage === 'read-failed' ? 'Fixture quality defaults could not be read. Nothing was replaced.' : '';
+  if (state.qualityMessage?.endsWith('-saved')) element('quality-message').textContent =
+    `Stream ${state.qualityMessage.startsWith('video') ? 'video' : 'audio'} default saved. Feed overrides stay in this session.`;
+  if (state.qualityMessage?.endsWith('-reset')) element('quality-message').textContent =
+    `Stream ${state.qualityMessage.startsWith('video') ? 'video' : 'audio'} default reset to Auto. Feed overrides stay in this session.`;
   if (!controls || panel || menu || !state.desiredPlaying || state.mode !== 'viewer') clearIdle();
   else if (idle === undefined) idle = window.setTimeout(() => { idle = undefined; hide(); }, 4000);
   layout();
@@ -117,6 +161,27 @@ const back = async () => {
   else if (pair.observe().mode === 'viewer') await sources();
 };
 
+for (const side of SIDES) for (const kind of ['video', 'audio'] as const) {
+  const id = `quality-${side}-${kind}`, field = document.createElement('fieldset'), legend = document.createElement('legend');
+  legend.textContent = `${side} · ${kind === 'video' ? 'Video' : 'Audio'}`;
+  const select = document.createElement('select'); select.id = id;
+  select.onchange = () => {
+    const option = pair.observe().feeds[side]?.quality[kind].options[Number(select.value)];
+    if (select.value === 'inherit' || select.value === 'auto' || option) {
+      pair.setQualityOverride(side, kind, select.value === 'inherit' ? undefined : select.value === 'auto' ? null : option);
+    }
+    reveal();
+  };
+  const readback = document.createElement('p'); readback.id = `${id}-readback`;
+  const capability = document.createElement('p'); capability.id = `${id}-capability`;
+  const save = document.createElement('button'); save.id = `${id}-save`; save.textContent = 'Save stream default';
+  save.setAttribute('aria-label', `Save ${side} ${kind} preference as stream default`);
+  save.onclick = () => { void pair.saveQualityDefault(side, kind); reveal(); };
+  const reset = document.createElement('button'); reset.id = `${id}-reset`; reset.textContent = 'Reset stream default';
+  reset.setAttribute('aria-label', `Reset ${side} stream ${kind} default to Auto; retain feed override`);
+  reset.onclick = () => { void pair.saveQualityDefault(side, kind, true); reveal(); };
+  field.append(legend, select, readback, capability, save, reset); element('quality-fields').append(field);
+}
 pair = new PairFixture(core, { A: element('mount-A'), B: element('mount-B') }, fixtures, render);
 window.pair = pair;
 for (const source of fixtures) {
@@ -156,6 +221,7 @@ element('more').onclick = () => { stopRepeat(); menu = !menu; reveal(); };
 element('hide').onclick = hide;
 element('swap').onclick = () => { menu = false; pair.swap(); reveal(); };
 element('status').onclick = () => { menu = false; toggle('status'); };
+element('quality').onclick = () => { menu = false; toggle('quality'); };
 element('centre').onclick = () => { pair.setMix({ balance: 50 }); reveal(); };
 for (const key of ['overall', 'balance'] as const) {
   element<HTMLInputElement>(key).oninput = () => { pair.setMix({ [key]: Number(element<HTMLInputElement>(key).value) }); reveal(); };

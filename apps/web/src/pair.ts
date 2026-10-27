@@ -1,4 +1,6 @@
 import { Harness, type CommandResult, type Observation, type Source, type TimingCore } from './player';
+import { copyRequest, validRequest, type QualityKind, type QualityRequest } from './quality';
+import { FixtureQualityStore, type QualityDefaults, type QualityStore } from './quality-store';
 
 export type Side = 'A' | 'B';
 export const SIDES: readonly Side[] = ['A', 'B'];
@@ -21,6 +23,10 @@ export interface PairObservation {
   requestedAdjustmentMs: number;
   adjustmentValid: boolean;
   status: CommandResult | 'stopped' | 'background' | 'cleanup-failed';
+  qualityStore: 'loading' | 'ready' | 'failed';
+  savingQuality: boolean;
+  qualityMessage?: 'save-failed' | 'read-failed' | 'video-saved' | 'audio-saved' | 'video-reset' | 'audio-reset';
+  qualityApplication: Record<Side, CommandResult | undefined>;
 }
 
 export function gains(mix: Mix): Record<Side, number> {
@@ -72,15 +78,97 @@ export class PairFixture {
   private adjustment = 0;
   private adjustmentValid = true;
   private status: PairObservation['status'] = 'stopped';
+  private defaults: QualityDefaults = {};
+  private overrides: Record<Side, Partial<Record<QualityKind, QualityRequest>>> = { A: {}, B: {} };
+  private qualityStore: PairObservation['qualityStore'] = 'loading';
+  private qualityMessage?: PairObservation['qualityMessage'];
+  private qualitySave?: object;
+  private qualityApplication: PairObservation['qualityApplication'] = { A: undefined, B: undefined };
+  private readGeneration = 0;
   get revision(): number { return this.generation; }
 
   constructor(core: TimingCore, mounts: Record<Side, HTMLElement>, sources: readonly Source[],
-    private readonly changed: () => void) {
+    private readonly changed: () => void,
+    private readonly store: QualityStore = new FixtureQualityStore(sources.map(source => source.id))) {
     this.sources = new Map(sources.map((source) => [source.id, source]));
     this.slots = {
       A: new Harness(core, mounts.A, () => this.publish()),
       B: new Harness(core, mounts.B, () => this.publish()),
     };
+    this.store.subscribe(() => { void this.reloadDefaults(); });
+    void this.reloadDefaults();
+  }
+
+  private async reloadDefaults(): Promise<void> {
+    const read = ++this.readGeneration;
+    try {
+      const values = await this.store.read();
+      if (read !== this.readGeneration) return;
+      this.defaults = values; this.qualityStore = 'ready';
+      if (this.qualityMessage === 'read-failed') this.qualityMessage = undefined;
+      this.applyQuality();
+    } catch {
+      if (read !== this.readGeneration) return;
+      this.qualityStore = 'failed'; this.qualityMessage = 'read-failed';
+    }
+    this.publish();
+  }
+
+  readQuality(side: Side, kind: QualityKind) {
+    const streamDefault = this.defaults[this.selected[side] ?? '']?.[kind] ?? null;
+    const feedOverride = this.overrides[side][kind];
+    return { streamDefault: copyRequest(streamDefault),
+      feedOverride: feedOverride === undefined ? undefined : copyRequest(feedOverride),
+      effective: copyRequest(feedOverride === undefined ? streamDefault : feedOverride),
+      scope: feedOverride === undefined ? 'Stream default' : 'Feed override (this session)' };
+  }
+
+  private applyQuality(): void {
+    if (this.mode !== 'viewer' || this.timing || this.qualitySave) return;
+    for (const side of SIDES) {
+      const player = this.slots[side].current;
+      if (player?.observe().state === 'ready') this.qualityApplication[side] = player.setQualityPreferences({
+        video: this.readQuality(side, 'video').effective, audio: this.readQuality(side, 'audio').effective });
+    }
+  }
+
+  setQualityOverride(side: Side, kind: QualityKind, request: QualityRequest | undefined): CommandResult {
+    if (this.mode !== 'viewer' || this.timing || this.qualitySave || this.qualityStore !== 'ready') return 'unavailable';
+    if (request !== undefined && !validRequest(request, kind)) return 'invalid';
+    if (request === undefined) delete this.overrides[side][kind];
+    else this.overrides[side][kind] = copyRequest(request);
+    this.applyQuality(); this.publish(); return this.qualityApplication[side] ?? 'unavailable';
+  }
+
+  async saveQualityDefault(side: Side, kind: QualityKind, reset = false): Promise<CommandResult> {
+    if (this.mode !== 'viewer' || this.timing || this.qualitySave || this.qualityStore !== 'ready') return 'unavailable';
+    const id = this.selected[side];
+    if (!id) return 'unavailable';
+    const owner = {}, run = this.generation;
+    this.qualitySave = owner; this.qualityMessage = undefined; this.publish();
+    try {
+      const values = await this.store.save(id, kind, reset ? null : this.readQuality(side, kind).effective);
+      if (run !== this.generation || this.qualitySave !== owner) {
+        // The write can commit after retirement. Adopt only a new store read
+        // under its own current read generation, never the retired save's
+        // snapshot, override, playback owner or result.
+        await this.reloadDefaults();
+        return 'cancelled';
+      }
+      // Supersede any older read, including a cross-tab notification in flight.
+      ++this.readGeneration;
+      this.defaults = values;
+      this.qualityMessage = `${kind}-${reset ? 'reset' : 'saved'}`;
+      return 'completed';
+    } catch {
+      if (run !== this.generation || this.qualitySave !== owner) return 'cancelled';
+      this.qualityMessage = 'save-failed'; return 'failed';
+    } finally {
+      if (this.qualitySave === owner) {
+        this.qualitySave = undefined;
+        this.applyQuality(); this.publish();
+      }
+    }
   }
 
   private publish(): void {
@@ -99,6 +187,8 @@ export class PairFixture {
       busy: this.timing !== undefined, stopping: this.stopping, retrying: { ...this.retrying },
       mix: { ...this.mix }, primary: this.primary, floating: { ...this.floating },
       requestedAdjustmentMs: this.adjustment, adjustmentValid: this.adjustmentValid, status: this.status,
+      qualityStore: this.qualityStore, savingQuality: this.qualitySave !== undefined, qualityMessage: this.qualityMessage,
+      qualityApplication: { ...this.qualityApplication },
     };
   }
 
@@ -110,10 +200,12 @@ export class PairFixture {
   }
 
   async watch(): Promise<CommandResult> {
-    if (this.stopping || this.cleanupFailed || !this.selected.A || !this.selected.B) return 'unavailable';
+    if (this.stopping || this.cleanupFailed || this.qualityStore !== 'ready' || this.qualitySave || !this.selected.A || !this.selected.B) return 'unavailable';
     const run = ++this.generation;
     ++this.playGeneration;
     this.mode = 'viewer'; this.desiredPlaying = true; this.timing = undefined;
+    this.overrides = { A: {}, B: {} };
+    this.qualityApplication = { A: undefined, B: undefined };
     this.mix = { overall: 50, balance: 50, muteA: false, muteB: false };
     this.primary = 'A'; this.floating = { x: 1, y: 0 };
     this.adjustment = 0; this.adjustmentValid = true;
@@ -143,6 +235,7 @@ export class PairFixture {
     }
     const player = this.slots[side].current;
     if (outcome === 'completed' && player) {
+      this.qualityApplication[side] = player.setQualityPreferences({ video: this.readQuality(side, 'video').effective, audio: this.readQuality(side, 'audio').effective });
       this.applyMix();
       if (restore !== undefined && restore > 0) {
         const position = player.observe().positionMs;
@@ -220,6 +313,7 @@ export class PairFixture {
   }
 
   async advance(side: Side, stepMs: number): Promise<CommandResult> {
+    if (this.qualitySave) return 'unavailable';
     if (this.mode !== 'viewer' || this.timing || !TIMING_STEPS.some((value) => value === stepMs)) return 'unavailable';
     const a = this.slots.A.current, b = this.slots.B.current;
     if (!a || !b || a.observe().state !== 'ready' || b.observe().state !== 'ready') return 'unavailable';
@@ -254,12 +348,13 @@ export class PairFixture {
       return 'failed';
     } finally {
       if (this.timing === owned) this.timing = undefined;
+      this.applyQuality();
       this.publish();
     }
   }
 
   async retry(side: Side): Promise<CommandResult> {
-    if (this.mode !== 'viewer' || this.timing || this.retrying[side] ||
+    if (this.mode !== 'viewer' || this.timing || this.qualitySave || this.retrying[side] ||
         this.slots[side].current?.observe().state !== 'failed') return 'unavailable';
     const generation = this.generation, restore = this.positions[side];
     this.retrying[side] = true;
@@ -276,6 +371,8 @@ export class PairFixture {
     const generation = ++this.generation;
     ++this.playGeneration;
     this.mode = 'sources'; this.desiredPlaying = false; this.timing = undefined; this.stopping = true;
+    this.overrides = { A: {}, B: {} }; this.qualitySave = undefined; this.qualityMessage = undefined;
+    this.qualityApplication = { A: undefined, B: undefined };
     this.retrying = { A: false, B: false };
     this.publish();
     const outcomes = await Promise.allSettled(SIDES.map((side) => this.slots[side].stop()));
@@ -284,6 +381,10 @@ export class PairFixture {
       this.stopping = false;
       this.status = this.cleanupFailed ? 'cleanup-failed' : background ? 'background' : 'stopped';
       this.publish();
+      // A committed save may outlive a retired viewer; the next session reads
+      // the current store rather than adopting that old session's completion.
+      this.qualityStore = 'loading';
+      await this.reloadDefaults();
     }
   }
 }

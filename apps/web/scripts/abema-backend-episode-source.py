@@ -33,7 +33,9 @@ REASONS = {"SCHEMA", "IDENTITY", "FREE", "WINDOW", "RESTRICTION", "DTO", "GATEWA
            "SOURCE_MODE", "SOURCE_URI", "CONFIGURATION", "BINDING", "CALL_CAP", "LIFETIME", "RUNTIME"}
 HELPER_CONFIGURATION_CHECKS = {"HELPER_FACTORY", "HELPER_KEY_SYSTEM", "HELPER_LICENSE_TYPE", "HELPER_SOURCE_TYPE", "HELPER_CALL_CAP", "HELPER_OUTPUT"}
 CONFIGURATION_CHECKS = HELPER_CONFIGURATION_CHECKS | {"PARENT_PROTECTION", "PARENT_AD_MODE", "PARENT_CALL_CAP",
-    "PARENT_PROTECTION_ASSOCIATION", "PARENT_AD_MODE_ASSOCIATION", "PARENT_LICENSE_ENDPOINT", "PARENT_LICENSE_TEMPLATE", "PARENT_LICENSE_QUERY"}
+    "PARENT_PROTECTION_ASSOCIATION", "PARENT_AD_MODE_ASSOCIATION", "PARENT_LICENSE_ENDPOINT", "PARENT_LICENSE_TEMPLATE", "PARENT_LICENSE_QUERY",
+    "PARENT_TEMPLATE_TEXT", "PARENT_RESULT_TEXT", "PARENT_TEMPLATE_SCHEME", "PARENT_RESULT_SCHEME",
+    "PARENT_TEMPLATE_HOST", "PARENT_RESULT_HOST", "PARENT_TEMPLATE_PATH", "PARENT_RESULT_PATH", "PARENT_PATH_BINDING"}
 # Public system identifiers from the same pinned provider mapping, not keys.
 DRM_SYSTEMS = {"WIDEVINE": "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed", "CUSTOM": "81376844-f976-481e-a84e-cc25d39b0b33"}
 AD_MODES = {0: "NONE", 1: "ABEMA_DEFAULT", 4: "CSAI", "AD_INSERTION_MODE_NONE": "NONE",
@@ -203,7 +205,13 @@ def validate_binding(value, phase, nonce, metadata, expiry, gateway, media_token
         if reserved & base_query.keys() or uri[:3] != advertised[:3] or query != {**base_query, "t": media_token, "enc": "wv" if value["drm"] == "WIDEVINE" else "clear"}: refuse("BINDING")
         template = urllib.parse.urlsplit(stream["drm"]["license"]["urlTemplate"])
         license_uri = urllib.parse.urlsplit(value["licenseUri"])
-        if any(not isinstance(item, str) or len(item) > 4096 or re.search(r"[\x00-\x20\\#]", item) for item in (stream["drm"]["license"]["urlTemplate"], value["licenseUri"])) or any(item.scheme != "https" or item.netloc != "license.p-c3-e.abema-tv.com" or item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", item.path) or any(part in {".", ".."} for part in item.path.split("/")) for item in (template, license_uri)) or license_uri.path != template.path: refuse("CONFIGURATION", "PARENT_LICENSE_ENDPOINT")
+        for role, item in (("TEMPLATE", stream["drm"]["license"]["urlTemplate"]), ("RESULT", value["licenseUri"])):
+            if not isinstance(item, str) or len(item) > 4096 or re.search(r"[\x00-\x20\\#]", item): refuse("CONFIGURATION", "PARENT_" + role + "_TEXT")
+        for role, item in (("TEMPLATE", template), ("RESULT", license_uri)):
+            if item.scheme != "https": refuse("CONFIGURATION", "PARENT_" + role + "_SCHEME")
+            if item.netloc != "license.p-c3-e.abema-tv.com": refuse("CONFIGURATION", "PARENT_" + role + "_HOST")
+            if item.fragment or not re.fullmatch(r"/[A-Za-z0-9_./~-]{1,255}", item.path) or any(part in {".", ".."} for part in item.path.split("/")): refuse("CONFIGURATION", "PARENT_" + role + "_PATH")
+        if license_uri.path != template.path: refuse("CONFIGURATION", "PARENT_PATH_BINDING")
         template_query, license_query = source.playlist_query(template.query), source.playlist_query(license_uri.query)
         replacements = {"t": media_token, "ct": "program", "cid": EPISODE}
         if set(template_query) - {"t", "ct", "cid", "tt", "tk", "dt"} or any(template_query.get(key) != "{" + key + "}" for key in replacements) or any("{" in item or "}" in item for key, item in template_query.items() if key not in replacements): refuse("CONFIGURATION", "PARENT_LICENSE_TEMPLATE")

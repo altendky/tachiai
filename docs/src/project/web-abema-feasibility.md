@@ -531,6 +531,9 @@ independently requires the CONFIGURATION reason and a helper-only enum for a
 helper refusal; other reasons cannot retain this field. The classification does
 not change admission, guard order, selected protection, URL construction or any
 lifetime/cleanup rule.
+Template/result text, HTTPS scheme, host and canonical-path checks have separate
+PARENT_TEMPLATE/PARENT_RESULT labels; PARENT_PATH_BINDING reports unequal paths.
+These labels describe existing predicates without returning an endpoint.
 
 Browser-free synthetic regressions run in repository hooks:
 
@@ -556,7 +559,8 @@ software fixture observations, not provider eligibility or physical-device
 measurements.
 
 The first fresh exact-episode trial at signed
-`df0d60eeca5b0a3631c0cc1321358930d8515975` verified headed Chrome156/Linux,
+`df0d60eeca5b0a3631c0cc1321358930d8515975` verified headed Chrome
+156.0.8078.47 on Linux x86-64,
 the four public pins, fresh guest/profile/media-token HTTP200, exact program
 HTTP200 and conservative eligibility, the pinned DTO pass and gateway HTTP200.
 It then refused at SOURCE_CONFIG with the broad CONFIGURATION reason. Cleanup
@@ -566,6 +570,25 @@ so the failing predicate and helper/parent origin cannot be reconstructed from
 that result. The fixed subreason diagnostic above is the next bounded step;
 this result does not justify guessing a template/DRM mismatch or loosening a
 guard.
+
+A second fresh attempt on signed
+`9c062b1c1de9b493aca646638ee333f9554b85b5` passed the same guest/profile/token,
+exact-program eligibility and DTO chain, and again received gateway HTTP 200.
+The first configuration refusal was specifically `PARENT_LICENSE_ENDPOINT`.
+At that revision, the grouped check covered bounded URI/type/character validation,
+HTTPS and the known license host, canonical template/output paths and path
+equality. The report does
+not identify the individual condition, actual endpoint or selected protection.
+No response, template or URL was retained; the result cannot establish a provider
+license rejection or browser DRM incompatibility.
+
+Both attempts used a fresh anonymous guest and owned blank headed browser,
+the fixed legacy replay seed and default host networking. Exit country was not
+independently measured. No GLOBAL News catalogue result was used as replay
+entitlement. Both confirmed owned cleanup with no grant persisted and performed
+no MPD, media, certificate, license or CDM operation. The next prerequisite is
+verification of the browser endpoint/configuration contract before any admission
+change or protected playback trial.
 
 ## Next decision
 

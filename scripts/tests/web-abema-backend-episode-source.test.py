@@ -134,7 +134,7 @@ class EpisodeTests(unittest.TestCase):
             ("PARENT_AD_MODE", {"adMode": PRIVATE}, None), ("PARENT_CALL_CAP", {"gatewayCalls": 0}, None),
             ("PARENT_PROTECTION_ASSOCIATION", {"drm": "CUSTOM", "keySystem": "CUSTOM"}, None),
             ("PARENT_AD_MODE_ASSOCIATION", {"adMode": "CSAI"}, None),
-            ("PARENT_LICENSE_ENDPOINT", {"licenseUri": binding()["licenseUri"].replace("license.p-c3-e.abema-tv.com", "private.invalid")}, None),
+            ("PARENT_RESULT_HOST", {"licenseUri": binding()["licenseUri"].replace("license.p-c3-e.abema-tv.com", "private.invalid")}, None),
             ("PARENT_LICENSE_TEMPLATE", {}, TEMPLATE + "&extra=" + PRIVATE),
             ("PARENT_LICENSE_QUERY", {"licenseUri": binding()["licenseUri"].replace(PRIVATE, "STALE")}, None)]
         for expected, changes, template in cases:
@@ -146,6 +146,27 @@ class EpisodeTests(unittest.TestCase):
             self.assertNotIn(PRIVATE, str(caught.exception))
         for reason, check in (("BINDING", "PARENT_LICENSE_QUERY"), ("CONFIGURATION", PRIVATE), ("CONFIGURATION", [])):
             with self.assertRaises(module.Refused): module.EpisodeRefused(reason, check)
+
+    def test_endpoint_checks_distinguish_template_and_result_without_private_values(self):
+        cases = [
+            ("PARENT_TEMPLATE_TEXT", TEMPLATE.replace("/abematv-dash", "/private path"), None),
+            ("PARENT_RESULT_TEXT", None, binding()["licenseUri"] + " " + PRIVATE),
+            ("PARENT_TEMPLATE_SCHEME", TEMPLATE.replace("https:", "http:"), None),
+            ("PARENT_RESULT_SCHEME", None, binding()["licenseUri"].replace("https:", "http:")),
+            ("PARENT_TEMPLATE_HOST", TEMPLATE.replace("license.p-c3-e.abema-tv.com", "private.invalid"), None),
+            ("PARENT_RESULT_HOST", None, binding()["licenseUri"].replace("license.p-c3-e.abema-tv.com", "private.invalid")),
+            ("PARENT_TEMPLATE_PATH", TEMPLATE.replace("/abematv-dash", "/../private"), None),
+            ("PARENT_RESULT_PATH", None, binding()["licenseUri"].replace("/abematv-dash", "/%70rivate")),
+            ("PARENT_PATH_BINDING", None, binding()["licenseUri"].replace("/abematv-dash", "/different")),
+        ]
+        for expected, template, result in cases:
+            data, packet = gateway(), binding()
+            if template is not None: data["streams"][0]["drm"]["license"]["urlTemplate"] = template
+            if result is not None: packet["licenseUri"] = result
+            with self.subTest(expected=expected), self.assertRaises(module.EpisodeRefused) as caught:
+                module.validate_binding(packet, "selection", NONCE, metadata(), END * 1000, data, PRIVATE)
+            self.assertEqual((caught.exception.reason, caught.exception.configuration_check), ("CONFIGURATION", expected))
+            self.assertNotIn(PRIVATE, str(caught.exception))
 
     def test_old_completion_never_receives_private_context_and_option_device_is_original_request(self):
         class Transport:

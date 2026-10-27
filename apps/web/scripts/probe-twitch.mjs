@@ -79,10 +79,14 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
         browserFailures?.arm();
         outcome = await page.evaluate((value) => window.twitchProof.prepare(value), selected);
       } finally {
-        browserFailures?.disarm();
-        await browserFailures?.close();
-        browserFailureEvidence = browserFailures?.summary();
-        browserFailures = undefined;
+        try {
+          if (outcome === 'refused') await browserFailures?.drain(lifetime.signal);
+        } finally {
+          browserFailures?.disarm();
+          try { await browserFailures?.close(); } catch {}
+          browserFailureEvidence = browserFailures?.summary();
+          browserFailures = undefined;
+        }
       }
       output({ event: 'preparation', selected, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
         ...(browserFailureEvidence ? { browserFailure: browserFailureEvidence } : {}) });
@@ -111,7 +115,7 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     if (!lifetime.signal.aborted) process.exitCode = 1;
   } finally {
     browserFailures?.disarm();
-    await browserFailures?.close();
+    try { await browserFailures?.close(); } catch {}
     clearTimeout(deadline);
     process.removeListener('SIGINT', cancel);
     process.removeListener('SIGTERM', cancel);

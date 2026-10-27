@@ -66,8 +66,8 @@ An auxiliary refusal can also report one fixed `auxiliaryReason`: `UTC_TIMING`,
 `UTC_TIMING` additionally reports only `utcScheme` values `DIRECT`, `HTTP_HEAD`,
 `HTTP_XSDATE` or `OTHER`; recognized classes match the exact 2012/2014 DASH scheme
 identifiers. No UTC value, timestamp, URL or unknown scheme string is retained.
-These fields describe the first existing refusal and survive retirement. They
-grant no auxiliary request or feature admission. Node and Python independently
+These fields describe the first refusal and survive retirement. They
+grant no auxiliary request admission. Node and Python independently
 check the fixed values and their boundary/reason association before output.
 
 This remains a bounded Linux development-browser observation. Linux is not an
@@ -114,12 +114,45 @@ country was not independently measured; full device flow and entitlement remain
 unestablished.
 
 This identifies the first refusal as an inline direct UTC timing declaration;
-it does not establish that admitting it would complete parsing or playback. The
-pinned parser's handling still needs verification before any admission change.
+it does not establish that its value is valid or that admitting it would complete
+parsing or playback. Its raw value was not retained. The bounded direct-only
+admission below has controlled fixture verification; no fresh provider trial has
+tested it.
 Neither trial establishes a DRM blocker or extension requirement. No fallback
 followed.
 
 ## Transport and lifecycle boundary
+
+The XML audit permits only root-level DASH `UTCTiming` elements with the exact
+`urn:mpeg:dash:utc:direct:2014` or legacy `:2012` scheme. The original MPD bytes
+reach the pinned parser unchanged. The value must use this deliberately narrow
+ISO subset: four-digit years 0001–9999, a valid Gregorian calendar date,
+`T` followed by 00–23 hours and 00–59 minutes/seconds, optional one to three
+fractional second digits, and explicit `Z` or an offset from `-14:00` to
+`+14:00` (14-hour offsets require zero minutes). It must parse to a finite date.
+Whitespace, missing zones, invalid calendar normalization, leap seconds, 24:00,
+extended years and greater fractional precision are refused. The maximum spelling
+is 29 characters. This subset is a diagnostic constraint, not complete XML Schema
+date-time support. Invalid direct declarations retain `UTC_TIMING / DIRECT`.
+
+Shaka 5.3.2 computes the direct value's clock offset locally with `Date.parse`
+and `Date.now`; it issues no timing request. Its direct branch otherwise silently
+uses zero for an invalid value, which is why the audit validates first.
+`dash.clockSyncUri` is explicitly empty; every TIMING networking request remains
+denied. HTTP-head/xsdate/iso, NTP and unknown schemes are still refused even when
+listed after a usable direct declaration. The audit continues all same-element
+protection/XLink and descendant checks after accepting direct timing.
+
+The pinned parser applies clock synchronization during initial live manifest
+construction when presentation-start timing is used; it does not resynchronize
+on ordinary refresh. Every refreshed MPD still passes the audit before parsing
+and publication. Direct timing affects media availability decisions, never source
+or grant expiry, which retain their monotonic lifetime. The embedded time can be
+inaccurate if a provider or intermediary serves an old MPD; client `no-store`
+does not prove upstream freshness. This is not evidence of alignment between
+feeds. See the [DASH-IF direct-time guidance][dash-direct] and
+[pinned parser implementation][shaka-utc]. No timing server, new origin, license
+operation or UX change is added.
 
 The separate ABEMA diagnostic uses pinned Shaka 5.3.2's compiled debug distribution
 because its init/media reference methods retain their public names. The ordinary
@@ -186,7 +219,13 @@ cleanup receipts, exact reference/range/stream ownership, templates/BaseURL,
 snapshot eviction, early index refusal, source expiry, denied protection types,
 each fixed auxiliary refusal and UTC scheme class, refusal preservation after
 cleanup, independent invalid/private auxiliary-output rejection,
+bounded direct-time date/zone validation, unchanged MPD bytes, actual pinned SDK
+clock offset without timing requests, invalid-refresh refusal and owned direct
+fixture decode/retirement,
 actual CORS/redirect/credential behavior, frame advancement and shared/failed
 retirement. The browser suite uses port 4186 and retains no capture artifacts.
 Browser-free protocol tests run in repository hooks; CI adds local Chrome tests.
 No actual provider acceptance is inferred from these tests.
+
+[dash-direct]: https://dash-industry-forum.github.io/docs/DASH-IF-IOP-v4.3.pdf#page=125
+[shaka-utc]: https://github.com/shaka-project/shaka-player/blob/v5.3.2/lib/dash/dash_parser.js

@@ -77,7 +77,7 @@ export class AbemaPlayback {
       });
       player.configure({ abr: { enabled: false }, manifest: { disableText: true, disableThumbnails: true,
         retryParameters: { maxAttempts: 1 }, raiseFatalErrorOnManifestUpdateRequestFailure: true,
-        dash: { initialSegmentLimit: 1000 } },
+        dash: { initialSegmentLimit: 1000, clockSyncUri: '' } },
         drm: { servers: {}, clearKeys: {}, logLicenseExchange: false },
         streaming: { retryParameters: { maxAttempts: 1 }, observeQualityChanges: true, segmentPrefetchLimit: 0,
           preferNativeHls: false, preferNativeDash: false, useNativeHlsForFairPlay: false,

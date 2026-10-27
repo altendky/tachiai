@@ -24,6 +24,23 @@ export function abemaMediaUri(raw: string): boolean {
   } catch { return false; }
 }
 
+function directUtcValue(value: string | null): boolean {
+  // Deliberately bounded ISO subset; Date.parse alone normalizes invalid dates
+  // and accepts local-time spellings. Never retain or publish this value.
+  if (!value || value.length > 29) return false;
+  const parts = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]{1,3})?(Z|[+-]([0-9]{2}):([0-9]{2}))$/.exec(value);
+  if (!parts || parts[0] !== value) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, zone, zoneHourText, zoneMinuteText] = parts;
+  const year = Number(yearText), month = Number(monthText), day = Number(dayText);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > days[month - 1] ||
+      Number(hourText) > 23 || Number(minuteText) > 59 || Number(secondText) > 59) return false;
+  const zoneHour = Number(zoneHourText), zoneMinute = Number(zoneMinuteText);
+  if (zone !== 'Z' && (zoneHour > 14 || zoneMinute > 59 || zoneHour === 14 && zoneMinute !== 0)) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
 export class AbemaDashPolicy {
   boundary: AbemaBoundary = 'NONE';
   auxiliaryReason?: AbemaAuxiliaryReason;
@@ -103,7 +120,10 @@ export class AbemaDashPolicy {
       if (name === 'utctiming') {
         const scheme = element.getAttribute('schemeIdUri');
         const matches = (method: string) => ['2012', '2014'].some((year) => scheme === 'urn:mpeg:dash:utc:' + method + ':' + year);
-        this.auxiliary('UTC_TIMING', matches('direct') ? 'DIRECT' : matches('http-head') ? 'HTTP_HEAD' : matches('http-xsdate') ? 'HTTP_XSDATE' : 'OTHER');
+        if (!matches('direct') || element.localName !== 'UTCTiming' || element.namespaceURI !== document.documentElement.namespaceURI ||
+            element.parentElement !== document.documentElement || !directUtcValue(element.getAttribute('value'))) {
+          this.auxiliary('UTC_TIMING', matches('direct') ? 'DIRECT' : matches('http-head') ? 'HTTP_HEAD' : matches('http-xsdate') ? 'HTTP_XSDATE' : 'OTHER');
+        }
       }
       if (name === 'segmentbase') this.auxiliary('SEGMENT_BASE');
       if (name === 'contentsteering') this.auxiliary('CONTENT_STEERING');

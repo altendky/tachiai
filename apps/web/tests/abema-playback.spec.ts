@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 
 test('actual controlled DASH decode and advancement under denied encrypted-media policy, then shared cleanup', async ({ page }) => {
   await page.goto('./');
@@ -127,6 +128,163 @@ test('each auxiliary XML refusal has a fixed latched reason and UTC retains only
   expect(results.unchanged.boundary).toBe('CANCELLED'); expect(results.unchanged.reason).toBeUndefined();
   expect(results.protection.boundary).toBe('PROTECTION'); expect(results.protection.reason).toBeUndefined();
   expect(JSON.stringify(results)).not.toContain('PRIVATE_AUXILIARY_VALUE');
+});
+
+test('direct UTC admits only bounded explicit-zone calendar values and still scans every guard', async ({ page }) => {
+  await page.goto('./');
+  const results = await page.evaluate(async () => {
+    const { AbemaDashPolicy } = await import('/harness/src/abema-dash-policy.ts');
+    const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=synthetic';
+    const timing = (value: string, extra = '', scheme = 'direct:2014') =>
+      '<UTCTiming schemeIdUri="urn:mpeg:dash:utc:' + scheme + '" value="' + value + '" ' + extra + '/>';
+    const audit = (body: string) => {
+      const policy = new AbemaDashPolicy(uri, 'a'.repeat(32), 10000);
+      const bytes = new TextEncoder().encode('<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">' + body + '</MPD>'), before = bytes.slice();
+      try { policy.audit(bytes); } catch {}
+      return { boundary: policy.boundary, reason: policy.auxiliaryReason, scheme: policy.utcScheme,
+        unchanged: bytes.every((value, index) => value === before[index]) };
+    };
+    const valid = ['2024-02-29T00:00:00Z', '2000-02-29T23:59:59.123+14:00', '0001-01-01T00:00:00-14:00',
+      '9999-12-31T23:59:59.1Z', '2026-10-27T12:30:45.12-05:30'];
+    const invalid = ['', 'PRIVATE_INVALID_DIRECT', '2024-02-30T00:00:00Z', '2023-02-29T00:00:00Z', '1900-02-29T00:00:00Z',
+      '0000-01-01T00:00:00Z', '2024-00-01T00:00:00Z', '2024-13-01T00:00:00Z', '2024-01-00T00:00:00Z', '2024-04-31T00:00:00Z',
+      '2024-01-01T24:00:00Z', '2024-01-01T00:60:00Z', '2024-01-01T00:00:60Z', '2024-01-01T00:00:00',
+      '2024-01-01', '2024-01-01T00:00:00+15:00', '2024-01-01T00:00:00+14:01', '2024-01-01T00:00:00-01:60',
+      '2024-01-01T00:00:00.1234Z', '2024-01-01T00:00:00Z ', '2024-01-01T00:00:00Z&#10;',
+      '2024-01-01t00:00:00z', '2024-01-01T00:00:00+0000', '2024-01-01T00:00:00.1234+01:00'];
+    const good = timing(valid[0]), http = timing('PRIVATE_TIMING_URL', '', 'http-head:2014');
+    return { valid: valid.flatMap(value => ['direct:2014', 'direct:2012'].map(scheme => audit(timing(value, '', scheme)))),
+      invalid: [...invalid.map(value => audit(timing(value))), audit('<UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014"/>')],
+      guards: [audit(timing(valid[0], 'xmlns:x="http://www.w3.org/1999/xlink" x:href="PRIVATE_XLINK"')),
+        audit(timing(valid[0], 'xmlns:c="urn:mpeg:cenc:2013" c:default_KID="PRIVATE_PROTECTION"')),
+        audit(good + http), audit(http + good), audit(good + '<SegmentBase/>'), audit('<SegmentBase/>' + good),
+        audit(good.replace('/>', '><ContentProtection/></UTCTiming>'))],
+      misplaced: [audit('<Period>' + good + '</Period>'), audit(good.replace('<UTCTiming ', '<UTCTiming xmlns="urn:foreign" ')),
+        audit(good.replace('<UTCTiming ', '<utctiming '))] };
+  });
+  for (const item of results.valid) expect(item).toEqual({ boundary: 'NONE', reason: undefined, scheme: undefined, unchanged: true });
+  for (const item of [...results.invalid, ...results.misplaced])
+    expect(item).toEqual({ boundary: 'AUXILIARY', reason: 'UTC_TIMING', scheme: 'DIRECT', unchanged: true });
+  expect(results.guards.map(item => [item.boundary, item.reason])).toEqual([
+    ['AUXILIARY', 'XLINK'], ['PROTECTION', undefined], ['AUXILIARY', 'UTC_TIMING'], ['AUXILIARY', 'UTC_TIMING'],
+    ['AUXILIARY', 'SEGMENT_BASE'], ['AUXILIARY', 'SEGMENT_BASE'], ['PROTECTION', undefined]]);
+  expect(JSON.stringify(results)).not.toContain('PRIVATE_');
+});
+
+test('pinned SDK uses direct clock offset without timing requests and invalid refresh never publishes', async ({ page }) => {
+  await page.goto('./');
+  const result = await page.evaluate(async () => {
+    const { AbemaDashPolicy, guardedDashFactory } = await import('/harness/src/abema-dash-policy.ts');
+    const shaka = (await import('/harness/tests/abema-sdk.ts')).default;
+    const source = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=synthetic';
+    const policy = new AbemaDashPolicy(source, 'a'.repeat(32), 10000);
+    const parser = guardedDashFactory(policy)();
+    const configuration = shaka.util.PlayerConfiguration.createDefault().manifest;
+    configuration.dash.clockSyncUri = ''; parser.configure(configuration, () => false);
+    const now = Date.now, clock = Date.parse('2024-01-01T00:00:00Z');
+    let invalid = false, manifests = 0, timing = 0, filters = 0, errors = 0, unchanged = true;
+    const host = { networkingEngine: { request: (type: number) => {
+      if (type !== shaka.net.NetworkingEngine.RequestType.MANIFEST) {
+        timing++; return shaka.util.AbortableOperation.failed(new Error('Unexpected controlled request'));
+      }
+      manifests++;
+      const xml = '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" availabilityStartTime="2023-12-31T23:59:40Z" minimumUpdatePeriod="PT60S" timeShiftBufferDepth="PT30S" minBufferTime="PT1S">' +
+        '<UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="' + (invalid ? 'PRIVATE_INVALID_REFRESH' : '2024-01-01T00:00:05Z') + '"/>' +
+        '<BaseURL>https://linear-abematv.akamaized.net/exact/</BaseURL><Period start="PT0S"><AdaptationSet mimeType="video/mp4" codecs="avc1.42c01e"><SegmentTemplate timescale="1" duration="2" startNumber="1" initialization="init-$RepresentationID$.mp4" media="segment-$Number$.m4s"/><Representation id="v" bandwidth="100000" width="640" height="360"/></AdaptationSet></Period></MPD>';
+      const data = new TextEncoder().encode(xml);
+      try { policy.audit(data); } catch { return shaka.util.AbortableOperation.failed(new Error('Controlled audit refusal')); }
+      unchanged &&= new TextDecoder().decode(data) === xml;
+      return shaka.util.AbortableOperation.completed({ uri: source, originalUri: source, data, headers: { 'content-type': 'application/dash+xml' } });
+    } }, filter: async () => { filters++; }, makeTextStreamsForClosedCaptions: () => {}, onTimelineRegionAdded: () => {}, onEvent: () => {},
+      onError: () => { errors++; }, isLowLatencyMode: () => false, isAutoLowLatencyMode: () => false, enableLowLatencyMode: () => {},
+      updateDuration: () => {}, newDrmInfo: () => {}, onManifestUpdated: () => {}, getBandwidthEstimate: () => 1000000,
+      onMetadata: () => {}, onInitialVariantChosen: () => {}, getStreamingRetryParameters: () => shaka.util.PlayerConfiguration.createDefault().streaming.retryParameters };
+    try {
+      Date.now = () => clock;
+      const model = await parser.start(source, host as any), snapshot = (policy as any).current;
+      const offset = (model.presentationTimeline as any).clockOffset_;
+      invalid = true; try { await parser.update(); } catch {}
+      return { offset, manifests, timing, filters, unchanged, errors, boundary: policy.boundary, reason: policy.auxiliaryReason,
+        scheme: policy.utcScheme, ended: policy.lifetime.signal.aborted, sameSnapshot: snapshot === (policy as any).current };
+    } finally { await parser.stop(); Date.now = now; }
+  });
+  expect(result).toEqual({ offset: 5000, manifests: 2, timing: 0, filters: 1, unchanged: true, errors: 1,
+    boundary: 'AUXILIARY', reason: 'UTC_TIMING', scheme: 'DIRECT', ended: true, sameSnapshot: true });
+});
+
+test('pinned direct parsing never falls back to HTTP; a configured missing-clock HEAD still hits policy denial', async ({ page }) => {
+  await page.goto('./');
+  const result = await page.evaluate(async () => {
+    const { AbemaDashPolicy } = await import('/harness/src/abema-dash-policy.ts');
+    const shaka = (await import('/harness/tests/abema-sdk.ts')).default;
+    const uri = 'https://linear-abematv.akamaized.net/channel/abema-news/manifest.mpd?t=synthetic';
+    const policy = new AbemaDashPolicy(uri, 'a'.repeat(32), 10000), parser = new shaka.dash.DashParser() as any;
+    const configuration = shaka.util.PlayerConfiguration.createDefault().manifest;
+    configuration.dash.clockSyncUri = ''; parser.configure(configuration, () => false);
+    const requested: { type: number; method: string }[] = [];
+    parser.playerInterface_ = { networkingEngine: { request: (type: number, request: any) => {
+      requested.push({ type, method: request.method });
+      return new shaka.util.AbortableOperation(policy.admit(type, request), async () => {});
+    } } };
+    const now = Date.now;
+    try {
+      Date.now = () => Date.parse('2024-01-01T00:00:00Z');
+      const elements = (scheme: string, value?: string) => [{ attributes: { schemeIdUri: 'urn:mpeg:dash:utc:' + scheme, value } }];
+      const offsets = [];
+      for (const scheme of ['direct:2014', 'direct:2012'])
+        offsets.push(await parser.parseUtcTiming_(() => [uri], elements(scheme, '2024-01-01T01:00:05+01:00')));
+      const malformed = await parser.parseUtcTiming_(() => [uri], [...elements('direct:2014'), ...elements('http-head:2014', uri)]);
+      const missing = await parser.parseUtcTiming_(() => [uri], []), beforeFallback = requested.length;
+      configuration.dash.clockSyncUri = uri;
+      const fallback = await parser.parseUtcTiming_(() => [uri], []);
+      return { offsets, malformed, missing, beforeFallback, fallback, requested, boundary: policy.boundary, reason: policy.auxiliaryReason };
+    } finally { await parser.stop(); Date.now = now; }
+  });
+  expect(result).toEqual({ offsets: [5000, 5000], malformed: 0, missing: 0, beforeFallback: 0, fallback: 0,
+    requested: [{ type: 4, method: 'HEAD' }], boundary: 'AUXILIARY', reason: 'REQUEST_TYPE' });
+});
+
+test('actual owned fixture with inline direct UTC decodes without auxiliary requests and retires normally', async ({ page }) => {
+  let manifests = 0, media = 0, denied = 0;
+  const server = createServer(async (request, response) => {
+    try {
+      const name = (request.url ?? '').slice(1);
+      if (!/^(manifest\.mpd|init-stream[01]\.m4s|chunk-stream[01]-[0-9]{5}\.m4s)$/.test(name)) { denied++; throw new Error(); }
+      let bytes = await readFile(new URL('../build/public/media/a/' + name, import.meta.url));
+      if (name === 'manifest.mpd') {
+        manifests++;
+        if (!bytes.includes('<ProgramInformation>')) throw new Error('Controlled fixture insertion point missing');
+        bytes = Buffer.from(bytes.toString('utf8').replace('<ProgramInformation>',
+          '<UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2012" value="2024-02-29T12:30:45.123+01:00"/><ProgramInformation>'));
+      } else media++;
+      response.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': name.endsWith('.mpd') ? 'application/dash+xml' : 'video/mp4' });
+      response.end(bytes);
+    } catch { response.writeHead(404); response.end(); }
+  });
+  await new Promise<void>(yes => server.listen(0, '127.0.0.1', yes));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error();
+  const origin = 'http://127.0.0.1:' + address.port;
+  try {
+    await page.goto('./');
+    const ready = await page.evaluate(async origin => {
+      const { AbemaPlayback } = await import('/harness/src/abema-playback.ts');
+      const proof = (window as any).directUtcFixture = new AbemaPlayback(document.body, {
+        manifest: origin + '/manifest.mpd', media: uri => new URL(uri).origin === origin && !new URL(uri).search });
+      const button = document.createElement('button'); button.textContent = 'Direct UTC fixture'; button.onclick = () => { void proof.play(); }; document.body.append(button);
+      return proof.prepare(origin + '/manifest.mpd', 'a'.repeat(32), 20000);
+    }, origin);
+    expect(ready).toBe('ready'); await page.getByRole('button', { name: 'Direct UTC fixture' }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).directUtcFixture.evidence().advancedMs)).toBeGreaterThan(1000);
+    const result = await page.evaluate(async () => {
+      const proof = (window as any).directUtcFixture, evidence = proof.evidence();
+      return { evidence, cleanup: await Promise.all([proof.close(), proof.close()]) };
+    });
+    expect(result.evidence).toMatchObject({ boundary: 'NONE', width: 640, height: 360 });
+    expect(result.evidence.frames).toBeGreaterThan(2); expect(result.evidence.counts.initialization).toBeGreaterThan(0);
+    expect(result.evidence.counts.segment).toBeGreaterThan(0); expect(result.evidence.counts.deniedDrm).toBe(0);
+    expect(result.evidence.auxiliaryReason).toBeUndefined(); expect(result.evidence.utcScheme).toBeUndefined();
+    expect(result.cleanup).toEqual(['confirmed', 'confirmed']); expect(manifests).toBe(1); expect(media).toBeGreaterThan(0); expect(denied).toBe(0);
+  } finally { server.closeAllConnections(); await new Promise<void>(yes => server.close(() => yes())); }
 });
 
 test('non-XML auxiliary admission and dispatch mismatch are distinguished before Fetch', async ({ page }) => {

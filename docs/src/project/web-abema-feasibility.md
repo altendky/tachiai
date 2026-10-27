@@ -446,6 +446,105 @@ invoke the source selector. It emits only closed refusal categories
 or acceptance, plus optional metadata-presence booleans. Transport refusals remain
 fixed outcomes. This mode also requires explicit opt-in and stays outside CI.
 
+## Exact-episode SOURCE/CONFIG diagnostic
+
+The separate episode diagnostic stops before requesting a manifest, media,
+certificate or license and creates no MediaKeySession. Its fixed source is the
+code-defined legacy catalogue seed `394-72_s10_p8529`; that identity is neither
+a saved user selection nor evidence of current availability or eligibility.
+It does not inherit the anonymous GLOBAL News context as replay entitlement.
+The following command performs fresh provider operations and requires explicit
+opt-in; it is excluded from routine checks:
+
+```sh
+mise exec -- uv run apps/web/scripts/abema-backend-episode-source.py --run-episode-source
+```
+
+Every other argument combination is inert. The command accepts no episode,
+URL, token, existing account/profile or browser-storage input. It uses the
+existing owned fresh headed Chrome/Linux navigator snapshot and fresh guest,
+profile and media token. The device identifier is bound to the original guest
+request, independently of the returned user identifier. The old bootstrap,
+source and manifest commands retain their token-only completion path; only this
+new private completion hook receives the short-lived guest context.
+
+The parent makes one authenticated GET for that exact program. Before any
+gateway operation, it requires exact identity, an explicit free label, a future
+free window and nonempty unexpired advertising terms. It conservatively refuses
+rental, precedence, device, trial and partner/authority restrictions. A true DRM
+metadata flag is retained as protected-content metadata, not interpreted as clear
+playback. A separate unchanged pinned DTO pass must preserve the program and
+ARIN identities. Only then can the parent make one GET of that fresh ARIN's
+fixed playback-resource gateway. Eligibility expiry and the original attempt
+deadline apply before and after these operations and both helper passes. The
+window is also anchored to the metadata request-start wall/monotonic clocks;
+its immutable minimum with the attempt deadline prevents clock rollback or a
+delayed response from extending eligibility.
+
+Both private helper phases run the same four hash-verified public bundles in
+the existing network-disabled, read-only, unprivileged owned container. Private
+inputs and results use bounded pipes, with core dumps and container logging
+disabled; only public runtime files are mounted. The metadata phase has no
+gateway consumption. The selection phase supplies the fresh gateway JSON to
+the unchanged gateway factory through one immutable, exact-URI frozen GET.
+Repeated/foreign requests, retries, feature evaluation and response, guest,
+device or player helper factories refuse in both phases. VM globals are an
+additional guard; the container's disabled network is the isolation boundary.
+
+The unchanged Chrome browser filter/comparator selects its first stream and
+first manifest. Widevine remains preferred when the provider comparator chooses
+it; custom protection is not substituted as a fallback. The original URL and
+configuration factories build the candidate, with Widevine mapped to `wv` and
+custom mapped to `clear` as in the pinned caller. This mapping alone establishes
+no unencrypted-playback claim. Session/ad modes outside the supported direct
+NONE/CSAI/ABEMA_DEFAULT modes and any unexpected manifest-query additions refuse.
+The parent independently binds the returned nonce, exact program, fresh ARIN,
+selected raw stream/manifest, protection, fresh media token and configuration.
+All fresh advertised query pairs must survive unchanged in decoded meaning;
+duplicates, encoded/reserved names, malformed escapes and reserved collisions
+refuse. The license URL is validated as configuration only and is never fetched.
+The supported configuration template is intentionally narrow: the existing
+known ABEMA license host, a bounded canonical path exactly preserved from the
+fresh selected template, exact token/program/content placeholders and unchanged
+bounded optional fields. It does not assume a native custom-protection path for
+Widevine. A different fresh contract refuses rather than expanding origins or
+adding helper calls. `configurationMatched` covers the key-system/license-URL
+subset only; certificates, license response handling and adapter compatibility
+remain unverified.
+
+Output contains fixed phases/refusal reasons, bounded HTTP status and boolean
+binding/cleanup evidence, plus closed protection/ad-mode enums. It excludes
+guest/account/device identifiers, ARINs, tokens, URLs, metadata and configuration
+payloads. Even SOURCE/CONFIG acceptance establishes no device flow, account
+entitlement, provider playback, browser key-system support, license adapter,
+renewal or product UX approval. Owned container cleanup must settle before its
+result is adopted; uncertainty refuses and retains only the public runtime for
+ownership review.
+
+Browser-free synthetic regressions run in repository hooks:
+
+```sh
+mise exec -- uv run scripts/tests/web-abema-backend-episode-source.test.py
+mise exec -- node --test scripts/tests/web-abema-episode-source.test.cjs
+```
+
+An additional opt-in local gate uses already available, hash-verified public
+assets, owned blank headed Chrome and network-disabled Docker. It never
+downloads assets or calls providers:
+
+```sh
+TACHIAI_ABEMA_PINNED_TEST=1 TACHIAI_ABEMA_PINNED_ASSETS=/path/to/verified-public-assets \
+  mise exec -- uv run scripts/tests/web-abema-episode-source-pinned.test.py
+```
+
+This gate executed the new repository helper and immutable frozen-GET plumbing
+in both phases. With synthetic gateway inputs, the actual pinned comparator
+selected Widevine with either input order and retained custom for a custom-only
+input; the independent parent accepted all three bindings. These are agent-run
+software fixture observations, not provider eligibility or physical-device
+measurements. No fresh exact-episode provider trial has been performed for this
+diagnostic.
+
 ## Next decision
 
 Before another MPD or CDM attempt, compare the current provider/native source

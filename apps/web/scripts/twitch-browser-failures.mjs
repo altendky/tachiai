@@ -26,6 +26,8 @@ const network = new Map([['net::ERR_FAILED', 'failed'], ['net::ERR_ABORTED', 'ab
   ['net::ERR_SSL_PROTOCOL_ERROR', 'ssl-protocol-error']]);
 const resource = new Set(['Fetch', 'XHR', 'Preflight']);
 const networkValues = new Set(network.values());
+const preparationWindow = 'selected-preparation';
+const deliveryWindow = 'selected-preparation-plus-up-to-250ms-delivery';
 const enumValue = (value, values) => value === undefined ? 'absent' : values.has(value) ? value : 'other';
 const bounded = (promise, late = () => {}) => {
   let timer, expired = false;
@@ -49,14 +51,17 @@ export function projectBrowserFailure(event) {
 // Independent output boundary; no application or protocol object is spread.
 export function browserFailureOutput(value) {
   try {
+    const window = value?.window ?? preparationWindow;
     if (!['ready', 'unavailable'].includes(value?.setup) ||
+        ![preparationWindow, deliveryWindow].includes(window) ||
+        (window === deliveryWindow && value.setup !== 'ready') ||
         !['confirmed', 'unconfirmed'].includes(value?.teardown) ||
         !['none', 'one', 'multiple', 'overflow'].includes(value?.observed) ||
         (value.observed === 'none' ? value.first !== undefined :
           value.setup !== 'ready' || !value.first || typeof value.first !== 'object' || Array.isArray(value.first))) {
       throw new Error();
     }
-    const result = { window: 'selected-preparation', association: 'unattributed',
+    const result = { window, association: 'unattributed',
       setup: value.setup, teardown: value.teardown, observed: value.observed };
     if (value.first) {
       const first = value.first;
@@ -73,14 +78,40 @@ export function browserFailureOutput(value) {
 
 export async function openBrowserFailures(page) {
   let session, active = false, armed = false, count = 0, first, closing;
+  let window = preparationWindow, draining, finishDrain, deliveryDeadline;
   let setup = 'unavailable', teardown = 'unconfirmed';
   const onFailure = event => {
     if (!active) return;
+    if (deliveryDeadline !== undefined && performance.now() >= deliveryDeadline) { disarm(); return; }
     // Saturate after 16 observations; retain only the first closed projection.
     if (count < 17) count++;
     if (!first) first = projectBrowserFailure(event);
   };
-  const disarm = () => { active = false; };
+  const disarm = () => { active = false; finishDrain?.(); };
+  const drain = signal => {
+    // One delivery window per collector; unavailable, unarmed, cancelled and
+    // retired collectors never wait or open a later generation.
+    if (draining) return draining;
+    if (!active || closing || setup !== 'ready' || signal.aborted) {
+      if (signal.aborted) disarm();
+      return draining = Promise.resolve();
+    }
+    window = deliveryWindow;
+    deliveryDeadline = performance.now() + 250;
+    return draining = new Promise(resolve => {
+      let timer;
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', disarm);
+        finishDrain = undefined;
+        active = false;
+        resolve();
+      };
+      finishDrain = finish;
+      signal.addEventListener('abort', disarm, { once: true });
+      timer = setTimeout(finish, 250);
+    });
+  };
   const close = () => {
     disarm();
     return closing ??= (async () => {
@@ -100,8 +131,8 @@ export async function openBrowserFailures(page) {
     await bounded(session.send('Network.enable', { maxPostDataSize: 0 }));
     setup = 'ready';
   } catch { await close(); }
-  return { disarm, close,
+  return { disarm, drain, close,
     arm: () => { if (!armed && !closing && setup === 'ready') { armed = true; active = true; } },
-    summary: () => browserFailureOutput({ setup, teardown, first,
+    summary: () => browserFailureOutput({ window, setup, teardown, first,
       observed: count === 0 ? 'none' : count === 1 ? 'one' : count <= 16 ? 'multiple' : 'overflow' }) };
 }

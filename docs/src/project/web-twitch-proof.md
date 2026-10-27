@@ -34,8 +34,9 @@ The activation event reports the selected launch mode. A headed automated
 browser remains different from an ordinary user-controlled browsing session.
 The flag alone does not authorize network access or select any playback case.
 
-The separate `--browser-failures` flag enables a passive Chrome diagnostic only
-during each selected preparation. The default runner creates no additional CDP
+The separate `--browser-failures` flag enables a passive Chrome diagnostic during
+each selected preparation, plus up to 250 ms of event delivery after an explicit
+`refused` result. The default runner creates no additional CDP
 session. This flag also requires `--network` and an exact selected case; it does
 not initiate authorization by itself. For example:
 
@@ -51,8 +52,10 @@ does not change Fetch, interception, caching or security behavior. However,
 traverse the automation client even without application listeners. This is a
 closed collector/output boundary, not a metadata-free automation transport.
 
-The separate `browserFailure` result always says `window=selected-preparation`
-and `association=unattributed`. It reports setup/teardown availability, a bounded
+The separate `browserFailure` result says `window=selected-preparation`, or
+`window=selected-preparation-plus-up-to-250ms-delivery` when the bounded refusal
+delivery wait starts. Both shapes always say `association=unattributed`.
+It reports setup/teardown availability, a bounded
 none/one/multiple/overflow observation category and only the first observed
 failure's allowlisted resource, cancellation, CORS, blocked and network-error
 categories. After sixteen observations the count saturates at overflow; no event
@@ -64,15 +67,25 @@ remain closed results and do not skip media/grant cleanup.
 
 This observation is not bound to the media manifest request. Source APIs,
 preflights, other requests and delayed events can overlap preparation. The
-listener disarms synchronously on runner cancellation or preparation settlement
-and before runner cleanup/replacement, then disables its Network domain and
-detaches. Preparation can internally retire a refused player before settling;
+listener disarms synchronously on runner cancellation and before runner
+cleanup/replacement, then disables its Network domain and detaches.
+Only an explicitly refused preparation with the opt-in collector armed can open
+one fixed delivery window. A monotonic deadline rejects callbacks after 250 ms
+even if the timer task itself is delayed. Cancellation, disarm or close interrupts
+the wait immediately; unavailable/unarmed/closed collectors do not wait. Success,
+an exception without an explicit refusal, and the default runner never drain.
+The existing trial deadline is unchanged and its cancellation interrupts this
+wait. Teardown and media/grant cleanup still run if the wait fails.
+Preparation can internally retire a refused player before settling;
 events from that retirement can appear in this unattributed window.
-Production does not wait for late failure events: a missing observation or an
-absent CORS field is unavailable evidence, never CORS success. Generic network
+A missing observation after either window or an absent CORS field is unavailable
+evidence, never CORS success. Generic network
 failure does not prove a redirect or HTTP status. The existing request-owned
-`media` diagnostic stays separate. This diagnostic has no provider observation
-yet.
+`media` diagnostic stays separate. No provider failure cause has been identified.
+A fresh provider attempt validated authorization, then refused the manifest
+Fetch while the immediate collector reported setup ready, teardown confirmed and
+no observation; media destruction and fresh-grant revocation were confirmed.
+The local delivery-gap reproduction below does not establish that attempt's cause.
 
 Only the two named existing catalogue samples are admitted. A refused selected
 case ends the playback sequence; it does not try a different channel/replay,
@@ -326,10 +339,18 @@ revocation or the cause of the earlier interruption.
 
 The passive failure suite uses real Chrome and dynamic loopback servers for
 missing-ACAO CORS, `redirect:error`, a refused TCP connection and successful Fetch.
-It verifies closed failure categories without intercepting requests or reading
-bodies; the redirect destination remains unrequested and credentials absent.
-Unlike production's immediate freeze, the fixture briefly waits for the expected
-CDP event to verify its schema; it does not establish provider event timing.
+It verifies closed failure categories without intercepting requests; only the
+owned success-control body is consumed and discarded to avoid manufacturing an
+abort failure by cancelling it. No provider body is read. The redirect
+destination remains unrequested and credentials absent.
+The original direct-collector fixture separately waits for an expected CDP event
+to verify its schema. New regressions execute the actual runner source with a
+synthetic proof page and normal Fetch for those four cases, without awaiting a
+host callback or failure event between Fetch settlement and the preparation
+return. Refused attempts exercise the production delivery window; success returns
+ready and never drains. Default-runner, cancelled-drain and rejected-drain controls
+verify independent protocol teardown and synthetic media/grant cleanup. No
+request is intercepted, no real grant exists and no provider cause is inferred.
 Synthetic tests cover private-property sentinels, unknown enums, first-observed
 latching, overflow, malformed output associations, stale generations and bounded
 protocol failure, including never-settling disable/detach operations and their
@@ -338,6 +359,17 @@ also verifies that the opt-in session
 detaches before the delayed synthetic cleanup receipt and that a CDP teardown
 refusal or timeout does not prevent that receipt. Its default case creates no
 CDP session.
+
+A separate bounded Linux/headed Chrome 156.0.8078.47 reproduction on the prior
+runner compared immediate freeze with a 250 ms delivery wait, three times each
+for missing-ACAO CORS, redirect refusal, TCP refusal and success. Every failure
+was absent at immediate freeze and observed once with the wait; all nine of
+those observations arrived after preparation settlement. Success reported none
+in both modes. All 27 natural/synthetic control attempts completed their owned
+cleanup receipts, with no redirect destination requested, credentials observed
+or unexpected requests. This establishes a local diagnostic event-delivery gap.
+It does not identify the cause of the actual provider manifest Fetch refusal
+or turn an unattributed browser failure into source-request association.
 
 ```sh
 mise exec -- npm run build --prefix apps/web

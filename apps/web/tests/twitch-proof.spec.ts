@@ -332,6 +332,50 @@ function setup(replies: (Response | (() => Promise<Response>))[]) {
   return { session, calls, advance: (value: number) => { now += value; } };
 }
 
+test('manifest endpoint is pinned before challenge and changes only the exact live path', async () => {
+  const observed: { uri: URL; requests: object[] }[] = [];
+  for (const endpoint of [undefined, 'v2', 'unversioned-live'] as const) {
+    const flow = setup([challenge(), grant(), validation(), validation(), response({ data: {
+      streamPlaybackAccessToken: { signature: 'synthetic-signature', value: '{"opaque":"synthetic+&=?/"}',
+        authorization: { isForbidden: false, forbiddenReasonCode: 'NONE' } },
+    } }), new Response(null)]);
+    await flow.session.begin(endpoint);
+    const opposite = endpoint === 'unversioned-live' ? 'v2' : 'unversioned-live';
+    await expect(flow.session.begin(opposite)).rejects.toThrow();
+    expect(flow.calls).toHaveLength(1);
+    flow.advance(5000); await flow.session.poll();
+    await expect(flow.session.begin(opposite)).rejects.toThrow();
+    if (endpoint === 'unversioned-live') {
+      await expect(flow.session.source('replay:2080217716')).rejects.toThrow();
+      expect(flow.calls).toHaveLength(3); // No replay revalidation/access/media fallback.
+    }
+    const uri = new URL(await flow.session.source('live:virtualjapan'));
+    expect(uri.pathname).toBe(endpoint === 'unversioned-live' ? '/api/channel/hls/virtualjapan.m3u8' :
+      '/api/v2/channel/hls/virtualjapan.m3u8');
+    expect(uri.origin).toBe('https://usher.ttvnw.net');
+    expect(uri.searchParams.get('token')).toBe('{"opaque":"synthetic+&=?/"}');
+    expect(await flow.session.close()).toBe('revoked');
+    observed.push({ uri, requests: flow.calls.map(({ url, options }) => {
+      const { signal: _signal, ...request } = options;
+      return { url, options: request };
+    }) });
+  }
+  for (const result of observed.slice(1)) {
+    expect(result.requests).toEqual(observed[0].requests);
+    expect(result.uri.search).toBe(observed[0].uri.search);
+  }
+});
+
+test('invalid manifest endpoints refuse before the first provider request', async () => {
+  for (const endpoint of [null, false, 0, {}, [], '', 'v1', 'unversioned',
+    'https://usher.ttvnw.net/api/channel/hls/virtualjapan.m3u8']) {
+    const flow = setup([]);
+    await expect(flow.session.begin(endpoint as any)).rejects.toThrow('Twitch diagnostic refused');
+    expect(await flow.session.close()).toBe('no-grant-held');
+    expect(flow.calls).toEqual([]);
+  }
+});
+
 test('explicit case set and provider media origins reject lookalikes and arbitrary CloudFront', () => {
   expect(isTwitchCase('live:virtualjapan')).toBe(true);
   for (const value of ['__proto__', 'live:other', 'replay:2080217716/other']) expect(isTwitchCase(value)).toBe(false);

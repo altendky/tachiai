@@ -191,11 +191,13 @@ treated as independently verified source/entitlement evidence.
 ### Verified browser backend and live permission
 
 Both live and replay source queries now declare `playerBackend: "mediaplayer"`.
-The selected manifest keeps its existing v2 path and five query fields, adding
-only `player_backend=mediaplayer`. The probe does not change OAuth client/scope,
+The default manifest keeps its existing v2 path and five query fields, adding
+only `player_backend=mediaplayer`. The default probe does not change OAuth client/scope,
 the empty GraphQL Client-ID comparison, browser Origin, cookies, integrity,
 redirect/TLS/CORS policy or media admission. It does not import other browser
-metadata, select an unversioned alternative or retry another profile.
+metadata or retry another profile. The separate
+[explicit live comparison](#explicit-unversioned-live-comparison) can pin an
+unversioned path before authorization.
 
 Only the live query also requests
 `authorization { isForbidden forbiddenReasonCode }`. Before publishing a live
@@ -241,10 +243,55 @@ runtime was inspected. The relevant current official assets are:
 These are independently expressed protocol declarations, not copied provider
 helper algorithms. Static contract differences do not establish the cause of
 the observed manifest Fetch refusal or imply that a valid media response lacks
-CORS support. Provider permission values for this diagnostic remain unobserved
-until a fresh reviewed trial. Offline synthetic and owned-media tests verify
+CORS support. Offline synthetic and owned-media tests verify
 the strict guard, closed diagnostics, refusal before media creation, permitted
 continuation, source replacement and cleanup; they are not provider acceptance.
+
+### Explicit unversioned live comparison
+
+The fresh PR #398 trial on reviewed commit
+`5bba925f6d062c26baafd63c8224e953ea244487` validated authorization and returned
+live permission `not-forbidden` with reason `NONE`, then refused Virtual Japan
+at player-load: manifest GET, checkpoint `fetch`, refusal `fetch-rejected`, SDK
+category 1/code 1002. Its bounded passive window captured one uncanceled Fetch
+failure with `MissingAllowOriginHeader` and extra-info HTTP 200. This event
+remains explicitly unattributed to the selected manifest; HTTP 200 does not
+establish a readable or valid media response. Media destruction and fresh-grant
+revocation were confirmed. See the [recorded result](https://github.com/altendky/tachiai/issues/365#issuecomment-6457327325).
+
+An explicit diagnostic-only comparison can select the other live path declared
+by the same official public endpoint builder:
+
+```sh
+mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --browser-failures --manifest-endpoint=unversioned-live --case=live:virtualjapan
+```
+
+The default remains `v2`; `--manifest-endpoint=v2` selects it explicitly.
+The unversioned comparison requires exactly the single existing live case. Replay,
+unknown values, duplicate/conflicting flags and arbitrary paths are refused at
+CLI validation before a browser or provider operation starts. The page also
+validates the exact endpoint choice before its first challenge request and pins
+it for that session; another begin call cannot replace it. Its source guard
+refuses replay before revalidation or access calls.
+
+Only `/api/v2/channel/hls/virtualjapan.m3u8` changes to
+`/api/channel/hls/virtualjapan.m3u8`. The selected OAuth identity, scope, fresh
+grant policy, exact source query and permission guard, opaque signature/value, manifest
+query parameters, headers and media admission remain the same. Normal Fetch,
+CORS/TLS, cookie omission, redirect refusal, response handling, single-attempt
+behavior and media/grant cleanup also remain in place. Activation and preparation
+output include only the closed `manifestEndpoint` label for reproducibility.
+Each activated run obtains its own fresh grant and source response; no grant or
+signed response is reused across runs.
+
+This is a one-variable counterfactual, not a corrected/default endpoint or an
+automatic retry/fallback. Both paths exist in the observed official static code;
+the current browser cohort and cause of the previous refusal remain unknown.
+An owned-media outcome can establish progress even without attributing a passive
+browser event. A second refusal would bound these two tested profiles, not prove
+that all ordinary website-owned playback needs an extension or companion. No
+actual provider result for the unversioned comparison is established by its
+synthetic/owned tests.
 
 All grant-bearing requests stay in the owned browser page. A closed Fetch
 transport admits only exact OAuth/GraphQL endpoint/method pairs, forces normal

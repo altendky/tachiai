@@ -54,6 +54,15 @@ are cleared on freeze and never output. This remains explicitly unattributed to
 the selected source/manifest, does not change Fetch/security policy and adds no
 product UX behavior.
 
+The Twitch diagnostic can also pin an explicit unversioned live-manifest
+comparison before authorization; its default remains the native comparison's v2
+path. The alternative is limited to the one named live diagnostic case, changes
+only that path and retains source/account binding, request/security policy and
+cleanup. This is an explicit counterfactual with closed endpoint labels, not a
+product endpoint selection, fallback or UX exception. Its
+[scope and evidence](web-twitch-proof.md#explicit-unversioned-live-comparison)
+remain separate from provider playback acceptance.
+
 The separate [ABEMA decoder diagnostic](web-abema-playback.md) now implements a
 bounded fresh GLOBAL metadata/bootstrap entry and an owned Shaka DASH transport
 whose exact SDK references admit init/media bytes. Its page disables encrypted

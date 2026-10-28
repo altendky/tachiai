@@ -63,11 +63,13 @@ for (const lifetime of ['finite', 'bounded-unknown'] as const) test(`owned provi
 });
 
 for (const fixture of [
+  { authorization: { isForbidden: false, forbiddenReasonCode: 'NONE' }, status: 'not-forbidden', reason: 'NONE', manifestEndpoint: 'unversioned-live' },
   { authorization: { isForbidden: false, forbiddenReasonCode: 'NONE' }, status: 'not-forbidden', reason: 'NONE' },
   { authorization: { isForbidden: true, forbiddenReasonCode: 'GEOBLOCKED' }, status: 'forbidden', reason: 'GEOBLOCKED' },
   { authorization: { isForbidden: false, forbiddenReasonCode: 'UNAUTHORIZED' }, status: 'unavailable', reason: 'UNAUTHORIZED' },
   { authorization: undefined, status: 'unavailable', reason: 'absent' },
-] as const) test(`live source permission gates owned player creation and retains bounded diagnostics: ${fixture.status}/${fixture.reason}`, async ({ page, baseURL }) => {
+] as const) test(`live source permission gates owned player creation and retains bounded diagnostics: ${fixture.status}/${fixture.reason}/${'manifestEndpoint' in fixture ? fixture.manifestEndpoint : 'v2'}`, async ({ page, baseURL }) => {
+  const manifestEndpoint = 'manifestEndpoint' in fixture ? fixture.manifestEndpoint : 'v2';
   let revoked = 0, mediaRequests = 0, unexpected = 0, backendMatched = false;
   await page.route('**/*', async route => {
     const uri = new URL(route.request().url());
@@ -87,7 +89,8 @@ for (const fixture of [
         ...(fixture.authorization ? { authorization: fixture.authorization } : {}) } } });
     } else if (uri.origin === 'https://usher.ttvnw.net') {
       mediaRequests++;
-      const first = uri.pathname === '/api/v2/channel/hls/virtualjapan.m3u8';
+      const first = uri.pathname === (manifestEndpoint === 'unversioned-live' ?
+        '/api/channel/hls/virtualjapan.m3u8' : '/api/v2/channel/hls/virtualjapan.m3u8');
       if (first) backendMatched = uri.searchParams.get('player_backend') === 'mediaplayer';
       const file = first ? 'master.m3u8' : uri.pathname.split('/').at(-1)!;
       if (!/^(master|media_[01])\.m3u8$|^init-stream[01]\.m4s$|^chunk-stream[01]-[0-9]{5}\.m4s$/.test(file)) {
@@ -98,7 +101,7 @@ for (const fixture of [
     } else { unexpected++; await route.abort(); }
   });
   await page.goto('twitch-proof.html'); await page.waitForFunction(() => Boolean((window as any).twitchProof));
-  await page.evaluate(() => (window as any).twitchProof.begin());
+  await page.evaluate(endpoint => (window as any).twitchProof.begin(endpoint), manifestEndpoint);
   await expect.poll(() => page.evaluate(() => (window as any).twitchProof.poll())).toBe('authorized');
   await page.evaluate(() => {
     const create = document.createElement.bind(document); (window as any).videoCreations = 0;

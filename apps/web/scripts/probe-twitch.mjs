@@ -13,11 +13,17 @@ const cases = arguments_.filter((value) => value.startsWith('--case=')).map((val
 const allowedCases = new Set(['live:virtualjapan', 'replay:2080217716']);
 const headed = arguments_.includes('--headed');
 const browserFailuresEnabled = arguments_.includes('--browser-failures');
+const endpointArguments = arguments_.filter(value => value.startsWith('--manifest-endpoint='));
+const manifestEndpoint = endpointArguments[0]?.slice('--manifest-endpoint='.length) ?? 'v2';
 if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !== cases.length ||
+    new Set(arguments_).size !== arguments_.length || endpointArguments.length > 1 ||
+    !['v2', 'unversioned-live'].includes(manifestEndpoint) ||
+    manifestEndpoint === 'unversioned-live' && (cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
     cases.some((value) => !allowedCases.has(value)) ||
-    arguments_.some((value) => value !== '--network' && value !== '--headed' && value !== '--browser-failures' && !value.startsWith('--case='))) {
+    arguments_.some((value) => value !== '--network' && value !== '--headed' && value !== '--browser-failures' &&
+      !value.startsWith('--case=') && !value.startsWith('--manifest-endpoint='))) {
   console.log(JSON.stringify({ event: 'trial', outcome: 'not-started',
-    usage: 'probe:twitch -- --network [--headed] [--browser-failures] --case=live:virtualjapan --case=replay:2080217716' }));
+    usage: 'probe:twitch -- --network [--headed] [--browser-failures] [--manifest-endpoint=v2|unversioned-live] --case=live:virtualjapan [--case=replay:2080217716]' }));
   process.exitCode = 2;
 } else {
   let server;
@@ -57,8 +63,8 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     page.setDefaultTimeout(10_000);
     await page.goto('http://127.0.0.1:4173/harness/twitch-proof.html');
     await page.waitForFunction(() => Boolean(window.twitchProof));
-    const challenge = await page.evaluate(() => window.twitchProof.begin());
-    output({ event: 'activation', browser: browser.version(), mode: headed ? 'headed' : 'headless', userCode: challenge.userCode,
+    const challenge = await page.evaluate(value => window.twitchProof.begin(value), manifestEndpoint);
+    output({ event: 'activation', browser: browser.version(), mode: headed ? 'headed' : 'headless', manifestEndpoint, userCode: challenge.userCode,
       expiresIn: challenge.expiresIn, destination: 'Twitch Activate', account: 'fresh-browser-local-grant-required' });
     const challengeDeadline = Date.now() + Math.min(challenge.expiresIn * 1000, 15 * 60_000);
     let authorized = false;
@@ -88,7 +94,7 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
           browserFailures = undefined;
         }
       }
-      output({ event: 'preparation', selected, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
+      output({ event: 'preparation', selected, manifestEndpoint, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
         ...(browserFailureEvidence ? { browserFailure: browserFailureEvidence } : {}) });
       if (outcome !== 'ready') break; // No alternate case on refusal.
       await page.getByRole('button', { name: 'Play diagnostic', exact: true }).click();

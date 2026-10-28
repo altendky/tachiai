@@ -15,11 +15,13 @@ const fixtureMode = process.argv[2] === '--synthetic-signal-child';
 async function fixtureChild(legacySignalControl) {
   const { chromium } = createRequire(new URL('../../apps/web/package.json', import.meta.url))('@playwright/test');
   const { twitchDiagnosticOutput } = await import('../../apps/web/scripts/twitch-diagnostic-output.mjs');
+  const { twitchNativeDiagnosticOutput } = await import('../../apps/web/scripts/twitch-native-diagnostic-output.mjs');
   const { openBrowserFailures } = await import('../../apps/web/scripts/twitch-browser-failures.mjs');
   const browserFailuresEnabled = process.argv.includes('--browser-failures');
   const detachRefusal = process.argv.includes('--synthetic-detach-refusal');
   const detachPending = process.argv.includes('--synthetic-detach-pending');
   const unversioned = process.argv.includes('--synthetic-unversioned');
+  const native = process.argv.includes('--synthetic-native');
   let browser, page, server, origin, timedOut = false;
   const state = { synthetic: true, browserAliveForReceipt: false, pageCleanupCompleted: false,
     browserClosed: false, serverClosed: false, unexpectedPageRequests: false, runnerOwnsSignals: false,
@@ -89,7 +91,7 @@ async function fixtureChild(legacySignalControl) {
           });
           const goto = page.goto.bind(page);
           page.goto = (url, options) => {
-            assert.equal(url, 'http://127.0.0.1:4173/harness/twitch-proof.html');
+            assert.equal(url, 'http://127.0.0.1:4173/harness/' + (native ? 'twitch-native-proof.html' : 'twitch-proof.html'));
             // Only navigation to the test-owned page is substituted. No routes
             // or provider responses are intercepted, fulfilled or synthesized.
             return goto(origin + '/synthetic-proof', options);
@@ -118,7 +120,7 @@ async function fixtureChild(legacySignalControl) {
     }
     process.argv = [process.execPath, fileURLToPath(runnerUrl), '--network', '--case=live:virtualjapan',
       ...(browserFailuresEnabled ? ['--browser-failures'] : []),
-      ...(unversioned ? ['--manifest-endpoint=unversioned-live'] : [])];
+      ...(unversioned ? ['--manifest-endpoint=unversioned-live'] : []), ...(native ? ['--transport=native-hls'] : [])];
     const context = vm.createContext({ console, process, AbortController, setTimeout, clearTimeout });
     const module = new vm.SourceTextModule(source, { context, identifier: runnerUrl.href,
       initializeImportMeta: meta => { meta.url = runnerUrl.href; } });
@@ -127,6 +129,7 @@ async function fixtureChild(legacySignalControl) {
       'node:timers/promises': await import('node:timers/promises'),
       '@playwright/test': { chromium: ownedChromium }, vite: { preview },
       './twitch-diagnostic-output.mjs': { twitchDiagnosticOutput },
+      './twitch-native-diagnostic-output.mjs': { twitchNativeDiagnosticOutput },
       './twitch-browser-failures.mjs': { openBrowserFailures },
     };
     await module.link(async name => {
@@ -183,6 +186,12 @@ if (fixtureMode) {
       [...valid, '--browser-failures', '--browser-failures'], [...valid, '--case=live:virtualjapan'],
       ['--network', unversioned, '--case=replay:2080217716'],
       [...valid, unversioned, '--case=replay:2080217716'],
+      [...valid, '--transport='], [...valid, '--transport=other'], [...valid, '--transport'],
+      [...valid, '--transport=native-hls', '--transport=native-hls'],
+      [...valid, '--transport=native-hls', '--transport=mse'],
+      [...valid, '--transport=native-hls', unversioned],
+      ['--network', '--transport=native-hls', '--case=replay:2080217716'],
+      [...valid, '--transport=native-hls', '--case=replay:2080217716'],
     ]) {
       const events = [], fakeProcess = { argv: ['node', runnerUrl.pathname, ...args] };
       let starts = 0;
@@ -194,6 +203,7 @@ if (fixtureMode) {
         'node:path': await import('node:path'), 'node:url': await import('node:url'),
         'node:timers/promises': { setTimeout: start }, '@playwright/test': { chromium: { launch: start } },
         vite: { preview: start }, './twitch-diagnostic-output.mjs': { twitchDiagnosticOutput: start },
+        './twitch-native-diagnostic-output.mjs': { twitchNativeDiagnosticOutput: start },
         './twitch-browser-failures.mjs': { openBrowserFailures: start },
       };
       await module.link(async name => {
@@ -236,6 +246,15 @@ if (fixtureMode) {
     assert.equal(fixture.pageCleanupCompleted, true); assert.equal(fixture.unexpectedPageRequests, false);
     assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
   });
+  test('actual runner explicitly selects the native page before synthetic authorization and still cleans up', { timeout: 40000 }, async () => {
+    const result = await signalRun('SIGTERM', false, true, false, false, false, true);
+    assert.equal(result.code, 0); assert.equal(result.stderrBytes, 0);
+    assert.equal(result.events.find(value => value.event === 'activation').transport, 'native-hls');
+    assert.equal(result.events.find(value => value.event === 'preparation').transport, 'native-hls');
+    assert.equal(result.events.find(value => value.event === 'activation').manifestEndpoint, 'v2');
+    assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
+    assert.equal(result.events.find(value => value.event === 'synthetic-signal-fixture').unexpectedPageRequests, false);
+  });
   test('negative control: previous Playwright SIGINT ownership cannot complete the synthetic receipt', { timeout: 40000 }, async () => {
     const result = await signalRun('SIGINT', true);
     assert.equal(result.signalSent, true); assert.equal(result.code, 130); assert.equal(result.signal, null);
@@ -261,11 +280,11 @@ if (fixtureMode) {
   });
 }
 
-async function signalRun(signal, legacy = false, browserFailures = false, detachRefusal = false, detachPending = false, unversioned = false) {
+async function signalRun(signal, legacy = false, browserFailures = false, detachRefusal = false, detachPending = false, unversioned = false, native = false) {
   const child = spawn(process.execPath, ['--experimental-vm-modules', fileURLToPath(import.meta.url),
     '--synthetic-signal-child', ...(legacy ? ['--legacy-control'] : []), ...(browserFailures ? ['--browser-failures'] : []),
     ...(detachRefusal ? ['--synthetic-detach-refusal'] : []), ...(detachPending ? ['--synthetic-detach-pending'] : []),
-    ...(unversioned ? ['--synthetic-unversioned'] : [])], {
+    ...(unversioned ? ['--synthetic-unversioned'] : []), ...(native ? ['--synthetic-native'] : [])], {
     env: { ...process.env, NODE_NO_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const events = []; let pending = '', bytes = 0, stderrBytes = 0, signalSent = false;

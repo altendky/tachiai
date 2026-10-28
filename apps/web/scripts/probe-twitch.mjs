@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from '@playwright/test';
 import { preview } from 'vite';
 import { twitchDiagnosticOutput } from './twitch-diagnostic-output.mjs';
+import { twitchNativeDiagnosticOutput } from './twitch-native-diagnostic-output.mjs';
 import { openBrowserFailures } from './twitch-browser-failures.mjs';
 
 const arguments_ = process.argv.slice(2);
@@ -15,15 +16,19 @@ const headed = arguments_.includes('--headed');
 const browserFailuresEnabled = arguments_.includes('--browser-failures');
 const endpointArguments = arguments_.filter(value => value.startsWith('--manifest-endpoint='));
 const manifestEndpoint = endpointArguments[0]?.slice('--manifest-endpoint='.length) ?? 'v2';
+const transportArguments = arguments_.filter(value => value.startsWith('--transport='));
+const transport = transportArguments[0]?.slice('--transport='.length) ?? 'mse';
 if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !== cases.length ||
     new Set(arguments_).size !== arguments_.length || endpointArguments.length > 1 ||
     !['v2', 'unversioned-live'].includes(manifestEndpoint) ||
+    transportArguments.length > 1 || !['mse', 'native-hls'].includes(transport) ||
+    transport === 'native-hls' && (manifestEndpoint !== 'v2' || cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
     manifestEndpoint === 'unversioned-live' && (cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
     cases.some((value) => !allowedCases.has(value)) ||
     arguments_.some((value) => value !== '--network' && value !== '--headed' && value !== '--browser-failures' &&
-      !value.startsWith('--case=') && !value.startsWith('--manifest-endpoint='))) {
+      !value.startsWith('--case=') && !value.startsWith('--manifest-endpoint=') && !value.startsWith('--transport='))) {
   console.log(JSON.stringify({ event: 'trial', outcome: 'not-started',
-    usage: 'probe:twitch -- --network [--headed] [--browser-failures] [--manifest-endpoint=v2|unversioned-live] --case=live:virtualjapan [--case=replay:2080217716]' }));
+    usage: 'probe:twitch -- --network [--headed] [--browser-failures] [--transport=mse|native-hls] [--manifest-endpoint=v2|unversioned-live] --case=live:virtualjapan [--case=replay:2080217716]' }));
   process.exitCode = 2;
 } else {
   let server;
@@ -37,7 +42,7 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
   const diagnostic = async () => {
     try {
       const value = await page?.evaluate(() => window.twitchProof?.diagnostic());
-      return twitchDiagnosticOutput(value);
+      return transport === 'native-hls' ? twitchNativeDiagnosticOutput(value) : twitchDiagnosticOutput(value);
     } catch { return { stage: 'unavailable' }; }
   };
   const deadline = setTimeout(cancel, 15 * 60_000);
@@ -53,7 +58,8 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
       handleSIGINT: false, handleSIGTERM: false });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     // No interception: real Chromium CORS/preflight behavior remains observable.
-    // Owned API/media Fetch transports enforce admission, omit and redirect:error.
+    // API/MSE Fetch enforce omit/redirect:error. Explicit native media uses normal
+    // browser cookies/redirects and its separate CSP destination boundary.
     // Install before the application or Shaka loads. Never forward console,
     // pageerror, network, trace, screenshot, storage or HAR data to Node output.
     await context.addInitScript(() => {
@@ -61,10 +67,10 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     });
     page = await context.newPage();
     page.setDefaultTimeout(10_000);
-    await page.goto('http://127.0.0.1:4173/harness/twitch-proof.html');
+    await page.goto('http://127.0.0.1:4173/harness/' + (transport === 'native-hls' ? 'twitch-native-proof.html' : 'twitch-proof.html'));
     await page.waitForFunction(() => Boolean(window.twitchProof));
     const challenge = await page.evaluate(value => window.twitchProof.begin(value), manifestEndpoint);
-    output({ event: 'activation', browser: browser.version(), mode: headed ? 'headed' : 'headless', manifestEndpoint, userCode: challenge.userCode,
+    output({ event: 'activation', browser: browser.version(), mode: headed ? 'headed' : 'headless', transport, manifestEndpoint, userCode: challenge.userCode,
       expiresIn: challenge.expiresIn, destination: 'Twitch Activate', account: 'fresh-browser-local-grant-required' });
     const challengeDeadline = Date.now() + Math.min(challenge.expiresIn * 1000, 15 * 60_000);
     let authorized = false;
@@ -94,17 +100,17 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
           browserFailures = undefined;
         }
       }
-      output({ event: 'preparation', selected, manifestEndpoint, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
+      output({ event: 'preparation', selected, transport, manifestEndpoint, outcome: outcome === 'ready' ? 'ready' : 'refused', ...await diagnostic(),
         ...(browserFailureEvidence ? { browserFailure: browserFailureEvidence } : {}) });
       if (outcome !== 'ready') break; // No alternate case on refusal.
       await page.getByRole('button', { name: 'Play diagnostic', exact: true }).click();
       const first = await page.evaluate(() => window.twitchProof.sample());
       await delay(20_000, undefined, { signal: lifetime.signal });
       const last = await page.evaluate(() => window.twitchProof.sample());
-      output({ event: 'playback', selected,
+      output({ event: 'playback', selected, transport,
         decoded: last.state === 'owned' && last.width > 0 && last.height > 0 && last.frames > first.frames,
         advanced: last.state === 'owned' && last.seconds > first.seconds + 1,
-        paused: last.paused === true, live: last.live === true,
+        paused: last.paused === true, live: transport === 'native-hls' ? 'unknown' : last.live === true,
         width: Number.isSafeInteger(last.width) ? last.width : 0,
         height: Number.isSafeInteger(last.height) ? last.height : 0,
         acoustic: 'not-tested', ...await diagnostic() });

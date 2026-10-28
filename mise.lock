@@ -46,7 +46,7 @@ checksum = "sha256:1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe
 url = "https://dl.google.com/go/go1.27.2.windows-amd64.zip"
 
 [[tools.java]]
-version = "temurin-21.0.12+101.0.LTS"
+version = "temurin-21.0.13+9.0.LTS"
 backend = "core:java"
 specifiers = ["temurin-21"]
 

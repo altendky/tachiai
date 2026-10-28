@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { twitchDiagnosticOutput } from '../../../apps/web/scripts/twitch-diagnostic-output.mjs';
+import { twitchNativeDiagnosticOutput } from '../../../apps/web/scripts/twitch-native-diagnostic-output.mjs';
 import { openBrowserFailures } from '../../../apps/web/scripts/twitch-browser-failures.mjs';
 
 const runner = new URL('../../../apps/web/scripts/probe-twitch.mjs', import.meta.url);
@@ -133,7 +134,9 @@ try {
   const namespaces = { 'node:path': await import('node:path'), 'node:url': await import('node:url'),
     'node:timers/promises': { setTimeout: fastDelay }, '@playwright/test': { chromium: ownedChromium },
     vite: { preview: async () => ({ httpServer: pageServer }) },
-    './twitch-diagnostic-output.mjs': { twitchDiagnosticOutput }, './twitch-browser-failures.mjs': { openBrowserFailures: collector } };
+    './twitch-diagnostic-output.mjs': { twitchDiagnosticOutput },
+    './twitch-native-diagnostic-output.mjs': { twitchNativeDiagnosticOutput },
+    './twitch-browser-failures.mjs': { openBrowserFailures: collector } };
   const context = vm.createContext({ console: { log: value => events.push(JSON.parse(value)) }, process: fakeProcess, AbortController, setTimeout, clearTimeout });
   const module = new vm.SourceTextModule(await readFile(runner, 'utf8'), { context, identifier: runner.href, initializeImportMeta: meta => { meta.url = runner.href; } });
   await module.link(async name => {

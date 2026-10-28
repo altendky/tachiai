@@ -63,6 +63,16 @@ product endpoint selection, fallback or UX exception. Its
 [scope and evidence](web-twitch-proof.md#explicit-unversioned-live-comparison)
 remain separate from provider playback acceptance.
 
+An explicitly selected Twitch native HTML diagnostic uses an owned browser
+video element instead of Shaka/MSE. Its separate page pins the existing single
+live/v2 case before authorization, validates the same account/source/permission
+contract and bounds native descendants with CSP. Normal native cookie/redirect
+semantics differ from the default MSE Fetch omit/redirect-error boundary; no
+per-request Fetch enforcement or manual track-control parity is claimed.
+Native timeline classification remains unknown and provider seek unsupported.
+This is a bounded experiment, not an extension/companion choice or product UX
+exception. See its [scope and evidence](web-twitch-proof.md#explicit-native-html-video-diagnostic).
+
 The separate [ABEMA decoder diagnostic](web-abema-playback.md) now implements a
 bounded fresh GLOBAL metadata/bootstrap entry and an owned Shaka DASH transport
 whose exact SDK references admit init/media bytes. Its page disables encrypted

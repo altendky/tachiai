@@ -293,7 +293,69 @@ that all ordinary website-owned playback needs an extension or companion. No
 actual provider result for the unversioned comparison is established by its
 synthetic/owned tests.
 
-All grant-bearing requests stay in the owned browser page. A closed Fetch
+### Explicit native HTML video diagnostic
+
+An independent page can test ordinary browser-native HLS playback while keeping
+the same browser-local account/source preparation. This is HTML video inside
+the website, not an OS companion, extension, media relay or selected product
+architecture. Select it explicitly before authorization:
+
+```sh
+mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --transport=native-hls --case=live:virtualjapan
+```
+
+`--transport=mse` is the unchanged default. Native mode accepts only the single
+existing live case and v2 manifest endpoint; replay, another endpoint, unknown
+transport and duplicate/conflicting flags refuse before browser/provider startup.
+There is no automatic fallback. Activation, preparation and playback carry the
+closed selected `transport` label. Native playback reports `live: "unknown"`:
+selecting a live catalogue item does not establish its observed timeline.
+
+The separate page imports the account/source adapter and native lifecycle only,
+with no provider scripts. OAuth/GQL still use the exact existing client, scope,
+permission guard and closed Fetch transport. The signed source stays inside the
+page and passes the existing live-media admission check before assignment.
+Native media has its own HTTPS-only CSP for the existing live CDN families;
+the replay CloudFront exception is absent. The fresh browser context blocks
+service workers and imports no cookies or saved grants.
+
+An absent `crossorigin` attribute deliberately uses normal no-CORS HTML media
+loading. This can play opaque media without making its bytes readable to script;
+it does not disable browser security. It also uses normal browser cookie and
+redirect semantics: a fresh profile has no imported cookies, but may adopt and
+send new cookies during the trial. Native elements do not expose the MSE Fetch
+adapter's per-request omit, redirect-error, cache, admission, byte-limit or timeout
+controls. Initial admission and descendant CSP remain distinct boundaries. See
+[HTML media fetching](https://html.spec.whatwg.org/multipage/media.html#concept-media-load-resource)
+and [CORS settings](https://html.spec.whatwg.org/multipage/urls-and-fetching.html#create-a-potential-cors-request).
+
+Owned Chrome 156.0.8078.47/Linux observations established no-ACAO native decoding
+and CSP refusal before network access for disallowed child playlists, segments
+and child-302 destinations. Permitted master-A → playlist-B → media-B decoded.
+Permitted segments crossing away from their playlist origin failed even without
+a separate initialization resource or with conventional target ACAO; those are
+failed decoding controls, not playback acceptance. Chromium's
+[HLS origin checks](https://chromium.googlesource.com/chromium/src/+/HEAD/media/filters/hls_network_access_impl.cc)
+corroborate that tainted segment/header/key data must share the media playlist's
+origin unless the responses are untainted. Current source is not an exact build
+identification. Twitch's actual descendant topology remains unknown.
+
+The native media owner bounds loading at thirty seconds; the runner retains its
+fifteen-minute trial cap. Cancellation, replacement generations, stale events and retirement are
+guarded; cleanup pauses, removes the source, reloads and removes the element,
+and independently revokes the fresh account grant. Failures report only closed
+native phases/refusals and optional MediaError code 1–4, with an independent CLI
+projection; no error message, signed URL, media body or pixels enter output.
+
+The existing diagnostic Play button starts muted observation of frame/time
+advancement. Acoustic output and provider advertisement/timeline binding remain
+unverified; seek stays unsupported. Earlier local native HLS observations found
+automatic rendition/default audio but no public manual audio/video-track APIs.
+This diagnostic adds no product Quality exception or claim of equivalent common
+controls. Actual provider decoding and any product adoption remain separate.
+
+All grant-bearing requests stay in the owned browser page. In the default MSE
+diagnostic, a closed Fetch
 transport admits only exact OAuth/GraphQL endpoint/method pairs, forces normal
 CORS mode, omits cookies, disables caching and uses `redirect: error`. The
 diagnostic replaces Shaka's HTTPS scheme plugin with its own bounded Fetch

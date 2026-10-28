@@ -22,7 +22,7 @@ if (!arguments_.includes('--network') || !cases.length || new Set(cases).size !=
     new Set(arguments_).size !== arguments_.length || endpointArguments.length > 1 ||
     !['v2', 'unversioned-live'].includes(manifestEndpoint) ||
     transportArguments.length > 1 || !['mse', 'native-hls'].includes(transport) ||
-    transport === 'native-hls' && (manifestEndpoint !== 'v2' || cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
+    transport === 'native-hls' && (cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
     manifestEndpoint === 'unversioned-live' && (cases.length !== 1 || cases[0] !== 'live:virtualjapan') ||
     cases.some((value) => !allowedCases.has(value)) ||
     arguments_.some((value) => value !== '--network' && value !== '--headed' && value !== '--browser-failures' &&

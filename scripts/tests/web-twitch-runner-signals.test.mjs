@@ -189,7 +189,7 @@ if (fixtureMode) {
       [...valid, '--transport='], [...valid, '--transport=other'], [...valid, '--transport'],
       [...valid, '--transport=native-hls', '--transport=native-hls'],
       [...valid, '--transport=native-hls', '--transport=mse'],
-      [...valid, '--transport=native-hls', unversioned],
+      [...valid, '--transport=native-hls', '--manifest-endpoint=unknown'],
       ['--network', '--transport=native-hls', '--case=replay:2080217716'],
       [...valid, '--transport=native-hls', '--case=replay:2080217716'],
     ]) {
@@ -246,14 +246,17 @@ if (fixtureMode) {
     assert.equal(fixture.pageCleanupCompleted, true); assert.equal(fixture.unexpectedPageRequests, false);
     assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
   });
-  test('actual runner explicitly selects the native page before synthetic authorization and still cleans up', { timeout: 40000 }, async () => {
-    const result = await signalRun('SIGTERM', false, true, false, false, false, true);
+  for (const unversioned of [false, true]) test(`actual runner explicitly selects the native page and pinned endpoint before synthetic authorization: unversioned=${unversioned}`, { timeout: 40000 }, async () => {
+    const result = await signalRun('SIGTERM', false, true, false, false, unversioned, true);
     assert.equal(result.code, 0); assert.equal(result.stderrBytes, 0);
     assert.equal(result.events.find(value => value.event === 'activation').transport, 'native-hls');
     assert.equal(result.events.find(value => value.event === 'preparation').transport, 'native-hls');
-    assert.equal(result.events.find(value => value.event === 'activation').manifestEndpoint, 'v2');
+    const endpoint = unversioned ? 'unversioned-live' : 'v2';
+    assert.equal(result.events.find(value => value.event === 'activation').manifestEndpoint, endpoint);
+    assert.equal(result.events.find(value => value.event === 'preparation').manifestEndpoint, endpoint);
     assert.ok(result.events.some(value => value.event === 'cleanup' && value.media === 'destroyed' && value.grant === 'revoked'));
-    assert.equal(result.events.find(value => value.event === 'synthetic-signal-fixture').unexpectedPageRequests, false);
+    const fixture = result.events.find(value => value.event === 'synthetic-signal-fixture');
+    assert.equal(fixture.unexpectedPageRequests, false); assert.equal(fixture.manifestEndpoint, endpoint);
   });
   test('negative control: previous Playwright SIGINT ownership cannot complete the synthetic receipt', { timeout: 40000 }, async () => {
     const result = await signalRun('SIGINT', true);

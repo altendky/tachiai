@@ -65,7 +65,8 @@ remain separate from provider playback acceptance.
 
 An explicitly selected Twitch native HTML diagnostic uses an owned browser
 video element instead of Shaka/MSE. Its separate page pins the existing single
-live/v2 case before authorization, validates the same account/source/permission
+live case and either the default v2 or explicit unversioned endpoint before
+authorization, validates the same account/source/permission
 contract and bounds native descendants with CSP. Normal native cookie/redirect
 semantics differ from the default MSE Fetch omit/redirect-error boundary; no
 per-request Fetch enforcement or manual track-control parity is claimed.

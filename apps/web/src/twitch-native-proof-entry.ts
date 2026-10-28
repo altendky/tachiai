@@ -1,4 +1,4 @@
-import { TwitchProofSession, type TwitchDiagnostic } from './twitch-proof';
+import { TwitchProofSession, type TwitchDiagnostic, type TwitchManifestEndpoint } from './twitch-proof';
 import { TwitchNativePlayback } from './twitch-native-playback';
 
 const session = new TwitchProofSession();
@@ -8,10 +8,8 @@ let stopped = false, preparing = false, generation = 0;
 let phase: TwitchDiagnostic['stage'] | undefined, failed: TwitchDiagnostic | undefined;
 let disposal: Promise<{ media: string; grant: string }> | undefined;
 const proof = {
-  begin(endpoint: string = 'v2') {
-    if (endpoint !== 'v2') return Promise.reject(new Error('Native diagnostic refused'));
-    return session.begin('v2');
-  },
+  // Session validates the exact union and pins it before any provider request.
+  begin: (endpoint: TwitchManifestEndpoint = 'v2') => session.begin(endpoint),
   poll: () => session.poll(),
   diagnostic: () => ({ ...(failed ?? (phase ? { stage: phase } : session.diagnostic())),
     ...(session.diagnostic().livePermission ? { livePermission: session.diagnostic().livePermission } : {}),

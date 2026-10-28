@@ -304,12 +304,38 @@ architecture. Select it explicitly before authorization:
 mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --transport=native-hls --case=live:virtualjapan
 ```
 
-`--transport=mse` is the unchanged default. Native mode accepts only the single
-existing live case and v2 manifest endpoint; replay, another endpoint, unknown
-transport and duplicate/conflicting flags refuse before browser/provider startup.
+`--transport=mse` and the v2 endpoint remain the defaults. Native mode accepts
+only the single existing live case, with either the default v2 or explicitly
+selected `unversioned-live` endpoint. Replay, unknown endpoints/transports and
+duplicate/conflicting flags refuse before browser/provider startup.
 There is no automatic fallback. Activation, preparation and playback carry the
 closed selected `transport` label. Native playback reports `live: "unknown"`:
 selecting a live catalogue item does not establish its observed timeline.
+
+One fresh headed Chrome 156.0.8078.47/Linux trial of native/v2 on reviewed
+`cec8c8680e82fbafa8be48aeabc5c49cd4fce90c` validated authorization and returned
+permission `not-forbidden/NONE`, then refused at player-load with native
+`failed/load-error` and MediaError 4. The passive window observed one canceled
+request, projected resource `other`, network `aborted`, CORS/blocked categories
+absent and extra-info HTTP 206. It remains explicitly unattributed to the selected
+manifest; neither that status nor an absent CORS category establishes a usable
+manifest or a failure cause. Player destruction and grant revocation were confirmed.
+
+An explicit native/unversioned counterfactual can change only the known official
+live path while preserving the native transport and all account/source policies:
+
+```sh
+mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --transport=native-hls --manifest-endpoint=unversioned-live --case=live:virtualjapan
+```
+
+The shared session validates and pins this exact endpoint choice before the
+challenge. A repeated begin cannot retarget it. Each trial uses its own fresh
+grant/source response; opaque signature/value and all other manifest query fields
+are used unchanged. The earlier MSE/unversioned refusal does not establish this
+native request profile's behavior. This is a counterfactual, not an endpoint fix,
+new default or fallback. Its provider playback remains unobserved until a fresh
+reviewed trial; controlled tests establish only construction, decoding and cleanup
+with owned media.
 
 The separate page imports the account/source adapter and native lifecycle only,
 with no provider scripts. OAuth/GQL still use the exact existing client, scope,

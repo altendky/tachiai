@@ -64,3 +64,27 @@ test('CLI independently projects media enums and bounded numbers only at player 
     expect(twitchDiagnosticOutput({ stage: 'player-load', http: number, media: { checkpoint: 'sdk', sdkCode: number, sdkCategory: number } }))
       .toEqual({ stage: 'player-load', media: { checkpoint: 'sdk' } });
 });
+
+test('CLI independently validates live permission, phase and reason associations without provider strings', () => {
+  for (const reason of ['NONE', 'absent']) expect(twitchDiagnosticOutput({ stage: 'player-load', livePermission: {
+    status: 'not-forbidden', reason, privateValue: 'PRIVATE' } })).toEqual({ stage: 'player-load', livePermission: { status: 'not-forbidden', reason } });
+  for (const reason of ['NONE', 'UNAUTHORIZED', 'UNAUTHORIZED_ENTITLEMENTS', 'GEOBLOCKED', 'CHANNEL_RESTRICTED_BANNED_USER', 'absent', 'other']) {
+    expect(twitchDiagnosticOutput({ stage: 'source-access', livePermission: { status: 'forbidden', reason } }))
+      .toEqual({ stage: 'source-access', livePermission: { status: 'forbidden', reason } });
+  }
+  for (const livePermission of [null, [], 'PRIVATE', { status: 'not-forbidden', reason: 'GEOBLOCKED' },
+    { status: 'not-forbidden', reason: 'PRIVATE' }, { status: 'PRIVATE', reason: 'NONE' }]) {
+    expect(twitchDiagnosticOutput({ stage: 'source-access', livePermission })).toEqual({ stage: 'source-access',
+      livePermission: { status: 'unavailable', reason: 'other' } });
+  }
+  expect(twitchDiagnosticOutput({ stage: 'player-ready', livePermission: { status: 'forbidden', reason: 'UNAUTHORIZED' } }))
+    .toEqual({ stage: 'player-ready', livePermission: { status: 'unavailable', reason: 'other' } });
+  expect(twitchDiagnosticOutput({ stage: 'token-validation', livePermission: { status: 'not-forbidden', reason: 'NONE' } }))
+    .toEqual({ stage: 'token-validation' });
+  let statusReads = 0, reasonReads = 0;
+  const changing = twitchDiagnosticOutput({ stage: 'source-access', livePermission: {
+    get status() { return ++statusReads === 1 ? 'not-forbidden' : 'PRIVATE'; },
+    get reason() { return ++reasonReads === 1 ? 'NONE' : 'PRIVATE'; } } });
+  expect(changing).toEqual({ stage: 'source-access', livePermission: { status: 'not-forbidden', reason: 'NONE' } });
+  expect([statusReads, reasonReads]).toEqual([1, 1]); expect(JSON.stringify(changing)).not.toContain('PRIVATE');
+});

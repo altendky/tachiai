@@ -173,7 +173,7 @@ test('numeric zero validation still requires exact client, scope and user bindin
 test('positive revalidation shortens an unknown lifetime without permitting later extension', async () => {
   const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
     validation({ expires_in: 0 }), validation({ expires_in: 1 }),
-    response({ data: { streamPlaybackAccessToken: { signature: 'synthetic-signature', value: 'synthetic-value' } } }),
+    response({ data: { streamPlaybackAccessToken: { signature: 'synthetic-signature', value: 'synthetic-value', authorization: { isForbidden: false } } } }),
     new Response(null)]);
   await flow.session.begin(); flow.advance(5000);
   expect(await flow.session.poll()).toBe('authorized');
@@ -187,7 +187,7 @@ test('positive revalidation shortens an unknown lifetime without permitting late
 test('zero revalidation retains the fixed local session cap without asserting a provider lifetime', async () => {
   const flow = setup([challenge(), response({ access_token: 'synthetic-access-grant', token_type: 'bearer' }),
     validation({ expires_in: 0 }), validation({ expires_in: 0 }),
-    response({ data: { streamPlaybackAccessToken: { signature: 'synthetic-signature', value: 'synthetic-value' } } }),
+    response({ data: { streamPlaybackAccessToken: { signature: 'synthetic-signature', value: 'synthetic-value', authorization: { isForbidden: false } } } }),
     new Response(null)]);
   await flow.session.begin(); flow.advance(5000);
   expect(await flow.session.poll()).toBe('authorized');
@@ -386,13 +386,15 @@ for (const selected of ['live:virtualjapan', 'replay:2080217716'] as const) test
   const field = live ? 'streamPlaybackAccessToken' : 'videoPlaybackAccessToken';
   const signedValue = '{"expires":1234567890,"x":"f0","synthetic":"a+b /&=?"}';
   const { session, calls, advance } = setup([challenge(), grant(), validation(), validation(),
-    response({ data: { [field]: { signature: 'synthetic-signature', value: signedValue } } }), new Response(null)]);
+    response({ data: { [field]: { signature: 'synthetic-signature', value: signedValue,
+      ...(live ? { authorization: { isForbidden: false, forbiddenReasonCode: 'NONE' } } : {}) } } }), new Response(null)]);
   await session.begin(); advance(5000); await session.poll();
   const uri = new URL(await session.source(selected));
   expect(uri.origin).toBe('https://usher.ttvnw.net');
   expect(uri.pathname).toBe(live ? '/api/v2/channel/hls/virtualjapan.m3u8' : '/vod/v2/2080217716.m3u8');
   expect(uri.searchParams.get('token')).toBe(signedValue);
-  expect([...uri.searchParams.keys()].sort()).toEqual(['allow_audio_only', 'allow_source', 'platform', 'sig', 'token']);
+  expect([...uri.searchParams.keys()].sort()).toEqual(['allow_audio_only', 'allow_source', 'platform', 'player_backend', 'sig', 'token']);
+  expect(uri.searchParams.get('player_backend')).toBe('mediaplayer');
   const access = calls.at(-1)!;
   expect(access.url).toBe('https://gql.twitch.tv/gql');
   expect(access.options.headers).toEqual({ 'Content-Type': 'application/json',
@@ -401,6 +403,8 @@ for (const selected of ['live:virtualjapan', 'replay:2080217716'] as const) test
   expect(query.variables).toEqual(live ? { login: 'virtualjapan', platform: 'web', playerType: 'site' } :
     { id: '2080217716', platform: 'web', playerType: 'site' });
   expect(query.operationName).toBe(live ? 'StreamPlaybackAccessToken' : 'VideoPlaybackAccessToken');
+  expect(query.query).toContain('playerBackend: "mediaplayer"');
+  expect(query.query.includes('authorization { isForbidden forbiddenReasonCode }')).toBe(live);
   expect(await session.close()).toBe('revoked');
   for (const call of calls) {
     expect(call.options.credentials).toBe('omit');
@@ -411,11 +415,107 @@ for (const selected of ['live:virtualjapan', 'replay:2080217716'] as const) test
   }
 });
 
+test('strict live permission accepts only explicit false with NONE or null/absent reason', async () => {
+  for (const authorization of [{ isForbidden: false, forbiddenReasonCode: 'NONE' },
+    { isForbidden: false, forbiddenReasonCode: null }, { isForbidden: false }]) {
+    const flow = setup([challenge(), grant(), validation(), validation(), response({ data: {
+      streamPlaybackAccessToken: { signature: 'synthetic', value: 'unchanged-opaque', authorization } } }), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+    expect(new URL(await flow.session.source('live:virtualjapan')).searchParams.get('token')).toBe('unchanged-opaque');
+    expect(flow.session.diagnostic()).toEqual({ stage: 'source-access', http: 200,
+      livePermission: { status: 'not-forbidden', reason: authorization.forbiddenReasonCode === 'NONE' ? 'NONE' : 'absent' } });
+    const copy = flow.session.diagnostic(); copy.livePermission!.status = 'forbidden';
+    expect(flow.session.diagnostic().livePermission!.status).toBe('not-forbidden');
+    expect(await flow.session.close()).toBe('revoked');
+  }
+});
+
+test('every forbidden live response refuses before URI publication and projects only closed reason enums', async () => {
+  for (const reason of ['NONE', 'UNAUTHORIZED', 'UNAUTHORIZED_ENTITLEMENTS', 'GEOBLOCKED',
+    'CHANNEL_RESTRICTED_BANNED_USER', null, undefined, 'PRIVATE_PROVIDER_REASON', 1, {}, []]) {
+    const flow = setup([challenge(), grant(), validation(), validation(), response({ data: {
+      streamPlaybackAccessToken: { signature: 'synthetic', value: 'PRIVATE_OPAQUE_VALUE', authorization: {
+        isForbidden: true, ...(reason === undefined ? {} : { forbiddenReasonCode: reason }) } } } }), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+    await expect(flow.session.source('live:virtualjapan')).rejects.toThrow('Twitch diagnostic refused');
+    const known = typeof reason === 'string' && !reason.startsWith('PRIVATE');
+    expect(flow.session.diagnostic()).toEqual({ stage: 'source-access', http: 200, livePermission: {
+      status: 'forbidden', reason: known ? reason : reason == null ? 'absent' : 'other' } });
+    expect(JSON.stringify(flow.session.diagnostic())).not.toContain('PRIVATE');
+    expect(await flow.session.close()).toBe('revoked');
+    expect(flow.calls).toHaveLength(6);
+  }
+});
+
+test('missing/malformed/contradictory live permission is unavailable and never substitutes opaque token claims', async () => {
+  for (const authorization of [undefined, null, [], 'PRIVATE', true, {}, { isForbidden: 'false' }, { isForbidden: 0 },
+    { isForbidden: null }, { isForbidden: false, forbiddenReasonCode: 'UNAUTHORIZED' },
+    { isForbidden: false, forbiddenReasonCode: 'GEOBLOCKED' }, { isForbidden: false, forbiddenReasonCode: 'PRIVATE' },
+    { isForbidden: false, forbiddenReasonCode: '' }, { isForbidden: false, forbiddenReasonCode: false }]) {
+    const flow = setup([challenge(), grant(), validation(), validation(), response({ data: {
+      streamPlaybackAccessToken: { signature: 'synthetic', value: '{"authorization":{"forbidden":false}}',
+        ...(authorization === undefined ? {} : { authorization }) } } }), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+    await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+    expect(flow.session.diagnostic().livePermission!.status).toBe('unavailable');
+    expect(JSON.stringify(flow.session.diagnostic())).not.toContain('PRIVATE');
+    expect(await flow.session.close()).toBe('revoked');
+  }
+});
+
+test('permission is source-owned and a later replay or failed revalidation cannot retain the old live result', async () => {
+  const flow = setup([challenge(), grant(), validation(), validation(), response({ data: {
+    streamPlaybackAccessToken: { signature: 'synthetic', value: '{}', authorization: { isForbidden: false } } } }),
+  validation(), response({ data: { videoPlaybackAccessToken: { signature: 'synthetic', value: '{}' } } }),
+  validation({ user_id: 'different-user' }), new Response(null)]);
+  await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+  await flow.session.source('live:virtualjapan'); expect(flow.session.diagnostic().livePermission).toBeDefined();
+  await flow.session.source('replay:2080217716'); expect(flow.session.diagnostic().livePermission).toBeUndefined();
+  await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+  expect(flow.session.diagnostic().livePermission).toBeUndefined();
+  expect(await flow.session.close()).toBe('revoked');
+});
+
+test('late or cancelled source replies cannot publish a not-forbidden permission or URI', async () => {
+  for (const cause of ['expiry', 'cancel']) {
+    let invalidate = () => {};
+    const flow = setup([challenge(), grant(), validation(), validation({ expires_in: 1 }), async () => {
+      invalidate();
+      return response({ data: { streamPlaybackAccessToken: { signature: 'synthetic', value: 'PRIVATE_OPAQUE',
+        authorization: { isForbidden: false, forbiddenReasonCode: 'NONE' } } } });
+    }, new Response(null)]);
+    invalidate = () => { if (cause === 'expiry') flow.advance(1000); else flow.session.cancel(); };
+    await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+    await expect(flow.session.source('live:virtualjapan')).rejects.toThrow();
+    expect(flow.session.diagnostic().livePermission).toBeUndefined();
+    expect(JSON.stringify(flow.session.diagnostic())).not.toContain('PRIVATE');
+    expect(await flow.session.close()).toBe('revoked'); expect(flow.calls).toHaveLength(6);
+  }
+});
+
+test('expired or cancelled recognized replacement clears old live permission before early refusal', async () => {
+  for (const cause of ['grant-expiry', 'session-expiry', 'cancel']) {
+    const flow = setup([challenge(), grant(), validation(), validation({ expires_in: 1 }), response({ data: {
+      streamPlaybackAccessToken: { signature: 'synthetic', value: '{}', authorization: { isForbidden: false } } } }), new Response(null)]);
+    await flow.session.begin(); flow.advance(5000); await flow.session.poll();
+    await flow.session.source('live:virtualjapan'); expect(flow.session.diagnostic().livePermission!.status).toBe('not-forbidden');
+    if (cause === 'cancel') flow.session.cancel(); else flow.advance(cause === 'grant-expiry' ? 1000 : 900000);
+    await expect(flow.session.source('replay:2080217716')).rejects.toThrow();
+    expect(flow.session.diagnostic().livePermission).toBeUndefined();
+    expect(flow.calls).toHaveLength(5); expect(await flow.session.close()).toBe('revoked');
+  }
+  const flow = setup([]); (flow.session as any).busy = true;
+  (flow.session as any).permission = { status: 'not-forbidden', reason: 'NONE' };
+  await expect(flow.session.source('replay:2080217716')).rejects.toThrow();
+  expect(flow.session.diagnostic().livePermission).toEqual({ status: 'not-forbidden', reason: 'NONE' });
+  (flow.session as any).busy = false; await flow.session.close();
+});
+
 for (const body of [
   { errors: [{ message: 'synthetic-private-error' }] },
   { data: { videoPlaybackAccessToken: { signature: 'abc', value: '{}' } } },
-  { data: { streamPlaybackAccessToken: { signature: 'bad&signature', value: '{}' } } },
-  { data: { streamPlaybackAccessToken: { signature: 'abc', value: 'control\ncharacter' } } },
+  { data: { streamPlaybackAccessToken: { signature: 'bad&signature', value: '{}', authorization: { isForbidden: false } } } },
+  { data: { streamPlaybackAccessToken: { signature: 'abc', value: 'control\ncharacter', authorization: { isForbidden: false } } } },
 ]) test(`malformed/private access response remains a fixed refusal: ${JSON.stringify(body).slice(0, 70)}`, async () => {
   const { session, advance } = setup([challenge(), grant(), validation(), validation(), response(body), new Response(null)]);
   await session.begin(); advance(5000); await session.poll();
@@ -427,7 +527,7 @@ test('each actual C0 control character is refused in a signed access value', asy
   for (let code = 0; code < 32; code++) {
     const value = 'synthetic' + String.fromCharCode(code) + 'opaque';
     const { session, advance } = setup([challenge(), grant(), validation(), validation(),
-      response({ data: { streamPlaybackAccessToken: { signature: 'abc', value } } }), new Response(null)]);
+      response({ data: { streamPlaybackAccessToken: { signature: 'abc', value, authorization: { isForbidden: false } } } }), new Response(null)]);
     await session.begin(); advance(5000); await session.poll();
     await expect(session.source('live:virtualjapan')).rejects.toThrow('Twitch diagnostic refused');
     expect(await session.close()).toBe('revoked');

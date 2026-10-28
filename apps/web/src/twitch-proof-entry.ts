@@ -51,6 +51,7 @@ const proof = {
   begin: () => session.begin(),
   poll: () => session.poll(),
   diagnostic: (): TwitchDiagnostic => ({ ...(failedDiagnostic ?? mediaDiagnostic ?? session.diagnostic()),
+    ...(session.diagnostic().livePermission ? { livePermission: session.diagnostic().livePermission } : {}),
     ...(mediaEvidence ? { media: mediaEvidence.snapshot() } : {}) }),
   async prepare(value: string): Promise<'ready' | 'refused'> {
     if (stopped || preparing || !isTwitchCase(value) || !ownership.acquire()) return 'refused';

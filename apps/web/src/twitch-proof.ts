@@ -58,7 +58,21 @@ export type TwitchDiagnosticStage = 'idle' | 'device-challenge' | 'token-poll' |
   'source-access' | 'player-attach' | 'player-load' | 'player-ready' | 'player-playback' | 'player-cleanup';
 export type TwitchRefusalReason = 'cancelled' | 'deadline' | 'token-type' |
   'expiry-missing' | 'expiry-zero' | 'expiry-invalid';
-export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchRefusalReason; media?: TwitchMediaDiagnostic }
+export type TwitchLiveReason = 'NONE' | 'UNAUTHORIZED' | 'UNAUTHORIZED_ENTITLEMENTS' |
+  'GEOBLOCKED' | 'CHANNEL_RESTRICTED_BANNED_USER' | 'absent' | 'other';
+export interface TwitchLivePermission { status: 'not-forbidden' | 'forbidden' | 'unavailable'; reason: TwitchLiveReason }
+export interface TwitchDiagnostic { stage: TwitchDiagnosticStage; http?: number; reason?: TwitchRefusalReason;
+  livePermission?: TwitchLivePermission; media?: TwitchMediaDiagnostic }
+const liveReasons = new Set(['NONE', 'UNAUTHORIZED', 'UNAUTHORIZED_ENTITLEMENTS', 'GEOBLOCKED', 'CHANNEL_RESTRICTED_BANNED_USER']);
+function livePermission(value: unknown): TwitchLivePermission {
+  if (value === undefined || value === null) return { status: 'unavailable', reason: 'absent' };
+  if (typeof value !== 'object' || Array.isArray(value)) return { status: 'unavailable', reason: 'other' };
+  const authorization = value as Record<string, unknown>, raw = authorization.forbiddenReasonCode;
+  const reason: TwitchLiveReason = raw === undefined || raw === null ? 'absent' :
+    typeof raw === 'string' && liveReasons.has(raw) ? raw as TwitchLiveReason : 'other';
+  return { status: authorization.isForbidden === true ? 'forbidden' :
+    authorization.isForbidden === false && (reason === 'NONE' || reason === 'absent') ? 'not-forbidden' : 'unavailable', reason };
+}
 const expiryRefusal = (body: Record<string, unknown>): TwitchRefusalReason =>
   !Object.hasOwn(body, 'expires_in') ? 'expiry-missing' : body.expires_in === 0 ? 'expiry-zero' : 'expiry-invalid';
 type Dependencies = { fetch?: typeof fetch; now?: () => number };
@@ -81,6 +95,7 @@ export class TwitchProofSession {
   private phase: TwitchDiagnosticStage = 'idle';
   private http?: number;
   private refusalReason?: TwitchRefusalReason;
+  private permission?: TwitchLivePermission;
 
   constructor(dependencies: Dependencies = {}) {
     this.fetcher = dependencies.fetch ?? createClosedBrowserFetch(admittedTwitchApi);
@@ -99,7 +114,8 @@ export class TwitchProofSession {
 
   diagnostic(): TwitchDiagnostic {
     return { stage: this.phase, ...(this.http === undefined ? {} : { http: this.http }),
-      ...(this.refusalReason === undefined ? {} : { reason: this.refusalReason }) };
+      ...(this.refusalReason === undefined ? {} : { reason: this.refusalReason }),
+      ...(this.permission ? { livePermission: { ...this.permission } } : {}) };
   }
 
   private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; this.refusalReason = undefined; }
@@ -233,6 +249,10 @@ export class TwitchProofSession {
   // bound to this session and exact selected case; opaque token internals aren't
   // treated as verified content or entitlement claims.
   async source(selected: TwitchCase): Promise<string> {
+    // A recognized replacement must not inherit old permission even when its
+    // lifetime/state guard refuses immediately. A concurrent caller cannot
+    // mutate the in-flight owner's evidence.
+    if (isTwitchCase(selected) && !this.busy) this.permission = undefined;
     this.active();
     if (!isTwitchCase(selected) || this.state !== 'authorized' || this.busy || this.now() >= this.grantDeadline) throw refused();
     this.busy = true;
@@ -245,7 +265,7 @@ export class TwitchProofSession {
       const variable = live ? 'login' : 'id';
       const argument = live ? 'channelName' : 'id';
       const type = live ? 'String' : 'ID';
-      const query = `query ${operationName}($${variable}: ${type}!, $platform: String!, $playerType: String!) { ${field}(${argument}: $${variable}, params: { platform: $platform, playerType: $playerType }) { signature value } }`;
+      const query = `query ${operationName}($${variable}: ${type}!, $platform: String!, $playerType: String!) { ${field}(${argument}: $${variable}, params: { platform: $platform, playerBackend: "mediaplayer", playerType: $playerType }) { signature value${live ? ' authorization { isForbidden forbiddenReasonCode }' : ''} } }`;
       this.enter('source-access');
       const response = await this.fetcher('https://gql.twitch.tv/gql', {
         credentials: 'omit', redirect: 'error', cache: 'no-store', method: 'POST',
@@ -262,12 +282,16 @@ export class TwitchProofSession {
       if (this.now() >= this.grantDeadline || response.status !== 200 || body.error != null || body.message != null ||
           body.errors != null && (!Array.isArray(body.errors) || body.errors.length !== 0)) throw refused();
       const access = record(record(body.data)[field]);
+      if (live) {
+        this.permission = livePermission(access.authorization);
+        if (this.permission.status !== 'not-forbidden') throw refused();
+      }
       if (typeof access.signature !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(access.signature) ||
           typeof access.value !== 'string' || access.value.length < 1 || access.value.length > 12000 ||
           /[\x00-\x1f]/.test(access.value)) throw refused();
       const uri = new URL(`https://usher.ttvnw.net${live ? `/api/v2/channel/hls/${resource}.m3u8` : `/vod/v2/${resource}.m3u8`}`);
       for (const [key, value] of Object.entries({ sig: access.signature, token: access.value,
-        platform: 'web', allow_source: 'true', allow_audio_only: 'true' })) uri.searchParams.set(key, value);
+        platform: 'web', allow_source: 'true', allow_audio_only: 'true', player_backend: 'mediaplayer' })) uri.searchParams.set(key, value);
       return uri.href;
     } catch { this.cancel(); throw refused(); }
     finally { this.busy = false; }

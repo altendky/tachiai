@@ -12,7 +12,7 @@ import { openBrowserFailures } from '../../../apps/web/scripts/twitch-browser-fa
 const runner = new URL('../../../apps/web/scripts/probe-twitch.mjs', import.meta.url);
 const { chromium } = createRequire(new URL('../../../apps/web/package.json', import.meta.url))('@playwright/test');
 const kind = process.argv[2];
-assert.ok(['cors', 'redirect', 'tcp', 'success', 'default', 'drain-failure', 'cancel', 'watchdog'].includes(kind));
+assert.ok(['cors', 'cors403', 'redirect', 'tcp', 'reset', 'success', 'default', 'drain-failure', 'cancel', 'watchdog'].includes(kind));
 const events = [], state = { detachedBeforeCleanup: false, mediaClosed: false, browserClosed: false,
   serversClosed: false, requests: 0, redirected: 0, credentials: false, unexpected: false,
   sessions: 0, drainCalls: 0, disabled: false, detached: false, cancelled: false, afterSettlement: 0, timedOut: false };
@@ -48,14 +48,17 @@ const watchdog = setTimeout(onTerm, 15000);
 try {
   resourceServer = await listen((request, response) => {
     state.requests++; state.credentials ||= Boolean(request.headers.cookie || request.headers.authorization);
+    if (request.url === '/reset') { request.socket.destroy(); return; }
     if (request.url === '/forbidden') state.redirected++;
     if (request.url === '/redirect') response.writeHead(302, { Location: '/forbidden', 'Access-Control-Allow-Origin': '*' });
-    else response.writeHead(200, request.url === '/cors' ? {} : { 'Access-Control-Allow-Origin': '*' });
+    else response.writeHead(request.url === '/cors403' ? 403 : 200,
+      ['/cors', '/cors403'].includes(request.url) ? {} : { 'Access-Control-Allow-Origin': '*' });
     response.end('owned');
   });
   const resourceOrigin = origin(resourceServer);
   if (kind === 'tcp') await new Promise(resolve => resourceServer.close(resolve));
-  const path = kind === 'success' ? '/success' : kind === 'redirect' ? '/redirect' : '/cors';
+  const path = kind === 'success' ? '/success' : kind === 'redirect' ? '/redirect' :
+    kind === 'cors403' ? '/cors403' : kind === 'reset' ? '/reset' : '/cors';
   const uri = resourceOrigin + path;
   pageServer = await listen((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'text/html',

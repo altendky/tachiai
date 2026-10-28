@@ -44,11 +44,12 @@ not initiate authorization by itself. For example:
 mise exec -- npm run probe:twitch --prefix apps/web -- --network --headed --browser-failures --case=live:virtualjapan
 ```
 
-Only the fresh owned diagnostic page gets a CDP session, with an application
-listener for `Network.loadingFailed`. No provider/login page is instrumented.
+Only the fresh owned diagnostic page gets a CDP session, with application
+listeners for `Network.loadingFailed` and `Network.responseReceivedExtraInfo`.
+No provider/login page is instrumented.
 The diagnostic makes no request, response-body, header or cookie queries and
 does not change Fetch, interception, caching or security behavior. However,
-`Network.enable` is domain-wide: URL/header-bearing protocol metadata can
+`Network.enable` is domain-wide: URL/header/cookie-bearing protocol metadata can
 traverse the automation client even without application listeners. This is a
 closed collector/output boundary, not a metadata-free automation transport.
 
@@ -58,17 +59,40 @@ delivery wait starts. Both shapes always say `association=unattributed`.
 It reports setup/teardown availability, a bounded
 none/one/multiple/overflow observation category and only the first observed
 failure's allowlisted resource, cancellation, CORS, blocked and network-error
-categories. After sixteen observations the count saturates at overflow; no event
+categories, plus optional bounded numeric `first.http`. After sixteen observations the count saturates at overflow; no event
 list is retained. Arbitrary error text is compared only against exact known
-constants and discarded; unknown values become `other`. Request identifiers,
-timestamps and `failedParameter` are neither retained nor returned. The
+constants and discarded; unknown values become `other`. Timestamps and
+`failedParameter` are not read or retained. The new extra-info handler reads only
+`requestId` and `statusCode`, each once. A private table holds at most sixteen
+bounded ASCII request IDs and one numeric status or an ambiguous marker per ID,
+plus the first failure's bounded ID. IDs never enter output. Both event arrival
+orders are supported; unrelated IDs cannot supply the first failure's status.
+Every duplicate extra-info event for an ID makes it permanently ambiguous,
+including equal statuses, or invalid/missing/throwing status values before or
+after a valid status. Ambiguity removes any previously matched `first.http`.
+Table overflow permanently disables all status correlation and removes a prior
+status while retaining the legacy failure counts/categories. Malformed IDs or
+status values cannot fabricate HTTP. Disarm, expiry and close clear all private
+IDs/table entries; only an already matched closed numeric value can remain.
+The
 collector independently checks the output shape. Setup and teardown failures
 remain closed results and do not skip media/grant cleanup.
+
+The [official CDP Network declarations](https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/Network.pdl)
+document extra-info status for failures that do not deliver a normal response
+event, including CORS errors. They also specify that a network request ID does
+not identify an individual HTTP request within that network operation. Therefore
+`first.http` is an observed extra-info status for that first failed browser
+network ID within the bounded window, not necessarily an individual/final HTTP
+response and never proof of a selected media/manifest request. A redirect can
+reuse an ID; one observed 302 is not a final-response claim. Missing `first.http`
+means unavailable evidence, including absent extra-info, ambiguity or overflow.
 
 This observation is not bound to the media manifest request. Source APIs,
 preflights, other requests and delayed events can overlap preparation. The
 listener disarms synchronously on runner cancellation and before runner
-cleanup/replacement, then disables its Network domain and detaches.
+cleanup/replacement, then independently removes both listeners, disables its
+Network domain and detaches.
 Only an explicitly refused preparation with the opt-in collector armed can open
 one fixed delivery window. A monotonic deadline rejects callbacks after 250 ms
 even if the timer task itself is delayed. Cancellation, disarm or close interrupts
@@ -154,8 +178,8 @@ OAuth requests use the documented
 Those documents do not establish private GraphQL/HLS playback support or that
 this selected public client will accept a browser session.
 
-Authenticated playback access intentionally follows Android's current
-`resolveTwitchPlayback` comparison: the GraphQL `Client-ID` header is empty,
+Authenticated playback access retains Android's current
+`resolveTwitchPlayback` client-header comparison: the GraphQL `Client-ID` header is empty,
 while OAuth issuance, validation and revocation remain bound to the exact public
 client above. This is a fixed, documented experimental request shape, not an
 accidentally omitted OAuth identity, and there is no automatic alternate-header
@@ -163,6 +187,64 @@ retry. A readable GraphQL response must match the exact requested live/replay
 field and bounded signature/value shape. Its opaque signed value is used
 unchanged for that same selected manifest path; its internal claims are not
 treated as independently verified source/entitlement evidence.
+
+### Verified browser backend and live permission
+
+Both live and replay source queries now declare `playerBackend: "mediaplayer"`.
+The selected manifest keeps its existing v2 path and five query fields, adding
+only `player_backend=mediaplayer`. The probe does not change OAuth client/scope,
+the empty GraphQL Client-ID comparison, browser Origin, cookies, integrity,
+redirect/TLS/CORS policy or media admission. It does not import other browser
+metadata, select an unversioned alternative or retry another profile.
+
+Only the live query also requests
+`authorization { isForbidden forbiddenReasonCode }`. Before publishing a live
+URI or creating a player, the adapter requires an explicit boolean false plus
+reason `NONE`, null or absent. True always refuses, including true with `NONE`.
+Missing/malformed authorization, a non-boolean flag, false with another known
+reason, or false with an unknown/non-string reason refuses. An opaque token's
+internal claims cannot replace this structured field.
+
+The closed `livePermission` diagnostic distinguishes `not-forbidden`, `forbidden`
+and `unavailable`, with reason `NONE`, `UNAUTHORIZED`, `UNAUTHORIZED_ENTITLEMENTS`,
+`GEOBLOCKED`, `CHANNEL_RESTRICTED_BANNED_USER`, `absent` or `other`. No arbitrary
+provider string or account/source identifier enters this field. It survives
+subsequent owned-media failure/cleanup, and a new source attempt clears it before
+revalidation so replay or a failed source cannot inherit an old live result.
+The CLI independently validates phase/status/reason associations and snapshots
+the primitive fields once before projecting them.
+
+False with null/absent reason is an explicit conservative adapter rule: the
+public runtime query AST does not establish schema types or nullability. An
+accepted false result is limited source-permission evidence, not complete
+entitlement, advertising, platform or playback acceptance. The existing media
+attempt follows it under the same policy; there is no new source-only mode or
+extra activation. Replay keeps its verified signature/value selection without
+inventing a structured VOD authorization field.
+
+The primary-source check used public guest HTML only in memory to locate
+query-free static assets; no login/profile, signed response or provider player
+runtime was inspected. The relevant current official assets are:
+
+- [Player/source asset 61456](https://assets.twitch.tv/assets/61456-bf3a1f15bb71ab6f65dd.js),
+  333,321 bytes, SHA-256
+  `67863bedfa543bc49a92525f8be184735296b25e5c5d5da9cdbdd70426c39dd0`.
+  Modules 889554/117186 declare the backend and live authorization selection;
+  module 768821 declares the manifest backend parameter. Its builder supports
+  both versioned and unversioned paths; no actual guest cohort was observed.
+- [Client/config asset 95120](https://assets.twitch.tv/assets/95120-2bcdd5afbbdea7868a33.js),
+  526,416 bytes, SHA-256
+  `d74fce69d6cadd05f4aa48304fe816b83d8846549760443ef9ba2d57bced1408`.
+  Module 600424 declares the five reason-code strings above. Browser client,
+  device, build/session and conditional integrity context are not transplanted.
+
+These are independently expressed protocol declarations, not copied provider
+helper algorithms. Static contract differences do not establish the cause of
+the observed manifest Fetch refusal or imply that a valid media response lacks
+CORS support. Provider permission values for this diagnostic remain unobserved
+until a fresh reviewed trial. Offline synthetic and owned-media tests verify
+the strict guard, closed diagnostics, refusal before media creation, permitted
+continuation, source replacement and cleanup; they are not provider acceptance.
 
 All grant-bearing requests stay in the owned browser page. A closed Fetch
 transport admits only exact OAuth/GraphQL endpoint/method pairs, forces normal
@@ -351,6 +433,13 @@ return. Refused attempts exercise the production delivery window; success return
 ready and never drains. Default-runner, cancelled-drain and rejected-drain controls
 verify independent protocol teardown and synthetic media/grant cleanup. No
 request is intercepted, no real grant exists and no provider cause is inferred.
+The actual-runner matrix additionally distinguishes missing-ACAO HTTP 200 and
+403 through `first.http`, reports 302 for refused redirects, omits HTTP for
+refused/reset TCP, and retains no failure for readable 200. Synthetic controls
+cover both event orders, unrelated IDs, duplicate/poisoned IDs, overflow,
+one-read private getters and late/expired callbacks. No response header, cookie,
+body, URL, request-will-be-sent listener or additional protocol query is used for
+correlation. This is a local mechanism test, not provider status acceptance.
 Synthetic tests cover private-property sentinels, unknown enums, first-observed
 latching, overflow, malformed output associations, stale generations and bounded
 protocol failure, including never-settling disable/detach operations and their

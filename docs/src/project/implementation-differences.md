@@ -39,6 +39,21 @@ provider playback nor equivalent product coverage. The separate Twitch diagnosti
 and ABEMA preparation/manifest experiments remain bounded investigations; their
 account, route, DRM and lifecycle findings do not approve a web UX exception.
 
+The separate Twitch browser diagnostic retains the native comparison's selected
+OAuth client and empty GraphQL client header, while explicitly declaring the
+verified `mediaplayer` backend and validating structured live source permission
+before owned media creation. Native's legacy signature/value comparison is not
+treated as that browser permission guard. Replay retains its existing field
+selection. This is a bounded diagnostic contract difference with closed output,
+not provider playback acceptance or a product UX change. See the
+[source contract and limits](web-twitch-proof.md#verified-browser-backend-and-live-permission).
+Its optional browser-failure diagnostic also uses bounded ephemeral CDP network
+IDs to correlate one observed numeric HTTP status with its first failed browser
+network operation. Duplicate/ambiguous IDs or overflow suppress the status; IDs
+are cleared on freeze and never output. This remains explicitly unattributed to
+the selected source/manifest, does not change Fetch/security policy and adds no
+product UX behavior.
+
 The separate [ABEMA decoder diagnostic](web-abema-playback.md) now implements a
 bounded fresh GLOBAL metadata/bootstrap entry and an owned Shaka DASH transport
 whose exact SDK references admit init/media bytes. Its page disables encrypted

@@ -9,6 +9,7 @@ export const TWITCH_CASES = {
   'replay:2080217716': { kind: 'replay', resource: '2080217716' },
 } as const;
 export type TwitchCase = keyof typeof TWITCH_CASES;
+export type TwitchManifestEndpoint = 'v2' | 'unversioned-live';
 export function isTwitchCase(value: string): value is TwitchCase {
   return Object.hasOwn(TWITCH_CASES, value);
 }
@@ -96,6 +97,7 @@ export class TwitchProofSession {
   private http?: number;
   private refusalReason?: TwitchRefusalReason;
   private permission?: TwitchLivePermission;
+  private manifestEndpoint: TwitchManifestEndpoint = 'v2';
 
   constructor(dependencies: Dependencies = {}) {
     this.fetcher = dependencies.fetch ?? createClosedBrowserFetch(admittedTwitchApi);
@@ -141,8 +143,11 @@ export class TwitchProofSession {
     return response;
   }
 
-  async begin(): Promise<{ userCode: string; expiresIn: number; interval: number }> {
-    if (this.state !== 'new' || this.busy) throw refused();
+  async begin(manifestEndpoint: TwitchManifestEndpoint = 'v2'): Promise<{ userCode: string; expiresIn: number; interval: number }> {
+    if (!['v2', 'unversioned-live'].includes(manifestEndpoint) || this.state !== 'new' || this.busy) throw refused();
+    // One explicit diagnostic comparison, pinned before any provider request.
+    // Repeated begin calls cannot replace an active session's endpoint.
+    this.manifestEndpoint = manifestEndpoint;
     this.busy = true;
     try {
       this.enter('device-challenge');
@@ -254,7 +259,8 @@ export class TwitchProofSession {
     // mutate the in-flight owner's evidence.
     if (isTwitchCase(selected) && !this.busy) this.permission = undefined;
     this.active();
-    if (!isTwitchCase(selected) || this.state !== 'authorized' || this.busy || this.now() >= this.grantDeadline) throw refused();
+    if (!isTwitchCase(selected) || this.state !== 'authorized' || this.busy || this.now() >= this.grantDeadline ||
+        this.manifestEndpoint === 'unversioned-live' && selected !== 'live:virtualjapan') throw refused();
     this.busy = true;
     try {
       await this.validate();
@@ -289,7 +295,8 @@ export class TwitchProofSession {
       if (typeof access.signature !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(access.signature) ||
           typeof access.value !== 'string' || access.value.length < 1 || access.value.length > 12000 ||
           /[\x00-\x1f]/.test(access.value)) throw refused();
-      const uri = new URL(`https://usher.ttvnw.net${live ? `/api/v2/channel/hls/${resource}.m3u8` : `/vod/v2/${resource}.m3u8`}`);
+      const livePath = this.manifestEndpoint === 'unversioned-live' ? '/api/channel/hls/' : '/api/v2/channel/hls/';
+      const uri = new URL(`https://usher.ttvnw.net${live ? `${livePath}${resource}.m3u8` : `/vod/v2/${resource}.m3u8`}`);
       for (const [key, value] of Object.entries({ sig: access.signature, token: access.value,
         platform: 'web', allow_source: 'true', allow_audio_only: 'true', player_backend: 'mediaplayer' })) uri.searchParams.set(key, value);
       return uri.href;

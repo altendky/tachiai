@@ -1,5 +1,5 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
-import { TwitchProofSession, TWITCH_CASES, isTwitchCase, allowedTwitchMedia, type TwitchCase, type TwitchDiagnostic } from './twitch-proof';
+import { TwitchProofSession, TWITCH_CASES, isTwitchCase, allowedTwitchMedia, type TwitchCase, type TwitchDiagnostic, type TwitchManifestEndpoint } from './twitch-proof';
 import type { TimingCore } from './player';
 import { TwitchOwnedLifetime } from './twitch-owned-lifetime';
 import { installTwitchMediaTransport, twitchMediaRequest } from './twitch-shaka-transport';
@@ -48,7 +48,7 @@ function stopPlayer(): Promise<void> {
 }
 
 const proof = {
-  begin: () => session.begin(),
+  begin: (manifestEndpoint?: TwitchManifestEndpoint) => session.begin(manifestEndpoint),
   poll: () => session.poll(),
   diagnostic: (): TwitchDiagnostic => ({ ...(failedDiagnostic ?? mediaDiagnostic ?? session.diagnostic()),
     ...(session.diagnostic().livePermission ? { livePermission: session.diagnostic().livePermission } : {}),

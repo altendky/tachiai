@@ -245,6 +245,9 @@ jobs:
       - name: Test Twitch media diagnostic boundaries with local fixtures
         run: npm run test:twitch:media --prefix apps/web
 
+      - name: Test paired Twitch ownership with synthetic authorization and owned media
+        run: npm run test:twitch:pair --prefix apps/web
+
   all:
     name: all
     if: ${{ !cancelled() }}

@@ -13,6 +13,7 @@
     "probe:twitch": "node scripts/probe-twitch.mjs",
     "test:twitch:offline": "playwright test --config playwright.twitch-offline.config.ts",
     "test:twitch:owned": "playwright test --config playwright.twitch-owned.config.ts",
+    "test:twitch:pair": "playwright test --config playwright.twitch-pair.config.ts",
     "test:twitch:media": "playwright test --config playwright.twitch-media.config.ts && node --test ../../scripts/tests/web-twitch-runner-signals.test.mjs ../../scripts/tests/web-twitch-browser-failures.test.mjs",
     "test:abema:local": "playwright test --config playwright.abema.config.ts",
     "test": "playwright test"

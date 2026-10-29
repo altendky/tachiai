@@ -21,7 +21,11 @@ The separate [ABEMA diagnostic](web-abema-playback.md#first-decoded-provider-obs
 has decoded anonymous GLOBAL News live for about five seconds in the owned
 browser player, after local backend source preparation and without an embed,
 extension or media relay. Sumo, replay, protected playback, sustained operation
-and acoustic output remain unverified; Twitch decoding remains unresolved.
+and acoustic output remain unverified. A separate bounded
+[Twitch live trial](web-twitch-proof.md#ordinary-browser-live-evidence) now has
+owned webpage video and user-confirmed audio through a scoped Headerly rule,
+including a Shields-up comparison. Full provider and paired-viewer acceptance
+remain separate work.
 
 ## Implemented boundary
 

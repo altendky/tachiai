@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://id.twitch.tv https://gql.twitch.tv https://ttvnw.net https://*.ttvnw.net https://twitchcdn.net https://*.twitchcdn.net; media-src blob:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Tachiai Twitch pair diagnostic</title>
+  </head>
+  <body>
+    <header class="diagnostic"><strong>Diagnostic · two independent Twitch players</strong></header>
+    <section class="pair-trial">
+      <p>Two copies of VirtualJapan live, prepared separately under one temporary Twitch authorization. This is a bounded player trial, not the complete web client.</p>
+      <p>Keep the working Headerly Twitch-media profile enabled. Browser Shields and extension settings cannot be verified by this page.</p>
+      <button id="start" disabled>Start fresh trial</button>
+      <button id="prepare" disabled>Prepare both feeds</button>
+      <button id="stop" disabled>Stop and revoke</button>
+      <p id="activation" hidden><a id="activation-link" target="_blank" rel="noopener noreferrer"></a></p>
+      <p id="summary" role="status">Ready. No provider request has started.</p>
+    </section>
+    <section id="viewer" aria-label="Twitch pair diagnostic">
+      <div id="stage">
+        <div id="pane-A" class="pane"><div id="mount-A" class="mount"></div><span class="chip">A · VirtualJapan live</span></div>
+        <div id="pane-B" class="pane"><div id="mount-B" class="mount"></div><span class="chip">B · VirtualJapan live</span></div>
+      </div>
+      <div id="dock">
+        <nav aria-label="Playback controls">
+          <button id="transport" disabled>Play both feeds</button>
+          <button id="swap" disabled>Swap primary feed</button>
+        </nav>
+        <section aria-label="Audio">
+          <label>Overall volume <input id="overall" type="range" min="0" max="100" value="50" disabled></label>
+          <label>Mix A ↔ B <input id="balance" type="range" min="0" max="100" value="50" disabled></label>
+          <div><button id="mute-A" disabled>Mute A</button><button id="mute-B" disabled>Mute B</button></div>
+        </section>
+      </div>
+    </section>
+    <section class="pair-trial">
+      <p>Use each mute or the mix to check the two audible contributions. Swapping retains both media sessions. Timing and quality acceptance remain separate; no seek is dispatched by this diagnostic.</p>
+      <p>Finish with Stop and revoke, and wait for cleanup confirmation before closing. Closing the tab alone cannot confirm revocation. Trial limit: 15 minutes.</p>
+      <details><summary>Technical details</summary><pre id="observations"></pre></details>
+    </section>
+    <script type="module" src="/src/twitch-pair-proof-entry.ts"></script>
+  </body>
+</html>

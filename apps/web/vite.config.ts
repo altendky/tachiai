@@ -12,6 +12,7 @@ export default defineConfig({
         harness: fileURLToPath(new URL('index.html', import.meta.url)),
         pair: fileURLToPath(new URL('pair.html', import.meta.url)),
         twitchProof: fileURLToPath(new URL('twitch-proof.html', import.meta.url)),
+        twitchPairProof: fileURLToPath(new URL('twitch-pair-proof.html', import.meta.url)),
         twitchNativeProof: fileURLToPath(new URL('twitch-native-proof.html', import.meta.url)),
         abemaProof: fileURLToPath(new URL('abema-proof.html', import.meta.url)),
       },

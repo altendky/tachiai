@@ -4,9 +4,86 @@ This is reproducible investigation infrastructure for
 [#365](https://github.com/altendky/tachiai/issues/365), using the
 [#364 web harness](web-client.md)'s pinned Shaka dependency, generated Rust/Wasm
 module, controlled test media and production browser test pipeline. It is not a
-connected-account feature, provider playback acceptance, a new web UX, or an
-extension/companion deployment decision. Issue365 remains open until the actual
-browser-local authorization and selected live/replay playback evidence is known.
+connected-account feature, complete provider acceptance, a new web UX, or an
+extension/companion deployment decision. A bounded ordinary-browser live trial
+now has video and user-confirmed audio with a scoped Headerly rule, including a
+Shields-up comparison. Replay, renewal, paired provider playback and the remaining
+controls still need acceptance; issue365 remains open.
+
+## Two-player live diagnostic
+
+After building, `/harness/twitch-pair-proof.html` is a separate, explicit diagnostic
+for two independent copies of VirtualJapan live. It reuses the common viewer's
+gain curve and primary/floating geometry, without broadening the fixture player's
+ad-free source or seek contract. This page tests the playback mechanism; its
+Start/Prepare sequence is not a new product account or navigation design.
+
+No provider request starts until **Start fresh trial**. Follow the fresh coded
+Twitch activation link, **Prepare both feeds**, then **Play both feeds**. One
+in-memory account authorization supplies two separately requested, serialized
+source preparations. Each feed owns its own Shaka player, video element, request
+admission, observations and retirement. A realm-wide HTTPS dispatcher binds each
+exact SDK request object to its media owner; identical URLs are never ownership
+keys. Retired or unbound requests cannot fetch under the other feed's authority.
+
+The diagnostic exposes joint play/pause, overall volume and the common mix with
+per-feed mute. Check A alone and B alone using the mute controls, then both.
+Swap changes geometry without replacing either player. No relative seek is
+dispatched and no quality ladder is promised. The fixture viewer retains its
+existing timing/quality tests independently.
+
+The working local comparison uses Headerly1.21.0 with a single rule combining
+the initiating loopback hostname, the existing HTTPS `ttvnw.net`/`twitchcdn.net`
+media families, GET/HEAD and XHR. It removes request `Origin` and sets response
+`Access-Control-Allow-Origin` to the exact local page origin. The rule does not
+alter OAuth/GraphQL, cookies, Referer, Sec-* or client identity. Browser settings
+and installed rules are not detected by this page. Headerly's installation
+permissions are broader than the configured rule; this observation is not a
+general extension security or distribution endorsement.
+
+Finish with **Stop and revoke**, and keep the page open until confirmation.
+Both player retirements and the single grant revocation have separate verdicts;
+revocation is attempted even if media destruction fails. Account expiry, the
+15-minute trial cap and page retirement also cancel the pair. Closing a tab alone
+does not establish server-side revocation. A closed sample is explicitly cached;
+active unavailable samples are kept separate from previous owned samples.
+
+The optional same-origin `/harness/twitch-pair-receipt` collector receives only
+closed diagnostics and bounded player observations. Playback does not depend on
+that endpoint; an ordinary static preview can return404. Grants, signed URLs,
+device codes, account identifiers and raw SDK errors never enter the receipt.
+The HTML video state and frame counts are not acoustic measurements; actual
+audible contributions still require a user check. Historical decoded/advanced
+flags alone do not prove current or simultaneous playback.
+
+Run `npm run test:twitch:pair` from `apps/web`. Its isolated port4196 tests use
+synthetic account/source exchanges and owned media only; no actual provider
+authorization is part of CI. The existing single-player, fixture and transport
+test suites remain separate. Actual duplicate-provider acceptance is pending
+until a fresh named-browser trial is recorded.
+
+## Ordinary-browser live evidence
+
+On October29, 2026 UTC, the user-controlled Linux Brave/Chromium156 browser played
+VirtualJapan in the owned MSE player with the scoped Headerly media rule. The
+filtered receipt recorded640×360 decoded video and advancing media time, followed
+by user-confirmed audible output. The first successful run ended with media
+destroyed and its temporary grant revoked. A fresh Shields-up comparison also
+played with unmuted state; the user closed its tab before final cleanup
+confirmation, so revocation for that comparison remains unconfirmed. Shields
+state was user-reported; exact browser minor, exit region and effective route
+were not independently measured. Turbo/advertisement behavior was not established.
+
+Headerly's public release source reproduced its published1.21.0 ZIP exactly; all
+28 JavaScript files matched the signed store payload. Store-added update metadata
+was the only difference. That establishes correspondence for the examined build,
+not an exhaustive security audit or trust in future updates. Owned-only browser
+checks separately verified the initiating/target intersection, header changes,
+wrong-site refusal, OFF restoration and cleanup. No custom Tachiai extension or
+server connecting to Twitch was needed in the successful ordinary webpage trial.
+
+The bounded observations and remaining acceptance are recorded on
+[#365](https://github.com/altendky/tachiai/issues/365#issuecomment-6484800348).
 
 ## Explicit local execution
 

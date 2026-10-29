@@ -47,6 +47,13 @@ treated as that browser permission guard. Replay retains its existing field
 selection. This is a bounded diagnostic contract difference with closed output,
 not provider playback acceptance or a product UX change. See the
 [source contract and limits](web-twitch-proof.md#verified-browser-backend-and-live-permission).
+The separate [two-player diagnostic](web-twitch-proof.md#two-player-live-diagnostic)
+shares one temporary account authorization across two fresh serialized source
+preparations and independently owned Shaka/video sessions. Its realm-wide
+transport binds each exact request object to one feed before asynchronous
+dispatch, rather than replacing one global handler per player. Common gain and
+geometry functions are reused; fixture seek/quality permissions are not inherited.
+This is diagnostic wiring, not a complete connected-account viewer or UX exception.
 Its optional browser-failure diagnostic also uses bounded ephemeral CDP network
 IDs to correlate one observed numeric HTTP status with its first failed browser
 network operation. Duplicate/ambiguous IDs or overflow suppress the status; IDs

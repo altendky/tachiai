@@ -120,6 +120,13 @@ export class TwitchProofSession {
       ...(this.permission ? { livePermission: { ...this.permission } } : {}) };
   }
 
+  // Non-secret lease observation for an owned host. Source revalidation may
+  // tighten this cap; an in-flight source still belongs to its authorized state.
+  authorizationRemainingMs(): number {
+    if (this.state !== 'authorized' || !this.grant || this.lifetime.signal.aborted) return 0;
+    return Math.max(0, Math.min(this.deadline, this.grantDeadline) - this.now());
+  }
+
   private enter(stage: TwitchDiagnosticStage): void { this.phase = stage; this.http = undefined; this.refusalReason = undefined; }
 
   private observed(response: Response): void {

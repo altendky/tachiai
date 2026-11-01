@@ -127,3 +127,12 @@ a new exact replay setup into one initial opaque browser CDM exchange, then
 close that same session. It has no player/media/renewal path. Read its
 [separate contract and opt-in procedure](../../docs/src/project/web-abema-routing.md#separate-one-initial-exchange-eme-diagnostic)
 before running it; the MPD-only command keeps its earlier boundary.
+
+The further `abema-route-playback.py --run-route-replay-playback` command uses a
+new fresh CUSTOM/CSAI replay, one temporary CDM exchange and a muted owned player
+to observe bounded decoded frames. Its
+[separate decoder contract](../../docs/src/project/web-abema-routing.md#separate-protected-replay-decoder-diagnostic)
+retains the exact source/reference guards and explicit session cleanup. Run
+`npm run test:abema:protected` for owned encrypted fixtures on port 4197; no
+provider operation occurs in this suite. It does not implement product routes,
+accounts, provider advertisement behavior or sustained playback.

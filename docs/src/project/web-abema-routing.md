@@ -230,3 +230,74 @@ the verified initial exchange.
 The standard initialization/session interfaces are defined by
 [CENC initialization data](https://www.w3.org/TR/eme-initdata-cenc/) and
 [Encrypted Media Extensions](https://www.w3.org/TR/encrypted-media/).
+
+## Separate protected replay decoder diagnostic
+
+The distinct decoder command adds an owned muted Shaka 5.3.3 player to a new
+fresh CUSTOM/CSAI replay preparation. The MPD-only and initial-exchange commands
+keep their earlier limits. After building the web assets and confirming that
+the selected WireGuard peer is idle elsewhere:
+
+```sh
+mise run web
+uv run apps/web/scripts/abema-route-playback.py \
+  --run-route-replay-playback --peer-idle-confirmed \
+  --route-runner /absolute/path/to/route-trial \
+  --wireguard-file /absolute/path/to/export.conf
+```
+
+The original source deadline of 120 seconds and route lease of 180 seconds stay
+fixed. Browser preparation has a 30-second limit; observation stops after five
+seconds of decoded media advancement or eight wall seconds, whichever occurs
+first, within the remaining original lifetime. These are diagnostic bounds,
+not a duration establishing sustained playback or renewal.
+
+The renderer independently checks the fixed replay, advertisement, fresh token,
+license URI and remaining lifetime. It audits namespaced standard CENC key IDs,
+requires a stable set across manifest refreshes and supplies public temporary
+ClearKey `DrmInfo` before SDK content filtering. Provider PSSH payloads remain
+inert. The original MPD is not rewritten. Initialization/media requests retain
+the existing exact SDK reference, stream, URI, range and current/previous
+snapshot admission; unknown auxiliary transports remain refused.
+
+One standard temporary browser session supplies the original initial request.
+The initial exchange reuses the verified runtime-only response helper and dash
+serializer. Standard EME hooks bind the actual session, challenge and update
+without reading SDK key caches or response key fields. Readiness waits for the
+actual native update acceptance, rather than SDK load completion. No alternate
+key system, persistent session, certificate, advertisement, renewal or second
+license request is admitted. The player stays muted; frame callbacks report only
+counts, dimensions and media advancement. No video pixels or audio are captured.
+
+The private proof server serves a frozen map of its own built scripts/Wasm,
+dedicated proof HTML and verified public runtime assets on loopback. It exposes
+no media relay or generic request endpoint. The page retains normal browser
+CORS/TLS and receives no route credential, bearer or saved account. The provider
+runtime's global network APIs remain blocked; the admitted player transport uses
+the separately captured native Fetch. Headerly is not part of this command.
+
+Retirement is terminal even before preparation. Cleanup independently closes
+and awaits the actual session, destroys the SDK player, independently checks
+standard MediaKeys detachment, restores owned hooks,
+then closes the browser/server and temporary route. First closure uncertainty
+stays uncertain after repeated cleanup and blocks another CDM owner in that
+realm. Numeric evidence before and after
+closure keeps readable license HTTP status separate from earlier MPD status;
+missing/invalid renderer receipts cannot establish CDM cleanup.
+
+Owned fixture tests use a hash-verified repository H.264/AAC source encrypted
+locally with a fixed **public synthetic** key. They cover successful five-second
+decoding, wrong-key/no-license refusal, exact one-exchange admission, original
+lifetime, response identity, late retirement and sticky closure failure:
+
+```sh
+npm run test:abema:protected --prefix apps/web
+uv run scripts/tests/web-abema-episode-playback.test.py
+TACHIAI_LOCAL_CHROME_TEST=1 xvfb-run --auto-servernum \
+  node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
+```
+
+Those fixtures establish the mechanism only. Actual provider decoding,
+entitlement, ad equivalence, acoustic output, paired operation and sustained
+playback require their own observations. This development diagnostic adds no
+product Routes/account controls or common UX exception.

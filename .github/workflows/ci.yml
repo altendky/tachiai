@@ -256,6 +256,14 @@ jobs:
           node --test scripts/tests/web-abema-browser-playback.test.mjs
           npm run test:abema:local --prefix apps/web
 
+      - name: Test one-exchange protected decoding with owned encrypted fixtures only
+        env:
+          TACHIAI_LOCAL_CHROME_TEST: "1"
+        run: |
+          uv run scripts/tests/web-abema-episode-playback.test.py
+          xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
+          npm run test:abema:protected --prefix apps/web
+
       - name: Test Twitch media diagnostic boundaries with local fixtures
         run: npm run test:twitch:media --prefix apps/web
 

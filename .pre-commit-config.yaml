@@ -242,6 +242,20 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|source|manifest|playback)|modern-context|owned-browser)\.py$|^scripts/tests/web-abema-backend-playback\.test\.py$'
         pass_filenames: false
 
+      - id: web-abema-episode-playback-tests
+        name: Web ABEMA protected replay ownership protocol tests
+        entry: uv run scripts/tests/web-abema-episode-playback.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|episode-(source|manifest|eme|playback))|route-(comparison|eme|playback))\.py$|^scripts/tests/web-abema-episode-playback\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-browser-episode-playback-tests
+        name: Web ABEMA protected replay browser protocol tests
+        entry: node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-(browser-(manifest|episode-(manifest|eme|playback))|route-browser)\.mjs$|^scripts/tests/web-abema-browser-episode-playback\.test\.mjs$'
+        pass_filenames: false
+
       - id: web-abema-browser-playback-tests
         name: Web ABEMA private playback and mapper protocol tests
         entry: node --test scripts/tests/web-abema-browser-playback.test.mjs

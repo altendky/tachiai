@@ -118,6 +118,17 @@ One fresh routed Chrome trial accepted the unchanged helper/serializer output
 in the same temporary browser session and confirmed its closure. This is initial
 exchange acceptance, without segment decoding or protected-playback acceptance.
 
+The distinct [protected replay decoder diagnostic](web-abema-routing.md#separate-protected-replay-decoder-diagnostic)
+adds muted Shaka 5.3.3 MSE decoding to a new fresh CUSTOM/CSAI source and one
+initial temporary browser exchange. Its public stream model receives audited
+standard CENC identifiers before SDK filtering; exact initialization/media
+references retain the existing request admission. Standard EME method ownership
+tracks the actual session/update/closure independently of SDK destruction.
+Owned encrypted fixtures verify bounded decoding and refusal/retirement paths;
+they establish no provider, acoustic, ad-equivalence or sustained acceptance.
+The no-license decoder and earlier EME command retain their separate limits.
+This adds no product controls or platform UX exception.
+
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/pair.ts>

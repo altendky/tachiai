@@ -15,6 +15,7 @@ export default defineConfig({
         twitchPairProof: fileURLToPath(new URL('twitch-pair-proof.html', import.meta.url)),
         twitchNativeProof: fileURLToPath(new URL('twitch-native-proof.html', import.meta.url)),
         abemaProof: fileURLToPath(new URL('abema-proof.html', import.meta.url)),
+        abemaProtectedProof: fileURLToPath(new URL('abema-protected-proof.html', import.meta.url)),
       },
     },
   },

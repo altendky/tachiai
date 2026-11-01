@@ -30,6 +30,7 @@ repos:
     rev: v0.24.0
     hooks:
       - id: markdownlint-cli2
+        language_version: system
 
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12

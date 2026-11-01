@@ -2,6 +2,7 @@ import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { type TimingCore } from './player';
 import { PairFixture, SIDES, TIMING_STEPS, pairBounds, type Side } from './pair';
 import { qualityTitle, observedQualityTitle, qualityExplanation, sameRequest } from './quality';
+import { controlDockWidth, viewerLayout, type ViewerLayout } from './viewer-layout';
 import './pair-style.css';
 
 declare global { interface Window { pair: PairFixture } }
@@ -33,6 +34,7 @@ let renderedRevision: number | undefined;
 let renderedPlaying = false;
 let pair: PairFixture;
 const stage = element('stage');
+let measuredLayout: ViewerLayout | undefined;
 const landscape = () => window.innerWidth > window.innerHeight;
 const clearIdle = () => { clearTimeout(idle); idle = undefined; };
 const stopRepeat = (cancelled = true, pointerId?: number) => {
@@ -48,12 +50,29 @@ const layout = () => {
   const state = pair.observe();
   if (state.mode !== 'viewer' || renderedRevision !== pair.revision) resetPointers();
   renderedRevision = pair.revision;
+  if (state.mode !== 'viewer') return;
+  const viewer = element('viewer'), dock = element('dock'), body = element('panel-body');
+  const usableTop = viewer.getBoundingClientRect().top + window.scrollY;
+  viewer.style.height = `${Math.max(0, window.innerHeight - usableTop)}px`;
+  const { width, height } = viewer.getBoundingClientRect();
+  dock.style.width = `${controlDockWidth(width, landscape(), panel !== undefined)}px`;
+  body.style.maxHeight = 'none';
+  const toolbarHeight = dock.querySelector('nav')!.getBoundingClientRect().height;
+  dock.style.setProperty('--toolbar-height', `${toolbarHeight}px`);
+  const next = viewerLayout(width, height, landscape(), panel !== undefined, controls, state.fitVideo,
+    toolbarHeight, body.getBoundingClientRect().height);
+  body.style.maxHeight = `${next.bodyCap}px`;
+  if (measuredLayout && [next.stage.width, next.stage.height, next.floatingRight, next.floatingBottom].some((value, i) =>
+    value !== [measuredLayout!.stage.width, measuredLayout!.stage.height, measuredLayout!.floatingRight, measuredLayout!.floatingBottom][i])) resetPointers();
+  measuredLayout = next;
+  stage.style.width = `${next.stage.width}px`; stage.style.height = `${next.stage.height}px`;
+  dock.dataset.position = next.sideDock ? 'side' : 'bottom';
   const aspect = (side: Side) => {
     const feed = state.feeds[side];
     return feed && feed.width > 0 && feed.height > 0 ? feed.width / feed.height : 16 / 9;
   };
-  const bounds = pairBounds(stage.clientWidth, stage.clientHeight, landscape(), state.primary,
-    state.floating, aspect('A'), aspect('B'));
+  const bounds = pairBounds(next.stage.width, next.stage.height, landscape(), state.primary,
+    state.floating, aspect('A'), aspect('B'), next.floatingRight, next.floatingBottom);
   for (const side of SIDES) {
     const pane = element(`pane-${side}`), rect = bounds[side];
     Object.assign(pane.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`,
@@ -76,6 +95,10 @@ const render = () => {
   element('timing-panel').hidden = panel !== 'timing';
   element('status-panel').hidden = panel !== 'status';
   element('quality-panel').hidden = panel !== 'quality';
+  element('panel-body').hidden = panel === undefined;
+  element('panel-title').textContent = panel ? `${{ audio: 'Audio', timing: 'Timing', status: 'Status', quality: 'Quality' }[panel]} controls` : '';
+  element('fit-video').textContent = `Fit video: ${state.fitVideo ? 'on' : 'off'}`;
+  element('fit-video').setAttribute('aria-pressed', String(state.fitVideo));
   element('more-menu').hidden = !menu;
   element('transport').textContent = state.desiredPlaying ? 'Pause' : 'Play';
   element<HTMLButtonElement>('transport').disabled = state.busy;
@@ -150,7 +173,8 @@ const render = () => {
 const reveal = () => { controls = true; clearIdle(); render(); };
 const hide = () => { stopRepeat(); clearIdle(); controls = false; panel = undefined; menu = false; render(); };
 const toggle = (name: typeof panel) => {
-  stopRepeat(); menu = false; panel = panel === name ? undefined : name; reveal();
+  stopRepeat(); menu = false; panel = panel === name ? undefined : name;
+  element('panel-body').scrollTop = 0; reveal();
 };
 const sources = async () => {
   stopRepeat(); clearIdle(); panel = undefined; menu = false; controls = true;
@@ -225,6 +249,8 @@ element('hide').onclick = hide;
 element('swap').onclick = () => { menu = false; pair.swap(); reveal(); };
 element('status').onclick = () => { menu = false; toggle('status'); };
 element('quality').onclick = () => { menu = false; toggle('quality'); };
+element('panel-back').onclick = () => { toggle(panel); };
+element('fit-video').onclick = () => { pair.toggleFitVideo(); reveal(); };
 element('centre').onclick = () => { pair.setMix({ balance: 50 }); reveal(); };
 for (const key of ['overall', 'balance'] as const) {
   element<HTMLInputElement>(key).oninput = () => { pair.setMix({ [key]: Number(element<HTMLInputElement>(key).value) }); reveal(); };
@@ -284,7 +310,9 @@ for (const side of SIDES) {
     const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
     if (Math.hypot(dx, dy) > 8) gesture.moving = true;
     if (!gesture.moving || !landscape() || side === pair.observe().primary) return;
-    const tx = stage.clientWidth - pane.clientWidth, ty = stage.clientHeight - pane.clientHeight;
+    const size = pane.getBoundingClientRect();
+    const tx = (measuredLayout?.floatingRight ?? stage.clientWidth) - size.width;
+    const ty = (measuredLayout?.floatingBottom ?? stage.clientHeight) - size.height;
     pair.moveFloating(tx > 0 ? (gesture.left + dx) / tx : 0, ty > 0 ? (gesture.top + dy) / ty : 0);
   };
   pane.onpointerup = (event) => {
@@ -307,5 +335,8 @@ window.addEventListener('pagehide', () => { resetPointers(); clearIdle(); void p
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { resetPointers(); clearIdle(); void pair.stop(true); }
 });
-new ResizeObserver(layout).observe(stage);
+const resize = new ResizeObserver(layout);
+resize.observe(element('viewer')); resize.observe(element('panel-body')); resize.observe(element('dock').querySelector('nav')!);
+resize.observe(document.querySelector('.diagnostic')!);
+window.addEventListener('resize', layout);
 render();

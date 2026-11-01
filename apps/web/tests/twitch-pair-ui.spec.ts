@@ -68,6 +68,8 @@ test(`paired ${A} / ${B} decodes owned videos, retains identities, and revokes o
   await page.getByRole('button', {name: 'Prepare both feeds'}).click();
   await expect(page.getByRole('button', {name: 'Play both feeds'})).toBeEnabled();
   await expect(page.locator('video')).toHaveCount(2);
+  await expect(page.locator('#stage')).toBeVisible();
+  for (const side of ['A', 'B']) await expect(page.locator(`#pane-${side} video`)).toBeVisible();
   await page.evaluate(() => {(window as any).ownedPairElements = Array.from(document.querySelectorAll('video'));});
   await page.getByRole('button', {name: 'Play both feeds'}).click();
   await expect.poll(() => page.evaluate(() => {
@@ -118,6 +120,7 @@ test(`paired ${A} / ${B} decodes owned videos, retains identities, and revokes o
   await page.getByRole('button', {name: 'Play both feeds'}).click();
   await page.getByRole('button', {name: 'Swap primary feed'}).click();
   expect(await page.evaluate(() => (window as any).twitchPairDiagnostic.snapshot().primary)).toBe('B');
+  for (const side of ['A', 'B']) await expect(page.locator(`#pane-${side} video`)).toBeVisible();
   expect(await page.evaluate(() => (window as any).ownedPairElements.every((video: HTMLVideoElement, index: number) =>
     video === document.querySelectorAll('video')[index]))).toBe(true);
   await page.getByRole('button', {name: 'Stop and revoke'}).click();

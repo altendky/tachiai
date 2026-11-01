@@ -55,6 +55,36 @@ after four idle seconds; a panel or pause keeps it available. More contains
 primary swap, Quality and safe playback observations. It does not advertise fake
 Providers, Routes or other unimplemented operations.
 
+### Responsive controls and Fit video
+
+Each adjustment panel has the common Back to playback controls action and
+**Fit video: on/off** toggle. Fit starts on for each new Watch, survives panel
+changes and retry, and changes geometry without playback commands or replacing
+players. Landscape with an open panel uses a bottom-aligned right dock at usable
+widths of at least 640 CSS logical pixels. Its width follows the native formula:
+the smaller of 360 and the larger of 45% (rounded down) or six 48-pixel toolbar
+targets plus 16 pixels of padding. Thus the minimum takes precedence at 640/641;
+it is not a strict 45% cap. Narrow landscape and portrait use a bottom tray.
+Panel content sizes naturally within a 60%-height scroll cap and available space
+above the fixed toolbar. The diagnostic header remains outside the measured
+usable viewer; no fullscreen or orientation-lock behavior is implied.
+
+Fit on reserves visible dock space in landscape; off allows the primary video
+underneath. The floating feed avoids the dock in both modes, using the same
+normalized position within its unobscured range. Hide restores full landscape
+space. Portrait always reserves the visible tray, or 56 logical pixels when
+hidden. Resizing, panel changes, Fit and Hide retain media elements, players,
+transport intent, mix/mutes and quality state. Manual orientation and TV-specific
+focus/placement rules are not implemented by this slice.
+
+Controlled browser regressions cover the 639/640/641 threshold, wide and narrow
+landscape, portrait, large-text scrolling/48-pixel targets, Fit on/off, panel
+changes, Hide/reveal and drag avoidance. They retain actual independent media
+elements/player objects, advancing playback, requested quality and mix state,
+with no toggle-induced play/pause/seek calls. Retry retains Fit; a new Watch
+restores on. Pure layout vectors supplement the real browser checks. These are
+owned media/software observations, not physical display or provider acceptance.
+
 ## Run and verification
 
 Use the [web harness build procedure](../../../apps/web/README.md), then visit
@@ -194,8 +224,7 @@ Android encrypted-storage equivalence or select product hosting/account storage.
 
 ## Remaining acceptance
 
-Full responsive control-dock/Fit video behavior, manual
-orientation, complete product picker/settings/navigation,
+Manual orientation, complete product picker/settings/navigation,
 browser history integration, provider accounts/routes and other full-client
 features remain pending. This fixture neither removes those requirements nor
 approves a platform-specific substitute. Any concrete UX deviation still needs

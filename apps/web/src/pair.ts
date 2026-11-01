@@ -20,6 +20,7 @@ export interface PairObservation {
   mix: Mix;
   primary: Side;
   floating: Position;
+  fitVideo: boolean;
   requestedAdjustmentMs: number;
   adjustmentValid: boolean;
   status: CommandResult | 'stopped' | 'background' | 'cleanup-failed';
@@ -38,7 +39,8 @@ export function gains(mix: Mix): Record<Side, number> {
 
 // Same bounds/defaults as TwoFeedViewerState; geometry never changes ownership.
 export function pairBounds(width: number, height: number, landscape: boolean, primary: Side,
-  floating: Position, aspectA = 16 / 9, aspectB = 16 / 9): Record<Side, Rect> {
+  floating: Position, aspectA = 16 / 9, aspectB = 16 / 9,
+  floatingRight = width, floatingBottom = height): Record<Side, Rect> {
   const ratio = (value: number) => Number.isFinite(value) && value > 0 ? value : 16 / 9;
   const a = ratio(aspectA), b = ratio(aspectB);
   if (!landscape) {
@@ -48,9 +50,10 @@ export function pairBounds(width: number, height: number, landscape: boolean, pr
     return { A: { left: 0, top: 0, width, height: ha }, B: { left: 0, top: ha, width, height: hb } };
   }
   const secondaryRatio = primary === 'A' ? b : a;
-  const sw = Math.min(width, Math.round(Math.min(width * 0.32, height * secondaryRatio * 0.65)));
-  const sh = Math.min(height, Math.round(sw / secondaryRatio));
-  const secondary = { left: Math.round((width - sw) * floating.x), top: Math.round((height - sh) * floating.y), width: sw, height: sh };
+  const right = Math.max(0, Math.min(width, floatingRight)), bottom = Math.max(0, Math.min(height, floatingBottom));
+  const sw = Math.min(right, Math.round(Math.min(right * 0.32, bottom * secondaryRatio * 0.65)));
+  const sh = Math.min(bottom, Math.round(sw / secondaryRatio));
+  const secondary = { left: Math.round((right - sw) * floating.x), top: Math.round((bottom - sh) * floating.y), width: sw, height: sh };
   const full = { left: 0, top: 0, width, height };
   return primary === 'A' ? { A: full, B: secondary } : { A: secondary, B: full };
 }
@@ -77,6 +80,7 @@ export class PairFixture {
   private mix: Mix = { overall: 50, balance: 50, muteA: false, muteB: false };
   private primary: Side = 'A';
   private floating: Position = { x: 1, y: 0 };
+  private fitVideo = true;
   private adjustment = 0;
   private adjustmentValid = true;
   private status: PairObservation['status'] = 'stopped';
@@ -187,7 +191,7 @@ export class PairFixture {
       feeds: { A: this.slots.A.current?.observe(), B: this.slots.B.current?.observe() },
       results: { ...this.results }, desiredPlaying: this.desiredPlaying,
       busy: this.timing !== undefined, stopping: this.stopping, retrying: { ...this.retrying },
-      mix: { ...this.mix }, primary: this.primary, floating: { ...this.floating },
+      mix: { ...this.mix }, primary: this.primary, floating: { ...this.floating }, fitVideo: this.fitVideo,
       requestedAdjustmentMs: this.adjustment, adjustmentValid: this.adjustmentValid, status: this.status,
       qualityStore: this.qualityStore, savingQuality: this.qualitySave !== undefined, qualityMessage: this.qualityMessage,
       qualityApplication: { ...this.qualityApplication },
@@ -211,7 +215,7 @@ export class PairFixture {
     this.overrides = { A: {}, B: {} };
     this.qualityApplication = { A: undefined, B: undefined };
     this.mix = { overall: 50, balance: 50, muteA: false, muteB: false };
-    this.primary = 'A'; this.floating = { x: 1, y: 0 };
+    this.primary = 'A'; this.floating = { x: 1, y: 0 }; this.fitVideo = true;
     this.adjustment = 0; this.adjustmentValid = true;
     this.positions = { A: undefined, B: undefined };
     this.results = { A: undefined, B: undefined };
@@ -337,6 +341,12 @@ export class PairFixture {
   moveFloating(x: number, y: number): void {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     this.floating = { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    this.publish();
+  }
+
+  toggleFitVideo(): void {
+    if (this.mode !== 'viewer') return;
+    this.fitVideo = !this.fitVideo;
     this.publish();
   }
 

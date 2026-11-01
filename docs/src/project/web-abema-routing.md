@@ -301,3 +301,41 @@ Those fixtures establish the mechanism only. Actual provider decoding,
 entitlement, ad equivalence, acoustic output, paired operation and sustained
 playback require their own observations. This development diagnostic adds no
 product Routes/account controls or common UX exception.
+
+### Initial protected provider decode observation
+
+One fresh run on signed clean
+`8930f87cf1fe5df438120d0947c4b8a7f514122a` passed on November 1, 2026. The
+complete route/setup/decode/cleanup command took 54.82 wall seconds and exited
+zero. Host: Ubuntu 26.04.1 LTS, Linux 7.0.0-34-generic x86-64; the fresh owned
+headed Google Chrome runtime reported 156.0.8078.79. Browser ClearKey used one
+temporary session and the audited standard CENC initialization. The same
+previously verified userspace route binary and user-authorized Windscribe Tokyo
+export supplied both backend and browser traffic. Exit country and independent
+complete route coverage were not measured. No saved provider account, Android
+cookie or grant was used.
+
+Fresh anonymous guest, matching profile, media token, conservative exact-program
+eligibility, gateway, source/session/token/configuration subset and all five
+runtime pins passed. The unchanged selector chose the fixed replay
+`394-72_s10_p8529`, CUSTOM and CSAI. The owned player read one MPD, two
+initializations and eight media segments; readable manifest/media and license
+statuses were HTTP 200. Exactly one selected key-system access, MediaKeys object,
+temporary session, initial message/request, license POST/response and accepted
+native update were recorded. No DRM admission refusal or SDK error occurred.
+
+Before stopping, actual frame callbacks reported **36 decoded frames at
+854 × 480 and 5,739 ms of media advancement**. Cleanup retained those counts,
+changed the policy to expected CANCELLED, explicitly closed that same session,
+verified MediaKeys detachment and destroyed the player/browser/server. Both
+provider-attempt cleanup and temporary-route cleanup were confirmed, with no
+host-route change, persisted guest grant or profile copy.
+
+This establishes bounded protected replay decoding through the Tachiai-owned
+browser player in this exact environment. The player was muted; acoustic output,
+quality/seek/alignment controls, paired feeds, advertisements, renewal and
+sustained operation were not tested. Actual provider codec/track metadata was
+not exported. Conservative free-window eligibility and successful decoding do
+not independently establish entitlement or provider ad equivalence. No
+certificate, advertisement, alternate header/body retry, renewal, second
+exchange, Headerly/CORS override, TLS bypass, capture or media relay occurred.

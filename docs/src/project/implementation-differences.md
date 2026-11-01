@@ -125,7 +125,9 @@ standard CENC identifiers before SDK filtering; exact initialization/media
 references retain the existing request admission. Standard EME method ownership
 tracks the actual session/update/closure independently of SDK destruction.
 Owned encrypted fixtures verify bounded decoding and refusal/retirement paths;
-they establish no provider, acoustic, ad-equivalence or sustained acceptance.
+one fresh routed Chrome 156 trial also decoded 36 protected replay frames at
+854 × 480 with 5,739 ms advancement and confirmed native/session/route cleanup.
+These establish no acoustic, entitlement, ad-equivalence or sustained acceptance.
 The no-license decoder and earlier EME command retain their separate limits.
 This adds no product controls or platform UX exception.
 

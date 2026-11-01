@@ -103,7 +103,17 @@ browser MPD request. Proxy-only CDP authentication and unchanged request
 continuation preserve the normal browser CORS/TLS checks; Python authenticates
 only CONNECT and ignores environment bypass settings. This is development
 infrastructure with no product Routes/account or UX change. Owned fixtures verify
-the mechanism; actual Japan egress and provider-route acceptance remain unproved.
+the mechanism; one fresh routed replay metadata trial returned a browser-readable
+MPD200 with independent route/attempt cleanup. Actual Japan egress, full route
+coverage and protected playback remain unproved.
+
+The separate one-initial-exchange EME diagnostic uses a fresh browser temporary
+ClearKey session rather than Android FrameworkMediaDrm. Its explicit standard
+common-PSSH request feeds the original CDM message to the exact bound license
+URI; the unchanged provider response helper and dash ClearKey serializer return
+opaque bytes directly to that same browser session. This is a bounded diagnostic
+contract, not automatic provider-player parity or a native-normalizer port. It
+adds no media player, product setting, stored account, renewal or UX variation.
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
 

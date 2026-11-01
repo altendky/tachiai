@@ -221,6 +221,20 @@ repos:
         files: '^apps/web/scripts/abema-(route-browser|browser-(manifest|episode-manifest))\.mjs$|^scripts/tests/web-abema-route-browser\.test\.mjs$'
         pass_filenames: false
 
+      - id: web-abema-episode-eme-tests
+        name: Web ABEMA one-exchange private EME preparation tests
+        entry: uv run scripts/tests/web-abema-episode-eme.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(backend-(bootstrap|episode-(source|manifest|eme))|route-(comparison|eme))\.py$|^scripts/tests/web-abema-episode-eme\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-browser-episode-eme-tests
+        name: Web ABEMA bounded browser EME protocol tests
+        entry: node --test scripts/tests/web-abema-browser-episode-eme.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-(browser-(manifest|episode-(manifest|eme))|route-browser)\.mjs$|^scripts/tests/web-abema-browser-episode-eme\.test\.mjs$'
+        pass_filenames: false
+
       - id: web-abema-backend-playback-tests
         name: Web ABEMA closed playback protocol safety tests
         entry: uv run scripts/tests/web-abema-backend-playback.test.py

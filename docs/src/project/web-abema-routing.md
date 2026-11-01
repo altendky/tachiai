@@ -109,3 +109,92 @@ separate observations.
 
 Primary interface references: [Chromium proxy behavior](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md),
 [CDP Fetch authentication](https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#type-AuthChallenge).
+
+## Routed metadata observation
+
+On November 1, 2026, one fresh metadata-only attempt on merged revision
+`2e8401725a4c0f985e8402d05e769defebe616c2` completed successfully. It used Linux
+x86-64, an owned headed Chrome major 156, a fresh anonymous guest/profile/token,
+the exact replay above, and the existing Windscribe Tokyo Shinkansen export in
+one temporary userspace route. The host runner was built from signed clean
+`f521141d588a8b352b51a658e14a69c6fe4792b4`, SHA-256
+`dc8415e2c8a8d9c62b5773eb0100340008b1dca6f88e3ecd7be30e5bf8a6a5c2`.
+The profile stayed inside the private consumer. Exact browser patch, effective
+exit country and independent complete route coverage were not measured.
+
+Pinned assets, fresh guest, matching profile, media token, conservative exact
+replay eligibility and gateway all returned HTTP 200. The unchanged selector
+accepted source/session/token and the existing configuration subset with CUSTOM
+protection and CSAI mode. The browser's exact normal-CORS MPD GET returned readable
+HTTP 200 and DASH XML. The declared-subset graph reported one Period, two
+AdaptationSets, ten Representations and SegmentTemplate, with content protection,
+cenc, pssh and key-ID metadata present. Five references were unresolved by this
+limited classifier, none invalid; all seven auxiliary-presence flags were false.
+No PSSH/key interpretation or manifest retention followed.
+
+The command exited zero. Route and attempt cleanup were independently confirmed,
+with no host-route change, saved profile copy or persisted guest grant. No
+initialization, media, ad, certificate, license or CDM operation occurred. The
+earlier default-host 403 was not the failing boundary in this new routed/fresh
+context; this later single run does not isolate its cause. Exact evidence is
+recorded on [the investigation](https://github.com/altendky/tachiai/issues/366#issuecomment-6564017525).
+
+## Separate one-initial-exchange EME diagnostic
+
+The following distinct opt-in command continues a new fresh replay preparation
+into one browser EME exchange. The metadata command above remains MPD-only.
+After confirming that the selected WireGuard peer is idle elsewhere:
+
+```sh
+uv run apps/web/scripts/abema-route-eme.py \
+  --run-route-replay-eme --peer-idle-confirmed \
+  --route-runner /absolute/path/to/route-trial \
+  --wireguard-file /absolute/path/to/export.conf
+```
+
+The original 120-second preparation/source deadline and 180-second route lease
+remain. The source must select CUSTOM without a Widevine fallback. Only the new
+command admits the source-validated initial-license host in its temporary route.
+The exact license URI remains independently bound to the fresh program/session/
+token configuration. The browser receives the verified fresh guest identity
+needed by the unchanged response helper; no bearer, device ID, saved account or
+cookie is transferred. These values use bounded private pipes, never files or
+command arguments.
+
+All four existing public bundles plus the already reviewed dash library are
+downloaded at runtime, hash/size checked and independently verified by the browser
+owner before execution. Application entry callbacks and dash auto-creation stay
+disabled. No provider code is packaged, no original provider page/player is
+loaded, and no response algorithm is copied into Tachiai.
+
+The fresh page fetches only its bound MPD, validates the namespaced standard
+CENC identifiers and constructs a standard common-system PSSH without decoding
+provider-specific PSSH payloads. It requests a temporary `org.w3.clearkey` session,
+checks its initial message against those same identifiers, and sends the original
+message bytes in one exact JSON POST with normal browser CORS/TLS, omitted
+credentials and refused redirects. The unchanged provider response helper uses
+that attempt's profile-verified user identity. Its result goes through the
+unchanged provider dash ClearKey adapter and `toJWK()` directly into the same
+fresh browser session's `update()`. Tachiai does not inspect, normalize, export,
+persist or reuse the returned keys.
+
+This explicit common-PSSH/JSON-POST contract is a bounded diagnostic choice; it
+does not reproduce automatic dash key-system/header selection. There is no
+alternate header/body retry, renewal, second exchange, native fallback or media
+relay. Browser-readable manifest and license statuses are reported separately;
+the closed result retains the operational stage and requires session closure
+and owned browser/server cleanup. A late accepted update cannot make an expired
+or canceled attempt succeed. Overall cleanup still requires independent route
+and provider-attempt confirmation.
+
+The command stops at CDM update acceptance. It makes no initialization-segment,
+media, advertisement or certificate request and creates no player. It does not
+establish usable decoded content, source entitlement, provider ad equivalence,
+renewal or web support. The existing no-license decoder and source-only helpers
+retain their restrictions. Runtime provider acceptance for this new command is
+unverified; controlled owned fixtures and actual provider observations must be
+reported separately.
+
+The standard initialization/session interfaces are defined by
+[CENC initialization data](https://www.w3.org/TR/eme-initdata-cenc/) and
+[Encrypted Media Extensions](https://www.w3.org/TR/encrypted-media/).

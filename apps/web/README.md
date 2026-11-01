@@ -121,3 +121,9 @@ can give the exact replay metadata experiment one temporary userspace WireGuard
 route for both backend preparation and browser MPD access. It is explicitly
 opt-in, retains normal TLS/source guards, and performs no media or DRM operation.
 It does not implement product route settings or select an installed companion.
+
+The distinct `abema-route-eme.py --run-route-replay-eme` diagnostic can continue
+a new exact replay setup into one initial opaque browser CDM exchange, then
+close that same session. It has no player/media/renewal path. Read its
+[separate contract and opt-in procedure](../../docs/src/project/web-abema-routing.md#separate-one-initial-exchange-eme-diagnostic)
+before running it; the MPD-only command keeps its earlier boundary.

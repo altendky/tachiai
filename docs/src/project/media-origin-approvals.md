@@ -45,6 +45,27 @@ Manifest declaration is provenance evidence, not entitlement or proof of clear
 media. Actual provider decoder acceptance remains unverified. This diagnostic
 does not broaden the cached Android policy or change existing MPD-only commands.
 
+### Bounded browser initial EME exchange
+
+The separate [one-exchange diagnostic](web-abema-routing.md#separate-one-initial-exchange-eme-diagnostic)
+adds `license.p-c3-e.abema-tv.com` only to its own temporary routed purpose.
+The fresh unchanged browser configuration factory and independent parent already
+validate this exact HTTPS host, canonical path, selected program, media token
+and advertised template/output binding. The reviewed pinned browser response
+caller uses the `abematv-dash` license family and exact JSON response contract.
+The owned browser repeats those fixed checks before its one initial JSON POST;
+it accepts no arbitrary endpoint, redirects, alternate transport or retries.
+Normal provider TLS and browser CORS remain in force, with credentials omitted.
+
+The new runtime-only `dash.js` download is the already reviewed exact public
+`abema.tv/assets/compat/62ff7b58b1651206.abema-dashjs.js`, 617,926 bytes and SHA-256
+`988f8bc1a196ae74faf5c9650ddce0d1104c4816a663e9ab534c6b2a1c87cab8`.
+Its unchanged ClearKey adapter serializes the unchanged response-helper output
+for the same fresh browser CDM. Source-only, MPD-only, Android cached and
+no-license decoder policies are unchanged. This admission is configuration and
+public-code evidence under the general integration scope, not successful
+provider EME/playback or entitlement evidence.
+
 ### Public ABEMA channel metadata
 
 The Channels adapter uses anonymous GET to

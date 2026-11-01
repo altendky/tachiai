@@ -14,6 +14,13 @@ fixtures with stream copy and encodes a separate owned quality ladder from A.
 No provider media is downloaded. If FFmpeg is not on PATH, set
 `FFMPEG=/path/to/ffmpeg` for preparation.
 
+Asset preparation also builds a separate, pinned FFmpeg 8.1 copy-only tool from
+the official source archive for the owned encrypted fixture. Its build helper
+uses a C compiler, Make, curl, tar, xz, GNU coreutils and `flock`. Build output is
+cached under `apps/web/build/tools/ffmpeg-8.1`. The encrypted generator accepts an explicit
+`FFMPEG_ENCRYPTED` executable override and verifies actual per-fragment CENC
+metadata. The ordinary `FFMPEG` selection continues to package clear fixtures.
+
 From the repository root:
 
 ```sh

@@ -288,7 +288,18 @@ missing/invalid renderer receipts cannot establish CDM cleanup.
 Owned fixture tests use a hash-verified repository H.264/AAC source encrypted
 locally with a fixed **public synthetic** key. They cover successful five-second
 decoding, wrong-key/no-license refusal, exact one-exchange admission, original
-lifetime, response identity, late retirement and sticky closure failure:
+lifetime, response identity, late retirement and sticky closure failure.
+
+Asset preparation builds a separate pinned FFmpeg 8.1 copy-only tool from the
+official source archive for this fixture. Older packagers can put encryption
+metadata in the initialization file or accumulate earlier samples across later
+fragments. The generator checks actual fragment-local `senc`/`saio`/`saiz`
+metadata, sample counts and offsets before publishing fixture provenance. An
+explicit `FFMPEG_ENCRYPTED` override must satisfy those same checks; the ordinary
+clear-fixture `FFMPEG` choice remains independent. These are owned test-media
+checks and do not parse or rewrite provider segments.
+
+Run the owned suites:
 
 ```sh
 npm run test:abema:protected --prefix apps/web

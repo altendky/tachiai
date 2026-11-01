@@ -249,6 +249,13 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|episode-(source|manifest|eme|playback))|route-(comparison|eme|playback))\.py$|^scripts/tests/web-abema-episode-playback\.test\.py$'
         pass_filenames: false
 
+      - id: web-encrypted-fixture-tests
+        name: Owned encrypted fixture packaging tests
+        entry: node --test scripts/tests/web-encrypted-fixture.test.mjs
+        language: system
+        files: '^apps/web/scripts/prepare-encrypted-fixture\.mjs$|^scripts/(build-web-fixture-ffmpeg\.sh|tests/web-encrypted-fixture\.test\.mjs)$'
+        pass_filenames: false
+
       - id: web-abema-browser-episode-playback-tests
         name: Web ABEMA protected replay browser protocol tests
         entry: node --test scripts/tests/web-abema-browser-episode-playback.test.mjs

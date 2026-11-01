@@ -24,6 +24,58 @@ function verifyInitialization(data, sampleEntry) {
   }
 }
 
+function boxes(data, start = 0, end = data.length) {
+  const result = [];
+  for (let at = start; at < end;) {
+    if (at + 8 > end || result.length >= 64) throw Error('Owned encrypted box shape refused.');
+    const size = data.readUInt32BE(at);
+    if (size < 8 || size > end - at) throw Error('Owned encrypted box bounds refused.');
+    result.push({ type: data.toString('ascii', at + 4, at + 8), start: at, payload: at + 8, end: at + size });
+    at += size;
+  }
+  return result;
+}
+
+// Older packagers omit CENC fragment data or accumulate previous fragments'
+// samples. Check every actual generated moof/traf, not just a version string.
+export function verifyEncryptedFragment(data) {
+  const failure = () => Error('Owned fragmented CENC metadata missing or invalid; run scripts/build-web-fixture-ffmpeg.sh or set FFMPEG_ENCRYPTED to a compatible packager (FFmpeg 8.1+).');
+  try {
+    if (!Buffer.isBuffer(data) || data.length > 2 * 1024 * 1024) throw failure();
+    const one = (list, type) => {
+      const matches = list.filter(box => box.type === type);
+      if (matches.length !== 1) throw failure();
+      return matches[0];
+    };
+    const top = boxes(data), moof = one(top, 'moof');
+    one(top, 'mdat');
+    const traf = one(boxes(data, moof.payload, moof.end), 'traf');
+    const children = boxes(data, traf.payload, traf.end);
+    const senc = one(children, 'senc'), saio = one(children, 'saio'), saiz = one(children, 'saiz'), trun = one(children, 'trun');
+    if (senc.end - senc.payload < 8 || saio.end - saio.payload !== 12 || saiz.end - saiz.payload < 9 || trun.end - trun.payload < 8) throw failure();
+    const flags = data.readUInt32BE(senc.payload), samples = data.readUInt32BE(senc.payload + 4);
+    if (![0, 2].includes(flags) || samples < 1 || samples > 1024 || data.readUInt32BE(trun.payload + 4) !== samples ||
+        data.readUInt32BE(saio.payload) !== 0 || data.readUInt32BE(saio.payload + 4) !== 1 ||
+        data.readUInt32BE(saio.payload + 8) !== senc.payload + 8 - moof.start || data.readUInt32BE(saiz.payload) !== 0 ||
+        data.readUInt32BE(saiz.payload + 5) !== samples) throw failure();
+    const defaultSize = data[saiz.payload + 4];
+    if (saiz.end !== saiz.payload + 9 + (defaultSize ? 0 : samples)) throw failure();
+    let at = senc.payload + 8;
+    for (let index = 0; index < samples; index++) {
+      const began = at;
+      at += 8; // The verified tenc uses an eight-byte per-sample IV.
+      if (flags === 2) {
+        if (at + 2 > senc.end) throw failure();
+        const subsamples = data.readUInt16BE(at);
+        if (subsamples > 64) throw failure();
+        at += 2 + 6 * subsamples;
+      }
+      if (at > senc.end || at - began !== (defaultSize || data[saiz.payload + 9 + index])) throw failure();
+    }
+    if (at !== senc.end) throw failure();
+  } catch { throw failure(); }
+}
+
 function protectOwnedManifest(xml) {
   // This is deliberately a narrow transformation of our just-generated FFmpeg
   // fixture, never a parser/rewriter for supplied or provider manifests.
@@ -76,7 +128,10 @@ export function prepareEncryptedFixture(root, output) {
   mkdirSync(dirname(destination), { recursive: true });
   mkdirSync(destination);
   try {
-    const ffmpeg = process.env.FFMPEG ?? 'ffmpeg';
+    const ffmpeg = process.env.FFMPEG_ENCRYPTED ?? resolve(root, 'apps/web/build/tools/ffmpeg-8.1/bin/ffmpeg');
+    const version = spawnSync(ffmpeg, ['-version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 8192 });
+    const packagerVersion = /^ffmpeg version ([A-Za-z0-9_.+-]{1,64}) /.exec(version.stdout ?? '')?.[1];
+    if (version.error || version.status !== 0 || !packagerVersion) throw Error('Owned encrypted packager unavailable; run scripts/build-web-fixture-ffmpeg.sh or set FFMPEG_ENCRYPTED.');
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', source, '-t', '12',
       '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-map_metadata', '-1',
       '-f', 'dash', '-seg_duration', '2', '-use_template', '1', '-use_timeline', '1',
@@ -85,7 +140,7 @@ export function prepareEncryptedFixture(root, output) {
       resolve(destination, 'manifest.mpd')];
     const encoded = spawnSync(ffmpeg, args, { stdio: 'ignore', timeout: 60000, killSignal: 'SIGKILL' });
     if (encoded.error || encoded.signal || encoded.status !== 0) {
-      throw Error('Owned encrypted fixture packaging failed; install FFmpeg or set FFMPEG.');
+      throw Error('Owned encrypted fixture packaging failed; run scripts/build-web-fixture-ffmpeg.sh or set FFMPEG_ENCRYPTED.');
     }
     const initializations = readdirSync(destination).filter((name) => name.startsWith('init-'));
     if (initializations.length !== 2 || !initializations.includes('init-stream0.m4s') ||
@@ -94,6 +149,11 @@ export function prepareEncryptedFixture(root, output) {
     }
     verifyInitialization(readFileSync(resolve(destination, 'init-stream0.m4s')), 'encv');
     verifyInitialization(readFileSync(resolve(destination, 'init-stream1.m4s')), 'enca');
+    const fragments = readdirSync(destination).filter(name => /^chunk-stream[01]-[0-9]{5}\.m4s$/.test(name));
+    if (fragments.length < 2 || fragments.length > 32 || ![0, 1].every(stream => fragments.includes(`chunk-stream${stream}-00001.m4s`))) {
+      throw Error('Owned encrypted fragment inventory refused.');
+    }
+    for (const name of fragments) verifyEncryptedFragment(readFileSync(resolve(destination, name)));
     const manifest = resolve(destination, 'manifest.mpd');
     writeFileSync(manifest, protectOwnedManifest(readFileSync(manifest, 'utf8')));
     const metadata = {
@@ -102,6 +162,7 @@ export function prepareEncryptedFixture(root, output) {
       scheme: 'cenc-aes-ctr', publicSyntheticKey: ENCRYPTED_FIXTURE_KEY_HEX,
       publicSyntheticKid: ENCRYPTED_FIXTURE_KID_UUID, encryptedInitializations: 2, adaptationSets: 2,
       providerRequests: false, decodedPlaybackVerified: false,
+      packagerVersion, encryptedMediaFragments: fragments.length, fragmentedCencVerified: true,
     };
     writeFileSync(resolve(destination, 'provenance.json'), `${JSON.stringify(metadata, null, 2)}\n`);
     return metadata;

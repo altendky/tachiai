@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare:assets": "bash ../../scripts/build-web-core.sh && node scripts/prepare-assets.mjs",
+    "prepare:assets": "bash ../../scripts/build-web-core.sh && bash ../../scripts/build-web-fixture-ffmpeg.sh && node scripts/prepare-assets.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",

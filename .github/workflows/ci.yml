@@ -211,12 +211,12 @@ jobs:
         with:
           cache: true
 
-      - name: Install Wasm target and fixture packager
+      - name: Install Wasm target and fixture packaging prerequisites
         run: |
           rustup component add rustfmt clippy
           rustup target add wasm32-unknown-unknown
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg xvfb
+          sudo apt-get install --yes ffmpeg xvfb build-essential curl xz-utils
 
       - name: Install browser test dependencies
         working-directory: apps/web
@@ -260,6 +260,7 @@ jobs:
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
+          node --test scripts/tests/web-encrypted-fixture.test.mjs
           uv run scripts/tests/web-abema-episode-playback.test.py
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
           npm run test:abema:protected --prefix apps/web

@@ -54,6 +54,172 @@ test('explicit Watch starts duplicate independent real players with common audio
   expect(result.state.floating).toEqual({ x: 1, y: 0 });
 });
 
+test('blocked Watch keeps Play visible and one click starts both retained feeds', async ({ page }) => {
+  await page.evaluate(() => {
+    (window as any).ordinaryPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('Blocked test start', 'NotAllowedError'));
+  });
+  await watch(page);
+  await expect.poll(() => page.evaluate(() => window.pair.observe().results)).toEqual({ A: 'blocked', B: 'blocked' });
+  const play = page.getByRole('button', { name: 'Play', exact: true });
+  await expect(play).toBeVisible();
+  await page.waitForTimeout(4300);
+  await expect(play).toBeVisible();
+  await page.evaluate(() => { HTMLMediaElement.prototype.play = (window as any).ordinaryPlay; });
+  await play.click();
+  await playing(page);
+});
+
+test('blocked joint Play returns to Play without replacing either ready player', async ({ page }) => {
+  await watch(page); await playing(page); await pause(page);
+  const result = await page.evaluate(async () => {
+    const a = window.pair.slots.A.current, b = window.pair.slots.B.current;
+    const ordinary = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('Blocked test start', 'NotAllowedError'));
+    try {
+      const outcome = await window.pair.play();
+      return { outcome, desiredPlaying: window.pair.observe().desiredPlaying,
+        retained: a === window.pair.slots.A.current && b === window.pair.slots.B.current };
+    } finally { HTMLMediaElement.prototype.play = ordinary; }
+  });
+  expect(result).toEqual({ outcome: 'blocked', desiredPlaying: false, retained: true });
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await playing(page);
+});
+
+test('late blocked startup reveals Play after the pending-start controls have hidden', async ({ page }) => {
+  await page.evaluate(() => {
+    const rejects: Array<(reason: DOMException) => void> = [];
+    HTMLMediaElement.prototype.play = () => new Promise<void>((_resolve, reject) => { rejects.push(reject); });
+    (window as any).blockedStarts = rejects;
+  });
+  await watch(page);
+  await expect.poll(() => page.evaluate(() => (window as any).blockedStarts.length)).toBe(2);
+  await expect(page.locator('#dock')).toBeHidden({ timeout: 6000 });
+  await page.evaluate(() => {
+    for (const reject of (window as any).blockedStarts) reject(new DOMException('Blocked test start', 'NotAllowedError'));
+  });
+  await expect.poll(() => page.evaluate(() => window.pair.observe().desiredPlaying)).toBe(false);
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
+});
+
+test('a blocked feed does not cancel its playing partner', async ({ page }) => {
+  await page.evaluate(() => {
+    const ordinary = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      return this.closest('#pane-A') ? Promise.reject(new DOMException('Blocked test start', 'NotAllowedError')) : ordinary.call(this);
+    };
+  });
+  await watch(page);
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.pair.observe();
+    return { a: state.results.A, b: state.results.B, desired: state.desiredPlaying,
+      bAdvancing: !state.feeds.B?.paused && (state.feeds.B?.positionMs ?? 0) > 200 };
+  })).toEqual({ a: 'blocked', b: 'completed', desired: true, bAdvancing: true });
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+});
+
+test('a blocked early feed preserves Watch intent until its delayed partner starts', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/media/b/master.m3u8', async (route) => { await gate; await route.continue(); });
+  await page.evaluate(() => {
+    const ordinary = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      return this.closest('#pane-A') ? Promise.reject(new DOMException('Blocked test start', 'NotAllowedError')) : ordinary.call(this);
+    };
+  });
+  await watch(page);
+  try {
+    await expect.poll(() => page.evaluate(() => window.pair.observe().results.A)).toBe('blocked');
+    expect((await page.evaluate(() => window.pair.observe())).desiredPlaying).toBe(true);
+  } finally { release(); }
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.pair.observe();
+    return state.desiredPlaying && state.results.B === 'completed' && !state.feeds.B?.paused &&
+      (state.feeds.B?.positionMs ?? 0) > 200;
+  })).toBe(true);
+});
+
+test('late blocked Play cannot clear a newer successful Play intent', async ({ page }) => {
+  await watch(page); await playing(page); await pause(page);
+  const result = await page.evaluate(async () => {
+    const pair = window.pair;
+    const players = [pair.slots.A.current!, pair.slots.B.current!];
+    const ordinary = players.map((player) => player.play.bind(player));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    players.forEach((player) => { player.play = async () => { await gate; return 'blocked'; }; });
+    const old = pair.play();
+    players.forEach((player, index) => { player.play = ordinary[index]; });
+    const latest = await pair.play();
+    release();
+    return { latest, old: await old, desiredPlaying: pair.observe().desiredPlaying };
+  });
+  expect(result).toEqual({ latest: 'completed', old: 'cancelled', desiredPlaying: true });
+  await playing(page);
+});
+
+test('blocked preparation cannot clear a current manual Play that is still pending', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/media/b/master.m3u8', async (route) => { await gate; await route.continue(); });
+  await page.evaluate(() => {
+    const ordinary = HTMLMediaElement.prototype.play;
+    (window as any).ordinaryPlay = ordinary;
+    HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('Blocked test start', 'NotAllowedError'));
+  });
+  await watch(page);
+  await expect.poll(() => page.evaluate(() => window.pair.observe().results.A)).toBe('blocked');
+  await page.evaluate(() => {
+    const a = window.pair.slots.A.current!, ordinary = a.play.bind(a);
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    HTMLMediaElement.prototype.play = function () {
+      return this.closest('#pane-B') ? Promise.reject(new DOMException('Blocked test start', 'NotAllowedError')) :
+        (window as any).ordinaryPlay.call(this);
+    };
+    a.play = async () => { await pending; return ordinary(); };
+    (window as any).finishManualPlay = finish;
+    (window as any).manualPlay = window.pair.play();
+  });
+  release();
+  await expect.poll(() => page.evaluate(() => window.pair.observe().results.B)).toBe('blocked');
+  expect((await page.evaluate(() => window.pair.observe())).desiredPlaying).toBe(true);
+  expect(await page.evaluate(async () => {
+    (window as any).finishManualPlay();
+    return await (window as any).manualPlay;
+  })).toBe('completed');
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.pair.observe();
+    return state.desiredPlaying && !state.feeds.A?.paused && (state.feeds.A?.positionMs ?? 0) > 200;
+  })).toBe(true);
+});
+
+test('blocked retry leaves the healthy partner advancing with its Play intent', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/media/a/manifest.mpd', (route) => ++requests === 1 ? route.abort() : route.continue());
+  await watch(page);
+  await expect.poll(() => page.evaluate(() => window.pair.observe().feeds.A?.state)).toBe('failed');
+  await expect.poll(() => page.evaluate(() => (window.pair.observe().feeds.B?.positionMs ?? 0) > 200)).toBe(true);
+  const result = await page.evaluate(async () => {
+    const pair = window.pair, partner = pair.slots.B.current!;
+    const before = partner.observe().positionMs!;
+    const ordinary = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      return this.closest('#pane-A') ? Promise.reject(new DOMException('Blocked test start', 'NotAllowedError')) : ordinary.call(this);
+    };
+    try {
+      const outcome = await pair.retry('A');
+      return { outcome, before, retained: pair.slots.B.current === partner, desiredPlaying: pair.observe().desiredPlaying };
+    } finally { HTMLMediaElement.prototype.play = ordinary; }
+  });
+  expect(result.outcome).toBe('blocked');
+  expect(result.retained).toBe(true);
+  expect(result.desiredPlaying).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.pair.observe().feeds.B?.positionMs ?? 0)).toBeGreaterThan(result.before);
+});
+
 test('centre-unity mixing, mute restoration and fine arrows preserve the other controls', async ({ page }) => {
   await watch(page);
   await playing(page);

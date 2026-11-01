@@ -30,6 +30,7 @@ let repeatOwner: { button: HTMLButtonElement; pointerId: number; repeated: boole
 const suppressedClicks = new WeakSet<HTMLButtonElement>();
 const resetGestures = new Set<() => void>();
 let renderedRevision: number | undefined;
+let renderedPlaying = false;
 let pair: PairFixture;
 const stage = element('stage');
 const landscape = () => window.innerWidth > window.innerHeight;
@@ -62,6 +63,8 @@ const layout = () => {
 
 const render = () => {
   const state = pair.observe();
+  if (renderedPlaying && !state.desiredPlaying) controls = true;
+  renderedPlaying = state.desiredPlaying;
   element('picker').hidden = state.mode !== 'sources';
   element('viewer').hidden = state.mode !== 'viewer';
   element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed' || state.qualityStore !== 'ready' || state.savingQuality;

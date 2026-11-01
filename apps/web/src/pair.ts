@@ -67,6 +67,8 @@ export class PairFixture {
   private feedRuns: Record<Side, number> = { A: 0, B: 0 };
   private generation = 0;
   private playGeneration = 0;
+  private pendingPlay?: number;
+  private preparing: Record<Side, number | undefined> = { A: undefined, B: undefined };
   private timing?: object;
   private mode: 'sources' | 'viewer' = 'sources';
   private desiredPlaying = false;
@@ -203,6 +205,8 @@ export class PairFixture {
     if (this.stopping || this.cleanupFailed || this.qualityStore !== 'ready' || this.qualitySave || !this.selected.A || !this.selected.B) return 'unavailable';
     const run = ++this.generation;
     ++this.playGeneration;
+    this.pendingPlay = undefined;
+    this.preparing = { A: undefined, B: undefined };
     this.mode = 'viewer'; this.desiredPlaying = true; this.timing = undefined;
     this.overrides = { A: {}, B: {} };
     this.qualityApplication = { A: undefined, B: undefined };
@@ -223,6 +227,28 @@ export class PairFixture {
 
   private async prepare(side: Side, run: number, restore?: number): Promise<CommandResult> {
     const feedRun = ++this.feedRuns[side];
+    this.preparing[side] = feedRun;
+    try { return await this.prepareFeed(side, run, feedRun, restore); }
+    finally {
+      if (run === this.generation && this.preparing[side] === feedRun) {
+        this.preparing[side] = undefined;
+        this.reconcileBlockedPlay();
+        this.publish();
+      }
+    }
+  }
+
+  private reconcileBlockedPlay(): void {
+    if (!this.desiredPlaying || this.pendingPlay === this.playGeneration ||
+        SIDES.some((side) => this.preparing[side] !== undefined)) return;
+    if (SIDES.some((side) => this.results[side] === 'blocked') &&
+        !SIDES.some((side) => {
+          const feed = this.slots[side].current?.observe();
+          return feed?.state === 'ready' && !feed.paused;
+        })) this.desiredPlaying = false;
+  }
+
+  private async prepareFeed(side: Side, run: number, feedRun: number, restore?: number): Promise<CommandResult> {
     const source = this.sources.get(this.selected[side] ?? '');
     if (!source) return 'invalid';
     const current = () => this.mode === 'viewer' && run === this.generation && feedRun === this.feedRuns[side];
@@ -251,7 +277,6 @@ export class PairFixture {
       }
     }
     this.results[side] = outcome;
-    this.publish();
     return outcome;
   }
 
@@ -259,6 +284,7 @@ export class PairFixture {
     if (this.mode !== 'viewer' || this.timing) return 'unavailable';
     this.desiredPlaying = true;
     const run = ++this.playGeneration, generation = this.generation;
+    this.pendingPlay = run;
     this.publish();
     const players = SIDES.map((side) => ({ side, player: this.slots[side].current }))
       .filter((entry) => entry.player?.observe().state === 'ready');
@@ -269,7 +295,9 @@ export class PairFixture {
       return outcome;
     }));
     if (generation !== this.generation || run !== this.playGeneration) return 'cancelled';
+    this.pendingPlay = undefined;
     this.status = outcomes.includes('completed') ? 'completed' : outcomes.includes('blocked') ? 'blocked' : 'unavailable';
+    this.reconcileBlockedPlay();
     this.publish();
     return this.status;
   }
@@ -370,6 +398,8 @@ export class PairFixture {
   async stop(background = false): Promise<void> {
     const generation = ++this.generation;
     ++this.playGeneration;
+    this.pendingPlay = undefined;
+    this.preparing = { A: undefined, B: undefined };
     this.mode = 'sources'; this.desiredPlaying = false; this.timing = undefined; this.stopping = true;
     this.overrides = { A: {}, B: {} }; this.qualitySave = undefined; this.qualityMessage = undefined;
     this.qualityApplication = { A: undefined, B: undefined };

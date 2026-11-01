@@ -12,6 +12,10 @@ Use the single controlled-source list's independent A/B checkboxes to assign
 each feed, including duplicates, then explicitly
 Watch. Watch requests playback as each selected feed becomes ready. No extra
 Play step is assumed; an autoplay refusal remains a closed `blocked` result.
+If all current attempts have settled with a refusal and neither feed is playing,
+the joint control returns to Play and becomes visible for a user retry, including
+when a delayed refusal arrives after controls have hidden. A blocked
+feed does not clear the intent of a still-preparing feed or a playing partner.
 Each slot owns its own player and lifetime. The other ready feed can play while
 one selected fixture is unavailable.
 

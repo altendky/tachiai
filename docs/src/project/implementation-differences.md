@@ -142,6 +142,22 @@ existing external status output. The browser's owned diagnostic header stays
 outside its measured usable viewer. This adds no fullscreen/orientation-lock mechanism,
 provider behavior or platform-specific UX exception.
 
+### Controlled browser session history
+
+The fixture projects the common Back layers into owned browser history entries;
+Android dispatches Back inside its Activity/view hierarchy. A tab-scoped registry
+contains only nonsecret navigation descriptors. Active player ownership remains
+in memory, and a history entry cannot start playback. Retirement invalidates that
+ownership synchronously before cleanup; pagehide does not initiate a traversal,
+and restored pages keep the cleanup barrier. The separate
+[approved web retirement policy](ux-variations.md#approved-exceptions) defines
+Forward/reload/BFCache behavior. These mechanisms do not change provider account,
+route, media or licensing behavior.
+
+The implementation treats [history traversal](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-history-interface)
+as asynchronous and keeps cleanup admission across the
+[browser's frozen-page lifecycle](https://web.dev/articles/bfcache).
+
 [media-session]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/PrototypeActivity.kt#L888-L900
 [manifest]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/AndroidManifest.xml#L9-L33
 [detection]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/TelevisionPresentation.kt#L23-L26

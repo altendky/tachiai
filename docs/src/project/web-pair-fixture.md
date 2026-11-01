@@ -49,8 +49,8 @@ The controller follows the Android viewer's current pure presentation rules:
   cannot publish an old presentation's state into its successor.
 
 The page exposes the verified Sources, joint transport, Audio, Timing, More and
-Hide subset as diagnostic controls. Back/Escape unwinds menu, panel, toolbar and
-viewer in that order. A playing viewer without a panel/menu hides its toolbar
+Hide subset as diagnostic controls. Header Back, Escape and browser Back unwind
+menu, panel, toolbar and viewer in that order. A playing viewer without a panel/menu hides its toolbar
 after four idle seconds; a panel or pause keeps it available. More contains
 primary swap, Quality and safe playback observations. It does not advertise fake
 Providers, Routes or other unimplemented operations.
@@ -84,6 +84,38 @@ elements/player objects, advancing playback, requested quality and mix state,
 with no toggle-induced play/pause/seek calls. Retry retains Fit; a new Watch
 restores on. Pure layout vectors supplement the real browser checks. These are
 owned media/software observations, not physical display or provider acceptance.
+
+### Browser history and retired viewers
+
+Browser traversal follows the common Back order without replacing either player
+while dismissing controls. Sources stops the presentation; Back from Sources can
+leave the fixture through ordinary document history. Opening another panel
+through More does not leave an older panel underneath it in the Back sequence.
+Automatic Hide and the header/Escape actions keep the same navigation layers.
+
+Under the explicitly approved [web history policy](ux-variations.md#approved-exceptions),
+Forward into a stopped viewer, reload, or BFCache return after retirement shows
+Sources. Playback needs a fresh Watch. An old entry cannot create a player or
+restore its callbacks. The tab registry contains only nonsecret ownership and
+closed control-layer descriptors, with no selected sources, media URLs, grants,
+quality or mix state. It identifies owned entries without guessing a global
+history index from the document's history length.
+
+Retirement invalidates the presentation before awaiting cleanup. Hidden/pagehide
+handling does not initiate a history traversal; restored pages retain the
+cleanup admission barrier. Uncertain cleanup still prevents a fresh Watch.
+History writes or traversals that cannot be prepared produce a useful refusal
+and keep Watch unavailable. Provider diagnostic pages retain their separate
+lifecycle and authorization handling.
+
+Controlled browser regressions use actual Back/Forward through two prior owned
+pages, verify player retention while closing layers, and cover direct entry,
+retired Forward, reload, unavailable tab storage, delayed cleanup and overlapping
+application rewinds. A dedicated owned Chrome context removes Playwright's
+BFCache-disabling default and requires an actual persisted pageshow with the
+same document identity. Synthetic page events exercise separate retirement races;
+they are not counted as genuine BFCache evidence. These checks establish bounded
+Chrome behavior, not provider-session restoration or other-engine acceptance.
 
 ## Run and verification
 
@@ -225,7 +257,7 @@ Android encrypted-storage equivalence or select product hosting/account storage.
 ## Remaining acceptance
 
 Manual orientation, complete product picker/settings/navigation,
-browser history integration, provider accounts/routes and other full-client
+provider accounts/routes and other full-client
 features remain pending. This fixture neither removes those requirements nor
 approves a platform-specific substitute. Any concrete UX deviation still needs
 the explicit discussion required by the common design instructions.

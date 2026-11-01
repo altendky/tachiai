@@ -29,13 +29,14 @@ to extend it. Merging this document does not approve its rows.
 
 ## Approved exceptions
 
-No exception has an explicit approval reference recorded in this initial audit.
-When the user approves a specific deviation, move its row here with the exact
-scope, affected implementations, approval date and a durable reference to that
-discussion. Mark approved designs that are not implemented yet as pending
-implementation. A changed scope requires its own approval. Unapproved proposals,
-ordinary shared behavior, accidental bugs and platform research do not belong
-in this register.
+The initial audit found no approved exceptions among UX-001–UX-010; those rows
+remain unconfirmed. Later scoped approvals are recorded separately below.
+A changed scope requires its own approval. Unapproved proposals, ordinary shared
+behavior, accidental bugs and platform research do not belong in this register.
+
+| ID | Area | Approved scope | Approval evidence | Implementation |
+| --- | --- | --- | --- | --- |
+| UX-011 | Web browser history after viewer retirement | Web Forward into a stopped viewer, or reload/BFCache return after retirement, shows Sources and requires a fresh Watch. Native has no Forward control. This scope retains the common Back order and does not restore retired players or authorize other navigation differences. | Explicit user answer “Approve this contract” on November 1, 2026 UTC; [exact contract and approval](https://github.com/altendky/tachiai/issues/368#issuecomment-6552324565). | Implemented in the [controlled browser fixture](web-pair-fixture.md#browser-history-and-retired-viewers); provider/full-client acceptance remains separate. |
 
 [theme]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/PrototypeTheme.kt#L34-L38
 [focus]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/TelevisionPresentation.kt#L30-L62

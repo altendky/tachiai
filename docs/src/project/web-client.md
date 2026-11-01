@@ -26,8 +26,9 @@ and acoustic output remain unverified. A separate bounded
 owned webpage video and user-confirmed audio through a scoped Headerly rule,
 including a Shields-up comparison. A later duplicate-live trial decoded both
 Twitch feeds concurrently with user-confirmed audio and confirmed cleanup;
-independent audible contributions and mix acceptance remain unconfirmed. Full
-provider and paired-viewer acceptance remain separate work.
+a subsequent [live/replay trial](web-twitch-proof.md#livereplay-observation-november-1-2026-utc)
+also confirmed each audible contribution and the fade with two scoped Headerly
+rules. Full provider and paired-viewer acceptance remain separate work.
 
 ## Implemented boundary
 

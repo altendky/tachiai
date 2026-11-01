@@ -114,6 +114,9 @@ URI; the unchanged provider response helper and dash ClearKey serializer return
 opaque bytes directly to that same browser session. This is a bounded diagnostic
 contract, not automatic provider-player parity or a native-normalizer port. It
 adds no media player, product setting, stored account, renewal or UX variation.
+One fresh routed Chrome trial accepted the unchanged helper/serializer output
+in the same temporary browser session and confirmed its closure. This is initial
+exchange acceptance, without segment decoding or protected-playback acceptance.
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
 

@@ -191,9 +191,41 @@ The command stops at CDM update acceptance. It makes no initialization-segment,
 media, advertisement or certificate request and creates no player. It does not
 establish usable decoded content, source entitlement, provider ad equivalence,
 renewal or web support. The existing no-license decoder and source-only helpers
-retain their restrictions. Runtime provider acceptance for this new command is
-unverified; controlled owned fixtures and actual provider observations must be
-reported separately.
+retain their restrictions. Controlled owned fixtures and actual provider
+observations are separate evidence.
+
+### Initial provider exchange observation
+
+One fresh run on signed clean
+`9b0df7df1e5b3b242224cfcb35a8925a69bae2d1` passed on November 1, 2026. The
+complete route/setup/exchange/cleanup operation took 52.95 wall seconds and
+exited zero; this is not a media-playback duration. Host: Ubuntu 26.04.1 LTS,
+Linux 7.0.0-34-generic x86-64. The installed Google Chrome reported
+156.0.8078.79, and the fresh owned headed runtime verified Linux/Chrome major 156.
+Browser ClearKey used a temporary session with no persistent-state or distinctive
+identifier permission. Exit country and independent complete route coverage
+were not measured. The existing WireGuard export and unchanged host runner
+were the same as the metadata observation; no saved provider account or Android
+cookie/grant was used.
+
+Fresh guest, matching profile, media token, conservative exact-program
+eligibility, gateway, source/session/token/configuration subset and all five
+public runtime pins passed. The unchanged selector chose CUSTOM and CSAI. Chrome
+read both the exact MPD GET and the single initial license Fetch as HTTP 200.
+The initial request came from the fresh browser CDM; the unchanged provider
+response helper and dash serializer produced the opaque bytes accepted by that
+same session's update. The result reported UPDATE_ACCEPTED at UPDATE, with
+session creation, request generation, license dispatch and explicit session
+closure all confirmed. No provider CORS/header override or TLS bypass was used.
+
+Browser/attempt cleanup and temporary-route cleanup were independently confirmed,
+with no host-route change, persisted guest grant or profile copy. No player,
+initialization/media segment, ad, certificate, renewal or second exchange
+followed. This establishes one initial browser-CDM response-acceptance boundary,
+not usable decryption, frames, acoustic output, entitlement, ad equivalence,
+sustained operation or protected replay support. The next acceptance boundary
+is source-bound protected decoding while retaining fresh session ownership and
+the verified initial exchange.
 
 The standard initialization/session interfaces are defined by
 [CENC initialization data](https://www.w3.org/TR/eme-initdata-cenc/) and

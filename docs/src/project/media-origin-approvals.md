@@ -62,9 +62,10 @@ The new runtime-only `dash.js` download is the already reviewed exact public
 `988f8bc1a196ae74faf5c9650ddce0d1104c4816a663e9ab534c6b2a1c87cab8`.
 Its unchanged ClearKey adapter serializes the unchanged response-helper output
 for the same fresh browser CDM. Source-only, MPD-only, Android cached and
-no-license decoder policies are unchanged. This admission is configuration and
-public-code evidence under the general integration scope, not successful
-provider EME/playback or entitlement evidence.
+no-license decoder policies are unchanged. This admission rests on configuration
+and public-code evidence under the general integration scope. The separate dated
+observation records one initial browser-CDM update acceptance; neither it nor
+this host admission establishes decoded playback or entitlement.
 
 ### Public ABEMA channel metadata
 

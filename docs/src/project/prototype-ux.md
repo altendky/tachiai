@@ -252,6 +252,41 @@ native-access-experiments.md#operation-owned-abema-renewal-implementation--2026-
 remain distinct: naturally expired physical-device adoption, actual signed-out
 interaction and process-death publication behavior remain in #294.
 
+### Opt-in minimized renewal observation
+
+The existing debug instrumentation fixture accepts
+`tachiaiAutomaticAbemaRenewal=minimized` on the explicitly verified persistent
+`tachiai-dev` emulator. It requires a naturally expired saved grant and the
+existing selected saved connection. It never changes the clock, fabricates
+expiry, resets browser data or enters provider credentials.
+
+The fixture waits for the original renewal operation to be pending, presses Home,
+and requires another pending observation after that exact Activity stops. It
+then observes the existing completion/account-replacement boundary without
+resuming or accessing the Activity. A same-process Activity resume, restart or
+host destruction permanently refuses the background claim. Verified READY must
+arrive while the host remains stopped; only then may the fixture return the same
+host and check original discovery, account ownership and protected-record
+preservation. Foreground completion racing minimization cannot pass this mode.
+
+After normal debug app/test APK signing verification and non-destructive
+installation, select only this opted-in case:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.abema.account.AbemaAutomaticRenewalDeviceTest#optInExpiredGrantRenewsWithoutClicksAndResumesOriginalDiscovery \
+  -e tachiaiAutomaticAbemaRenewal minimized \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Closed output adds the mode, background phase/first failed guard and whether the
+original host returned. Existing independent cleanup and preservation reporting
+remains active on failure. The instrumentation process stays alive, and its
+callbacks observe only that process. Pending-to-READY brackets terminal operation
+completion, not the exact browser/bootstrap/store-commit timing. This fixture
+does not by itself establish a successful run, physical visibility, process-loss
+survival, genuine interaction classification or closed-app scheduling.
+
 ## ABEMA broadcast live mode — October 14
 
 Opening a currently airing configured broadcast selects its continuous live

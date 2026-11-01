@@ -161,4 +161,71 @@ class AbemaRenewalObservationTest {
         early.finish({}, { error("synthetic failed baseline comparison") })
         assertEquals(AbemaRenewalProbeEvidence.Guard.PRESERVATION, early.firstFailedGuard)
     }
+
+    @Test fun minimizedEvidenceRequiresPendingAfterStopThenVerifiedReadyBeforeReturn() {
+        val background = AbemaRenewalBackgroundObservation()
+        background.activityResumed() // Initial launch precedes the guarded interval.
+        assertTrue(background.begin(Completion.PENDING))
+        background.hostStopped()
+        assertTrue(background.afterStop(Completion.PENDING))
+        assertTrue(background.sample(Completion.PENDING, false))
+        assertTrue(background.sample(Completion.READY, true))
+        assertTrue(background.allowReturn())
+        background.hostStarted(); background.activityResumed()
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.NONE, background.firstFailedGuard)
+        assertEquals(AbemaRenewalBackgroundObservation.Phase.RETURN_ALLOWED, background.phase)
+    }
+
+    @Test fun completionBeforeHomeOrBeforeStoppedPendingCannotClaimMinimizedCompletion() {
+        val before = AbemaRenewalBackgroundObservation()
+        assertFalse(before.begin(Completion.READY))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.PENDING_BEFORE_HOME, before.firstFailedGuard)
+        val duringHome = AbemaRenewalBackgroundObservation()
+        assertTrue(duringHome.begin(Completion.PENDING)); duringHome.hostStopped()
+        assertFalse(duringHome.afterStop(Completion.READY))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.PENDING_AFTER_STOP, duringHome.firstFailedGuard)
+        val noStop = AbemaRenewalBackgroundObservation()
+        assertTrue(noStop.begin(Completion.PENDING)); assertFalse(noStop.afterStop(Completion.PENDING))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.HOST_NOT_STOPPED, noStop.firstFailedGuard)
+    }
+
+    @Test fun resumeThenStopOrResumeRacingReadyPermanentlyRefusesBackgroundEvidence() {
+        for (afterReady in listOf(false, true)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            if (afterReady) assertTrue(background.sample(Completion.READY, true))
+            background.activityResumed(); background.hostStopped()
+            assertFalse(background.sample(Completion.READY, true)); assertFalse(background.allowReturn())
+            assertEquals(AbemaRenewalBackgroundObservation.Guard.RESUMED, background.firstFailedGuard)
+        }
+    }
+
+    @Test fun unverifiedOrLostCompletionAndPrematureReturnCannotPassBackgroundGuard() {
+        for ((completion, replacement) in listOf(Completion.READY to false, Completion.PENDING to true,
+                Completion.ABSENT to false, Completion.FAILURE to false)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            assertFalse(background.sample(completion, replacement)); assertFalse(background.allowReturn())
+            assertEquals(AbemaRenewalBackgroundObservation.Guard.COMPLETION, background.firstFailedGuard)
+        }
+        val early = AbemaRenewalBackgroundObservation()
+        assertTrue(early.begin(Completion.PENDING)); early.hostStopped(); assertTrue(early.afterStop(Completion.PENDING))
+        assertFalse(early.allowReturn())
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.RETURN, early.firstFailedGuard)
+    }
+
+    @Test fun restartOrDestructionCannotReuseStoppedHostEvidence() {
+        for (destroyed in listOf(false, true)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            if (destroyed) background.hostDestroyed() else background.hostStarted()
+            background.hostStopped()
+            assertFalse(background.sample(Completion.READY, true)); assertFalse(background.allowReturn())
+            assertEquals(if (destroyed) AbemaRenewalBackgroundObservation.Guard.HOST_DESTROYED
+                else AbemaRenewalBackgroundObservation.Guard.HOST_NOT_STOPPED, background.firstFailedGuard)
+        }
+    }
 }

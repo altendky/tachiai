@@ -67,10 +67,10 @@ internal class AbemaRenewalObservation(
 }
 
 internal class AbemaRenewalProbeEvidence {
-    enum class Phase { BASELINE, OWNER, EXPIRED_INPUT, HOST_LAUNCH, COMPLETION, REPLACEMENT, DISCOVERY,
+    enum class Phase { BASELINE, OWNER, EXPIRED_INPUT, HOST_LAUNCH, MINIMIZING, BACKGROUND, RETURN, COMPLETION, REPLACEMENT, DISCOVERY,
         FINAL_REPLACEMENT, HOST_CLOSE, PRESERVATION, FINISHED }
     enum class Guard { NONE, EXCEPTION, ROUTE, SNAPSHOT, OWNER, EXPIRED_INPUT, ACCOUNT_FILE,
-        COMPLETION, HOST_REFUSAL, DEADLINE, DISCOVERY, HOST_CLOSE, PRESERVATION }
+        COMPLETION, BACKGROUND, HOST_RETURN, HOST_REFUSAL, DEADLINE, DISCOVERY, HOST_CLOSE, PRESERVATION }
     var phase = Phase.BASELINE
     var firstFailedPhase = Phase.BASELINE
         private set
@@ -90,5 +90,63 @@ internal class AbemaRenewalProbeEvidence {
         phase = Phase.PRESERVATION
         try { preservation() } catch (_: Throwable) { fail(Guard.PRESERVATION) }
         phase = Phase.FINISHED
+    }
+}
+
+// Fixture evidence only. Completion must still be pending after the exact host
+// stops, then reach verified replacement without an intervening Activity resume.
+internal class AbemaRenewalBackgroundObservation {
+    enum class Phase { IDLE, MINIMIZING, STOPPED_PENDING, READY, RETURN_ALLOWED }
+    enum class Guard { NONE, PENDING_BEFORE_HOME, HOST_NOT_STOPPED, PENDING_AFTER_STOP, RESUMED, HOST_DESTROYED, COMPLETION, RETURN }
+    @Volatile var phase = Phase.IDLE
+        private set
+    @Volatile var firstFailedGuard = Guard.NONE
+        private set
+    @Volatile var hostIsStopped = false
+        private set
+    private var observing = false
+    private fun refuse(guard: Guard): Boolean {
+        if (firstFailedGuard == Guard.NONE) firstFailedGuard = guard
+        return false
+    }
+    @Synchronized fun begin(completion: AbemaRenewalReadinessCoordinator.Completion): Boolean {
+        if (firstFailedGuard != Guard.NONE) return false
+        if (phase != Phase.IDLE || completion != AbemaRenewalReadinessCoordinator.Completion.PENDING)
+            return refuse(Guard.PENDING_BEFORE_HOME)
+        hostIsStopped = false
+        observing = true
+        phase = Phase.MINIMIZING
+        return true
+    }
+    @Synchronized fun hostStopped() { if (observing) hostIsStopped = true }
+    @Synchronized fun hostStarted() {
+        if (observing && hostIsStopped) refuse(Guard.HOST_NOT_STOPPED)
+        hostIsStopped = false
+    }
+    @Synchronized fun activityResumed() { if (observing) refuse(Guard.RESUMED) }
+    @Synchronized fun hostDestroyed() { if (observing) { hostIsStopped = false; refuse(Guard.HOST_DESTROYED) } }
+    @Synchronized fun afterStop(completion: AbemaRenewalReadinessCoordinator.Completion): Boolean {
+        if (firstFailedGuard != Guard.NONE) return false
+        if (phase != Phase.MINIMIZING || !hostIsStopped) return refuse(Guard.HOST_NOT_STOPPED)
+        if (completion != AbemaRenewalReadinessCoordinator.Completion.PENDING) return refuse(Guard.PENDING_AFTER_STOP)
+        phase = Phase.STOPPED_PENDING
+        return true
+    }
+    @Synchronized fun sample(completion: AbemaRenewalReadinessCoordinator.Completion, replacementVerified: Boolean): Boolean {
+        if (firstFailedGuard != Guard.NONE) return false
+        if (!hostIsStopped) return refuse(Guard.HOST_NOT_STOPPED)
+        if (phase != Phase.STOPPED_PENDING && phase != Phase.READY) return refuse(Guard.COMPLETION)
+        return when {
+            completion == AbemaRenewalReadinessCoordinator.Completion.PENDING && !replacementVerified && phase == Phase.STOPPED_PENDING -> true
+            completion == AbemaRenewalReadinessCoordinator.Completion.READY && replacementVerified -> { phase = Phase.READY; true }
+            else -> refuse(Guard.COMPLETION)
+        }
+    }
+    @Synchronized fun allowReturn(): Boolean {
+        if (firstFailedGuard != Guard.NONE) return false
+        if (phase != Phase.READY || !hostIsStopped) return refuse(Guard.RETURN)
+        observing = false
+        phase = Phase.RETURN_ALLOWED
+        return true
     }
 }

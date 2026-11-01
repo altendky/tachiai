@@ -1,11 +1,15 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE } from '../src/twitch-proof';
+import { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE, type TwitchCase } from '../src/twitch-proof';
 
-test('explicit paired trial decodes two owned videos, retains identities through controls, and revokes once', async ({ page, baseURL }) => {
+for (const [A, B] of [
+  ['live:virtualjapan', 'live:virtualjapan'], ['live:virtualjapan', 'replay:2080217716'],
+  ['replay:2080217716', 'live:virtualjapan'], ['replay:2080217716', 'replay:2080217716'],
+] as const) {
+test(`paired ${A} / ${B} decodes owned videos, retains identities, and revokes once`, async ({ page, baseURL }) => {
   let challenges = 0, revocations = 0, sources = 0, activeSources = 0, maxSources = 0, unexpected = 0;
-  const receipts: any[] = [];
+  const receipts: any[] = [], sourceCases: TwitchCase[] = [];
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.origin === new URL(baseURL!).origin) {
@@ -26,25 +30,38 @@ test('explicit paired trial decodes two owned videos, retains identities through
       revocations++; await route.fulfill({status: 200, body: ''});
     } else if (url.href === 'https://gql.twitch.tv/gql') {
       sources++; activeSources++; maxSources = Math.max(maxSources, activeSources);
+      const body = request.postDataJSON(), replay = body.operationName === 'VideoPlaybackAccessToken';
+      sourceCases.push(replay ? `replay:${body.variables.id}` : `live:${body.variables.login}`);
       await new Promise(resolve => setTimeout(resolve, 25));
       activeSources--;
-      await route.fulfill({json: {data: {streamPlaybackAccessToken: {signature: `synthetic-${sources}`, value: '{}',
+      await route.fulfill({json: {data: {[replay ? 'videoPlaybackAccessToken' : 'streamPlaybackAccessToken']: {signature: `synthetic-${sources}`, value: '{}',
         authorization: {isForbidden: false, forbiddenReasonCode: 'NONE'}}}}});
-    } else if (url.origin === 'https://usher.ttvnw.net') {
+    } else if (url.origin === 'https://usher.ttvnw.net' || url.origin === 'https://dgeft87wbj63p.cloudfront.net') {
       expect(request.headers().authorization).toBeUndefined();
       expect(request.headers().cookie).toBeUndefined();
-      const file = url.pathname === '/api/v2/channel/hls/virtualjapan.m3u8' ? 'master.m3u8' : url.pathname.split('/').at(-1)!;
+      const replay = url.pathname === '/vod/v2/2080217716.m3u8';
+      const file = url.pathname === '/api/v2/channel/hls/virtualjapan.m3u8' || replay ? 'master.m3u8' : url.pathname.split('/').at(-1)!;
       if (!/^(master|media_[01])\.m3u8$|^init-stream[01]\.m4s$|^chunk-stream[01]-[0-9]{5}\.m4s$/.test(file)) {
         unexpected++; await route.abort(); return;
       }
-      await route.fulfill({body: await readFile(resolve('build/public/media/a', file)),
+      let body = await readFile(resolve('build/public/media/a', file));
+      // Exercise the real replay-only route and page CSP with owned bytes.
+      if (replay) body = Buffer.from(body.toString().replace(/media_[01]\.m3u8/g,
+        file => `https://dgeft87wbj63p.cloudfront.net/${file}`));
+      await route.fulfill({body,
         contentType: file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4'});
     } else {unexpected++; await route.abort();}
   });
   await page.goto('twitch-pair-proof.html');
+  await page.getByLabel('Feed A', {exact: true}).selectOption(A);
+  await page.getByLabel('Feed B', {exact: true}).selectOption(B);
   await expect(page.getByRole('button', {name: 'Start fresh trial'})).toBeEnabled();
   expect(challenges).toBe(0);
   await page.getByRole('button', {name: 'Start fresh trial'}).click();
+  await expect(page.getByLabel('Feed A', {exact: true})).toBeDisabled();
+  await expect(page.getByLabel('Feed B', {exact: true})).toBeDisabled();
+  // Programmatic form edits after Start cannot alter the pinned source pair.
+  await page.locator('#source-A').evaluate((input: HTMLSelectElement) => {input.value = 'replay:2080217716'; input.dispatchEvent(new Event('change'));});
   await expect(page.getByRole('link', {name: 'Activate Twitch code TESTPAIR'})).toHaveAttribute('href',
     'https://www.twitch.tv/activate?public=true&device-code=TESTPAIR');
   await expect(page.getByRole('button', {name: 'Prepare both feeds'})).toBeEnabled();
@@ -59,6 +76,13 @@ test('explicit paired trial decodes two owned videos, retains identities through
       value.samples.A.state === 'owned' && value.samples.B.state === 'owned';
   })).toBe(true);
   expect(challenges).toBe(1); expect(sources).toBe(2); expect(maxSources).toBe(1);
+  expect(sourceCases).toEqual([A, B]);
+  expect(await page.evaluate(() => (window as any).twitchPairDiagnostic.snapshot().selected)).toEqual({A, B});
+  for (const [side, selected] of [['A', A], ['B', B]] as const) {
+    const diagnostic = await page.evaluate(side => (window as any).twitchPairDiagnostic.snapshot().diagnostics[side], side);
+    if (selected.startsWith('replay:')) expect(diagnostic.livePermission).toBeUndefined();
+    else expect(diagnostic.livePermission?.status).toBe('not-forbidden');
+  }
   expect(await page.locator('video').evaluateAll(videos => videos.map(video => ({volume: video.volume, muted: video.muted})))).toEqual([
     {volume: .5, muted: false}, {volume: .5, muted: false}]);
   await page.locator('#balance').evaluate((input: HTMLInputElement) => {input.value = '100'; input.dispatchEvent(new Event('input'));});
@@ -106,6 +130,7 @@ test('explicit paired trial decodes two owned videos, retains identities through
     expect(encoded).not.toContain(privateValue);
   }
 });
+}
 
 test('stopping a pending token request closes without creating media or adopting a grant', async ({ page, baseURL }) => {
   let tokenRequested = false, revoked = 0, sourceCalls = 0;

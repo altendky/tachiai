@@ -33,8 +33,8 @@ export class TwitchMediaRoute {
   private readonly pending = new Set<shaka.extern.IAbortableOperation<shaka.extern.Response>>();
   private readonly plugin: shaka.extern.SchemePlugin;
 
-  constructor(private readonly current: () => boolean) {
-    this.plugin = createTwitchMediaPlugin(uri => this.active && allowedTwitchMedia(uri, false),
+  constructor(private readonly current: () => boolean, replay = false) {
+    this.plugin = createTwitchMediaPlugin(uri => this.active && allowedTwitchMedia(uri, replay),
       request => this.observers.take(request));
   }
 

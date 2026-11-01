@@ -1,4 +1,5 @@
-import type { TwitchPairSession } from './twitch-pair-session';
+import type { TwitchPairSession, TwitchPairSelection } from './twitch-pair-session';
+import { isTwitchCase } from './twitch-proof';
 import type { Mix, Side } from './pair';
 import './pair-style.css';
 import './twitch-pair-style.css';
@@ -14,6 +15,7 @@ let importing: Promise<typeof import('./twitch-pair-session')> | undefined;
 let stopping: Promise<void> | undefined, pollTimer: number | undefined, capTimer: number | undefined, sampleTimer: number | undefined;
 let deadline = 0, desiredPlaying = false, primary: Side = 'A';
 let playIntent = 0;
+let selected: TwitchPairSelection = {A: 'live:virtualjapan', B: 'live:virtualjapan'};
 let mix: Mix = {overall: 50, balance: 50, muteA: false, muteB: false};
 let cleanup: Awaited<ReturnType<TwitchPairSession['close']>> | undefined;
 const samples: Record<Side, ReturnType<TwitchPairSession['sample']> | undefined> = {A: undefined, B: undefined};
@@ -49,7 +51,7 @@ function snapshot() {
   const platform = navigator.userAgent.includes('Android') ? 'Android' : navigator.userAgent.includes('CrOS') ? 'Chrome OS' :
     /Linux/.test(navigator.platform) ? 'Linux' : /Mac/.test(navigator.platform) ? 'macOS' : /Win/.test(navigator.platform) ? 'Windows' : 'unknown';
   const chromiumMajor = Number(navigator.userAgent.match(/(?:Chrome|Chromium)\/(\d{1,3})(?:\.|\s)/)?.[1]);
-  return {schema: 1, profile: 'twitch-pair', phase, selected: {A: 'live:virtualjapan', B: 'live:virtualjapan'},
+  return {schema: 1, profile: 'twitch-pair', phase, selected: {...selected},
     ...(typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision) ? {revision} : {}),
     context: {browser: 'user-controlled', shieldState: 'not-detected', headerTool: 'Headerly-user-configured'},
     environment: {platform, ...(Number.isSafeInteger(chromiumMajor) && chromiumMajor > 0 ? {chromiumMajor} : {})},
@@ -72,6 +74,12 @@ function render() {
   get<HTMLButtonElement>('start').disabled = begun || retired;
   get<HTMLButtonElement>('prepare').disabled = phase !== 'authorized' || retired;
   get<HTMLButtonElement>('stop').disabled = !begun || retired;
+  for (const side of sides) {
+    const input = get<HTMLSelectElement>(`source-${side}`);
+    input.disabled = begun || retired;
+    input.value = selected[side];
+    get(`label-${side}`).textContent = `${side} · ${selected[side] === 'live:virtualjapan' ? 'VirtualJapan live' : 'Twitch replay 2080217716'}`;
+  }
   for (const id of ['transport', 'swap', 'mute-A', 'mute-B']) get<HTMLButtonElement>(id).disabled = !ready;
   for (const id of ['overall', 'balance']) get<HTMLInputElement>(id).disabled = !ready;
   get('transport').textContent = desiredPlaying ? 'Pause both feeds' : 'Play both feeds';
@@ -138,6 +146,9 @@ async function poll() {
 }
 get('start').onclick = async () => {
   if (begun || retired) return;
+  const A = get<HTMLSelectElement>('source-A').value, B = get<HTMLSelectElement>('source-B').value;
+  if (!isTwitchCase(A) || !isTwitchCase(B)) return;
+  selected = Object.freeze({A, B});
   begun = true; phase = 'starting'; deadline = performance.now() + 15 * 60000;
   capTimer = window.setTimeout(() => {void stop();}, 15 * 60000); render();
   try {
@@ -145,7 +156,7 @@ get('start').onclick = async () => {
     const module = await importing;
     if (!active()) return;
     host = new module.TwitchPairSession({A: get('mount-A'), B: get('mount-B')});
-    const challenge = await host.begin();
+    const challenge = await host.begin(selected);
     if (!active()) return;
     if (!/^[A-Z0-9]{4,16}$/.test(challenge.userCode)) throw new Error('Activation refused');
     const link = new URL('https://www.twitch.tv/activate');
@@ -155,6 +166,12 @@ get('start').onclick = async () => {
     phase = 'activation-pending'; get('activation').hidden = false; render();
     pollTimer = window.setTimeout(poll, 1000);
   } catch { if (!retired) {phase = 'refused'; render(); await stop();} }
+};
+for (const side of sides) get<HTMLSelectElement>(`source-${side}`).onchange = () => {
+  if (begun || retired) return;
+  const value = get<HTMLSelectElement>(`source-${side}`).value;
+  if (isTwitchCase(value)) selected = {...selected, [side]: value};
+  render();
 };
 get('prepare').onclick = async () => {
   if (!active() || phase !== 'authorized' || !host) return;

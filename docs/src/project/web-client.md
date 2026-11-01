@@ -24,8 +24,10 @@ extension or media relay. Sumo, replay, protected playback, sustained operation
 and acoustic output remain unverified. A separate bounded
 [Twitch live trial](web-twitch-proof.md#ordinary-browser-live-evidence) now has
 owned webpage video and user-confirmed audio through a scoped Headerly rule,
-including a Shields-up comparison. Full provider and paired-viewer acceptance
-remain separate work.
+including a Shields-up comparison. A later duplicate-live trial decoded both
+Twitch feeds concurrently with user-confirmed audio and confirmed cleanup;
+independent audible contributions and mix acceptance remain unconfirmed. Full
+provider and paired-viewer acceptance remain separate work.
 
 ## Implemented boundary
 

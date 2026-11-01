@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { pairFixture, authorizePair } from './twitch-pair-fixture';
+import type { TwitchCase } from '../src/twitch-proof';
 
 test.afterEach(async ({ page }) => {
   await page.evaluate(() => (window as any).pairTest?.pair.close());
@@ -27,6 +28,57 @@ test('one grant, two serialized fresh source operations and independent owned pl
   expect(cleanup).toEqual({ media: { A: 'destroyed', B: 'destroyed' }, grant: 'revoked' });
   expect(await page.evaluate(() => (window as any).pairTest.inspect())).toMatchObject({ destroyed: [1, 1], domVideos: 0 });
   expect(await page.evaluate(() => (window as any).pairTest.inspect().apiCalls.filter((v: string) => v === 'revoke').length)).toBe(1);
+});
+
+for (const A of ['live:virtualjapan', 'replay:2080217716'] as const) {
+  for (const B of ['live:virtualjapan', 'replay:2080217716'] as const) {
+    test(`exact independently pinned source cases ${A} / ${B}`, async ({ page }) => {
+      await pairFixture(page); await authorizePair(page, { A, B });
+      expect(await page.evaluate(() => (window as any).pairTest.pair.prepare())).toBe('ready');
+      const request = (selected: TwitchCase) => selected === 'live:virtualjapan'
+        ? { operationName: 'StreamPlaybackAccessToken', variables: { login: 'virtualjapan', platform: 'web', playerType: 'site' } }
+        : { operationName: 'VideoPlaybackAccessToken', variables: { id: '2080217716', platform: 'web', playerType: 'site' } };
+      const path = (selected: TwitchCase) => selected === 'live:virtualjapan'
+        ? '/api/v2/channel/hls/virtualjapan.m3u8' : '/vod/v2/2080217716.m3u8';
+      expect(await page.evaluate(() => (window as any).pairTest.inspect())).toMatchObject({
+        sourceRequests: [request(A), request(B)], loadedPaths: [path(A), path(B)], differentSourceResults: true,
+      });
+      for (const [side, selected] of [['A', A], ['B', B]] as const) {
+        const diagnostic = await page.evaluate(side => (window as any).pairTest.pair.diagnostic(side), side);
+        if (selected === 'live:virtualjapan') expect(diagnostic.livePermission?.status).toBe('not-forbidden');
+        else expect(diagnostic.livePermission).toBeUndefined();
+        const index = side === 'A' ? 0 : 1;
+        expect(await page.evaluate(index => (window as any).pairTest.fire(index,
+          'https://dgeft87wbj63p.cloudfront.net/owned.m4s'), index)).toBe(selected.startsWith('replay:') ? 'completed' : 'refused');
+        expect(await page.evaluate(index => (window as any).pairTest.fire(index,
+          'https://other.cloudfront.net/owned.m4s'), index)).toBe('refused');
+      }
+    });
+  }
+}
+
+test('invalid selections refuse before authorization and caller mutation cannot replace pinned cases', async ({ page }) => {
+  await pairFixture(page);
+  expect(await page.evaluate(async () => {
+    const f = (window as any).pairTest;
+    const results = [];
+    for (const selected of [null, {}, { A: 'live:virtualjapan' }, { A: 'live:other', B: 'replay:2080217716' }]) {
+      results.push(await f.pair.begin(selected).then(() => 'accepted', () => 'refused'));
+    }
+    return { results, calls: f.inspect().apiCalls };
+  })).toEqual({ results: ['refused', 'refused', 'refused', 'refused'], calls: [] });
+  await page.evaluate(async () => {
+    const f = (window as any).pairTest, selected = { A: 'replay:2080217716', B: 'live:virtualjapan' };
+    const starting = f.pair.begin(selected);
+    selected.A = 'live:virtualjapan'; selected.B = 'replay:2080217716';
+    await starting; f.advance(1001); await f.pair.poll();
+  });
+  expect(await page.evaluate(() => (window as any).pairTest.pair.begin({ A: 'live:virtualjapan', B: 'replay:2080217716' })
+    .then(() => 'accepted', () => 'refused'))).toBe('refused');
+  expect(await page.evaluate(() => (window as any).pairTest.pair.prepare())).toBe('ready');
+  expect(await page.evaluate(() => (window as any).pairTest.inspect().loadedPaths)).toEqual([
+    '/vod/v2/2080217716.m3u8', '/api/v2/channel/hls/virtualjapan.m3u8',
+  ]);
 });
 
 test('successful media ownership survives the preparation deadline, then account cap denies it', async ({ page }) => {

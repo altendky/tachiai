@@ -96,12 +96,13 @@ and Chrome tests are `npm run test:twitch:offline` and `npm run test:twitch:owne
 Actual provider authorization/playback requires the documented explicit network
 command and fresh user-controlled activation; it is not part of ordinary tests.
 
-`/harness/twitch-pair-proof.html` adds a separate bounded two-player live trial:
-one fresh activation, two serialized source preparations, independent video
+`/harness/twitch-pair-proof.html` adds a separate bounded two-player trial:
+independent live/replay selections pinned before one fresh activation, two
+serialized source preparations, independent video
 owners and the common mix/geometry functions. It does not turn provider sources
 into ad-free fixtures or enable provider seeking. Its synthetic/owned-only
 regressions run with `npm run test:twitch:pair` on isolated port4196. See the
-[paired diagnostic procedure](../../docs/src/project/web-twitch-proof.md#two-player-live-diagnostic)
+[paired diagnostic procedure](../../docs/src/project/web-twitch-proof.md#two-player-diagnostic)
 before starting an actual trial.
 
 ## ABEMA no-license decoder diagnostic

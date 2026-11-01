@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import type { TwitchPairSelection } from '../src/twitch-pair-session';
 
 export async function pairFixture(page: Page, options: {
   sourceGate?: boolean; tokenGate?: boolean; attachGate?: boolean; sourceFailure?: boolean;
@@ -15,7 +16,7 @@ export async function pairFixture(page: Page, options: {
     const { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE } = await import('/harness/src/twitch-proof.ts');
     const shaka = (await import('/harness/tests/twitch-media-sdk.ts')).default;
     let now = 0, sourceCalls = 0, tokenStarted = false, mediaFetches = 0, validationCalls = 0;
-    const apiCalls: string[] = [], players: any[] = [], videos: HTMLVideoElement[] = [];
+    const apiCalls: string[] = [], sourceRequests: any[] = [], players: any[] = [], videos: HTMLVideoElement[] = [];
     let releaseSource!: () => void, releaseToken!: () => void, releaseAttach!: () => void, rejectPlay!: () => void;
     const playGate = options.deferredPlayA ? new Promise<void>((_resolve, reject) => { rejectPlay = () => reject(new DOMException('paused', 'AbortError')); }) : Promise.resolve();
     const sourceGate = options.sourceGate ? new Promise<void>(resolve => { releaseSource = resolve; }) : Promise.resolve();
@@ -32,7 +33,10 @@ export async function pairFixture(page: Page, options: {
       if (uri.pathname === '/oauth2/revoke') return new Response(null, { status: 200 });
       if (uri.href === 'https://gql.twitch.tv/gql') {
         const index = ++sourceCalls; if (index === 1) await sourceGate;
-        return json({ data: { streamPlaybackAccessToken: { signature: 'synthetic_' + index,
+        const request = JSON.parse(String(init.body));
+        sourceRequests.push({operationName: request.operationName, variables: request.variables});
+        const field = request.operationName === 'VideoPlaybackAccessToken' ? 'videoPlaybackAccessToken' : 'streamPlaybackAccessToken';
+        return json({ data: { [field]: { signature: 'synthetic_' + index,
           value: 'PRIVATE_SOURCE_' + index, authorization: { isForbidden: options.sourceFailure === true && index === 2,
             forbiddenReasonCode: options.sourceFailure && index === 2 ? 'UNAUTHORIZED' : 'NONE' } } } });
       }
@@ -62,11 +66,11 @@ export async function pairFixture(page: Page, options: {
         video.play = () => index === 0 && options.blockedA ? Promise.reject(new DOMException('blocked', 'NotAllowedError')) : index === 0 && options.failedPlayA ? Promise.reject(new DOMException('failed', 'NotSupportedError')) : index === 0 ? playGate : Promise.resolve();
         return video;
       } });
-    const fire = async (index: number) => {
+    const fire = async (index: number, destination?: string) => {
       const original = globalThis.fetch;
       globalThis.fetch = (async () => { mediaFetches++; return new Response('owned synthetic bytes'); }) as typeof fetch;
       try {
-        const player = players[index], uri = player.loaded;
+        const player = players[index], uri = destination ?? player.loaded;
         const request = shaka.net.NetworkingEngine.makeRequest([uri], shaka.net.NetworkingEngine.defaultRetryParameters());
         player.filter(shaka.net.NetworkingEngine.RequestType.MANIFEST, request);
         await twitchMediaDispatcher(uri, request, shaka.net.NetworkingEngine.RequestType.MANIFEST, () => {}, () => {}, {}).promise;
@@ -76,17 +80,18 @@ export async function pairFixture(page: Page, options: {
     };
     (window as any).pairTest = { pair, mounts, players, videos, fire, releaseSource, releaseToken, releaseAttach, rejectPlay,
       advance: (value: number) => { now += value; },
-      inspect: () => ({ apiCalls: [...apiCalls], sourceCalls, tokenStarted, mediaFetches,
+      inspect: () => ({ apiCalls: [...apiCalls], sourceRequests: [...sourceRequests], sourceCalls, tokenStarted, mediaFetches,
         players: players.length, loads: players.filter(player => player.loaded).length,
+        loadedPaths: players.map(player => player.loaded ? new URL(player.loaded).pathname : undefined),
         differentSourceResults: players.length === 2 && players[0].loaded !== players[1].loaded,
         destroyed: players.map(player => player.destroyed), domVideos: document.querySelectorAll('video').length }) };
   }, options);
 }
 
-export async function authorizePair(page: Page) {
-  await page.evaluate(async () => {
+export async function authorizePair(page: Page, selected?: TwitchPairSelection) {
+  await page.evaluate(async selected => {
     const f = (window as any).pairTest;
-    await f.pair.begin(); f.advance(1001);
+    await f.pair.begin(selected); f.advance(1001);
     if (await f.pair.poll() !== 'authorized') throw Error('Fixture authorization refused');
-  });
+  }, selected);
 }

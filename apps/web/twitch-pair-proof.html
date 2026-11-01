@@ -3,14 +3,18 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://id.twitch.tv https://gql.twitch.tv https://ttvnw.net https://*.ttvnw.net https://twitchcdn.net https://*.twitchcdn.net; media-src blob:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://id.twitch.tv https://gql.twitch.tv https://ttvnw.net https://*.ttvnw.net https://twitchcdn.net https://*.twitchcdn.net https://dgeft87wbj63p.cloudfront.net; media-src blob:; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Tachiai Twitch pair diagnostic</title>
   </head>
   <body>
     <header class="diagnostic"><strong>Diagnostic · two independent Twitch players</strong></header>
     <section class="pair-trial">
-      <p>Two copies of VirtualJapan live, prepared separately under one temporary Twitch authorization. This is a bounded player trial, not the complete web client.</p>
-      <p>Keep the working Headerly Twitch-media profile enabled. Browser Shields and extension settings cannot be verified by this page.</p>
+      <p>Choose each feed before starting. Both sources are prepared separately under one temporary Twitch authorization. This is a bounded player trial, not the complete web client.</p>
+      <label for="source-A">Feed A</label>
+      <select id="source-A" disabled><option value="live:virtualjapan">VirtualJapan live</option><option value="replay:2080217716">Twitch replay 2080217716</option></select>
+      <label for="source-B">Feed B</label>
+      <select id="source-B" disabled><option value="live:virtualjapan">VirtualJapan live</option><option value="replay:2080217716">Twitch replay 2080217716</option></select>
+      <p>The working Headerly Twitch-media profile covers live playback; replay CDN access has not been verified. Browser Shields and extension settings cannot be verified by this page.</p>
       <button id="start" disabled>Start fresh trial</button>
       <button id="prepare" disabled>Prepare both feeds</button>
       <button id="stop" disabled>Stop and revoke</button>
@@ -19,8 +23,8 @@
     </section>
     <section id="viewer" aria-label="Twitch pair diagnostic">
       <div id="stage">
-        <div id="pane-A" class="pane"><div id="mount-A" class="mount"></div><span class="chip">A · VirtualJapan live</span></div>
-        <div id="pane-B" class="pane"><div id="mount-B" class="mount"></div><span class="chip">B · VirtualJapan live</span></div>
+        <div id="pane-A" class="pane"><div id="mount-A" class="mount"></div><span id="label-A" class="chip">A · VirtualJapan live</span></div>
+        <div id="pane-B" class="pane"><div id="mount-B" class="mount"></div><span id="label-B" class="chip">B · VirtualJapan live</span></div>
       </div>
       <div id="dock">
         <nav aria-label="Playback controls">

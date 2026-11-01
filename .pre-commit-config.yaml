@@ -206,6 +206,20 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|source)|owned-browser)\.py$|^apps/web/scripts/abema-browser-(manifest|snapshot)\.mjs$|^scripts/tests/web-abema-browser-snapshot\.test\.py$'
         pass_filenames: false
 
+      - id: web-abema-route-tests
+        name: Web ABEMA private route ownership and CONNECT tests
+        entry: uv run scripts/tests/web-abema-route.test.py
+        language: system
+        files: '^apps/web/scripts/abema-(route-(transport|owner|comparison)|backend-(bootstrap|episode-source))\.py$|^scripts/tests/web-abema-route\.test\.py$'
+        pass_filenames: false
+
+      - id: web-abema-route-browser-tests
+        name: Web ABEMA proxy-only browser authentication tests
+        entry: node --test scripts/tests/web-abema-route-browser.test.mjs
+        language: system
+        files: '^apps/web/scripts/abema-(route-browser|browser-(manifest|episode-manifest))\.mjs$|^scripts/tests/web-abema-route-browser\.test\.mjs$'
+        pass_filenames: false
+
       - id: web-abema-backend-playback-tests
         name: Web ABEMA closed playback protocol safety tests
         entry: uv run scripts/tests/web-abema-backend-playback.test.py

@@ -5,6 +5,7 @@ import { stat, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { routeBrowserOptions } from './abema-route-browser.mjs';
 
 export const bodyLimit = 512 * 1024;
 export const inputLimit = 16 * 1024;
@@ -132,14 +133,15 @@ export function validateOwnedRuntimePath(runtime) {
     Buffer.byteLength(runtime + '/pw-00000000/browser/0000000000000000.sock') > 103) throw new Error();
 }
 
-export async function launchOwnedBrowser(runtime, { headless = false } = {}) {
+export async function launchOwnedBrowser(runtime, { headless = false, route, harnessOrigin } = {}) {
   validateOwnedRuntimePath(runtime);
   if (process.platform !== 'linux') throw new Error();
   process.env.TMPDIR = runtime;
   await writeFile(runtime + '/launch-started.json', '{"started":true}', { flag: 'wx', mode: 0o600 });
   const require = createRequire(import.meta.url);
   const { chromium } = require('@playwright/test');
-  const browserServer = await chromium.launchServer({ channel: 'chrome', headless, host: '127.0.0.1' });
+  const routed = route === undefined ? {} : routeBrowserOptions(route, harnessOrigin).launchOptions;
+  const browserServer = await chromium.launchServer({ channel: 'chrome', headless, host: '127.0.0.1', ...routed });
   try {
     const pid = browserServer.process().pid;
     if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error();

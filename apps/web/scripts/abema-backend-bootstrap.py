@@ -13,6 +13,7 @@ host. node:vm is not a sandbox. This is diagnostic source, not a web backend.
 import base64
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import multiprocessing
 import os
@@ -29,6 +30,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+_route_spec = importlib.util.spec_from_file_location("web_abema_route_transport", Path(__file__).with_name("abema-route-transport.py"))
+route_transport = sys.modules.get(_route_spec.name)
+if route_transport is None:
+    route_transport = importlib.util.module_from_spec(_route_spec)
+    sys.modules[_route_spec.name] = route_transport
+    _route_spec.loader.exec_module(route_transport)
 
 # Measured diagnostic runtime (Node 24.15), independent of application tooling.
 # Keep the tested digest until a replacement's helper behavior is verified.
@@ -245,14 +253,14 @@ def native_exchange(operation, fields, opener):
         return status, body
 
 
-def native_worker(sender, operation, fields):
+def native_worker(sender, operation, fields, proxy_route=None):
     # No downloaded code executes here. The private IPC never enters stdout,
     # stderr, command arguments or files; a separate process gives a hard deadline.
     try:
         with open(os.devnull, "wb") as silent:
             os.dup2(silent.fileno(), 1)
             os.dup2(silent.fileno(), 2)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        opener = route_transport.make_opener(proxy_route, NoRedirect())
         status, body = native_exchange(operation, fields, opener)
         sender.send_bytes(json.dumps({"status": status, "body": base64.b64encode(body).decode("ascii")}).encode("ascii"))
     except BaseException:
@@ -265,15 +273,17 @@ def native_worker(sender, operation, fields):
 
 
 class NativeTransport:
-    def __init__(self, context=None):
+    def __init__(self, context=None, proxy_route=None):
         self.context = context or multiprocessing.get_context("spawn")
+        self.proxy_route = route_transport.validate_route(proxy_route)
 
     def request(self, operation, fields, timeout):
         request_spec(operation, fields)  # Refuse before process creation.
         if timeout <= 0:
             raise Refused()
         receiver, sender = self.context.Pipe(duplex=False)
-        process = self.context.Process(target=native_worker, args=(sender, operation, fields), daemon=True)
+        arguments = (sender, operation, fields) if self.proxy_route is None else (sender, operation, fields, self.proxy_route)
+        process = self.context.Process(target=native_worker, args=arguments, daemon=True)
         started = False
         try:
             with completing_cleanup():

@@ -234,6 +234,13 @@ jobs:
           xvfb-run --auto-servernum uv run scripts/tests/web-abema-browser-snapshot.test.py
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-manifest.test.mjs scripts/tests/web-abema-browser-episode-manifest.test.mjs
 
+      - name: Test local route ownership and proxy-only browser authentication
+        env:
+          TACHIAI_LOCAL_CHROME_TEST: "1"
+        run: |
+          uv run scripts/tests/web-abema-route.test.py
+          xvfb-run --auto-servernum node --test scripts/tests/web-abema-route-browser.test.mjs
+
       - name: Test bounded ABEMA playback with controlled local media only
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"

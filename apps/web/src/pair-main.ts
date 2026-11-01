@@ -3,6 +3,7 @@ import { type TimingCore } from './player';
 import { PairFixture, SIDES, TIMING_STEPS, pairBounds, type Side } from './pair';
 import { qualityTitle, observedQualityTitle, qualityExplanation, sameRequest } from './quality';
 import { controlDockWidth, viewerLayout, type ViewerLayout } from './viewer-layout';
+import { ViewerHistory, type ViewerHistoryPanel } from './viewer-history';
 import './pair-style.css';
 
 declare global { interface Window { pair: PairFixture } }
@@ -22,7 +23,7 @@ shaka.polyfill.installAll();
 if (!shaka.Player.isBrowserSupported()) throw new Error('Browser media support is unavailable.');
 
 let controls = true;
-let panel: 'audio' | 'timing' | 'status' | 'quality' | undefined;
+let panel: ViewerHistoryPanel | undefined;
 let menu = false;
 let idle: number | undefined;
 let repeat: number | undefined;
@@ -33,6 +34,7 @@ const resetGestures = new Set<() => void>();
 let renderedRevision: number | undefined;
 let renderedPlaying = false;
 let pair: PairFixture;
+let navigation: ViewerHistory | undefined;
 const stage = element('stage');
 let measuredLayout: ViewerLayout | undefined;
 const landscape = () => window.innerWidth > window.innerHeight;
@@ -84,9 +86,10 @@ const render = () => {
   const state = pair.observe();
   if (renderedPlaying && !state.desiredPlaying) controls = true;
   renderedPlaying = state.desiredPlaying;
+  navigation?.update({ mode: state.mode, presentation: pair.revision, controls, panel, menu });
   element('picker').hidden = state.mode !== 'sources';
   element('viewer').hidden = state.mode !== 'viewer';
-  element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed' || state.qualityStore !== 'ready' || state.savingQuality;
+  element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed' || state.qualityStore !== 'ready' || state.savingQuality || navigation?.pending === true;
   for (const source of fixtures) for (const side of SIDES) {
     element<HTMLInputElement>(`source-${side}-${source.id}`).checked = state.selected[side] === source.id;
   }
@@ -158,6 +161,9 @@ const render = () => {
   element('pair-result').textContent = state.qualityStore === 'loading' ? 'Reading fixture quality defaults…' :
     state.qualityStore === 'failed' ? 'Fixture quality defaults could not be read. Nothing was replaced. Close and reopen to retry.' :
       state.mode === 'sources' && state.status === 'stopped' ? 'Timing core ready' : state.status;
+  if (navigation?.unavailable && state.status !== 'cleanup-failed') {
+    element('pair-result').textContent = 'Navigation could not be prepared. Reload this page to retry.';
+  }
   element('quality-message').textContent = state.savingQuality ? 'Saving stream quality…' :
     state.qualityMessage === 'save-failed' ? 'Stream quality could not be saved. Saved preferences were not replaced.' :
       state.qualityMessage === 'read-failed' ? 'Fixture quality defaults could not be read. Nothing was replaced.' : '';
@@ -176,17 +182,11 @@ const toggle = (name: typeof panel) => {
   stopRepeat(); menu = false; panel = panel === name ? undefined : name;
   element('panel-body').scrollTop = 0; reveal();
 };
-const sources = async () => {
+const sources = async (background = false) => {
   stopRepeat(); clearIdle(); panel = undefined; menu = false; controls = true;
-  await pair.stop();
+  await pair.stop(background);
 };
-const back = async () => {
-  stopRepeat();
-  if (menu) { menu = false; reveal(); }
-  else if (panel) { panel = undefined; reveal(); }
-  else if (controls && pair.observe().mode === 'viewer') hide();
-  else if (pair.observe().mode === 'viewer') await sources();
-};
+const back = () => { stopRepeat(); navigation?.back(); };
 
 for (const side of SIDES) for (const kind of ['video', 'audio'] as const) {
   const id = `quality-${side}-${kind}`, field = document.createElement('fieldset'), legend = document.createElement('legend');
@@ -239,7 +239,7 @@ for (const side of SIDES) {
   }
 }
 element('watch').onclick = () => { controls = true; panel = undefined; menu = false; void pair.watch(); };
-element('sources').onclick = () => { void sources(); };
+element('sources').onclick = () => { void navigation?.sources(); };
 element('back').onclick = () => { void back(); };
 element('transport').onclick = () => { if (pair.observe().desiredPlaying) pair.pause(); else void pair.play(); reveal(); };
 element('audio').onclick = () => toggle('audio');
@@ -331,12 +331,25 @@ for (const side of SIDES) {
 stage.onclick = (event) => { if (event.target === stage) { if (controls) hide(); else reveal(); } };
 window.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); void back(); } });
 window.addEventListener('blur', resetPointers);
-window.addEventListener('pagehide', () => { resetPointers(); clearIdle(); void pair.stop(true); });
+const retirePage = () => { resetPointers(); clearIdle(); navigation?.suspend(); };
+window.addEventListener('pagehide', retirePage);
+window.addEventListener('pageshow', () => { navigation?.resume(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') { resetPointers(); clearIdle(); void pair.stop(true); }
+  if (document.visibilityState === 'hidden') retirePage();
+  else navigation?.resume();
 });
 const resize = new ResizeObserver(layout);
 resize.observe(element('viewer')); resize.observe(element('panel-body')); resize.observe(element('dock').querySelector('nav')!);
 resize.observe(document.querySelector('.diagnostic')!);
 window.addEventListener('resize', layout);
+navigation = new ViewerHistory({
+  apply: (layer) => {
+    resetPointers(); clearIdle();
+    if (panel !== layer.panel) element('panel-body').scrollTop = 0;
+    controls = layer.controls; panel = layer.panel; menu = layer.menu;
+    render();
+  },
+  stop: sources,
+  changed: () => { if (navigation) render(); },
+});
 render();

@@ -115,3 +115,9 @@ with encrypted-media disabled and no license transport. It is excluded from
 ordinary tests. `npm run test:abema:local` tests owned fixtures and loopback
 network boundaries on port 4186; browser-free Python/Node protocol tests are
 listed in its guide. Actual provider decode acceptance remains pending.
+
+The separate [local ABEMA route diagnostic](../../docs/src/project/web-abema-routing.md)
+can give the exact replay metadata experiment one temporary userspace WireGuard
+route for both backend preparation and browser MPD access. It is explicitly
+opt-in, retains normal TLS/source guards, and performs no media or DRM operation.
+It does not implement product route settings or select an installed companion.

@@ -29,6 +29,7 @@
   - [ABEMA web bootstrap feasibility](project/web-abema-feasibility.md)
   - [Bounded ABEMA browser decoder diagnostic](project/web-abema-playback.md)
   - [Web account and route assessment](project/web-accounts-and-routes.md)
+  - [Local ABEMA route diagnostic](project/web-abema-routing.md)
   - [Cross-platform distribution](project/platform-distribution.md)
   - [Cross-platform validation roadmap](project/platform-validation-plan.md)
   - [Security and privacy](project/security-and-privacy.md)

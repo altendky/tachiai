@@ -131,10 +131,10 @@ def exchange(operation, fields, opener):
         return status, body
 
 
-def episode_worker(sender, operation, fields):
+def episode_worker(sender, operation, fields, proxy_route=None):
     try:
         with open(os.devnull, "wb") as silent: os.dup2(silent.fileno(), 1); os.dup2(silent.fileno(), 2)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), bootstrap.NoRedirect())
+        opener = bootstrap.route_transport.make_opener(proxy_route, bootstrap.NoRedirect())
         status, body = exchange(operation, fields, opener)
         sender.send_bytes(json.dumps({"status": status, "body": base64.b64encode(body).decode("ascii")}).encode())
     except BaseException:
@@ -144,15 +144,17 @@ def episode_worker(sender, operation, fields):
 
 
 class EpisodeTransport:
-    def __init__(self, context=None):
+    def __init__(self, context=None, proxy_route=None):
         self.context, self.used = context or multiprocessing.get_context("spawn"), set()
+        self.proxy_route = bootstrap.route_transport.validate_route(proxy_route)
 
     def request(self, operation, fields, timeout):
         request_spec(operation, fields)
         if operation in self.used or timeout <= 0: refuse("CALL_CAP")
         self.used.add(operation)
         receiver, sender = self.context.Pipe(duplex=False)
-        process = self.context.Process(target=episode_worker, args=(sender, operation, fields), daemon=True)
+        arguments = (sender, operation, fields) if self.proxy_route is None else (sender, operation, fields, self.proxy_route)
+        process = self.context.Process(target=episode_worker, args=arguments, daemon=True)
         started = False
         try:
             with bootstrap.completing_cleanup(): process.start(); started = True; sender.close()

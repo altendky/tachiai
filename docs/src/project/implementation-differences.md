@@ -96,6 +96,15 @@ for about five seconds with confirmed cleanup. Protected sources, Sumo/replay,
 sustained operation and acoustic output remain unverified. This adds no product
 controls or platform UX exception.
 
+The [local ABEMA route diagnostic](web-abema-routing.md) reuses the existing Go
+userspace WireGuard transport in a bounded host command. A private immutable
+loopback proxy descriptor reaches the exact replay's backend workers and owned
+browser MPD request. Proxy-only CDP authentication and unchanged request
+continuation preserve the normal browser CORS/TLS checks; Python authenticates
+only CONNECT and ignores environment bypass settings. This is development
+infrastructure with no product Routes/account or UX change. Owned fixtures verify
+the mechanism; actual Japan egress and provider-route acceptance remain unproved.
+
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/player.ts>
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/pair.ts>

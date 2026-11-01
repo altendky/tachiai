@@ -5,6 +5,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { launchOwnedBrowser, fetchManifest } from './abema-browser-manifest.mjs';
+import { installRouteAuth, routeBrowserOptions, validateRouteDescriptor } from './abema-route-browser.mjs';
 
 const require = createRequire(import.meta.url);
 const { strictJson } = require('./abema-episode-source-helper.cjs');
@@ -180,13 +181,21 @@ export async function observeManifest(page, input, now = () => process.hrtime.bi
 }
 
 async function main() {
-  let input, server, browser, browserServer, context, output = { refused: true }, cleanupConfirmed = true;
+  let input, server, browser, browserServer, context, routeAuth, output = { refused: true }, cleanupConfirmed = true;
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 2 || args[0] !== '--owned-runtime' || !isAbsolute(args[1]) || !(await stat(args[1])).isDirectory()) throw new Error();
+    const routed = args.length === 3 && args[2] === '--with-route';
+    if (!(args.length === 2 || routed) || args[0] !== '--owned-runtime' || !isAbsolute(args[1]) || !(await stat(args[1])).isDirectory()) throw new Error();
     let size = 0; const chunks = [];
-    for await (const chunk of process.stdin) { size += chunk.length; if (size > 16384) throw new Error(); chunks.push(chunk); }
-    input = validateInput(strictJson(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)), 16384));
+    const limit = routed ? 32768 : 16384;
+    for await (const chunk of process.stdin) { size += chunk.length; if (size > limit) throw new Error(); chunks.push(chunk); }
+    const packet = strictJson(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)), limit);
+    let route;
+    if (routed) {
+      if (!keys(packet, ['request', 'route'])) throw new Error();
+      route = validateRouteDescriptor(packet.route);
+      input = validateInput(packet.request);
+    } else input = validateInput(packet);
     const origin = new URL(input.uri).origin;
     server = createServer((request, response) => {
       if (request.method !== 'GET' || request.url !== '/') { response.writeHead(404); response.end(); return; }
@@ -195,16 +204,21 @@ async function main() {
       response.end('<!doctype html><title>Tachiai replay MPD metadata</title>');
     });
     await new Promise((yes, no) => { server.once('error', no); server.listen(0, '127.0.0.1', yes); });
-    ({ browser, browserServer } = await launchOwnedBrowser(args[1]));
+    const harnessOrigin = 'http://127.0.0.1:' + server.address().port;
+    const routeOptions = routed ? routeBrowserOptions(route, harnessOrigin) : undefined;
+    ({ browser, browserServer } = await launchOwnedBrowser(args[1], routed ? { route, harnessOrigin } : undefined));
     if (!/^156\.[0-9.]+$/.test(browser.version())) throw new Error();
-    context = await browser.newContext({ serviceWorkers: 'block' }); const page = await context.newPage();
+    context = await browser.newContext({ serviceWorkers: 'block', ...routeOptions?.contextOptions }); const page = await context.newPage();
     page.on('console', () => {}); page.on('pageerror', () => {});
-    await page.goto('http://127.0.0.1:' + server.address().port + '/', { waitUntil: 'load', timeout: 10000 });
+    if (routed) routeAuth = await installRouteAuth(context, page, route);
+    await page.goto(harnessOrigin + '/', { waitUntil: 'load', timeout: 10000 });
     if (!await page.evaluate(() => navigator.platform === 'Linux x86_64' && /Chrome\/156\./.test(navigator.userAgent) &&
       !navigator.userAgent.includes('HeadlessChrome') && (document.permissionsPolicy ?? document.featurePolicy)?.allowsFeature('encrypted-media') === false)) throw new Error();
     output = await observeManifest(page, input);
+    routeAuth?.assertHealthy();
   } catch { output = { refused: true }; }
   finally {
+    try { await routeAuth?.dispose(); } catch { cleanupConfirmed = false; }
     try { await context?.close(); } catch { cleanupConfirmed = false; }
     try { await browser?.close(); } catch { cleanupConfirmed = false; }
     try { await browserServer?.close(); } catch { cleanupConfirmed = false; }

@@ -119,14 +119,16 @@ test('real 639/640/641 dock thresholds and wide underlay drag retain normalized 
 
 test('portrait and large text keep fixed 48px toolbar targets, capped scroll body and 56px hidden reserve', async ({ page }) => {
   await open(page, 400, 800);
-  await page.addStyleTag({ content: 'html { font-size: 28.8px; } #dock nav button { font-size: 21.6px; }' });
+  // Keep the usable height fractional: clientHeight rounds it before the 60% cap.
+  await page.addStyleTag({ content: 'html { font-size: 28.8px; } .diagnostic { min-height: 291.55px; } #dock nav button { font-size: 21.6px; }' });
   await page.getByRole('button', { name: 'More', exact: true }).click(); await page.getByRole('menuitem', { name: 'Quality', exact: true }).click();
   const read = await page.evaluate(() => {
     const body = document.getElementById('panel-body')!, viewer = document.getElementById('viewer')!, dock = document.getElementById('dock')!;
     body.scrollTop = body.scrollHeight;
-    return { cap: body.clientHeight, height: viewer.clientHeight, scrolling: body.scrollTop > 0,
+    return { cap: body.getBoundingClientRect().height, height: viewer.getBoundingClientRect().height, scrolling: body.scrollTop > 0,
       targets: [...dock.querySelectorAll('nav button')].map(e => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })) };
   });
+  expect(Number.isInteger(read.height)).toBe(false);
   expect(read.cap).toBeLessThanOrEqual(Math.floor(read.height * .6)); expect(read.scrolling).toBe(true);
   for (const target of read.targets) { expect(target.w).toBeGreaterThanOrEqual(48); expect(target.h).toBeGreaterThanOrEqual(48); }
   let b = await boxes(page); expect(b.stage.bottom).toBeCloseTo(b.dock.y, 0); expect(b.a.y).toBeLessThan(b.b.y);

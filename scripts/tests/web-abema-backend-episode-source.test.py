@@ -268,6 +268,31 @@ class EpisodeTests(unittest.TestCase):
             def complete_private(self, context): self.reference = context; raise module.Refused()
         failed = Failed(io.StringIO(), Transport()); self.assertEqual(failed.run(), 1); self.assertEqual(failed.reference, {})
 
+    def test_episode_attempt_inherits_measured_setup_context_without_fixed_token_fallback(self):
+        calls = []
+        class Transport:
+            def request(self, operation, fields, timeout):
+                calls.append((operation, fields))
+                if operation == "GUEST": return 200, wire({"user_id": "fresh_user", "access_token": PRIVATE})
+                if operation == "PROFILE": return 200, wire({"profile": {"userId": "fresh_user"}})
+                if operation == "BROWSER_MEDIA_TOKEN":
+                    bootstrap.request_spec(operation, fields)
+                    return 200, wire({"token": PRIVATE})
+                raise AssertionError("Unexpected operation")
+        class Attempt(module.EpisodeAttempt):
+            def browser_snapshot(self):
+                self.media_token_context = {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}
+                return {}
+            def prepare(self): return wire({"device_type": 3, "device_id": DEVICE, "application_key_secret": PRIVATE})
+            def complete_private(self, context): self.received = set(context)
+        attempt = Attempt(io.StringIO(), Transport())
+        self.assertEqual(attempt.run(), 0)
+        self.assertEqual(calls[-1], ("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE,
+            "context": {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}}))
+        self.assertEqual(attempt.received, {"userId", "bearer", "deviceId", "mediaToken"})
+        for value in (PRIVATE, "ja-JP", "Asia/Tokyo"):
+            self.assertNotIn(value, attempt.output.getvalue())
+
     def test_source_expiry_is_checked_before_gateway_or_late_private_binding(self):
         calls = []
         class Metadata:

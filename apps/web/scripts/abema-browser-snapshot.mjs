@@ -12,15 +12,19 @@ export async function captureSnapshot(runtime, launcher = launchOwnedBrowser) {
     context = await browser.newContext({ serviceWorkers: 'block' });
     await context.route('**/*', route => route.abort());
     const page = await context.newPage();
-    const navigator = await page.evaluate(() => ({
-      userAgent: window.navigator.userAgent,
-      platform: window.navigator.platform,
-      maxTouchPoints: window.navigator.maxTouchPoints,
-      userAgentData: window.navigator.userAgentData ? {
-        mobile: window.navigator.userAgentData.mobile, platform: window.navigator.userAgentData.platform,
-      } : null,
+    const snapshot = await page.evaluate(() => ({
+      navigator: {
+        userAgent: window.navigator.userAgent,
+        platform: window.navigator.platform,
+        maxTouchPoints: window.navigator.maxTouchPoints,
+        userAgentData: window.navigator.userAgentData ? {
+          mobile: window.navigator.userAgentData.mobile, platform: window.navigator.userAgentData.platform,
+        } : null,
+      },
+      mediaTokenContext: { osLang: window.navigator.language,
+        osTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
     }));
-    output = { version: browser.version(), navigator };
+    output = { version: browser.version(), navigator: snapshot.navigator, mediaTokenContext: snapshot.mediaTokenContext };
   } catch { output = { refused: true }; process.exitCode = 1; }
   finally {
     try { await context?.close(); } catch { cleanupConfirmed = false; }

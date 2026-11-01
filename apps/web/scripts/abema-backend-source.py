@@ -183,6 +183,7 @@ class SourceAttempt(bootstrap.Attempt):
         super().__init__(output, transport, runner)
         self.retained_snapshot_runtime = None
         self.snapshot_used = False
+        self.media_token_context = None
 
     def bound_source(self, binding, nonce, media_token, channel):
         """Private extension point; the source-only proof performs no more I/O."""
@@ -212,9 +213,10 @@ class SourceAttempt(bootstrap.Attempt):
             if not isinstance(packet, dict) or packet.get("cleanupConfirmed") is not True:
                 uncertain = True
                 raise bootstrap.CleanupUnconfirmed()
-            if result.code != 0 or result.stderr or set(packet) != {"version", "navigator", "cleanupConfirmed"}:
+            if result.code != 0 or result.stderr or set(packet) != {"version", "navigator", "mediaTokenContext", "cleanupConfirmed"}:
                 raise Refused()
-            return validate_browser(json.dumps({"version": packet["version"], "navigator": packet["navigator"]}).encode())
+            navigator = validate_browser(json.dumps({"version": packet["version"], "navigator": packet["navigator"]}).encode())
+            context = bootstrap.validate_media_token_context(packet["mediaTokenContext"])
         finally:
             with bootstrap.completing_cleanup():
                 try:
@@ -230,6 +232,12 @@ class SourceAttempt(bootstrap.Attempt):
                     self.cleanup_confirmed = False
                     self.retained_snapshot_runtime = runtime
                     raise bootstrap.CleanupUnconfirmed() from None
+        self.media_token_context = context
+        return navigator
+
+    def media_token_request(self, bearer):
+        context = bootstrap.validate_media_token_context(self.media_token_context)
+        return self.request("BROWSER_MEDIA_TOKEN", {"bearer": bearer, "context": context})
 
     def source(self, media_token, navigator):
         self.phase = "CHANNELS"
@@ -285,6 +293,9 @@ class SourceAttempt(bootstrap.Attempt):
         try:
             self.phase = "BROWSER"
             self.navigator = self.browser_snapshot()
+            # Even overridden snapshot owners must supply measured context before
+            # any guest/account operation. There is no fixed-context fallback.
+            self.media_token_context = bootstrap.validate_media_token_context(self.media_token_context)
             self.report("BROWSER_VERIFIED", browser="Chrome", major=156, os="Linux")
         except BaseException as error:
             if isinstance(error, bootstrap.CleanupUnconfirmed):

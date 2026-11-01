@@ -331,6 +331,7 @@ class ManifestTests(unittest.TestCase):
                 raise module.bootstrap.CleanupUnconfirmed(PRIVATE)
         class Attempt(module.ManifestAttempt):
             def browser_snapshot(self):
+                self.media_token_context = {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}
                 return {}
 
             def prepare(self):

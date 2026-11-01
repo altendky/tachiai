@@ -10,10 +10,12 @@ now has video and user-confirmed audio with a scoped Headerly rule, including a
 Shields-up comparison. Replay, renewal, paired provider playback and the remaining
 controls still need acceptance; issue365 remains open.
 
-## Two-player live diagnostic
+## Two-player diagnostic
 
 After building, `/harness/twitch-pair-proof.html` is a separate, explicit diagnostic
-for two independent copies of VirtualJapan live. It reuses the common viewer's
+for two independent feeds chosen from VirtualJapan live and the existing exact
+replay case `2080217716`, including duplicates. Each selection is pinned before
+authorization and cannot change during that trial. It reuses the common viewer's
 gain curve and primary/floating geometry, without broadening the fixture player's
 ad-free source or seek contract. This page tests the playback mechanism; its
 Start/Prepare sequence is not a new product account or navigation design.
@@ -59,8 +61,43 @@ flags alone do not prove current or simultaneous playback.
 Run `npm run test:twitch:pair` from `apps/web`. Its isolated port4196 tests use
 synthetic account/source exchanges and owned media only; no actual provider
 authorization is part of CI. The existing single-player, fixture and transport
-test suites remain separate. Actual duplicate-provider acceptance is pending
-until a fresh named-browser trial is recorded.
+test suites remain separate. All four live/replay assignments have controlled
+dual-decoder coverage, using synthetic provider exchanges and owned media.
+Replay requests alone may use the single previously admitted
+`dgeft87wbj63p.cloudfront.net` distribution; a live partner cannot inherit that
+permission. The page CSP admits that exact host, while each request filter and
+request-owned transport enforce its feed's kind. The working Headerly rule
+described above covers Twitch media families only; it does not establish access
+to that replay distribution. Any further rule must be verified separately before
+a real replay trial. No rule is changed by this page, and replay availability,
+entitlement and advertisement behavior remain unverified. Actual paired-provider
+acceptance remains distinct from this controlled coverage.
+
+### Duplicate live observation: October 31, 2026 UTC
+
+The owner ran the frozen production pair page at revision
+`c644369fc647d8bc85f683c3deea460463d268b4` with Shaka 5.3.3, one fresh
+authorization and two separately prepared VirtualJapan live sources. The closed
+receipt identifies Linux and Chromium major 156. The requested environment was
+the owner's ordinary Brave with the existing Headerly media rule; extension
+settings, Shields state, exact browser minor, region and effective route were
+not independently measured.
+
+Both players decoded and advanced during the same sample interval. Each rose
+from four baseline frames to 1,497 frames. A advanced from 25.518 to 87.958
+seconds and B from 25.508 to 87.778 seconds; final observed video dimensions were
+1920×1080 and 640×360 respectively. These are media positions, not an independently
+measured elapsed trial duration or synchronization result. The owner confirmed
+video and audio, but could not confidently judge fade/mix with identical content
+and no timing adjustment. Independent audible contributions and provider mix
+acceptance therefore remain unconfirmed; software volume readback is separate.
+
+The final receipt at 23:54:33 UTC is closed, with both media owners destroyed
+and the temporary grant revoked, also confirmed by the owner. No provider media,
+grant, code, signed URL or account identifier was retained in the receipt. This
+establishes bounded duplicate-live concurrent video with user-confirmed audible
+output and cleanup, not replay, sustained playback, renewal, timing/quality
+controls or the ABEMA/Twitch combination.
 
 ## Ordinary-browser live evidence
 

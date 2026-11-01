@@ -1,12 +1,13 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
-import { TwitchProofSession, allowedTwitchMedia, type PollResult, type TwitchDiagnostic,
-  type TwitchLivePermission } from './twitch-proof';
+import { TwitchProofSession, allowedTwitchMedia, isTwitchCase, TWITCH_CASES, type TwitchCase,
+  type PollResult, type TwitchDiagnostic, type TwitchLivePermission } from './twitch-proof';
 import { TwitchOwnedLifetime } from './twitch-owned-lifetime';
 import { TwitchMediaDiagnostics, ownedMediaObserver } from './twitch-media-diagnostic';
 import { twitchMediaRequest } from './twitch-shaka-transport';
 import { installTwitchMediaRouter, TwitchMediaRoute } from './twitch-media-router';
 
 export type TwitchPairSide = 'A' | 'B';
+export type TwitchPairSelection = Readonly<Record<TwitchPairSide, TwitchCase>>;
 export type TwitchPairPlayResult = 'completed' | 'blocked' | 'failed' | 'unavailable';
 export type TwitchPairSample = { state: 'unavailable' } | {
   state: 'owned' | 'failed'; width: number; height: number; frames: number; seconds?: number;
@@ -35,6 +36,7 @@ export class TwitchPairSession {
   private readonly feeds: Record<TwitchPairSide, Feed>;
   private readonly now: () => number;
   private account?: TwitchProofSession;
+  private selected?: TwitchPairSelection;
   private deadline = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private preparing = false;
@@ -66,8 +68,15 @@ export class TwitchPairSession {
     this.timer = setTimeout(() => { this.cancel(); void this.close(); }, Math.max(0, Math.ceil(remaining)));
   }
 
-  async begin(): Promise<{ userCode: string; expiresIn: number; interval: number }> {
+  async begin(selected: TwitchPairSelection = { A: 'live:virtualjapan', B: 'live:virtualjapan' }):
+    Promise<{ userCode: string; expiresIn: number; interval: number }> {
     if (this.stopped || this.account) throw refused();
+    if (!selected || typeof selected !== 'object' || Array.isArray(selected)) throw refused();
+    const { A, B } = selected;
+    if (typeof A !== 'string' || typeof B !== 'string' || !isTwitchCase(A) || !isTwitchCase(B)) throw refused();
+    // Capture values before authorization. Later caller/UI mutations cannot
+    // change which source or replay-only destinations either feed may use.
+    this.selected = Object.freeze({ A, B });
     this.deadline = this.now() + 15 * 60_000;
     this.account = new TwitchProofSession({ fetch: this.dependencies.fetch, now: this.now });
     this.armDeadline();
@@ -109,9 +118,10 @@ export class TwitchPairSession {
           if (!ready()) throw refused();
           const feed = this.feeds[side];
           try {
-            sources[side] = await this.account!.source('live:virtualjapan');
+            const selected = this.selected![side];
+            sources[side] = await this.account!.source(selected);
             this.armDeadline();
-            if (!ready() || !allowedTwitchMedia(sources[side], false)) throw refused();
+            if (!ready() || !allowedTwitchMedia(sources[side], TWITCH_CASES[selected].kind === 'replay')) throw refused();
             const diagnostic = this.account!.diagnostic();
             feed.stage = { ...diagnostic };
             feed.permission = diagnostic.livePermission ? { ...diagnostic.livePermission } : undefined;
@@ -123,7 +133,8 @@ export class TwitchPairSession {
         if (!ready()) throw refused();
         shaka.polyfill.installAll();
         installTwitchMediaRouter();
-        await Promise.all(sides.map(side => this.prepareFeed(this.feeds[side], sources[side], generation, ready)));
+        await Promise.all(sides.map(side => this.prepareFeed(this.feeds[side], sources[side],
+          TWITCH_CASES[this.selected![side]].kind === 'replay', generation, ready)));
         if (!ready()) throw refused();
       })(), new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
@@ -147,7 +158,7 @@ export class TwitchPairSession {
     } finally { clearTimeout(timeout); this.preparing = false; }
   }
 
-  private async prepareFeed(feed: Feed, uri: string, generation: number, ready: () => boolean): Promise<void> {
+  private async prepareFeed(feed: Feed, uri: string, replay: boolean, generation: number, ready: () => boolean): Promise<void> {
     if (!ready() || !feed.ownership.acquire()) throw refused();
     const evidence = feed.evidence = new TwitchMediaDiagnostics();
     feed.stage = { stage: 'player-attach' };
@@ -159,7 +170,7 @@ export class TwitchPairSession {
       feed.mount.append(video);
       const player = feed.player = this.dependencies.createPlayer?.() ?? new shaka.Player();
       const current = () => this.current(feed, generation, player) && (this.prepared || ready());
-      const route = feed.route = new TwitchMediaRoute(current);
+      const route = feed.route = new TwitchMediaRoute(current, replay);
       player.addEventListener('error', event => {
         if (!this.current(feed, generation, player)) return;
         feed.failed = true;
@@ -184,7 +195,7 @@ export class TwitchPairSession {
         route.bind(request, observe);
         observe({ checkpoint: 'request-filter', ...identity });
         if (!this.current(feed, generation, player) || !request.uris.length ||
-            request.uris.some(raw => !allowedTwitchMedia(raw, false))) {
+            request.uris.some(raw => !allowedTwitchMedia(raw, replay))) {
           observe({ checkpoint: 'request-filter', refusal: 'policy', ...identity });
           throw refused();
         }

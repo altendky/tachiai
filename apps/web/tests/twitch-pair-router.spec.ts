@@ -47,6 +47,27 @@ test('identical URIs retain the exact original per-feed observer and status', as
   expect(result.b.checkpoint).toBe('complete'); expect(result.b.refusal).toBeUndefined(); expect(result.fetches).toBe(2);
 });
 
+test('replay CDN permission stays with its exact request owner', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const { TwitchMediaRoute, twitchMediaDispatcher } = await import('/harness/src/twitch-media-router.ts');
+    const shaka = (await import('/harness/tests/twitch-media-sdk.ts')).default;
+    const original = globalThis.fetch; let fetches = 0;
+    globalThis.fetch = (async () => { fetches++; return new Response('owned'); }) as typeof fetch;
+    const live = new TwitchMediaRoute(() => true), replay = new TwitchMediaRoute(() => true, true);
+    try {
+      const dispatch = (route: InstanceType<typeof TwitchMediaRoute>, uri: string) => {
+        const request = shaka.net.NetworkingEngine.makeRequest([uri], shaka.net.NetworkingEngine.defaultRetryParameters());
+        route.bind(request, () => {});
+        return twitchMediaDispatcher(uri, request, 1, () => {}, () => {}, {}).promise.then(() => 'completed', () => 'refused');
+      };
+      return { live: await dispatch(live, 'https://dgeft87wbj63p.cloudfront.net/owned'),
+        replay: await dispatch(replay, 'https://dgeft87wbj63p.cloudfront.net/owned'),
+        other: await dispatch(replay, 'https://other.cloudfront.net/owned'), fetches };
+    } finally { live.retire(); replay.retire(); globalThis.fetch = original; }
+  });
+  expect(result).toEqual({live: 'refused', replay: 'completed', other: 'refused', fetches: 1});
+});
+
 test('retirement blocks late streamed bytes and final response without rebinding a replacement', async ({ page }) => {
   const result = await page.evaluate(async () => {
     const { TwitchMediaRoute, twitchMediaDispatcher } = await import('/harness/src/twitch-media-router.ts');

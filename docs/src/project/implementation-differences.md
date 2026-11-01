@@ -130,6 +130,18 @@ only public fixture identity and numeric preferences; it stores no grants or
 provider metadata and establishes no account-storage or hosting decision.
 These mechanisms preserve the common scopes without adding a UX exception.
 
+### Controlled browser Fit and control dock
+
+The browser fixture follows the existing native Fit toggle, stage reservations,
+floating avoidance and responsive control-dock formulas using CSS logical pixels
+and measured DOM toolbar/content heights. Android uses its View measurement in
+dp; the implemented Fit/reservation rules keep the same panel threshold,
+minimum targets, capped scroll body and normalized floating position. Android
+also measures compact status/live rows; this bounded fixture retains its
+existing external status output. The browser's owned diagnostic header stays
+outside its measured usable viewer. This adds no fullscreen/orientation-lock mechanism,
+provider behavior or platform-specific UX exception.
+
 [media-session]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/PrototypeActivity.kt#L888-L900
 [manifest]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/AndroidManifest.xml#L9-L33
 [detection]: https://github.com/altendky/tachiai/blob/d60ce4a3485305ae4681d8dca6b33cd8e48bb449/apps/android/app/src/main/kotlin/net/fstab/tachiai/feature/presentation/TelevisionPresentation.kt#L23-L26

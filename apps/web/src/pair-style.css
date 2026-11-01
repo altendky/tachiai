@@ -33,3 +33,15 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem; }
 #quality-fields select { max-width: 100%; }
 #quality-fields p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fixture-note { font-size: .85rem; color: #c1c3c7; }
+
+/* The provider pair diagnostic shares the base styles, not the fixture dock. */
+.pair-fixture #viewer { position: relative; min-height: 0; display: block; overflow: hidden; }
+.pair-fixture #stage { position: absolute; left: 0; top: 0; }
+.pair-fixture #dock { position: absolute; right: 0; bottom: 0; z-index: 2; padding: 4px 8px; max-height: none; overflow: visible; }
+.pair-fixture #panel-body { overflow: auto; display: flow-root; }
+.pair-fixture #panel-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
+.pair-fixture #panel-header button { min-width: 0; }
+.pair-fixture #panel-header #panel-back { min-width: 48px; }
+.pair-fixture #dock nav { display: grid; gap: 0; grid-template-columns: repeat(6, minmax(48px, 1fr)); }
+.pair-fixture #dock nav button { font-size: 12px; padding: 4px; overflow-wrap: anywhere; }
+.pair-fixture #more-menu { position: absolute; right: 8px; bottom: calc(var(--toolbar-height, 48px) + 4px); padding: .4rem; background: #25282c; max-width: calc(100vw - 16px); width: max-content; max-height: 60dvh; overflow: auto; margin-bottom: 0; }

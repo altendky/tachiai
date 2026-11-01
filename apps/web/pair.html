@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Tachiai controlled pair fixture</title>
   </head>
-  <body>
+  <body class="pair-fixture">
     <header class="diagnostic">
       <strong>Diagnostic · controlled pair fixture</strong>
       <button id="back">Back</button>
@@ -36,6 +36,12 @@
           </div>
         </div>
         <div id="dock">
+          <div id="panel-body" hidden>
+            <div id="panel-header">
+              <button id="panel-back" aria-label="Back to playback controls">←</button>
+              <span id="panel-title"></span>
+              <button id="fit-video" aria-label="Fit video beside visible controls; toggle without restarting playback" aria-pressed="true">Fit video: on</button>
+            </div>
           <section id="audio-panel" hidden aria-label="Audio">
             <label>Overall volume <input id="overall" type="range" min="0" max="100" step="1" value="50"></label>
             <label>Mix A ↔ B <input id="balance" type="range" min="0" max="100" step="1" value="50"></label>
@@ -59,6 +65,7 @@
             <div id="quality-fields"></div>
             <p id="quality-message"></p>
           </section>
+          </div>
           <div id="more-menu" hidden role="menu" aria-label="More">
             <button id="swap" role="menuitem">Swap primary feed</button>
             <button id="status" role="menuitem">Playback status</button>
@@ -75,7 +82,7 @@
         </div>
       </section>
       <p id="pair-result" role="status">Loading timing core…</p>
-      <p class="fixture-note">Fixture scope: controller, controlled quality, media and Wasm checks. Full responsive product controls, provider accounts/routes, provider quality and orientation controls require their own implementation and acceptance.</p>
+      <p class="fixture-note">Fixture scope: controller, responsive Fit/control dock, controlled quality, media and Wasm checks. Provider accounts/routes, provider quality, complete product navigation and orientation controls require their own implementation and acceptance.</p>
     </main>
     <script type="module" src="/src/pair-main.ts"></script>
   </body>

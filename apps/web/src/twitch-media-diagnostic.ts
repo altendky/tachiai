@@ -22,13 +22,16 @@ export class TwitchMediaObservers {
 }
 
 export function ownedMediaObserver(active: () => boolean, evidence: TwitchMediaDiagnostics,
-  status: (http: number) => void, failure: () => void): MediaObserver {
+  status: (http: number) => void, failure: (http: number | undefined) => void): MediaObserver {
+  let responseStatus: number | undefined;
   return (event) => {
     if (!active()) return;
     const failed = evidence.failed;
-    if (!failed && event.http !== undefined) status(event.http);
+    if (!failed && event.http !== undefined) { responseStatus = event.http; status(event.http); }
     evidence.observe(event);
-    if (!failed && event.refusal) failure();
+    // Concurrent requests share the presentation's diagnostics, but only this
+    // request's own response can supply the status of its first refusal.
+    if (!failed && event.refusal) failure(responseStatus);
   };
 }
 

@@ -3,6 +3,44 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE } from '../src/twitch-proof';
 
+for (const refusal of ['fetch-rejected', 'http-status', 'sdk'] as const) test(`owned failure status belongs to its request after a successful manifest (${refusal})`, async ({page, baseURL}) => {
+  let revocations = 0, masters = 0, children = 0, unexpected = 0;
+  await page.route('**/*', async route => {
+    const uri = new URL(route.request().url());
+    if (uri.origin === new URL(baseURL!).origin) { await route.continue(); return; }
+    const json = (body: unknown) => route.fulfill({json: body});
+    if (uri.href === 'https://id.twitch.tv/oauth2/device') await json({device_code: 'synthetic-device', user_code: 'TEST1234',
+      verification_uri: 'https://www.twitch.tv/activate', expires_in: 600, interval: 1});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/token') await json({access_token: 'synthetic-browser-grant', token_type: 'bearer', expires_in: 3600});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/validate') await json({client_id: TWITCH_PROOF_CLIENT, scopes: [TWITCH_PROOF_SCOPE], user_id: '12345', expires_in: 3600});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/revoke') { revocations++; await route.fulfill({status: 200, body: ''}); }
+    else if (uri.href === 'https://gql.twitch.tv/gql') await json({data: {videoPlaybackAccessToken: {signature: 'synthetic', value: '{}'}}});
+    else if (uri.origin === 'https://usher.ttvnw.net' && uri.pathname === '/vod/v2/2080217716.m3u8') {
+      masters++;
+      await route.fulfill({status: 200, contentType: 'application/vnd.apple.mpegurl',
+        body: refusal === 'sdk' ? 'PRIVATE_INVALID_MANIFEST' : '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nchild.m3u8\n'});
+    } else if (uri.origin === 'https://usher.ttvnw.net' && uri.pathname === '/vod/v2/child.m3u8') {
+      children++;
+      if (refusal === 'http-status') await route.fulfill({status: 403, body: 'PRIVATE_REFUSAL_BODY'});
+      else await route.abort('failed');
+    } else { unexpected++; await route.abort(); }
+  });
+  await page.goto('twitch-proof.html'); await page.waitForFunction(() => Boolean((window as any).twitchProof));
+  await page.evaluate(() => (window as any).twitchProof.begin());
+  await expect.poll(() => page.evaluate(() => (window as any).twitchProof.poll())).toBe('authorized');
+  expect(await page.evaluate(() => (window as any).twitchProof.prepare('replay:2080217716'))).toBe('refused');
+  const diagnostic = await page.evaluate(() => (window as any).twitchProof.diagnostic());
+  expect(diagnostic).toMatchObject({stage: 'player-load', media: {refusal}});
+  if (refusal === 'http-status') expect(diagnostic.http).toBe(403);
+  else expect(diagnostic.http).toBeUndefined();
+  expect(JSON.stringify(diagnostic)).not.toContain('PRIVATE');
+  expect(await page.evaluate(() => (window as any).twitchProof.close())).toEqual({media: 'destroyed', grant: 'revoked'});
+  expect(await page.evaluate(() => (window as any).twitchProof.diagnostic())).toEqual(diagnostic);
+  await expect(page.locator('video')).toHaveCount(0);
+  expect(masters).toBe(1); expect(children).toBe(refusal === 'sdk' ? 0 : 1);
+  expect(revocations).toBe(1); expect(unexpected).toBe(0);
+});
+
 for (const lifetime of ['finite', 'bounded-unknown'] as const) test(`owned provider host decodes only synthetic fixture media and cleans up (${lifetime})`, async ({ page, baseURL }) => {
   let revocations = 0;
   let unexpected = 0;

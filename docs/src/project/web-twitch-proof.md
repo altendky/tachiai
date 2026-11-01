@@ -576,9 +576,12 @@ region/account condition, selected content, observed behavior and cleanup.
 The session/host diagnostic getter and CLI refusal results expose only a closed
 stage enum and an optional integer HTTP status from 100 through 599. Stages
 distinguish device challenge, token polling, validation, source access and player
-attach/load/playback/cleanup. Network failures may have no HTTP status; media
-status is the latest response observed in that stage, not proof of why a decoder
-failed. Original preparation failure stages survive subsequent cleanup. Provider
+attach/load/playback/cleanup. Network failures may have no HTTP status. During
+successful media preparation, status is the latest readable response in that
+stage. A transport refusal freezes only the failing request's own readable
+response status; a pre-response refusal has none. SDK-only failures, load deadlines
+and play rejections omit HTTP when no failing request has been identified.
+Original preparation failure stages survive subsequent cleanup. Provider
 strings, response fields, token shapes and raw player/network errors do not
 enter this diagnostic result.
 
@@ -607,9 +610,12 @@ policy, Fetch rejection, the existing ten-second transport timeout, owned abort,
 readable HTTP rejection, body reading/size, processing and SDK failure. The host's
 existing thirty-second load deadline has an explicit `load-timeout` marker.
 `fetch-rejected` does not identify CORS: redirects, CSP, DNS/TLS and other network
-failures can produce the same unreadable result. No HTTP value means none was
-observed before the latched failure, not proof that no request occurred. A known
-HTTP value is still only the latest readable response before failure.
+failures can produce the same unreadable result. No HTTP value means no readable
+response was established for that failure, not proof that no request occurred.
+A known transport-refusal status belongs to the bound request, including when a
+different request responds concurrently. It does not establish the failure's
+underlying cause. Historical receipts produced before this correction can carry
+an earlier request's status and retain their original attribution limits.
 
 ### Activated browser trial: October 26, 2026
 

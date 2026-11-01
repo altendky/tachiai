@@ -18,6 +18,55 @@ test('first transport refusal survives later responses and numeric SDK annotatio
   expect(evidence.snapshot().sdkCode).toBe(1002);
 });
 
+test('a response from a different request cannot supply the first refusal status', () => {
+  const evidence = new TwitchMediaDiagnostics();
+  let lastHttp: number | undefined;
+  const failures: (number | undefined)[] = [];
+  const observer = () => ownedMediaObserver(() => true, evidence, value => { lastHttp = value; },
+    (http?: number) => { failures.push(http); });
+  const completed = observer(), rejected = observer();
+  completed({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', http: 200 });
+  completed({ checkpoint: 'complete', requestKind: 'manifest', method: 'GET' });
+  rejected({ checkpoint: 'fetch', requestKind: 'manifest', method: 'GET', refusal: 'fetch-rejected' });
+  completed({ checkpoint: 'response', requestKind: 'segment', method: 'GET', http: 206 });
+  rejected({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', http: 403 });
+  expect(lastHttp).toBe(200); expect(failures).toEqual([undefined]);
+  expect(evidence.snapshot()).toEqual({ checkpoint: 'fetch', requestKind: 'manifest', method: 'GET', refusal: 'fetch-rejected' });
+});
+
+for (const kind of ['body', 'http-status'] as const) test(`interleaved requests retain only their own ${kind} refusal status`, () => {
+  const evidence = new TwitchMediaDiagnostics();
+  let lastHttp: number | undefined;
+  const failures: (number | undefined)[] = [];
+  const observer = () => ownedMediaObserver(() => true, evidence, value => { lastHttp = value; },
+    (http?: number) => { failures.push(http); });
+  const first = observer(), second = observer();
+  first({ checkpoint: 'response', requestKind: 'segment', method: 'GET', http: 200 });
+  second({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', http: 403 });
+  if (kind === 'body') first({ checkpoint: 'body', requestKind: 'segment', method: 'GET', refusal: 'body-read' });
+  else second({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', refusal: 'http-status' });
+  second({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', http: 500 });
+  expect(lastHttp).toBe(403); expect(failures).toEqual([kind === 'body' ? 200 : 403]);
+  expect(evidence.snapshot()).toEqual(kind === 'body'
+    ? { checkpoint: 'body', requestKind: 'segment', method: 'GET', refusal: 'body-read' }
+    : { checkpoint: 'response', requestKind: 'manifest', method: 'GET', refusal: 'http-status' });
+});
+
+test('a retired request cannot publish its captured response status into a later failure', () => {
+  const retired = new TwitchMediaDiagnostics(), current = new TwitchMediaDiagnostics();
+  let active = true;
+  const failures: (number | undefined)[] = [];
+  const old = ownedMediaObserver(() => active, retired, () => {}, (http?: number) => { failures.push(http); });
+  old({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', http: 403 });
+  active = false;
+  old({ checkpoint: 'response', requestKind: 'manifest', method: 'GET', refusal: 'http-status' });
+  const replacement = ownedMediaObserver(() => true, current, () => {}, (http?: number) => { failures.push(http); });
+  replacement({ checkpoint: 'response', requestKind: 'segment', method: 'GET', http: 206 });
+  replacement({ checkpoint: 'body', requestKind: 'segment', method: 'GET', refusal: 'body-read' });
+  expect(failures).toEqual([206]);
+  expect(retired.failed).toBe(false); expect(current.failed).toBe(true);
+});
+
 test('SDK-only and explicit load deadline failures remain distinct and reject invalid numeric evidence', () => {
   for (const value of [undefined, null, true, '1002', 0, -1, 1.5, NaN, Infinity, 100000]) {
     const evidence = new TwitchMediaDiagnostics(); evidence.sdk({ category: value, code: value });

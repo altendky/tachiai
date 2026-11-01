@@ -1,9 +1,79 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { pairFixture, authorizePair } from './twitch-pair-fixture';
-import type { TwitchCase } from '../src/twitch-proof';
+import { TWITCH_PROOF_CLIENT, TWITCH_PROOF_SCOPE, type TwitchCase } from '../src/twitch-proof';
 
 test.afterEach(async ({ page }) => {
   await page.evaluate(() => (window as any).pairTest?.pair.close());
+});
+
+for (const refusal of ['fetch-rejected', 'http-status'] as const) test(`real paired child-manifest ${refusal} cannot inherit the successful master status`, async ({page, baseURL}) => {
+  let revocations = 0, masters = 0, rejectedChildren = 0, unexpected = 0;
+  await page.route('**/*', async route => {
+    const request = route.request(), uri = new URL(request.url());
+    if (uri.origin === new URL(baseURL!).origin) {
+      if (uri.pathname.endsWith('/twitch-pair-receipt')) await route.fulfill({status: 204});
+      else await route.continue();
+      return;
+    }
+    const json = (body: unknown) => route.fulfill({json: body});
+    if (uri.href === 'https://id.twitch.tv/oauth2/device') await json({device_code: 'synthetic-device', user_code: 'TESTPAIR',
+      verification_uri: 'https://www.twitch.tv/activate', expires_in: 600, interval: 1});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/token') await json({access_token: 'synthetic-pair-grant', token_type: 'bearer', expires_in: 3600});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/validate') await json({client_id: TWITCH_PROOF_CLIENT, scopes: [TWITCH_PROOF_SCOPE], user_id: '12345', expires_in: 3600});
+    else if (uri.href === 'https://id.twitch.tv/oauth2/revoke') { revocations++; await route.fulfill({status: 200, body: ''}); }
+    else if (uri.href === 'https://gql.twitch.tv/gql') {
+      const replay = request.postDataJSON().operationName === 'VideoPlaybackAccessToken';
+      await json({data: {[replay ? 'videoPlaybackAccessToken' : 'streamPlaybackAccessToken']: {signature: 'synthetic', value: '{}',
+        authorization: {isForbidden: false, forbiddenReasonCode: 'NONE'}}}});
+    } else if (uri.origin === 'https://usher.ttvnw.net' && uri.pathname === '/vod/v2/2080217716.m3u8') {
+      masters++;
+      await route.fulfill({status: 200, contentType: 'application/vnd.apple.mpegurl',
+        body: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nhttps://dgeft87wbj63p.cloudfront.net/child.m3u8\n'});
+    } else if (uri.href === 'https://dgeft87wbj63p.cloudfront.net/child.m3u8') {
+      rejectedChildren++;
+      if (refusal === 'http-status') await route.fulfill({status: 403, body: 'PRIVATE_REFUSAL_BODY'});
+      else await route.abort('failed');
+    } else if (uri.origin === 'https://usher.ttvnw.net') {
+      const first = uri.pathname === '/api/v2/channel/hls/virtualjapan.m3u8';
+      const file = first ? 'master.m3u8' : uri.pathname.split('/').at(-1)!;
+      if (first) masters++;
+      if (!/^(master|media_[01])\.m3u8$|^init-stream[01]\.m4s$|^chunk-stream[01]-[0-9]{5}\.m4s$/.test(file)) {
+        unexpected++; await route.abort(); return;
+      }
+      await route.fulfill({body: await readFile(resolve('build/public/media/a', file)),
+        contentType: file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4'});
+    } else { unexpected++; await route.abort(); }
+  });
+  await page.goto('twitch-pair-proof.html');
+  await page.getByLabel('Feed B', {exact: true}).selectOption('replay:2080217716');
+  await page.getByRole('button', {name: 'Start fresh trial'}).click();
+  await expect(page.getByRole('button', {name: 'Prepare both feeds'})).toBeEnabled();
+  await page.getByRole('button', {name: 'Prepare both feeds'}).click();
+  await expect.poll(() => page.evaluate(() => (window as any).twitchPairDiagnostic.snapshot().phase)).toBe('closed');
+  const snapshot = await page.evaluate(() => (window as any).twitchPairDiagnostic.snapshot());
+  expect(snapshot.diagnostics.B).toMatchObject({stage: 'player-load', media: {refusal, requestKind: 'manifest', method: 'GET'}});
+  if (refusal === 'http-status') expect(snapshot.diagnostics.B.http).toBe(403);
+  else expect(snapshot.diagnostics.B.http).toBeUndefined();
+  expect(snapshot.cleanup).toEqual({media: {A: 'destroyed', B: 'destroyed'}, grant: 'revoked'});
+  expect(JSON.stringify(snapshot)).not.toContain('PRIVATE');
+  await expect(page.locator('video')).toHaveCount(0);
+  expect(masters).toBe(2); expect(rejectedChildren).toBe(1); expect(revocations).toBe(1); expect(unexpected).toBe(0);
+});
+
+test('SDK-only pair failure omits an earlier successful media response status after cleanup', async ({page}) => {
+  await pairFixture(page); await authorizePair(page);
+  expect(await page.evaluate(() => (window as any).pairTest.pair.prepare())).toBe('ready');
+  expect(await page.evaluate(() => (window as any).pairTest.fire(0))).toBe('completed');
+  expect(await page.evaluate(() => (window as any).pairTest.pair.diagnostic('A').http)).toBe(200);
+  await page.evaluate(() => (window as any).pairTest.players[0].events.get('error')({detail: {category: 3, code: 3016}}));
+  await expect.poll(() => page.evaluate(() => (window as any).pairTest.inspect().destroyed)).toEqual([1, 0]);
+  const diagnostic = await page.evaluate(() => (window as any).pairTest.pair.diagnostic('A'));
+  expect(diagnostic).toMatchObject({stage: 'player-playback', media: {checkpoint: 'sdk', refusal: 'sdk', sdkCategory: 3, sdkCode: 3016}});
+  expect(diagnostic.http).toBeUndefined();
+  expect(await page.evaluate(() => (window as any).pairTest.pair.close())).toEqual({media: {A: 'destroyed', B: 'destroyed'}, grant: 'revoked'});
+  expect(await page.evaluate(() => (window as any).pairTest.pair.diagnostic('A'))).toEqual(diagnostic);
 });
 
 test('constructor is inert, close without begin holds no account and repeated begin refuses', async ({ page }) => {
@@ -154,10 +224,13 @@ for (const option of ['shortGrant', 'shortSourceValidation'] as const) test(`${o
 
 test('terminal play failure retires its media route while the partner remains usable', async ({ page }) => {
   await pairFixture(page, { failedPlayA: true }); await authorizePair(page); await page.evaluate(() => (window as any).pairTest.pair.prepare());
+  expect(await page.evaluate(() => (window as any).pairTest.fire(0))).toBe('completed');
+  expect(await page.evaluate(() => (window as any).pairTest.pair.diagnostic('A').http)).toBe(200);
   expect(await page.evaluate(() => (window as any).pairTest.pair.play())).toEqual({ A: 'failed', B: 'completed' });
+  expect(await page.evaluate(() => (window as any).pairTest.pair.diagnostic('A').http)).toBeUndefined();
   expect(await page.evaluate(() => (window as any).pairTest.fire(0))).toBe('refused');
   expect(await page.evaluate(() => (window as any).pairTest.fire(1))).toBe('completed');
-  expect(await page.evaluate(() => (window as any).pairTest.inspect())).toMatchObject({ destroyed: [1, 0], mediaFetches: 1 });
+  expect(await page.evaluate(() => (window as any).pairTest.inspect())).toMatchObject({ destroyed: [1, 0], mediaFetches: 2 });
 });
 
 test('pause invalidates a pending play rejection without retiring healthy media', async ({ page }) => {

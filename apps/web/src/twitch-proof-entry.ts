@@ -80,7 +80,7 @@ const proof = {
           failure = true;
           evidence.sdk((event as Event & { detail?: unknown }).detail);
           failedDiagnostic ??= { ...(mediaDiagnostic ?? { stage: 'player-playback' }),
-            stage: mediaDiagnostic?.stage === 'player-ready' ? 'player-playback' : mediaDiagnostic?.stage ?? 'player-playback' };
+            stage: mediaDiagnostic?.stage === 'player-ready' ? 'player-playback' : mediaDiagnostic?.stage ?? 'player-playback', http: undefined };
         }
       });
       owned.configure({ manifest: { retryParameters: { maxAttempts: 1 } },
@@ -94,7 +94,7 @@ const proof = {
         // player that happens to be current when a delayed plugin starts.
         const observe = ownedMediaObserver(() => !stopped && !ownership.retiring && player === owned && preparation === generation,
           evidence, (http) => { if (mediaDiagnostic) mediaDiagnostic = { ...mediaDiagnostic, http }; },
-          () => { if (mediaDiagnostic) failedDiagnostic ??= { ...mediaDiagnostic }; });
+          http => { if (mediaDiagnostic) failedDiagnostic ??= { ...mediaDiagnostic, http }; });
         mediaObservers.bind(request, observe);
         observe({ checkpoint: 'request-filter', ...identity });
         if (stopped || player !== owned || !request.uris.length ||
@@ -123,7 +123,7 @@ const proof = {
       return 'ready';
     } catch (error) {
       if (preparation === generation && !ownership.retiring && !stopped) mediaEvidence?.sdk(error);
-      failedDiagnostic ??= { ...(mediaDiagnostic ?? session.diagnostic()) };
+      failedDiagnostic ??= mediaDiagnostic ? { ...mediaDiagnostic, http: undefined } : { ...session.diagnostic() };
       await stopPlayer().catch(() => { failure = true; });
       return 'refused';
     } finally { preparing = false; }
@@ -161,7 +161,7 @@ play.onclick = () => {
   void playing?.play().catch(() => {
     if (!stopped && video === playing && !ownership.retiring) {
       failure = true;
-      failedDiagnostic = { ...mediaDiagnostic, stage: 'player-playback' };
+      failedDiagnostic ??= { ...mediaDiagnostic, stage: 'player-playback', http: undefined };
     }
   });
 };

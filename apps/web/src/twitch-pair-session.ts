@@ -143,7 +143,7 @@ export class TwitchPairSession {
             if (feed.stage?.stage !== 'player-ready') {
               feed.evidence?.loadTimeout();
               feed.failed = true;
-              feed.failedStage ??= { ...(feed.stage ?? { stage: 'player-load' }) };
+              feed.failedStage ??= { ...(feed.stage ?? { stage: 'player-load' }), http: undefined };
             }
           }
           reject(refused());
@@ -176,7 +176,7 @@ export class TwitchPairSession {
         feed.failed = true;
         evidence.sdk((event as Event & { detail?: unknown }).detail);
         feed.failedStage ??= { ...(feed.stage ?? { stage: 'player-playback' }),
-          stage: feed.stage?.stage === 'player-ready' ? 'player-playback' : feed.stage?.stage ?? 'player-playback' };
+          stage: feed.stage?.stage === 'player-ready' ? 'player-playback' : feed.stage?.stage ?? 'player-playback', http: undefined };
         // An independent player error retires its feed immediately; paired
         // preparation below still fails closed and retires/revokes the whole pair.
         route.retire();
@@ -191,7 +191,7 @@ export class TwitchPairSession {
         const identity = twitchMediaRequest(type, request.method);
         const observe = ownedMediaObserver(current, evidence,
           http => { if (feed.stage) feed.stage = { ...feed.stage, http }; },
-          () => { if (feed.stage) feed.failedStage ??= { ...feed.stage }; });
+          http => { if (feed.stage) feed.failedStage ??= { ...feed.stage, http }; });
         route.bind(request, observe);
         observe({ checkpoint: 'request-filter', ...identity });
         if (!this.current(feed, generation, player) || !request.uris.length ||
@@ -209,7 +209,7 @@ export class TwitchPairSession {
     } catch (error) {
       if (this.current(feed, generation)) {
         feed.failed = true; evidence.sdk(error);
-        feed.failedStage ??= { ...(feed.stage ?? { stage: 'player-load' }) };
+        feed.failedStage ??= { ...(feed.stage ?? { stage: 'player-load' }), http: undefined };
       }
       throw refused();
     }
@@ -227,7 +227,7 @@ export class TwitchPairSession {
       } catch (error) {
         if (ticket !== this.playGeneration || !this.current(feed, generation)) return 'unavailable' as const;
         try { if ((error as { name?: unknown })?.name === 'NotAllowedError') return 'blocked' as const; } catch {}
-        feed.failed = true; feed.failedStage = { ...(feed.stage ?? {}), stage: 'player-playback' };
+        feed.failed = true; feed.failedStage ??= { ...(feed.stage ?? {}), stage: 'player-playback', http: undefined };
         feed.route?.retire(); void this.stopFeed(feed);
         return 'failed' as const;
       }

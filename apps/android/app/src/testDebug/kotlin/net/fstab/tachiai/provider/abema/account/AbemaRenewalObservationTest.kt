@@ -161,4 +161,105 @@ class AbemaRenewalObservationTest {
         early.finish({}, { error("synthetic failed baseline comparison") })
         assertEquals(AbemaRenewalProbeEvidence.Guard.PRESERVATION, early.firstFailedGuard)
     }
+
+    @Test fun minimizedEvidenceRequiresPendingAfterStopThenVerifiedReadyBeforeReturn() {
+        val background = AbemaRenewalBackgroundObservation()
+        background.activityResumed() // Initial launch precedes the guarded interval.
+        assertTrue(background.begin(Completion.PENDING))
+        background.hostStopped()
+        assertTrue(background.afterStop(Completion.PENDING))
+        assertTrue(background.sample(Completion.PENDING, false))
+        assertTrue(background.sample(Completion.READY, true))
+        assertTrue(background.allowReturn())
+        background.hostStarted(); background.activityResumed()
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.NONE, background.firstFailedGuard)
+        assertEquals(AbemaRenewalBackgroundObservation.Phase.RETURN_ALLOWED, background.phase)
+    }
+
+    @Test fun completionBeforeHomeOrBeforeStoppedPendingCannotClaimMinimizedCompletion() {
+        val before = AbemaRenewalBackgroundObservation()
+        assertFalse(before.begin(Completion.READY))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.PENDING_BEFORE_HOME, before.firstFailedGuard)
+        val duringHome = AbemaRenewalBackgroundObservation()
+        assertTrue(duringHome.begin(Completion.PENDING)); duringHome.hostStopped()
+        assertFalse(duringHome.afterStop(Completion.READY))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.PENDING_AFTER_STOP, duringHome.firstFailedGuard)
+        val noStop = AbemaRenewalBackgroundObservation()
+        assertTrue(noStop.begin(Completion.PENDING)); assertFalse(noStop.afterStop(Completion.PENDING))
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.HOST_NOT_STOPPED, noStop.firstFailedGuard)
+    }
+
+    @Test fun resumeThenStopOrResumeRacingReadyPermanentlyRefusesBackgroundEvidence() {
+        for (afterReady in listOf(false, true)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            if (afterReady) assertTrue(background.sample(Completion.READY, true))
+            background.activityResumed(); background.hostStopped()
+            assertFalse(background.sample(Completion.READY, true)); assertFalse(background.allowReturn())
+            assertEquals(AbemaRenewalBackgroundObservation.Guard.RESUMED, background.firstFailedGuard)
+        }
+    }
+
+    @Test fun unverifiedOrLostCompletionAndPrematureReturnCannotPassBackgroundGuard() {
+        for ((completion, replacement) in listOf(Completion.READY to false, Completion.PENDING to true,
+                Completion.ABSENT to false, Completion.FAILURE to false)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            assertFalse(background.sample(completion, replacement)); assertFalse(background.allowReturn())
+            assertEquals(AbemaRenewalBackgroundObservation.Guard.COMPLETION, background.firstFailedGuard)
+        }
+        val early = AbemaRenewalBackgroundObservation()
+        assertTrue(early.begin(Completion.PENDING)); early.hostStopped(); assertTrue(early.afterStop(Completion.PENDING))
+        assertFalse(early.allowReturn())
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.RETURN, early.firstFailedGuard)
+    }
+
+    @Test fun restartOrDestructionCannotReuseStoppedHostEvidence() {
+        for (destroyed in listOf(false, true)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            if (destroyed) background.hostDestroyed() else background.hostStarted()
+            background.hostStopped()
+            assertFalse(background.sample(Completion.READY, true)); assertFalse(background.allowReturn())
+            assertEquals(if (destroyed) AbemaRenewalBackgroundObservation.Guard.HOST_DESTROYED
+                else AbemaRenewalBackgroundObservation.Guard.HOST_NOT_STOPPED, background.firstFailedGuard)
+        }
+    }
+
+    @Test fun privateMutationSummarySeparatesSelectedAccountJournalAndOtherRecordsWithoutExportingIdentities() {
+        val selected = "no_backup/abema-account-selected.enc"
+        val journal = "no_backup/failure-diagnostics.tsv"
+        val other = "no_backup/PRIVATE_SYNTHETIC_RECORD.enc"
+        val baseline = mapOf(selected to byteArrayOf(1), journal to byteArrayOf(2), other to byteArrayOf(3))
+        fun summary(after: Map<String, ByteArray>) = abemaRenewalOtherMutations(baseline, after, selected)
+        assertEquals(AbemaRenewalOtherMutations(0, 0, 0, AbemaRenewalOtherMutations.Kind.NONE),
+            summary(baseline + (selected to byteArrayOf(4))))
+        assertEquals(AbemaRenewalOtherMutations(1, 0, 0, AbemaRenewalOtherMutations.Kind.DIAGNOSTIC_JOURNAL_ONLY),
+            summary(baseline + (journal to byteArrayOf(4))))
+        assertEquals(AbemaRenewalOtherMutations(1, 0, 0, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD),
+            summary(baseline + (selected to byteArrayOf(4)) + (other to byteArrayOf(5))))
+        val mixed = summary(baseline + (journal to byteArrayOf(4)) + (other to byteArrayOf(5)))
+        assertEquals(AbemaRenewalOtherMutations.Kind.MIXED, mixed.kind)
+        assertFalse(mixed.toString().contains("PRIVATE"))
+        assertFalse(mixed.toString().contains("no_backup"))
+    }
+
+    @Test fun privateMutationSummaryIncludesInventoryChangesAndNeverTreatsJournalLookalikesAsTheJournal() {
+        val selected = "selected"
+        val removed = "shared_prefs/PRIVATE.xml"
+        val added = "no_backup/failure-diagnostics.tsv.enc"
+        val result = abemaRenewalOtherMutations(mapOf(selected to byteArrayOf(1), removed to byteArrayOf(2)),
+            mapOf(selected to byteArrayOf(1), added to byteArrayOf(3)), selected)
+        assertEquals(AbemaRenewalOtherMutations(0, 1, 1, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD), result)
+    }
+
+    @Test fun privateMutationCountsSaturateWithoutExportingOversizedInventories() {
+        val before = (1..100).associate { "before$it" to byteArrayOf(1) }
+        val after = (1..100).associate { "after$it" to byteArrayOf(2) }
+        assertEquals(AbemaRenewalOtherMutations(0, 64, 64, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD),
+            abemaRenewalOtherMutations(before, after, "selected"))
+    }
 }

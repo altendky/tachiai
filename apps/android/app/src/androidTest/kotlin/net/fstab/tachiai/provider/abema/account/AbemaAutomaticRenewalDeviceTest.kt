@@ -1,19 +1,29 @@
 package net.fstab.tachiai.provider.abema.account
 
+import android.app.Activity
+import android.app.ActivityManager
 import android.app.Application
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.MutableState
+import androidx.activity.ComponentActivity
+import androidx.annotation.RequiresApi
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.filters.SdkSuppress
+import androidx.lifecycle.Lifecycle
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.feature.connections.ManageStreamsActivity
 import net.fstab.tachiai.feature.connections.StreamManagementController
 import net.fstab.tachiai.presentation.PrototypeService
@@ -51,8 +61,10 @@ class AbemaAutomaticRenewalDeviceTest {
         Log.i("TachiaiAbemaRenewalProbe", "localReadiness=$result providerRequests=NONE")
     }
 
+    @SdkSuppress(minSdkVersion = 29)
     @Test fun optInExpiredGrantRenewsWithoutClicksAndResumesOriginalDiscovery() {
-        assumeTrue(InstrumentationRegistry.getArguments().getString("tachiaiAutomaticAbemaRenewal") == "true")
+        val mode = InstrumentationRegistry.getArguments().getString("tachiaiAutomaticAbemaRenewal")
+        assumeTrue(mode in listOf("true", "minimized"))
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         assumeTrue(Application.getProcessName() == context.packageName)
@@ -69,11 +81,14 @@ class AbemaAutomaticRenewalDeviceTest {
             size <= 128 && String(bytes, 0, size, Charsets.UTF_8).trim() == "tachiai-dev"
         }
         assumeTrue("Requires verified persistent tachiai-dev", verifiedAvd)
-        observe()
+        observe(minimized = mode == "minimized")
     }
 
-    private fun observe() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+    @RequiresApi(29)
+    private fun observe(minimized: Boolean) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val application = context.applicationContext as Application
         val began = SystemClock.elapsedRealtime()
         val deadline = began + 120_000
         val evidence = AbemaRenewalProbeEvidence()
@@ -88,8 +103,15 @@ class AbemaAutomaticRenewalDeviceTest {
         var preservationChecked = false
         var otherRecordsUnchanged = false
         var changedAccount = false
+        var otherMutations: AbemaRenewalOtherMutations? = null
         var resourcesRetained = false
         var refusal: AbemaAccountReadinessResult? = null
+        val background = if (minimized) AbemaRenewalBackgroundObservation() else null
+        val trackedHost = AtomicReference<Activity?>()
+        var hostTaskId = -1
+        var hostComponent: ComponentName? = null
+        var callbacks: Application.ActivityLifecycleCallbacks? = null
+        var returnedToOriginalHost = false
         try {
             val instance = defaultProviderInstanceId(PrototypeService.ABEMA)
             accountFile = "no_backup/abema-account-$instance.enc"
@@ -112,10 +134,51 @@ class AbemaAutomaticRenewalDeviceTest {
                 { abemaReplacementReceiptCurrent(binding.store, it) }, System::currentTimeMillis)
             observation = probe
             evidence.phase = AbemaRenewalProbeEvidence.Phase.HOST_LAUNCH
+            if (background != null) {
+                callbacks = object : Application.ActivityLifecycleCallbacks {
+                    override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
+                    override fun onActivityStarted(activity: Activity) { if (activity === trackedHost.get()) background.hostStarted() }
+                    override fun onActivityResumed(activity: Activity) { background.activityResumed() }
+                    override fun onActivityPaused(activity: Activity) = Unit
+                    override fun onActivityStopped(activity: Activity) { if (activity === trackedHost.get()) background.hostStopped() }
+                    override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) = Unit
+                    override fun onActivityDestroyed(activity: Activity) { if (activity === trackedHost.get()) background.hostDestroyed() }
+                }
+                application.registerActivityLifecycleCallbacks(callbacks)
+            }
             hostLaunchAttempted = true
             val host = ActivityScenario.launch<ManageStreamsActivity>(Intent(context, ManageStreamsActivity::class.java)
                 .putExtra(ManageStreamsActivity.INSTANCE_ID, instance))
             scenario = host
+            host.onActivity { trackedHost.set(it); hostTaskId = it.taskId; hostComponent = it.componentName }
+            if (background != null) {
+                evidence.phase = AbemaRenewalProbeEvidence.Phase.MINIMIZING
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    val step = probe.poll()
+                    if (step == AbemaRenewalObservation.Step.REPLACED) replaced = true
+                    evidence.require(step != AbemaRenewalObservation.Step.REFUSED, AbemaRenewalProbeEvidence.Guard.COMPLETION)
+                    if (probe.observedCompletion != AbemaRenewalReadinessCoordinator.Completion.ABSENT) break
+                    Thread.sleep(50)
+                }
+                evidence.require(host.state == Lifecycle.State.RESUMED && background.begin(probe.observedCompletion),
+                    AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                val home = boundedProbeCheck(5_000, { resourcesRetained = true }) {
+                    ParcelFileDescriptor.AutoCloseInputStream(
+                        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME")
+                    ).use { it.read() == -1 }
+                }
+                evidence.require(home == true, AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                while (SystemClock.elapsedRealtime() < deadline && !background.hostIsStopped &&
+                    background.firstFailedGuard == AbemaRenewalBackgroundObservation.Guard.NONE) Thread.sleep(50)
+                evidence.require(host.state == Lifecycle.State.CREATED && background.hostIsStopped,
+                    AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                val stopped = probe.poll()
+                if (stopped == AbemaRenewalObservation.Step.REPLACED) replaced = true
+                val stoppedPending = background.afterStop(probe.observedCompletion)
+                evidence.require(stopped == AbemaRenewalObservation.Step.WAIT && stoppedPending,
+                    AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                evidence.phase = AbemaRenewalProbeEvidence.Phase.BACKGROUND
+            }
             evidence.phase = AbemaRenewalProbeEvidence.Phase.COMPLETION
             while (SystemClock.elapsedRealtime() < deadline && !replaced && refusal == null) {
                 when (probe.poll()) {
@@ -123,7 +186,11 @@ class AbemaAutomaticRenewalDeviceTest {
                     AbemaRenewalObservation.Step.REFUSED -> evidence.require(false, AbemaRenewalProbeEvidence.Guard.COMPLETION)
                     AbemaRenewalObservation.Step.WAIT -> Unit
                 }
-                host.onActivity { activity ->
+                if (background != null) {
+                    evidence.phase = AbemaRenewalProbeEvidence.Phase.BACKGROUND
+                    evidence.require(host.state == Lifecycle.State.CREATED && background.sample(probe.observedCompletion, replaced),
+                        AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                } else host.onActivity { activity ->
                     val text = ManageStreamsActivity::class.java.getDeclaredField("message\$delegate")
                         .apply { isAccessible = true }.get(activity).let { it as MutableState<*> }.value as? String
                     refusal = abemaRenewalTerminalReadiness(text)
@@ -133,6 +200,23 @@ class AbemaAutomaticRenewalDeviceTest {
             if (!replaced && refusal == null) probe.deadline()
             evidence.require(refusal == null, AbemaRenewalProbeEvidence.Guard.HOST_REFUSAL)
             evidence.require(replaced, AbemaRenewalProbeEvidence.Guard.DEADLINE)
+            if (background != null) {
+                evidence.phase = AbemaRenewalProbeEvidence.Phase.RETURN
+                // Close the observation window on the lifecycle callback thread,
+                // after any queued resume/start event has had a chance to refuse it.
+                var allowed = false
+                instrumentation.runOnMainSync { allowed = background.allowReturn() }
+                evidence.require(allowed, AbemaRenewalProbeEvidence.Guard.BACKGROUND)
+                // ActivityScenario's resume driver only dismisses its own empty
+                // Activities; an actual Home requires returning the owned task.
+                returnAbemaRenewalTask(context, hostTaskId, checkNotNull(hostComponent))
+                while (SystemClock.elapsedRealtime() < deadline && host.state != Lifecycle.State.RESUMED &&
+                    host.state != Lifecycle.State.DESTROYED) Thread.sleep(50)
+                evidence.require(host.state == Lifecycle.State.RESUMED, AbemaRenewalProbeEvidence.Guard.HOST_RETURN)
+                host.onActivity { returnedToOriginalHost = it === trackedHost.get() }
+                evidence.require(returnedToOriginalHost && host.state == Lifecycle.State.RESUMED,
+                    AbemaRenewalProbeEvidence.Guard.HOST_RETURN)
+            }
             evidence.phase = AbemaRenewalProbeEvidence.Phase.DISCOVERY
             while (replaced && SystemClock.elapsedRealtime() < deadline && !discovery) {
                 host.onActivity { activity ->
@@ -173,16 +257,27 @@ class AbemaAutomaticRenewalDeviceTest {
                         }
                         val changed = baseline[selected]?.let { old -> after[selected]?.let { !MessageDigest.isEqual(old, it) } ?: true }
                             ?: after.containsKey(selected)
-                        Preservation(unchanged, changed, !replaced || observation?.poll() == AbemaRenewalObservation.Step.REPLACED)
+                        Preservation(unchanged, changed, !replaced || observation?.poll() == AbemaRenewalObservation.Step.REPLACED,
+                            abemaRenewalOtherMutations(baseline, after, selected))
                     } else null
                 }
                 preservationChecked = comparison != null
                 otherRecordsUnchanged = comparison?.otherRecordsUnchanged == true
                 changedAccount = comparison?.accountRecordChanged == true
+                otherMutations = comparison?.otherMutations
                 evidence.require(preservationChecked && otherRecordsUnchanged && comparison?.replacementCurrent == true &&
                     (if (replaced) changedAccount else !changedAccount), AbemaRenewalProbeEvidence.Guard.PRESERVATION)
                 evidence.require(SystemClock.elapsedRealtime() in began until deadline, AbemaRenewalProbeEvidence.Guard.DEADLINE)
             })
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.HOST_CLOSE
+            callbacks?.let { registered ->
+                runCatching { application.unregisterActivityLifecycleCallbacks(registered) }.onFailure {
+                    resourcesRetained = true
+                    evidence.fail(AbemaRenewalProbeEvidence.Guard.HOST_CLOSE)
+                }
+            }
+            trackedHost.set(null)
+            evidence.phase = AbemaRenewalProbeEvidence.Phase.FINISHED
             Log.i("TachiaiAbemaRenewalProbe", "outcome=${if (evidence.firstFailedGuard == AbemaRenewalProbeEvidence.Guard.NONE) "PASS" else "FAIL"} " +
                 "firstFailedPhase=${if (evidence.firstFailedGuard == AbemaRenewalProbeEvidence.Guard.NONE) "NONE" else evidence.firstFailedPhase.name} " +
                 "firstFailedGuard=${evidence.firstFailedGuard.name} completion=${observation?.observedCompletion?.name ?: "NOT_OBSERVED"} " +
@@ -190,13 +285,19 @@ class AbemaAutomaticRenewalDeviceTest {
                 "originalDiscoveryReady=$discovery hostClosed=$hostClosed preservationChecked=$preservationChecked " +
                 "otherRecordsUnchanged=$otherRecordsUnchanged accountRecordChanged=$changedAccount " +
                 "readiness=${refusal?.name ?: "NONE"} cleanupUnknown=${!hostClosed} " +
-                "hostOwnershipMissing=${hostLaunchAttempted && scenario == null} resourcesRetained=$resourcesRetained")
+                "hostOwnershipMissing=${hostLaunchAttempted && scenario == null} resourcesRetained=$resourcesRetained " +
+                "mode=${if (minimized) "MINIMIZED" else "FOREGROUND"} " +
+                "backgroundPhase=${background?.phase?.name ?: "NOT_REQUESTED"} " +
+                "backgroundGuard=${background?.firstFailedGuard?.name ?: "NONE"} returnedToOriginalHost=$returnedToOriginalHost " +
+                "otherMutationKind=${otherMutations?.kind?.name ?: "UNAVAILABLE"} " +
+                "otherChanged=${otherMutations?.changed ?: 0} otherAdded=${otherMutations?.added ?: 0} otherRemoved=${otherMutations?.removed ?: 0}")
         }
         if (evidence.firstFailedGuard != AbemaRenewalProbeEvidence.Guard.NONE)
             throw AssertionError("Automatic renewal observation did not satisfy closed completion, account, discovery and preservation checks")
     }
 
-    private class Preservation(val otherRecordsUnchanged: Boolean, val accountRecordChanged: Boolean, val replacementCurrent: Boolean)
+    private class Preservation(val otherRecordsUnchanged: Boolean, val accountRecordChanged: Boolean,
+        val replacementCurrent: Boolean, val otherMutations: AbemaRenewalOtherMutations)
     private fun <T> boundedProbeCheck(timeoutMs: Long, retainedResource: () -> Unit, action: () -> T): T? {
         val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "abema-probe-cleanup").apply { isDaemon = true } }
         val result = worker.submit(Callable { action() })
@@ -238,6 +339,15 @@ class AbemaAutomaticRenewalDeviceTest {
     }
 }
 
+@RequiresApi(29)
+internal fun returnAbemaRenewalTask(context: Context, taskId: Int, component: ComponentName) {
+    check(taskId >= 0)
+    val manager = checkNotNull(context.getSystemService(ActivityManager::class.java))
+    val task = checkNotNull(manager.appTasks.singleOrNull { it.taskInfo?.taskId == taskId })
+    check(task.taskInfo?.topActivity == component)
+    task.moveToFront()
+}
+
 internal fun abemaRenewalRecordWithinLimit(prefix: String, name: String, size: Long): Boolean {
     val limit = if (prefix == "no_backup" && name == "failure-diagnostics.tsv") FailureJournalCodec.MAX_BYTES
         else PRIVATE_SECRET_LIMIT + 29
@@ -250,6 +360,29 @@ internal fun abemaRenewalTerminalReadiness(message: String?): AbemaAccountReadin
         .singleOrNull { message == abemaAccountReadinessMessage(it) }
 
 class AbemaAutomaticRenewalRecordGuardDeviceTest {
+    @SdkSuppress(minSdkVersion = 29)
+    @Test fun realHomeReturnsSameBlankHostWithoutProviderOrPrivateStoreAccess() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        ActivityScenario.launch(ComponentActivity::class.java).use { host ->
+            val original = AtomicReference<Activity?>()
+            var taskId = -1
+            var component: ComponentName? = null
+            host.onActivity { original.set(it); taskId = it.taskId; component = it.componentName }
+            ParcelFileDescriptor.AutoCloseInputStream(
+                instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME")
+            ).use { check(it.read() == -1) }
+            val stoppedDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < stoppedDeadline && host.state != Lifecycle.State.CREATED) Thread.sleep(50)
+            assertTrue(host.state == Lifecycle.State.CREATED)
+            returnAbemaRenewalTask(context, taskId, checkNotNull(component))
+            val resumedDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < resumedDeadline && host.state != Lifecycle.State.RESUMED) Thread.sleep(50)
+            assertTrue(host.state == Lifecycle.State.RESUMED)
+            host.onActivity { assertTrue(it === original.get() && it.taskId == taskId) }
+            original.set(null)
+        }
+    }
     @Test fun onlyKnownTerminalHostMessagesBecomeClosedRefusals() {
         for (status in listOf(AbemaAccountReadinessResult.FAILURE, AbemaAccountReadinessResult.TEMPORARY_FAILURE,
             AbemaAccountReadinessResult.INTERACTION_REQUIRED, AbemaAccountReadinessResult.STORAGE_FAILURE)) {

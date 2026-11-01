@@ -252,6 +252,80 @@ native-access-experiments.md#operation-owned-abema-renewal-implementation--2026-
 remain distinct: naturally expired physical-device adoption, actual signed-out
 interaction and process-death publication behavior remain in #294.
 
+### Opt-in minimized renewal observation
+
+The existing debug instrumentation fixture accepts
+`tachiaiAutomaticAbemaRenewal=minimized` on the explicitly verified persistent
+`tachiai-dev` emulator. It requires a naturally expired saved grant and the
+existing selected saved connection. It never changes the clock, fabricates
+expiry, resets browser data or enters provider credentials.
+
+The fixture waits for the original renewal operation to be pending, presses Home,
+and requires another pending observation after that exact Activity stops. It
+then observes the existing completion/account-replacement boundary without
+resuming or accessing the Activity. A same-process Activity resume, restart or
+host destruction permanently refuses the background claim. Verified READY must
+arrive while the host remains stopped; only then may the fixture return the same
+host and check original discovery, account ownership and protected-record
+preservation. Foreground completion racing minimization cannot pass this mode.
+
+After normal debug app/test APK signing verification and non-destructive
+installation, select only this opted-in case:
+
+```sh
+adb -s emulator-5580 shell am instrument -w -r \
+  -e class net.fstab.tachiai.provider.abema.account.AbemaAutomaticRenewalDeviceTest#optInExpiredGrantRenewsWithoutClicksAndResumesOriginalDiscovery \
+  -e tachiaiAutomaticAbemaRenewal minimized \
+  net.fstab.tachiai.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Return uses the unique owned app task captured before Home, requires its expected
+top component, and then checks the original Activity identity. The provider-free
+blank-Activity test exercises real Home/stop/task-return/resume separately from
+account renewal. AndroidX's [resume driver](https://github.com/android/android-test/blob/main/core/java/androidx/test/core/app/InstrumentationActivityInvoker.java)
+only dismisses its own empty Activities; Android's [owned-task return](https://developer.android.com/reference/android/app/ActivityManager.AppTask#moveToFront())
+brings the actual task forward. Recreation still refuses the exact-host claim.
+
+Closed output adds the mode, background phase/first failed guard, whether the
+original host returned, and bounded nonselected-record mutation counts/category.
+Only an exact diagnostic-journal identity gets its own category; other or mixed
+changes stay separate. No record names, IDs, digests or grants enter output.
+The identical-inventory/nonselected-digest preservation assertion remains strict,
+including diagnostic-journal changes. Independent cleanup/preservation reporting
+remains active on failure. The instrumentation process stays alive, and its
+callbacks observe only that process. Pending-to-READY brackets terminal operation
+completion, not the exact browser/bootstrap/store-commit timing. This fixture
+does not by itself establish a successful run, physical visibility, process-loss
+survival, genuine interaction classification or closed-app scheduling.
+
+### First minimized observation — November 1, 2026 UTC
+
+One observation using the Android inputs retained in signed
+`690cba76d5547daa467165893756a68f44fb96ab` ran on verified persistent `tachiai-dev`,
+Android 16/API 36 x86-64, WebView 133.0.6943.137 and ordinary debug 0.1.0. Both
+installed APKs matched the shared development certificate. The existing selected
+ABEMA saved-connection owner and remembered account were used; region/exit
+country was not independently measured. Local-only preflight reported
+EXPIRED_READY without provider access. No clock change, forced expiry, reset,
+credential entry, cookie/grant transfer or phone operation occurred.
+
+The run failed overall after 75.519 seconds. It reached verified same-account
+replacement and terminal READY after the stopped-host pending observation, with
+no failed background guard. Return then failed at phase RETURN/EXCEPTION before
+original discovery or exact-host return could be established. Host closure and
+preservation comparison completed, but nonselected records were not all unchanged;
+the selected account record changed. The original closed report cannot identify
+which other record changed, so neither preservation nor its cause is established.
+The later counts/category extension does not retroactively explain that result.
+
+Separate local-only postflight reported UNEXPIRED without another provider
+operation. No renewal retry followed. Source review identified the AndroidX
+Home-return limitation described above; the fixture now uses the owned task and
+retains the first failed result. This establishes only the bounded stopped-host
+terminal replacement observation. Complete minimized return/discovery/preservation
+acceptance still needs a future naturally expired run; physical and process-loss
+behavior, genuine interaction handling and scheduling remain open in #294.
+
 ## ABEMA broadcast live mode — October 14
 
 Opening a currently airing configured broadcast selects its continuous live

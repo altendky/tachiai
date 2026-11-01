@@ -7,8 +7,10 @@ module, controlled test media and production browser test pipeline. It is not a
 connected-account feature, complete provider acceptance, a new web UX, or an
 extension/companion deployment decision. A bounded ordinary-browser live trial
 now has video and user-confirmed audio with a scoped Headerly rule, including a
-Shields-up comparison. Replay, renewal, paired provider playback and the remaining
-controls still need acceptance; issue365 remains open.
+Shields-up comparison. A later bounded live/replay pair also has concurrent
+decoded video, user-confirmed independent audio and fade operation with two
+scoped rules. Sustained playback, renewal and the remaining controls still need
+acceptance; issue365 remains open.
 
 ## Two-player diagnostic
 
@@ -34,7 +36,7 @@ Swap changes geometry without replacing either player. No relative seek is
 dispatched and no quality ladder is promised. The fixture viewer retains its
 existing timing/quality tests independently.
 
-The working local comparison uses Headerly1.21.0 with a single rule combining
+The original live comparison uses Headerly1.21.0 with a single rule combining
 the initiating loopback hostname, the existing HTTPS `ttvnw.net`/`twitchcdn.net`
 media families, GET/HEAD and XHR. It removes request `Origin` and sets response
 `Access-Control-Allow-Origin` to the exact local page origin. The rule does not
@@ -68,10 +70,11 @@ Replay requests alone may use the single previously admitted
 permission. The page CSP admits that exact host, while each request filter and
 request-owned transport enforce its feed's kind. The working Headerly rule
 described above covers Twitch media families only; it does not establish access
-to that replay distribution. Any further rule must be verified separately before
-a real replay trial. No rule is changed by this page, and replay availability,
-entitlement and advertisement behavior remain unverified. Actual paired-provider
-acceptance remains distinct from this controlled coverage.
+to that replay distribution. The live/replay observation below used a separately
+verified additive rule for that exact distribution. No rule is changed by this
+page; availability beyond the observed replay and advertisement behavior remain
+unverified. Actual paired-provider acceptance remains distinct from this
+controlled coverage.
 
 ### Duplicate live observation: October 31, 2026 UTC
 
@@ -89,8 +92,9 @@ seconds and B from 25.508 to 87.778 seconds; final observed video dimensions wer
 1920×1080 and 640×360 respectively. These are media positions, not an independently
 measured elapsed trial duration or synchronization result. The owner confirmed
 video and audio, but could not confidently judge fade/mix with identical content
-and no timing adjustment. Independent audible contributions and provider mix
-acceptance therefore remain unconfirmed; software volume readback is separate.
+and no timing adjustment. That duplicate-content trial did not independently
+establish each audible contribution or the mix; software volume readback is
+separate.
 
 The final receipt at 23:54:33 UTC is closed, with both media owners destroyed
 and the temporary grant revoked, also confirmed by the owner. No provider media,
@@ -98,6 +102,42 @@ grant, code, signed URL or account identifier was retained in the receipt. This
 establishes bounded duplicate-live concurrent video with user-confirmed audible
 output and cleanup, not replay, sustained playback, renewal, timing/quality
 controls or the ABEMA/Twitch combination.
+
+### Live/replay observation: November 1, 2026 UTC
+
+The owner ran the frozen production pair page at revision
+`41bc4b1573d475ba9ffc072a889b2fa44c73e921` with Shaka 5.3.3, a fresh activation,
+A on VirtualJapan live and B on replay `2080217716`. The closed receipt identifies
+Linux and Chromium major 156; ordinary Brave was requested. Exact browser patch,
+Shields/settings, account identity, exit region and effective route were not
+independently measured.
+
+Both the existing Twitch-media rule and an additive Headerly replay rule were
+enabled. The latter matches only HTTPS `dgeft87wbj63p.cloudfront.net` GET/HEAD XHR
+from initiating hostname `127.0.0.1`, removes request Origin and sets response
+ACAO to `http://127.0.0.1:4173`. The initiating hostname match includes other
+loopback ports, although the fixed ACAO does not grant them readability. Separate
+owned-browser tests verified import alongside the unchanged live rule, scope,
+ON/OFF behavior, credential omission and cleanup before this provider trial.
+The earlier mixed trial had failed during B's manifest Fetch and cleaned up;
+this success does not establish that rejected request's host, HTTP status or
+cause. The owner was instructed to disable the extra replay rule afterward;
+its disabled state was not independently observed.
+
+During the shared sample interval, A advanced from 25.506 to 58.493 seconds
+(4→796 decoded frames; final 640×360), while B advanced from 0.066 to 33.075
+seconds (4→1,684 frames; final 1920×1080). These are roughly 33 seconds of media
+advancement, not common-event synchronization. The owner confirmed hearing each
+feed alone and the fade changing their relative contribution. The final closed
+receipt at 01:04:19.042 UTC confirms both media owners destroyed and the temporary
+grant revoked; the owner separately confirmed cleanup.
+
+This establishes bounded live/replay decoding, audible contributions and fade
+operation under the stated local extension setup. It does not establish
+extension-free delivery, replay/replay coverage, sustained reliability,
+seeking/offset acceptance or the complete common product viewer. The
+[issue evidence](https://github.com/altendky/tachiai/issues/365#issuecomment-6551534256)
+records the same limits; issues365/368 remain open.
 
 ## Ordinary-browser live evidence
 

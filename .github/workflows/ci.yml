@@ -241,6 +241,13 @@ jobs:
           uv run scripts/tests/web-abema-route.test.py
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-route-browser.test.mjs
 
+      - name: Test one-exchange browser EME with owned fixtures only
+        env:
+          TACHIAI_LOCAL_CHROME_TEST: "1"
+        run: |
+          uv run scripts/tests/web-abema-episode-eme.test.py
+          xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-episode-eme.test.mjs
+
       - name: Test bounded ABEMA playback with controlled local media only
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"

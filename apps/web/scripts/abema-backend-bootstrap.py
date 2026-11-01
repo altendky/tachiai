@@ -48,6 +48,10 @@ ASSETS = (
     ("legacy.js", "1deb672fea92d35e.8204.bundle.js", 18786, "8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d"),
     ("utilities.js", "7977ee0696dadeb7.9328.js", 187143, "0187e58193b73f6e261f8ca799c7d75d76b4138813e17b1d57c4d8a6919bc466"),
 )
+# Separate opt-in browser EME probe only. Existing bootstrap/source operations
+# still download exactly ASSETS and never load this provider browser library.
+EME_ASSET = ("dash.js", "62ff7b58b1651206.abema-dashjs.js", 617926,
+             "988f8bc1a196ae74faf5c9650ddce0d1104c4816a663e9ab534c6b2a1c87cab8")
 RESPONSE_LIMIT = 65536
 ASSET_LIMIT = 2 * 1024 * 1024
 IPC_LIMIT = 3 * 1024 * 1024
@@ -176,8 +180,9 @@ def request_spec(operation, fields):
     """Only closed operations can construct a URL. No arbitrary fetch interface."""
     headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
     body = None
-    if operation == "ASSET":
-        asset = next((item for item in ASSETS if item[0] == fields.get("name")), None)
+    if operation in {"ASSET", "EME_ASSET"}:
+        assets = ASSETS if operation == "ASSET" else (EME_ASSET,)
+        asset = next((item for item in assets if item[0] == fields.get("name")), None)
         if asset is None or set(fields) != {"name"}:
             raise Refused()
         url = "https://abema.tv/assets/compat/" + asset[1]
@@ -230,12 +235,12 @@ def native_exchange(operation, fields, opener):
             raise Refused()
         if status != 200:
             return status, b""  # Never consume arbitrary refusal bodies/redirect targets.
-        maximum = ASSET_LIMIT if operation == "ASSET" else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT
+        maximum = ASSET_LIMIT if operation in {"ASSET", "EME_ASSET"} else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT
         length = response.headers.get("Content-Length")
         if length is not None and (not length.isascii() or not length.isdecimal() or int(length) > maximum):
             raise Refused()
         content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        allowed = {"application/javascript", "text/javascript", "application/x-javascript"} if operation == "ASSET" else {"application/json"}
+        allowed = {"application/javascript", "text/javascript", "application/x-javascript"} if operation in {"ASSET", "EME_ASSET"} else {"application/json"}
         if content_type not in allowed or response.headers.get("Content-Encoding", "identity").lower() != "identity":
             raise Refused()
         chunks, size = [], 0
@@ -296,7 +301,7 @@ class NativeTransport:
             if not isinstance(reply, dict) or set(reply) != {"status", "body"} or type(reply["status"]) is not int or not 100 <= reply["status"] <= 599 or not isinstance(reply["body"], str):
                 raise Refused()
             body = base64.b64decode(reply["body"], validate=True)
-            if len(body) > (ASSET_LIMIT if operation == "ASSET" else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT):
+            if len(body) > (ASSET_LIMIT if operation in {"ASSET", "EME_ASSET"} else 512 * 1024 if operation == "CHANNELS" else RESPONSE_LIMIT):
                 raise Refused()
             return reply["status"], body
         finally:

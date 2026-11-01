@@ -329,6 +329,32 @@ teardown, interruption and timeout without provider operations. Repository hooks
 tests; the web CI job also runs these local Chrome regressions after installing
 its browser dependencies. Neither CI path invokes a provider command.
 
+### Measured setup-browser media-token context
+
+Source, manifest, decoder and replay attempts now take `osLang` from the owned
+blank setup browser's actual `navigator.language`, and `osTimezone` from its
+`Intl.DateTimeFormat().resolvedOptions().timeZone`. The setup snapshot closes
+before provider work. Its independently validated context supplies the existing
+media-token query without changing those observed strings or introducing browser
+overrides. Missing or invalid context refuses before fresh guest setup;
+source attempts cannot fall back to the standalone bootstrap's fixed `en-US`/`UTC`
+diagnostic context.
+
+The private boundary accepts bounded ASCII language tags and slash-separated
+timezone names/aliases, including `UTC` and `Etc/GMT+5`; unexpected forms fail
+closed. It checks admission syntax rather than inferring locale, region or
+entitlement. Query encoding retains the exact admitted values. Neither value
+enters diagnostics, provider helper envelopes or retained evidence. Existing
+standalone bootstrap commands retain their explicitly fixed context.
+
+This removes one artificial difference from the native adapter's measured
+language/timezone inputs. It does not identify or fix the replay HTTP 403, establish
+a working domestic route or account, or select hosting/storage. Later media probes
+open another browser; they do not yet compare its locale/timezone with the setup
+snapshot. The implemented claim is measured setup-context propagation, not proof
+that both browser lifetimes had identical context. No further provider trial is
+implied by the local regression coverage.
+
 ## Public runtime interface and regional context
 
 An anonymous public entry-page review located the opaque adapter missing from

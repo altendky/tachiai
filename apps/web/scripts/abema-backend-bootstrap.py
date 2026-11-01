@@ -152,6 +152,18 @@ def validate_guest_request(body):
     return body
 
 
+def validate_media_token_context(value):
+    """Bounded observed browser values, without normalization or invented defaults."""
+    if not isinstance(value, dict) or set(value) != {"osLang", "osTimezone"}:
+        raise Refused()
+    language, timezone = value["osLang"], value["osTimezone"]
+    if not isinstance(language, str) or not 1 <= len(language) <= 128 or not re.fullmatch(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*", language):
+        raise Refused()
+    if not isinstance(timezone, str) or not 1 <= len(timezone) <= 128 or not re.fullmatch(r"[A-Za-z0-9_+-]{1,64}(?:/[A-Za-z0-9_+-]{1,64}){0,3}", timezone):
+        raise Refused()
+    return {"osLang": language, "osTimezone": timezone}
+
+
 def request_spec(operation, fields):
     """Only closed operations can construct a URL. No arbitrary fetch interface."""
     headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
@@ -169,7 +181,7 @@ def request_spec(operation, fields):
         validate_guest_request(body)
         url = "https://abema.tv/api/auth/login/guest"
         headers["Content-Type"] = "application/json"
-    elif operation in {"PROFILE", "MEDIA_TOKEN"}:
+    elif operation in {"PROFILE", "MEDIA_TOKEN", "BROWSER_MEDIA_TOKEN"}:
         if not bounded_token(fields.get("bearer")):
             raise Refused()
         headers["Authorization"] = "Bearer " + fields["bearer"]
@@ -179,11 +191,12 @@ def request_spec(operation, fields):
                 raise Refused()
             url = "https://api.p-c3-e.abema-tv.com/v1/users/" + user_id
         else:
-            if set(fields) != {"bearer"}:
+            if set(fields) != ({"bearer", "context"} if operation == "BROWSER_MEDIA_TOKEN" else {"bearer"}):
                 raise Refused()
-            # Fixed public diagnostic context, not the caller's personal settings.
-            query = urllib.parse.urlencode({"osName": "pc", "osVersion": "1.0.0", "osLang": "en-US",
-                                          "osTimezone": "UTC", "appVersion": "v26.1001.1"})
+            # Standalone bootstrap keeps its explicit fixed diagnostic context.
+            # Source attempts require values measured by their owned setup browser.
+            context = validate_media_token_context(fields["context"]) if operation == "BROWSER_MEDIA_TOKEN" else {"osLang": "en-US", "osTimezone": "UTC"}
+            query = urllib.parse.urlencode({"osName": "pc", "osVersion": "1.0.0", **context, "appVersion": "v26.1001.1"})
             url = "https://api.p-c3-e.abema-tv.com/v1/media/token?" + query
     elif operation == "CHANNELS" and fields == {}:
         url = "https://api.abema.io/v1/channels"
@@ -471,6 +484,9 @@ class Attempt:
     def complete_private(self, context):
         raise Refused()
 
+    def media_token_request(self, bearer):
+        return self.request("MEDIA_TOKEN", {"bearer": bearer})
+
     def request(self, operation, fields):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
@@ -544,7 +560,7 @@ class Attempt:
             profile.clear()
             self.report("MATCHING_PROFILE_ACCEPTED", identityMatched=True)
             self.phase = "MEDIA_TOKEN"
-            media = strict_json(self.request("MEDIA_TOKEN", {"bearer": bearer}))
+            media = strict_json(self.media_token_request(bearer))
             if not isinstance(media, dict) or not bounded_token(media.get("token")):
                 raise Refused()
             if self.private_completion is True:

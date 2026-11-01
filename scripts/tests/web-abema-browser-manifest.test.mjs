@@ -25,6 +25,7 @@ test('owned launcher preflights the pinned Unix socket byte budget before launch
 test('snapshot keeps real navigator values, blocks all network and returns cleanup only after both browser owners close', async () => {
   const navigator = { userAgent: 'actual desktop identity', platform: 'Linux x86_64', maxTouchPoints: 0,
     userAgentData: { mobile: false, platform: 'Linux' } };
+  const mediaTokenContext = { osLang: 'ja-JP', osTimezone: 'Asia/Tokyo' };
   for (const failedCleanup of [false, true]) {
     const closed = [];
     let blocked = false;
@@ -38,13 +39,16 @@ test('snapshot keeps real navigator values, blocks all network and returns clean
               route: async (pattern, handler) => {
                 assert.equal(pattern, '**/*'); await handler({ abort: async () => { blocked = true; } });
               }, newPage: async () => ({ evaluate: async fn =>
-                vm.runInNewContext('(' + fn.toString() + ')()', { window: { navigator } }) }) };
+                vm.runInNewContext('(' + fn.toString() + ')()', {
+                  window: { navigator: { ...navigator, language: mediaTokenContext.osLang } },
+                  Intl: { DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: mediaTokenContext.osTimezone }) }) },
+                }) }) };
           } },
         browserServer: { close: async () => { closed.push('server'); } },
       };
     });
     assert.equal(blocked, true); assert.deepEqual(closed, ['context', 'browser', 'server']);
-    assert.deepEqual(JSON.parse(JSON.stringify(output)), { version: '156.0.0.0', navigator, cleanupConfirmed: !failedCleanup });
+    assert.deepEqual(JSON.parse(JSON.stringify(output)), { version: '156.0.0.0', navigator, mediaTokenContext, cleanupConfirmed: !failedCleanup });
     assert.equal(JSON.stringify(output).includes(privateFixture), false);
   }
 });

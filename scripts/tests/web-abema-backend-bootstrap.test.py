@@ -49,7 +49,8 @@ class Transport:
             return self.guest_status, encoded({"user_id": IDENTITY, "access_token": PRIVATE, "refresh_token": PRIVATE})
         if operation == "PROFILE":
             return 200, encoded({"profile": {"userId": self.profile}})
-        if operation == "MEDIA_TOKEN":
+        if operation in {"MEDIA_TOKEN", "BROWSER_MEDIA_TOKEN"}:
+            module.request_spec(operation, fields)
             return 200, encoded({"token": PRIVATE})
         raise AssertionError("Unexpected operation")
 
@@ -127,6 +128,33 @@ class Opener:
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_browser_token_context_is_exact_bounded_encoded_and_separate_from_standalone(self):
+        for language, timezone in (("ja-JP", "Asia/Tokyo"), ("en-US", "Etc/GMT+5"),
+                                   ("zh-Hant-TW", "America/Argentina/Buenos_Aires"), ("en", "UTC")):
+            context = {"osLang": language, "osTimezone": timezone}
+            request = module.request_spec("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE, "context": context})
+            query = module.urllib.parse.parse_qs(module.urllib.parse.urlsplit(request.full_url).query, strict_parsing=True)
+            self.assertEqual(query, {"osName": ["pc"], "osVersion": ["1.0.0"], "osLang": [language],
+                                     "osTimezone": [timezone], "appVersion": ["v26.1001.1"]})
+            self.assertEqual(request.get_header("Authorization"), "Bearer " + PRIVATE)
+            self.assertNotIn(PRIVATE, request.full_url)
+            self.assertIsNone(request.get_header("Cookie"))
+            projected = module.validate_media_token_context(context)
+            context["osLang"] = "changed"
+            self.assertEqual(projected["osLang"], language)
+        for value in (None, {}, [], {"osLang": "en-US"}, {"osLang": "en-US", "osTimezone": "UTC", "extra": PRIVATE}):
+            with self.assertRaises(module.Refused): module.validate_media_token_context(value)
+        for field, values in (("osLang", [None, True, "", "en_US", "en-US&private=x", " en-US", "en\nUS", "é", "a" * 129]),
+                              ("osTimezone", [None, True, "", "../UTC", "Asia//Tokyo", "/UTC", "UTC/", "Asia\\Tokyo", "Etc/GMT%2B5", "UTC?private=x", "UTC\n", "é", "a" * 129])):
+            for value in values:
+                context = {"osLang": "en-US", "osTimezone": "UTC", field: value}
+                with self.subTest(field=field, value=value), self.assertRaises(module.Refused):
+                    module.request_spec("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE, "context": context})
+        for operation, fields in (("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE}),
+                                  ("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE, "context": {"osLang": "en", "osTimezone": "UTC"}, "url": PRIVATE}),
+                                  ("MEDIA_TOKEN", {"bearer": PRIVATE, "context": {"osLang": "en", "osTimezone": "UTC"}})):
+            with self.assertRaises(module.Refused): module.request_spec(operation, fields)
+
     def attempt(self, docker=None, transport=None):
         docker, transport = docker or Docker(), transport or Transport()
         output = io.StringIO()
@@ -608,6 +636,7 @@ class SourceProofTests(unittest.TestCase):
         calls = []
         class Attempt(source_module.SourceAttempt):
             def browser_snapshot(self):
+                self.media_token_context = {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}
                 return {}
 
             def prepare(self):
@@ -618,10 +647,15 @@ class SourceProofTests(unittest.TestCase):
         for profile, expected in ((IDENTITY, 0), ("wrong", 1)):
             calls.clear()
             output = io.StringIO()
-            self.assertEqual(Attempt(output, Transport(profile=profile)).run(), expected)
+            transport = Transport(profile=profile)
+            self.assertEqual(Attempt(output, transport).run(), expected)
             self.assertEqual(calls, [PRIVATE] if expected == 0 else [])
             self.assertNotIn(PRIVATE, output.getvalue())
             self.assertNotIn('"sourceRequests": false', output.getvalue())
+            tokens = [(operation, fields) for operation, fields in transport.calls if operation.endswith("MEDIA_TOKEN")]
+            self.assertEqual(tokens, [("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE,
+                "context": {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}})] if expected == 0 else [])
+            self.assertNotIn("Asia/Tokyo", output.getvalue())
 
     @unittest.skipUnless(shutil.which("node"), "Node needed only for synthetic helper fixtures")
     def test_source_helper_preserves_exact_selector_contract_and_never_inspects_thrown_values(self):

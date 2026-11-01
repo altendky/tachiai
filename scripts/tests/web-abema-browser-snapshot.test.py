@@ -27,10 +27,12 @@ bootstrap, owned = source.bootstrap, source.owned_browser
 NAVIGATOR = {"userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/156.0.0.0 Safari/537.36",
              "platform": "Linux x86_64", "maxTouchPoints": 0,
              "userAgentData": {"mobile": False, "platform": "Linux"}}
+TOKEN_CONTEXT = {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo"}
 
 
 def packet(**changes):
-    return json.dumps({"version": "156.0.8078.47", "navigator": NAVIGATOR, "cleanupConfirmed": True, **changes}).encode()
+    return json.dumps({"version": "156.0.8078.47", "navigator": NAVIGATOR,
+                       "mediaTokenContext": TOKEN_CONTEXT, "cleanupConfirmed": True, **changes}).encode()
 
 
 class NoProvider:
@@ -54,10 +56,34 @@ class SnapshotTests(unittest.TestCase):
             return bootstrap.CommandResult(0, packet())
         attempt = self.attempt(runner)
         self.assertEqual(attempt.browser_snapshot(), NAVIGATOR)
+        self.assertEqual(attempt.media_token_context, TOKEN_CONTEXT)
         self.assertFalse(paths[0].exists()); self.assertTrue(attempt.cleanup_confirmed)
         self.assertIsNone(attempt.retained_snapshot_runtime)
         with self.assertRaises(bootstrap.Refused): attempt.browser_snapshot()
         self.assertEqual(len(paths), 1)
+
+    def test_bad_or_missing_context_refuses_before_any_provider_operation_and_cleans_snapshot(self):
+        invalid = [None, {}, {"osLang": "ja-JP"}, {"osLang": "ja-JP", "osTimezone": "Asia/Tokyo", "extra": "PRIVATE"},
+                   {"osLang": "ja_JP", "osTimezone": "Asia/Tokyo"}, {"osLang": "ja-JP", "osTimezone": "../PRIVATE"}]
+        missing = json.loads(packet()); del missing["mediaTokenContext"]
+        for raw in [json.dumps(missing).encode(), *(packet(mediaTokenContext=value) for value in invalid)]:
+            paths = []
+            def runner(args, *rest, **kwargs):
+                paths.append(Path(args[-1])); return bootstrap.CommandResult(0, raw)
+            attempt = self.attempt(runner)
+            self.assertEqual(attempt.run(), 1)
+            self.assertTrue(attempt.cleanup_confirmed); self.assertFalse(paths[0].exists())
+            self.assertIsNone(attempt.media_token_context)
+            self.assertNotIn("PRIVATE", attempt.output.getvalue())
+            self.assertNotIn("osLang", attempt.output.getvalue())
+
+    def test_overridden_snapshot_cannot_fall_back_to_fixed_context(self):
+        class Missing(source.SourceAttempt):
+            def browser_snapshot(self): return NAVIGATOR
+        attempt = Missing(io.StringIO(), NoProvider())
+        self.assertEqual(attempt.run(), 1)
+        self.assertIn('"outcome": "REFUSED"', attempt.output.getvalue())
+        with self.assertRaises(bootstrap.Refused): attempt.media_token_request("synthetic-bearer")
 
     def test_unknown_or_false_receipt_is_sticky_retained_and_distinct_before_provider_work(self):
         for raw in (packet(cleanupConfirmed=False), packet().replace(b', "cleanupConfirmed": true', b''), b'private-invalid-json'):
@@ -171,6 +197,7 @@ class SnapshotTests(unittest.TestCase):
             nav = attempt.browser_snapshot()
         self.assertEqual(nav["platform"], "Linux x86_64")
         self.assertIn("Chrome/156.", nav["userAgent"]); self.assertNotIn("HeadlessChrome", nav["userAgent"])
+        self.assertEqual(bootstrap.validate_media_token_context(attempt.media_token_context), attempt.media_token_context)
         self.assertFalse(paths[0].exists()); self.assertTrue(attempt.cleanup_confirmed)
 
     def actual_cancellation(self, interrupted):

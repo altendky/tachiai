@@ -228,4 +228,38 @@ class AbemaRenewalObservationTest {
                 else AbemaRenewalBackgroundObservation.Guard.HOST_NOT_STOPPED, background.firstFailedGuard)
         }
     }
+
+    @Test fun privateMutationSummarySeparatesSelectedAccountJournalAndOtherRecordsWithoutExportingIdentities() {
+        val selected = "no_backup/abema-account-selected.enc"
+        val journal = "no_backup/failure-diagnostics.tsv"
+        val other = "no_backup/PRIVATE_SYNTHETIC_RECORD.enc"
+        val baseline = mapOf(selected to byteArrayOf(1), journal to byteArrayOf(2), other to byteArrayOf(3))
+        fun summary(after: Map<String, ByteArray>) = abemaRenewalOtherMutations(baseline, after, selected)
+        assertEquals(AbemaRenewalOtherMutations(0, 0, 0, AbemaRenewalOtherMutations.Kind.NONE),
+            summary(baseline + (selected to byteArrayOf(4))))
+        assertEquals(AbemaRenewalOtherMutations(1, 0, 0, AbemaRenewalOtherMutations.Kind.DIAGNOSTIC_JOURNAL_ONLY),
+            summary(baseline + (journal to byteArrayOf(4))))
+        assertEquals(AbemaRenewalOtherMutations(1, 0, 0, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD),
+            summary(baseline + (selected to byteArrayOf(4)) + (other to byteArrayOf(5))))
+        val mixed = summary(baseline + (journal to byteArrayOf(4)) + (other to byteArrayOf(5)))
+        assertEquals(AbemaRenewalOtherMutations.Kind.MIXED, mixed.kind)
+        assertFalse(mixed.toString().contains("PRIVATE"))
+        assertFalse(mixed.toString().contains("no_backup"))
+    }
+
+    @Test fun privateMutationSummaryIncludesInventoryChangesAndNeverTreatsJournalLookalikesAsTheJournal() {
+        val selected = "selected"
+        val removed = "shared_prefs/PRIVATE.xml"
+        val added = "no_backup/failure-diagnostics.tsv.enc"
+        val result = abemaRenewalOtherMutations(mapOf(selected to byteArrayOf(1), removed to byteArrayOf(2)),
+            mapOf(selected to byteArrayOf(1), added to byteArrayOf(3)), selected)
+        assertEquals(AbemaRenewalOtherMutations(0, 1, 1, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD), result)
+    }
+
+    @Test fun privateMutationCountsSaturateWithoutExportingOversizedInventories() {
+        val before = (1..100).associate { "before$it" to byteArrayOf(1) }
+        val after = (1..100).associate { "after$it" to byteArrayOf(2) }
+        assertEquals(AbemaRenewalOtherMutations(0, 64, 64, AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD),
+            abemaRenewalOtherMutations(before, after, "selected"))
+    }
 }

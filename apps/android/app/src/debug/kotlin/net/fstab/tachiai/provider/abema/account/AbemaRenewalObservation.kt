@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.abema.account
 
+import java.security.MessageDigest
+
 // Debug-fixture observation, never account authority. The original projection
 // stays in-process; outputs contain only closed states and failed predicates.
 internal class AbemaRenewalObservation(
@@ -149,4 +151,25 @@ internal class AbemaRenewalBackgroundObservation {
         phase = Phase.RETURN_ALLOWED
         return true
     }
+}
+
+internal data class AbemaRenewalOtherMutations(val changed: Int, val added: Int, val removed: Int, val kind: Kind) {
+    enum class Kind { NONE, DIAGNOSTIC_JOURNAL_ONLY, OTHER_PROTECTED_RECORD, MIXED }
+}
+
+// Only counts/categories leave the fixture; record identities and digests stay
+// private. This summary never relaxes its strict preservation assertion.
+internal fun abemaRenewalOtherMutations(before: Map<String, ByteArray>, after: Map<String, ByteArray>, selected: String): AbemaRenewalOtherMutations {
+    val changed = (before.keys + after.keys).filter { key -> key != selected &&
+        (before[key] == null || after[key] == null || !MessageDigest.isEqual(before.getValue(key), after.getValue(key))) }
+    val journal = changed.any { it == "no_backup/failure-diagnostics.tsv" }
+    val other = changed.any { it != "no_backup/failure-diagnostics.tsv" }
+    val kind = when {
+        journal && other -> AbemaRenewalOtherMutations.Kind.MIXED
+        journal -> AbemaRenewalOtherMutations.Kind.DIAGNOSTIC_JOURNAL_ONLY
+        other -> AbemaRenewalOtherMutations.Kind.OTHER_PROTECTED_RECORD
+        else -> AbemaRenewalOtherMutations.Kind.NONE
+    }
+    return AbemaRenewalOtherMutations(changed.count { it in before && it in after }.coerceAtMost(64),
+        changed.count { it !in before }.coerceAtMost(64), changed.count { it !in after }.coerceAtMost(64), kind)
 }

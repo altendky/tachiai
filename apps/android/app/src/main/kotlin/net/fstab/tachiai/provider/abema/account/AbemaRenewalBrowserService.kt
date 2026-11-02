@@ -38,8 +38,9 @@ class AbemaRenewalBrowserService : Service() {
             }
             if (message.what != AbemaRenewalBrowserProtocol.START || started) return
             val response = message.replyTo ?: return
-            val parsed = AbemaRenewalBrowserProtocol.decodeRequest(fields,
+            val start = AbemaRenewalBrowserProtocol.decodeStart(fields,
                 message.sendingUid, Process.myUid(), SystemClock.elapsedRealtime()) ?: return
+            val parsed = start.request
             started = true; request = parsed; reply = response
             try { response.binder.linkToDeath(death, 0); sender = response.binder }
             catch (_: Exception) {
@@ -59,7 +60,7 @@ class AbemaRenewalBrowserService : Service() {
                     browser.layout(0, 0, width, height)
                 }, completed = ::complete, observation = {
                     if (it == AbemaApprovalObservation.CLEANUP_UNCONFIRMED) cleanupUnconfirmed = true
-                })
+                }, networkEgressFactory = start.egressFactory())
             main.postDelayed({
                 runtime?.diagnostic?.let(diagnostics::absorb)
                 diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)

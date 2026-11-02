@@ -85,7 +85,8 @@ internal class AndroidAbemaAccountStorage(context: Context, instanceId: String) 
 }
 
 internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: String,
-    expectedOwnerProof: String? = null): AbemaAccountConnectionBinding {
+    expectedOwnerProof: String? = null,
+    renewalEgressFactory: (() -> RouteNetworkEgress)? = null): AbemaAccountConnectionBinding {
     val application = context.applicationContext
     val store = AbemaAccountGrantStore(instanceId, AndroidAbemaAccountStorage(application, instanceId))
     val poisoned = AbemaAccountWorkers.poisoned(instanceId)
@@ -106,10 +107,15 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
         override fun sameOwner(owner: AbemaCatalogRouteOwner) = routeAdmission.check({ !poisoned.get() && !ProviderStartupScopeCleanup.isPoisoned(instanceId) }) { expected ->
             readOwner(expected).takeIf(owner::sameOwnership)?.proof()
         }
-        override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean) =
-            AndroidAbemaAccountBootstrapClient(application, instanceId, owner.proof(), gate, foreground)
+        override fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean): AbemaAccountBootstrap {
+            // The bound renewal path uses only the remembered browser and
+            // native verification. It must not silently use unbound bootstrap.
+            if (renewalEgressFactory != null) throw AbemaAccountException(AbemaAccountFailure.REFUSED)
+            return AndroidAbemaAccountBootstrapClient(application, instanceId, owner.proof(), gate, foreground)
+        }
         override fun transport(owner: AbemaCatalogRouteOwner, gate: () -> Boolean): AbemaAccountTransport =
-            OwnedAbemaAccountTransport(owner.profile, { gate() && sameOwner(owner) }, { poisoned.set(true) })
+            OwnedAbemaAccountTransport(owner.profile, { gate() && sameOwner(owner) }, { poisoned.set(true) },
+                networkEgressFactory = renewalEgressFactory)
         override fun toString() = "AndroidAbemaAccountConnectionBinding(redacted)"
     }
 }

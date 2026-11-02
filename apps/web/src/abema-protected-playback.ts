@@ -3,6 +3,12 @@ import { guardedDashFactory, type AbemaBoundary } from './abema-dash-policy';
 import { AbemaProtectedDashPolicy, type AbemaProtectedBinding } from './abema-protected-dash-policy';
 import { AbemaCdmOwner } from './abema-cdm-owner';
 import { TwitchOwnedLifetime } from './twitch-owned-lifetime';
+import type { CommandResult, Observation, PlayerSession, Source, TimingCore } from './player';
+import { relativePlan, dispatchRelativeSeek, seekTo } from './player-commands';
+import { milliseconds } from './timing';
+import { playheadFormat, type PlayheadFormats } from './formats';
+import { PlayerQuality, type QualityPreferences } from './quality';
+import type QualityShaka from 'shaka-player/dist/shaka-player.compiled';
 
 export type AbemaProtectedPlaybackOptions = {
   fetch: typeof fetch;
@@ -31,6 +37,8 @@ export class AbemaProtectedPlayback {
   private sdkCode?: number;
   private lastClock = performance.now();
   private lastWall = Date.now();
+  private viewer?: { source: Source; core: TimingCore; changed: () => void; quality: PlayerQuality; formats: PlayheadFormats;
+    lifetime: AbortController; disposed: boolean; disposal?: Promise<void>; playIntent: number; wantsPlaying: boolean };
 
   constructor(private readonly mount: HTMLElement, private readonly binding: AbemaProtectedBinding, private readonly options: AbemaProtectedPlaybackOptions) {
     this.binding = Object.freeze({ ...binding });
@@ -68,6 +76,8 @@ export class AbemaProtectedPlayback {
       const video = this.video = document.createElement('video');
       video.playsInline = true; video.muted = true; video.setAttribute('aria-label', 'Owned protected replay diagnostic media');
       this.mount.append(video);
+      if (this.viewer) for (const event of ['timeupdate', 'playing', 'pause', 'seeked', 'volumechange', 'resize'])
+        video.addEventListener(event, () => { if (!this.ended && !this.viewer!.disposed) this.viewer!.changed(); }, { signal: this.viewer.lifetime.signal });
       const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
         if (this.ended || policy.lifetime.signal.aborted) return;
         try { this.active(); } catch { void this.close(); return; }
@@ -80,6 +90,18 @@ export class AbemaProtectedPlayback {
       };
       this.frameHandle = video.requestVideoFrameCallback(onFrame);
       const player = this.player = new shaka.Player();
+      if (this.viewer) player.addEventListener('mediaqualitychanged', event => {
+        if (this.ended || this.viewer!.disposed || policy.lifetime.signal.aborted) return;
+        try {
+          const value = event as Event & { mediaQuality?: unknown; position?: unknown };
+          const format = playheadFormat(value.mediaQuality, value.position);
+          if (format) {
+            if (format.kind === 'video') this.viewer!.formats.video = format;
+            else this.viewer!.formats.audio = format;
+            this.viewer!.changed();
+          }
+        } catch { /* No SDK object or exception reflection. */ }
+      });
       policy.lifetime.signal.addEventListener('abort', () => { if (!this.ended) void this.close(); }, { once: true });
       player.addEventListener('error', event => {
         if (this.ended) return;
@@ -88,7 +110,9 @@ export class AbemaProtectedPlayback {
         try { if (policy.boundary === 'NONE') policy.fail(detail?.category === shaka.util.Error.Category.DRM ? 'PROTECTION' : 'RESOURCE'); } catch {}
         void this.close();
       });
-      player.configure({ abr: { enabled: false },
+      player.configure({ ...(this.viewer ? { abrFactory: this.viewer.quality.factory(
+        player.getConfiguration().abrFactory as unknown as QualityShaka.extern.AbrManager.Factory) as unknown as shaka.extern.AbrManager.Factory } : {}),
+        abr: this.viewer ? { enabled: true, allowAudioFallback: false, restrictToScreenSize: true, restrictToElementSize: false } : { enabled: false },
         manifest: { disableText: true, disableThumbnails: true, retryParameters: { maxAttempts: 1 }, raiseFatalErrorOnManifestUpdateRequestFailure: true,
           dash: { initialSegmentLimit: 1000, clockSyncUri: '' } },
         drm: { servers: { 'org.w3.clearkey': this.binding.licenseUri }, clearKeys: {}, retryParameters: { maxAttempts: 1 },
@@ -114,6 +138,84 @@ export class AbemaProtectedPlayback {
     } catch { if (!this.policy) this.refusedBoundary = 'RESOURCE'; await this.close(); return 'refused'; }
   }
 
+  // This facade is confined to the fixed owned/ad-free fixture. It does not
+  // advertise timing, quality or audible provider capability in the proof API.
+  fixtureViewer(source: Source, core: TimingCore, changed: () => void): PlayerSession {
+    const fixture = this.options.fixture, expected = new URL(import.meta.env.BASE_URL + 'media/encrypted/manifest.mpd', location.origin).href;
+    if (this.used || this.ended || this.viewer || !fixture || source.kind !== 'fixture' || source.id !== 'owned-encrypted-dash' ||
+      new URL(source.manifest, location.href).href !== expected || fixture.manifest !== expected || this.binding.uri !== expected ||
+      fixture.licenseUri !== new URL(import.meta.env.BASE_URL + 'owned-protected-license', location.origin).href) throw new Error('Owned viewer refused');
+    const viewer: NonNullable<AbemaProtectedPlayback['viewer']> = { source: Object.freeze({ ...source }), core, changed, quality: new PlayerQuality(),
+      formats: { basis: 'last-sdk-buffered-playhead' } as PlayheadFormats, lifetime: new AbortController(), disposed: false,
+      disposal: undefined as Promise<void> | undefined, playIntent: 0, wantsPlaying: false };
+    this.viewer = viewer;
+    const ready = () => {
+      if (viewer.disposed || this.ended || !this.player || !this.video || !['ready', 'play'].includes(this.stage)) return false;
+      try { this.active(); return true; } catch { return false; }
+    };
+    const observe = (): Observation => {
+      const loaded = ready(), video = this.video, range = loaded ? this.player!.seekRange() : undefined;
+      const live = loaded ? this.player!.isLive() : undefined, origin = live ? range!.start : 0;
+      const tracks = loaded ? this.player!.getVariantTracks() : [];
+      return { id: viewer.source.id, state: viewer.disposed ? 'disposed' : this.ended ? 'failed' : loaded ? 'ready' : 'loading', live,
+        positionMs: loaded ? milliseconds(video!.currentTime - origin) : undefined,
+        durationMs: range ? milliseconds(range.end - origin) : undefined, windowStartMs: loaded ? milliseconds(origin) : undefined,
+        paused: video?.paused ?? true, seeking: video?.seeking ?? false, width: video?.videoWidth ?? 0, height: video?.videoHeight ?? 0,
+        volume: video?.volume ?? 1, muted: video?.muted ?? true, seekable: Boolean(range && range.end > range.start),
+        qualities: tracks.map(track => track.id), activeQuality: tracks.find(track => track.active)?.id,
+        quality: viewer.quality.snapshot(), playheadFormats: { basis: viewer.formats.basis,
+          video: viewer.formats.video ? { ...viewer.formats.video } : undefined, audio: viewer.formats.audio ? { ...viewer.formats.audio } : undefined } };
+    };
+    const plan = (delta: bigint) => ready() ? relativePlan(core, observe(), delta, viewer.lifetime.signal) : { outcome: 'unavailable' as const };
+    return {
+      surface: this.mount,
+      load: async () => { const result = await this.prepare(); changed(); return viewer.disposed ? 'cancelled' : result === 'ready' ? 'completed' : 'failed'; },
+      observe,
+      play: async (): Promise<CommandResult> => {
+        if (!ready()) return 'unavailable';
+        const intent = ++viewer.playIntent; viewer.wantsPlaying = true;
+        try {
+          await this.video!.play();
+          if (!ready()) return 'cancelled';
+          if (!viewer.wantsPlaying) { this.video!.pause(); return 'cancelled'; }
+          if (intent !== viewer.playIntent) return 'cancelled';
+          this.stage = 'play'; changed(); return 'completed';
+        } catch (error) {
+          if (!ready() || intent !== viewer.playIntent) return 'cancelled';
+          if (error instanceof DOMException && error.name === 'NotAllowedError') { viewer.wantsPlaying = false; return 'blocked'; }
+          try { this.policy!.fail('RESOURCE'); } catch {} await this.close(); return 'failed';
+        }
+      },
+      pause: () => { viewer.wantsPlaying = false; ++viewer.playIntent; if (ready()) this.video!.pause(); },
+      relativePlan: plan,
+      seekRelative: (delta, full = false, accepted) => ready() ? dispatchRelativeSeek(plan(delta), delta, full,
+        (seconds, tolerance, dispatched) => seekTo(this.video!, this.player!, viewer.lifetime.signal, ready, seconds, tolerance, dispatched), accepted) : Promise.resolve('unavailable'),
+      setGain: (volume, muted) => { if (ready() && Number.isFinite(volume) && volume >= 0 && volume <= 1 && typeof muted === 'boolean') {
+        this.video!.volume = volume; this.video!.muted = muted;
+      } },
+      setQuality: id => {
+        if (!ready()) return 'unavailable';
+        if (id === undefined) { this.player!.configure({ abr: { enabled: true } }); return 'completed'; }
+        const track = this.player!.getVariantTracks().find(candidate => candidate.id === id);
+        if (!track) return 'unsupported';
+        this.player!.configure({ abr: { enabled: false } }); this.player!.selectVariantTrack(track, false); return 'completed';
+      },
+      setQualityPreferences: (preferences: QualityPreferences) => {
+        if (!ready()) return 'unavailable';
+        if (viewer.quality.matches(preferences)) return 'completed';
+        if (!viewer.quality.request(preferences)) return 'invalid';
+        try {
+          if (!this.player!.configure({ abr: { enabled: true } })) return 'failed';
+          viewer.quality.dispatch(); viewer.quality.committed(); changed(); return 'completed';
+        } catch { return 'failed'; } finally { viewer.quality.cancelDispatch(); }
+      },
+      dispose: () => viewer.disposal ??= (async () => {
+        viewer.disposed = true;
+        if (await this.close() !== 'confirmed') throw new Error('Owned viewer cleanup unconfirmed');
+      })(),
+    };
+  }
+
   async play(): Promise<'playing' | 'refused'> {
     if (this.ended || !this.video || this.stage !== 'ready') return 'refused';
     try {
@@ -135,6 +237,10 @@ export class AbemaProtectedPlayback {
   close(): Promise<'confirmed' | 'unconfirmed'> {
     if (!this.closure) {
       this.ended = true; this.stage = 'cleanup'; clearTimeout(this.timer); clearTimeout(this.preparationTimer);
+      if (this.viewer) {
+        this.viewer.wantsPlaying = false; ++this.viewer.playIntent; this.viewer.lifetime.abort(); this.viewer.quality.close();
+        this.viewer.formats = { basis: 'last-sdk-buffered-playhead' };
+      }
       if (this.frameHandle !== undefined) this.video?.cancelVideoFrameCallback(this.frameHandle);
       this.policy?.close(); this.video?.pause();
       const explicitCdmClose = this.cdm?.close() ?? Promise.resolve('confirmed' as const);
@@ -150,7 +256,7 @@ export class AbemaProtectedPlayback {
           this.video?.removeAttribute('src'); this.video?.load(); this.video?.remove();
         }
         if (!confirmed) throw new Error('Protected cleanup unconfirmed');
-      }).then(() => 'confirmed' as const, () => 'unconfirmed' as const);
+      }).then(() => { this.viewer?.changed(); return 'confirmed' as const; }, () => { this.viewer?.changed(); return 'unconfirmed' as const; });
     }
     return this.closure;
   }

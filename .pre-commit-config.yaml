@@ -221,6 +221,13 @@ repos:
         files: '^apps/web/scripts/abema-(route-browser|browser-(manifest|episode-manifest))\.mjs$|^scripts/tests/web-abema-route-browser\.test\.mjs$'
         pass_filenames: false
 
+      - id: web-mixed-browser-transport-tests
+        name: Mixed browser routing and scoped header protocol tests
+        entry: node --test scripts/tests/web-mixed-route-browser.test.mjs scripts/tests/web-mixed-browser-headers.test.mjs
+        language: system
+        files: '^apps/web/scripts/(mixed-(route-browser|browser-headers)|abema-route-browser)\.mjs$|^scripts/tests/web-mixed-(route-browser|browser-headers)\.test\.mjs$'
+        pass_filenames: false
+
       - id: web-abema-episode-eme-tests
         name: Web ABEMA one-exchange private EME preparation tests
         entry: uv run scripts/tests/web-abema-episode-eme.test.py

@@ -350,3 +350,50 @@ not exported. Conservative free-window eligibility and successful decoding do
 not independently establish entitlement or provider ad equivalence. No
 certificate, advertisement, alternate header/body retry, renewal, second
 exchange, Headerly/CORS override, TLS bypass, capture or media relay occurred.
+
+## Separate mixed-browser transport fixtures
+
+The next owned-only transport slice for
+[#368](https://github.com/altendky/tachiai/issues/368) leaves the ABEMA route
+options and authentication module unchanged. A separate mixed-only options
+builder pins either existing Twitch live or replay case. It adds explicit
+HTTPS/443 System bypass rules for the existing Twitch OAuth/GraphQL hosts and
+media families; only replay adds the one already admitted distribution host.
+ABEMA and unknown destinations retain the restrictive authenticated proxy.
+This is destination selection, without a direct fallback, PAC or host-route edit.
+
+A separate development-only CDP Fetch owner combines exact proxy authentication
+with the existing scoped Headerly media behavior: remove only request Origin,
+then set only response Access-Control-Allow-Origin to the exact loopback harness
+origin. The browser-controlled initiating Origin, GET/HEAD and Fetch/XHR type
+must match, and the response remains bound to the original request ID, URL,
+method, frame and resource type. OAuth/GraphQL receive no header rewrite.
+Original status and every other header remain unchanged; no body inspection,
+fulfillment, redirect, cookie or TLS override is added. This is privileged
+diagnostic header rewriting, not ordinary website CORS support or a selected
+shipping extension/companion architecture. Existing ordinary browser rules are
+independent of this disposable-browser mechanism.
+
+Owned Chrome 156.0.8078.79 fixtures verify the split using an authenticated
+refusing proxy and a DNS-remapped loopback TLS-preface sink. Accepted System
+destinations never reach the proxy; ABEMA, unknowns, lookalikes and other
+schemes/ports never reach System. No provider TCP/TLS session or response is
+used. Separate HTTP loopback fixtures verify CORS off/on/off, same-origin child
+requests, wrong initiator/method refusal, exact response bytes/status, ordinary
+untrusted-TLS refusal, bounded state and cleanup. The HTTP fixture seam cannot
+admit a remote target. These tests establish mechanisms and boundaries, not an
+actual provider HTTPS result or complete route coverage.
+
+Run the browser-free protocol cases with:
+
+```sh
+node --test scripts/tests/web-mixed-route-browser.test.mjs scripts/tests/web-mixed-browser-headers.test.mjs
+```
+
+Set `TACHIAI_LOCAL_CHROME_TEST=1` to include the owned Chrome checks after the
+usual web dependency/browser setup. They retain no provider profile, grant,
+request URL or unrestricted trace. A real mixed-provider trial still needs
+provider-bound player adapters, fresh user-controlled Twitch activation before
+the original ABEMA attempt starts, same-session blocked Play and independent
+CDM closure, grant revocation, browser and route cleanup. No such trial is
+performed by these fixtures.

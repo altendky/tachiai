@@ -148,6 +148,17 @@ CDM closure and MediaKeys detachment precede iframe removal. Uncertain cleanup
 blocks replacement. This is owned-only diagnostic wiring, with no provider route,
 account, ad or UX exception. The original bounded protected decoder is unchanged.
 
+Separate [mixed transport fixtures](web-abema-routing.md#separate-mixed-browser-transport-fixtures)
+implement destination-based browser proxy selection: ABEMA retains the existing
+authenticated route while the pinned Twitch case explicitly bypasses it for
+its existing HTTPS/443 catalogue. This has no direct fallback or host-route edit.
+A single development-only CDP owner can combine exact proxy authentication with
+the existing scoped Headerly media Origin/ACAO rewrite, without reading media
+bodies or altering status, cookies or TLS. Owned Chrome fixtures verify these
+mechanisms; no actual mixed provider session or shipping architecture is selected.
+Android retains its native per-provider routing and is unaffected. These helpers
+add no product controls or UX exception.
+
 ### Controlled browser fixture formats
 
 The provider-free browser fixture now reports bounded audio/video format

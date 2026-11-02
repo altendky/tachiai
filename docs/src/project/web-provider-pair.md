@@ -220,14 +220,21 @@ Without cancellation, the original continuation succeeded. Substituting
 failRequest or continueResponse did not repair the canceled-ID race. This is a
 verified local mechanism, not retrospective proof of the provider trigger.
 
-The scoped fix retains at most 512 current admitted entries through response
-continuation settlement. Only that exact uniquely matched entry, with its
-unchanged request/response tuple and Network ID, can consume a same-session
-positive cancellation receipt already observed while its response is pending.
-Only the exact known invalid-interception error for that command is tolerated.
-Missing, ambiguous, unrelated, false, early or late cancellation, other continuation errors
-and replaced/disposed ownership remain refused. Entries retire by identity;
-there is no future cancellation history, command retry or response fabrication.
+The scoped lifecycle retains at most 512 current admitted entries through
+response continuation settlement. Only that exact uniquely matched entry, with
+its unchanged request/response tuple and Network ID, can consume a same-session
+positive cancellation receipt observed after admission and before the command
+rejection. That terminal event may precede delivery of the response pause:
+the exact canceled entry remains owned until its response settles or the owner
+is disposed. Its response must still be pending and fully bound when the exact
+known invalid-interception error for that command is tolerated. Nonpositive
+terminal events invalidate a prior cancellation receipt and retire entries
+without a pending response. Retained entries use the existing capacity and
+original owner lifetime; overflow refuses further admission.
+Missing, ambiguous, unrelated, false, before-admission or late cancellation,
+other continuation errors and replaced/disposed ownership remain refused.
+Entries retire by identity; no Network-only history can authorize a new Fetch
+entry, and there is no command retry or response fabrication.
 
 The closed diagnostic additionally exposes canceledContinuationObserved, a
 monotonic boolean indicating this narrow case occurred. Historical four-field
@@ -265,3 +272,36 @@ No URL, request or Network ID, header, token, raw error or provider payload is
 projected. Node and Python reject unknown fields/values and accept historical
 diagnostics. These details do not broaden cancellation tolerance, change
 request/header policy or turn process closure into a cleanup receipt.
+
+### Untracked replay failure and cancellation ordering
+
+A sixth provider trial used signed `e46e2f31e0e8a7c043650e13c95530a5d8f475e0`,
+fresh hashed assets and matching clean runner after new readiness and unused-peer
+confirmation. Both feeds selected Twitch replay 2080217716 on System network,
+with no ABEMA preparation. The owner saw frames in both panes before the window
+closed. The five-second sampled joint-advancement threshold was not reached and
+no audio acceptance was requested. The first failed response continuation was
+classified INVALID_INTERCEPTION_ID / UNTRACKED_ERROR / NO_ENTRY. Browser/group,
+backend and route closure were confirmed; renderer/CDM/grant/auth cleanup
+remained unconfirmed. This is a failed transaction with a separate bounded
+visual observation.
+
+The temporary Chrome profile uses the driver's scoped CDP header rewriting;
+the Headerly extension is not loaded there. The owner's usual browser rules
+remain unchanged. The driver's guard deliberately closes its page on the
+failed continuation; the record does not establish a Chrome process crash.
+
+Owned Chrome checks of nonadmitted POST reset, abort, server-auth cancellation
+and redirect failures did not reproduce the response pause. A controlled event
+delivery check did reproduce the exact diagnostic: an admitted GET's real
+failed-response event was held while a real abort delivered a matching positive
+Network cancellation, then the original response event was delivered unchanged.
+The prior terminal handler had already removed its entry. This reproduces a
+local lifecycle defect, without proving the provider trial's event order.
+
+The corrected owner retains only that already-admitted, uniquely canceled
+entry across this ordering. It preserves the initial media-header admission
+and all response binding checks, and releases the entry at settlement or owner
+disposal. The failed Fetch remains failed while the page can finish its normal
+cleanup. No additional API tracking, provider permission, header change,
+continuation retry or inferred grant/CDM cleanup is introduced.

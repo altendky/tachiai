@@ -14,6 +14,13 @@ fixtures with stream copy and encodes a separate owned quality ladder from A.
 No provider media is downloaded. If FFmpeg is not on PATH, set
 `FFMPEG=/path/to/ffmpeg` for preparation.
 
+Asset preparation also builds a separate, pinned FFmpeg 8.1 copy-only tool from
+the official source archive for the owned encrypted fixture. Its build helper
+uses a C compiler, Make, curl, tar, xz, GNU coreutils and `flock`. Build output is
+cached under `apps/web/build/tools/ffmpeg-8.1`. The encrypted generator accepts an explicit
+`FFMPEG_ENCRYPTED` executable override and verifies actual per-fragment CENC
+metadata. The ordinary `FFMPEG` selection continues to package clear fixtures.
+
 From the repository root:
 
 ```sh
@@ -127,3 +134,12 @@ a new exact replay setup into one initial opaque browser CDM exchange, then
 close that same session. It has no player/media/renewal path. Read its
 [separate contract and opt-in procedure](../../docs/src/project/web-abema-routing.md#separate-one-initial-exchange-eme-diagnostic)
 before running it; the MPD-only command keeps its earlier boundary.
+
+The further `abema-route-playback.py --run-route-replay-playback` command uses a
+new fresh CUSTOM/CSAI replay, one temporary CDM exchange and a muted owned player
+to observe bounded decoded frames. Its
+[separate decoder contract](../../docs/src/project/web-abema-routing.md#separate-protected-replay-decoder-diagnostic)
+retains the exact source/reference guards and explicit session cleanup. Run
+`npm run test:abema:protected` for owned encrypted fixtures on port 4197; no
+provider operation occurs in this suite. It does not implement product routes,
+accounts, provider advertisement behavior or sustained playback.

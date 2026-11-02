@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare:assets": "bash ../../scripts/build-web-core.sh && node scripts/prepare-assets.mjs",
+    "prepare:assets": "bash ../../scripts/build-web-core.sh && bash ../../scripts/build-web-fixture-ffmpeg.sh && node scripts/prepare-assets.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
@@ -16,6 +16,7 @@
     "test:twitch:pair": "playwright test --config playwright.twitch-pair.config.ts",
     "test:twitch:media": "playwright test --config playwright.twitch-media.config.ts && node --test ../../scripts/tests/web-twitch-runner-signals.test.mjs ../../scripts/tests/web-twitch-browser-failures.test.mjs",
     "test:abema:local": "playwright test --config playwright.abema.config.ts",
+    "test:abema:protected": "playwright test --config playwright.abema-protected.config.ts",
     "test": "playwright test"
   },
   "dependencies": {

@@ -94,6 +94,17 @@ export class AbemaDashPolicy {
     this.current = this.previous = { entries: [], streams: new Set() };
   }
 
+  protected checkProtectionElement(element: Element): void {
+    const name = element.localName.toLowerCase();
+    if (['contentprotection', 'pssh', 'pro', 'laurl', 'license', 'protectionheader'].includes(name) ||
+        element.namespaceURI === 'urn:mpeg:cenc:2013' || [...element.attributes].some((a) =>
+          ['default_kid', 'kid'].includes(a.localName.toLowerCase()) || a.namespaceURI === 'urn:mpeg:cenc:2013')) this.fail('PROTECTION');
+  }
+
+  protected checkProtectionStream(stream: shaka.extern.Stream): void {
+    if (stream.encrypted || stream.drmInfos.length || stream.keyIds.size) this.fail('PROTECTION');
+  }
+
   audit(bytes: Uint8Array): void {
     this.active();
     if (!bytes.length || bytes.length > 512 * 1024) this.fail('LIMIT');
@@ -114,9 +125,7 @@ export class AbemaDashPolicy {
         if (!/^[0-9]+$/.test(repeat) || Number(repeat) > 8191 || !duration || !/^[0-9]+$/.test(duration) ||
             !Number.isSafeInteger(Number(duration)) || Number(duration) <= 0 || (timeline += Number(repeat) + 1) > 32768) this.fail('LIMIT');
       }
-      if (['contentprotection', 'pssh', 'pro', 'laurl', 'license', 'protectionheader'].includes(name) ||
-          element.namespaceURI === 'urn:mpeg:cenc:2013' || [...element.attributes].some((a) =>
-            ['default_kid', 'kid'].includes(a.localName.toLowerCase()) || a.namespaceURI === 'urn:mpeg:cenc:2013')) this.fail('PROTECTION');
+      this.checkProtectionElement(element);
       if (name === 'utctiming') {
         const scheme = element.getAttribute('schemeIdUri');
         const matches = (method: string) => ['2012', '2014'].some((year) => scheme === 'urn:mpeg:dash:utc:' + method + ':' + year);
@@ -154,7 +163,7 @@ export class AbemaDashPolicy {
       }
     };
     for (const stream of streams) {
-      if (stream.encrypted || stream.drmInfos.length || stream.keyIds.size) this.fail('PROTECTION');
+      this.checkProtectionStream(stream);
       this.publicationStage = 'INDEX';
       this.indexing = true;
       try { await stream.createSegmentIndex(); }
@@ -278,8 +287,8 @@ export class AbemaDashPolicy {
     return kind;
   }
 
-  install(): void {
-    const fetcher = createClosedBrowserFetch((url, method) => method === 'GET' && (url.href === this.manifest || this.admitMedia(url.href)));
+  protected createMediaPlugin(fetcher = createClosedBrowserFetch((url, method) =>
+    method === 'GET' && (url.href === this.manifest || this.admitMedia(url.href)))): shaka.extern.SchemePlugin {
     const plugin: shaka.extern.SchemePlugin = (uri, request, _type, progress, received) => {
       const cancel = new AbortController();
       let owned = false;
@@ -354,10 +363,18 @@ export class AbemaDashPolicy {
       })();
       return new shaka.util.AbortableOperation(task, () => { cancel.abort(); return Promise.resolve(); });
     };
+    return plugin;
+  }
+
+  protected installNetworkPlugin(plugin: shaka.extern.SchemePlugin): void {
     for (const scheme of ['http', 'data', 'https']) shaka.net.NetworkingEngine.unregisterScheme(scheme);
     shaka.net.NetworkingEngine.registerScheme('https', plugin, shaka.net.NetworkingEngine.PluginPriority.APPLICATION, true);
     // Only local fixture tests install the same plugin for their owned HTTP origin.
     if (new URL(this.manifest).protocol === 'http:') shaka.net.NetworkingEngine.registerScheme('http', plugin, shaka.net.NetworkingEngine.PluginPriority.APPLICATION, true);
+  }
+
+  install(): void {
+    this.installNetworkPlugin(this.createMediaPlugin());
   }
 }
 

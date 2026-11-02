@@ -230,3 +230,123 @@ the verified initial exchange.
 The standard initialization/session interfaces are defined by
 [CENC initialization data](https://www.w3.org/TR/eme-initdata-cenc/) and
 [Encrypted Media Extensions](https://www.w3.org/TR/encrypted-media/).
+
+## Separate protected replay decoder diagnostic
+
+The distinct decoder command adds an owned muted Shaka 5.3.3 player to a new
+fresh CUSTOM/CSAI replay preparation. The MPD-only and initial-exchange commands
+keep their earlier limits. After building the web assets and confirming that
+the selected WireGuard peer is idle elsewhere:
+
+```sh
+mise run web
+uv run apps/web/scripts/abema-route-playback.py \
+  --run-route-replay-playback --peer-idle-confirmed \
+  --route-runner /absolute/path/to/route-trial \
+  --wireguard-file /absolute/path/to/export.conf
+```
+
+The original source deadline of 120 seconds and route lease of 180 seconds stay
+fixed. Browser preparation has a 30-second limit; observation stops after five
+seconds of decoded media advancement or eight wall seconds, whichever occurs
+first, within the remaining original lifetime. These are diagnostic bounds,
+not a duration establishing sustained playback or renewal.
+
+The renderer independently checks the fixed replay, advertisement, fresh token,
+license URI and remaining lifetime. It audits namespaced standard CENC key IDs,
+requires a stable set across manifest refreshes and supplies public temporary
+ClearKey `DrmInfo` before SDK content filtering. Provider PSSH payloads remain
+inert. The original MPD is not rewritten. Initialization/media requests retain
+the existing exact SDK reference, stream, URI, range and current/previous
+snapshot admission; unknown auxiliary transports remain refused.
+
+One standard temporary browser session supplies the original initial request.
+The initial exchange reuses the verified runtime-only response helper and dash
+serializer. Standard EME hooks bind the actual session, challenge and update
+without reading SDK key caches or response key fields. Readiness waits for the
+actual native update acceptance, rather than SDK load completion. No alternate
+key system, persistent session, certificate, advertisement, renewal or second
+license request is admitted. The player stays muted; frame callbacks report only
+counts, dimensions and media advancement. No video pixels or audio are captured.
+
+The private proof server serves a frozen map of its own built scripts/Wasm,
+dedicated proof HTML and verified public runtime assets on loopback. It exposes
+no media relay or generic request endpoint. The page retains normal browser
+CORS/TLS and receives no route credential, bearer or saved account. The provider
+runtime's global network APIs remain blocked; the admitted player transport uses
+the separately captured native Fetch. Headerly is not part of this command.
+
+Retirement is terminal even before preparation. Cleanup independently closes
+and awaits the actual session, destroys the SDK player, independently checks
+standard MediaKeys detachment, restores owned hooks,
+then closes the browser/server and temporary route. First closure uncertainty
+stays uncertain after repeated cleanup and blocks another CDM owner in that
+realm. Numeric evidence before and after
+closure keeps readable license HTTP status separate from earlier MPD status;
+missing/invalid renderer receipts cannot establish CDM cleanup.
+
+Owned fixture tests use a hash-verified repository H.264/AAC source encrypted
+locally with a fixed **public synthetic** key. They cover successful five-second
+decoding, wrong-key/no-license refusal, exact one-exchange admission, original
+lifetime, response identity, late retirement and sticky closure failure.
+
+Asset preparation builds a separate pinned FFmpeg 8.1 copy-only tool from the
+official source archive for this fixture. Older packagers can put encryption
+metadata in the initialization file or accumulate earlier samples across later
+fragments. The generator checks actual fragment-local `senc`/`saio`/`saiz`
+metadata, sample counts and offsets before publishing fixture provenance. An
+explicit `FFMPEG_ENCRYPTED` override must satisfy those same checks; the ordinary
+clear-fixture `FFMPEG` choice remains independent. These are owned test-media
+checks and do not parse or rewrite provider segments.
+
+Run the owned suites:
+
+```sh
+npm run test:abema:protected --prefix apps/web
+uv run scripts/tests/web-abema-episode-playback.test.py
+TACHIAI_LOCAL_CHROME_TEST=1 xvfb-run --auto-servernum \
+  node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
+```
+
+Those fixtures establish the mechanism only. Actual provider decoding,
+entitlement, ad equivalence, acoustic output, paired operation and sustained
+playback require their own observations. This development diagnostic adds no
+product Routes/account controls or common UX exception.
+
+### Initial protected provider decode observation
+
+One fresh run on signed clean
+`8930f87cf1fe5df438120d0947c4b8a7f514122a` passed on November 1, 2026. The
+complete route/setup/decode/cleanup command took 54.82 wall seconds and exited
+zero. Host: Ubuntu 26.04.1 LTS, Linux 7.0.0-34-generic x86-64; the fresh owned
+headed Google Chrome runtime reported 156.0.8078.79. Browser ClearKey used one
+temporary session and the audited standard CENC initialization. The same
+previously verified userspace route binary and user-authorized Windscribe Tokyo
+export supplied both backend and browser traffic. Exit country and independent
+complete route coverage were not measured. No saved provider account, Android
+cookie or grant was used.
+
+Fresh anonymous guest, matching profile, media token, conservative exact-program
+eligibility, gateway, source/session/token/configuration subset and all five
+runtime pins passed. The unchanged selector chose the fixed replay
+`394-72_s10_p8529`, CUSTOM and CSAI. The owned player read one MPD, two
+initializations and eight media segments; readable manifest/media and license
+statuses were HTTP 200. Exactly one selected key-system access, MediaKeys object,
+temporary session, initial message/request, license POST/response and accepted
+native update were recorded. No DRM admission refusal or SDK error occurred.
+
+Before stopping, actual frame callbacks reported **36 decoded frames at
+854 × 480 and 5,739 ms of media advancement**. Cleanup retained those counts,
+changed the policy to expected CANCELLED, explicitly closed that same session,
+verified MediaKeys detachment and destroyed the player/browser/server. Both
+provider-attempt cleanup and temporary-route cleanup were confirmed, with no
+host-route change, persisted guest grant or profile copy.
+
+This establishes bounded protected replay decoding through the Tachiai-owned
+browser player in this exact environment. The player was muted; acoustic output,
+quality/seek/alignment controls, paired feeds, advertisements, renewal and
+sustained operation were not tested. Actual provider codec/track metadata was
+not exported. Conservative free-window eligibility and successful decoding do
+not independently establish entitlement or provider ad equivalence. No
+certificate, advertisement, alternate header/body retry, renewal, second
+exchange, Headerly/CORS override, TLS bypass, capture or media relay occurred.

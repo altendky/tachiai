@@ -5,6 +5,8 @@ extend-ignore-re = ['\bue6666qo983tsx6so1t0vnawi233wa\b', '\b9FYQvU4hBaZZy1\b']
 [default.extend-words]
 # HTMLMediaElement event name.
 seeked = "seeked"
+# ISO BMFF Track Run box type.
+trun = "trun"
 
 [files]
 # Upstream notices, copyright names and patch context must remain verbatim.

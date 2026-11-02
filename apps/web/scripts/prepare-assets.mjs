@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareQualityFixture } from './prepare-quality-fixture.mjs';
+import { prepareEncryptedFixture } from './prepare-encrypted-fixture.mjs';
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(app, '../..');
@@ -35,6 +36,7 @@ for (const name of ['a', 'b']) {
 }
 writeFileSync(resolve(output, 'media/provenance.json'), JSON.stringify(provenance, null, 2) + '\n');
 prepareQualityFixture(root, output);
+prepareEncryptedFixture(root, output);
 
 // Include the selected package's upstream notices with every build.
 const notices = resolve(output, 'licenses/shaka-player');

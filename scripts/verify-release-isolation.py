@@ -30,6 +30,7 @@ REQUIRED_COMPONENTS = {
         ".provider.abema.AbemaEpisodeMetadataService",
         ".provider.abema.AbemaSeriesMetadataService",
         ".provider.abema.account.AbemaAccountReadinessService",
+        ".provider.abema.account.AbemaRenewalJobService",
         ".provider.abema.account.AbemaRenewalBrowserService",
         ".provider.abema.account.AbemaAccountBootstrapService",
         ".provider.abema.account.AbemaEmailGrantHandoffService",
@@ -92,6 +93,12 @@ def verify(manifest, asset_paths, source_manifests, application_id):
     if len(applications) != 1:
         raise IsolationFailure("APPLICATION_COUNT")
     app = applications[0]
+    if qualified(app.get(ANDROID + "name", ""), application_id) != application_id + ".TachiaiApplication" or \
+            app.get(ANDROID + "process") not in (None, application_id):
+        raise IsolationFailure("RENEWAL_APPLICATION")
+    permissions = {node.get(ANDROID + "name") for node in root.findall("uses-permission")}
+    if not {"android.permission.ACCESS_NETWORK_STATE", "android.permission.RECEIVE_BOOT_COMPLETED"}.issubset(permissions):
+        raise IsolationFailure("RENEWAL_JOB_PERMISSIONS")
     if app.get(ANDROID + "enabled") not in (None, "true"):
         raise IsolationFailure("APPLICATION_DISABLED")
     for name in ("debuggable", "testOnly"):
@@ -116,6 +123,11 @@ def verify(manifest, asset_paths, source_manifests, application_id):
             if len(nodes) != 1 or nodes[0].get(ANDROID + "enabled") not in (None, "true"):
                 raise IsolationFailure("PRIMARY_COMPONENT")
     browser = present[("service", application_id + ".provider.abema.account.AbemaRenewalBrowserService")][0]
+    job = present[("service", application_id + ".provider.abema.account.AbemaRenewalJobService")][0]
+    if job.get(ANDROID + "exported") != "true" or job.get(ANDROID + "permission") != "android.permission.BIND_JOB_SERVICE" or \
+            job.get(ANDROID + "process") not in (None, application_id) or job.find("intent-filter") is not None or \
+            job.get(ANDROID + "directBootAware") not in (None, "false"):
+        raise IsolationFailure("RENEWAL_JOB_SERVICE")
     if browser.get(ANDROID + "exported") != "false" or browser.get(ANDROID + "process") != ":abema_approval_browser" or \
             browser.find("intent-filter") is not None:
         raise IsolationFailure("RENEWAL_BROWSER_SERVICE")
@@ -165,6 +177,8 @@ def primary_content():
     def component(kind, name):
         attributes = ('android:exported="false" android:process=":abema_approval_browser"'
                       if name == ".provider.abema.account.AbemaRenewalBrowserService" else 'android:exported="true"')
+        if name == ".provider.abema.account.AbemaRenewalJobService":
+            attributes += ' android:permission="android.permission.BIND_JOB_SERVICE"'
         return f'<{kind} android:name="{name}" {attributes}>' + (launcher if name == ".MainActivity" else "") + f'</{kind}>'
 
     return "".join(component(kind, name) for kind, names in REQUIRED_COMPONENTS.items() for name in sorted(names))
@@ -174,7 +188,9 @@ def fixture(content=None, attributes="", package="net.fstab.tachiai"):
     if content is None:
         content = primary_content()
     return (f'<manifest xmlns:android="{ANDROID[1:-1]}" xmlns:tools="{TOOLS[1:-1]}" package="{package}">'
-            f'<application {attributes}>{content}</application></manifest>').encode()
+            '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />'
+            '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />'
+            f'<application android:name=".TachiaiApplication" {attributes}>{content}</application></manifest>').encode()
 
 
 class IsolationTests(unittest.TestCase):
@@ -196,6 +212,37 @@ class IsolationTests(unittest.TestCase):
         forbidden = forbidden_components(self.sources, "net.fstab.tachiai")
         self.assertNotIn("net.fstab.tachiai.MainActivity", forbidden)
         self.assertIn("net.fstab.tachiai.feature.diagnostic.BrowserLabActivity", forbidden)
+
+    def test_renewal_job_requires_system_binding_and_default_unlocked_process(self):
+        for field, value in (("permission", None), ("permission", "android.permission.INTERNET"),
+                             ("exported", "false"), ("process", ":other"),
+                             ("directBootAware", "true"), ("intent-filter", "added")):
+            with self.subTest(field=field, value=value):
+                tree = manifest_tree(fixture())
+                job = next(node for node in tree.find("application")
+                           if node.get(ANDROID + "name") == ".provider.abema.account.AbemaRenewalJobService")
+                if field == "intent-filter":
+                    ET.SubElement(job, field)
+                elif value is None:
+                    job.attrib.pop(ANDROID + field)
+                else:
+                    job.set(ANDROID + field, value)
+                with self.assertRaises(IsolationFailure):
+                    self.check(ET.tostring(tree))
+
+    def test_job_application_and_normal_permissions_are_required(self):
+        for alteration in ("application-name", "application-process", "network", "boot"):
+            with self.subTest(alteration=alteration):
+                tree = manifest_tree(fixture())
+                if alteration == "application-name":
+                    tree.find("application").attrib.pop(ANDROID + "name")
+                elif alteration == "application-process":
+                    tree.find("application").set(ANDROID + "process", ":other")
+                else:
+                    name = "android.permission." + ("ACCESS_NETWORK_STATE" if alteration == "network" else "RECEIVE_BOOT_COMPLETED")
+                    tree.remove(next(node for node in tree.findall("uses-permission") if node.get(ANDROID + "name") == name))
+                with self.assertRaises(IsolationFailure):
+                    self.check(ET.tostring(tree))
 
     def test_renewal_browser_requires_private_original_process_without_intent_filter(self):
         for field, value in (("exported", "true"), ("exported", None), ("process", None),

@@ -5,6 +5,8 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.nio.channels.OverlappingFileLockException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.presentation.*
@@ -25,6 +27,29 @@ class ProviderInstanceStoreTest {
     private val japan = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION,
         "12345678-1234-1234-1234-123456789abc", "Japan")
     private fun defaults() = legacyProviderSetups(defaultSourceSetups())
+
+    @Test fun mutationWakeupsRunAfterStorageAndLocksAndCannotChangeTheSaveResult() {
+        val memory = Memory(); val file = temporary.newFile("mutation.lock")
+        val worker = Executors.newSingleThreadExecutor()
+        var calls = 0; var observedCommitted = false
+        val store = ProviderInstanceStore(memory, file, mutated = {
+            calls++
+            observedCommitted = worker.submit<Boolean> {
+                ProviderInstanceStore(memory, file).readSnapshot(::defaults).committed
+            }.get(5, TimeUnit.SECONDS)
+            throw IllegalStateException("Fixture notification refused")
+        })
+        try {
+            store.save(defaultProviderInstanceId(PrototypeService.ABEMA), null, SourceRouteChoice.system, ::defaults)
+            assertEquals(1, calls); assertTrue(observedCommitted)
+            store.read(::defaults); assertEquals(1, calls)
+            memory.failWrite = true
+            assertThrows(Exception::class.java) {
+                store.save(defaultProviderInstanceId(PrototypeService.ABEMA), "Other", SourceRouteChoice.system, ::defaults)
+            }
+            assertEquals(1, calls)
+        } finally { worker.shutdownNow() }
+    }
 
     @Test fun typedSnapshotProvenanceComesFromTheSameReadAndNeverFallsBackOnCorruption() {
         val committed = Memory()

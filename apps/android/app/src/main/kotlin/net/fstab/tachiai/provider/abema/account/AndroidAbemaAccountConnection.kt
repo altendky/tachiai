@@ -96,6 +96,8 @@ internal fun androidAbemaAccountConnectionBinding(context: Context, instanceId: 
         { connectionProfileStore(application).snapshot(it) }, expected)
     return object : AbemaAccountConnectionBinding {
         override val store = store
+        override fun accepted() = AndroidAbemaRenewalJobs.accepted(application)
+        override fun forgotten() = AndroidAbemaRenewalJobs.forgotten(application, instanceId)
         override val routeCurrent get() = routeAdmission.canContinue()
         override fun owner(): AbemaCatalogRouteOwner {
             var captured: AbemaCatalogRouteOwner? = null

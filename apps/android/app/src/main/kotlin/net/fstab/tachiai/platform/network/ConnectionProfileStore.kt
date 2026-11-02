@@ -15,7 +15,7 @@ internal data class ConnectionSummary(val id: String, val name: String, val kind
 
 // Default-process mutations and playback-process snapshots share the same fixed file lock.
 internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, private val lockFile: File? = null,
-    private val protocols: RouteProtocols = routeProtocols) {
+    private val protocols: RouteProtocols = routeProtocols, private val mutated: () -> Unit = {}) {
     companion object { private val lock = Any() } // Also serializes stores across Activity recreation.
     private class Entry(val id: String, val name: String, val profile: ConnectionProfile)
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
@@ -88,7 +88,7 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         val updated = entries + Entry(UUID.randomUUID().toString(), name, validated)
         write(updated)
         summaries(updated)
-    }
+    }.also { runCatching(mutated) }
 
     fun remove(id: String) = locked {
         val entries = read()
@@ -96,5 +96,5 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         val updated = entries.filterNot { it.id == id }
         write(updated)
         summaries(updated)
-    }
+    }.also { runCatching(mutated) }
 }

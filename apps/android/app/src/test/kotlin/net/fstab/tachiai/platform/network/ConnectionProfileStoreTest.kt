@@ -5,6 +5,8 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.crypto.spec.SecretKeySpec
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
@@ -20,6 +22,24 @@ class ConnectionProfileStoreTest {
         override fun write(plaintext: ByteArray) { bytes = plaintext.copyOf() }
     }
     private fun profile() = parseConnectionProfile(fixtureWireGuard().toByteArray())
+
+    @Test fun mutationWakeupObservesTheCommittedProfileOutsideItsLockAndIsIsolated() {
+        val memory = MemorySecrets(); val worker = Executors.newSingleThreadExecutor()
+        var calls = 0; var observed = -1
+        val store = ConnectionProfileStore(memory, mutated = {
+            calls++
+            observed = worker.submit<Int> { ConnectionProfileStore(memory).summaries().size }.get(5, TimeUnit.SECONDS)
+            throw IllegalStateException("Fixture notification refused")
+        })
+        try {
+            val saved = store.add("First", profile()).single()
+            assertEquals(1, calls); assertEquals(1, observed)
+            store.summaries(); assertEquals(1, calls)
+            store.remove(saved.id); assertEquals(2, calls); assertEquals(0, observed)
+            assertThrows(Exception::class.java) { store.remove(saved.id) }
+            assertEquals(2, calls)
+        } finally { worker.shutdownNow() }
+    }
 
     @Test fun requestedProfileSnapshotUsesOneReadAndDistinguishesMissingFromUnreadable() {
         val memory = MemorySecrets()

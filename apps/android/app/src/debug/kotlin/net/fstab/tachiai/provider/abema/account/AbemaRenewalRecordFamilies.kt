@@ -13,7 +13,7 @@ internal enum class AbemaRenewalRecordFamily {
     ROUTE_PROFILES, LEGACY_SETUP, PROVIDER_REGISTRY, QUALITY, CONFIGURED_SOURCE, ABEMA_ACCOUNT,
     TWITCH_AUTHORIZATION, TWITCH_FORGET_PENDING, COORDINATION_LOCK, DIAGNOSTIC_JOURNAL, CDN_REVIEW_JOURNAL,
     RECOVERY_CHECKPOINT, SELECTED_ACCOUNT_AUXILIARY, ACCOUNT_AUXILIARY, PRIVATE_RECORD_AUXILIARY,
-    SHARED_PREFERENCES, UNKNOWN,
+    SHARED_PREFERENCES, RENEWAL_SCHEDULE, UNKNOWN,
 }
 
 internal data class AbemaRenewalFamilyMutation(val family: AbemaRenewalRecordFamily, val changed: Int, val added: Int, val removed: Int)
@@ -65,6 +65,8 @@ internal fun abemaRenewalRecordFamily(key: String, selected: String): AbemaRenew
         dynamic(name, "configured-provider-instance-", ".lock", ::configuredProviderInstanceBindingName) ||
         dynamic(name, "twitch-catalog-", ".lock") { "twitch-catalog-$it" }) return AbemaRenewalRecordFamily.COORDINATION_LOCK
     when (name) {
+        AbemaRenewalJobLedger.FILE_NAME, AbemaRenewalJobLedger.FILE_NAME + ".bak",
+        AbemaRenewalJobLedger.FILE_NAME + ".new" -> return AbemaRenewalRecordFamily.RENEWAL_SCHEDULE
         "failure-diagnostics.tsv" -> return AbemaRenewalRecordFamily.DIAGNOSTIC_JOURNAL
         "abema-cdn-review.tsv" -> return AbemaRenewalRecordFamily.CDN_REVIEW_JOURNAL
         "prototype-cached-recovery.tsv", "prototype-player-recovery.tsv" -> return AbemaRenewalRecordFamily.RECOVERY_CHECKPOINT

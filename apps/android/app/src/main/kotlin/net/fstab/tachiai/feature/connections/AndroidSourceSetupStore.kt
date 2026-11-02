@@ -18,6 +18,7 @@ internal fun providerSetupStore(context: Context): ProviderSetupStore = Provider
 internal fun providerInstanceStore(context: Context, reuseReadKey: Boolean = false): ProviderInstanceStore = ProviderInstanceStore(
     AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.PROVIDER_INSTANCES, reuseReadKey),
     File(context.noBackupFilesDir, "provider-instances.lock"),
+    mutated = { net.fstab.tachiai.provider.abema.account.AndroidAbemaRenewalJobs.changed(context.applicationContext) },
 )
 
 internal fun legacyProviderSettings(context: Context) = providerSetupStore(context).read(sourceSetupStore(context).read())

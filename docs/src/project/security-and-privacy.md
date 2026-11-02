@@ -26,6 +26,29 @@ display names, never copied keys/credentials. Conflicting earlier stream/feed
 route settings require explicit review; unsupported or failed routes stop before provider
 preparation instead of falling back to the system network.
 
+## Android renewal scheduling metadata
+
+The [expiry-based job](source-network-routing.md#expiry-based-android-renewal-job)
+adds one intentional public-metadata AtomicFile under `noBackupFilesDir`:
+`abema-renewal-jobs-v1.bin`, with only its `.bak`/`.new` atomic-write siblings.
+Its maximum input is 16 KiB and its versioned decoder validates at most 16 entries,
+opaque UUIDs, reserved job IDs, public generation/acceptance/expiry times, due
+times, finite attempt counts and closed dispositions. It stores no account
+identity, grant, cookie, password, owner proof, route configuration, Network or
+diagnostic. It adds no cryptographic key or secret-store slot. Credential records
+retain their existing encryption and adoption/revocation boundaries.
+
+Consumption is durably recorded before provider activation. An interrupted
+RUNNING record becomes deferred after process restart; unreadable/corrupt metadata
+disables automatic dispatch rather than clearing the record. Public metadata is
+not authorization: execution still rechecks protected account/source ownership,
+entitlement and the originally supplied Network. Backup remains disabled.
+
+Renewal preservation observations strictly decode this public file and report its
+changes under the separate RENEWAL_SCHEDULE family. Its expected bookkeeping
+changes do not relax exact private account/route/configuration preservation;
+unknown files, lookalikes and oversized records retain their existing guards.
+
 ## Normal playback lifetime — 2026-10-17
 
 The user requested removal of the primary viewer's experimental five-minute

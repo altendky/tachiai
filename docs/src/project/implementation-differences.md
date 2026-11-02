@@ -34,9 +34,20 @@ Android readiness also exposes an internal RAM-only owner lease before provider
 dispatch. Only that exact lease controls activation/cancellation; observers share
 status. Pending reservations expire at their original deadline and active work
 keeps its existing lifetime. Actual cleanup receipts release ownership, while
-unknown closure remains retained. This adds no background scheduler or user-facing
-flow; the [owned admission boundary](source-network-routing.md#owned-renewal-admission)
+unknown closure remains retained. The lease adds no user-facing flow;
+the [owned admission boundary](source-network-routing.md#owned-renewal-admission)
 records its scope.
+
+The [expiry-based Android job](source-network-routing.md#expiry-based-android-renewal-job)
+uses that lease on API 28 and newer, with a system-bound JobService, normal
+network/boot permissions and ordinary-process-only reconciliation. A private
+public-metadata ledger records consumption before activation and defers interrupted
+or uncertain work. Each scheduled invocation has a fresh opaque key. The captured
+JobParameters Network and original deadline remain mandatory; API 26/27 retains
+foreground renewal. API 34 supplies a Network-change callback. These are internal
+scheduling mechanisms with no new account screen or notification. Runtime and
+physical-device acceptance remain separate from passing host fixtures; no web
+or Apple equivalent is established here.
 
 ## Other implementations
 

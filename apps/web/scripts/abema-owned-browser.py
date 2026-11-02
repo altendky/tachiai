@@ -57,18 +57,26 @@ def cleanup_owned_browser(runtime):
         return
     try:
         state, group, started = _process_stat(pid)
-        with Path("/proc", str(pid), "cmdline").open("rb") as process_arguments:
-            raw = process_arguments.read(65537)
-        args = raw.decode("utf8", errors="strict").split("\0")
-        if len(raw) > 65536 or Path("/proc", str(pid)).stat().st_uid != os.getuid() or started != value["startTime"] or group != pid or "--remote-debugging-pipe" not in args or "--user-data-dir=" + str(profile) not in args:
+        if Path("/proc", str(pid)).stat().st_uid != os.getuid() or started != value["startTime"] or group != pid:
             raise bootstrap.CleanupUnconfirmed()
-        # A PID or stale ownership file alone never authorizes a signal.
-        if _process_stat(pid)[1:] != (group, started):
-            raise bootstrap.CleanupUnconfirmed()
-        os.killpg(pid, signal.SIGKILL)
+        if state not in {"Z", "X"}:
+            with Path("/proc", str(pid), "cmdline").open("rb") as process_arguments:
+                raw = process_arguments.read(65537)
+            # Closing Node's debugging pipe may leave an exiting leader with
+            # empty arguments while children are still shutting down. That
+            # permits passive waiting only, never a less-verified signal.
+            if raw:
+                args = raw.decode("utf8", errors="strict").split("\0")
+                if len(raw) > 65536 or "--remote-debugging-pipe" not in args or "--user-data-dir=" + str(profile) not in args:
+                    raise bootstrap.CleanupUnconfirmed()
+                # A PID or stale ownership file alone never authorizes a signal.
+                final_state, final_group, final_started = _process_stat(pid)
+                if (final_group, final_started) != (group, started):
+                    raise bootstrap.CleanupUnconfirmed()
+                if final_state not in {"Z", "X"}:
+                    os.killpg(pid, signal.SIGKILL)
     except (FileNotFoundError, ProcessLookupError):
-        if _live_group(pid):
-            raise bootstrap.CleanupUnconfirmed() from None
+        pass  # No leader to signal; its recorded group must still become quiet.
     end = bootstrap.time.monotonic() + 5
     while _live_group(pid):
         if bootstrap.time.monotonic() >= end:

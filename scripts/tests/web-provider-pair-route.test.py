@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -149,6 +150,22 @@ class HostTests(unittest.TestCase):
         with temporary, contextlib.redirect_stdout(io.StringIO()) as captured:
             self.assertEqual(job.run(), {"owned": "PRIVATE_SYNTHETIC"})
         self.assertEqual(captured.getvalue(), "")
+        self.assertTrue(job.cleanup_confirmed and job.reaped)
+
+    def test_nested_worker_retains_selected_node_without_inheriting_ambient_path(self):
+        script = "import sys,json,shutil,subprocess,os;json.load(sys.stdin);node=shutil.which('node');assert node;assert shutil.which('ambient-only') is None;assert 'PAIR_PRIVATE_ENV' not in os.environ;value=subprocess.run([node,'--version'],check=True,capture_output=True,text=True).stdout.strip();assert value=='OWNED_NODE';print(json.dumps({'outcome':'READY','packet':{'owned':True},'cleanupConfirmed':True}))"
+        job, temporary = self.owned_job(script)
+        with temporary:
+            root = Path(temporary.name)
+            tools, ambient = root / "selected-tools", root / "ambient"
+            tools.mkdir(); ambient.mkdir()
+            node = tools / "node"
+            node.write_text(f"#!{sys.executable}\nprint('OWNED_NODE')\n")
+            node.chmod(0o755)
+            unwanted = ambient / "ambient-only"
+            unwanted.write_text("#!/bin/sh\nexit 0\n"); unwanted.chmod(0o755)
+            with patch.dict(os.environ, PATH=str(tools) + os.pathsep + str(ambient), PAIR_PRIVATE_ENV=PRIVATE):
+                self.assertEqual(job.run(), {"owned": True})
         self.assertTrue(job.cleanup_confirmed and job.reaped)
 
     def test_stderr_missing_receipt_and_timeout_cannot_be_cleanup_success(self):

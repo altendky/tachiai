@@ -72,12 +72,13 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   const networkTerminal = (event, failedLoad) => {
     if (disposed || failed || !identifier(event?.requestId)) return;
     const entries = [...responses.entries()].filter(([, entry]) => entry.networkId === event.requestId);
-    if (entries.length === 1) {
-      const [, entry] = entries[0];
-      if (entry.responsePending && entry.cancelEligible && failedLoad && event.canceled === true) entry.canceled = true;
+    const canceled = entries.length === 1 && failedLoad && event.canceled === true;
+    for (const [id, entry] of entries) {
+      // This is the original admitted Fetch owner, not cancellation history for
+      // a future request. Keep it until its response settles or this owner closes.
+      entry.canceled = canceled;
+      if (!canceled && !entry.responsePending) retire(id, entry);
     }
-    // No cancellation history survives to authorize a later interception.
-    for (const [id, entry] of entries) if (!entry.responsePending) retire(id, entry);
   };
   const networkFailed = event => networkTerminal(event, true);
   const networkFinished = event => networkTerminal(event, false);

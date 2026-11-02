@@ -217,13 +217,15 @@ test('disposal diagnostics distinguish held closure, close failure and detach fa
 
 const invalidInterception = (method = 'Fetch.continueRequest') =>
   Error(`cdpSession.send: Protocol error (${method}): Invalid InterceptionId.`);
-async function heldResponse({ missingRequestId = false, missingResponseId = false, ambiguous = false, earlyCancellation = false, changedResponse = {} } = {}) {
+async function heldResponse({ missingRequestId = false, missingResponseId = false, ambiguous = false, earlyCancellation = false,
+  terminalAfterEarly, changedResponse = {} } = {}) {
   const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'replay:2080217716'));
   const base = packet({ networkId: 'owned-network' });
   if (missingRequestId) delete base.networkId;
   f.session.emit('Fetch.requestPaused', base); await tick();
   if (ambiguous) { f.session.emit('Fetch.requestPaused', { ...base, requestId: 'second' }); await tick(); }
   if (earlyCancellation) f.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+  if (terminalAfterEarly) f.session.emit(terminalAfterEarly, { requestId: 'owned-network', canceled: false });
   let reject;
   f.session.send = () => new Promise((_yes, no) => { reject = no; });
   const response = { ...base, responseErrorReason: 'Failed', ...changedResponse };
@@ -245,16 +247,90 @@ test('only an exact already-canceled current response may retire an invalid inte
   assert.equal(f.session.listenerCount('Network.loadingFinished'), 0);
 });
 
-test('missing, false, unrelated, ambiguous or premature cancellation never authorizes a rejected continuation', async () => {
-  for (const mode of ['missing', 'false', 'unrelated', 'ambiguous', 'missing-request-id', 'missing-response-id', 'early', 'finished',
+test('an early cancellation retains only the exact admitted owner until its matching response settles', async () => {
+  const f = await heldResponse({ earlyCancellation: true });
+  f.reject(invalidInterception()); await tick();
+  f.hook.assertHealthy(); assert.equal(f.page.isClosed(), false);
+  assert.equal(f.hook.diagnostic().canceledContinuationObserved, true);
+  assert.equal(Object.hasOwn(f.hook.diagnostic(), 'continuationFailure'), false);
+  await f.hook.dispose(); assert.equal(f.hook.diagnostic().disposal, 'DONE');
+  for (const options of [{ missingRequestId: true }, { missingResponseId: true }, { ambiguous: true },
+    { changedResponse: { networkId: 'different-network' } }, { changedResponse: { frameId: 'other-frame' } },
+    { changedResponse: { resourceType: 'XHR' } }, { changedResponse: { request: { ...packet().request, method: 'HEAD' } } },
+    { changedResponse: { request: { ...packet().request, url: 'https://usher.ttvnw.net/other-owned' } } }]) {
+    const invalid = await heldResponse({ earlyCancellation: true, ...options });
+    invalid.reject(invalidInterception()); await tick();
+    assert.equal(invalid.page.isClosed(), true); assert.equal(invalid.hook.diagnostic().canceledContinuationObserved, false);
+    await assert.rejects(invalid.hook.dispose());
+  }
+  const otherError = await heldResponse({ earlyCancellation: true });
+  otherError.reject(Error('PRIVATE_ARBITRARY_FAILURE')); await tick();
+  assert.deepEqual(otherError.hook.diagnostic().continuationFailure,
+    { error: 'OTHER', response: 'TRACKED_ERROR', cancellation: 'PRIOR_CANCEL' });
+  await assert.rejects(otherError.hook.dispose());
+});
+
+test('a subsequent nonpositive terminal event invalidates early and pending cancellation receipts', async () => {
+  for (const event of ['Network.loadingFinished', 'Network.loadingFailed']) {
+    const early = await heldResponse({ earlyCancellation: true, terminalAfterEarly: event });
+    early.reject(invalidInterception()); await tick();
+    assert.deepEqual(early.hook.diagnostic().continuationFailure,
+      { error: 'INVALID_INTERCEPTION_ID', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' });
+    await assert.rejects(early.hook.dispose());
+    const pending = await heldResponse();
+    pending.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+    pending.session.emit(event, { requestId: 'owned-network', canceled: false });
+    pending.reject(invalidInterception()); await tick();
+    assert.deepEqual(pending.hook.diagnostic().continuationFailure,
+      { error: 'INVALID_INTERCEPTION_ID', response: 'TRACKED_ERROR', cancellation: 'NO_PRIOR_CANCEL' });
+    await assert.rejects(pending.hook.dispose());
+  }
+});
+
+test('early receipts cannot authorize different Fetch owners or future reuse of a Network ID', async () => {
+  for (const mode of ['different-fetch', 'ambiguous-reuse', 'future-reuse']) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    const base = packet({ networkId: 'owned-network' });
+    f.session.emit('Fetch.requestPaused', base); await tick();
+    f.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+    const next = { ...base, requestId: 'different-fetch' };
+    if (mode === 'future-reuse') f.session.emit('Network.loadingFinished', { requestId: 'owned-network' });
+    if (mode !== 'different-fetch') { f.session.emit('Fetch.requestPaused', next); await tick(); }
+    f.session.send = async () => { throw invalidInterception(); };
+    f.session.emit('Fetch.requestPaused', { ...next, responseErrorReason: 'Failed' }); await tick();
+    assert.equal(hook.diagnostic().failure, 'CONTINUATION_FAILED'); assert.equal(hook.diagnostic().canceledContinuationObserved, false);
+    await assert.rejects(hook.dispose());
+  }
+});
+
+test('retained early cancellations remain capped at 512 and disappear on owner disposal', async () => {
+  const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  for (let i = 0; i < 512; i++) {
+    f.session.emit('Fetch.requestPaused', packet({ requestId: 'fetch-' + i, networkId: 'network-' + i }));
+    f.session.emit('Network.loadingFailed', { requestId: 'network-' + i, canceled: true });
+  }
+  await tick(); hook.assertHealthy();
+  f.session.emit('Fetch.requestPaused', packet({ requestId: 'overflow', networkId: 'overflow-network' })); await tick();
+  assert.equal(hook.diagnostic().failure, 'CAPACITY'); assert.equal(hook.diagnostic().canceledContinuationObserved, false);
+  await assert.rejects(hook.dispose());
+  const clean = fake(), closing = await installMixedRouteHeaders(clean.context, clean.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  clean.session.emit('Fetch.requestPaused', packet({ networkId: 'owned-network' }));
+  clean.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+  await closing.dispose(); const before = closing.diagnostic(), count = clean.calls.length;
+  clean.session.emit('Fetch.requestPaused', packet({ networkId: 'owned-network', responseErrorReason: 'Failed' })); await tick();
+  assert.equal(clean.calls.length, count); assert.deepEqual(closing.diagnostic(), before);
+});
+
+test('missing, false, unrelated or ambiguous cancellation never authorizes a rejected continuation', async () => {
+  for (const mode of ['missing', 'false', 'unrelated', 'ambiguous', 'missing-request-id', 'missing-response-id', 'finished',
     'response-frame', 'response-method', 'response-url', 'response-resource', 'different-response-id']) {
     const changedResponse = mode === 'response-frame' ? { frameId: 'other-frame' } :
       mode === 'response-method' ? { request: { ...packet().request, method: 'HEAD' } } :
         mode === 'response-url' ? { request: { ...packet().request, url: 'https://usher.ttvnw.net/other-owned' } } :
           mode === 'response-resource' ? { resourceType: 'XHR' } : mode === 'different-response-id' ? { networkId: 'different-network' } : {};
     const f = await heldResponse({ ambiguous: mode === 'ambiguous', missingRequestId: mode === 'missing-request-id',
-      missingResponseId: mode === 'missing-response-id', earlyCancellation: mode === 'early', changedResponse });
-    if (!['missing', 'early'].includes(mode)) f.session.emit(mode === 'finished' ? 'Network.loadingFinished' : 'Network.loadingFailed', {
+      missingResponseId: mode === 'missing-response-id', changedResponse });
+    if (mode !== 'missing') f.session.emit(mode === 'finished' ? 'Network.loadingFinished' : 'Network.loadingFailed', {
       requestId: mode === 'unrelated' ? 'unrelated-network' : 'owned-network', canceled: mode !== 'false' });
     f.reject(invalidInterception()); await tick();
     assert.equal(f.page.isClosed(), true, mode);
@@ -300,11 +376,11 @@ test('settled cancellation receipts cannot authorize a later interception or sur
   assert.equal(closing.hook.diagnostic().disposal, 'DONE');
 });
 
-test('terminal requests release bounded registry capacity without retaining cancellation history', async () => {
+test('noncanceled terminal requests release bounded registry capacity without cancellation history', async () => {
   const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
   for (let i = 0; i < 600; i++) {
     f.session.emit('Fetch.requestPaused', packet({ requestId: 'owned-' + i, networkId: 'same-network' }));
-    f.session.emit('Network.loadingFailed', { requestId: 'same-network', canceled: true });
+    f.session.emit('Network.loadingFailed', { requestId: 'same-network', canceled: false });
   }
   await tick(); hook.assertHealthy(); assert.equal(hook.diagnostic().canceledContinuationObserved, false);
   await hook.dispose();
@@ -318,7 +394,6 @@ test('continuation evidence distinguishes exact protocol errors and current resp
     [{ changedResponse: { networkId: 'other-network' } }, 'NETWORK_ID_MISMATCH', 'TRACKED_ERROR'],
     [{ changedResponse: { frameId: 'other-frame' } }, 'RESPONSE_BINDING_MISMATCH', 'TRACKED_ERROR'],
     [{ ambiguous: true }, 'AMBIGUOUS_NETWORK_ID', 'TRACKED_ERROR'],
-    [{ earlyCancellation: true }, 'NO_ENTRY', 'UNTRACKED_ERROR'],
   ]) {
     const f = await heldResponse(options);
     f.reject(invalidInterception()); await tick();
@@ -375,7 +450,7 @@ const listen = server => new Promise((resolve, reject) => { server.once('error',
 const serverOrigin = server => 'http://127.0.0.1:' + server.address().port;
 const close = async server => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); };
 
-test('actual Chrome preserves failed Fetch and keeps the owner healthy only after exact cancellation evidence', local, async () => {
+test('actual Chrome preserves failed Fetch with pending cancellation and controlled early-response ordering', local, async () => {
   const harness = createServer((_request, response) => response.end('<!doctype html><title>Owned cancellation</title>'));
   const media = createServer(request => request.socket.destroy());
   const proxy = createServer((_request, response) => { response.writeHead(403); response.end(); });
@@ -389,9 +464,11 @@ test('actual Chrome preserves failed Fetch and keeps the owner healthy only afte
     const { chromium } = require('@playwright/test');
     browser = await chromium.launch({ channel: 'chrome', headless: true,
       proxy: { server: serverOrigin(proxy), bypass: '127.0.0.1' }, env: { ...process.env, TMPDIR: root } });
-    for (const abort of [false, true]) {
+    for (const mode of ['reset', 'pending-abort', 'controlled-early-abort']) {
+      const abort = mode !== 'reset', early = mode === 'controlled-early-abort';
       const context = await browser.newContext({ serviceWorkers: 'block' }), page = await context.newPage();
       let hook, capturedFetch, capturedNetwork, responseSeen = false, canceled = false, rejectedAfterCancellation = false;
+      let deliveredAfterCancellation = false, deliveryFailed = false;
       try {
         hook = await installMixedRouteHeaders({ newCDPSession: async selected => {
           const session = await context.newCDPSession(selected), send = session.send.bind(session);
@@ -401,8 +478,27 @@ test('actual Chrome preserves failed Fetch and keeps the owner healthy only afte
           session.on('Network.loadingFailed', event => {
             if (capturedNetwork && event.requestId === capturedNetwork && event.canceled === true) canceled = true;
           });
+          // Reorder delivery of actual Chrome events only; neither event fields
+          // nor identities are forged. This proves the controlled interleaving,
+          // not its occurrence in a provider trial or natural browser ordering.
+          const on = session.on.bind(session), off = session.off.bind(session), wrappers = new Map();
+          session.on = (name, listener) => {
+            if (!early || name !== 'Fetch.requestPaused') { on(name, listener); return session; }
+            const wrapped = event => {
+              if (event.responseErrorReason === undefined) { listener(event); return; }
+              void (async () => {
+                await page.evaluate(() => window.ownedFixtureAbort.abort());
+                const deadline = Date.now() + 1000;
+                while (!canceled && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+                assert.equal(canceled, true);
+                deliveredAfterCancellation = true; listener(event);
+              })().catch(() => { deliveryFailed = true; });
+            };
+            wrappers.set(listener, wrapped); on(name, wrapped); return session;
+          };
+          session.off = (name, listener) => { off(name, wrappers.get(listener) ?? listener); wrappers.delete(listener); return session; };
           session.send = async (method, fields) => {
-            if (abort && fields?.requestId === capturedFetch && method === 'Fetch.continueRequest') {
+            if (abort && !early && fields?.requestId === capturedFetch && method === 'Fetch.continueRequest') {
               await page.evaluate(() => window.ownedFixtureAbort.abort());
               await new Promise(resolve => setTimeout(resolve, 250));
             }
@@ -430,6 +526,7 @@ test('actual Chrome preserves failed Fetch and keeps the owner healthy only afte
         assert.equal(result, 'failed'); assert.equal(responseSeen, true);
         assert.equal(page.isClosed(), false); hook.assertHealthy();
         assert.equal(rejectedAfterCancellation, abort); assert.equal(canceled, abort);
+        assert.equal(deliveredAfterCancellation, early); assert.equal(deliveryFailed, false);
         assert.equal(hook.diagnostic().canceledContinuationObserved, abort);
         await hook.dispose();
         assert.deepEqual(hook.diagnostic(), { failure: 'NONE', stage: 'NONE', command: 'NONE', disposal: 'DONE', canceledContinuationObserved: abort });

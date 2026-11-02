@@ -293,6 +293,25 @@ ownership before any forced group cleanup and removes that runtime only after
 termination is confirmed. Interrupted/unverified launches retain it and fail
 closed. No private URI, token or debugging endpoint enters those records.
 
+The complete owner JSON is now published atomically from a closed mode-600
+pending file. Existing records and pending writers cannot be overwritten.
+Closing Node's debugging pipe can make Chrome's leader disappear before its
+children exit; an absent, zombie or empty-argument leader therefore gets a
+bounded five-second passive group-quiescence wait with no signal. Forced cleanup
+still requires every original identity/profile check and a final identity
+recheck. Malformed/unregistered ownership, stale identities and persistent live
+children remain unconfirmed. This repairs ownership races shared by the source,
+snapshot and provider-viewer launchers; it changes no provider request policy.
+
+The repair passed 34 Python manifest/ownership tests with actual local Chrome,
+25 additional serial repetitions of the real cancellation case, 11 manifest
+Node cases including ordinary local CORS and five episode-manifest cases.
+The ten local CONNECT/TLS tests and affected repository checks also passed.
+Snapshot protocol checks passed with their three headed cases skipped locally;
+the CI workflow supplies the headed display and runs those cases. These are
+owned/local fixtures, without provider or user-browser operations. The original
+CI failure did not distinguish which of the two races occurred.
+
 The canonical source proof's initial desktop-browser snapshot now uses this same
 owned Chrome launcher and shared parent-side process verification, before any
 guest/account or provider work. It keeps the actual desktop navigator values,

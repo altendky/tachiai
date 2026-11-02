@@ -1,7 +1,7 @@
 // Owned browser transport only. Private URI/body use stdin/stdout pipes; no URL
 // arguments, provider page, storage, interception, media or DRM operations.
 import { createServer } from 'node:http';
-import { stat, readFile, writeFile } from 'node:fs/promises';
+import { stat, readFile, writeFile, open, link, unlink } from 'node:fs/promises';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -133,6 +133,18 @@ export function validateOwnedRuntimePath(runtime) {
     Buffer.byteLength(runtime + '/pw-00000000/browser/0000000000000000.sock') > 103) throw new Error();
 }
 
+export async function publishBrowserOwner(runtime, owner, writePending = (file, wire) => file.writeFile(wire)) {
+  const pending = runtime + '/browser-owner.pending.json';
+  const file = await open(pending, 'wx', 0o600);
+  try {
+    try { await writePending(file, JSON.stringify(owner)); }
+    finally { await file.close(); }
+    // A hard link publishes the complete inode atomically and refuses EEXIST.
+    // Never replace an earlier ownership record, even on a failed launch.
+    await link(pending, runtime + '/browser-owner.json');
+  } finally { await unlink(pending); }
+}
+
 export async function launchOwnedBrowser(runtime, { headless = false, route, harnessOrigin } = {}) {
   validateOwnedRuntimePath(runtime);
   if (process.platform !== 'linux') throw new Error();
@@ -151,8 +163,7 @@ export async function launchOwnedBrowser(runtime, { headless = false, route, har
     const processGroup = Number(fields[2]), startTime = fields[19];
     if (processGroup !== pid || !/^[0-9]+$/.test(startTime || '') || !profile ||
       !resolve(profile).startsWith(resolve(runtime) + sep) || (await stat('/proc/' + pid)).uid !== process.getuid()) throw new Error();
-    await writeFile(runtime + '/browser-owner.json', JSON.stringify({ pid, processGroup, startTime,
-      userDataDir: resolve(profile) }), { flag: 'wx', mode: 0o600 });
+    await publishBrowserOwner(runtime, { pid, processGroup, startTime, userDataDir: resolve(profile) });
     // The private automation endpoint remains only in process memory.
     const browser = await chromium.connect(browserServer.wsEndpoint());
     return { browser, browserServer };

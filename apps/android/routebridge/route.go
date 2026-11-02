@@ -55,6 +55,9 @@ type Route struct {
 	once     sync.Once
 	workers  sync.WaitGroup
 	slots    chan struct{}
+
+	// Bound transports verify callback cleanup after their dial workers join.
+	afterCleanup func() error
 }
 
 func validHost(host string) bool {
@@ -151,6 +154,9 @@ func (r *Route) Close() error {
 			}
 		}
 		r.workers.Wait()
+		if r.afterCleanup != nil && r.afterCleanup() != nil {
+			r.closeErr = errRouteCleanup
+		}
 	})
 	return r.closeErr
 }

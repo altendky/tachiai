@@ -9,16 +9,38 @@ import java.util.Base64
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.CookieJar
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.provider.abema.account.AbemaApprovalBrowserPolicy
 
 private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATCHING, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION, ABEMA_ACCOUNT_BOOTSTRAP, ABEMA_ACCOUNT_SESSION, ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT, ABEMA_APPROVAL_BROWSER }
+
+// Shares one actual backend close between construction rollback and its ready
+// owner. It executes inline so nested account receipts need no extra worker.
+private class BoundBackendReceipt(private val resource: RouteBackend) : RouteBackend {
+    override val proxyPort get() = resource.proxyPort
+    private val closeWork = FutureTask<Unit> { resource.close() }
+    private val failed = AtomicBoolean()
+    override fun close() {
+        closeWork.run()
+        try { closeWork.get(1000, TimeUnit.MILLISECONDS) }
+        catch (error: Throwable) {
+            failed.set(true)
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            throw IOException("Bound backend cleanup unconfirmed")
+        }
+        if (failed.get()) throw IOException("Bound backend cleanup unconfirmed")
+    }
+    override fun toString() = "BoundBackendReceipt(secrets hidden)"
+}
 
 // Owned by a playback run, not a display position. The owner shares one instance
 // for a repeated imported profile and closes it after every dependent feed stops.
@@ -31,11 +53,16 @@ internal class RouteSession private constructor(
     val proxyRealm: String,
     private val diagnostics: FailureReporter,
     private val purpose: RoutePurpose = RoutePurpose.PLAYBACK,
+    private val networkEgress: RouteNetworkEgress? = null,
+    private val networkCancellation: AutoCloseable? = null,
 ) : AutoCloseable {
     val hasProxyBridge get() = backend != null
     val isAbemaApprovalBridge get() = purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER && hasProxyBridge
     val proxyPort: Int = backend?.proxyPort ?: 0
     private val closed = AtomicBoolean()
+    private val networkCleanupFailed = AtomicBoolean()
+    private val networkCloseLock = Any()
+    private var networkCloseFinished = false
     private val connections = Collections.newSetFromMap(ConcurrentHashMap<RoutedHttpsConnection, Boolean>())
     // Anonymous ABEMA metadata uses a private, credential-free client even on
     // System. Java's process-global authenticators/cookie handlers cannot attach
@@ -46,12 +73,21 @@ internal class RouteSession private constructor(
             routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
         .authenticator(Authenticator.NONE)
         .cookieJar(CookieJar.NO_COOKIES)
+        .apply {
+            // CONNECT clients reach only their owned loopback bridge. Its Go
+            // transport binds external sockets; direct System HTTPS binds here.
+            if (backend == null && networkEgress != null) {
+                socketFactory(networkEgress.socketFactory)
+                dns(Dns { host -> networkEgress.resolveAddresses(host, 10_000) })
+            }
+        }
         .connectionPool(ConnectionPool())
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .build()
 
     fun open(url: URL): HttpsURLConnection {
         if (closed.get()) throw IOException("Route is closed")
+        networkEgress?.checkActive()
         require(url.protocol == "https" && url.userInfo == null && url.ref == null && url.port in listOf(-1, 443))
         when (purpose) {
             RoutePurpose.TWITCH_CATALOG -> require(url.host in setOf("id.twitch.tv", "api.twitch.tv"))
@@ -71,7 +107,7 @@ internal class RouteSession private constructor(
             RoutePurpose.PLAYBACK -> Unit
         }
         if (!hasProxyBridge && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
-        val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() },
+        val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() && networkEgress?.isActive() != false },
             allowProgressingMediaBody = purpose == RoutePurpose.PLAYBACK) { connections.remove(it) }
         connections.add(connection)
         if (closed.get()) { connection.disconnect(); throw IOException("Route is closed") }
@@ -82,9 +118,30 @@ internal class RouteSession private constructor(
         host == "127.0.0.1" && realm == proxyRealm
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
+        if (networkEgress != null) synchronized(networkCloseLock) {
+            if (!closed.compareAndSet(false, true)) {
+                if (!networkCloseFinished) networkCleanupFailed.set(true)
+                if (networkCleanupFailed.get()) throw IOException("Route cleanup failed")
+                return
+            }
+        } else if (!closed.compareAndSet(false, true)) {
+            return
+        }
         var failed = false
-        for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
+        try {
+            val networkBefore: List<Pair<FailureStage, () -> Unit>> = if (networkEgress == null) emptyList() else
+                listOf(FailureStage.ROUTE_CANCEL_REQUESTS to { networkEgress.cancel() })
+            val networkAfter: List<Pair<FailureStage, () -> Unit>> = if (networkEgress == null) emptyList() else listOf(
+                FailureStage.ROUTE_BACKEND_CLOSE to { networkEgress.closeOwnedSockets() },
+                FailureStage.ROUTE_BACKEND_CLOSE to {
+                    if (!networkEgress.isCleanupConfirmed()) {
+                        networkEgress.reportCleanupUnconfirmed()
+                        throw IOException("Network cleanup unconfirmed")
+                    }
+                },
+                FailureStage.ROUTE_CANCEL to { networkCancellation?.close() },
+            )
+            for ((stage, cleanup) in networkBefore + listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.ROUTE_DISCONNECT to {
                 connections.forEach { connection ->
                     if (diagnostics.cleanupAll(FailureStage.ROUTE_DISCONNECT) { connection.disconnect() })
@@ -96,13 +153,33 @@ internal class RouteSession private constructor(
             FailureStage.ROUTE_CONNECTION_POOL to { client?.connectionPool?.evictAll() },
             FailureStage.ROUTE_EXECUTOR to { client?.dispatcher?.executorService?.shutdownNow() },
             FailureStage.ROUTE_BACKEND_CLOSE to { backend?.close() },
-        )) if (!diagnostics.cleanupAll(stage, cleanup)) failed = true
+            ) + networkAfter) if (!diagnostics.cleanupAll(stage, cleanup)) failed = true
+        } catch (error: Throwable) {
+            failed = true
+            throw error
+        } finally {
+            if (networkEgress != null) {
+                val unconfirmed = synchronized(networkCloseLock) {
+                    if (failed) networkCleanupFailed.set(true)
+                    networkCloseFinished = true
+                    networkCleanupFailed.get()
+                }
+                if (unconfirmed) {
+                    // Standalone bound factories have no outer account owner
+                    // to retain this session and its actual backend/client.
+                    retainedNetworkOwners.add(listOf(this))
+                    runCatching(networkEgress::reportCleanupUnconfirmed)
+                    throw IOException("Route cleanup failed")
+                }
+            }
+        }
         if (failed) throw IOException("Route cleanup failed")
     }
 
     override fun toString() = "RouteSession(${if (isSystem) "system" else "imported"}, secrets hidden)"
 
     companion object {
+        private val retainedNetworkOwners = java.util.concurrent.ConcurrentLinkedQueue<List<Any>>()
         // This CONNECT layer only admits the union of already-reviewed native
         // and helper HTTPS hosts. Provider adapters still enforce exact URI,
         // source identity, request method and media-origin policies above it.
@@ -257,6 +334,70 @@ internal class RouteSession private constructor(
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_ACCOUNT_SESSION)
 
+        fun createBoundAbemaAccountSession(profile: ConnectionProfile?, egress: RouteNetworkEgress,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile?, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                NativeRouteBackend.createBound(selected, security, preparation, egress)
+            },
+        ): RouteSession = createBoundOwned(profile, egress, preparation, RoutePurpose.ABEMA_ACCOUNT_SESSION, createBackend)
+
+        fun createBoundAbemaAccountBootstrap(profile: ConnectionProfile?, egress: RouteNetworkEgress,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile?, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                NativeRouteBackend.createBound(selected, security, preparation, egress)
+            },
+        ): RouteSession = createBoundOwned(profile, egress, preparation, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, createBackend)
+
+        fun createBoundAbemaApprovalBrowser(profile: ConnectionProfile?, egress: RouteNetworkEgress,
+            preparation: RoutePreparation = RoutePreparation(), ownBackend: (RouteBackend) -> RouteBackend = { it },
+            createBackend: (ConnectionProfile?, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                NativeRouteBackend.createBound(selected, security, preparation, egress)
+            },
+        ): RouteSession = createBoundOwned(profile, egress, preparation, RoutePurpose.ABEMA_APPROVAL_BROWSER,
+            createBackend, ownBackend)
+
+        private fun createBoundOwned(profile: ConnectionProfile?, egress: RouteNetworkEgress,
+            preparation: RoutePreparation, purpose: RoutePurpose,
+            createBackend: (ConnectionProfile?, RouteProxySecurity) -> RouteBackend,
+            ownBackend: (RouteBackend) -> RouteBackend = { it },
+        ): RouteSession {
+            var cancellation: AutoCloseable? = null
+            var ready: RouteSession? = null
+            var allocatedBackend: BoundBackendReceipt? = null
+            try {
+                require(profile == null || profile.protocol in setOf(WireGuardRouteProtocol, HttpProxyRouteProtocol, Socks5RouteProtocol))
+                preparation.checkActive(); egress.checkActive()
+                // This hook owns only a RAM cancellation signal, not a borrowed
+                // native handle. Its ready session removes it during cleanup.
+                cancellation = preparation.onCancel(egress::cancel)
+                ready = createOwned(profile, preparation, { selected, security -> createBackend(selected, security) }, purpose,
+                    { backend ->
+                        val receipt = BoundBackendReceipt(backend)
+                        allocatedBackend = receipt
+                        ownBackend(receipt)
+                    },
+                    if (purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER) { security -> createBackend(null, security) } else null,
+                    egress, cancellation)
+                preparation.checkActive(); egress.checkActive()
+                return ready
+            } catch (error: Throwable) {
+                var confirmed = true
+                try { egress.cancel() } catch (_: Throwable) { confirmed = false }
+                try { ready?.close() } catch (_: Throwable) { confirmed = false }
+                try { allocatedBackend?.close() } catch (_: Throwable) { confirmed = false }
+                try { egress.closeOwnedSockets() } catch (_: Throwable) { confirmed = false }
+                try { cancellation?.close() } catch (_: Throwable) { confirmed = false }
+                if (!runCatching(egress::isCleanupConfirmed).getOrDefault(false)) confirmed = false
+                if (!preparation.cleanupConfirmed) confirmed = false
+                if (!confirmed || error is Error) {
+                    runCatching(egress::reportCleanupUnconfirmed)
+                    retainedNetworkOwners.add(listOfNotNull(egress, ready, cancellation, allocatedBackend))
+                    preparation.recordCleanupFailure()
+                }
+                throw error
+            }
+        }
+
         // Visible provider-controlled approval in its own process/profile. Only
         // this purpose admits the verified auth origin; native account purposes
         // retain their narrower hosts. Ownership precedes cancellation rollback.
@@ -280,11 +421,12 @@ internal class RouteSession private constructor(
             purpose: RoutePurpose,
             ownBackend: (RouteBackend) -> RouteBackend = { it },
             createSystemBackend: ((RouteProxySecurity) -> RouteBackend)? = null,
+            networkEgress: RouteNetworkEgress? = null, networkCancellation: AutoCloseable? = null,
         ): RouteSession {
             require(createSystemBackend == null || purpose == RoutePurpose.ABEMA_APPROVAL_BROWSER)
             preparation.checkActive()
             if (profile == null && createSystemBackend == null)
-                return RouteSession(null, true, "", "", "", preparation.diagnostics, purpose)
+                return RouteSession(null, true, "", "", "", preparation.diagnostics, purpose, networkEgress, networkCancellation)
             fun nonce() = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also { SecureRandom().nextBytes(it) })
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
@@ -311,7 +453,7 @@ internal class RouteSession private constructor(
                 backend = ownBackend(checkNotNull(backend))
                 preparation.checkActive()
                 check(backend.proxyPort in 1..65535)
-                RouteSession(backend, profile == null, username, password, realm, preparation.diagnostics, purpose)
+                RouteSession(backend, profile == null, username, password, realm, preparation.diagnostics, purpose, networkEgress, networkCancellation)
             } catch (error: Exception) {
                 if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.ROUTE_CREATE, error)
                 runCatching { backend?.close() }.onFailure { cleanupError ->

@@ -374,6 +374,45 @@ This smoke does not exercise provider renewal, a remembered session, actual
 Network Parcelable delivery or process-death recovery. Cold closed-app renewal
 and physical naturally expired acceptance remain open.
 
+### Private Network parcel fixture
+
+A separate opt-in instrumentation fixture exercises an actual active Android
+Network through Messenger/Binder into a non-exported debug service in the exact
+approval-browser process. It uses the production START envelope and decoder,
+checks private Network equality and the original request/deadline after the
+round trip, and rejects ten malformed bound envelopes alongside valid bound and
+legacy cases. Its finite service owner acknowledges handler retirement before
+the test releases the binding. No Network handle or private payload is printed.
+The probe constructs no renewal operation, browser, provider runtime or route.
+Release-isolation checks exclude its service from ordinary release builds.
+
+Run this fixture only on a newly agreed disposable emulator with host-verified
+empty app state before installation. Instrumentation starts the normal
+Application, which can schedule real renewals on configured data before any
+test guard runs. The in-app guard first drains empty startup reconciliation,
+then permits only the three exact empty startup coordination locks and an
+optional strictly decoded empty public scheduler ledger; it refuses private
+preferences and unknown files without opening them. This guard does not replace
+the clean-device schedule or authorize use on a persistent configured AVD.
+
+The opt-in is `tachiaiFreshNetworkParcel=true`, with the exact
+`AbemaRenewalNetworkParcelDeviceTest` class selected. Acceptance requires ARMED,
+PASSED and one executed JUnit test, plus independent binding and emulator shutdown
+confirmation; a skipped test or zero exit status alone is insufficient.
+One separately approved run passed on November 2, 2026 using signed source
+`543b080462c27a865102c7f950d419e2e62e5147` and the verified shared-signed APKs.
+The new API 36/Android 16 x86-64 AVD used KVM, software rendering, 2 GiB/2 cores
+and no snapshots. Host preinstall emptiness was confirmed before either install;
+no configured account, persistent AVD or phone was used. The exact one-test
+lifecycle, ARMED/PASSED markers and all twelve cases passed in 6.113 JUnit
+seconds. Driver elapsed time was 135.389 seconds including fresh boot, installs,
+execution and cleanup. Independent normal-shutdown acknowledgement, owned
+process exit and two empty process/ADB-emulator inventories were confirmed under
+the global lock. Handler retirement and binding release were also confirmed.
+This establishes the same-UID private Parcelable/codec boundary only;
+JobParameters Network provenance, socket/resolver binding, provider renewal,
+process-loss recovery and physical-device acceptance remain separate.
+
 ## Recommendation and scope
 
 Keep the external system VPN as the current baseline. If routing becomes an

@@ -322,7 +322,9 @@ class BrowserTrial:
         child_clean, received, control_count = False, None, 0
         try:
             env = {"PATH": os.defpath, "LANG": "C.UTF-8"}
-            for key in ("DISPLAY", "XAUTHORITY"):
+            # Headed Chrome needs the user's runtime directory to discover the
+            # desktop audio socket. Keep the browser's environment allowlisted.
+            for key in ("DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"):
                 if key in os.environ:
                     env[key] = os.environ[key]
             with bootstrap.completing_cleanup():

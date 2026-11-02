@@ -126,9 +126,9 @@ of SDK destruction, plus media, temporary grant, browser, backend and route
 closure. Missing or contradictory evidence stays unconfirmed and blocks
 replacement; child/process death cannot upgrade it.
 
-No actual combined ABEMA/Twitch provider trial has been accepted for this new
-entry. Existing individual provider observations remain bounded evidence in
-their respective guides. Named-browser live/live, live/replay, replay/replay,
+The observations below distinguish one paired decode/cleanup pass from failed
+attempts and missing acoustic acceptance. Existing individual provider
+observations remain bounded evidence in their respective guides. Broader named-browser live/live, live/replay, replay/replay,
 provider duplicates, audible output, sustained playback, advertisements,
 entitlement and renewal remain separate acceptance. No full web app or provider
 Quality parity is established here.
@@ -159,4 +159,42 @@ The old owner abandoned its output loop and retained no final browser receipt.
 Backend attempts, the owned browser group and route reported closed, but player,
 CDM and temporary-grant closure remained unconfirmed. This failed observation
 is not retroactively upgraded by the local tool-handoff, Stop and bounded-drain
-regressions. No second provider trial followed it.
+regressions.
+
+### Repaired live/replay decoding and separate replay refusal
+
+A later transaction on signed `02cbc47f025b56b78e63950bd5dc7d45cf9f84db`
+used freshly rebuilt Rust/Wasm and web assets, a retained public source/output
+hash manifest, and an ordinary Go runner with the same clean VCS stamp. Host,
+browser, selected ABEMA replay and intended routes matched the preceding
+conditions. The owner reconfirmed an unused Tokyo peer and completed fresh
+Twitch activation. One fresh ABEMA preparation was used.
+
+The real common viewer reported 5,023 ms of sampled joint advancement, counting
+only intervals where both frame and media counters advanced. ABEMA contributed
+118 decoded frames and 5,305 ms at 854×480; Twitch live contributed 81 frames and
+5,256 ms at 1920×1080. The final receipt retained decodeObserved=true,
+playbackFailureObserved=false and independent media, CDM/MediaKeys, renderer,
+grant revocation, authentication-owner, backend, browser-group and route closure.
+The command exited zero. The dimensions do not supply consumed codec/audio
+formats, acoustic output, synchronization or a sustained playback duration.
+The owner did not get to check A-only/B-only/fade audio before retirement, so
+acoustic acceptance remains unproved. The earlier failed receipt stays failed.
+
+A third separately activated trial changed Twitch to replay 2080217716 and
+used the same reviewed source/assets. The owned browser disappeared after
+activation; its terminal receipt was REFUSED without sampled decode or a
+sampled playback failure. Browser/group, backend and route closure were
+confirmed, while media/CDM/grant/renderer and authentication-owner cleanup were
+unconfirmed. One ABEMA preparation was recorded. No Retry followed it.
+
+The old receipt cannot distinguish a latched header guard or rejected CDP
+continuation from page-close/disposal failure or timeout. Matching replay
+route/header/CDN policies and a generic refusal do not establish the trigger.
+The diagnostic follow-up exposes only the first closed failure category,
+request/response/auth/cleanup stage, continuation-command enum and disposal
+state, validated independently by Node and Python. It records no URL, header,
+request identifier or raw error, changes no admission policy, and cannot
+upgrade missing cleanup. Owned fixtures cover response/continuation failures
+that close the page before renderer cleanup can be observed. No later provider
+trial has used these new diagnostics.

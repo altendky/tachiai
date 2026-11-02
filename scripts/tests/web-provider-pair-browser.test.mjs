@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { actionServer, ABEMA_SOURCE_ID, cleanupProjection, mediaOrigin, PrivateControl,
-  main, PairedDecodeWindow, terminalCleanup, validateConfig, validateObservation } from '../../apps/web/scripts/provider-pair-browser.mjs';
+  main, PairedDecodeWindow, terminalCleanup, validateConfig, validateObservation, validateTransportDiagnostic } from '../../apps/web/scripts/provider-pair-browser.mjs';
 
 const route = { kind: 'loopback-connect', host: '127.0.0.1', port: 1234, username: 'u'.repeat(24), password: 'p'.repeat(24), realm: 'r'.repeat(24) };
 const twitchCase = 'replay:2080217716', capability = 'a'.repeat(32);
@@ -207,12 +207,23 @@ test('opt-in config bounds and public media origin grammar', () => {
   for (const bad of ['https://evil.akamaized.net', 'https://a.b-abematv.akamaized.net', 'https://vod-abematv.akamaized.net/path', 'http://vod-abematv.akamaized.net']) assert.throws(() => mediaOrigin(bad));
 });
 
-async function wholeHostFixture(late = false) {
+test('transport diagnostics admit only closed classifications without private fields', () => {
+  const value = { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE', command: 'CONTINUE_RESPONSE', disposal: 'FAILED' };
+  assert.deepEqual(validateTransportDiagnostic(value), value);
+  for (const bad of [{ ...value, url: 'PRIVATE_SYNTHETIC_URL' }, { ...value, failure: 'PRIVATE_SYNTHETIC_ERROR' },
+    { ...value, stage: [] }, { ...value, command: 'Fetch.getResponseBody' }, { ...value, disposal: 1 }])
+    assert.throws(() => validateTransportDiagnostic(bad));
+});
+
+async function wholeHostFixture(late = false, transportFailure = false) {
   const runtime = await mkdtemp(join(tmpdir(), 'pair-host-owned-'));
   const originalArgs = process.argv, originalWrite = process.stdout.write, originalExit = process.exitCode;
   const commands = [], events = []; let stdout = '', samples = 0, pausedAfterDecode = 0, pageClosed = false;
   const session = new EventEmitter();
-  session.send = async method => { commands.push(method); };
+  session.send = async method => {
+    commands.push(method);
+    if (transportFailure && method === 'Fetch.continueResponse') throw new Error('PRIVATE_SYNTHETIC_ERROR');
+  };
   session.detach = async () => { commands.push('detach'); };
   const final = observation(); final.state = 'closed'; final.pair.mode = 'sources';
   final.cleanup = { media: ['destroyed', 'destroyed'], grant: 'revoked', cleanupConfirmed: true,
@@ -225,11 +236,20 @@ async function wholeHostFixture(late = false) {
     waitForFunction: async fn => { commands.push(fn.toString().includes('prepare-trial') ? 'commonUIEnabled' : 'pageAPI'); },
     locator: selector => ({ check: async () => { commands.push(selector); }, click: async () => { assert.equal(selector, '#watch'); commands.push('Watch'); } }),
     evaluate: async (fn, input) => {
+      if (pageClosed) throw new Error('Owned page is closed');
       const text = fn.toString();
       if (text.includes('.configure(')) { const wire = JSON.parse(input); assert.deepEqual(Object.keys(wire).sort(), ['capability', 'expiresAtMs', 'schema', 'twitchCase']); commands.push('configure'); return; }
       if (text.includes('.begin(')) { assert(commands.includes('commonUIEnabled')); commands.push('begin'); return 'completed'; }
       if (text.includes('.stop(')) { commands.push('explicitStop'); return final; }
       assert(text.includes('.observe(')); samples++;
+      if (transportFailure && samples === 2) {
+        const request = { url: 'https://dgeft87wbj63p.cloudfront.net/owned.m3u8', method: 'GET', headers: { Origin: new URL(url).origin } };
+        const event = { requestId: 'owned-request', request, frameId: 'owned-frame', resourceType: 'Fetch' };
+        session.emit('Fetch.requestPaused', event);
+        session.emit('Fetch.requestPaused', { ...event, responseStatusCode: 206, responseHeaders: [] });
+        await new Promise(resolve => setImmediate(resolve));
+        if (pageClosed) throw new Error('Owned page is closed');
+      }
       if (samples === 1) return { ...observation(), state: 'ready', pair: { ...observation().pair, mode: 'sources' } };
       if (samples >= 5) return final;
       const value = observation();
@@ -257,7 +277,7 @@ async function wholeHostFixture(late = false) {
     await rm(runtime, { recursive: true, force: true });
   }
   assert(commands.indexOf('Fetch.enable') < commands.indexOf('navigate'));
-  assert(commands.indexOf('explicitStop') < commands.indexOf('pageClose'));
+  if (!transportFailure) assert(commands.indexOf('explicitStop') < commands.indexOf('pageClose'));
   assert(commands.indexOf('pageClose') < commands.indexOf('contextClose'));
   assert.doesNotMatch(stdout, /PRIVATE|userId|licenseUri|password|capability/);
   return { result: JSON.parse(stdout.trim()), commands, events, samples, pausedAfterDecode };
@@ -277,4 +297,14 @@ test('a ready observation after original activation cutoff never activates ABEMA
   assert.equal(result.outcome, 'REFUSED'); assert.equal(result.decodeObserved, false);
   assert(!commands.includes('Watch')); assert(!events.some(value => value.event === 'fresh'));
   assert.equal(result.rendererCleanupConfirmed, true); // cleanup is independent of the failed admission
+});
+
+test('closed header failure survives lost renderer cleanup without fabricating grant closure', async () => {
+  const { result } = await wholeHostFixture(false, true);
+  assert.equal(result.outcome, 'REFUSED'); assert.equal(result.decodeObserved, false);
+  assert.equal(result.rendererCleanupConfirmed, false); assert.equal(result.cdmCleanupConfirmed, false);
+  assert.equal(result.grantCleanup, 'unconfirmed'); assert.equal(result.authCleanupConfirmed, false);
+  assert.equal(result.browserCleanupConfirmed, true);
+  assert.deepEqual(result.transportDiagnostic, { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE',
+    command: 'CONTINUE_RESPONSE', disposal: 'FAILED' });
 });

@@ -109,6 +109,7 @@ test('capacity, broken continuation and disposal refuse unsafe continuation with
   for (let i = 0; i < 512; i++) full.session.emit('Fetch.requestPaused', packet({ requestId: 'pending-' + i }));
   await tick(); hook.assertHealthy();
   full.session.emit('Fetch.requestPaused', packet({ requestId: 'overflow' })); await tick();
+  assert.deepEqual(hook.diagnostic(), { failure: 'CAPACITY', stage: 'REQUEST', command: 'NONE', disposal: 'OPEN' });
   assert.equal(full.page.isClosed(), true); await assert.rejects(hook.dispose());
   const broken = fake(), failing = await installMixedRouteHeaders(broken.context, broken.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
   broken.session.send = async () => { throw new Error('PRIVATE_SIGNED_URL_MUST_STAY_INSIDE'); };
@@ -121,10 +122,95 @@ test('capacity, broken continuation and disposal refuse unsafe continuation with
   const closePage = pending.page.close;
   pending.page.close = async () => { reject(new Error('EXPECTED_OWNED_CANCELLATION')); await closePage(); };
   await closing.dispose(); await closing.dispose();
+  assert.deepEqual(closing.diagnostic(), { failure: 'NONE', stage: 'NONE', command: 'NONE', disposal: 'DONE' });
   assert.equal(pending.detached(), 1); assert.equal(pending.session.listenerCount('Fetch.requestPaused'), 0);
   const count = pending.calls.length;
   pending.session.emit('Fetch.requestPaused', packet({ responseStatusCode: 200, responseHeaders: [] }));
   await tick(); assert.equal(pending.calls.length, count);
+});
+
+test('replay-like 206 and 403 preserve status and expose only independent frozen diagnostics', async () => {
+  for (const status of [206, 403]) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'replay:2080217716'));
+    const before = hook.diagnostic();
+    assert.ok(Object.isFrozen(before)); assert.notEqual(before, hook.diagnostic());
+    assert.throws(() => { before.failure = 'PRIVATE_VALUE'; }, TypeError);
+    const base = packet({ request: { ...packet().request, url: 'https://dgeft87wbj63p.cloudfront.net/owned-synthetic' } });
+    f.session.emit('Fetch.requestPaused', base); await tick(); f.calls.length = 0;
+    f.session.emit('Fetch.requestPaused', { ...base, responseStatusCode: status,
+      responseHeaders: [{ name: 'Content-Range', value: 'bytes 0-9/10' }] }); await tick();
+    assert.deepEqual(f.calls, [{ method: 'Fetch.continueResponse', fields: { requestId: 'one', responseCode: status,
+      responseHeaders: [{ name: 'Content-Range', value: 'bytes 0-9/10' }, { name: 'Access-Control-Allow-Origin', value: origin }] } }]);
+    assert.deepEqual(before, { failure: 'NONE', stage: 'NONE', command: 'NONE', disposal: 'OPEN' });
+    hook.assertHealthy(); await hook.dispose();
+    assert.deepEqual(hook.diagnostic(), { ...before, disposal: 'DONE' });
+    assert.equal(before.disposal, 'OPEN');
+  }
+});
+
+test('continuation failures identify the exact closed stage and command without raw errors', async () => {
+  for (const [stage, command] of [['REQUEST', 'CONTINUE_REQUEST'], ['RESPONSE', 'CONTINUE_RESPONSE'], ['AUTH', 'CONTINUE_AUTH']]) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'replay:2080217716'));
+    const base = packet({ request: { ...packet().request, url: 'https://dgeft87wbj63p.cloudfront.net/owned-synthetic' } });
+    if (stage === 'RESPONSE') { f.session.emit('Fetch.requestPaused', base); await tick(); }
+    f.session.send = async () => { throw Error('PRIVATE_URL_HEADER_TOKEN_OR_CDP_MESSAGE'); };
+    if (stage === 'AUTH') f.session.emit('Fetch.authRequired', { requestId: 'owned-auth', authChallenge: {} });
+    else f.session.emit('Fetch.requestPaused', stage === 'REQUEST' ? base : { ...base, responseStatusCode: 206, responseHeaders: [] });
+    await tick();
+    assert.equal(f.page.isClosed(), true);
+    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'OPEN' });
+    await assert.rejects(hook.dispose(), /^Error: MIXED_BROWSER_HEADERS_REFUSED$/);
+    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'FAILED' });
+    assert.equal(JSON.stringify(hook.diagnostic()).includes('PRIVATE'), false);
+  }
+});
+
+test('response binding refusal remains the first cause through later cleanup errors', async () => {
+  const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'replay:2080217716'));
+  const base = packet({ request: { ...packet().request, url: 'https://dgeft87wbj63p.cloudfront.net/owned-synthetic' } });
+  f.session.emit('Fetch.requestPaused', base); await tick();
+  f.session.emit('Fetch.requestPaused', { ...base, frameId: 'different-owned-frame', responseStatusCode: 200, responseHeaders: [] }); await tick();
+  const first = hook.diagnostic();
+  assert.deepEqual(first, { failure: 'RESPONSE_BINDING_MISMATCH', stage: 'RESPONSE', command: 'NONE', disposal: 'OPEN' });
+  f.page.isClosed = () => false;
+  f.page.close = async () => { throw Error('PRIVATE_CLOSE_MESSAGE'); };
+  f.session.detach = async () => { throw Error('PRIVATE_DETACH_MESSAGE'); };
+  await assert.rejects(hook.dispose(), /^Error: MIXED_BROWSER_HEADERS_REFUSED$/);
+  assert.deepEqual(hook.diagnostic(), { ...first, disposal: 'FAILED' });
+  assert.equal(first.disposal, 'OPEN');
+});
+
+test('malformed events and headers have distinct closed refusal categories', async () => {
+  for (const [mode, failure, stage] of [['request-event', 'REQUEST_EVENT_INVALID', 'REQUEST'],
+    ['request-headers', 'REQUEST_HEADERS_INVALID', 'REQUEST'], ['response-headers', 'RESPONSE_HEADERS_INVALID', 'RESPONSE'],
+    ['auth-event', 'AUTH_EVENT_INVALID', 'AUTH']]) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    if (mode === 'response-headers') { f.session.emit('Fetch.requestPaused', packet()); await tick(); }
+    if (mode === 'auth-event') f.session.emit('Fetch.authRequired', { requestId: null });
+    else f.session.emit('Fetch.requestPaused', mode === 'request-event' ? packet({ requestId: null }) :
+      mode === 'request-headers' ? packet({ request: { ...packet().request, headers: { Origin: origin, Private: 'PRIVATE\nVALUE' } } }) :
+        packet({ responseStatusCode: 200, responseHeaders: [{ name: 'Private', value: 'PRIVATE\nVALUE' }] }));
+    await tick(); assert.equal(f.page.isClosed(), true);
+    assert.deepEqual(hook.diagnostic(), { failure, stage, command: 'NONE', disposal: 'OPEN' });
+    await assert.rejects(hook.dispose());
+  }
+});
+
+test('disposal diagnostics distinguish held closure, close failure and detach failure', async () => {
+  const held = fake(), waiting = await installMixedRouteHeaders(held.context, held.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; }), closePage = held.page.close;
+  held.page.close = async () => { await gate; await closePage(); };
+  const closing = waiting.dispose();
+  assert.deepEqual(waiting.diagnostic(), { failure: 'NONE', stage: 'NONE', command: 'NONE', disposal: 'RUNNING' });
+  release(); await closing; assert.equal(waiting.diagnostic().disposal, 'DONE');
+  for (const [mode, failure, stage] of [['close', 'PAGE_CLOSE_FAILED', 'CLOSE'], ['detach', 'DETACH_FAILED', 'DETACH']]) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    f.page.close = async () => { if (mode === 'close') throw Error('PRIVATE_CLOSE_MESSAGE'); };
+    if (mode === 'detach') f.session.detach = async () => { throw Error('PRIVATE_DETACH_MESSAGE'); };
+    await assert.rejects(hook.dispose(), /^Error: MIXED_BROWSER_HEADERS_REFUSED$/);
+    assert.deepEqual(hook.diagnostic(), { failure, stage, command: 'NONE', disposal: 'FAILED' });
+  }
 });
 
 const local = { skip: process.env.TACHIAI_LOCAL_CHROME_TEST !== '1', timeout: 60000 };

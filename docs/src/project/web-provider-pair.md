@@ -196,5 +196,44 @@ request/response/auth/cleanup stage, continuation-command enum and disposal
 state, validated independently by Node and Python. It records no URL, header,
 request identifier or raw error, changes no admission policy, and cannot
 upgrade missing cleanup. Owned fixtures cover response/continuation failures
-that close the page before renderer cleanup can be observed. No later provider
-trial has used these new diagnostics.
+that close the page before renderer cleanup can be observed.
+
+### Replay-only refusal and owned cancellation reproduction
+
+A fourth trial on signed `a978dc35350ef5a09d7dda93fdd940361120465b`
+used rebuilt, hashed public assets and a matching clean ordinary route runner.
+The owner reconfirmed an unused Tokyo peer and activated Twitch through the
+provider's documented code-prefilled URL. Both selected feeds were Twitch
+replay 2080217716; no ABEMA preparation occurred. The window closed again.
+The authoritative first diagnostic was CONTINUATION_FAILED / RESPONSE /
+CONTINUE_REQUEST / FAILED. No sampled decode or audio acceptance was recorded.
+Browser/group, backend and route closure were confirmed; renderer and grant
+cleanup remained unconfirmed. This identifies a failed response-stage
+continuation, not its request's cancellation state or the exact provider cause.
+
+An independent owned-only Chrome experiment reproduced that same tuple: a
+local server reset produced a failed-response pause, then an AbortController
+canceled the request before its delayed continuation. The same CDP session
+observed matching Network.loadingFailed with canceled=true before the
+continuation rejected with the public Invalid InterceptionId protocol error.
+Without cancellation, the original continuation succeeded. Substituting
+failRequest or continueResponse did not repair the canceled-ID race. This is a
+verified local mechanism, not retrospective proof of the provider trigger.
+
+The scoped fix retains at most 512 current admitted entries through response
+continuation settlement. Only that exact uniquely matched entry, with its
+unchanged request/response tuple and Network ID, can consume a same-session
+positive cancellation receipt already observed while its response is pending.
+Only the exact known invalid-interception error for that command is tolerated.
+Missing, ambiguous, unrelated, false, early or late cancellation, other continuation errors
+and replaced/disposed ownership remain refused. Entries retire by identity;
+there is no future cancellation history, command retry or response fabrication.
+
+The closed diagnostic additionally exposes canceledContinuationObserved, a
+monotonic boolean indicating this narrow case occurred. Historical four-field
+diagnostics remain accepted; the optional boolean is strictly validated by both
+Node and Python. It is not playback, account or cleanup authority. All original
+origin, frame, method, response, header, status/body and TLS guards remain.
+Owned real-Chrome tests retain a failed fetch while keeping the viewer alive;
+independent media/CDM/grant cleanup is still required. No provider trial has
+used this cancellation fix yet.

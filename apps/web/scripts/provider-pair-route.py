@@ -215,8 +215,10 @@ def validate_control(raw):
             raise bootstrap.Refused()
         if "transportDiagnostic" in value:
             diagnostic = value["transportDiagnostic"]
-            if (not isinstance(diagnostic, dict) or set(diagnostic) != {"failure", "stage", "command", "disposal"}
-                    or any(type(field) is not str for field in diagnostic.values())
+            fields = {"failure", "stage", "command", "disposal"}
+            if (not isinstance(diagnostic, dict) or set(diagnostic) not in (fields, fields | {"canceledContinuationObserved"})
+                    or any(type(diagnostic[field]) is not str for field in fields)
+                    or "canceledContinuationObserved" in diagnostic and type(diagnostic["canceledContinuationObserved"]) is not bool
                     or diagnostic["failure"] not in {"NONE", "CONTINUATION_FAILED", "RESPONSE_BINDING_MISMATCH",
                         "REQUEST_HEADERS_INVALID", "RESPONSE_HEADERS_INVALID", "CAPACITY", "AUTH_EVENT_INVALID",
                         "REQUEST_EVENT_INVALID", "PAGE_CLOSE_FAILED", "DETACH_FAILED"}

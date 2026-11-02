@@ -210,18 +210,25 @@ test('opt-in config bounds and public media origin grammar', () => {
 test('transport diagnostics admit only closed classifications without private fields', () => {
   const value = { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE', command: 'CONTINUE_RESPONSE', disposal: 'FAILED' };
   assert.deepEqual(validateTransportDiagnostic(value), value);
+  assert.deepEqual(validateTransportDiagnostic({ ...value, canceledContinuationObserved: true }),
+    { ...value, canceledContinuationObserved: true });
   for (const bad of [{ ...value, url: 'PRIVATE_SYNTHETIC_URL' }, { ...value, failure: 'PRIVATE_SYNTHETIC_ERROR' },
-    { ...value, stage: [] }, { ...value, command: 'Fetch.getResponseBody' }, { ...value, disposal: 1 }])
+    { ...value, stage: [] }, { ...value, command: 'Fetch.getResponseBody' }, { ...value, disposal: 1 },
+    { ...value, canceledContinuationObserved: 'PRIVATE' }, { ...value, canceledContinuationObserved: 0 }])
     assert.throws(() => validateTransportDiagnostic(bad));
 });
 
-async function wholeHostFixture(late = false, transportFailure = false) {
+async function wholeHostFixture(late = false, transportFailure = false, canceledContinuation = false) {
   const runtime = await mkdtemp(join(tmpdir(), 'pair-host-owned-'));
   const originalArgs = process.argv, originalWrite = process.stdout.write, originalExit = process.exitCode;
   const commands = [], events = []; let stdout = '', samples = 0, pausedAfterDecode = 0, pageClosed = false;
   const session = new EventEmitter();
-  session.send = async method => {
+  session.send = async (method, fields = {}) => {
     commands.push(method);
+    if (canceledContinuation && method === 'Fetch.continueRequest' && fields.requestId === 'owned-request' && !fields.headers) {
+      session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+      throw new Error('cdpSession.send: Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
+    }
     if (transportFailure && method === 'Fetch.continueResponse') throw new Error('PRIVATE_SYNTHETIC_ERROR');
   };
   session.detach = async () => { commands.push('detach'); };
@@ -242,11 +249,12 @@ async function wholeHostFixture(late = false, transportFailure = false) {
       if (text.includes('.begin(')) { assert(commands.includes('commonUIEnabled')); commands.push('begin'); return 'completed'; }
       if (text.includes('.stop(')) { commands.push('explicitStop'); return final; }
       assert(text.includes('.observe(')); samples++;
-      if (transportFailure && samples === 2) {
+      if ((transportFailure || canceledContinuation) && samples === 2) {
         const request = { url: 'https://dgeft87wbj63p.cloudfront.net/owned.m3u8', method: 'GET', headers: { Origin: new URL(url).origin } };
-        const event = { requestId: 'owned-request', request, frameId: 'owned-frame', resourceType: 'Fetch' };
+        const event = { requestId: 'owned-request', networkId: 'owned-network', request, frameId: 'owned-frame', resourceType: 'Fetch' };
         session.emit('Fetch.requestPaused', event);
-        session.emit('Fetch.requestPaused', { ...event, responseStatusCode: 206, responseHeaders: [] });
+        session.emit('Fetch.requestPaused', { ...event, ...(canceledContinuation ? { responseErrorReason: 'Failed' } :
+          { responseStatusCode: 206, responseHeaders: [] }) });
         await new Promise(resolve => setImmediate(resolve));
         if (pageClosed) throw new Error('Owned page is closed');
       }
@@ -306,5 +314,15 @@ test('closed header failure survives lost renderer cleanup without fabricating g
   assert.equal(result.grantCleanup, 'unconfirmed'); assert.equal(result.authCleanupConfirmed, false);
   assert.equal(result.browserCleanupConfirmed, true);
   assert.deepEqual(result.transportDiagnostic, { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE',
-    command: 'CONTINUE_RESPONSE', disposal: 'FAILED' });
+    command: 'CONTINUE_RESPONSE', disposal: 'FAILED', canceledContinuationObserved: false });
+});
+
+test('positively retired continuation keeps the host alive and retains independent cleanup', async () => {
+  const { result, events } = await wholeHostFixture(false, false, true);
+  assert.equal(result.decodeObserved, true); assert.equal(result.playbackFailureObserved, false);
+  assert.equal(events.filter(event => event.event === 'decodeObserved').length, 1);
+  assert.equal(result.rendererCleanupConfirmed, true); assert.equal(result.authCleanupConfirmed, true);
+  assert.equal(result.grantCleanup, 'revoked');
+  assert.deepEqual(result.transportDiagnostic, { failure: 'NONE', stage: 'NONE', command: 'NONE',
+    disposal: 'DONE', canceledContinuationObserved: true });
 });

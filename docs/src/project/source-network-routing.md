@@ -358,9 +358,21 @@ The reviewed implementation passed 2,469 local JVM tests, including durable
 consume/crash recovery, finite retries, stale callbacks, targeted mutation checks,
 Stop/receipt ordering and callback isolation. Compilation, debug lint with the
 same baseline findings, release isolation and 15 manifest-isolation fixtures
-passed. No job-enabled APK was deployed and no scheduled provider/device trial
-was performed. Actual JobScheduler, cross-process Network, remembered-session
-and physical naturally expired renewal acceptance remain open.
+passed. App/test APKs were built and both matched the shared debug certificate.
+An explicitly approved provider-free smoke then passed on a fresh API 36
+Android 16/x86-64 AVD with software rendering and KVM. One opt-in test took
+2.035 seconds and observed unforced system delivery, production service binding
+and retirement of a synthetic job without account authority. Its 99.931-second
+driver pass receipt also includes fresh boot and installation; it is not a
+provider-operation duration. Persistent AVD data and the phone were untouched.
+
+The immediate post-shutdown inventory guard refused confirmation. Its original
+receipt remains distinct from a later postflight under the global emulator lock,
+which confirmed the owned PID, emulator process and ADB device were absent.
+The transient guard's exact cause remains unknown. No second fixture was run.
+This smoke does not exercise provider renewal, a remembered session, actual
+Network Parcelable delivery or process-death recovery. Cold closed-app renewal
+and physical naturally expired acceptance remain open.
 
 ## Recommendation and scope
 

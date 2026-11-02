@@ -307,6 +307,11 @@ libxml2 2.15.4 supersede the initial host environment's versions. A source pin
 alone does not prove a completed build. Optional p11-kit/IDN/TPM/compression
 dependencies stay disabled; included libtasn1/unistring remain part of the exact GnuTLS
 archive and retain their per-file notices. GnuTLS stays thread-enabled.
+The zlib archive uses the maintainer's [versioned release asset](https://github.com/madler/zlib/releases/tag/v1.3.2).
+Its bytes match the existing SHA-256 pin and the checksum published on
+[zlib's official site](https://zlib.net/); this changes neither version nor source
+contents. The fossil URL returned small nonmatching responses in two CI runs;
+those responses were rejected, not accepted under a replacement checksum.
 [GnuTLS releases](https://www.gnutls.org/news.html),
 [libxml2 releases](https://download.gnome.org/sources/libxml2/2.15/).
 

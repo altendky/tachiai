@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { validateInput, fetchManifest, bodyLimit, validateOwnedRuntimePath } from '../../apps/web/scripts/abema-browser-manifest.mjs';
+import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { validateInput, fetchManifest, bodyLimit, validateOwnedRuntimePath, publishBrowserOwner } from '../../apps/web/scripts/abema-browser-manifest.mjs';
 import { captureSnapshot } from '../../apps/web/scripts/abema-browser-snapshot.mjs';
 
 const privateFixture = 'PRIVATE_SYNTHETIC_BROWSER_MANIFEST';
@@ -20,6 +23,44 @@ test('owned launcher preflights the pinned Unix socket byte budget before launch
   assert.throws(() => validateOwnedRuntimePath('/' + 'a'.repeat(103 - suffix.length)));
   assert.throws(() => validateOwnedRuntimePath('/' + 'é'.repeat(35)));
   assert.throws(() => validateOwnedRuntimePath('relative'));
+});
+
+test('browser ownership is published only after the complete pending JSON is closed', async () => {
+  const runtime = await mkdtemp(join(tmpdir(), 'tachiai-owner-publication-'));
+  const owner = { pid: 43210, processGroup: 43210, startTime: '123', userDataDir: runtime + '/profile' };
+  let began, release;
+  const started = new Promise(resolve => { began = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const publishing = publishBrowserOwner(runtime, owner, async (file, wire) => {
+    await file.writeFile(wire.slice(0, 7)); began();
+    await held;
+    await file.writeFile(wire.slice(7));
+  });
+  try {
+    await started;
+    assert.equal(await readFile(runtime + '/browser-owner.pending.json', 'utf8'), JSON.stringify(owner).slice(0, 7));
+    await assert.rejects(stat(runtime + '/browser-owner.json'), { code: 'ENOENT' });
+    release(); await publishing;
+    assert.deepEqual(JSON.parse(await readFile(runtime + '/browser-owner.json', 'utf8')), owner);
+    assert.equal((await stat(runtime + '/browser-owner.json')).mode & 0o777, 0o600);
+    await assert.rejects(stat(runtime + '/browser-owner.pending.json'), { code: 'ENOENT' });
+  } finally { release(); await publishing; await rm(runtime, { recursive: true, force: true }); }
+});
+
+test('browser ownership publication never overwrites an existing record or pending writer', async () => {
+  const runtime = await mkdtemp(join(tmpdir(), 'tachiai-owner-publication-'));
+  const final = runtime + '/browser-owner.json', pending = runtime + '/browser-owner.pending.json';
+  const original = '{"existing":true}';
+  try {
+    await writeFile(final, original, { flag: 'wx', mode: 0o600 });
+    await assert.rejects(publishBrowserOwner(runtime, { replacement: true }), { code: 'EEXIST' });
+    assert.equal(await readFile(final, 'utf8'), original);
+    await assert.rejects(stat(pending), { code: 'ENOENT' });
+    await writeFile(pending, 'existing-pending', { flag: 'wx', mode: 0o600 });
+    await assert.rejects(publishBrowserOwner(runtime, { replacement: true }), { code: 'EEXIST' });
+    assert.equal(await readFile(pending, 'utf8'), 'existing-pending');
+    assert.equal(await readFile(final, 'utf8'), original);
+  } finally { await rm(runtime, { recursive: true, force: true }); }
 });
 
 test('snapshot keeps real navigator values, blocks all network and returns cleanup only after both browser owners close', async () => {

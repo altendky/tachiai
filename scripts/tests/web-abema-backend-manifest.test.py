@@ -5,6 +5,7 @@
 # ///
 """Offline exact-MPD protocol, XML/privacy and owned worker lifecycle tests."""
 import base64
+from contextlib import contextmanager, ExitStack
 import importlib.util
 import io
 import json
@@ -352,6 +353,83 @@ class ManifestTests(unittest.TestCase):
 
 
 class BrowserManifestTests(unittest.TestCase):
+    @contextmanager
+    def owned_browser_cleanup(self, *, process=("S", 43210, "123"), final=None, raw=None, live=True, uid=None):
+        owned = module.source.owned_browser
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            runtime = Path(directory)
+            profile = runtime / "profile"
+            (runtime / "browser-owner.json").write_text(json.dumps({"pid": 43210,
+                "processGroup": 43210, "startTime": "123", "userDataDir": str(profile)}))
+            arguments = raw if raw is not None else ("chrome\0--remote-debugging-pipe\0--user-data-dir=" + str(profile) + "\0").encode()
+            real_stat, real_open = Path.stat, Path.open
+            reads, clock = [], [0.0]
+            def proc_stat(path, *args, **kwargs):
+                if path == Path("/proc/43210"):
+                    return SimpleNamespace(st_uid=os.getuid() if uid is None else uid)
+                return real_stat(path, *args, **kwargs)
+            def proc_open(path, *args, **kwargs):
+                if path == Path("/proc/43210/cmdline"):
+                    reads.append(path)
+                    return io.BytesIO(arguments)
+                return real_open(path, *args, **kwargs)
+            states = [process] if final is None else [process, final]
+            metadata = stack.enter_context(patch.object(owned, "_process_stat", side_effect=states))
+            stack.enter_context(patch.object(owned, "_live_group", **({"return_value": live} if isinstance(live, bool) else {"side_effect": live})))
+            stack.enter_context(patch.object(Path, "stat", autospec=True, side_effect=proc_stat))
+            stack.enter_context(patch.object(Path, "open", autospec=True, side_effect=proc_open))
+            stack.enter_context(patch.object(owned.bootstrap.time, "monotonic", side_effect=lambda: clock[0]))
+            stack.enter_context(patch.object(owned.bootstrap.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)))
+            signals = stack.enter_context(patch.object(owned.os, "killpg"))
+            yield runtime, signals, metadata, reads, clock
+
+    def test_exiting_or_empty_argument_leader_waits_for_children_without_signalling(self):
+        for state in ("Z", "X", "S"):
+            with self.subTest(state=state), self.owned_browser_cleanup(process=(state, 43210, "123"), raw=b"", live=[True, True, False]) as fixture:
+                runtime, signals, metadata, reads, clock = fixture
+                module.cleanup_owned_browser(runtime)
+                signals.assert_not_called(); self.assertEqual(metadata.call_count, 1)
+                self.assertEqual(len(reads), int(state == "S")); self.assertEqual(clock[0], 0.05)
+
+    def test_disappearing_leader_waits_for_children_without_signalling(self):
+        for error in (FileNotFoundError(), ProcessLookupError()):
+            with self.subTest(error=type(error)), self.owned_browser_cleanup(process=error, live=[True, True, False]) as fixture:
+                runtime, signals, _, _, clock = fixture
+                module.cleanup_owned_browser(runtime)
+                signals.assert_not_called(); self.assertEqual(clock[0], 0.05)
+
+    def test_persistent_children_after_leader_exit_remain_unconfirmed_at_the_original_bound(self):
+        with self.owned_browser_cleanup(process=("Z", 43210, "123")) as fixture:
+            runtime, signals, _, _, clock = fixture
+            with self.assertRaises(module.bootstrap.CleanupUnconfirmed):
+                module.cleanup_owned_browser(runtime)
+            signals.assert_not_called(); self.assertGreaterEqual(clock[0], 5); self.assertLess(clock[0], 5.1)
+
+    def test_live_verified_leader_requires_final_identity_check_before_group_signal(self):
+        with self.owned_browser_cleanup(final=("S", 43210, "123"), live=[True, True, False]) as fixture:
+            runtime, signals, metadata, reads, _ = fixture
+            module.cleanup_owned_browser(runtime)
+            signals.assert_called_once_with(43210, signal.SIGKILL)
+            self.assertEqual(metadata.call_count, 2); self.assertEqual(len(reads), 1)
+
+    def test_leader_exiting_at_final_identity_check_is_never_signalled(self):
+        with self.owned_browser_cleanup(final=("Z", 43210, "123"), live=[True, True, False]) as fixture:
+            runtime, signals, metadata, _, _ = fixture
+            module.cleanup_owned_browser(runtime)
+            signals.assert_not_called(); self.assertEqual(metadata.call_count, 2)
+
+    def test_live_identity_mismatches_and_unreadable_metadata_fail_without_signals_or_waiting(self):
+        for changes in ({"uid": os.getuid() + 1}, {"process": ("S", 43210, "stale")},
+                        {"process": ("S", 43211, "123")}, {"raw": b"unrelated\0"},
+                        {"raw": b"chrome\0--remote-debugging-pipe\0--user-data-dir=/outside\0"},
+                        {"final": ("S", 43210, "changed")}, {"final": ("S", 43211, "123")},
+                        {"process": PermissionError()}):
+            with self.subTest(changes=changes), self.owned_browser_cleanup(**changes) as fixture:
+                runtime, signals, _, _, clock = fixture
+                with self.assertRaises((module.bootstrap.CleanupUnconfirmed, PermissionError)):
+                    module.cleanup_owned_browser(runtime)
+                signals.assert_not_called(); self.assertEqual(clock[0], 0)
+
     def packet(self, **changes):
         return {"nonce": NONCE, "browserReadable": True, "corsPermission": "CORS_READABLE",
                 "status": 200, "mime": "DASH_XML", "accepted": True,
@@ -504,9 +582,8 @@ class BrowserManifestTests(unittest.TestCase):
             self.assertTrue(set(signals) <= {node_group[0], browser_group[0]})
         finally:
             unrelated.terminate(); unrelated.wait(timeout=5)
-            if transport.retained_runtime:
-                # An ownership uncertainty must remain reviewable, not be hidden.
-                self.fail("local Chrome cleanup was not confirmed")
+            # Keep an uncertain runtime for review without masking the original
+            # cleanup exception. Success already asserts retained_runtime is None.
 
     def test_browser_reply_rejects_stale_nonce_private_extras_and_hidden_status_claims(self):
         bad = [self.packet(nonce="b" * 32), self.packet(uri=PRIVATE), self.packet(body="invalid base64"),

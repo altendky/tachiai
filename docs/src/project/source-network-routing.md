@@ -399,10 +399,19 @@ The opt-in is `tachiaiFreshNetworkParcel=true`, with the exact
 `AbemaRenewalNetworkParcelDeviceTest` class selected. Acceptance requires ARMED,
 PASSED and one executed JUnit test, plus independent binding and emulator shutdown
 confirmation; a skipped test or zero exit status alone is insufficient.
-This fixture has not yet run on a device. Even a pass would establish only the
-same-UID private Parcelable/codec boundary, not JobParameters Network provenance,
-socket/resolver binding, provider renewal, process-loss recovery or physical
-device acceptance.
+One separately approved run passed on November 2, 2026 using signed source
+`543b080462c27a865102c7f950d419e2e62e5147` and the verified shared-signed APKs.
+The new API 36/Android 16 x86-64 AVD used KVM, software rendering, 2 GiB/2 cores
+and no snapshots. Host preinstall emptiness was confirmed before either install;
+no configured account, persistent AVD or phone was used. The exact one-test
+lifecycle, ARMED/PASSED markers and all twelve cases passed in 6.113 JUnit
+seconds. Driver elapsed time was 135.389 seconds including fresh boot, installs,
+execution and cleanup. Independent normal-shutdown acknowledgement, owned
+process exit and two empty process/ADB-emulator inventories were confirmed under
+the global lock. Handler retirement and binding release were also confirmed.
+This establishes the same-UID private Parcelable/codec boundary only;
+JobParameters Network provenance, socket/resolver binding, provider renewal,
+process-loss recovery and physical-device acceptance remain separate.
 
 ## Recommendation and scope
 

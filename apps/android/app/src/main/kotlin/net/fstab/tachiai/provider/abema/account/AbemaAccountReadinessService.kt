@@ -105,62 +105,100 @@ internal object AndroidAbemaRenewalReadiness {
     // Application-owned operations survive individual readiness Service/Activity
     // observers. Unconfirmed cleanup keeps the actual operation and reservation.
     private val operations = ConcurrentHashMap<String, AbemaAccountRenewalOperation>()
+    private val ownedAdmission = AbemaRenewalOwnedAdmission(coordinator, operations,
+        validate = ::workCurrent, dispatch = { action -> main.post(action) },
+        elapsed = SystemClock::elapsedRealtime,
+        schedulePending = { deadline, action -> main.postDelayed(action, maxOf(0L, deadline - SystemClock.elapsedRealtime())) },
+        authoritative = { work, outcome ->
+            if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
+                AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
+        })
+
     fun check(service: Service, target: AbemaReadinessTarget, deadline: Long,
         network: Network? = null): AbemaRenewalReadinessCoordinator.Decision {
+        val reservation = reserve(service, target, deadline, network)
+        val status = when (reservation) {
+            is AbemaRenewalReservation.Owned -> {
+                reservation.lease.activate()
+                AbemaRenewalReadinessCoordinator.Status.WAIT
+            }
+            is AbemaRenewalReservation.Observed -> reservation.status
+            is AbemaRenewalReservation.NoWork -> reservation.status
+            AbemaRenewalReservation.Deferred -> AbemaRenewalReadinessCoordinator.Status.WAIT
+        }
+        return AbemaRenewalReadinessCoordinator.Decision(status)
+    }
+
+    // The owner must store the returned lease before explicitly activating it.
+    // Observers never receive a ticket, operation, transport or cancellation right.
+    fun reserve(context: Context, target: AbemaReadinessTarget, deadline: Long,
+        network: Network? = null, admitted: () -> Boolean = { true },
+        notify: (AbemaRenewalOperationOutcome) -> Unit = {},
+    ): AbemaRenewalReservation {
         val instance = target.instanceId
+        fun permitted() = runCatching(admitted).getOrDefault(false)
         fun invalidateTarget() = coordinator.invalidate(instance) { it.owner.proof() == target.ownerProof }
         fun failed(status: AbemaRenewalReadinessCoordinator.Status = AbemaRenewalReadinessCoordinator.Status.FAILURE): AbemaRenewalReadinessCoordinator.Decision {
             invalidateTarget()
             return AbemaRenewalReadinessCoordinator.Decision(status)
         }
         return try {
-            coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }?.let { return it }
+            ownedAdmission.retireExpiredPending()
+            if (!permitted()) return AbemaRenewalReservation.Deferred
+            coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }?.let {
+                return AbemaRenewalReservation.Observed(it.status)
+            }
             val capturedNetwork = network?.let { AbemaRenewalNetwork(it, deadline) }
-            val binding = androidAbemaAccountConnectionBinding(service, instance, target.ownerProof,
+            val binding = androidAbemaAccountConnectionBinding(context, instance, target.ownerProof,
                 renewalEgressFactory = capturedNetwork?.egressFactory())
             val owner = binding.owner()
             val snapshot = binding.store.readSnapshot()
             val wall = System.currentTimeMillis()
+            if (!permitted()) return AbemaRenewalReservation.Deferred
+            var observed = false
             abemaReadinessRecordAdmission(
                 ownerCurrent = { owner.instance.id == instance && owner.proof() == target.ownerProof && binding.sameOwner(owner) },
-                claimed = { coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof } },
-                recordCurrent = { binding.store.usable(snapshot.revision) }, refused = { failed() })?.let { return it }
+                claimed = { coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }
+                    ?.also { observed = true } },
+                recordCurrent = { binding.store.usable(snapshot.revision) }, refused = { failed() })?.let {
+                return if (observed) AbemaRenewalReservation.Observed(it.status) else AbemaRenewalReservation.NoWork(it.status)
+            }
+            if (!permitted()) return AbemaRenewalReservation.Deferred
             val record = snapshot.record
             if (record == null) {
                 invalidateTarget()
-                return AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.READY)
+                return AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
             }
             if (wall < record.acceptedWallMs || decodedAbemaGrant(record.grant.bearer, record.grant.userId,
-                    record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs) return failed()
+                    record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs)
+                return AbemaRenewalReservation.NoWork(failed().status)
             if (wall < record.grant.expiresAtMs) {
                 invalidateTarget()
-                return AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.READY)
+                return AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
             }
-            if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return failed()
+            if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return AbemaRenewalReservation.NoWork(failed().status)
             // WAIT observes existing work; it never replaces that work's
             // capability/deadline or grants control to this observer.
-            val decision = coordinator.check(instance, Scope(owner.proof(), snapshot),
-                Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline)
-            if (decision.status == AbemaRenewalReadinessCoordinator.Status.LAUNCH) {
-                start(service.applicationContext, checkNotNull(decision.ticket))
-                AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.WAIT)
-            } else decision
+            ownedAdmission.reserve(instance, Scope(owner.proof(), snapshot),
+                Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline, admitted,
+                construct = { ticket, work, completed -> createOperation(context.applicationContext, ticket, work, completed) },
+                notify = notify)
         } catch (error: AbemaAccountException) {
-            failed(when (error.category) {
+            if (!permitted()) return AbemaRenewalReservation.Deferred
+            AbemaRenewalReservation.NoWork(failed(when (error.category) {
                 AbemaAccountFailure.STORAGE_FAILED -> AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE
                 AbemaAccountFailure.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.FAILURE
                 else -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
-            })
-        } catch (_: Throwable) { failed(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE) }
+            }).status)
+        } catch (_: Throwable) {
+            if (!permitted()) AbemaRenewalReservation.Deferred
+            else AbemaRenewalReservation.NoWork(failed(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE).status)
+        }
     }
-    fun claim(ticket: String): Work? = coordinator.claim(ticket)?.takeIf { work ->
+    private fun workCurrent(ticket: String, work: Work): Boolean =
         runCatching { work.binding.sameOwner(work.owner) && work.binding.store.usable(work.expected.revision) &&
             System.currentTimeMillis() >= work.beganWall && abemaRenewalSnapshotMatches(work.expected,
                 work.binding.store.readSnapshot(), System.currentTimeMillis()) && coordinator.current(ticket) }.getOrDefault(false)
-    }
-    fun current(ticket: String) = coordinator.current(ticket)
-    fun finish(ticket: String, success: Boolean) = coordinator.finish(ticket, success)
-    fun finish(ticket: String, result: AbemaRenewalReadinessCoordinator.Status) = coordinator.finish(ticket, result)
     fun cancelUnclaimed(ticket: String) = coordinator.cancelUnclaimed(ticket)
 
     // In-process, closed observation only: no readiness request or grant leaves
@@ -173,38 +211,17 @@ internal object AndroidAbemaRenewalReadiness {
         return coordinator.evidence(instance) { Scope(it.owner.proof(), it.expected) == scope }
     }
 
-    private fun start(context: Context, ticket: String) {
-        val work = claim(ticket)
-        if (work == null) { coordinator.finish(ticket, false); return }
-        val operation = try { AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,
+    private fun createOperation(context: Context, ticket: String, work: Work,
+        completed: (AbemaRenewalOperationOutcome) -> Unit): AbemaAccountRenewalOperation =
+        AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,
             AndroidAbemaRenewalBrowser(context, work.network?.network), AndroidAbemaEmailGrantHandoff.inbox,
             AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
-            { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
+            { action -> check(main.post(action)) }, { delay, action -> check(main.postDelayed(action, delay)) },
             SystemClock::elapsedRealtime, System::currentTimeMillis, { coordinator.current(ticket) },
             beforeApproval = { id, deadline, gate ->
                 net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate)
-            }, completed = { outcome ->
-                if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
-                    AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
-                val status = when (outcome.result) {
-                    AbemaAutomaticRenewalResult.SUCCESS -> AbemaRenewalReadinessCoordinator.Status.READY
-                    AbemaAutomaticRenewalResult.INTERACTION_REQUIRED -> AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED
-                    AbemaAutomaticRenewalResult.STORAGE_FAILURE -> AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE
-                    AbemaAutomaticRenewalResult.TEMPORARY_FAILURE -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
-                    AbemaAutomaticRenewalResult.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.FAILURE
-                }
-                coordinator.finish(ticket, status, outcome.cleanupConfirmed, outcome.diagnostic, outcome.producerDiagnostic)
-                if (outcome.cleanupConfirmed) operations.remove(ticket)
-            }) } catch (_: Throwable) {
-                // Construction has not bound or allocated browser resources.
-                coordinator.finish(ticket, false); return
-            }
-        operations[ticket] = operation
-        if (!main.post(operation::start)) {
-            operations.remove(ticket)
-            coordinator.finish(ticket, false)
-        }
-    }
+            }, completed = completed,
+            completionUnavailable = completed)
 }
 
 // Same-UID observers initiate/join application-owned renewal. No grant fields

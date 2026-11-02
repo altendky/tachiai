@@ -30,6 +30,14 @@ this does not implement a scheduler or a different product UX. Actual Android
 Parcelable/network acceptance remains unproved. There is no corresponding web
 or Apple mechanism established by this implementation.
 
+Android readiness also exposes an internal RAM-only owner lease before provider
+dispatch. Only that exact lease controls activation/cancellation; observers share
+status. Pending reservations expire at their original deadline and active work
+keeps its existing lifetime. Actual cleanup receipts release ownership, while
+unknown closure remains retained. This adds no background scheduler or user-facing
+flow; the [owned admission boundary](source-network-routing.md#owned-renewal-admission)
+records its scope.
+
 ## Other implementations
 
 No iOS or tvOS application implementation differences are established here.

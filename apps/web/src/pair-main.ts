@@ -91,7 +91,7 @@ const render = () => {
   navigation?.update({ mode: state.mode, presentation: pair.revision, controls, panel, menu });
   element('picker').hidden = state.mode !== 'sources';
   element('viewer').hidden = state.mode !== 'viewer';
-  element<HTMLButtonElement>('watch').disabled = !state.selected.A || !state.selected.B || state.stopping || state.status === 'cleanup-failed' || state.qualityStore !== 'ready' || state.savingQuality || navigation?.pending === true;
+  element<HTMLButtonElement>('watch').disabled = !state.watchAllowed || navigation?.pending === true;
   for (const source of fixtures) for (const side of SIDES) {
     element<HTMLInputElement>(`source-${side}-${source.id}`).checked = state.selected[side] === source.id;
   }
@@ -161,15 +161,15 @@ const render = () => {
   }
   element('adjustment').textContent = `${state.adjustmentValid ? 'Requested adjustment' : 'Timing anchor invalid after recovery'}: ${state.requestedAdjustmentMs} ms · not measured synchronization.`;
   element('observations').textContent = JSON.stringify(state, null, 2);
-  element('pair-result').textContent = state.qualityStore === 'loading' ? 'Reading fixture quality defaults…' :
-    state.qualityStore === 'failed' ? 'Fixture quality defaults could not be read. Nothing was replaced. Close and reopen to retry.' :
+  element('pair-result').textContent = state.qualityStore === 'loading' ? 'Reading saved quality defaults…' :
+    state.qualityStore === 'failed' ? 'Saved quality defaults could not be read. Nothing was replaced. Close and reopen to retry.' :
       state.mode === 'sources' && state.status === 'stopped' ? 'Timing core ready' : state.status;
   if (navigation?.unavailable && state.status !== 'cleanup-failed') {
     element('pair-result').textContent = 'Navigation could not be prepared. Reload this page to retry.';
   }
   element('quality-message').textContent = state.savingQuality ? 'Saving stream quality…' :
     state.qualityMessage === 'save-failed' ? 'Stream quality could not be saved. Saved preferences were not replaced.' :
-      state.qualityMessage === 'read-failed' ? 'Fixture quality defaults could not be read. Nothing was replaced.' : '';
+      state.qualityMessage === 'read-failed' ? 'Saved quality defaults could not be read. Nothing was replaced.' : '';
   if (state.qualityMessage?.endsWith('-saved')) element('quality-message').textContent =
     `Stream ${state.qualityMessage.startsWith('video') ? 'video' : 'audio'} default saved. Feed overrides stay in this session.`;
   if (state.qualityMessage?.endsWith('-reset')) element('quality-message').textContent =
@@ -213,7 +213,7 @@ for (const side of SIDES) for (const kind of ['video', 'audio'] as const) {
   field.append(legend, select, readback, capability, save, reset); element('quality-fields').append(field);
 }
 pair = new PairFixture(core, { A: element('mount-A'), B: element('mount-B') }, fixtures, render,
-  bootstrap.qualityStore, bootstrap.factory);
+  bootstrap.qualityStore, bootstrap.factory, bootstrap.lifecycle);
 window.pair = pair;
 for (const source of fixtures) {
   const row = document.createElement('tr'), name = document.createElement('th');

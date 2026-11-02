@@ -3,12 +3,15 @@ import { guardedDashFactory, type AbemaBoundary } from './abema-dash-policy';
 import { AbemaProtectedDashPolicy, type AbemaProtectedBinding } from './abema-protected-dash-policy';
 import { AbemaCdmOwner } from './abema-cdm-owner';
 import { TwitchOwnedLifetime } from './twitch-owned-lifetime';
-import type { CommandResult, Observation, PlayerSession, Source, TimingCore } from './player';
+import type { CommandResult, DiagnosticProviderSource, Observation, PlayerSession, Source, TimingCore } from './player';
 import { relativePlan, dispatchRelativeSeek, seekTo } from './player-commands';
 import { milliseconds } from './timing';
 import { playheadFormat, type PlayheadFormats } from './formats';
 import { PlayerQuality, type QualityPreferences } from './quality';
 import type QualityShaka from 'shaka-player/dist/shaka-player.compiled';
+import { ProviderDefaultQuality } from './provider-quality';
+import { ABEMA_SOURCE_ID } from './provider-catalogue';
+import { protectedReplayBinding } from './abema-protected-binding';
 
 export type AbemaProtectedPlaybackOptions = {
   fetch: typeof fetch;
@@ -38,6 +41,8 @@ export class AbemaProtectedPlayback {
   private lastClock = performance.now();
   private lastWall = Date.now();
   private viewer?: { source: Source; core: TimingCore; changed: () => void; quality: PlayerQuality; formats: PlayheadFormats;
+    lifetime: AbortController; disposed: boolean; disposal?: Promise<void>; playIntent: number; wantsPlaying: boolean };
+  private provider?: { changed: () => void; quality: ProviderDefaultQuality; formats: PlayheadFormats;
     lifetime: AbortController; disposed: boolean; disposal?: Promise<void>; playIntent: number; wantsPlaying: boolean };
 
   constructor(private readonly mount: HTMLElement, private readonly binding: AbemaProtectedBinding, private readonly options: AbemaProtectedPlaybackOptions) {
@@ -76,8 +81,9 @@ export class AbemaProtectedPlayback {
       const video = this.video = document.createElement('video');
       video.playsInline = true; video.muted = true; video.setAttribute('aria-label', 'Owned protected replay diagnostic media');
       this.mount.append(video);
-      if (this.viewer) for (const event of ['timeupdate', 'playing', 'pause', 'seeked', 'volumechange', 'resize'])
-        video.addEventListener(event, () => { if (!this.ended && !this.viewer!.disposed) this.viewer!.changed(); }, { signal: this.viewer.lifetime.signal });
+      const observer = this.viewer ?? this.provider;
+      if (observer) for (const event of ['timeupdate', 'playing', 'pause', 'seeked', 'volumechange', 'resize'])
+        video.addEventListener(event, () => { if (!this.ended && !observer.disposed) observer.changed(); }, { signal: observer.lifetime.signal });
       const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
         if (this.ended || policy.lifetime.signal.aborted) return;
         try { this.active(); } catch { void this.close(); return; }
@@ -90,15 +96,15 @@ export class AbemaProtectedPlayback {
       };
       this.frameHandle = video.requestVideoFrameCallback(onFrame);
       const player = this.player = new shaka.Player();
-      if (this.viewer) player.addEventListener('mediaqualitychanged', event => {
-        if (this.ended || this.viewer!.disposed || policy.lifetime.signal.aborted) return;
+      if (observer) player.addEventListener('mediaqualitychanged', event => {
+        if (this.ended || observer.disposed || policy.lifetime.signal.aborted) return;
         try {
           const value = event as Event & { mediaQuality?: unknown; position?: unknown };
           const format = playheadFormat(value.mediaQuality, value.position);
           if (format) {
-            if (format.kind === 'video') this.viewer!.formats.video = format;
-            else this.viewer!.formats.audio = format;
-            this.viewer!.changed();
+            if (format.kind === 'video') observer.formats.video = format;
+            else observer.formats.audio = format;
+            observer.changed();
           }
         } catch { /* No SDK object or exception reflection. */ }
       });
@@ -142,7 +148,7 @@ export class AbemaProtectedPlayback {
   // advertise timing, quality or audible provider capability in the proof API.
   fixtureViewer(source: Source, core: TimingCore, changed: () => void): PlayerSession {
     const fixture = this.options.fixture, expected = new URL(import.meta.env.BASE_URL + 'media/encrypted/manifest.mpd', location.origin).href;
-    if (this.used || this.ended || this.viewer || !fixture || source.kind !== 'fixture' || source.id !== 'owned-encrypted-dash' ||
+    if (this.used || this.ended || this.viewer || this.provider || !fixture || source.kind !== 'fixture' || source.id !== 'owned-encrypted-dash' ||
       new URL(source.manifest, location.href).href !== expected || fixture.manifest !== expected || this.binding.uri !== expected ||
       fixture.licenseUri !== new URL(import.meta.env.BASE_URL + 'owned-protected-license', location.origin).href) throw new Error('Owned viewer refused');
     const viewer: NonNullable<AbemaProtectedPlayback['viewer']> = { source: Object.freeze({ ...source }), core, changed, quality: new PlayerQuality(),
@@ -216,12 +222,82 @@ export class AbemaProtectedPlayback {
     };
   }
 
+  // Separate source-bound provider facade. An observed seek range/SDK track is
+  // not permission to use the fixture's ad-free planner or manual ABR policy.
+  providerViewer(source: DiagnosticProviderSource, packet: unknown, changed: () => void): PlayerSession {
+    const admitted = protectedReplayBinding(packet);
+    if (this.used || this.ended || this.viewer || this.provider || this.options.fixture ||
+        source.kind !== 'provider-diagnostic' || source.id !== ABEMA_SOURCE_ID ||
+        Object.keys(admitted).some(key => admitted[key as keyof typeof admitted] !== this.binding[key as keyof typeof admitted]))
+      throw new Error('Protected provider viewer refused');
+    const provider: NonNullable<AbemaProtectedPlayback['provider']> = { changed, quality: new ProviderDefaultQuality(),
+      formats: { basis: 'last-sdk-buffered-playhead' }, lifetime: new AbortController(), disposed: false, playIntent: 0, wantsPlaying: false };
+    this.provider = provider;
+    const ready = () => {
+      if (provider.disposed || this.ended || !this.player || !this.video || !['ready', 'play'].includes(this.stage)) return false;
+      try { this.active(); return true; } catch { return false; }
+    };
+    const observe = (): Observation => {
+      const loaded = ready(), video = this.video, range = loaded ? this.player!.seekRange() : undefined;
+      const live = loaded ? this.player!.isLive() : undefined, origin = live ? range!.start : 0;
+      const evidence = this.evidence();
+      return { id: ABEMA_SOURCE_ID, state: provider.disposed ? 'disposed' : this.ended ? 'failed' : loaded ? 'ready' : 'loading', live,
+        positionMs: loaded ? milliseconds(video!.currentTime - origin) : undefined,
+        durationMs: range ? milliseconds(range.end - origin) : undefined, windowStartMs: loaded ? milliseconds(origin) : undefined,
+        paused: video?.paused ?? true, seeking: video?.seeking ?? false, width: video?.videoWidth ?? 0, height: video?.videoHeight ?? 0,
+        volume: video?.volume ?? 1, muted: video?.muted ?? true, seekable: false, qualities: [],
+        decodedFrames: Math.min(1000000, evidence.frames), mediaAdvanceMs: evidence.advancedMs,
+        quality: provider.quality.snapshot(), playheadFormats: { basis: provider.formats.basis,
+          video: provider.formats.video ? { ...provider.formats.video } : undefined,
+          audio: provider.formats.audio ? { ...provider.formats.audio } : undefined } };
+    };
+    return {
+      surface: this.mount, observe,
+      load: async () => { const result = await this.prepare(); changed(); return provider.disposed ? 'cancelled' : result === 'ready' ? 'completed' : 'failed'; },
+      play: async (): Promise<CommandResult> => {
+        if (!ready()) return 'unavailable';
+        const intent = ++provider.playIntent; provider.wantsPlaying = true;
+        try {
+          await this.video!.play();
+          if (!ready()) return 'cancelled';
+          if (!provider.wantsPlaying) { this.video!.pause(); return 'cancelled'; }
+          if (intent !== provider.playIntent) return 'cancelled';
+          this.stage = 'play'; changed(); return 'completed';
+        } catch (error) {
+          if (!ready() || intent !== provider.playIntent) return 'cancelled';
+          if (error instanceof DOMException && error.name === 'NotAllowedError') { provider.wantsPlaying = false; return 'blocked'; }
+          try { this.policy!.fail('RESOURCE'); } catch {} await this.close(); return 'failed';
+        }
+      },
+      pause: () => { provider.wantsPlaying = false; ++provider.playIntent; if (ready()) this.video!.pause(); },
+      relativePlan: () => ({ outcome: ready() ? 'unsupported' : 'unavailable' }),
+      seekRelative: () => Promise.resolve(ready() ? 'unsupported' : 'unavailable'),
+      setGain: (volume, muted) => { if (ready() && Number.isFinite(volume) && volume >= 0 && volume <= 1 && typeof muted === 'boolean') {
+        this.video!.volume = volume; this.video!.muted = muted;
+      } },
+      setQuality: id => ready() ? id === undefined ? 'completed' : 'unsupported' : 'unavailable',
+      setQualityPreferences: preferences => {
+        if (!ready()) return 'unavailable';
+        const result = provider.quality.request(preferences); changed(); return result;
+      },
+      dispose: () => provider.disposal ??= (async () => {
+        provider.disposed = true;
+        if (await this.close() !== 'confirmed') throw new Error('Protected provider cleanup unconfirmed');
+      })(),
+    };
+  }
+
   async play(): Promise<'playing' | 'refused'> {
     if (this.ended || !this.video || this.stage !== 'ready') return 'refused';
     try {
       this.active(); await this.video.play(); this.active();
       if (this.stage !== 'ready') return 'refused'; this.stage = 'play'; return 'playing';
     } catch { await this.close(); return 'refused'; }
+  }
+
+  providerMediaKeysDetached(): boolean {
+    // Standard native property, independent of SDK destroy resolution.
+    try { return !!this.provider && !!this.video && this.video.mediaKeys === null; } catch { return false; }
   }
 
   evidence() {
@@ -241,6 +317,10 @@ export class AbemaProtectedPlayback {
         this.viewer.wantsPlaying = false; ++this.viewer.playIntent; this.viewer.lifetime.abort(); this.viewer.quality.close();
         this.viewer.formats = { basis: 'last-sdk-buffered-playhead' };
       }
+      if (this.provider) {
+        this.provider.wantsPlaying = false; ++this.provider.playIntent; this.provider.lifetime.abort(); this.provider.quality.close();
+        this.provider.formats = { basis: 'last-sdk-buffered-playhead' };
+      }
       if (this.frameHandle !== undefined) this.video?.cancelVideoFrameCallback(this.frameHandle);
       this.policy?.close(); this.video?.pause();
       const explicitCdmClose = this.cdm?.close() ?? Promise.resolve('confirmed' as const);
@@ -256,7 +336,8 @@ export class AbemaProtectedPlayback {
           this.video?.removeAttribute('src'); this.video?.load(); this.video?.remove();
         }
         if (!confirmed) throw new Error('Protected cleanup unconfirmed');
-      }).then(() => { this.viewer?.changed(); return 'confirmed' as const; }, () => { this.viewer?.changed(); return 'unconfirmed' as const; });
+      }).then(() => { this.viewer?.changed(); this.provider?.changed(); return 'confirmed' as const; },
+        () => { this.viewer?.changed(); this.provider?.changed(); return 'unconfirmed' as const; });
     }
     return this.closure;
   }

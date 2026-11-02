@@ -46,6 +46,7 @@ export class OwnedProtectedFrame implements PlayerSession {
   constructor(source: Source, _core: TimingCore, private readonly changed: () => void,
     options: { lifetimeMs?: number } = {}) {
     const budget = options.lifetimeMs ?? 120000;
+    if (source.kind !== 'fixture') throw refused();
     const manifest = new URL(source.manifest, location.href).href;
     if (source.kind !== 'fixture' || source.id !== 'owned-encrypted-dash' ||
       manifest !== new URL(base + 'media/encrypted/manifest.mpd', location.origin).href ||

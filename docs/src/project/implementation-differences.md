@@ -159,6 +159,20 @@ mechanisms; no actual mixed provider session or shipping architecture is selecte
 Android retains its native per-provider routing and is unaffected. These helpers
 add no product controls or UX exception.
 
+### Bounded common provider viewer
+
+The [bounded common provider viewer](web-provider-pair.md) connects narrow
+provider adapters to the same picker/controller/layout/history. ABEMA uses an
+isolated browser realm and explicit temporary-CDM/MediaKeys cleanup; Twitch
+owns a per-feed Shaka/video session beneath one temporary presentation account.
+Android retains its native player/CDM and encrypted configured-source storage.
+The diagnostic's separate IndexedDB defaults accept only known public case IDs
+and numeric preferences. Provider timing and manual quality remain explicitly
+unsupported; owned fixture permissions are not inherited. A fixed private host
+action prepares fresh ABEMA packets only after Twitch activation, under original
+source/presentation deadlines. This establishes implemented diagnostic wiring,
+not combined provider acceptance, a complete web client or a UX exception.
+
 ### Controlled browser fixture formats
 
 The provider-free browser fixture now reports bounded audio/video format

@@ -19,6 +19,9 @@
     "test:abema:local": "playwright test --config playwright.abema.config.ts",
     "test:abema:protected": "playwright test --config playwright.abema-protected.config.ts",
     "test:owned-mixed": "playwright test --config playwright.owned-mixed.config.ts",
+    "test:provider:frame": "playwright test --config playwright.abema-provider-frame.config.ts",
+    "test:provider:runtime": "playwright test --config playwright.provider-runtime.config.ts",
+    "test:provider:pair": "playwright test --config playwright.provider-pair.config.ts",
     "test": "playwright test"
   },
   "dependencies": {

@@ -260,17 +260,19 @@ export class TwitchProofSession {
   // The signed URL never leaves the browser host. Request/response ownership is
   // bound to this session and exact selected case; opaque token internals aren't
   // treated as verified content or entitlement claims.
-  async source(selected: TwitchCase): Promise<string> {
+  async source(selected: TwitchCase, retainOnSourceFailure = false): Promise<string> {
     // A recognized replacement must not inherit old permission even when its
     // lifetime/state guard refuses immediately. A concurrent caller cannot
     // mutate the in-flight owner's evidence.
     if (isTwitchCase(selected) && !this.busy) this.permission = undefined;
     this.active();
-    if (!isTwitchCase(selected) || this.state !== 'authorized' || this.busy || this.now() >= this.grantDeadline ||
+    if (typeof retainOnSourceFailure !== 'boolean' || !isTwitchCase(selected) || this.state !== 'authorized' || this.busy || this.now() >= this.grantDeadline ||
         this.manifestEndpoint === 'unversioned-live' && selected !== 'live:virtualjapan') throw refused();
     this.busy = true;
+    let validated = false;
     try {
       await this.validate();
+      validated = true;
       const { kind, resource } = TWITCH_CASES[selected];
       const live = kind === 'live';
       const operationName = live ? 'StreamPlaybackAccessToken' : 'VideoPlaybackAccessToken';
@@ -307,7 +309,13 @@ export class TwitchProofSession {
       for (const [key, value] of Object.entries({ sig: access.signature, token: access.value,
         platform: 'web', allow_source: 'true', allow_audio_only: 'true', player_backend: 'mediaplayer' })) uri.searchParams.set(key, value);
       return uri.href;
-    } catch { this.cancel(); throw refused(); }
+    } catch {
+      // The finite mixed proof may retry a source-specific refusal under the
+      // same independently validated account. Existing callers retain their
+      // original fail-closed behavior; validation/identity/expiry never opt out.
+      if (!retainOnSourceFailure || !validated || this.authorizationRemainingMs() <= 0) this.cancel();
+      throw refused();
+    }
     finally { this.busy = false; }
   }
 

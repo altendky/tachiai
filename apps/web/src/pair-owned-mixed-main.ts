@@ -9,6 +9,7 @@ configurePairBootstrap({
     { id: 'a-hls', label: 'Fixture A · HLS', kind: 'fixture', manifest: `${base}media/a/master.m3u8` },
   ],
   factory: (source, core, changed) => {
+    if (source.kind !== 'fixture') throw new Error('Owned fixture source unavailable');
     if (source.id === 'owned-encrypted-dash') return new OwnedProtectedFrame(source, core, changed);
     if (source.id === 'a-hls') return new BrowserPlayer(source, core, changed);
     throw new Error('Owned fixture source unavailable');

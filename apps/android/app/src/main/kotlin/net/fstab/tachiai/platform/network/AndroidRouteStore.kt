@@ -8,4 +8,5 @@ import net.fstab.tachiai.platform.storage.PrivateAuthorizationSlot
 internal fun connectionProfileStore(context: Context, reuseReadKey: Boolean = false) = ConnectionProfileStore(
     AndroidPrivateSecretStore(context, PrivateAuthorizationSlot.CONNECTION_PROFILES, reuseReadKey),
     File(context.noBackupFilesDir, "connection-profiles.lock"),
+    mutated = { net.fstab.tachiai.provider.abema.account.AndroidAbemaRenewalJobs.changed(context.applicationContext) },
 )

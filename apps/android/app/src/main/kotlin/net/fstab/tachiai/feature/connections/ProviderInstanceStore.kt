@@ -25,7 +25,8 @@ internal class ProviderInstanceRegistrySnapshot internal constructor(instances: 
 
 // Missing registry is a read-only legacy view. The first explicit mutation commits
 // the whole view atomically; no source/provider/route/grant slot is rewritten.
-internal class ProviderInstanceStore(private val store: PrivateSecretStore, private val lockFile: File? = null) {
+internal class ProviderInstanceStore(private val store: PrivateSecretStore, private val lockFile: File? = null,
+    private val mutated: () -> Unit = {}) {
     companion object { private val lock = Any() }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
@@ -134,5 +135,5 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
         store.write(bytes)
         entries
-    }
+    }.also { runCatching(mutated) }
 }

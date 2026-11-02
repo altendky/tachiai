@@ -10,6 +10,21 @@ class AbemaRenewalRecordFamiliesTest {
     private val selected = "no_backup/abema-account-$id.enc"
     private fun family(name: String) = abemaRenewalRecordFamily("no_backup/$name", selected)
 
+    @Test fun publicRenewalScheduleHasAnExactBoundedFamilyWithoutAcceptingLookalikes() {
+        for (suffix in listOf("", ".bak", ".new")) {
+            assertEquals(AbemaRenewalRecordFamily.RENEWAL_SCHEDULE, family(AbemaRenewalJobLedger.FILE_NAME + suffix))
+        }
+        for (name in listOf("abema-renewal-jobs.bin", "abema-renewal-jobs-v1.bin.extra", "ABEMA-renewal-jobs-v1.bin")) {
+            assertEquals(AbemaRenewalRecordFamily.UNKNOWN, family(name))
+        }
+        assertEquals(AbemaRenewalRecordFamily.SHARED_PREFERENCES,
+            abemaRenewalRecordFamily("shared_prefs/" + AbemaRenewalJobLedger.FILE_NAME, selected))
+        val mutation = abemaRenewalFamilyMutations(emptyMap(),
+            mapOf("no_backup/" + AbemaRenewalJobLedger.FILE_NAME to byteArrayOf(1)), selected).single()
+        assertEquals(AbemaRenewalRecordFamily.RENEWAL_SCHEDULE, mutation.family)
+        assertEquals(1, mutation.added)
+    }
+
     @Test fun onlyExactSourceDefinedNamesAndCanonicalBindingsObtainKnownFamilies() {
         for ((name, expected) in listOf("connection-profiles.enc" to ROUTE_PROFILES, "source-setup.enc" to LEGACY_SETUP,
             "provider-setup.enc" to LEGACY_SETUP, "provider-instances.enc" to PROVIDER_REGISTRY, "stream-quality.enc" to QUALITY,

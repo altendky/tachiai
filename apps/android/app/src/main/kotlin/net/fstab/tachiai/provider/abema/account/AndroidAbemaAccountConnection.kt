@@ -124,6 +124,10 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
     private val makeHttpTransport: ((URL) -> javax.net.ssl.HttpsURLConnection, () -> Boolean) -> AbemaAccountHttpTransport = { open, current ->
         AbemaAccountHttpTransport(open, current, SystemClock::elapsedRealtime, System::currentTimeMillis)
     },
+    private val networkEgressFactory: (() -> RouteNetworkEgress)? = null,
+    private val createBoundBackend: (ConnectionProfile, RouteProxySecurity, RoutePreparation, RouteNetworkEgress) -> RouteBackend = { selected, security, preparation, egress ->
+        NativeRouteBackend.createBound(selected, security, preparation, egress)
+    },
 ) : AbemaAccountTransport {
     companion object { private val retained = ConcurrentLinkedQueue<List<Any>>() }
     private val lock = Any()
@@ -132,14 +136,17 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
     private var revision = 0L
     private var preparing: RoutePreparation? = null
     private var active: AbemaAccountTransport? = null
-    val cleanupConfirmed: Boolean get() = synchronized(lock) { !poisoned && preparing == null && active == null }
+    private var activeEgress: RouteNetworkEgress? = null
+    val cleanupConfirmed: Boolean get() = synchronized(lock) { !poisoned && preparing == null && active == null && activeEgress == null }
     private fun <T> request(action: (AbemaAccountTransport) -> T): T {
         val preparation = RoutePreparation()
         val run = synchronized(lock) {
             if (closed || preparing != null) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             preparing = preparation; revision
         }
-        fun current() = synchronized(lock) { !closed && revision == run } && gate()
+        var egress: RouteNetworkEgress? = null
+        fun ownerCurrent() = synchronized(lock) { !closed && revision == run } && gate()
+        fun current() = ownerCurrent() && egress?.isActive() != false
         var route: RouteSession? = null
         var backend: RouteBackend? = null
         var backendClose: AbemaAccountCleanupReceipt<RouteBackend>? = null
@@ -147,14 +154,18 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         var fatalConstruction = false
         try {
             if (!current()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
-            route = RouteSession.createAbemaAccountSession(profile, preparation) { selected, security ->
+            egress = networkEgressFactory?.invoke()
+            synchronized(lock) { activeEgress = egress }
+            if (!current()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            fun allocate(selected: ConnectionProfile, security: RouteProxySecurity): RouteBackend {
                 // Capture before the factory's cancellation/constructor checks
                 // can attempt rollback. A failed rollback must retain its owner.
-                val allocated = createBackend(selected, security, preparation)
+                val allocated = egress?.let { createBoundBackend(selected, security, preparation, it) }
+                    ?: createBackend(selected, security, preparation)
                 backend = allocated
                 val receipt = AbemaAccountCleanupReceipt(allocated, RouteBackend::close)
                 backendClose = receipt
-                object : RouteBackend {
+                return object : RouteBackend {
                     override val proxyPort get() = allocated.proxyPort
                     override fun close() {
                         if (!receipt.await()) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
@@ -162,6 +173,11 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
                     override fun toString() = "AbemaAccountOwnedBackend(redacted)"
                 }
             }
+            route = egress?.let { bound ->
+                RouteSession.createBoundAbemaAccountSession(profile, bound, preparation) { selected, security ->
+                    allocate(checkNotNull(selected), security)
+                }
+            } ?: RouteSession.createAbemaAccountSession(profile, preparation, ::allocate)
             val owned = route
             transport = makeHttpTransport({ url ->
                 if (!current() || !allowedAccountUrl(url)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
@@ -175,20 +191,26 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
             fatalConstruction = route == null && backend != null
             throw error
         } finally {
+            // Retire bound DNS admission before HTTP cleanup waits for its
+            // caller. Actual resolver completion remains a separate receipt.
+            try { egress?.cancel() } catch (_: Throwable) { preparation.recordCleanupFailure() }
             // A constructor Error can bypass the shared factory's Exception
             // rollback. Its returned backend still has an owned, single receipt.
             val partialClosed = if (route == null) backendClose?.await() != false else true
-            val confirmed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route)
+            val confirmed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route) &&
+                runCatching { egress?.isCleanupConfirmed() != false }.getOrDefault(false)
             synchronized(lock) {
                 if (!confirmed) { closed = true; poisoned = true }
-                else if (preparing === preparation) { preparing = null; active = null }
+                else if (preparing === preparation) { preparing = null; active = null; activeEgress = null }
             }
             if (!confirmed) {
-                retained.add(listOfNotNull(preparation, backend, backendClose, route, transport))
+                retained.add(listOfNotNull(preparation, backend, backendClose, route, transport, egress))
                 cleanupFailed()
                 throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
             }
-            if (!current()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            // The external operation gate owns result/adoption lifetime; the
+            // request's egress was intentionally cancelled during cleanup.
+            if (!ownerCurrent()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
         }
     }
     override fun profile(id: String, bearer: String) = request { it.profile(id, bearer) }
@@ -196,7 +218,8 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
     override fun emailRegistration(id: String, bearer: String) = request { it.emailRegistration(id, bearer) }
     override fun token(challenge: AbemaAccountChallenge) = request { it.token(challenge) }
     override fun cancelActiveRequest() {
-        val owned = synchronized(lock) { revision++; preparing to active }
+        val owned = synchronized(lock) { revision++; Triple(preparing, active, activeEgress) }
+        try { owned.third?.cancel() } catch (_: Throwable) { owned.first?.recordCleanupFailure() }
         owned.first?.cancel(); owned.second?.cancelActiveRequest()
     }
     override fun close() {

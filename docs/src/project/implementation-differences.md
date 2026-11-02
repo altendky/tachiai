@@ -18,6 +18,15 @@ application, Kotlin provider/player/storage code and Rust timing core.
 | Launcher integration | The same APK declares ordinary Android and Leanback launcher categories, with Leanback and touchscreen support marked optional. | Make the app discoverable through the platform's applicable launcher without requiring a touchscreen. This records manifest integration, not approval of different in-app navigation or visual design. | [Manifest][manifest] |
 | Device-mode detection | TV adaptations use Android's Configuration UI mode; ordinary phone mode uses the shared default path. | Select the applicable system integration inside one application. Detection is not authorization for every UX branch it selects. | [Configuration detection][detection] |
 
+Android also has an internal, explicitly selected account-transport
+[Network-binding prerequisite](source-network-routing.md#explicit-android-network-prerequisite).
+It binds direct HTTPS and supported proxy/tunnel outer sockets to one supplied
+Android `Network`, while loopback and WireGuard inner traffic keep their existing
+ownership. Blocking platform work and accepted sockets retain independent
+cleanup receipts. Ordinary callers are unchanged; this does not implement a
+scheduler, cross-process handoff or a different product UX. There is no
+corresponding web or Apple mechanism established by this implementation.
+
 ## Other implementations
 
 No iOS or tvOS application implementation differences are established here.

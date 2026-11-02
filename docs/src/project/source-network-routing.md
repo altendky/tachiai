@@ -189,6 +189,50 @@ HTTP CONNECT has owned transport/TLS fixtures, not a commercial-proxy playback
 observation. Provider acceptance of any particular exit remains an independent
 condition; a saved profile name is not proof of its location or compatibility.
 
+### Explicit Android Network prerequisite
+
+The internal bound account-transport path accepts one supplied Android `Network`
+and an absolute monotonic deadline of at most 90 seconds. It does not choose a
+default network or bind the process. Direct System HTTPS uses that Network's
+socket factory and resolver; the authenticated loopback proxy remains local.
+Bound HTTP/SOCKS proxy connections and WireGuard's outer UDP sockets use the
+same supplied Network. WireGuard destination DNS and TCP remain inside its
+userspace tunnel. Existing unbound factories and ordinary application callers
+retain their previous behavior. Bound OpenVPN/OpenConnect construction is
+refused before backend allocation; their ordinary transports are unchanged.
+
+The scope bounds waiting, rather than claiming Android can forcibly cancel a
+blocking platform resolver. At most four distinct DNS workers may run, with
+only outstanding same-host work shared. Cancellation retires the entire scope,
+wakes waiters and refuses late answers. Actual resolver, synchronous socket-bind
+and socket-creation work retain ownership until they finish. Accepted sockets
+also require an explicit close receipt; cancellation and `Socket.isClosed` are
+not cleanup confirmation. Borrowed Go descriptors stay live through synchronous
+binding, and Android closes its own duplicate descriptor.
+
+Unconfirmed native, resolver, descriptor or socket cleanup is sticky and retains
+the actual owner. A bound WireGuard peer reservation spans construction, its
+published route and cleanup; replacement for the same key pair is allowed only
+after confirmed cleanup. Unknown cleanup quarantines that peer until process
+exit. No key, peer digest, provider URL or platform exception is reported by
+these ownership guards.
+
+This is a prerequisite for operation-owned renewal in
+[issue #294](https://github.com/altendky/tachiai/issues/294), with explicit bound
+factories for account session, bootstrap and approval-browser routes. It adds
+no scheduler, cross-process Network handoff, background consumer, account
+adoption rule, setting or UX exception. End-to-end renewal using a supplied
+Network and actual Android Network behavior still require integration and
+device evidence; host fixtures and JNI compilation do not establish them.
+
+Local verification passed the full pinned Go race suite, including 20 focused
+Network tests, both Android ABI bridge builds, 2,383 debug JVM tests (44 new),
+instrumentation compilation, debug lint and release isolation. The new tests
+cover blocked platform work, same-host coalescing, original deadlines, borrowed
+descriptor lifetime, WireGuard publication/reopen/close ordering, peer quarantine,
+constructor rollback and the actual OkHttp socket-factory handoff. These are
+owned fixtures; no supplied-Network provider or device trial was performed.
+
 ## Recommendation and scope
 
 Keep the external system VPN as the current baseline. If routing becomes an

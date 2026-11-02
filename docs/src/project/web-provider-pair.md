@@ -22,6 +22,11 @@ feed can Retry without replacing its healthy partner. Retry obtains a fresh
 source and consumes the original trial window; it does not revoke a still-valid
 shared Twitch grant or claim to restore an unsupported replay position.
 
+Playback controls auto-hide after four seconds, including while a feed is
+preparing. Tap the main feed to reveal them, then choose Audio for overall
+volume, mix and per-feed mute. Pausing playback reveals controls again. These
+are the common viewer interactions, not a separate diagnostic control layout.
+
 These provider adapters report relative timing as unsupported and do not
 dispatch fixture seeks. The common Timing control retains its normal pause
 behavior and reports the refusal without changing the requested adjustment.
@@ -415,3 +420,66 @@ and original receipt were retained. Setting the supervising process's TMPDIR
 before Playwright launch corrected that setup for both comparison modes. The
 diagnostic ran under a separate 150-second supervisor and disabled ambient
 protocol debug logging; no token-bearing URLs or provider payloads were logged.
+
+### Combined replay recovery and desktop audio discovery
+
+The next combined trial used clean signed
+`6dea44b1025d66f42a38c5d16beab52239a94871` (merged in #442), freshly rebuilt
+Rust/Wasm and JavaScript with 532 hashed public assets, and an ordinary route
+runner carrying the same clean VCS identity. The owner reconfirmed availability
+and an unused Tokyo peer, completed fresh Twitch activation, and observed both
+ABEMA replay 394-72_s10_p8529 and Twitch replay 2080217716 render in headed Chrome
+156.0.8078.79 on Ubuntu 26.04.1 / Linux 7.0.0-34-generic x86-64. ABEMA used the
+existing Tokyo export and Twitch used System; effective exit country remained
+unmeasured.
+
+The repaired driver retained its window through the natural retired-response
+acknowledgement and recorded 5,137 ms of sampled joint advancement. A contributed
+159 decoded frames and 5,305 ms at 854×480; B contributed 259 frames and 5,388 ms
+at 1280×720. One fresh ABEMA attempt was used. Explicit Stop confirmed media,
+CDM/MediaKeys, renderer, grant revocation, CDP transport, browser/group, backend
+and route cleanup, with no host-route change. The owner heard no audio and
+could not see fade/mute controls, possibly seeing them during shutdown. This
+is successful bounded video/recovery/cleanup evidence and failed acoustic
+acceptance; the CLI's transaction-success boolean does not upgrade that result.
+
+An owned fixture held A's license response for more than 4.5 seconds and
+reproduced hidden controls while A remained preparing. They stayed hidden when
+A became ready; primary-feed tap followed by Audio revealed overall volume,
+mix and both mute buttons. The open Audio panel stayed visible beyond the idle
+period. Stop reset the dock's hidden flag while hiding the entire viewer; that
+does not independently establish the owner's possible visible flash. The owned
+check confirmed cleanup and zero retained surfaces. This does not explain audio
+silence: the common player path applies the default 0.5 gain and unmuted state
+after each load completes and before Play. The owned encrypted/clear regression
+now checks that initial state before manipulating audio controls, then checks
+normal reveal and independent mixing.
+
+The launcher constructed a restricted environment for its Node/Chrome owner
+but omitted XDG_RUNTIME_DIR. On this host, a read-only PulseAudio metadata query
+connected under the host environment, failed under the exact restricted
+environment, then connected when only the original XDG_RUNTIME_DIR was restored.
+The browser owner now carries that standard runtime directory alongside its
+existing display variables. Backend worker environments, provider account/route
+permissions, ambient proxy/debug exclusion and audio-device defaults are
+unchanged. The owner-loop regression verifies both presence and omission of
+the runtime variable while poisoning unrelated ambient settings. Desktop-audio
+connectivity, Chrome output, physical audibility and provider audio remain
+separate observations.
+
+A bounded provider-free comparison then used the same headed Chrome with an
+owned 440 Hz WebAudio oscillator at gain 0.005. Both modes used fresh profiles,
+a deny-all proxy and aborted page networking, with no provider requests,
+recording, PCM capture or audio-device changes. The immutable temporary consumer
+had SHA-256
+`e28d286678c28f3a8de12451cc4be6de1aed52046dfcd0742dd5a3b6824369ba`.
+Private PulseAudio metadata was filtered to verified same-user Chrome process
+group members before projecting counts, cork/mute flags and numeric volumes.
+Across six samples, the old restricted environment produced no owned output
+stream; adding only XDG_RUNTIME_DIR produced one uncorked, unmuted stream with
+both server-side channel volumes at 100 percent in all six samples. The
+oscillator's own gain remained 0.005. Both AudioContext clocks advanced, showing
+why a running media clock alone does not establish an audio-server connection.
+Tone/context, browser, leader/group, owned stream and proxy cleanup were
+independently confirmed, and both runtimes were removed. This establishes
+browser-to-audio-server connectivity, not physical audibility or provider audio.

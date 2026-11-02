@@ -88,7 +88,7 @@ emit(receipt)
 
 
 class BrowserOwnerTests(unittest.TestCase):
-    def run_owner(self, mode, stop_line=b"stop\n", fail_probe=False):
+    def run_owner(self, mode, stop_line=b"stop\n", fail_probe=False, expected_env=None):
         processes = []
         native_popen = subprocess.Popen
         native_set_blocking = os.set_blocking
@@ -103,6 +103,8 @@ class BrowserOwnerTests(unittest.TestCase):
 
             def launch(_command, **options):
                 self.assertEqual(Path(_command[1]).name, "provider-pair-browser.mjs")
+                if expected_env is not None:
+                    self.assertEqual(options["env"], expected_env)
                 process = native_popen([sys.executable, "-u", "-c", CHILD,
                     str(root), mode, json.dumps(RECEIPT)], **options)
                 processes.append(process)
@@ -153,6 +155,21 @@ class BrowserOwnerTests(unittest.TestCase):
                         process.kill()
                     process.wait(timeout=2)
                     self.assertIsNotNone(process.returncode)
+
+    def test_headed_browser_keeps_audio_runtime_without_inheriting_ambient_environment(self):
+        desktop = {"DISPLAY": ":owned", "XAUTHORITY": "/owned/display-auth"}
+        ambient = {**desktop, "HOME": "/owned/home", "DBUS_SESSION_BUS_ADDRESS": "OWNED_PRIVATE",
+            "HTTPS_PROXY": "OWNED_PRIVATE", "NO_PROXY": "OWNED_PRIVATE", "NODE_OPTIONS": "OWNED_PRIVATE",
+            "DEBUG": "pw:protocol", "SSLKEYLOGFILE": "OWNED_PRIVATE", "PAIR_PRIVATE_ENV": "OWNED_PRIVATE"}
+        for runtime in (None, "/owned/runtime"):
+            with self.subTest(runtime_present=runtime is not None):
+                inherited = {**ambient, **({"XDG_RUNTIME_DIR": runtime} if runtime is not None else {})}
+                expected = {"PATH": os.defpath, "LANG": "C.UTF-8", **desktop,
+                    **({"XDG_RUNTIME_DIR": runtime} if runtime is not None else {})}
+                with patch.dict(os.environ, inherited, clear=True):
+                    _, trial, report = self.run_owner("stop", expected_env=expected)
+                self.assertTrue(trial.cleanup_confirmed)
+                self.assertTrue(report["cleanupConfirmed"])
 
     def test_stop_then_terminal_receipt_and_eof_preserves_authoritative_cleanup(self):
         for line in (b"stop\n", b"stop\r\n"):

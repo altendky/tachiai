@@ -42,8 +42,17 @@ test('common viewer plays an actual encrypted and clear pair, mixes independentl
   await page.goto('provider-pair-owned.html'); await configure(page); await prepare(page);
   expect(await page.evaluate(() => (window as any).providerOwned.fresh)).toBe(0);
   await page.locator('#watch').click(); await playing(page, 5000);
+  const initial = await page.evaluate(() => window.pair.observe());
+  expect(initial.mix).toEqual({ overall: 50, balance: 50, muteA: false, muteB: false });
+  for (const side of ['A', 'B'] as const) {
+    expect(initial.feeds[side]?.volume).toBe(0.5);
+    expect(initial.feeds[side]?.muted).toBe(false);
+  }
+  await expect(page.locator('#dock')).toBeHidden();
   await page.locator('#stage').click({ position: { x: 3, y: 3 } });
+  await expect(page.locator('#audio')).toBeVisible();
   await page.locator('#audio').click();
+  await expect(page.locator('#balance')).toBeVisible();
   await page.locator('#mute-B').click();
   expect(await page.evaluate(() => window.pair.observe().feeds.B?.muted)).toBe(true);
   expect(await page.evaluate(() => window.pair.observe().feeds.A?.muted)).toBe(false);

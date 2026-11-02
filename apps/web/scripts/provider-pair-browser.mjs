@@ -107,6 +107,17 @@ export function terminalCleanup(observation) {
   return cleanupProjection(observation);
 }
 
+export function validateTransportDiagnostic(value) {
+  if (!exact(value, ['failure', 'stage', 'command', 'disposal']) ||
+      !['NONE', 'CONTINUATION_FAILED', 'RESPONSE_BINDING_MISMATCH', 'REQUEST_HEADERS_INVALID',
+        'RESPONSE_HEADERS_INVALID', 'CAPACITY', 'AUTH_EVENT_INVALID', 'REQUEST_EVENT_INVALID',
+        'PAGE_CLOSE_FAILED', 'DETACH_FAILED'].includes(value.failure) ||
+      !['NONE', 'REQUEST', 'RESPONSE', 'AUTH', 'CLOSE', 'DETACH'].includes(value.stage) ||
+      !['NONE', 'CONTINUE_REQUEST', 'CONTINUE_RESPONSE', 'CONTINUE_AUTH'].includes(value.command) ||
+      !['OPEN', 'RUNNING', 'DONE', 'FAILED'].includes(value.disposal)) throw refused();
+  return { ...value };
+}
+
 export class PairedDecodeWindow {
   sample(value, expected) {
     const feeds = value?.pair?.feeds, attempts = value?.attempts;
@@ -315,6 +326,7 @@ export async function main(dependencies = {}) {
   const clock = dependencies.now ?? (() => process.hrtime.bigint());
   let browser, browserServer, context, auth, action, control, page, config, started = false, observation;
   let decode = false, playbackFailureObserved = false, outcome = 'REFUSED', browserCleanupConfirmed = true, authCleanupConfirmed = true;
+  let transportDiagnostic;
   let projected = { mediaCleanupConfirmed: true, cdmCleanupConfirmed: true, grantCleanup: 'no-grant-held', rendererCleanupConfirmed: true };
   const interrupt = () => { if (control) control.stop = true; };
   process.on('SIGTERM', interrupt); process.on('SIGINT', interrupt);
@@ -403,11 +415,15 @@ export async function main(dependencies = {}) {
       }
     }
     try { await bounded(auth?.dispose() ?? Promise.resolve(), 5000); } catch { authCleanupConfirmed = false; }
+    try {
+      if (auth) transportDiagnostic = validateTransportDiagnostic(auth.diagnostic());
+    } catch { authCleanupConfirmed = false; }
     for (const close of [() => context?.close(), () => browser?.close(), () => browserServer?.close(), () => action?.close()]) {
       try { await bounded(Promise.resolve().then(close), 5000); } catch { browserCleanupConfirmed = false; }
     }
     control?.close();
-    const receipt = { event: 'finished', outcome, decodeObserved: decode, playbackFailureObserved, ...projected, browserCleanupConfirmed, authCleanupConfirmed };
+    const receipt = { event: 'finished', outcome, decodeObserved: decode, playbackFailureObserved, ...projected, browserCleanupConfirmed, authCleanupConfirmed,
+      ...(transportDiagnostic ? { transportDiagnostic } : {}) };
     process.stdout.write(JSON.stringify(receipt) + '\n');
     process.exitCode = outcome !== 'REFUSED' && !playbackFailureObserved && projected.rendererCleanupConfirmed && browserCleanupConfirmed && authCleanupConfirmed ? 0 : 1;
     process.off('SIGTERM', interrupt); process.off('SIGINT', interrupt);

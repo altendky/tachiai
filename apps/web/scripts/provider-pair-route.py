@@ -209,10 +209,21 @@ def validate_control(raw):
         # This schema intentionally cannot carry any raw page/provider object.
         expected = {"event", "outcome", "decodeObserved", "playbackFailureObserved", "mediaCleanupConfirmed", "cdmCleanupConfirmed",
                     "grantCleanup", "rendererCleanupConfirmed", "browserCleanupConfirmed", "authCleanupConfirmed"}
-        if (set(value) != expected or value["outcome"] not in {"STOPPED", "EXPIRED", "REFUSED"}
+        if (set(value) not in (expected, expected | {"transportDiagnostic"}) or value["outcome"] not in {"STOPPED", "EXPIRED", "REFUSED"}
                 or value["grantCleanup"] not in {"revoked", "no-grant-held", "unconfirmed"}
                 or any(type(value[key]) is not bool for key in expected - {"event", "outcome", "grantCleanup"})):
             raise bootstrap.Refused()
+        if "transportDiagnostic" in value:
+            diagnostic = value["transportDiagnostic"]
+            if (not isinstance(diagnostic, dict) or set(diagnostic) != {"failure", "stage", "command", "disposal"}
+                    or any(type(field) is not str for field in diagnostic.values())
+                    or diagnostic["failure"] not in {"NONE", "CONTINUATION_FAILED", "RESPONSE_BINDING_MISMATCH",
+                        "REQUEST_HEADERS_INVALID", "RESPONSE_HEADERS_INVALID", "CAPACITY", "AUTH_EVENT_INVALID",
+                        "REQUEST_EVENT_INVALID", "PAGE_CLOSE_FAILED", "DETACH_FAILED"}
+                    or diagnostic["stage"] not in {"NONE", "REQUEST", "RESPONSE", "AUTH", "CLOSE", "DETACH"}
+                    or diagnostic["command"] not in {"NONE", "CONTINUE_REQUEST", "CONTINUE_RESPONSE", "CONTINUE_AUTH"}
+                    or diagnostic["disposal"] not in {"OPEN", "RUNNING", "DONE", "FAILED"}):
+                raise bootstrap.Refused()
         return value
     raise bootstrap.Refused()
 

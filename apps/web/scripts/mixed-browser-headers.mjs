@@ -62,63 +62,80 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   if (!policies.has(selectedPolicy) || page.url() !== 'about:blank') throw refused();
   const route = validateRouteDescriptor(descriptor), proxyOrigin = 'http://' + route.host + ':' + route.port;
   let session, failed = false, disposed = false, disposal;
+  let failure = 'NONE', failureStage = 'NONE', failureCommand = 'NONE', disposalState = 'OPEN';
   const attempts = new Set(), responses = new Map(), pending = new Set();
-  const fail = () => { failed = true; responses.clear(); void page.close().catch(() => {}); };
-  const send = (method, fields) => {
-    const task = session.send(method, fields).catch(() => {
-      if (!disposed && !page.isClosed()) fail();
-    }).finally(() => pending.delete(task));
-    pending.add(task);
+  const record = (value, stage, command = 'NONE') => {
+    if (failure !== 'NONE') return;
+    failure = value; failureStage = stage; failureCommand = command;
+  };
+  const fail = (value, stage, command = 'NONE') => {
+    record(value, stage, command); failed = true; responses.clear(); void page.close().catch(() => {});
+  };
+  const send = (method, fields, stage) => {
+    const command = { 'Fetch.continueRequest': 'CONTINUE_REQUEST', 'Fetch.continueResponse': 'CONTINUE_RESPONSE',
+      'Fetch.continueWithAuth': 'CONTINUE_AUTH' }[method];
+    try {
+      const task = session.send(method, fields).catch(() => {
+        if (!disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command);
+      }).finally(() => pending.delete(task));
+      pending.add(task);
+    } catch { fail('CONTINUATION_FAILED', stage, command); }
   };
   const paused = event => {
     if (disposed || failed) return;
+    let reason = 'REQUEST_EVENT_INVALID', stage = 'REQUEST';
     try {
+      if (event?.responseStatusCode !== undefined || event?.responseErrorReason !== undefined) stage = 'RESPONSE';
       const id = event?.requestId;
       if (!identifier(id)) throw refused();
-      if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
+      if (stage === 'RESPONSE') {
         const captured = responses.get(id); responses.delete(id);
         if (!captured || event.responseErrorReason !== undefined) {
-          send('Fetch.continueRequest', { requestId: id }); return;
+          send('Fetch.continueRequest', { requestId: id }, stage); return;
         }
+        reason = 'RESPONSE_BINDING_MISMATCH';
         if (event.request?.url !== captured.url || event.request?.method !== captured.method || event.frameId !== captured.frame ||
           event.resourceType !== captured.resource || !Number.isInteger(event.responseStatusCode) ||
           event.responseStatusCode < 100 || event.responseStatusCode > 599) throw refused();
+        reason = 'RESPONSE_HEADERS_INVALID';
         const headers = responseHeaders(event.responseHeaders).filter(header => header.name.toLowerCase() !== 'access-control-allow-origin');
         headers.push({ name: 'Access-Control-Allow-Origin', value: selectedPolicy.origin });
         // Preserve status and all other headers. No body API, fulfillment,
         // redirect, cookie, request URL/method or TLS override exists here.
         send('Fetch.continueResponse', { requestId: id, responseCode: event.responseStatusCode,
-          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) });
+          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) }, stage);
         return;
       }
       const request = event.request;
       if (!request || !['GET', 'HEAD'].includes(request.method) || !['XHR', 'Fetch'].includes(event.resourceType) ||
         !identifier(event.frameId) || !selectedPolicy.match(request.url)) {
-        send('Fetch.continueRequest', { requestId: id }); return;
+        send('Fetch.continueRequest', { requestId: id }, stage); return;
       }
+      reason = 'REQUEST_HEADERS_INVALID';
       const headers = requestHeaders(request.headers), origins = headers.filter(header => header.name.toLowerCase() === 'origin');
       // Browser-controlled Origin binds the actual initiating origin, including
       // its port; a target URL or top-level page URL is not an initiator proof.
       if (origins.length !== 1 || origins[0].value !== selectedPolicy.origin) {
-        send('Fetch.continueRequest', { requestId: id }); return;
+        send('Fetch.continueRequest', { requestId: id }, stage); return;
       }
+      reason = 'CAPACITY';
       if (responses.has(id) || responses.size >= 512) throw refused();
       responses.set(id, { url: request.url, method: request.method, frame: event.frameId, resource: event.resourceType });
       send('Fetch.continueRequest', { requestId: id,
-        headers: headers.filter(header => header.name.toLowerCase() !== 'origin'), interceptResponse: true });
-    } catch { fail(); }
+        headers: headers.filter(header => header.name.toLowerCase() !== 'origin'), interceptResponse: true }, stage);
+    } catch { fail(reason, stage); }
   };
   const auth = event => {
     if (disposed || failed) return;
     const id = event?.requestId, challenge = event?.authChallenge;
-    if (!identifier(id)) { fail(); return; }
+    if (!identifier(id)) { fail('AUTH_EVENT_INVALID', 'AUTH'); return; }
     let response = { response: 'CancelAuth' };
     const first = !attempts.has(id) && attempts.size < 512;
     if (first) attempts.add(id);
     if (first && challenge?.source === 'Proxy' && challenge.origin === proxyOrigin &&
       challenge.scheme === 'basic' && challenge.realm === route.realm)
       response = { response: 'ProvideCredentials', username: route.username, password: route.password };
-    send('Fetch.continueWithAuth', { requestId: id, authChallengeResponse: response });
+    send('Fetch.continueWithAuth', { requestId: id, authChallengeResponse: response }, 'AUTH');
   };
   try {
     session = await context.newCDPSession(page);
@@ -132,18 +149,21 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
     throw refused();
   }
   return Object.freeze({
+    diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState }); },
     assertHealthy() { if (failed || disposed) throw refused(); },
     dispose() {
       if (disposal) return disposal;
-      disposed = true; responses.clear();
+      disposed = true; responses.clear(); disposalState = 'RUNNING';
       disposal = (async () => {
-        if (!page.isClosed()) { try { await page.close(); } catch { failed = true; } }
+        if (!page.isClosed()) { try { await page.close(); } catch { failed = true; record('PAGE_CLOSE_FAILED', 'CLOSE'); } }
         await Promise.allSettled([...pending]);
         session.off('Fetch.requestPaused', paused); session.off('Fetch.authRequired', auth);
-        try { await session.detach(); } catch { if (!page.isClosed()) failed = true; }
+        try { await session.detach(); } catch { if (!page.isClosed()) { failed = true; record('DETACH_FAILED', 'DETACH'); } }
         attempts.clear();
         if (failed) throw refused();
-      })();
+      })().then(() => { disposalState = 'DONE'; }, () => {
+        disposalState = 'FAILED'; throw refused();
+      });
       return disposal;
     },
   });

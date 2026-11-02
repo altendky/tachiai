@@ -374,6 +374,36 @@ This smoke does not exercise provider renewal, a remembered session, actual
 Network Parcelable delivery or process-death recovery. Cold closed-app renewal
 and physical naturally expired acceptance remain open.
 
+### Private Network parcel fixture
+
+A separate opt-in instrumentation fixture exercises an actual active Android
+Network through Messenger/Binder into a non-exported debug service in the exact
+approval-browser process. It uses the production START envelope and decoder,
+checks private Network equality and the original request/deadline after the
+round trip, and rejects ten malformed bound envelopes alongside valid bound and
+legacy cases. Its finite service owner acknowledges handler retirement before
+the test releases the binding. No Network handle or private payload is printed.
+The probe constructs no renewal operation, browser, provider runtime or route.
+Release-isolation checks exclude its service from ordinary release builds.
+
+Run this fixture only on a newly agreed disposable emulator with host-verified
+empty app state before installation. Instrumentation starts the normal
+Application, which can schedule real renewals on configured data before any
+test guard runs. The in-app guard first drains empty startup reconciliation,
+then permits only the three exact empty startup coordination locks and an
+optional strictly decoded empty public scheduler ledger; it refuses private
+preferences and unknown files without opening them. This guard does not replace
+the clean-device schedule or authorize use on a persistent configured AVD.
+
+The opt-in is `tachiaiFreshNetworkParcel=true`, with the exact
+`AbemaRenewalNetworkParcelDeviceTest` class selected. Acceptance requires ARMED,
+PASSED and one executed JUnit test, plus independent binding and emulator shutdown
+confirmation; a skipped test or zero exit status alone is insufficient.
+This fixture has not yet run on a device. Even a pass would establish only the
+same-UID private Parcelable/codec boundary, not JobParameters Network provenance,
+socket/resolver binding, provider renewal, process-loss recovery or physical
+device acceptance.
+
 ## Recommendation and scope
 
 Keep the external system VPN as the current baseline. If routing becomes an

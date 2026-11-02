@@ -196,7 +196,8 @@ def fixture(content=None, attributes="", package="net.fstab.tachiai"):
 class IsolationTests(unittest.TestCase):
     sources = [fixture('<activity android:name=".feature.diagnostic.InspectionControlActivity" />'
                        '<activity android:name=".feature.diagnostic.AbemaCachedHelperActivity" />'
-                       '<service android:name=".provider.abema.account.AbemaRenewalProbeService" />'),
+                       '<service android:name=".provider.abema.account.AbemaRenewalProbeService" />'
+                       '<service android:name=".provider.abema.account.AbemaRenewalNetworkParcelProbeService" />'),
                fixture('<activity android:name=".MainActivity" tools:node="remove" />'
                        '<activity android:name=".feature.diagnostic.BrowserLabActivity" />')]
 
@@ -313,6 +314,7 @@ class IsolationTests(unittest.TestCase):
                         '<activity android:name=".feature.diagnostic.InspectionControlActivity" android:enabled="false" />',
                         '<service android:name="net.fstab.tachiai.feature.diagnostic.BrowserLabActivity" />',
                         '<service android:name=".provider.abema.account.AbemaRenewalProbeService" />',
+                        '<service android:name=".provider.abema.account.AbemaRenewalNetworkParcelProbeService" />',
                         '<activity-alias android:name=".Alias" android:targetActivity=".feature.diagnostic.AbemaCachedHelperActivity" />'):
             with self.assertRaises(IsolationFailure):
                 self.check(fixture(primary_content() + content))

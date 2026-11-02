@@ -1,6 +1,7 @@
 // Development-only equivalent of the already scoped Headerly media rule.
 // This is privileged header rewriting, not ordinary website CORS support.
 import { validateRouteDescriptor } from './abema-route-browser.mjs';
+import { createLifecycleHistory } from './mixed-browser-lifecycle.mjs';
 
 const policies = new WeakSet();
 const refused = () => new Error('MIXED_BROWSER_HEADERS_REFUSED');
@@ -42,6 +43,9 @@ export function ownedMixedHeaderPolicy(harnessOrigin, mediaOrigin) {
 }
 
 const identifier = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const networkErrors = new Set(['Failed', 'Aborted', 'TimedOut', 'AccessDenied', 'ConnectionClosed', 'ConnectionReset',
+  'ConnectionRefused', 'ConnectionAborted', 'ConnectionFailed', 'NameNotResolved', 'InternetDisconnected',
+  'AddressUnreachable', 'BlockedByClient', 'BlockedByResponse']);
 function requestHeaders(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw refused();
   const entries = Object.entries(input);
@@ -65,23 +69,29 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   let failure = 'NONE', failureStage = 'NONE', failureCommand = 'NONE', disposalState = 'OPEN';
   let canceledContinuationObserved = false;
   let continuationFailure;
+  let absentInterception, untrackedFailure;
+  const history = createLifecycleHistory();
   const attempts = new Set(), responses = new Map(), pending = new Set();
-  const retire = (id, entry) => { if (responses.get(id) === entry) responses.delete(id); };
+  const retire = (id, entry, reason) => {
+    if (responses.get(id) === entry) { responses.delete(id); history.retire(id, reason); }
+  };
   const matchesResponse = (entry, event) => event.request?.url === entry.url && event.request?.method === entry.method &&
     event.frameId === entry.frame && event.resourceType === entry.resource;
   const networkTerminal = (event, failedLoad) => {
     if (disposed || failed || !identifier(event?.requestId)) return;
+    history.networkTerminal(event, failedLoad);
     const entries = [...responses.entries()].filter(([, entry]) => entry.networkId === event.requestId);
     const canceled = entries.length === 1 && failedLoad && event.canceled === true;
     for (const [id, entry] of entries) {
       // This is the original admitted Fetch owner, not cancellation history for
       // a future request. Keep it until its response settles or this owner closes.
       entry.canceled = canceled;
-      if (!canceled && !entry.responsePending) retire(id, entry);
+      if (!canceled && !entry.responsePending) retire(id, entry, failedLoad ? 'NETWORK_FAILED' : 'NETWORK_FINISHED');
     }
   };
   const networkFailed = event => networkTerminal(event, true);
   const networkFinished = event => networkTerminal(event, false);
+  const networkRequest = event => { if (!disposed && !failed) history.networkRequest(event); };
   const protocolError = (error, method) => {
     try {
       // Exact public Chrome/Playwright protocol message, never a substring of
@@ -106,27 +116,42 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
     }
     return { error: protocolError(error, method), response: response?.kind ?? 'NOT_RESPONSE', cancellation };
   };
-  const record = (value, stage, command = 'NONE', evidence) => {
+  const record = (value, stage, command = 'NONE', evidence, response) => {
     if (failure !== 'NONE') return;
     failure = value; failureStage = stage; failureCommand = command;
-    if (value === 'CONTINUATION_FAILED') continuationFailure = Object.freeze({ ...evidence });
+    if (value === 'CONTINUATION_FAILED') {
+      continuationFailure = Object.freeze({ ...evidence });
+      if (response?.kind === 'UNTRACKED_ERROR') untrackedFailure = response.lifecycle;
+    }
   };
-  const fail = (value, stage, command = 'NONE', evidence) => {
-    record(value, stage, command, evidence); failed = true; responses.clear(); void page.close().catch(() => {});
+  const fail = (value, stage, command = 'NONE', evidence, response) => {
+    record(value, stage, command, evidence, response); failed = true; responses.clear(); void page.close().catch(() => {});
   };
   const send = (method, fields, stage, entry, response) => {
     const command = { 'Fetch.continueRequest': 'CONTINUE_REQUEST', 'Fetch.continueResponse': 'CONTINUE_RESPONSE',
       'Fetch.continueWithAuth': 'CONTINUE_AUTH' }[method];
+    const id = fields.requestId, ownerSession = session, token = history.command(id, command);
+    const absentOwner = (error, synchronous) => !synchronous && !disposed && !failed && session === ownerSession &&
+      !page.isClosed() && stage === 'RESPONSE' && response?.kind === 'UNTRACKED_ERROR' && response.validError &&
+      !response.hasStatus && entry === undefined && responses.get(id) === undefined && method === 'Fetch.continueRequest' &&
+      Reflect.ownKeys(fields).length === 1 && Reflect.ownKeys(fields)[0] === 'requestId' && fields.requestId === id &&
+      id === response.id && protocolError(error, method) === 'INVALID_INTERCEPTION_ID';
     const rejected = (error, synchronous = false) => {
       if (stage === 'RESPONSE' && canceledInterception(error, method, fields.requestId, entry)) canceledContinuationObserved = true;
+      // Chrome's missing-job negative acknowledgement precedes all request
+      // modifications. This exact unmodified failed-response passthrough had
+      // no effect; it is neither cancellation nor playback/cleanup evidence.
+      else if (absentOwner(error, synchronous)) absentInterception ??= history.ack(response.lifecycle);
       else if (synchronous || !disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command,
-        continuationEvidence(error, method, fields.requestId, stage, entry, response));
+        continuationEvidence(error, method, fields.requestId, stage, entry, response), response);
     };
-    const settled = () => { if (stage === 'RESPONSE' && entry) retire(fields.requestId, entry); };
+    const settled = () => { if (stage === 'RESPONSE' && entry) retire(id, entry, 'RESPONSE_SETTLED'); };
     try {
-      const task = session.send(method, fields).catch(rejected).finally(() => { settled(); pending.delete(task); });
+      const task = session.send(method, fields).then(() => history.settle(token, 'OK'), error => {
+        history.settle(token, protocolError(error, method)); rejected(error);
+      }).finally(() => { settled(); pending.delete(task); });
       pending.add(task);
-    } catch (error) { rejected(error, true); settled(); }
+    } catch (error) { history.settle(token, protocolError(error, method)); rejected(error, true); settled(); }
   };
   const paused = event => {
     if (disposed || failed) return;
@@ -138,9 +163,11 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
       if (stage === 'RESPONSE') {
         reason = 'RESPONSE_BINDING_MISMATCH';
         const captured = responses.get(id);
-        const response = { kind: `${captured ? 'TRACKED' : 'UNTRACKED'}_${event.responseErrorReason !== undefined ? 'ERROR' : 'STATUS'}`,
+        const response = Object.freeze({ id, lifecycle: history.response(event), validError: networkErrors.has(event.responseErrorReason),
+          hasStatus: event.responseStatusCode !== undefined,
+          kind: `${captured ? 'TRACKED' : 'UNTRACKED'}_${event.responseErrorReason !== undefined ? 'ERROR' : 'STATUS'}`,
           networkIdPresent: identifier(event.networkId), networkIdMatches: event.networkId === captured?.networkId,
-          bindingMatches: !!captured && matchesResponse(captured, event) };
+          bindingMatches: !!captured && matchesResponse(captured, event) });
         if (captured?.responsePending) throw refused();
         if (captured) {
           captured.responsePending = true;
@@ -162,8 +189,11 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
         return;
       }
       const request = event.request;
-      if (!request || !['GET', 'HEAD'].includes(request.method) || !['XHR', 'Fetch'].includes(event.resourceType) ||
-        !identifier(event.frameId) || !selectedPolicy.match(request.url)) {
+      const skipped = !request || !['GET', 'HEAD'].includes(request.method) ? 'SKIPPED_METHOD' :
+        !['XHR', 'Fetch'].includes(event.resourceType) ? 'SKIPPED_RESOURCE' : !identifier(event.frameId) ? 'SKIPPED_FRAME' :
+          !selectedPolicy.match(request.url) ? 'SKIPPED_URL' : undefined;
+      if (skipped) {
+        history.request(event, skipped);
         send('Fetch.continueRequest', { requestId: id }, stage); return;
       }
       reason = 'REQUEST_HEADERS_INVALID';
@@ -171,10 +201,12 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
       // Browser-controlled Origin binds the actual initiating origin, including
       // its port; a target URL or top-level page URL is not an initiator proof.
       if (origins.length !== 1 || origins[0].value !== selectedPolicy.origin) {
+        history.request(event, 'SKIPPED_ORIGIN');
         send('Fetch.continueRequest', { requestId: id }, stage); return;
       }
       reason = 'CAPACITY';
       if (responses.has(id) || responses.size >= 512) throw refused();
+      history.request(event, 'ADMITTED');
       responses.set(id, { url: request.url, method: request.method, frame: event.frameId, resource: event.resourceType,
         networkId: identifier(event.networkId) ? event.networkId : undefined, responsePending: false, cancelEligible: false, canceled: false });
       send('Fetch.continueRequest', { requestId: id,
@@ -197,28 +229,33 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
     session = await context.newCDPSession(page);
     session.on('Fetch.requestPaused', paused); session.on('Fetch.authRequired', auth);
     session.on('Network.loadingFailed', networkFailed); session.on('Network.loadingFinished', networkFinished);
+    session.on('Network.requestWillBeSent', networkRequest);
     await session.send('Network.enable');
     await session.send('Fetch.enable', { handleAuthRequests: true, patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
   } catch {
     if (session) {
       session.off('Fetch.requestPaused', paused); session.off('Fetch.authRequired', auth);
       session.off('Network.loadingFailed', networkFailed); session.off('Network.loadingFinished', networkFinished);
+      session.off('Network.requestWillBeSent', networkRequest);
       try { await session.detach(); } catch {}
     }
     throw refused();
   }
   return Object.freeze({
     diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState, canceledContinuationObserved,
-      ...(continuationFailure ? { continuationFailure: Object.freeze({ ...continuationFailure }) } : {}) }); },
+      ...(continuationFailure ? { continuationFailure: Object.freeze({ ...continuationFailure }) } : {}),
+      ...(absentInterception ? { absentInterception: Object.freeze({ ...absentInterception }) } : {}),
+      ...(untrackedFailure ? { untrackedFailure: Object.freeze({ ...untrackedFailure }) } : {}) }); },
     assertHealthy() { if (failed || disposed) throw refused(); },
     dispose() {
       if (disposal) return disposal;
-      disposed = true; responses.clear(); disposalState = 'RUNNING';
+      disposed = true; responses.clear(); history.clear(); disposalState = 'RUNNING';
       disposal = (async () => {
         if (!page.isClosed()) { try { await page.close(); } catch { failed = true; record('PAGE_CLOSE_FAILED', 'CLOSE'); } }
         await Promise.allSettled([...pending]);
         session.off('Fetch.requestPaused', paused); session.off('Fetch.authRequired', auth);
         session.off('Network.loadingFailed', networkFailed); session.off('Network.loadingFinished', networkFinished);
+        session.off('Network.requestWillBeSent', networkRequest);
         try { await session.detach(); } catch { if (!page.isClosed()) { failed = true; record('DETACH_FAILED', 'DETACH'); } }
         attempts.clear();
         if (failed) throw refused();

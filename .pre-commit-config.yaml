@@ -230,9 +230,9 @@ repos:
 
       - id: web-mixed-browser-transport-tests
         name: Mixed browser routing and scoped header protocol tests
-        entry: node --test scripts/tests/web-mixed-route-browser.test.mjs scripts/tests/web-mixed-browser-headers.test.mjs
+        entry: node --test scripts/tests/web-mixed-route-browser.test.mjs scripts/tests/web-mixed-browser-headers.test.mjs scripts/tests/web-mixed-browser-lifecycle.test.mjs
         language: system
-        files: '^apps/web/scripts/(mixed-(route-browser|browser-headers)|abema-route-browser)\.mjs$|^scripts/tests/web-mixed-(route-browser|browser-headers)\.test\.mjs$'
+        files: '^apps/web/scripts/(mixed-(route-browser|browser-(headers|lifecycle))|abema-route-browser)\.mjs$|^apps/web/scripts/mixed-browser-lifecycle-schema\.json$|^scripts/tests/web-mixed-(route-browser|browser-(headers|lifecycle))\.test\.mjs$'
         pass_filenames: false
 
       - id: web-abema-episode-eme-tests
@@ -246,14 +246,14 @@ repos:
         name: Provider pair private host and backend protocol tests
         entry: uv run scripts/tests/web-provider-pair-route.test.py
         language: system
-        files: '^apps/web/scripts/provider-pair-.*\.py$|^scripts/tests/web-provider-pair-route\.test\.py$'
+        files: '^apps/web/scripts/provider-pair-.*\.py$|^apps/web/scripts/mixed-browser-lifecycle-schema\.json$|^scripts/tests/web-provider-pair-route\.test\.py$'
         pass_filenames: false
 
       - id: web-provider-pair-browser-tests
         name: Provider pair owned action and cleanup protocol tests
         entry: node --test scripts/tests/web-provider-pair-browser.test.mjs
         language: system
-        files: '^apps/web/scripts/(provider-pair-browser|mixed-(route-browser|browser-headers))\.mjs$|^scripts/tests/web-provider-pair-browser\.test\.mjs$'
+        files: '^apps/web/scripts/(provider-pair-browser|mixed-(route-browser|browser-(headers|lifecycle)))\.mjs$|^apps/web/scripts/mixed-browser-lifecycle-schema\.json$|^scripts/tests/web-provider-pair-browser\.test\.mjs$'
         pass_filenames: false
 
       - id: web-provider-pair-owner-tests

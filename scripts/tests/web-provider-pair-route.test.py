@@ -174,6 +174,36 @@ class HostTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(bootstrap.Refused):
                 host.validate_control(host.wire({**receipt, "transportDiagnostic": {**diagnostic, **change}}))
 
+    def test_absent_interception_history_is_closed_and_never_cleanup_authority(self):
+        receipt = {"event": "finished", "outcome": "REFUSED", "decodeObserved": False,
+            "playbackFailureObserved": False, "mediaCleanupConfirmed": False, "cdmCleanupConfirmed": False,
+            "grantCleanup": "unconfirmed", "rendererCleanupConfirmed": False, "browserCleanupConfirmed": True,
+            "authCleanupConfirmed": False}
+        diagnostic = {"failure": "NONE", "stage": "NONE", "command": "NONE", "disposal": "DONE"}
+        lifecycle = {"firstRequest": "UNSEEN", "lastRequest": "UNSEEN", "requestCount": 0,
+            "firstRequestSequence": 0, "lastRequestSequence": 0, "retirement": "NONE", "retirementSequence": 0,
+            "previousCommand": "NONE", "previousResult": "NONE", "responseSequence": 1, "ackSequence": 2,
+            "relatedRequests": 0, "tupleRelation": "NONE", "networkTerminal": "NONE", "initiator": "UNSEEN",
+            "errorReason": "Failed", "redirected": False, "complete": True}
+        value = {**receipt, "transportDiagnostic": {**diagnostic, "absentInterception": lifecycle}}
+        self.assertEqual(host.validate_control(host.wire(value)), value)
+        self.assertFalse(host.trial_succeeded(value, True))
+        for change in ({"url": PRIVATE}, {"errorReason": PRIVATE}, {"requestCount": True},
+                       {"ackSequence": -1}, {"relatedRequests": 2049}, {"complete": 1},
+                       {"firstRequest": []}, {"errorReason": "NONE"}):
+            with self.subTest(change=change), self.assertRaises(bootstrap.Refused):
+                host.validate_control(host.wire({**receipt, "transportDiagnostic": {
+                    **diagnostic, "absentInterception": {**lifecycle, **change}}}))
+        failure = {"failure": "CONTINUATION_FAILED", "stage": "RESPONSE", "command": "CONTINUE_REQUEST", "disposal": "FAILED",
+            "continuationFailure": {"error": "OTHER", "response": "UNTRACKED_ERROR", "cancellation": "NO_ENTRY"}}
+        value = {**receipt, "transportDiagnostic": {**failure, "untrackedFailure": lifecycle}}
+        self.assertEqual(host.validate_control(host.wire(value)), value)
+        self.assertFalse(host.trial_succeeded(value, True))
+        for change in ({"failure": "NONE"}, {"stage": "AUTH"}, {"command": "CONTINUE_AUTH"}, {"continuationFailure": {}}):
+            with self.subTest(change=change), self.assertRaises(bootstrap.Refused):
+                host.validate_control(host.wire({**receipt, "transportDiagnostic": {
+                    **failure, **change, "untrackedFailure": lifecycle}}))
+
     def test_owned_fresh_process_private_result_and_reaping(self):
         script = "import sys,json;value=json.load(sys.stdin);assert value['route']['username']=='u'*24;print(json.dumps({'outcome':'READY','packet':{'owned':'PRIVATE_SYNTHETIC'},'cleanupConfirmed':True}))"
         job, temporary = self.owned_job(script)

@@ -1,0 +1,23 @@
+{
+  "enums": {
+    "firstRequest": ["ADMITTED", "SKIPPED_METHOD", "SKIPPED_RESOURCE", "SKIPPED_FRAME", "SKIPPED_URL", "SKIPPED_ORIGIN", "UNSEEN", "UNKNOWN"],
+    "lastRequest": ["ADMITTED", "SKIPPED_METHOD", "SKIPPED_RESOURCE", "SKIPPED_FRAME", "SKIPPED_URL", "SKIPPED_ORIGIN", "UNSEEN", "UNKNOWN"],
+    "retirement": ["NONE", "RESPONSE_SETTLED", "NETWORK_FAILED", "NETWORK_FINISHED", "UNKNOWN"],
+    "previousCommand": ["NONE", "CONTINUE_REQUEST", "CONTINUE_RESPONSE", "CONTINUE_AUTH"],
+    "previousResult": ["NONE", "PENDING", "OK", "INVALID_INTERCEPTION_ID", "OTHER"],
+    "tupleRelation": ["SAME", "DIFFERENT", "NONE", "UNKNOWN"],
+    "networkTerminal": ["NONE", "CANCELED", "FAILED", "FAILED_UNKNOWN", "FINISHED", "UNKNOWN"],
+    "initiator": ["PREFLIGHT_SEEN", "OTHER_SEEN", "UNSEEN", "UNKNOWN"],
+    "errorReason": ["NONE", "OTHER", "Failed", "Aborted", "TimedOut", "AccessDenied", "ConnectionClosed", "ConnectionReset", "ConnectionRefused", "ConnectionAborted", "ConnectionFailed", "NameNotResolved", "InternetDisconnected", "AddressUnreachable", "BlockedByClient", "BlockedByResponse"]
+  },
+  "integers": {
+    "requestCount": 1000000,
+    "firstRequestSequence": 1000000,
+    "lastRequestSequence": 1000000,
+    "retirementSequence": 1000000,
+    "responseSequence": 1000000,
+    "ackSequence": 1000000,
+    "relatedRequests": 2048
+  },
+  "booleans": ["redirected", "complete"]
+}

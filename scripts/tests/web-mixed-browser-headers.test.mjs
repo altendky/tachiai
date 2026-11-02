@@ -260,8 +260,12 @@ test('an early cancellation retains only the exact admitted owner until its matc
     { changedResponse: { request: { ...packet().request, url: 'https://usher.ttvnw.net/other-owned' } } }]) {
     const invalid = await heldResponse({ earlyCancellation: true, ...options });
     invalid.reject(invalidInterception()); await tick();
-    assert.equal(invalid.page.isClosed(), true); assert.equal(invalid.hook.diagnostic().canceledContinuationObserved, false);
-    await assert.rejects(invalid.hook.dispose());
+    assert.equal(invalid.hook.diagnostic().canceledContinuationObserved, false);
+    if (options.ambiguous) {
+      // Ambiguity retired both pre-response entries. This is an absent-owner
+      // no-effect ACK, independently of the unusable cancellation receipt.
+      invalid.hook.assertHealthy(); assert.ok(invalid.hook.diagnostic().absentInterception); await invalid.hook.dispose();
+    } else { assert.equal(invalid.page.isClosed(), true); await assert.rejects(invalid.hook.dispose()); }
   }
   const otherError = await heldResponse({ earlyCancellation: true });
   otherError.reject(Error('PRIVATE_ARBITRARY_FAILURE')); await tick();
@@ -274,9 +278,10 @@ test('a subsequent nonpositive terminal event invalidates early and pending canc
   for (const event of ['Network.loadingFinished', 'Network.loadingFailed']) {
     const early = await heldResponse({ earlyCancellation: true, terminalAfterEarly: event });
     early.reject(invalidInterception()); await tick();
-    assert.deepEqual(early.hook.diagnostic().continuationFailure,
-      { error: 'INVALID_INTERCEPTION_ID', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' });
-    await assert.rejects(early.hook.dispose());
+    early.hook.assertHealthy();
+    assert.equal(early.hook.diagnostic().canceledContinuationObserved, false);
+    assert.equal(early.hook.diagnostic().absentInterception.retirement, event === 'Network.loadingFinished' ? 'NETWORK_FINISHED' : 'NETWORK_FAILED');
+    await early.hook.dispose();
     const pending = await heldResponse();
     pending.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
     pending.session.emit(event, { requestId: 'owned-network', canceled: false });
@@ -298,8 +303,10 @@ test('early receipts cannot authorize different Fetch owners or future reuse of 
     if (mode !== 'different-fetch') { f.session.emit('Fetch.requestPaused', next); await tick(); }
     f.session.send = async () => { throw invalidInterception(); };
     f.session.emit('Fetch.requestPaused', { ...next, responseErrorReason: 'Failed' }); await tick();
-    assert.equal(hook.diagnostic().failure, 'CONTINUATION_FAILED'); assert.equal(hook.diagnostic().canceledContinuationObserved, false);
-    await assert.rejects(hook.dispose());
+    assert.equal(hook.diagnostic().canceledContinuationObserved, false);
+    if (mode === 'different-fetch') {
+      hook.assertHealthy(); assert.equal(hook.diagnostic().absentInterception.firstRequest, 'UNSEEN'); await hook.dispose();
+    } else { assert.equal(hook.diagnostic().failure, 'CONTINUATION_FAILED'); await assert.rejects(hook.dispose()); }
   }
 });
 
@@ -364,11 +371,11 @@ test('settled cancellation receipts cannot authorize a later interception or sur
   assert.equal(Object.hasOwn(f.hook.diagnostic(), 'continuationFailure'), false);
   f.session.send = async () => { throw invalidInterception(); };
   f.session.emit('Fetch.requestPaused', { ...f.base, responseErrorReason: 'Failed' }); await tick();
-  assert.equal(f.hook.diagnostic().failure, 'CONTINUATION_FAILED');
+  f.hook.assertHealthy();
   assert.equal(f.hook.diagnostic().canceledContinuationObserved, true);
-  assert.deepEqual(f.hook.diagnostic().continuationFailure,
-    { error: 'INVALID_INTERCEPTION_ID', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' });
-  await assert.rejects(f.hook.dispose());
+  assert.equal(f.hook.diagnostic().absentInterception.retirement, 'RESPONSE_SETTLED');
+  assert.equal(Object.hasOwn(f.hook.diagnostic(), 'continuationFailure'), false);
+  await f.hook.dispose();
   const closing = await heldResponse(), disposal = closing.hook.dispose();
   closing.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
   closing.reject(invalidInterception()); await disposal;
@@ -445,10 +452,243 @@ test('nested continuation evidence is immutable, independent and belongs only to
   await assert.rejects(hook.dispose());
 });
 
+test('exact absent failed-response negative acknowledgements have no cancellation or playback meaning', async () => {
+  const errors = ['Failed', 'Aborted', 'TimedOut', 'AccessDenied', 'ConnectionClosed', 'ConnectionReset', 'ConnectionRefused',
+    'ConnectionAborted', 'ConnectionFailed', 'NameNotResolved', 'InternetDisconnected', 'AddressUnreachable', 'BlockedByClient', 'BlockedByResponse'];
+  for (const errorReason of errors) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    f.session.send = async (method, fields) => {
+      assert.equal(method, 'Fetch.continueRequest'); assert.deepEqual(fields, { requestId: fields.requestId });
+      throw invalidInterception();
+    };
+    f.session.emit('Fetch.requestPaused', packet({ responseErrorReason: errorReason })); await tick();
+    hook.assertHealthy(); assert.equal(f.page.isClosed(), false);
+    const first = hook.diagnostic();
+    assert.equal(first.failure, 'NONE'); assert.equal(first.disposal, 'OPEN'); assert.equal(first.canceledContinuationObserved, false);
+    assert.equal(first.absentInterception.errorReason, errorReason); assert.equal(first.absentInterception.firstRequest, 'UNSEEN');
+    assert.ok(first.absentInterception.ackSequence > first.absentInterception.responseSequence);
+    assert.equal(Object.hasOwn(first, 'continuationFailure'), false); assert.equal(Object.hasOwn(first, 'untrackedFailure'), false);
+    assert.ok(Object.isFrozen(first.absentInterception));
+    assert.notEqual(first.absentInterception, hook.diagnostic().absentInterception);
+    assert.throws(() => { first.absentInterception.errorReason = 'PRIVATE'; }, TypeError);
+    f.session.emit('Fetch.requestPaused', packet({ requestId: 'later', responseErrorReason: 'Aborted' })); await tick();
+    assert.deepEqual(hook.diagnostic().absentInterception, first.absentInterception);
+    await hook.dispose(); assert.equal(hook.diagnostic().disposal, 'DONE');
+    assert.equal(f.session.listenerCount('Network.requestWillBeSent'), 0);
+  }
+});
+
+test('absent-owner tolerance uses the original response snapshot and exact command argument shape', async () => {
+  for (const mode of ['extra-key', 'symbol-key', 'changed-id', 'unknown-error', 'null-error', 'status-with-error', 'status',
+    'wrong-method-error', 'private-error', 'sync-throw', 'replacement']) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    let reject;
+    const pending = new Promise((_yes, no) => { reject = no; });
+    f.session.send = (method, fields) => {
+      if (mode === 'sync-throw') throw invalidInterception();
+      if (mode === 'extra-key') fields.headers = [];
+      if (mode === 'symbol-key') fields[Symbol('private')] = true;
+      if (mode === 'changed-id') fields.requestId = 'different';
+      return pending;
+    };
+    const response = packet(mode === 'status' ? { responseStatusCode: 403, responseHeaders: [] } : {
+      responseErrorReason: mode === 'unknown-error' ? 'PRIVATE_UNKNOWN_REASON' : mode === 'null-error' ? null : 'Failed',
+      ...(mode === 'status-with-error' ? { responseStatusCode: 403 } : {}) });
+    f.session.emit('Fetch.requestPaused', response);
+    if (mode === 'replacement') {
+      f.session.send = async () => {};
+      f.session.emit('Fetch.requestPaused', packet()); await tick();
+    }
+    if (mode !== 'sync-throw') reject(mode === 'wrong-method-error' ? invalidInterception('Fetch.continueResponse') :
+      mode === 'private-error' ? Error('PRIVATE_TOKEN Invalid InterceptionId.') : invalidInterception());
+    await tick();
+    assert.equal(hook.diagnostic().failure, 'CONTINUATION_FAILED', mode); assert.equal(f.page.isClosed(), true, mode);
+    assert.equal(Object.hasOwn(hook.diagnostic(), 'absentInterception'), false, mode);
+    assert.equal(hook.diagnostic().canceledContinuationObserved, false, mode);
+    if (mode !== 'status') assert.ok(hook.diagnostic().untrackedFailure, mode);
+    assert.equal(JSON.stringify(hook.diagnostic()).includes('PRIVATE'), false, mode);
+    await assert.rejects(hook.dispose());
+  }
+  const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  let reject; f.session.send = () => new Promise((_yes, no) => { reject = no; });
+  const event = packet({ responseErrorReason: 'Failed' });
+  f.session.emit('Fetch.requestPaused', event);
+  event.responseErrorReason = 'PRIVATE_CHANGED_REASON'; event.responseStatusCode = 206; event.requestId = 'changed';
+  reject(invalidInterception()); await tick(); hook.assertHealthy();
+  assert.equal(hook.diagnostic().absentInterception.errorReason, 'Failed'); await hook.dispose();
+});
+
+test('request and auth commands remain fatal and closed owners cannot accept absent acknowledgements', async () => {
+  for (const stage of ['REQUEST', 'AUTH']) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    f.session.send = async method => { throw invalidInterception(method); };
+    if (stage === 'AUTH') f.session.emit('Fetch.authRequired', { requestId: 'one', authChallenge: {} });
+    else f.session.emit('Fetch.requestPaused', packet({ request: { ...packet().request, method: 'POST' } }));
+    await tick(); assert.equal(hook.diagnostic().stage, stage); assert.equal(hook.diagnostic().failure, 'CONTINUATION_FAILED');
+    assert.equal(Object.hasOwn(hook.diagnostic(), 'absentInterception'), false); await assert.rejects(hook.dispose());
+  }
+  for (const mode of ['disposed', 'closed-page', 'prior-failure']) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    let reject; f.session.send = () => new Promise((_yes, no) => { reject = no; });
+    f.session.emit('Fetch.requestPaused', packet({ responseErrorReason: 'Failed' }));
+    let disposal;
+    if (mode === 'disposed') disposal = hook.dispose();
+    if (mode === 'closed-page') await f.page.close();
+    if (mode === 'prior-failure') f.session.emit('Fetch.requestPaused', packet({ requestId: null }));
+    reject(invalidInterception()); await tick();
+    assert.equal(Object.hasOwn(hook.diagnostic(), 'absentInterception'), false, mode);
+    if (mode === 'prior-failure') {
+      assert.equal(hook.diagnostic().failure, 'REQUEST_EVENT_INVALID'); await assert.rejects(hook.dispose());
+    } else await (disposal ?? hook.dispose());
+  }
+});
+
+test('observational lifecycle distinguishes skipped and retired owners without changing header admission', async () => {
+  const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  const base = packet({ networkId: 'private-network', request: { ...packet().request, method: 'POST' } });
+  f.session.emit('Network.requestWillBeSent', { requestId: base.networkId, initiator: { type: 'preflight' } });
+  f.session.emit('Fetch.requestPaused', base); await tick();
+  assert.deepEqual(f.calls.at(-1).fields, { requestId: 'one' });
+  f.session.emit('Network.loadingFailed', { requestId: base.networkId, canceled: false });
+  f.session.send = async () => { throw invalidInterception(); };
+  f.session.emit('Fetch.requestPaused', { ...base, responseErrorReason: 'Failed' }); await tick();
+  const first = hook.diagnostic().absentInterception;
+  assert.equal(first.firstRequest, 'SKIPPED_METHOD'); assert.equal(first.requestCount, 1);
+  assert.equal(first.networkTerminal, 'FAILED'); assert.equal(first.initiator, 'PREFLIGHT_SEEN');
+  assert.equal(first.previousCommand, 'CONTINUE_REQUEST'); assert.equal(first.previousResult, 'OK');
+  assert.equal(JSON.stringify(first).includes('private'), false); await hook.dispose();
+
+  const fatal = fake(), broken = await installMixedRouteHeaders(fatal.context, fatal.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  fatal.session.send = async () => { throw Error('PRIVATE_ARBITRARY_ERROR'); };
+  fatal.session.emit('Fetch.requestPaused', packet({ responseErrorReason: 'Failed' })); await tick();
+  const before = broken.diagnostic(), after = broken.diagnostic();
+  assert.ok(Object.isFrozen(before.untrackedFailure)); assert.notEqual(before.untrackedFailure, after.untrackedFailure);
+  assert.equal(before.untrackedFailure.ackSequence, 0);
+  assert.throws(() => { before.untrackedFailure.firstRequest = 'PRIVATE'; }, TypeError);
+  await assert.rejects(broken.dispose()); assert.deepEqual(broken.diagnostic().untrackedFailure, before.untrackedFailure);
+});
+
 const local = { skip: process.env.TACHIAI_LOCAL_CHROME_TEST !== '1', timeout: 60000 };
 const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const serverOrigin = server => 'http://127.0.0.1:' + server.address().port;
 const close = async server => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); };
+
+test('actual Chrome controlled duplicate negative acknowledgement preserves two owned videos and explicit revoke cleanup', local, async () => {
+  const fixtures = await Promise.all(['a', 'b'].map(name => readFile(new URL(
+    '../../apps/android/app/src/androidTest/assets/controlled-mirroring/' + name + '.mp4', import.meta.url))));
+  let revoked = 0;
+  const harness = createServer((request, response) => {
+    if (request.url === '/revoke' && request.method === 'POST') { revoked++; response.writeHead(204); response.end(); return; }
+    const index = ['/a.mp4', '/b.mp4'].indexOf(request.url);
+    if (index !== -1 && request.method === 'GET') {
+      response.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': fixtures[index].length }); response.end(fixtures[index]); return;
+    }
+    response.end('<!doctype html><title>Owned absent interception</title>');
+  });
+  const media = createServer(request => request.socket.destroy());
+  const proxy = createServer((_request, response) => { response.writeHead(403); response.end(); });
+  proxy.on('connect', (_request, socket) => socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'));
+  let root, browser, context, hook;
+  try {
+    await Promise.all([listen(harness), listen(media), listen(proxy)]);
+    const parent = process.env.TACHIAI_MIXED_HEADER_TEST_ROOT || join(tmpdir(), 'agents');
+    await mkdir(parent, { recursive: true }); root = await mkdtemp(join(parent, 'absent-response-'));
+    const { chromium } = createRequire(new URL('../../apps/web/package.json', import.meta.url))('@playwright/test');
+    browser = await chromium.launch({ channel: 'chrome', headless: true,
+      proxy: { server: serverOrigin(proxy), bypass: '127.0.0.1' }, env: { ...process.env, TMPDIR: root } });
+    context = await browser.newContext({ serviceWorkers: 'block' }); const page = await context.newPage();
+    let session, captured, naturalResponses = 0, controlledDuplicate = false, continued = 0, negativeAcknowledgement = false;
+    hook = await installMixedRouteHeaders({ newCDPSession: async selected => {
+      session = await context.newCDPSession(selected); const send = session.send.bind(session);
+      session.on('Fetch.requestPaused', event => {
+        if (event.responseErrorReason !== undefined && !controlledDuplicate) { captured = event; naturalResponses++; }
+      });
+      session.send = async (method, fields) => {
+        try {
+          const result = await send(method, fields);
+          if (captured && method === 'Fetch.continueRequest' && fields?.requestId === captured.requestId) continued++;
+          return result;
+        } catch (error) {
+          if (controlledDuplicate && method === 'Fetch.continueRequest' && fields?.requestId === captured?.requestId) {
+            negativeAcknowledgement = error.message === 'cdpSession.send: Protocol error (Fetch.continueRequest): Invalid InterceptionId.' ||
+              error.message === 'Protocol error (Fetch.continueRequest): Invalid InterceptionId.';
+          }
+          throw error;
+        }
+      };
+      return session;
+    } }, page, route, ownedMixedHeaderPolicy(serverOrigin(harness), serverOrigin(media)));
+    await page.goto(serverOrigin(harness));
+    await page.evaluate(async () => {
+      window.ownedVideos = ['/a.mp4', '/b.mp4'].map(src => {
+        const video = document.createElement('video'); video.muted = true; video.loop = true; video.playsInline = true;
+        video.src = src; document.body.append(video);
+        const state = { video, frames: 0, advanceMs: 0, last: undefined, handle: undefined };
+        const frame = (_now, metadata) => {
+          state.frames++;
+          if (state.last !== undefined) state.advanceMs += Math.max(0, metadata.mediaTime - state.last) * 1000;
+          state.last = metadata.mediaTime; state.handle = video.requestVideoFrameCallback(frame);
+        };
+        state.handle = video.requestVideoFrameCallback(frame); return state;
+      });
+      await Promise.all(window.ownedVideos.map(state => state.video.play()));
+    });
+    const result = await page.evaluate(async url => {
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 3000);
+      try { await fetch(url, { credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal }); return 'unexpected-success'; }
+      catch { return controller.signal.aborted ? 'timed-out' : 'failed'; }
+      finally { clearTimeout(timer); }
+    }, serverOrigin(media) + '/reset');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(result, 'failed'); assert.equal(naturalResponses, 1); assert.equal(continued, 1); assert.ok(captured);
+    // Deliver one duplicate of the unchanged real Chrome event after natural
+    // completion. No event order/delivery delay or protocol error is fabricated.
+    // This proves the actual negative ACK, not a provider's event provenance.
+    controlledDuplicate = true; session.emit('Fetch.requestPaused', captured);
+    const deadline = Date.now() + 2000;
+    while (!negativeAcknowledgement && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(negativeAcknowledgement, true); await tick();
+    hook.assertHealthy(); assert.equal(page.isClosed(), false); assert.equal(result, 'failed');
+    const diagnostic = hook.diagnostic();
+    assert.equal(diagnostic.failure, 'NONE'); assert.equal(diagnostic.canceledContinuationObserved, false);
+    assert.equal(diagnostic.absentInterception.firstRequest, 'ADMITTED'); assert.equal(diagnostic.absentInterception.requestCount, 1);
+    assert.notEqual(diagnostic.absentInterception.retirement, 'NONE');
+    assert.equal(Object.hasOwn(diagnostic, 'continuationFailure'), false);
+    const playback = await page.evaluate(async () => {
+      let previous = window.ownedVideos.map(state => ({ frames: state.frames, advanceMs: state.advanceMs }));
+      let jointMs = 0; const deadline = performance.now() + 15000;
+      while (jointMs <= 5000 && performance.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const now = window.ownedVideos.map(state => ({ frames: state.frames, advanceMs: state.advanceMs }));
+        if (now.every((state, index) => state.frames > previous[index].frames && state.advanceMs > previous[index].advanceMs))
+          jointMs += Math.min(...now.map((state, index) => state.advanceMs - previous[index].advanceMs));
+        previous = now;
+      }
+      return { jointMs, videos: window.ownedVideos.map(state => ({ frames: state.frames, advanceMs: state.advanceMs,
+        playing: !state.video.paused && !state.video.ended })) };
+    });
+    assert.ok(playback.jointMs > 5000, JSON.stringify(playback));
+    assert.equal(playback.videos.length, 2);
+    assert.ok(playback.videos.every(video => video.playing && video.frames > 0 && video.advanceMs > 5000));
+    const stopped = await page.evaluate(async () => {
+      const videos = window.ownedVideos.map(state => {
+        state.video.cancelVideoFrameCallback(state.handle); state.video.pause(); state.video.removeAttribute('src');
+        state.video.load(); state.video.remove();
+        return state.video.paused && !state.video.isConnected && state.video.getAttribute('src') === null;
+      });
+      delete window.ownedVideos;
+      const receipt = await fetch('/revoke', { method: 'POST', credentials: 'omit', redirect: 'error', cache: 'no-store' });
+      return { videos, revoke: receipt.status === 204 };
+    });
+    assert.deepEqual(stopped, { videos: [true, true], revoke: true }); assert.equal(revoked, 1);
+    assert.equal(page.isClosed(), false); hook.assertHealthy();
+    await hook.dispose(); assert.equal(hook.diagnostic().disposal, 'DONE'); hook = undefined;
+  } finally {
+    await hook?.dispose().catch(() => {}); await context?.close(); await browser?.close();
+    await Promise.all([close(harness), close(media), close(proxy)]);
+    if (root) await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('actual Chrome preserves failed Fetch with pending cancellation and controlled early-response ordering', local, async () => {
   const harness = createServer((_request, response) => response.end('<!doctype html><title>Owned cancellation</title>'));

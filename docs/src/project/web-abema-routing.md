@@ -291,7 +291,8 @@ decoding, wrong-key/no-license refusal, exact one-exchange admission, original
 lifetime, response identity, late retirement and sticky closure failure.
 
 Asset preparation builds a separate pinned FFmpeg 8.1 copy-only tool from the
-official source archive for this fixture. Older packagers can put encryption
+upstream source archive, obtained from the explicit Ubuntu original-source
+publication with the unchanged upstream SHA-256, for this fixture. Older packagers can put encryption
 metadata in the initialization file or accumulate earlier samples across later
 fragments. The generator checks actual fragment-local `senc`/`saio`/`saiz`
 metadata, sample counts and offsets before publishing fixture provenance. An

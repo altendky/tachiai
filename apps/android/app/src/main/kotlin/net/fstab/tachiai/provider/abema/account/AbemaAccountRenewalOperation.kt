@@ -4,8 +4,15 @@ import java.util.UUID
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
+import net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Phase
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Reason
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Progress
 
-internal class AbemaRenewalOperationOutcome(val result: AbemaAutomaticRenewalResult, val cleanupConfirmed: Boolean) {
+internal class AbemaRenewalOperationOutcome(val result: AbemaAutomaticRenewalResult, val cleanupConfirmed: Boolean,
+    val diagnostic: AbemaRenewalDiagnostic = AbemaRenewalDiagnostic(),
+    val producerDiagnostic: AbemaRenewalDiagnostic? = null) {
     override fun toString() = "AbemaRenewalOperationOutcome(${result.name}, cleanupConfirmed=$cleanupConfirmed)"
 }
 
@@ -26,9 +33,12 @@ internal class AbemaAccountRenewalOperation(
     private val elapsedMs: () -> Long,
     private val wallMs: () -> Long,
     private val scopeCurrent: () -> Boolean,
-    private val beforeApproval: (String, Long, () -> Boolean) -> Boolean,
+    private val beforeApproval: (String, Long, () -> Boolean) -> ProviderStartupCleanupAdmission,
     private val completed: (AbemaRenewalOperationOutcome) -> Unit,
 ) {
+    private val diagnostics = AbemaRenewalDiagnostics()
+    private var producerDiagnostic: AbemaRenewalDiagnostic? = null
+    @Volatile private var phase = Phase.ADMISSION
     private val lock = Any()
     private val nonce = UUID.randomUUID().toString().replace("-", "")
     private val transport = AtomicReference<AbemaAccountTransport?>()
@@ -69,17 +79,28 @@ internal class AbemaAccountRenewalOperation(
 
     fun start() {
         synchronized(lock) { check(!started); started = true }
+        diagnostics.progress(Progress.STARTED)
         val began = elapsedMs()
         if (began < 0 || deadline <= began || deadline - began > 90_000 || !scalarCurrent()) {
-            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return
+            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE,
+                if (began < 0 || synchronized(lock) { refusedClock }) Reason.CLOCK_REFUSED
+                else if (deadline <= began) Reason.DEADLINE else Reason.REFUSED); return
         }
-        delay(deadline - began) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE) }
+        delay(deadline - began) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.DEADLINE, Phase.LIFETIME) }
         execute {
-            if (!originalCurrent() || !beforeApproval(owner.instance.id, deadline, ::originalCurrent) || !originalCurrent()) {
+            if (!originalCurrent()) {
                 requestEnd(if (elapsedMs() >= deadline) AbemaAutomaticRenewalResult.TEMPORARY_FAILURE
-                    else AbemaAutomaticRenewalResult.CANCELLED)
+                    else AbemaAutomaticRenewalResult.CANCELLED, Reason.OWNER_CHANGED)
                 return@execute
             }
+            phase = Phase.STARTUP_CLEANUP
+            val admission = beforeApproval(owner.instance.id, deadline, ::originalCurrent)
+            if (admission != ProviderStartupCleanupAdmission.READY || !originalCurrent()) {
+                requestEnd(if (elapsedMs() >= deadline) AbemaAutomaticRenewalResult.TEMPORARY_FAILURE
+                    else AbemaAutomaticRenewalResult.CANCELLED, Reason.REFUSED, startup = admission)
+                return@execute
+            }
+            diagnostics.progress(Progress.STARTUP_READY)
             if (!scalarCurrent()) { requestEnd(AbemaAutomaticRenewalResult.CANCELLED); return@execute }
             inbox.register(nonce, owner.instance.id, owner.proof(), deadline) { value ->
                 // The inbox invokes this under its own cancellation lock.
@@ -98,11 +119,12 @@ internal class AbemaAccountRenewalOperation(
                     requestEnd(AbemaAutomaticRenewalResult.CANCELLED); return@post
                 }
                 try {
+                    phase = Phase.BROWSER_START
                     browser.start(AbemaApprovalBrowserRequest(owner.instance.id, owner.proof(), "https://abema.tv/account",
                         deadline, nonce, resetBrowserSession = false, automaticReturn = true), ::browserCompleted)
                 } catch (_: Throwable) {
                     synchronized(lock) { cleanupUncertain = true; browserSettled = true }
-                    requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE)
+                    requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.EXCEPTION)
                 }
             }
         }
@@ -112,13 +134,17 @@ internal class AbemaAccountRenewalOperation(
     private fun watch() {
         if (synchronized(lock) { ended || committed || requested != null }) return
         if (!scalarCurrent()) {
-            requestEnd(if (synchronized(lock) { refusedClock } || elapsedMs() >= deadline)
-                AbemaAutomaticRenewalResult.TEMPORARY_FAILURE else AbemaAutomaticRenewalResult.CANCELLED)
+            val clockRefused = synchronized(lock) { refusedClock }
+            val expired = clockRefused || elapsedMs() >= deadline
+            requestEnd(if (expired)
+                AbemaAutomaticRenewalResult.TEMPORARY_FAILURE else AbemaAutomaticRenewalResult.CANCELLED,
+                if (clockRefused) Reason.CLOCK_REFUSED else if (expired) Reason.DEADLINE else Reason.OWNER_CHANGED,
+                if (expired) Phase.LIFETIME else Phase.OPERATION)
             return
         }
         val check = synchronized(lock) { if (watching) false else { watching = true; true } }
         if (check) execute {
-            try { if (!originalCurrent()) requestEnd(AbemaAutomaticRenewalResult.CANCELLED) }
+            try { if (!originalCurrent()) requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.OWNER_CHANGED, Phase.OPERATION) }
             finally { synchronized(lock) { watching = false } }
         }
         delay(1000, ::watch)
@@ -129,24 +155,33 @@ internal class AbemaAccountRenewalOperation(
             if (ended || browserResultSeen) false else { browserResultSeen = true; true }
         }
         if (!accept) return
+        val producer = browser.producerDiagnostic
+        synchronized(lock) { if (producerDiagnostic == null) producerDiagnostic = producer }
+        diagnostics.absorb(browser.diagnostic)
         val released = result.cleanupConfirmed && runCatching(browser::release).getOrDefault(false)
+        if (!released) diagnostics.cleanup(false)
         synchronized(lock) {
             if (!released) cleanupUncertain = true
             browserSettled = true
         }
         if (!released || result != AbemaRenewalBrowserResult.DELIVERED || !scalarCurrent()) {
             requestEnd(if (result == AbemaRenewalBrowserResult.CANCELLED) AbemaAutomaticRenewalResult.CANCELLED
-                else AbemaAutomaticRenewalResult.TEMPORARY_FAILURE)
+                else AbemaAutomaticRenewalResult.TEMPORARY_FAILURE,
+                if (!released) Reason.CLEANUP_REFUSED else if (result == AbemaRenewalBrowserResult.CANCELLED) Reason.CANCELLED else Reason.REFUSED,
+                if (!released) Phase.CLEANUP else Phase.BROWSER_START)
             return
         }
         val grant = synchronized(lock) { candidate.also { candidate = null } }
-        if (grant == null) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return }
+        if (grant == null) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.CANDIDATE_MISSING, Phase.CANDIDATE); return }
+        diagnostics.progress(Progress.CANDIDATE_DELIVERED)
         execute { verifyAndAdopt(grant) }
     }
 
     private fun verifyAndAdopt(grant: AbemaAccountGrant) {
-        if (!originalCurrent() || decodedAbemaGrant(grant.bearer, grant.userId, wallMs()).expiresAtMs != grant.expiresAtMs) {
-            requestEnd(AbemaAutomaticRenewalResult.CANCELLED); return
+        phase = Phase.CANDIDATE
+        if (!originalCurrent()) { requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.OWNER_CHANGED); return }
+        if (decodedAbemaGrant(grant.bearer, grant.userId, wallMs()).expiresAtMs != grant.expiresAtMs) {
+            requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.CANDIDATE_INVALID); return
         }
         fun eligible() = originalCurrent() && wallMs() < grant.expiresAtMs
         fun <T> request(action: (AbemaAccountTransport) -> T): T {
@@ -157,32 +192,63 @@ internal class AbemaAccountRenewalOperation(
                 val value = action(owned)
                 if (!eligible()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                 return value
+            } catch (failure: AbemaAccountException) {
+                diagnostics.refuse(phase, Reason.ACCOUNT_FAILURE, account = failure.category, transport = failure.transportFailure)
+                throw failure
+            } catch (failure: Throwable) {
+                diagnostics.refuse(phase, Reason.EXCEPTION)
+                throw failure
             } finally {
                 try { owned.close() }
                 catch (_: Throwable) {
+                    diagnostics.cleanup(false)
+                    diagnostics.refuse(Phase.CLEANUP, Reason.CLEANUP_REFUSED)
                     synchronized(lock) { cleanupUncertain = true; retained.add(owned) }
                     throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
                 }
                 finally { transport.compareAndSet(owned, null) }
             }
         }
-        val profile = request { it.profile(grant.userId, grant.bearer) }
+        fun profileRefusal(value: AbemaAccountProfileResult) = when (value) {
+            AbemaAccountProfileResult.Rejected -> Reason.PROFILE_REJECTED
+            AbemaAccountProfileResult.Inconclusive -> Reason.PROFILE_INCONCLUSIVE
+            else -> Reason.IDENTITY_MISMATCH
+        }
+        fun emailRefusal(value: AbemaAccountEmailResult) = when (value) {
+            AbemaAccountEmailResult.UNREGISTERED -> Reason.EMAIL_UNREGISTERED
+            AbemaAccountEmailResult.REJECTED -> Reason.EMAIL_REJECTED
+            else -> Reason.EMAIL_INCONCLUSIVE
+        }
+        // Observe returned refusals before request's finally can fail closing
+        // the transport. The result/adoption decisions below remain unchanged.
+        phase = Phase.PROFILE
+        val profile = request { transport -> transport.profile(grant.userId, grant.bearer).also { value ->
+            if (value !is AbemaAccountProfileResult.Identity || value.id != grant.userId)
+                diagnostics.refuse(Phase.PROFILE, profileRefusal(value))
+        } }
         if (profile !is AbemaAccountProfileResult.Identity || profile.id != grant.userId) {
-            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return
+            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, profileRefusal(profile)); return
         }
-        val email = request { it.emailRegistration(grant.userId, grant.bearer) }
+        diagnostics.progress(Progress.PROFILE_VERIFIED)
+        phase = Phase.EMAIL
+        val email = request { transport -> transport.emailRegistration(grant.userId, grant.bearer).also { value ->
+            if (value != AbemaAccountEmailResult.REGISTERED) diagnostics.refuse(Phase.EMAIL, emailRefusal(value))
+        } }
         if (email != AbemaAccountEmailResult.REGISTERED) {
-            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return
+            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, emailRefusal(email)); return
         }
+        diagnostics.progress(Progress.EMAIL_VERIFIED)
+        phase = Phase.ADOPTION
         if (profile.id != expected.record?.grant?.userId) {
             // Positive, natively verified DIFFERENT registered account. This
             // means choose the saved account, never "an email code is needed".
             requestEnd(if (eligible()) AbemaAutomaticRenewalResult.INTERACTION_REQUIRED
-                else AbemaAutomaticRenewalResult.CANCELLED)
+                else AbemaAutomaticRenewalResult.CANCELLED, Reason.ACCOUNT_DIFFERENT)
             return
         }
-        if (!eligible() || !abemaRenewalCandidateExtends(expected, grant, wallMs())) {
-            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return
+        if (!eligible()) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE); return }
+        if (!abemaRenewalCandidateExtends(expected, grant, wallMs())) {
+            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.CANDIDATE_NOT_EXTENDING); return
         }
         val adopted = withAbemaAccountReplacement(binding.store, grant, profile.id, expected.revision,
             checkNotNull(expected.record).acceptedWallMs, wallMs, canCommit = ::scalarCurrent) { receipt, _ ->
@@ -200,7 +266,8 @@ internal class AbemaAccountRenewalOperation(
                 }
             }
         }
-        if (!adopted) requestEnd(AbemaAutomaticRenewalResult.CANCELLED)
+        if (!adopted) requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.ADOPTION_REFUSED)
+        else diagnostics.progress(Progress.ADOPTED)
     }
 
     private fun execute(action: () -> Unit) {
@@ -213,19 +280,22 @@ internal class AbemaAccountRenewalOperation(
                     AbemaAccountFailure.STORAGE_FAILED -> AbemaAutomaticRenewalResult.STORAGE_FAILURE
                     AbemaAccountFailure.CANCELLED -> AbemaAutomaticRenewalResult.CANCELLED
                     else -> AbemaAutomaticRenewalResult.TEMPORARY_FAILURE
-                })
-            } catch (_: Throwable) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE) }
+                }, Reason.ACCOUNT_FAILURE, account = failure.category, transportEvidence = failure.transportFailure)
+            } catch (_: Throwable) { requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.EXCEPTION) }
             finally { synchronized(lock) { workers-- }; maybeFinish() }
         } } catch (_: Throwable) {
             synchronized(lock) { workers-- }
-            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE)
+            requestEnd(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, Reason.EXCEPTION)
         }
     }
 
-    fun cancel() = requestEnd(AbemaAutomaticRenewalResult.CANCELLED)
-    private fun requestEnd(result: AbemaAutomaticRenewalResult) {
+    fun cancel() = requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.CANCELLED, Phase.OPERATION)
+    private fun requestEnd(result: AbemaAutomaticRenewalResult, reason: Reason = Reason.REFUSED, at: Phase = phase,
+        account: AbemaAccountFailure? = null, transportEvidence: ProviderTransportEvidence? = null,
+        startup: ProviderStartupCleanupAdmission? = null) {
         val begin = synchronized(lock) {
             if (ended || committed) return
+            diagnostics.refuse(at, reason, account = account, transport = transportEvidence, startup = startup)
             revoked = true
             if (requested == null) requested = result
             val first = !cleanupAlarm; cleanupAlarm = true; first
@@ -252,8 +322,10 @@ internal class AbemaAccountRenewalOperation(
             val result = requested ?: return
             if (ended || !force && (workers != 0 || browserStarted && !browserSettled || transport.get() != null)) return
             ended = true
+            diagnostics.cleanup(!cleanupUncertain)
+            if (cleanupUncertain) diagnostics.refuse(Phase.CLEANUP, Reason.CLEANUP_REFUSED)
             AbemaRenewalOperationOutcome(if (cleanupUncertain) AbemaAutomaticRenewalResult.TEMPORARY_FAILURE else result,
-                !cleanupUncertain)
+                !cleanupUncertain, diagnostics.freeze(), producerDiagnostic)
         }
         inbox.unregister(nonce)
         synchronized(lock) { registered = false; candidate = null }

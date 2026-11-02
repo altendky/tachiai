@@ -12,12 +12,19 @@ internal class AbemaRenewalObservation(
     private val usable: (Long) -> Boolean,
     private val receiptCurrent: (AbemaAccountSnapshot) -> Boolean,
     private val wallMs: () -> Long,
+    private val evidence: () -> AbemaRenewalReadinessCoordinator.Evidence = {
+        AbemaRenewalReadinessCoordinator.Evidence(completion())
+    },
 ) {
     enum class Step { WAIT, REPLACED, REFUSED }
     enum class Guard { NONE, OWNER, COMPLETION_LOST, COMPLETION_REFUSED, COMPLETION_TIMEOUT,
         COMPLETION_MISSING, SNAPSHOT, REVISION, USABLE, GENERATION, ACCOUNT, BEARER,
         EXPIRY, ACCEPTED_WALL, DECODED_EXPIRY }
     var observedCompletion = AbemaRenewalReadinessCoordinator.Completion.ABSENT
+        private set
+    var observedDiagnostic: AbemaRenewalDiagnostic? = null
+        private set
+    var observedProducerDiagnostic: AbemaRenewalDiagnostic? = null
         private set
     var firstFailedGuard = Guard.NONE
         private set
@@ -31,7 +38,10 @@ internal class AbemaRenewalObservation(
     fun poll(): Step {
         if (firstFailedGuard != Guard.NONE) return Step.REFUSED
         if (!ownerCurrent()) return refuse(Guard.OWNER)
-        observedCompletion = completion()
+        val captured = evidence()
+        observedCompletion = captured.completion
+        observedDiagnostic = captured.diagnostic
+        observedProducerDiagnostic = captured.producerDiagnostic
         when (observedCompletion) {
             AbemaRenewalReadinessCoordinator.Completion.ABSENT ->
                 return if (sawOperation) refuse(Guard.COMPLETION_LOST) else Step.WAIT
@@ -98,6 +108,7 @@ internal class AbemaRenewalProbeEvidence {
 // Fixture evidence only. Completion must still be pending after the exact host
 // stops, then reach verified replacement without an intervening Activity resume.
 internal class AbemaRenewalBackgroundObservation {
+    data class Snapshot(val phase: Phase, val guard: Guard, val hostIsStopped: Boolean)
     enum class Phase { IDLE, MINIMIZING, STOPPED_PENDING, READY, RETURN_ALLOWED }
     enum class Guard { NONE, PENDING_BEFORE_HOME, HOST_NOT_STOPPED, PENDING_AFTER_STOP, RESUMED, HOST_DESTROYED, COMPLETION, RETURN }
     @Volatile var phase = Phase.IDLE
@@ -107,11 +118,18 @@ internal class AbemaRenewalBackgroundObservation {
     @Volatile var hostIsStopped = false
         private set
     private var observing = false
+    private var frozen: Snapshot? = null
+    @Synchronized fun freeze(): Snapshot {
+        frozen?.let { return it }
+        observing = false
+        return Snapshot(phase, firstFailedGuard, hostIsStopped).also { frozen = it }
+    }
     private fun refuse(guard: Guard): Boolean {
         if (firstFailedGuard == Guard.NONE) firstFailedGuard = guard
         return false
     }
     @Synchronized fun begin(completion: AbemaRenewalReadinessCoordinator.Completion): Boolean {
+        if (frozen != null) return false
         if (firstFailedGuard != Guard.NONE) return false
         if (phase != Phase.IDLE || completion != AbemaRenewalReadinessCoordinator.Completion.PENDING)
             return refuse(Guard.PENDING_BEFORE_HOME)
@@ -120,14 +138,16 @@ internal class AbemaRenewalBackgroundObservation {
         phase = Phase.MINIMIZING
         return true
     }
-    @Synchronized fun hostStopped() { if (observing) hostIsStopped = true }
+    @Synchronized fun hostStopped() { if (observing && frozen == null) hostIsStopped = true }
     @Synchronized fun hostStarted() {
+        if (frozen != null) return
         if (observing && hostIsStopped) refuse(Guard.HOST_NOT_STOPPED)
         hostIsStopped = false
     }
-    @Synchronized fun activityResumed() { if (observing) refuse(Guard.RESUMED) }
-    @Synchronized fun hostDestroyed() { if (observing) { hostIsStopped = false; refuse(Guard.HOST_DESTROYED) } }
+    @Synchronized fun activityResumed() { if (observing && frozen == null) refuse(Guard.RESUMED) }
+    @Synchronized fun hostDestroyed() { if (observing && frozen == null) { hostIsStopped = false; refuse(Guard.HOST_DESTROYED) } }
     @Synchronized fun afterStop(completion: AbemaRenewalReadinessCoordinator.Completion): Boolean {
+        if (frozen != null) return false
         if (firstFailedGuard != Guard.NONE) return false
         if (phase != Phase.MINIMIZING || !hostIsStopped) return refuse(Guard.HOST_NOT_STOPPED)
         if (completion != AbemaRenewalReadinessCoordinator.Completion.PENDING) return refuse(Guard.PENDING_AFTER_STOP)
@@ -135,6 +155,7 @@ internal class AbemaRenewalBackgroundObservation {
         return true
     }
     @Synchronized fun sample(completion: AbemaRenewalReadinessCoordinator.Completion, replacementVerified: Boolean): Boolean {
+        if (frozen != null) return false
         if (firstFailedGuard != Guard.NONE) return false
         if (!hostIsStopped) return refuse(Guard.HOST_NOT_STOPPED)
         if (phase != Phase.STOPPED_PENDING && phase != Phase.READY) return refuse(Guard.COMPLETION)
@@ -145,6 +166,7 @@ internal class AbemaRenewalBackgroundObservation {
         }
     }
     @Synchronized fun allowReturn(): Boolean {
+        if (frozen != null) return false
         if (firstFailedGuard != Guard.NONE) return false
         if (phase != Phase.READY || !hostIsStopped) return refuse(Guard.RETURN)
         observing = false

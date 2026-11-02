@@ -14,6 +14,8 @@ internal enum class AbemaRenewalBrowserResult {
 }
 
 internal interface AbemaRenewalBrowser {
+    val diagnostic: AbemaRenewalDiagnostic get() = AbemaRenewalDiagnostic()
+    val producerDiagnostic: AbemaRenewalDiagnostic? get() = null
     // Main-looper calls and completion; the owner releases only after completion.
     fun start(request: AbemaApprovalBrowserRequest, completed: (AbemaRenewalBrowserResult) -> Unit)
     fun cancel()
@@ -23,6 +25,7 @@ internal interface AbemaRenewalBrowser {
 // Only fixed, bounded account-page requests cross this channel. The existing
 // protected handoff transports the candidate separately; no grant is an IPC field.
 internal object AbemaRenewalBrowserProtocol {
+    data class Outcome(val result: AbemaRenewalBrowserResult, val diagnostic: AbemaRenewalDiagnostic)
     const val START = 1
     const val CANCEL = 2
     const val RESULT = 3
@@ -52,15 +55,61 @@ internal object AbemaRenewalBrowserProtocol {
         ownUid >= 0 && sendingUid == ownUid && fields == requestFields(request)
 
     fun decodeResult(fields: Map<String, Any?>, sendingUid: Int, ownUid: Int,
-        request: AbemaApprovalBrowserRequest): AbemaRenewalBrowserResult? {
-        if (fields.keys != requestKeys + "result" ||
-            !matches(fields - "result", sendingUid, ownUid, request)) return null
+        request: AbemaApprovalBrowserRequest): AbemaRenewalBrowserResult? = decodeOutcome(fields, sendingUid, ownUid, request)?.result
+
+    fun resultFields(request: AbemaApprovalBrowserRequest, result: AbemaRenewalBrowserResult,
+        diagnostic: AbemaRenewalDiagnostic): Map<String, Any?> = requestFields(request) + ("result" to result.name) + diagnostic.fields()
+
+    fun decodeOutcome(fields: Map<String, Any?>, sendingUid: Int, ownUid: Int,
+        request: AbemaApprovalBrowserRequest): Outcome? {
+        if (fields.keys != requestKeys + "result" + AbemaRenewalDiagnostic.keys ||
+            !matches(fields.filterKeys { it in requestKeys }, sendingUid, ownUid, request)) return null
         val name = fields["result"] as? String ?: return null
-        return AbemaRenewalBrowserResult.entries.singleOrNull { it.name == name }
+        val result = AbemaRenewalBrowserResult.entries.singleOrNull { it.name == name } ?: return null
+        val diagnostic = AbemaRenewalDiagnostic.decode(fields.filterKeys { it in AbemaRenewalDiagnostic.keys }) ?: return null
+        val cleanup = if (result.cleanupConfirmed) AbemaRenewalDiagnostic.Cleanup.CONFIRMED else AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED
+        if (diagnostic.cleanup != cleanup ||
+            result == AbemaRenewalBrowserResult.DELIVERED && diagnostic.reason != AbemaRenewalDiagnostic.Reason.NONE) return null
+        return Outcome(result, diagnostic)
+    }
+
+    fun projectResult(result: AbemaRenewalBrowserResult, expired: Boolean, cancelled: Boolean): AbemaRenewalBrowserResult = when {
+        !result.cleanupConfirmed -> result
+        expired -> AbemaRenewalBrowserResult.TEMPORARY_FAILURE
+        cancelled -> AbemaRenewalBrowserResult.CANCELLED
+        else -> result
+    }
+}
+
+// The real client handler uses this exact receipt/retirement path. Local guards
+// and the producer's first closed receipt remain separate: IPC arrival cannot
+// establish chronological ordering across owners. This is not a second receiver
+// lifetime; completion permanently refuses all later diagnostic envelopes too.
+internal class AbemaRenewalBrowserEvidence(private val diagnostics: AbemaRenewalDiagnostics) {
+    private var retired = false
+    private var producer: AbemaRenewalDiagnostic? = null
+    @Synchronized fun producer() = producer
+    @Synchronized fun receive(fields: Map<String, Any?>, sendingUid: Int, ownUid: Int,
+        request: AbemaApprovalBrowserRequest): AbemaRenewalBrowserProtocol.Outcome? {
+        if (retired) return null
+        val decoded = AbemaRenewalBrowserProtocol.decodeOutcome(fields, sendingUid, ownUid, request) ?: return null
+        if (producer == null) producer = decoded.diagnostic
+        diagnostics.absorb(decoded.diagnostic)
+        return decoded
+    }
+    @Synchronized fun finish(result: AbemaRenewalBrowserResult) {
+        if (retired) return
+        retired = true
+        diagnostics.cleanup(result.cleanupConfirmed)
+        diagnostics.freeze()
     }
 }
 
 internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowser, ServiceConnection {
+    private val diagnostics = AbemaRenewalDiagnostics()
+    private val evidence = AbemaRenewalBrowserEvidence(diagnostics)
+    override val diagnostic get() = diagnostics.snapshot()
+    override val producerDiagnostic get() = evidence.producer()
     private companion object { val retained = ConcurrentLinkedQueue<AndroidAbemaRenewalBrowser>() }
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -74,20 +123,15 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
     private var expired = false
     private var cancellationWatchdog = false
     private var retainedOnce = false
-    private val death = IBinder.DeathRecipient { main.post { finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) } }
+    private val death = IBinder.DeathRecipient { main.post { disconnected() } }
     private val reply = Messenger(object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
             if (result != null || message.what != AbemaRenewalBrowserProtocol.RESULT) return
             val captured = request ?: return
             val decoded = runCatching {
-                AbemaRenewalBrowserProtocol.decodeResult(message.data.fields(), message.sendingUid, Process.myUid(), captured)
+                evidence.receive(message.data.fields(), message.sendingUid, Process.myUid(), captured)
             }.getOrNull() ?: return
-            finish(when {
-                !decoded.cleanupConfirmed -> decoded
-                expired -> AbemaRenewalBrowserResult.TEMPORARY_FAILURE
-                cancelled -> AbemaRenewalBrowserResult.CANCELLED
-                else -> decoded
-            })
+            finish(AbemaRenewalBrowserProtocol.projectResult(decoded.result, expired, cancelled))
         }
     })
 
@@ -96,18 +140,26 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
         check(this.request == null && result == null) { "A renewal browser is single use" }
         this.request = request; this.completed = completed
         if (!AbemaRenewalBrowserProtocol.accepts(request, SystemClock.elapsedRealtime())) {
+            diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.REFUSED)
             finish(AbemaRenewalBrowserResult.TEMPORARY_FAILURE); return
         }
         main.postDelayed({
-            if (result == null) { expired = true; cancel() }
+            if (result == null) {
+                diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
+                expired = true; cancel()
+            }
         }, request.deadlineElapsedMs - SystemClock.elapsedRealtime())
         // A lost result must not strand the operation, nor imply cleanup.
         main.postDelayed({ finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) },
             maxOf(0L, request.deadlineElapsedMs - SystemClock.elapsedRealtime()) + 7_000L)
         try {
             bound = context.bindService(Intent(context, AbemaRenewalBrowserService::class.java), this, Context.BIND_AUTO_CREATE)
-            if (!bound) finish(AbemaRenewalBrowserResult.TEMPORARY_FAILURE)
+            if (!bound) {
+                diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.BIND_REFUSED)
+                finish(AbemaRenewalBrowserResult.TEMPORARY_FAILURE)
+            }
         } catch (_: Exception) {
+            diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.EXCEPTION)
             finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED)
         }
     }
@@ -119,26 +171,37 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
         val captured = request ?: return
         try {
             binder.linkToDeath(death, 0)
+            diagnostics.progress(AbemaRenewalDiagnostic.Progress.BROWSER_BOUND)
             remote = Messenger(binder)
             // Mark before send: an exception cannot prove that START was not delivered.
             sent = true
             remote!!.send(Message.obtain().apply {
                 what = AbemaRenewalBrowserProtocol.START; replyTo = reply; data = captured.envelope()
             })
-        } catch (_: Exception) { finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) }
+        } catch (_: Exception) {
+            diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.EXCEPTION)
+            finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED)
+        }
     }
 
     override fun onServiceDisconnected(name: ComponentName) = disconnected()
     override fun onBindingDied(name: ComponentName) = disconnected()
     override fun onNullBinding(name: ComponentName) {
         requireMain()
+        diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.BIND_REFUSED)
         finish(if (sent) AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED else AbemaRenewalBrowserResult.TEMPORARY_FAILURE)
     }
-    private fun disconnected() { requireMain(); finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED) }
+    private fun disconnected() {
+        requireMain()
+        if (result == null) diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.BROKER_LOST)
+        finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED)
+    }
 
     override fun cancel() {
         requireMain()
         if (result != null) return
+        diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND,
+            if (expired) AbemaRenewalDiagnostic.Reason.DEADLINE else AbemaRenewalDiagnostic.Reason.CANCELLED)
         cancelled = true
         if (!sent) {
             finish(if (expired) AbemaRenewalBrowserResult.TEMPORARY_FAILURE else AbemaRenewalBrowserResult.CANCELLED)
@@ -172,6 +235,7 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
         requireMain()
         if (result != null) return
         result = value
+        evidence.finish(value)
         main.removeCallbacksAndMessages(null)
         if (!value.cleanupConfirmed) retain()
         val callback = completed; completed = null

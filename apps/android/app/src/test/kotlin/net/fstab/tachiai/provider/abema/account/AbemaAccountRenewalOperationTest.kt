@@ -5,6 +5,10 @@ import java.util.concurrent.Executor
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
+import net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
+import net.fstab.tachiai.platform.network.ProviderTransportFailure
+import net.fstab.tachiai.platform.network.ProviderTransportPhase
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -27,9 +31,18 @@ class AbemaAccountRenewalOperationTest {
         var profile: AbemaAccountProfileResult? = null
         var email = AbemaAccountEmailResult.REGISTERED
         var profileHook: () -> Unit = {}
+        var profileFailure: AbemaAccountException? = null
+        var startupAdmission: ProviderStartupCleanupAdmission? = null
+        var browserDiagnostic = AbemaRenewalDiagnostic()
+        val clientDiagnostics = AbemaRenewalDiagnostics()
+        val clientEvidence = AbemaRenewalBrowserEvidence(clientDiagnostics)
+        var useClientEvidence = false
+        var clientExpired = false
+        var clientCancelled = false
         var ownerHook: () -> Unit = {}
         var beforeApproval: (String, Long, () -> Boolean) -> Boolean = { _, _, gate -> gate() }
         var closeFails = false
+        var closeFailureAt: Int? = null
         var profiles = 0
         var emails = 0
         var closes = 0
@@ -45,10 +58,19 @@ class AbemaAccountRenewalOperationTest {
         var request: AbemaApprovalBrowserRequest? = null
         var returned: ((AbemaRenewalBrowserResult) -> Unit)? = null
         val browser = object : AbemaRenewalBrowser {
+            override val diagnostic get() = if (useClientEvidence) clientDiagnostics.snapshot() else browserDiagnostic
+            override val producerDiagnostic get() = if (useClientEvidence) clientEvidence.producer() else null
             override fun start(request: AbemaApprovalBrowserRequest, completed: (AbemaRenewalBrowserResult) -> Unit) {
                 requests++; this@Fixture.request = request; returned = completed
             }
-            override fun cancel() { cancellations++ }
+            override fun cancel() {
+                cancellations++
+                if (useClientEvidence) {
+                    clientCancelled = true
+                    clientDiagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND,
+                        if (clientExpired) AbemaRenewalDiagnostic.Reason.DEADLINE else AbemaRenewalDiagnostic.Reason.CANCELLED)
+                }
+            }
             override fun release(): Boolean { releases++; return releaseConfirmed }
         }
         val binding = object : AbemaAccountConnectionBinding {
@@ -63,6 +85,7 @@ class AbemaAccountRenewalOperationTest {
             override fun transport(owner: AbemaCatalogRouteOwner, gate: () -> Boolean) = object : AbemaAccountTransport {
                 override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
                     check(gate()); profiles++; profileHook()
+                    profileFailure?.let { throw it }
                     return profile ?: AbemaAccountProfileResult.Identity(id)
                 }
                 override fun emailRegistration(id: String, bearer: String): AbemaAccountEmailResult {
@@ -70,7 +93,7 @@ class AbemaAccountRenewalOperationTest {
                 }
                 override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult = error("No token polling")
                 override fun cancelActiveRequest() = Unit
-                override fun close() { closes++; if (closeFails) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
+                override fun close() { closes++; if (closeFails || closes == closeFailureAt) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED) }
             }
         }
         val expected: AbemaAccountSnapshot
@@ -83,7 +106,8 @@ class AbemaAccountRenewalOperationTest {
         val deadline = elapsed + 90_000
         val operation = AbemaAccountRenewalOperation(binding, owner, expected, deadline, browser, inbox,
             worker, cancellation, { main.add(it) }, { wait, action -> later.add(elapsed + wait to action) },
-            { elapsed }, { wall }, { scopeHook(); scope }, { id, deadline, gate -> beforeApproval(id, deadline, gate) }, outcomes::add)
+            { elapsed }, { wall }, { scopeHook(); scope }, { id, deadline, gate -> startupAdmission ?:
+                if (beforeApproval(id, deadline, gate)) ProviderStartupCleanupAdmission.READY else ProviderStartupCleanupAdmission.CANCELLED }, outcomes::add)
         fun pump() {
             repeat(200) {
                 var worked = worker.one() || cancellation.one()
@@ -103,6 +127,19 @@ class AbemaAccountRenewalOperationTest {
         }
         fun browserDone(result: AbemaRenewalBrowserResult = AbemaRenewalBrowserResult.DELIVERED) {
             checkNotNull(returned)(result); pump()
+        }
+        fun clientDeadline() {
+            clientExpired = true
+            clientDiagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
+            browser.cancel()
+        }
+        fun closedReply(producer: AbemaRenewalDiagnostic) {
+            val captured = checkNotNull(request)
+            val fields = AbemaRenewalBrowserProtocol.resultFields(captured, AbemaRenewalBrowserResult.TEMPORARY_FAILURE, producer)
+            val received = checkNotNull(clientEvidence.receive(fields, 10, 10, captured))
+            val result = AbemaRenewalBrowserProtocol.projectResult(received.result, clientExpired, clientCancelled)
+            clientEvidence.finish(result)
+            browserDone(result)
         }
         fun onlyResult() = outcomes.single().result
     }
@@ -161,6 +198,148 @@ class AbemaAccountRenewalOperationTest {
             f.browserDone()
             assertEquals(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, f.onlyResult())
             assertTrue(f.outcomes.single().cleanupConfirmed); assertArrayEquals(f.prior, f.storage.bytes)
+            assertEquals(listOf(AbemaRenewalDiagnostic.Reason.CANDIDATE_MISSING, AbemaRenewalDiagnostic.Reason.PROFILE_REJECTED,
+                AbemaRenewalDiagnostic.Reason.PROFILE_INCONCLUSIVE, AbemaRenewalDiagnostic.Reason.EMAIL_UNREGISTERED,
+                AbemaRenewalDiagnostic.Reason.EMAIL_REJECTED, AbemaRenewalDiagnostic.Reason.EMAIL_INCONCLUSIVE)[failure],
+                f.outcomes.single().diagnostic.reason)
+        }
+    }
+
+    @Test fun brokerRegionFailureAndCleanupRemainIndependentWithoutReplacingAccountOrRequestingInteraction() {
+        val f = Fixture(); f.start()
+        f.browserDiagnostic = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_FAILURE,
+            AbemaRenewalDiagnostic.Progress.PAGE_COMMITTED, region = AbemaApprovalRegionFailure.TRANSPORT_FAILED,
+            cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        f.releaseConfirmed = false
+        f.browserDone(AbemaRenewalBrowserResult.TEMPORARY_FAILURE)
+        val outcome = f.outcomes.single()
+        assertEquals(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, outcome.result)
+        assertFalse(outcome.cleanupConfirmed)
+        assertEquals(AbemaRenewalDiagnostic.Reason.REGION_FAILURE, outcome.diagnostic.reason)
+        assertEquals(AbemaApprovalRegionFailure.TRANSPORT_FAILED, outcome.diagnostic.region)
+        assertEquals(AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED, outcome.diagnostic.cleanup)
+        assertEquals(0, f.profiles); assertArrayEquals(f.prior, f.storage.bytes)
+    }
+
+    @Test fun producerFailureDelayedAcrossClientAndOperationDeadlinesPreservesBothOwnersWithoutAdoptingLateGrant() {
+        val f = Fixture(); f.useClientEvidence = true; f.start()
+        // The actual producer records a cause and starts closing. Its reply is
+        // held until after the real operation's deadline/cancel tasks execute.
+        val producer = AbemaRenewalDiagnostics()
+        producer.progress(AbemaRenewalDiagnostic.Progress.PAGE_COMMITTED)
+        producer.refuse(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_FAILURE,
+            region = AbemaApprovalRegionFailure.TRANSPORT_FAILED)
+        producer.retireCause()
+        f.elapsed = f.deadline; f.clientDeadline(); f.pump()
+        assertTrue(f.outcomes.isEmpty()); assertFalse(f.deliver())
+        producer.cleanup(true)
+        val closed = producer.freeze()
+        val captured = checkNotNull(f.request)
+        val fields = AbemaRenewalBrowserProtocol.resultFields(captured, AbemaRenewalBrowserResult.TEMPORARY_FAILURE, closed)
+        assertNull(f.clientEvidence.receive(fields, 11, 10, captured))
+        assertNull(f.clientEvidence.receive(fields + ("nonce" to "f".repeat(32)), 10, 10, captured))
+        assertNull(f.clientEvidence.producer())
+        f.closedReply(closed) // Real client decoder, retirement and result projection.
+        val outcome = f.outcomes.single()
+        assertEquals(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, outcome.result)
+        assertEquals(AbemaRenewalDiagnostic.Phase.LIFETIME, outcome.diagnostic.phase)
+        assertEquals(AbemaRenewalDiagnostic.Reason.DEADLINE, outcome.diagnostic.reason)
+        assertEquals(closed, outcome.producerDiagnostic)
+        assertTrue(outcome.cleanupConfirmed); assertEquals(0, f.profiles)
+        assertArrayEquals(f.prior, f.storage.bytes)
+        assertNull(f.clientEvidence.receive(fields, 10, 10, captured))
+    }
+
+    @Test fun earlierLocalCancellationIsNotReorderedByALaterProducerCauseOrClosedReply() {
+        val f = Fixture(); f.useClientEvidence = true; f.start()
+        f.operation.cancel(); f.pump()
+        assertTrue(f.outcomes.isEmpty()); assertFalse(f.deliver())
+        val producer = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_REJECTED,
+            cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        f.closedReply(producer)
+        val outcome = f.outcomes.single()
+        assertEquals(AbemaAutomaticRenewalResult.CANCELLED, outcome.result)
+        assertEquals(AbemaRenewalDiagnostic.Reason.CANCELLED, outcome.diagnostic.reason)
+        assertEquals(AbemaRenewalDiagnostic.Phase.OPERATION, outcome.diagnostic.phase)
+        assertEquals(producer, outcome.producerDiagnostic)
+        assertTrue(outcome.cleanupConfirmed); assertEquals(0, f.profiles)
+        assertArrayEquals(f.prior, f.storage.bytes)
+    }
+
+    @Test fun retiredClientAndForcedOperationCompletionLeaveProducerEvidenceUnavailableWithoutReopeningLifetime() {
+        val f = Fixture(); f.useClientEvidence = true; f.start()
+        f.elapsed = f.deadline; f.clientDeadline(); f.pump()
+        f.elapsed += 7000; f.pump()
+        f.clientEvidence.finish(AbemaRenewalBrowserResult.CLEANUP_UNCONFIRMED)
+        val finished = f.outcomes.single()
+        assertFalse(finished.cleanupConfirmed); assertNull(finished.producerDiagnostic)
+        val producer = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_REJECTED,
+            cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        val request = checkNotNull(f.request)
+        assertNull(f.clientEvidence.receive(AbemaRenewalBrowserProtocol.resultFields(request,
+            AbemaRenewalBrowserResult.TEMPORARY_FAILURE, producer), 10, 10, request))
+        assertNull(f.clientEvidence.producer()); assertNull(f.outcomes.single().producerDiagnostic)
+        assertSame(finished, f.outcomes.single()); assertFalse(f.deliver())
+        assertEquals(0, f.profiles); assertArrayEquals(f.prior, f.storage.bytes)
+    }
+
+    @Test fun nativeTransportCategoriesAndRequestStageSurviveLaterCleanupFailureWithoutExceptionReflection() {
+        val f = Fixture(); f.start(); assertTrue(f.deliver())
+        f.profileFailure = AbemaAccountException(AbemaAccountFailure.TEMPORARY,
+            ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT, ProviderTransportPhase.CONNECT))
+        f.closeFails = true; f.browserDone()
+        val outcome = f.outcomes.single()
+        assertEquals(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, outcome.result)
+        assertEquals(AbemaRenewalDiagnostic.Phase.PROFILE, outcome.diagnostic.phase)
+        assertEquals(AbemaAccountFailure.TEMPORARY, outcome.diagnostic.account)
+        assertEquals(ProviderTransportFailure.TIMEOUT, outcome.diagnostic.transport)
+        assertEquals(ProviderTransportPhase.CONNECT, outcome.diagnostic.transportPhase)
+        assertEquals(AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED, outcome.diagnostic.cleanup)
+        assertArrayEquals(f.prior, f.storage.bytes)
+        val unknown = Fixture(); unknown.start(); assertTrue(unknown.deliver())
+        unknown.profileHook = { error("PRIVATE_URL_TOKEN_IDENTITY") }; unknown.browserDone()
+        assertEquals(AbemaRenewalDiagnostic.Reason.EXCEPTION, unknown.outcomes.single().diagnostic.reason)
+        assertFalse(unknown.outcomes.single().diagnostic.toString().contains("PRIVATE"))
+    }
+
+    @Test fun returnedProfileAndEmailRefusalsRemainFirstCauseWhenTheirTransportCloseAlsoFails() {
+        val reasons = listOf(AbemaRenewalDiagnostic.Reason.PROFILE_REJECTED, AbemaRenewalDiagnostic.Reason.PROFILE_INCONCLUSIVE,
+            AbemaRenewalDiagnostic.Reason.IDENTITY_MISMATCH, AbemaRenewalDiagnostic.Reason.EMAIL_UNREGISTERED,
+            AbemaRenewalDiagnostic.Reason.EMAIL_REJECTED, AbemaRenewalDiagnostic.Reason.EMAIL_INCONCLUSIVE)
+        for (failure in reasons.indices) {
+            val f = Fixture(); f.start(); assertTrue(f.deliver())
+            when (failure) {
+                0 -> f.profile = AbemaAccountProfileResult.Rejected
+                1 -> f.profile = AbemaAccountProfileResult.Inconclusive
+                2 -> f.profile = AbemaAccountProfileResult.Identity("inconsistent")
+                3 -> f.email = AbemaAccountEmailResult.UNREGISTERED
+                4 -> f.email = AbemaAccountEmailResult.REJECTED
+                5 -> f.email = AbemaAccountEmailResult.INCONCLUSIVE
+            }
+            f.closeFailureAt = if (failure < 3) 1 else 2
+            f.browserDone()
+            val outcome = f.outcomes.single()
+            assertEquals(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, outcome.result)
+            assertFalse(outcome.cleanupConfirmed)
+            assertEquals(if (failure < 3) AbemaRenewalDiagnostic.Phase.PROFILE else AbemaRenewalDiagnostic.Phase.EMAIL, outcome.diagnostic.phase)
+            assertEquals(reasons[failure], outcome.diagnostic.reason)
+            assertNull(outcome.diagnostic.account) // Cleanup is not substituted as the categorical cause.
+            assertEquals(AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED, outcome.diagnostic.cleanup)
+            assertEquals(1, f.requests); assertEquals(1, f.profiles)
+            assertEquals(if (failure < 3) 0 else 1, f.emails)
+            assertEquals(if (failure < 3) 1 else 2, f.closes)
+            assertArrayEquals(f.prior, f.storage.bytes)
+        }
+    }
+
+    @Test fun startupCleanupAdmissionCategoryIsObservedWithoutChangingExistingCancellationOrRetryRules() {
+        for (admission in ProviderStartupCleanupAdmission.entries.filter { it != ProviderStartupCleanupAdmission.READY }) {
+            val f = Fixture(); f.startupAdmission = admission; f.start()
+            assertEquals(AbemaAutomaticRenewalResult.CANCELLED, f.onlyResult())
+            assertEquals(admission, f.outcomes.single().diagnostic.startup)
+            assertEquals(AbemaRenewalDiagnostic.Phase.STARTUP_CLEANUP, f.outcomes.single().diagnostic.phase)
+            assertTrue(f.outcomes.single().cleanupConfirmed)
+            assertEquals(0, f.requests); assertArrayEquals(f.prior, f.storage.bytes)
         }
     }
 

@@ -12,6 +12,7 @@ import net.fstab.tachiai.feature.connections.AbemaApprovalObservation
 // Application-owned, unattached browser. This service never starts an Activity,
 // adopts a grant, resets the remembered profile or collects user credentials.
 class AbemaRenewalBrowserService : Service() {
+    private val diagnostics = AbemaRenewalDiagnostics()
     private val main = Handler(Looper.getMainLooper())
     private var runtime: AbemaApprovalBrowserRuntime? = null
     private var request: AbemaApprovalBrowserRequest? = null
@@ -41,7 +42,10 @@ class AbemaRenewalBrowserService : Service() {
                 message.sendingUid, Process.myUid(), SystemClock.elapsedRealtime()) ?: return
             started = true; request = parsed; reply = response
             try { response.binder.linkToDeath(death, 0); sender = response.binder }
-            catch (_: Exception) { complete(false); return }
+            catch (_: Exception) {
+                diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.BROKER_LOST)
+                complete(false); return
+            }
             runtime = AbemaApprovalBrowserRuntime(this@AbemaRenewalBrowserService, parsed,
                 operationCurrent = { !cancelled && !ended && sender?.isBinderAlive == true &&
                     parsed.current(SystemClock.elapsedRealtime()) },
@@ -56,7 +60,11 @@ class AbemaRenewalBrowserService : Service() {
                 }, completed = ::complete, observation = {
                     if (it == AbemaApprovalObservation.CLEANUP_UNCONFIRMED) cleanupUnconfirmed = true
                 })
-            main.postDelayed({ timedOut = true; cancel() }, maxOf(0L, parsed.deadlineElapsedMs - SystemClock.elapsedRealtime()))
+            main.postDelayed({
+                runtime?.diagnostic?.let(diagnostics::absorb)
+                diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
+                timedOut = true; cancel()
+            }, maxOf(0L, parsed.deadlineElapsedMs - SystemClock.elapsedRealtime()))
             runtime!!.start()
             runtime?.resume()
         }
@@ -68,6 +76,8 @@ class AbemaRenewalBrowserService : Service() {
 
     private fun cancel() {
         if (ended) return
+        runtime?.diagnostic?.let(diagnostics::absorb)
+        diagnostics.refuse(AbemaRenewalDiagnostic.Phase.OPERATION, AbemaRenewalDiagnostic.Reason.CANCELLED)
         cancelled = true
         if (runtime == null) complete(false) else runtime?.close(false)
     }
@@ -83,11 +93,19 @@ class AbemaRenewalBrowserService : Service() {
             delivered -> AbemaRenewalBrowserResult.DELIVERED
             else -> AbemaRenewalBrowserResult.TEMPORARY_FAILURE
         }
+        runtime?.diagnostic?.let(diagnostics::absorb)
+        if (!delivered) diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_START, AbemaRenewalDiagnostic.Reason.REFUSED)
+        diagnostics.cleanup(result.cleanupConfirmed)
+        val diagnostic = diagnostics.freeze()
         val captured = request
         try {
             if (captured != null) reply?.send(Message.obtain().apply {
                 what = AbemaRenewalBrowserProtocol.RESULT
-                data = captured.envelope().apply { putString("result", result.name) }
+                data = Bundle().apply {
+                    AbemaRenewalBrowserProtocol.resultFields(captured, result, diagnostic).forEach { (key, value) ->
+                        when (value) { is String -> putString(key, value); is Long -> putLong(key, value); is Boolean -> putBoolean(key, value) }
+                    }
+                }
             })
         } catch (_: Exception) { }
         reply = null; request = null; runtime = null

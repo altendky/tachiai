@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 type Options = { sourceGate?: boolean; tokenGate?: boolean; attachGate?: boolean; sourceFailureAt?: number;
   validationFailureAt?: number; destroyFailureAt?: number; abemaDisposeFailure?: boolean; missingAbemaDiagnostic?: boolean;
+  deferredAbemaCommand?: 'load' | 'play' | 'seekRelative';
   blocked?: boolean; deferredPlay?: boolean; realPlayer?: boolean; shortGrant?: boolean; shortSourceValidation?: boolean; replay?: boolean };
 
 async function fixture(page: Page, options: Options = {}) {
@@ -34,11 +35,12 @@ async function fixture(page: Page, options: Options = {}) {
       }) as typeof fetch;
     }
     let now = 0, wall = 2000000000000, sourceCalls = 0, validationCalls = 0, tokens = 0, revoked = 0, stops = 0;
-    let releaseSource!: () => void, releaseToken!: () => void, releaseAttach!: () => void, finishPlay!: () => void;
+    let releaseSource!: () => void, releaseToken!: () => void, releaseAttach!: () => void, finishPlay!: () => void, finishAbemaCommand!: () => void;
     const sourceGate = options.sourceGate ? new Promise<void>(resolve => { releaseSource = resolve; }) : Promise.resolve();
     const tokenGate = options.tokenGate ? new Promise<void>(resolve => { releaseToken = resolve; }) : Promise.resolve();
     const attachGate = options.attachGate ? new Promise<void>(resolve => { releaseAttach = resolve; }) : Promise.resolve();
     const playGate = options.deferredPlay ? new Promise<void>(resolve => { finishPlay = resolve; }) : Promise.resolve();
+    const abemaCommandGate = new Promise<void>(resolve => { finishAbemaCommand = resolve; });
     const api: string[] = [], players: any[] = [], videos: HTMLVideoElement[] = [], leases: string[] = [], events: string[] = [], abema: any[] = [];
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
     const fetcher = (async (raw: RequestInfo | URL, init: RequestInit = {}) => {
@@ -85,14 +87,23 @@ async function fixture(page: Page, options: Options = {}) {
       freshAbema: async signal => { if (signal?.aborted) throw Error('Owned cancellation'); return { fresh: ++freshAbema }; },
       makeAbemaPlayer: (source, _core, changed, fresh, budget) => {
         const quality = new ProviderDefaultQuality(), node = document.createElement('div');
-        const record = { closed: false, disposed: 0, budget: budget.lifetimeMs, fresh: undefined as unknown }; abema.push(record);
+        const record = { closed: false, disposed: 0, budget: budget.lifetimeMs, fresh: undefined as unknown, commands: [] as string[] }; abema.push(record);
         let state = 'loading', closure: Promise<void> | undefined;
+        const command = async (name: string) => {
+          record.commands.push(name);
+          if (options.deferredAbemaCommand === name) await abemaCommandGate;
+          return 'completed';
+        };
         const result = {
-          surface: node, load: async () => { record.fresh = await fresh(); state = 'ready'; changed(); return 'completed'; },
+          surface: node, load: async () => { record.fresh = await fresh(); await command('load');
+            if (!record.closed) state = 'ready'; changed(); return 'completed'; },
           observe: () => ({ id: source.id, state, paused: true, seeking: false, width: 0, height: 0, volume: 1, muted: true,
             seekable: false, qualities: [], quality: quality.snapshot(), playheadFormats: { basis: 'last-sdk-buffered-playhead' } }),
-          play: async () => 'completed', pause() {}, relativePlan: () => ({ outcome: 'unsupported' }), seekRelative: async () => 'unsupported',
-          setGain() {}, setQuality: () => 'unsupported', setQualityPreferences: (value: any) => quality.request(value),
+          play: () => command('play'), pause() { record.commands.push('pause'); },
+          relativePlan: () => { record.commands.push('relativePlan'); return { outcome: 'unsupported' }; },
+          seekRelative: () => command('seekRelative'), setGain() { record.commands.push('setGain'); },
+          setQuality: () => { record.commands.push('setQuality'); return 'unsupported'; },
+          setQualityPreferences: (value: any) => { record.commands.push('setQualityPreferences'); return quality.request(value); },
           dispose: () => closure ??= Promise.resolve().then(() => { record.disposed++; state = 'disposed'; node.remove();
             if (options.abemaDisposeFailure) throw Error('PRIVATE_SYNTHETIC_ABEMA_CLOSE'); record.closed = true; }),
           ...(options.missingAbemaDiagnostic ? {} : { diagnostic: () => ({ cleanup: record.closed ? 'confirmed' : 'pending',
@@ -120,7 +131,7 @@ async function fixture(page: Page, options: Options = {}) {
       document.body.append(player.surface); active.push(player); return active.length - 1;
     };
     (window as any).providerTest = { runtime, selected, active, players, videos, abema, create,
-      abemaId: ABEMA_SOURCE_ID, releaseSource, releaseToken, releaseAttach, finishPlay,
+      abemaId: ABEMA_SOURCE_ID, releaseSource, releaseToken, releaseAttach, finishPlay, finishAbemaCommand,
       advance: (milliseconds: number) => { now += milliseconds; wall += milliseconds; },
       rollback: () => { now--; wall--; },
       inspect: () => ({ sourceCalls, validationCalls, tokens, revoked, stops, api: [...api], events: [...events],
@@ -313,6 +324,78 @@ test('short account expiry and clock rollback synchronously stop admission and f
     return { allowed, cleanup: await f.runtime.retire() };
   })).toMatchObject({ allowed: false, cleanup: { grant: 'revoked', cleanupConfirmed: true } });
 });
+
+test('a shortened shared account cap blocks every ABEMA command without waiting for the expiry timer', async ({ page }) => {
+  await fixture(page, { shortSourceValidation: true }); await authorize(page);
+  const result = await page.evaluate(async () => {
+    const f = (window as any).providerTest; f.create(f.abemaId); const p = f.active[0]; await p.load();
+    f.create(); await f.active[1].load(); // Revalidation tightens the cap after ABEMA construction.
+    const budget = f.abema[0].budget, before = [...f.abema[0].commands];
+    f.advance(1001); // Only injected clocks move; the real expiry timer cannot run in this task.
+    const play = await p.play(), load = await p.load(), plan = p.relativePlan(1000n), seek = await p.seekRelative(1000n, true);
+    p.setGain(0.5, false); const quality = p.setQuality(), preferences = p.setQualityPreferences({ video: null, audio: null });
+    const after = [...f.abema[0].commands]; p.pause(); await p.dispose();
+    return { budget, before, after, play, load, plan, seek, quality, preferences,
+      paused: f.abema[0].commands.at(-1), cleanup: await f.runtime.retire(), inspect: f.inspect() };
+  });
+  expect(result.budget).toBe(120000); expect(result.before).toEqual(['load']); expect(result.after).toEqual(result.before);
+  expect(result).toMatchObject({ play: 'unavailable', load: 'unavailable', plan: { outcome: 'unavailable' },
+    seek: 'unavailable', quality: 'unavailable', preferences: 'unavailable', paused: 'pause',
+    cleanup: { cleanupConfirmed: true, grant: 'revoked' }, inspect: { abemaDisposed: [1], destroyed: [1], stops: 1 } });
+});
+
+for (const command of ['load', 'play', 'seekRelative'] as const) {
+  test(`a late ABEMA ${command} success is cancelled against the shortened shared account cap`, async ({ page }) => {
+    await fixture(page, { shortSourceValidation: true, deferredAbemaCommand: command }); await authorize(page);
+    const result = await page.evaluate(async command => {
+      const f = (window as any).providerTest; f.create(f.abemaId); const p = f.active[0];
+      if (command !== 'load') await p.load();
+      const pending = command === 'seekRelative' ? p.seekRelative(1000n, true) : p[command]();
+      f.create(); await f.active[1].load();
+      const dispatched = [...f.abema[0].commands]; f.advance(1001); f.finishAbemaCommand();
+      return { dispatched, result: await pending, cleanup: await f.runtime.retire(), inspect: f.inspect() };
+    }, command);
+    expect(result.dispatched).toEqual(command === 'load' ? ['load'] : ['load', command]);
+    expect(result.result).toBe('cancelled');
+    expect(result.cleanup).toMatchObject({ cleanupConfirmed: true, grant: 'revoked' });
+    expect(result.inspect).toMatchObject({ abemaDisposed: [1], destroyed: [1], stops: 1 });
+  });
+}
+
+test('requesting one owner disposal immediately blocks its commands while retaining its healthy partner', async ({ page }) => {
+  await fixture(page); await authorize(page);
+  const result = await page.evaluate(async () => {
+    const f = (window as any).providerTest; f.create(f.abemaId); f.create();
+    const p = f.active[0], partner = f.active[1]; await Promise.all([p.load(), partner.load()]);
+    const closing = p.dispose(); // Underlying disposal has not run its microtask yet.
+    const play = p.play(), load = p.load(), seek = p.seekRelative(1000n, true), plan = p.relativePlan(1000n);
+    p.setGain(0.3, false); const quality = p.setQuality(), preferences = p.setQualityPreferences({ video: null, audio: null });
+    p.pause(); await closing;
+    const healthy = await partner.play(), after = await p.load(), inspect = f.inspect();
+    return { results: await Promise.all([play, load, seek]), plan, quality, preferences, after, healthy,
+      commands: [...f.abema[0].commands], partner: partner.observe().state, inspect, cleanup: await f.runtime.retire() };
+  });
+  expect(result).toMatchObject({ results: ['unavailable', 'unavailable', 'unavailable'], plan: { outcome: 'unavailable' },
+    quality: 'unavailable', preferences: 'unavailable', after: 'unavailable', healthy: 'completed', partner: 'ready',
+    commands: ['load', 'pause'], inspect: { revoked: 0, stops: 0, abemaDisposed: [1] }, cleanup: { cleanupConfirmed: true, grant: 'revoked' } });
+});
+
+for (const command of ['load', 'play', 'seekRelative'] as const) {
+  test(`a late ABEMA ${command} success cannot reopen its individually retired owner`, async ({ page }) => {
+    await fixture(page, { deferredAbemaCommand: command }); await authorize(page);
+    const result = await page.evaluate(async command => {
+      const f = (window as any).providerTest; f.create(f.abemaId); const p = f.active[0];
+      if (command !== 'load') await p.load();
+      const pending = command === 'seekRelative' ? p.seekRelative(1000n, true) : p[command]();
+      f.create(); await f.active[1].load();
+      const closing = p.dispose(); f.finishAbemaCommand();
+      const outcome = await pending; await closing;
+      return { outcome, healthy: await f.active[1].play(), inspect: f.inspect(), cleanup: await f.runtime.retire() };
+    }, command);
+    expect(result).toMatchObject({ outcome: 'cancelled', healthy: 'completed', inspect: { revoked: 0, stops: 0, abemaDisposed: [1] },
+      cleanup: { cleanupConfirmed: true, grant: 'revoked' } });
+  });
+}
 
 test('late attachment after retirement cannot load media or reopen the original owner', async ({ page }) => {
   await fixture(page, { attachGate: true }); await authorize(page);

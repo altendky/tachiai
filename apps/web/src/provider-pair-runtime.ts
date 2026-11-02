@@ -1,4 +1,4 @@
-import type { DiagnosticProviderSource, PlayerFactory, PlayerSession, TimingCore } from './player';
+import type { CommandResult, DiagnosticProviderSource, PlayerFactory, PlayerSession, TimingCore } from './player';
 import type { PairLifecycle, Side } from './pair';
 import { ABEMA_SOURCE_ID, TWITCH_SOURCE_IDS } from './provider-catalogue';
 import { TwitchProofSession, isTwitchCase, type PollResult, type TwitchCase } from './twitch-proof';
@@ -224,11 +224,23 @@ export class ProviderPairRuntime {
     const owned: Owned = { session: player, provider, diagnostic: typeof diagnostic === 'function' ? diagnostic.bind(player) : undefined,
       closed: false, uncertain: false };
     this.media.push(owned);
-    return { surface: player.surface, load: () => player.load(), observe: () => player.observe(), play: () => player.play(),
-      pause: () => player.pause(), relativePlan: delta => player.relativePlan(delta),
-      seekRelative: (delta, full, accepted) => player.seekRelative(delta, full, accepted),
-      setGain: (volume, muted) => player.setGain(volume, muted), setQuality: id => player.setQuality(id),
-      setQualityPreferences: value => player.setQualityPreferences(value), dispose: () => closeOwned(owned) };
+    const admitted = () => !owned.closure && !owned.closed && !owned.uncertain && this.current();
+    const command = (dispatch: () => Promise<CommandResult>): Promise<CommandResult> => {
+      if (!admitted()) return Promise.resolve('unavailable');
+      // Dispatch before yielding so native Play retains the user activation.
+      return dispatch().then(result => {
+        const current = admitted();
+        return !current && result === 'completed' ? 'cancelled' : result;
+      });
+    };
+    return { surface: player.surface, load: () => command(() => player.load()), observe: () => player.observe(),
+      play: () => command(() => player.play()), pause: () => player.pause(),
+      relativePlan: delta => admitted() ? player.relativePlan(delta) : { outcome: 'unavailable' },
+      seekRelative: (delta, full, accepted) => command(() => player.seekRelative(delta, full, accepted)),
+      setGain: (volume, muted) => { if (admitted()) player.setGain(volume, muted); },
+      setQuality: id => admitted() ? player.setQuality(id) : 'unavailable',
+      setQualityPreferences: value => admitted() ? player.setQualityPreferences(value) : 'unavailable',
+      dispose: () => closeOwned(owned) };
   }
   observe() {
     return { state: this.state, ready: this.begun && ['ready', 'running'].includes(this.state) && this.admitted(),

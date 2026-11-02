@@ -23,9 +23,12 @@ Android also has an internal, explicitly selected account-transport
 It binds direct HTTPS and supported proxy/tunnel outer sockets to one supplied
 Android `Network`, while loopback and WireGuard inner traffic keep their existing
 ownership. Blocking platform work and accepted sockets retain independent
-cleanup receipts. Ordinary callers are unchanged; this does not implement a
-scheduler, cross-process handoff or a different product UX. There is no
-corresponding web or Apple mechanism established by this implementation.
+cleanup receipts. An internal optional renewal path now passes the same captured
+capability and original deadline to native HTTP and the same-UID approval process;
+only its private START carries a typed Network. Ordinary callers are unchanged;
+this does not implement a scheduler or a different product UX. Actual Android
+Parcelable/network acceptance remains unproved. There is no corresponding web
+or Apple mechanism established by this implementation.
 
 ## Other implementations
 

@@ -220,10 +220,11 @@ these ownership guards.
 This is a prerequisite for operation-owned renewal in
 [issue #294](https://github.com/altendky/tachiai/issues/294), with explicit bound
 factories for account session, bootstrap and approval-browser routes. It adds
-no scheduler, cross-process Network handoff, background consumer, account
-adoption rule, setting or UX exception. End-to-end renewal using a supplied
-Network and actual Android Network behavior still require integration and
-device evidence; host fixtures and JNI compilation do not establish them.
+no scheduler, background consumer, account adoption rule, setting or UX exception.
+The optional renewal handoff below subsequently connects the native HTTP and
+approval-process factories. End-to-end renewal using a supplied Network and
+actual Android Network behavior still require device evidence; host fixtures
+and JNI compilation do not establish them.
 
 Local verification passed the full pinned Go race suite, including 20 focused
 Network tests, both Android ABI bridge builds, 2,383 debug JVM tests (44 new),
@@ -232,6 +233,44 @@ cover blocked platform work, same-host coalescing, original deadlines, borrowed
 descriptor lifetime, WireGuard publication/reopen/close ordering, peer quarantine,
 constructor rollback and the actual OkHttp socket-factory handoff. These are
 owned fixtures; no supplied-Network provider or device trial was performed.
+
+### Optional renewal Network handoff
+
+The internal readiness entry can now capture one supplied Android `Network` and
+the original absolute operation deadline. Native account verification and the
+hidden approval browser receive that same immutable capability; each independently
+owned resource creates a fresh egress scope. A second readiness observer waits
+for the existing account operation without replacing its Network or extending
+its deadline. The ordinary null-capability path remains unchanged.
+
+Only the private START message carries a typed Network Parcelable with an
+explicit bound-mode discriminator. Legacy START keeps its original four scalar
+fields; partial, wrong-type, unknown or stale envelopes are refused. CANCEL and
+results retain the existing scalar instance/owner/nonce/deadline identity and
+cannot replace the captured capability. No Network handle enters saved account
+state, diagnostics or an Activity intent.
+
+The approval runtime publishes its scope owner before allocating a backend,
+uses the bound approval route and cancels the scope before region/HTTP cleanup
+waits. Partial and late preparation retain actual owners. Confirmed closure
+after cancellation can release them; an earlier unknown cleanup verdict stays
+failed even if work completes later. The remembered browser profile, normal TLS,
+destination policy, proxy acknowledgment and grant-adoption checks are unchanged.
+
+Renewal uses native HTTP and the hidden approval browser, not device-authorization
+bootstrap. The Network-bound account binding explicitly refuses bootstrap rather
+than falling back to its unbound implementation. No scheduler, Network-loss
+observer, new permission, UI or ordinary caller is wired by this slice. JVM
+fixtures use a typed mockable SDK Network for protocol identity; they do not
+establish real Parcelable transport or supplied-Network behavior across Android
+processes. Those remain separately controlled runtime acceptance.
+
+Local handoff verification passed 2,402 debug JVM tests (19 new), instrumentation
+compilation, debug lint and release isolation. The new cases cover strict START
+admission, captured Network/deadline identity, independent scopes, observer
+coalescing, bootstrap refusal and partial/cancelled cleanup. Go inputs are
+unchanged from the verified two-ABI prerequisite build. No APK deployment,
+provider operation or persistent device/profile change was performed.
 
 ## Recommendation and scope
 

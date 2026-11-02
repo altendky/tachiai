@@ -4,9 +4,12 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Network
 import android.os.*
 import android.os.Process
 import java.util.concurrent.ConcurrentLinkedQueue
+import net.fstab.tachiai.platform.network.AndroidNetworkEgress
+import net.fstab.tachiai.platform.network.RouteNetworkEgress
 
 internal enum class AbemaRenewalBrowserResult {
     DELIVERED, CANCELLED, TEMPORARY_FAILURE, CLEANUP_UNCONFIRMED;
@@ -22,6 +25,16 @@ internal interface AbemaRenewalBrowser {
     fun release(): Boolean
 }
 
+// START alone carries this immutable, RAM-only capability. Replies and CANCEL
+// keep the scalar owner/nonce/deadline identity and cannot replace this Network.
+internal class AbemaRenewalBrowserStart(val request: AbemaApprovalBrowserRequest, val network: Network? = null) {
+    private val networkContext = network?.let { AbemaRenewalNetwork(it, request.deadlineElapsedMs) }
+    fun egressFactory(create: (Network, Long) -> RouteNetworkEgress = { value, deadline ->
+        AndroidNetworkEgress(value, deadline)
+    }): (() -> RouteNetworkEgress)? = networkContext?.egressFactory(create)
+    override fun toString() = "AbemaRenewalBrowserStart(redacted)"
+}
+
 // Only fixed, bounded account-page requests cross this channel. The existing
 // protected handoff transports the candidate separately; no grant is an IPC field.
 internal object AbemaRenewalBrowserProtocol {
@@ -35,6 +48,23 @@ internal object AbemaRenewalBrowserProtocol {
     fun requestFields(request: AbemaApprovalBrowserRequest): Map<String, Any?> = mapOf(
         "instance" to request.instanceId, "proof" to request.ownerProof,
         "nonce" to request.emailNonce, "deadline" to request.deadlineElapsedMs)
+
+    fun startFields(start: AbemaRenewalBrowserStart): Map<String, Any?> = requestFields(start.request) +
+        (start.network?.let { mapOf("bound" to true, "network" to it) } ?: emptyMap())
+
+    fun decodeStart(fields: Map<String, Any?>, sendingUid: Int, ownUid: Int, now: Long): AbemaRenewalBrowserStart? =
+        runCatching {
+            val network = when (fields.keys) {
+                requestKeys -> null
+                requestKeys + setOf("bound", "network") -> {
+                    if (fields["bound"] !is Boolean || fields["bound"] != true) return null
+                    fields["network"] as? Network ?: return null
+                }
+                else -> return null
+            }
+            val request = decodeRequest(fields.filterKeys { it in requestKeys }, sendingUid, ownUid, now) ?: return null
+            AbemaRenewalBrowserStart(request, network)
+        }.getOrNull()
 
     fun accepts(request: AbemaApprovalBrowserRequest, now: Long): Boolean =
         request.verificationUri == "https://abema.tv/account" && request.automaticReturn &&
@@ -105,7 +135,7 @@ internal class AbemaRenewalBrowserEvidence(private val diagnostics: AbemaRenewal
     }
 }
 
-internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowser, ServiceConnection {
+internal class AndroidAbemaRenewalBrowser(context: Context, private val network: Network? = null) : AbemaRenewalBrowser, ServiceConnection {
     private val diagnostics = AbemaRenewalDiagnostics()
     private val evidence = AbemaRenewalBrowserEvidence(diagnostics)
     override val diagnostic get() = diagnostics.snapshot()
@@ -114,6 +144,7 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private var request: AbemaApprovalBrowserRequest? = null
+    private var startCarrier: AbemaRenewalBrowserStart? = null
     private var completed: ((AbemaRenewalBrowserResult) -> Unit)? = null
     private var result: AbemaRenewalBrowserResult? = null
     private var remote: Messenger? = null
@@ -143,6 +174,11 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
             diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.REFUSED)
             finish(AbemaRenewalBrowserResult.TEMPORARY_FAILURE); return
         }
+        startCarrier = runCatching { AbemaRenewalBrowserStart(request, network) }.getOrNull()
+        if (startCarrier == null) {
+            diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.REFUSED)
+            finish(AbemaRenewalBrowserResult.TEMPORARY_FAILURE); return
+        }
         main.postDelayed({
             if (result == null) {
                 diagnostics.refuse(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
@@ -168,7 +204,7 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
         requireMain()
         if (result != null) return
         if (cancelled) { finish(if (expired) AbemaRenewalBrowserResult.TEMPORARY_FAILURE else AbemaRenewalBrowserResult.CANCELLED); return }
-        val captured = request ?: return
+        val captured = startCarrier ?: return
         try {
             binder.linkToDeath(death, 0)
             diagnostics.progress(AbemaRenewalDiagnostic.Progress.BROWSER_BOUND)
@@ -176,7 +212,7 @@ internal class AndroidAbemaRenewalBrowser(context: Context) : AbemaRenewalBrowse
             // Mark before send: an exception cannot prove that START was not delivered.
             sent = true
             remote!!.send(Message.obtain().apply {
-                what = AbemaRenewalBrowserProtocol.START; replyTo = reply; data = captured.envelope()
+                what = AbemaRenewalBrowserProtocol.START; replyTo = reply; data = captured.startEnvelope()
             })
         } catch (_: Exception) {
             diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_BIND, AbemaRenewalDiagnostic.Reason.EXCEPTION)
@@ -251,4 +287,8 @@ internal fun Bundle.fields(): Map<String, Any?> = keySet().associateWith { get(i
 internal fun AbemaApprovalBrowserRequest.envelope() = Bundle().apply {
     putString("instance", instanceId); putString("proof", ownerProof)
     putString("nonce", emailNonce); putLong("deadline", deadlineElapsedMs)
+}
+
+internal fun AbemaRenewalBrowserStart.startEnvelope() = request.envelope().apply {
+    network?.let { putBoolean("bound", true); putParcelable("network", it) }
 }

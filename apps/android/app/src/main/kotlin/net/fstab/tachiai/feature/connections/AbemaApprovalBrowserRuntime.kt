@@ -20,6 +20,7 @@ import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Phase
 import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Reason
 import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Progress
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -33,6 +34,81 @@ internal enum class AbemaApprovalObservation {
     RENDERER_GONE, CLEANUP_CONFIRMED, CLEANUP_UNCONFIRMED,
 }
 
+// The preparation worker publishes its actual scope here before constructing a
+// backend. Cancellation can therefore retire a late factory without losing its owner.
+internal class AbemaApprovalNetworkOwner {
+    private val lock = Any()
+    private var factoryStarted = false
+    private var creating = false
+    private var cancelled = false
+    private var cleanupFailed = false
+    private var closeStarted = false
+    private var closeResult: Boolean? = null
+    private var egress: RouteNetworkEgress? = null
+
+    fun create(factory: () -> RouteNetworkEgress): RouteNetworkEgress {
+        synchronized(lock) {
+            if (factoryStarted || cancelled) throw IOException("Approval network refused")
+            factoryStarted = true; creating = true
+        }
+        val value = try { factory() } catch (_: Throwable) {
+            synchronized(lock) { creating = false }
+            throw IOException("Approval network refused")
+        }
+        val keep = synchronized(lock) {
+            egress = value; creating = false
+            !cancelled && !cleanupFailed && !closeStarted
+        }
+        if (!keep) {
+            val failed = runCatching(value::cancel).isFailure
+            // Cancellation can precede a pure factory's return without losing
+            // cleanup ownership. Preserve an earlier unknown verdict, while
+            // allowing the joined preparation owner to explicitly close it.
+            if (failed || synchronized(lock) { cleanupFailed }) refuseCleanup()
+            throw IOException("Approval network refused")
+        }
+        try { value.checkActive() } catch (_: Throwable) {
+            cancel()
+            throw IOException("Approval network refused")
+        }
+        return value
+    }
+
+    fun cancel() {
+        val value = synchronized(lock) { cancelled = true; egress }
+        if (runCatching { value?.cancel() }.isFailure) refuseCleanup()
+    }
+
+    fun refuseCleanup(): Boolean {
+        val value = synchronized(lock) {
+            cleanupFailed = true; cancelled = true; closeResult = false
+            egress
+        }
+        runCatching { value?.reportCleanupUnconfirmed() }
+        return false
+    }
+
+    fun closeConfirmed(): Boolean {
+        val allowed = synchronized(lock) {
+            closeResult?.let { return it }
+            if (closeStarted || creating) false else { closeStarted = true; true }
+        }
+        if (!allowed) return refuseCleanup()
+        cancel()
+        val value = synchronized(lock) { egress }
+        val confirmed = runCatching {
+            value?.closeOwnedSockets()
+            value?.isCleanupConfirmed() != false
+        }.getOrDefault(false)
+        if (!confirmed) return refuseCleanup()
+        return synchronized(lock) {
+            if (cleanupFailed) false else { closeResult = true; true }
+        }
+    }
+
+    override fun toString() = "AbemaApprovalNetworkOwner(redacted)"
+}
+
 internal class AbemaApprovalBrowserRuntime(
     private val context: Context,
     private val request: AbemaApprovalBrowserRequest,
@@ -41,6 +117,7 @@ internal class AbemaApprovalBrowserRuntime(
     private val onBrowser: (WebView) -> Unit,
     private val completed: (Boolean) -> Unit,
     private val observation: (AbemaApprovalObservation) -> Unit = {},
+    private val networkEgressFactory: (() -> RouteNetworkEgress)? = null,
 ) {
     private val diagnostics = AbemaRenewalDiagnostics()
     internal val diagnostic get() = diagnostics.snapshot()
@@ -58,17 +135,20 @@ internal class AbemaApprovalBrowserRuntime(
     }
     private class Owned {
         val preparation = RoutePreparation()
+        val network = AbemaApprovalNetworkOwner()
         val prepared = CountDownLatch(1)
         @Volatile var backend: AbemaAccountCleanupReceipt<RouteBackend>? = null
         @Volatile var route: RouteSession? = null
         @Volatile var routeClose: AbemaAccountCleanupReceipt<RouteSession>? = null
         @Volatile var regionCheck: AbemaApprovalRegionCheck? = null
-        fun closeConfirmed(): Boolean {
-            if (!prepared.await(1, TimeUnit.SECONDS)) return false
-            if (regionCheck?.closeConfirmed() == false) return false
-            val closed = routeClose?.await() ?: (backend?.await() ?: true)
-            return closed && preparation.cleanupConfirmed
-        }
+        fun closeConfirmed(): Boolean = try {
+            if (!prepared.await(1, TimeUnit.SECONDS)) network.refuseCleanup()
+            else if (regionCheck?.closeConfirmed() == false) network.refuseCleanup()
+            else {
+                val closed = routeClose?.await() ?: (backend?.await() ?: true)
+                if (!closed || !preparation.cleanupConfirmed) network.refuseCleanup() else network.closeConfirmed()
+            }
+        } catch (_: Throwable) { network.refuseCleanup() }
     }
     private val main = Handler(Looper.getMainLooper())
     private var view: WebView? = null
@@ -220,15 +300,19 @@ internal class AbemaApprovalBrowserRuntime(
                 if (BuildConfig.LOCAL_INSPECTION) Log.i("TachiaiInspect", "ABEMA_ROUTE mode=${owner.instance.setup.route?.mode?.name} " +
                     "kind=${owner.profile?.kind?.id ?: "SYSTEM"} " +
                     "windscribeNamed=${owner.instance.setup.route?.connectionName?.contains("windscribe", ignoreCase = true) == true}")
-                handle.route = RouteSession.createAbemaApprovalBrowser(owner.profile, handle.preparation,
-                    ownBackend = { backend ->
-                        val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
-                        handle.backend = receipt
-                        object : RouteBackend {
-                            override val proxyPort get() = backend.proxyPort
-                            override fun close() { check(receipt.await()) }
-                        }
-                    })
+                val egress = networkEgressFactory?.let { handle.network.create(it) }
+                val ownBackend: (RouteBackend) -> RouteBackend = { backend ->
+                    val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
+                    handle.backend = receipt
+                    object : RouteBackend {
+                        override val proxyPort get() = backend.proxyPort
+                        override fun close() { check(receipt.await()) }
+                    }
+                }
+                handle.route = if (egress == null) RouteSession.createAbemaApprovalBrowser(owner.profile,
+                    handle.preparation, ownBackend = ownBackend)
+                else RouteSession.createBoundAbemaApprovalBrowser(owner.profile, egress,
+                    handle.preparation, ownBackend = ownBackend)
                 handle.routeClose = AbemaAccountCleanupReceipt(checkNotNull(handle.route), RouteSession::close)
                 handle.regionCheck = AbemaApprovalRegionCheck(checkNotNull(handle.route), ::currentOnWorker,
                     SystemClock::elapsedRealtime, request.deadlineElapsedMs)
@@ -463,6 +547,7 @@ internal class AbemaApprovalBrowserRuntime(
         val browser = view
         var destroyed = true
         try {
+            handle?.network?.cancel()
             handle?.preparation?.cancel()
             handle?.regionCheck?.cancel()
             browser?.settings?.blockNetworkLoads = true

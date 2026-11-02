@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.abema.account
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.Network
 import android.os.*
 import android.os.Process
 import java.util.UUID
@@ -12,6 +13,21 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import net.fstab.tachiai.presentation.validProviderInstanceId
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
+import net.fstab.tachiai.platform.network.AndroidNetworkEgress
+import net.fstab.tachiai.platform.network.RouteNetworkEgress
+
+// RAM-only capability captured once for an operation. Each resource gets a
+// fresh scope, while all scopes retain this exact Network and original deadline.
+internal class AbemaRenewalNetwork(val network: Network, val deadlineElapsedMs: Long) {
+    private val deadlineNanos = Math.multiplyExact(deadlineElapsedMs, 1_000_000L)
+    init { require(deadlineElapsedMs > 0) }
+
+    fun egressFactory(create: (Network, Long) -> RouteNetworkEgress = { selected, deadline ->
+        AndroidNetworkEgress(selected, deadline)
+    }): () -> RouteNetworkEgress = { create(network, deadlineNanos) }
+
+    override fun toString() = "AbemaRenewalNetwork(private capability hidden)"
+}
 
 internal object AbemaReadinessIpc {
     const val CHECK = 1
@@ -67,7 +83,9 @@ internal object AbemaReadinessIpc {
 
 internal object AndroidAbemaRenewalReadiness {
     class Work(val binding: AbemaAccountConnectionBinding, val owner: AbemaCatalogRouteOwner,
-        val expected: AbemaAccountSnapshot, val beganWall: Long, val deadline: Long) {
+        val expected: AbemaAccountSnapshot, val beganWall: Long, val deadline: Long,
+        val network: AbemaRenewalNetwork? = null) {
+        init { require(network == null || network.deadlineElapsedMs == deadline) }
         override fun toString() = "AbemaRenewalWork(redacted)"
     }
     private class Scope(val owner: String, val snapshot: AbemaAccountSnapshot) {
@@ -87,7 +105,8 @@ internal object AndroidAbemaRenewalReadiness {
     // Application-owned operations survive individual readiness Service/Activity
     // observers. Unconfirmed cleanup keeps the actual operation and reservation.
     private val operations = ConcurrentHashMap<String, AbemaAccountRenewalOperation>()
-    fun check(service: Service, target: AbemaReadinessTarget, deadline: Long): AbemaRenewalReadinessCoordinator.Decision {
+    fun check(service: Service, target: AbemaReadinessTarget, deadline: Long,
+        network: Network? = null): AbemaRenewalReadinessCoordinator.Decision {
         val instance = target.instanceId
         fun invalidateTarget() = coordinator.invalidate(instance) { it.owner.proof() == target.ownerProof }
         fun failed(status: AbemaRenewalReadinessCoordinator.Status = AbemaRenewalReadinessCoordinator.Status.FAILURE): AbemaRenewalReadinessCoordinator.Decision {
@@ -96,7 +115,9 @@ internal object AndroidAbemaRenewalReadiness {
         }
         return try {
             coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }?.let { return it }
-            val binding = androidAbemaAccountConnectionBinding(service, instance, target.ownerProof)
+            val capturedNetwork = network?.let { AbemaRenewalNetwork(it, deadline) }
+            val binding = androidAbemaAccountConnectionBinding(service, instance, target.ownerProof,
+                renewalEgressFactory = capturedNetwork?.egressFactory())
             val owner = binding.owner()
             val snapshot = binding.store.readSnapshot()
             val wall = System.currentTimeMillis()
@@ -116,7 +137,10 @@ internal object AndroidAbemaRenewalReadiness {
                 return AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.READY)
             }
             if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return failed()
-            val decision = coordinator.check(instance, Scope(owner.proof(), snapshot), Work(binding, owner, snapshot, wall, deadline), deadline)
+            // WAIT observes existing work; it never replaces that work's
+            // capability/deadline or grants control to this observer.
+            val decision = coordinator.check(instance, Scope(owner.proof(), snapshot),
+                Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline)
             if (decision.status == AbemaRenewalReadinessCoordinator.Status.LAUNCH) {
                 start(service.applicationContext, checkNotNull(decision.ticket))
                 AbemaRenewalReadinessCoordinator.Decision(AbemaRenewalReadinessCoordinator.Status.WAIT)
@@ -153,7 +177,7 @@ internal object AndroidAbemaRenewalReadiness {
         val work = claim(ticket)
         if (work == null) { coordinator.finish(ticket, false); return }
         val operation = try { AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,
-            AndroidAbemaRenewalBrowser(context), AndroidAbemaEmailGrantHandoff.inbox,
+            AndroidAbemaRenewalBrowser(context, work.network?.network), AndroidAbemaEmailGrantHandoff.inbox,
             AbemaAccountWorkers.worker, AbemaAccountWorkers.cancellation,
             { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
             SystemClock::elapsedRealtime, System::currentTimeMillis, { coordinator.current(ticket) },

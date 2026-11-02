@@ -237,14 +237,15 @@ async function wholeHostFixture(late = false) {
       return value;
     } };
   const context = { newPage: async () => page, newCDPSession: async p => { assert.equal(p, page); return session; }, close: async () => { commands.push('contextClose'); } };
+  const clockBase = process.hrtime.bigint(), hostMs = late ? 300000 : 10000;
   const control = { initial: Promise.resolve({ schema: 1, route, twitchCase, sources: { A: 'abema', B: 'twitch' },
-    deadlineNs: String(process.hrtime.bigint() + 10_000_000_000n), expiresAtMs: Date.now() + 10000 }),
+    deadlineNs: String(clockBase + BigInt(hostMs) * 1000000n), expiresAtMs: Date.now() + hostMs }),
     stop: false, closed: false, emit: value => events.push(value), close() { this.closed = true; }, fresh: () => assert.fail('No provider preparation in this owned page fixture') };
   try {
     process.argv = ['node', 'owned', '--owned-runtime', runtime];
     process.stdout.write = chunk => { stdout += chunk; return true; };
     let clocks = 0;
-    await main({ control, ...(late ? { now: () => clocks++ === 0 ? 0n : 181000000000n } : {}),
+    await main({ control, ...(late ? { now: () => clockBase + (clocks++ === 0 ? 0n : 181000000000n) } : {}),
       assets: async () => ({ assets: new Map(), rootHtml: Buffer.from('owned'), childHtml: Buffer.from('owned') }),
       launch: async (_root, options) => {
         assert.equal(options.proxy.server, 'http://127.0.0.1:1234'); assert(!JSON.stringify(options).includes(route.password));

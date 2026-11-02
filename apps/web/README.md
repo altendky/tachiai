@@ -15,7 +15,11 @@ No provider media is downloaded. If FFmpeg is not on PATH, set
 `FFMPEG=/path/to/ffmpeg` for preparation.
 
 Asset preparation also builds a separate, pinned FFmpeg 8.1 copy-only tool from
-the official source archive for the owned encrypted fixture. Its build helper
+the upstream source archive for the owned encrypted fixture. The explicit
+[Ubuntu source publication](https://launchpad.net/ubuntu/+source/ffmpeg/7:8.1-3ubuntu3)
+supplies the original archive, verified byte-for-byte against the existing
+upstream SHA-256; neither the version nor source pin changes. This avoids
+repeated connection failures at the original release host. Its build helper
 uses a C compiler, Make, curl, tar, xz, GNU coreutils and `flock`. Build output is
 cached under `apps/web/build/tools/ffmpeg-8.1`. The encrypted generator accepts an explicit
 `FFMPEG_ENCRYPTED` executable override and verifies actual per-fragment CENC

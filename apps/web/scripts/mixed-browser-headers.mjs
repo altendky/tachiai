@@ -63,7 +63,33 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   const route = validateRouteDescriptor(descriptor), proxyOrigin = 'http://' + route.host + ':' + route.port;
   let session, failed = false, disposed = false, disposal;
   let failure = 'NONE', failureStage = 'NONE', failureCommand = 'NONE', disposalState = 'OPEN';
+  let canceledContinuationObserved = false;
   const attempts = new Set(), responses = new Map(), pending = new Set();
+  const retire = (id, entry) => { if (responses.get(id) === entry) responses.delete(id); };
+  const matchesResponse = (entry, event) => event.request?.url === entry.url && event.request?.method === entry.method &&
+    event.frameId === entry.frame && event.resourceType === entry.resource;
+  const networkTerminal = (event, failedLoad) => {
+    if (disposed || failed || !identifier(event?.requestId)) return;
+    const entries = [...responses.entries()].filter(([, entry]) => entry.networkId === event.requestId);
+    if (entries.length === 1) {
+      const [, entry] = entries[0];
+      if (entry.responsePending && entry.cancelEligible && failedLoad && event.canceled === true) entry.canceled = true;
+    }
+    // No cancellation history survives to authorize a later interception.
+    for (const [id, entry] of entries) if (!entry.responsePending) retire(id, entry);
+  };
+  const networkFailed = event => networkTerminal(event, true);
+  const networkFinished = event => networkTerminal(event, false);
+  const canceledInterception = (error, method, id, entry) => {
+    if (disposed || failed || !entry?.responsePending || !entry.cancelEligible || !entry.canceled || responses.get(id) !== entry ||
+      [...responses.values()].filter(value => value.networkId === entry.networkId).length !== 1) return false;
+    try {
+      // Exact public Chrome/Playwright protocol message, never a substring of
+      // an arbitrary transport/provider error. No error text is retained.
+      return error?.message === `cdpSession.send: Protocol error (${method}): Invalid InterceptionId.` ||
+        error?.message === `Protocol error (${method}): Invalid InterceptionId.`;
+    } catch { return false; }
+  };
   const record = (value, stage, command = 'NONE') => {
     if (failure !== 'NONE') return;
     failure = value; failureStage = stage; failureCommand = command;
@@ -71,15 +97,18 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   const fail = (value, stage, command = 'NONE') => {
     record(value, stage, command); failed = true; responses.clear(); void page.close().catch(() => {});
   };
-  const send = (method, fields, stage) => {
+  const send = (method, fields, stage, entry) => {
     const command = { 'Fetch.continueRequest': 'CONTINUE_REQUEST', 'Fetch.continueResponse': 'CONTINUE_RESPONSE',
       'Fetch.continueWithAuth': 'CONTINUE_AUTH' }[method];
+    const rejected = (error, synchronous = false) => {
+      if (stage === 'RESPONSE' && canceledInterception(error, method, fields.requestId, entry)) canceledContinuationObserved = true;
+      else if (synchronous || !disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command);
+    };
+    const settled = () => { if (stage === 'RESPONSE' && entry) retire(fields.requestId, entry); };
     try {
-      const task = session.send(method, fields).catch(() => {
-        if (!disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command);
-      }).finally(() => pending.delete(task));
+      const task = session.send(method, fields).catch(rejected).finally(() => { settled(); pending.delete(task); });
       pending.add(task);
-    } catch { fail('CONTINUATION_FAILED', stage, command); }
+    } catch (error) { rejected(error, true); settled(); }
   };
   const paused = event => {
     if (disposed || failed) return;
@@ -89,13 +118,18 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
       const id = event?.requestId;
       if (!identifier(id)) throw refused();
       if (stage === 'RESPONSE') {
-        const captured = responses.get(id); responses.delete(id);
+        reason = 'RESPONSE_BINDING_MISMATCH';
+        const captured = responses.get(id);
+        if (captured?.responsePending) throw refused();
+        if (captured) {
+          captured.responsePending = true;
+          captured.cancelEligible = matchesResponse(captured, event) && identifier(event.networkId) && event.networkId === captured.networkId;
+        }
         if (!captured || event.responseErrorReason !== undefined) {
-          send('Fetch.continueRequest', { requestId: id }, stage); return;
+          send('Fetch.continueRequest', { requestId: id }, stage, captured); return;
         }
         reason = 'RESPONSE_BINDING_MISMATCH';
-        if (event.request?.url !== captured.url || event.request?.method !== captured.method || event.frameId !== captured.frame ||
-          event.resourceType !== captured.resource || !Number.isInteger(event.responseStatusCode) ||
+        if (!matchesResponse(captured, event) || !Number.isInteger(event.responseStatusCode) ||
           event.responseStatusCode < 100 || event.responseStatusCode > 599) throw refused();
         reason = 'RESPONSE_HEADERS_INVALID';
         const headers = responseHeaders(event.responseHeaders).filter(header => header.name.toLowerCase() !== 'access-control-allow-origin');
@@ -103,7 +137,7 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
         // Preserve status and all other headers. No body API, fulfillment,
         // redirect, cookie, request URL/method or TLS override exists here.
         send('Fetch.continueResponse', { requestId: id, responseCode: event.responseStatusCode,
-          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) }, stage);
+          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) }, stage, captured);
         return;
       }
       const request = event.request;
@@ -120,7 +154,8 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
       }
       reason = 'CAPACITY';
       if (responses.has(id) || responses.size >= 512) throw refused();
-      responses.set(id, { url: request.url, method: request.method, frame: event.frameId, resource: event.resourceType });
+      responses.set(id, { url: request.url, method: request.method, frame: event.frameId, resource: event.resourceType,
+        networkId: identifier(event.networkId) ? event.networkId : undefined, responsePending: false, cancelEligible: false, canceled: false });
       send('Fetch.continueRequest', { requestId: id,
         headers: headers.filter(header => header.name.toLowerCase() !== 'origin'), interceptResponse: true }, stage);
     } catch { fail(reason, stage); }
@@ -140,16 +175,19 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   try {
     session = await context.newCDPSession(page);
     session.on('Fetch.requestPaused', paused); session.on('Fetch.authRequired', auth);
+    session.on('Network.loadingFailed', networkFailed); session.on('Network.loadingFinished', networkFinished);
+    await session.send('Network.enable');
     await session.send('Fetch.enable', { handleAuthRequests: true, patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
   } catch {
     if (session) {
       session.off('Fetch.requestPaused', paused); session.off('Fetch.authRequired', auth);
+      session.off('Network.loadingFailed', networkFailed); session.off('Network.loadingFinished', networkFinished);
       try { await session.detach(); } catch {}
     }
     throw refused();
   }
   return Object.freeze({
-    diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState }); },
+    diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState, canceledContinuationObserved }); },
     assertHealthy() { if (failed || disposed) throw refused(); },
     dispose() {
       if (disposal) return disposal;
@@ -158,6 +196,7 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
         if (!page.isClosed()) { try { await page.close(); } catch { failed = true; record('PAGE_CLOSE_FAILED', 'CLOSE'); } }
         await Promise.allSettled([...pending]);
         session.off('Fetch.requestPaused', paused); session.off('Fetch.authRequired', auth);
+        session.off('Network.loadingFailed', networkFailed); session.off('Network.loadingFinished', networkFinished);
         try { await session.detach(); } catch { if (!page.isClosed()) { failed = true; record('DETACH_FAILED', 'DETACH'); } }
         attempts.clear();
         if (failed) throw refused();

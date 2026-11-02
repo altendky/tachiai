@@ -152,8 +152,11 @@ class HostTests(unittest.TestCase):
         diagnostic = {"failure": "CONTINUATION_FAILED", "stage": "RESPONSE", "command": "CONTINUE_RESPONSE", "disposal": "FAILED"}
         value = {**receipt, "transportDiagnostic": diagnostic}
         self.assertEqual(host.validate_control(host.wire(value)), value)
+        observed = {**receipt, "transportDiagnostic": {**diagnostic, "canceledContinuationObserved": True}}
+        self.assertEqual(host.validate_control(host.wire(observed)), observed)
         self.assertFalse(host.trial_succeeded(value, True))
-        for change in ({"url": PRIVATE}, {"failure": PRIVATE}, {"stage": []}, {"command": "Fetch.getResponseBody"}, {"disposal": 1}):
+        for change in ({"url": PRIVATE}, {"failure": PRIVATE}, {"stage": []}, {"command": "Fetch.getResponseBody"},
+                       {"disposal": 1}, {"canceledContinuationObserved": PRIVATE}, {"canceledContinuationObserved": 0}):
             with self.subTest(change=change), self.assertRaises(bootstrap.Refused):
                 host.validate_control(host.wire({**receipt, "transportDiagnostic": {**diagnostic, **change}}))
 

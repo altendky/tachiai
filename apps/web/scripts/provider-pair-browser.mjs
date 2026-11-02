@@ -108,7 +108,8 @@ export function terminalCleanup(observation) {
 }
 
 export function validateTransportDiagnostic(value) {
-  if (!exact(value, ['failure', 'stage', 'command', 'disposal']) ||
+  if (!subset(value, ['failure', 'stage', 'command', 'disposal'], ['canceledContinuationObserved']) ||
+      Object.hasOwn(value, 'canceledContinuationObserved') && typeof value.canceledContinuationObserved !== 'boolean' ||
       !['NONE', 'CONTINUATION_FAILED', 'RESPONSE_BINDING_MISMATCH', 'REQUEST_HEADERS_INVALID',
         'RESPONSE_HEADERS_INVALID', 'CAPACITY', 'AUTH_EVENT_INVALID', 'REQUEST_EVENT_INVALID',
         'PAGE_CLOSE_FAILED', 'DETACH_FAILED'].includes(value.failure) ||

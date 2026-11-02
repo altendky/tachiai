@@ -366,3 +366,51 @@ replay both returned HTTP 200 without cookies, saved accounts or Authorization.
 The token and manifest remained in memory. This permits a focused diagnostic
 through the unchanged Twitch player without another owner activation; manifest
 acceptance alone does not establish playback, audio or authenticated behavior.
+
+The focused anonymous browser comparison then reproduced and resolved the
+shutdown without another owner activation. Both modes used the same temporary
+consumer (SHA-256
+`c91879b51db7df4a4b135699bde0f6a49f39e3423a138a48b4e78f951c63c6b6`),
+unchanged TwitchProviderPlayer, Shaka transport/router and exact replay source.
+Only the header-owner implementation changed: signed `71f2f2844e147a9fbcce6f99ac69c590773b79aa`
+versus signed `bfc328eb580904441de59f6a249b2505a11734cd`. Each mode requested two
+independent fresh anonymous tokens; all four token requests returned HTTP 200.
+No account, cookies, OAuth grant, alternate client or saved profile was used.
+Metadata used System network; browser media used the existing exact System
+bypasses with an owned deny proxy for other destinations. No Windscribe peer
+was connected. Region/exit country were not independently measured.
+
+On Ubuntu 26.04.1 / Linux 7.0.0-34-generic x86-64 with headed Chrome
+156.0.8078.79 and the revision above, the baseline closed its viewer during
+Play after 4.012 seconds. Its diagnostic exactly matched the owner trial:
+CONTINUATION_FAILED / RESPONSE / CONTINUE_REQUEST with
+INVALID_INTERCEPTION_ID / UNTRACKED_ERROR / NO_ENTRY and canceled=false.
+Process/group, context, servers and route-proxy closure were confirmed;
+renderer cleanup and transport disposal were not confirmed.
+
+The focused mode completed in 9.114 seconds with 5,170 ms of sampled joint
+advancement. Both muted 852×480 players advanced 5,238 ms in the counted
+intervals, contributing 123 and 139 decoded frames. Its natural lifecycle
+observation was ADMITTED once, RESPONSE_SETTLED, previous CONTINUE_RESPONSE / OK,
+same request tuple, no Network terminal yet, then response error Failed and
+the missing-job acknowledgement. No duplicate event or protocol error was
+injected. This identifies a later failed-response event after successful
+response continuation, rather than the earlier cancellation-order hypothesis.
+The acknowledgement was observed without a fatal failure or cancellation claim.
+
+Explicit Stop destroyed both players and removed both video elements, with
+paused/reset/disconnected surfaces and no attached media keys. CDP transport
+disposal reported DONE; context, Chrome, owned process and process group, Vite,
+page server, pending fresh requests and deny proxy closed. Both completed
+comparison runtimes were removed after these checks. Anonymous operation had
+no OAuth grant to revoke and no protected-media/CDM session was established.
+This is bounded real replay and driver recovery evidence, not authenticated
+cross-provider playback, audio/fade acceptance, renewal or sustained reliability.
+
+An initial diagnostic setup attempt made no provider requests: Playwright's
+Node-side temporary profile did not meet the expected owned-directory check.
+Chrome and its process group closed; its incomplete launch-ownership runtime
+and original receipt were retained. Setting the supervising process's TMPDIR
+before Playwright launch corrected that setup for both comparison modes. The
+diagnostic ran under a separate 150-second supervisor and disabled ambient
+protocol debug logging; no token-bearing URLs or provider payloads were logged.

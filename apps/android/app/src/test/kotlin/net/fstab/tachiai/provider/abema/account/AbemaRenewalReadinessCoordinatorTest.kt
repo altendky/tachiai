@@ -158,4 +158,76 @@ class AbemaRenewalReadinessCoordinatorTest {
         assertEquals("AbemaRenewalReadinessCoordinator(redacted)", f.coordinator.toString())
         assertEquals("AbemaRenewalDecision(FAILURE)", f.coordinator.check("a", "record", "private").toString())
     }
+
+    @Test fun diagnosticAndCompletionAreOneReadOnlyExactScopeSnapshotWithoutClockPruningOrPrivateWork() {
+        var reads = 0; var now = 100L
+        val coordinator = AbemaRenewalReadinessCoordinator<String>({ reads++; now }, { "a".repeat(32) })
+        val ticket = checkNotNull(coordinator.check("instance", "original", "PRIVATE_WORK").ticket)
+        coordinator.claim(ticket)
+        val diagnostic = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_FAILURE,
+            region = AbemaApprovalRegionFailure.EXPIRED, cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        val pendingReads = reads
+        assertEquals(AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.PENDING),
+            coordinator.evidence("instance") { it == "PRIVATE_WORK" })
+        assertEquals(pendingReads, reads)
+        coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, true, diagnostic)
+        val finishedReads = reads
+        now = Long.MAX_VALUE // Observation cannot expire/prune or renew the entry.
+        val evidence = coordinator.evidence("instance") { it == "PRIVATE_WORK" }
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE, evidence.completion)
+        assertEquals(diagnostic, evidence.diagnostic)
+        assertEquals(AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.ABSENT),
+            coordinator.evidence("instance") { it == "different-predecessor" })
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.ABSENT, coordinator.evidence("other-instance") { true }.completion)
+        assertEquals(finishedReads, reads)
+        assertFalse(evidence.toString().contains("PRIVATE_WORK"))
+    }
+
+    @Test fun laterCleanupRefusalCannotRewriteFirstDiagnosticOrBeUpgradedByALaterFinish() {
+        val f = Fixture(); val ticket = checkNotNull(f.coordinator.check("instance", "original", "private").ticket)
+        f.coordinator.claim(ticket)
+        val first = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.PROFILE, AbemaRenewalDiagnostic.Reason.PROFILE_REJECTED)
+        val later = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.OPERATION, AbemaRenewalDiagnostic.Reason.CANCELLED)
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, true, first)
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.FAILURE, false, later)
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.READY, true, later)
+        val evidence = f.coordinator.evidence("instance") { it == "private" }
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED, evidence.completion)
+        assertEquals(first.copy(cleanup = AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED), evidence.diagnostic)
+    }
+
+    @Test fun coordinatorDeadlineDoesNotLoseTheActualOperationReceiptWhenCleanupFinishesLater() {
+        val f = Fixture(); val ticket = checkNotNull(f.coordinator.check("instance", "record", "private").ticket)
+        f.coordinator.claim(ticket)
+        f.now += 1000
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE,
+            f.coordinator.observeClaimed("instance") { it == "private" }!!.status)
+        assertEquals(AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.PENDING),
+            f.coordinator.evidence("instance") { it == "private" })
+        val cause = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_FAILURE,
+            region = AbemaApprovalRegionFailure.TRANSPORT_FAILED)
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.FAILURE, true, cause)
+        val evidence = f.coordinator.evidence("instance") { it == "private" }
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE, evidence.completion)
+        assertEquals(cause.copy(cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED), evidence.diagnostic)
+    }
+
+    @Test fun localGuardAndProducerReceiptPublishAtomicallyAndRetainTheirIndependentCleanupMeaning() {
+        val f = Fixture(); val ticket = checkNotNull(f.coordinator.check("instance", "record", "private").ticket)
+        f.coordinator.claim(ticket)
+        val local = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE)
+        val producer = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_FAILURE,
+            region = AbemaApprovalRegionFailure.TRANSPORT_FAILED, cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, true, local, producer)
+        assertEquals(AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE,
+            local.copy(cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED), producer), f.coordinator.evidence("instance") { it == "private" })
+        f.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.FAILURE, false,
+            local.copy(reason = AbemaRenewalDiagnostic.Reason.CANCELLED), producer.copy(region = AbemaApprovalRegionFailure.CANCELLED))
+        val evidence = f.coordinator.evidence("instance") { it == "private" }
+        assertEquals(local.copy(cleanup = AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED), evidence.diagnostic)
+        assertEquals(producer, evidence.producerDiagnostic)
+        assertEquals(AbemaRenewalDiagnostic.Cleanup.CONFIRMED, evidence.producerDiagnostic!!.cleanup)
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED, evidence.completion)
+        assertNull(f.coordinator.evidence("instance") { it == "foreign-predecessor" }.producerDiagnostic)
+    }
 }

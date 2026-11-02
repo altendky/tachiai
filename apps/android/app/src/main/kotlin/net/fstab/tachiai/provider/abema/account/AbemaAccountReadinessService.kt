@@ -142,8 +142,11 @@ internal object AndroidAbemaRenewalReadiness {
     // In-process, closed observation only: no readiness request or grant leaves
     // this process, and a different owner/predecessor cannot satisfy the probe.
     fun completion(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Completion {
+        return evidence(instance, ownerProof, expected).completion
+    }
+    fun evidence(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Evidence {
         val scope = Scope(ownerProof, expected)
-        return coordinator.completion(instance) { Scope(it.owner.proof(), it.expected) == scope }
+        return coordinator.evidence(instance) { Scope(it.owner.proof(), it.expected) == scope }
     }
 
     private fun start(context: Context, ticket: String) {
@@ -155,8 +158,7 @@ internal object AndroidAbemaRenewalReadiness {
             { action -> main.post(action) }, { delay, action -> main.postDelayed(action, delay) },
             SystemClock::elapsedRealtime, System::currentTimeMillis, { coordinator.current(ticket) },
             beforeApproval = { id, deadline, gate ->
-                net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate) ==
-                    net.fstab.tachiai.platform.network.ProviderStartupCleanupAdmission.READY
+                net.fstab.tachiai.platform.network.ProviderStartupScopeCleanup.awaitReady(id, deadline, gate)
             }, completed = { outcome ->
                 if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
                     AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
@@ -167,7 +169,7 @@ internal object AndroidAbemaRenewalReadiness {
                     AbemaAutomaticRenewalResult.TEMPORARY_FAILURE -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
                     AbemaAutomaticRenewalResult.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.FAILURE
                 }
-                coordinator.finish(ticket, status, outcome.cleanupConfirmed)
+                coordinator.finish(ticket, status, outcome.cleanupConfirmed, outcome.diagnostic, outcome.producerDiagnostic)
                 if (outcome.cleanupConfirmed) operations.remove(ticket)
             }) } catch (_: Throwable) {
                 // Construction has not bound or allocated browser resources.

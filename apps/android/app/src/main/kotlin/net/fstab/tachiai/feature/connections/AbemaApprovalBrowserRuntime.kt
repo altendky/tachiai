@@ -16,6 +16,9 @@ import net.fstab.tachiai.platform.web.configureSecureSettings
 import net.fstab.tachiai.presentation.SourceRouteMode
 import net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner
 import net.fstab.tachiai.provider.abema.account.*
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Phase
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Reason
+import net.fstab.tachiai.provider.abema.account.AbemaRenewalDiagnostic.Progress
 import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -39,6 +42,8 @@ internal class AbemaApprovalBrowserRuntime(
     private val completed: (Boolean) -> Unit,
     private val observation: (AbemaApprovalObservation) -> Unit = {},
 ) {
+    private val diagnostics = AbemaRenewalDiagnostics()
+    internal val diagnostic get() = diagnostics.snapshot()
     private val applicationContext get() = context.applicationContext
     private val packageName get() = context.packageName
     companion object {
@@ -88,6 +93,7 @@ internal class AbemaApprovalBrowserRuntime(
             Application.getProcessName() != "$packageName:abema_approval_browser" || poisoned.get() ||
             !request.current(SystemClock.elapsedRealtime()) || !operationCurrent() ||
             !occupied.compareAndSet(false, true)) {
+            diagnostics.refuse(Phase.ADMISSION, Reason.REFUSED)
             finishDirect(); return
         }
         claimed = true
@@ -141,7 +147,7 @@ internal class AbemaApprovalBrowserRuntime(
             onBrowser(browser)
             if (request.resetBrowserSession) prepareFreshSession() else prepareRoute()
             watchOwner()
-        } catch (_: Throwable) { close(false) }
+        } catch (_: Throwable) { refuse(Phase.BROWSER_START, Reason.EXCEPTION) }
     }
 
     private fun sameOwner() = request.ownerProof == captureAbemaCatalogRouteOwner(request.instanceId,
@@ -153,7 +159,10 @@ internal class AbemaApprovalBrowserRuntime(
     private fun currentOnWorker(): Boolean {
         if (!current()) return false
         val matches = runCatching(::sameOwner).getOrDefault(false)
-        if (!matches) main.post { close(false) }
+        if (!matches) {
+            diagnostics.refuse(Phase.OPERATION, Reason.OWNER_CHANGED)
+            main.post { close(false) }
+        }
         return matches && current()
     }
     private fun prepareFreshSession() {
@@ -198,7 +207,7 @@ internal class AbemaApprovalBrowserRuntime(
     }
     private fun prepareRoute() {
         val handle = Owned(); owned = handle
-        main.postDelayed({ if (!ending && !ready) close(false) }, 45000)
+        main.postDelayed({ if (!ending && !ready) refuse(Phase.ROUTE, Reason.DEADLINE) }, 45000)
         workers.execute {
             var valid = false
             try {
@@ -224,15 +233,18 @@ internal class AbemaApprovalBrowserRuntime(
                 handle.regionCheck = AbemaApprovalRegionCheck(checkNotNull(handle.route), ::currentOnWorker,
                     SystemClock::elapsedRealtime, request.deadlineElapsedMs)
                 valid = !ending && request.current(SystemClock.elapsedRealtime()) && sameOwner()
-            } catch (_: Throwable) { valid = false }
+            } catch (error: Throwable) {
+                diagnostics.refuse(Phase.ROUTE, Reason.ROUTE_PREPARATION, transport = providerTransportEvidence(error))
+                valid = false
+            }
             finally {
                 handle.prepared.countDown()
                 main.post {
                     if (ending) return@post
-                    if (!valid) { close(false); return@post }
+                    if (!valid) { refuse(Phase.ROUTE, Reason.REFUSED); return@post }
                     proxy.install(checkNotNull(handle.route), onComplete = { applied ->
                         if (ending) return@install
-                        if (!applied || !request.current(SystemClock.elapsedRealtime())) { close(false); return@install }
+                        if (!applied || !request.current(SystemClock.elapsedRealtime())) { refuse(Phase.PROXY, Reason.PROXY_REFUSED); return@install }
                         ready = true
                         Log.i(LOG_TAG, "APPROVAL_ROUTE_PROXY_APPLIED"); observed(AbemaApprovalObservation.ROUTE_APPLIED)
                         if (active) resumeBrowser()
@@ -248,12 +260,13 @@ internal class AbemaApprovalBrowserRuntime(
     }
     private fun watchOwner() {
         if (ending) return
-        if (!request.current(SystemClock.elapsedRealtime()) || !operationCurrent()) { close(false); return }
+        if (!request.current(SystemClock.elapsedRealtime())) { refuse(Phase.LIFETIME, Reason.DEADLINE); return }
+        if (!operationCurrent()) { refuse(Phase.OPERATION, Reason.CANCELLED); return }
         if (!checkPending) {
             checkPending = true
             workers.execute {
                 val matches = runCatching(::sameOwner).getOrDefault(false)
-                main.post { checkPending = false; if (!matches) close(false) }
+                main.post { checkPending = false; if (!matches) refuse(Phase.OPERATION, Reason.OWNER_CHANGED) }
             }
         }
         main.postDelayed(::watchOwner, 1000)
@@ -264,11 +277,11 @@ internal class AbemaApprovalBrowserRuntime(
             trustedEmailPage = request.emailNonce != null && url?.let {
                 runCatching { java.net.URI(it).host == "abema.tv" && AbemaApprovalBrowserPolicy.allowedNavigation(it) }.getOrDefault(false)
             } == true
-            if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) close(false)
+            if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) refuse(Phase.PAGE, Reason.NAVIGATION_REFUSED)
         }
         override fun onPageCommitVisible(browser: WebView, url: String?) {
             Log.i(LOG_TAG, "PAGE_COMMITTED"); observed(AbemaApprovalObservation.PAGE_COMMITTED)
-            if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) close(false)
+            if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) refuse(Phase.PAGE, Reason.NAVIGATION_REFUSED)
         }
         override fun onPageFinished(browser: WebView, url: String?) { Log.i(LOG_TAG, "PAGE_FINISHED") }
         override fun shouldOverrideUrlLoading(browser: WebView, resource: WebResourceRequest): Boolean {
@@ -279,7 +292,7 @@ internal class AbemaApprovalBrowserRuntime(
         override fun shouldInterceptRequest(browser: WebView, resource: WebResourceRequest) = intercept(resource)
         override fun onReceivedSslError(browser: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
             Log.i(LOG_TAG, "TLS_ERROR_REFUSED"); observed(AbemaApprovalObservation.TLS_REFUSED)
-            handler.cancel(); close(false)
+            handler.cancel(); refuse(Phase.PAGE, Reason.TLS_REFUSED)
         }
         override fun onReceivedHttpAuthRequest(browser: WebView, handler: HttpAuthHandler, host: String, realm: String) {
             val route = owned?.route
@@ -291,7 +304,7 @@ internal class AbemaApprovalBrowserRuntime(
         override fun onReceivedError(browser: WebView, resource: WebResourceRequest, error: WebResourceError) {
             observed(AbemaApprovalObservation.NETWORK_ERROR)
             inspectResource("NETWORK_ERROR", resource, error.errorCode.coerceIn(-16, 0))
-            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { close(false); return }
+            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { refuse(Phase.PAGE, Reason.NETWORK_ERROR); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_NETWORK_ERROR_${error.errorCode.coerceIn(-16, 0)}")
             if (resource.isForMainFrame) {
@@ -302,7 +315,7 @@ internal class AbemaApprovalBrowserRuntime(
         override fun onReceivedHttpError(browser: WebView, resource: WebResourceRequest, response: WebResourceResponse) {
             observed(AbemaApprovalObservation.HTTP_ERROR)
             inspectResource("HTTP_ERROR", resource, response.statusCode.coerceIn(100, 599))
-            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { close(false); return }
+            if (request.automaticReturn && !ending && fatalAutomaticResource(resource)) { refuse(Phase.PAGE, Reason.HTTP_ERROR); return }
             if (resource.url.host == AbemaApprovalBrowserPolicy.GATEWAY_HOST)
                 Log.i(LOG_TAG, "GATEWAY_HTTP_ERROR_${response.statusCode.coerceIn(100, 599)}")
             if (resource.isForMainFrame) {
@@ -312,7 +325,7 @@ internal class AbemaApprovalBrowserRuntime(
         }
         override fun onRenderProcessGone(browser: WebView, detail: RenderProcessGoneDetail): Boolean {
             observed(AbemaApprovalObservation.RENDERER_GONE)
-            close(false); return true
+            refuse(Phase.PAGE, Reason.RENDERER_GONE); return true
         }
     }
     private fun allowed(resource: WebResourceRequest) = if (resource.isForMainFrame)
@@ -356,6 +369,7 @@ internal class AbemaApprovalBrowserRuntime(
                                 automaticReturn.claim(current(), trustedEmailPage, candidate != null && emailCandidate === candidate)
                                     .also { if (it) automaticCandidate = candidate }
                             }
+                            if (!accepted) diagnostics.refuse(Phase.CANDIDATE, Reason.CANDIDATE_INVALID)
                             close(accepted)
                         }) automaticReturn.cancel()
                     } else emailCandidate = candidate
@@ -367,6 +381,7 @@ internal class AbemaApprovalBrowserRuntime(
         if (origins.size > 1 || resource.requestHeaders.keys.any {
             it.equals("Cookie", true) || it.equals("Authorization", true) || it.equals("Proxy-Authorization", true)
         }) {
+            diagnostics.refuse(Phase.REGION, Reason.REFUSED)
             main.post { close(false) }
             return blocked()
         }
@@ -380,7 +395,7 @@ internal class AbemaApprovalBrowserRuntime(
                 if (result.status == 200) observed(AbemaApprovalObservation.REGION_ALLOWED)
                 if (result.status == 403) observed(AbemaApprovalObservation.REGION_REJECTED)
                 if (result.status == 403) main.post {
-                    if (request.automaticReturn) close(false)
+                    if (request.automaticReturn) refuse(Phase.REGION, Reason.REGION_REJECTED)
                     else if (current()) status("ABEMA rejected this route’s region. Return to Tachiai.")
                 }
                 WebResourceResponse("text/plain", "UTF-8", result.status, "Provider region response",
@@ -388,10 +403,12 @@ internal class AbemaApprovalBrowserRuntime(
             }
             is AbemaApprovalRegionResult.Failure -> {
                 Log.i(LOG_TAG, "REGION_FAILURE_${result.category.name}")
+                diagnostics.refuse(Phase.REGION, Reason.REGION_FAILURE, region = result.category)
                 main.post { close(false) }
                 blocked()
             }
             null -> {
+                diagnostics.refuse(Phase.REGION, Reason.REGION_FAILURE)
                 main.post { close(false) }
                 blocked()
             }
@@ -420,7 +437,7 @@ internal class AbemaApprovalBrowserRuntime(
         if (ready && !ending) {
             workers.execute {
                 val matches = runCatching(::sameOwner).getOrDefault(false)
-                main.post { if (matches && current()) resumeBrowser() else if (!ending) close(false) }
+                main.post { if (matches && current()) resumeBrowser() else if (!ending) refuse(Phase.OPERATION, Reason.OWNER_CHANGED) }
             }
         }
     }
@@ -436,6 +453,7 @@ internal class AbemaApprovalBrowserRuntime(
     fun close(returnRequested: Boolean) {
         if (!returnRequested) automaticReturn.cancel()
         if (ending || !claimed) return
+        diagnostics.retireCause()
         ending = true; ready = false
         trustedEmailPage = false
         main.removeCallbacksAndMessages(null)
@@ -501,9 +519,28 @@ internal class AbemaApprovalBrowserRuntime(
     }
     private fun finishDirect() {
         if (finishedAfterCleanup) return
+        if (!successful) diagnostics.refuse(Phase.CANDIDATE, Reason.CANDIDATE_MISSING)
+        if (diagnostics.snapshot().cleanup == AbemaRenewalDiagnostic.Cleanup.UNOBSERVED) diagnostics.cleanup(true)
+        diagnostics.freeze()
         automaticReturn.cancel(); automaticCandidate = null; emailCandidate = null
         trustedEmailPage = false; finishedAfterCleanup = true
         completed(successful)
     }
-    private fun observed(value: AbemaApprovalObservation) { runCatching { observation(value) } }
+    private fun refuse(phase: Phase, reason: Reason) { diagnostics.refuse(phase, reason); close(false) }
+    private fun observed(value: AbemaApprovalObservation) {
+        when (value) {
+            AbemaApprovalObservation.ROUTE_APPLIED -> diagnostics.progress(Progress.ROUTE_APPLIED)
+            AbemaApprovalObservation.PAGE_STARTED -> diagnostics.progress(Progress.PAGE_STARTED)
+            AbemaApprovalObservation.PAGE_COMMITTED -> diagnostics.progress(Progress.PAGE_COMMITTED)
+            AbemaApprovalObservation.REGION_ALLOWED -> diagnostics.progress(Progress.REGION_ALLOWED)
+            AbemaApprovalObservation.CANDIDATE_CAPTURED -> diagnostics.progress(Progress.CANDIDATE_CAPTURED)
+            AbemaApprovalObservation.CLEANUP_CONFIRMED -> diagnostics.cleanup(true)
+            AbemaApprovalObservation.CLEANUP_UNCONFIRMED -> {
+                diagnostics.refuse(Phase.CLEANUP, Reason.CLEANUP_REFUSED)
+                diagnostics.cleanup(false)
+            }
+            else -> Unit // A nonfatal resource error is not a decisive refusal.
+        }
+        runCatching { observation(value) }
+    }
 }

@@ -104,6 +104,7 @@ class AbemaAutomaticRenewalDeviceTest {
         var otherRecordsUnchanged = false
         var changedAccount = false
         var otherMutations: AbemaRenewalOtherMutations? = null
+        var familyMutations = emptyList<AbemaRenewalFamilyMutation>()
         var resourcesRetained = false
         var refusal: AbemaAccountReadinessResult? = null
         val background = if (minimized) AbemaRenewalBackgroundObservation() else null
@@ -131,7 +132,8 @@ class AbemaAutomaticRenewalDeviceTest {
             val probe = AbemaRenewalObservation(expected,
                 { AndroidAbemaRenewalReadiness.completion(instance, owner.proof(), expected) },
                 { binding.sameOwner(owner) }, binding.store::readSnapshot, binding.store::usable,
-                { abemaReplacementReceiptCurrent(binding.store, it) }, System::currentTimeMillis)
+                { abemaReplacementReceiptCurrent(binding.store, it) }, System::currentTimeMillis,
+                evidence = { AndroidAbemaRenewalReadiness.evidence(instance, owner.proof(), expected) })
             observation = probe
             evidence.phase = AbemaRenewalProbeEvidence.Phase.HOST_LAUNCH
             if (background != null) {
@@ -233,6 +235,7 @@ class AbemaAutomaticRenewalDeviceTest {
         } catch (_: Throwable) {
             evidence.fail(AbemaRenewalProbeEvidence.Guard.EXCEPTION)
         } finally {
+            val backgroundEvidence = background?.freeze()
             evidence.finish(close = {
                 val owned = scenario
                 if (owned == null) {
@@ -258,13 +261,14 @@ class AbemaAutomaticRenewalDeviceTest {
                         val changed = baseline[selected]?.let { old -> after[selected]?.let { !MessageDigest.isEqual(old, it) } ?: true }
                             ?: after.containsKey(selected)
                         Preservation(unchanged, changed, !replaced || observation?.poll() == AbemaRenewalObservation.Step.REPLACED,
-                            abemaRenewalOtherMutations(baseline, after, selected))
+                            abemaRenewalOtherMutations(baseline, after, selected), abemaRenewalFamilyMutations(baseline, after, selected))
                     } else null
                 }
                 preservationChecked = comparison != null
                 otherRecordsUnchanged = comparison?.otherRecordsUnchanged == true
                 changedAccount = comparison?.accountRecordChanged == true
                 otherMutations = comparison?.otherMutations
+                familyMutations = comparison?.families ?: emptyList()
                 evidence.require(preservationChecked && otherRecordsUnchanged && comparison?.replacementCurrent == true &&
                     (if (replaced) changedAccount else !changedAccount), AbemaRenewalProbeEvidence.Guard.PRESERVATION)
                 evidence.require(SystemClock.elapsedRealtime() in began until deadline, AbemaRenewalProbeEvidence.Guard.DEADLINE)
@@ -287,17 +291,22 @@ class AbemaAutomaticRenewalDeviceTest {
                 "readiness=${refusal?.name ?: "NONE"} cleanupUnknown=${!hostClosed} " +
                 "hostOwnershipMissing=${hostLaunchAttempted && scenario == null} resourcesRetained=$resourcesRetained " +
                 "mode=${if (minimized) "MINIMIZED" else "FOREGROUND"} " +
-                "backgroundPhase=${background?.phase?.name ?: "NOT_REQUESTED"} " +
-                "backgroundGuard=${background?.firstFailedGuard?.name ?: "NONE"} returnedToOriginalHost=$returnedToOriginalHost " +
+                "backgroundPhase=${backgroundEvidence?.phase?.name ?: "NOT_REQUESTED"} " +
+                "backgroundGuard=${backgroundEvidence?.guard?.name ?: "NONE"} returnedToOriginalHost=$returnedToOriginalHost " +
                 "otherMutationKind=${otherMutations?.kind?.name ?: "UNAVAILABLE"} " +
-                "otherChanged=${otherMutations?.changed ?: 0} otherAdded=${otherMutations?.added ?: 0} otherRemoved=${otherMutations?.removed ?: 0}")
+                "otherChanged=${otherMutations?.changed ?: 0} otherAdded=${otherMutations?.added ?: 0} otherRemoved=${otherMutations?.removed ?: 0} " +
+                "familyMutations=${familyMutations.joinToString(",") { "${it.family.name}:${it.changed}:${it.added}:${it.removed}" }} " +
+                (observation?.observedDiagnostic?.fields()?.entries?.joinToString(" ") { "${it.key}=${it.value}" } ?: "diagnostic=UNAVAILABLE") + " " +
+                (observation?.observedProducerDiagnostic?.fields()?.entries?.joinToString(" ") {
+                    "producer${it.key.replaceFirstChar(Char::uppercaseChar)}=${it.value}"
+                } ?: "producerDiagnostic=UNAVAILABLE"))
         }
         if (evidence.firstFailedGuard != AbemaRenewalProbeEvidence.Guard.NONE)
             throw AssertionError("Automatic renewal observation did not satisfy closed completion, account, discovery and preservation checks")
     }
 
     private class Preservation(val otherRecordsUnchanged: Boolean, val accountRecordChanged: Boolean,
-        val replacementCurrent: Boolean, val otherMutations: AbemaRenewalOtherMutations)
+        val replacementCurrent: Boolean, val otherMutations: AbemaRenewalOtherMutations, val families: List<AbemaRenewalFamilyMutation>)
     private fun <T> boundedProbeCheck(timeoutMs: Long, retainedResource: () -> Unit, action: () -> T): T? {
         val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "abema-probe-cleanup").apply { isDaemon = true } }
         val result = worker.submit(Callable { action() })

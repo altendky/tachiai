@@ -247,6 +247,51 @@ class AbemaRenewalObservationTest {
         assertFalse(mixed.toString().contains("no_backup"))
     }
 
+    @Test fun freezeBeforeTeardownCannotInventHostDestructionOrPermitAReturn() {
+        val background = AbemaRenewalBackgroundObservation()
+        assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+        assertTrue(background.afterStop(Completion.PENDING))
+        val snapshot = background.freeze()
+        background.hostDestroyed(); background.activityResumed(); background.hostStarted(); background.hostStopped()
+        assertSame(snapshot, background.freeze())
+        assertEquals(AbemaRenewalBackgroundObservation.Phase.STOPPED_PENDING, snapshot.phase)
+        assertEquals(AbemaRenewalBackgroundObservation.Guard.NONE, snapshot.guard)
+        assertTrue(snapshot.hostIsStopped)
+        assertFalse(background.allowReturn()); assertFalse(background.sample(Completion.READY, true))
+        assertEquals(snapshot.guard, background.firstFailedGuard)
+    }
+
+    @Test fun freezePreservesAGenuineEarlierLifecycleFailureAndItsOriginalPhase() {
+        for (destroyed in listOf(false, true)) {
+            val background = AbemaRenewalBackgroundObservation()
+            assertTrue(background.begin(Completion.PENDING)); background.hostStopped()
+            assertTrue(background.afterStop(Completion.PENDING))
+            if (destroyed) background.hostDestroyed() else background.activityResumed()
+            val snapshot = background.freeze()
+            background.hostDestroyed()
+            assertEquals(if (destroyed) AbemaRenewalBackgroundObservation.Guard.HOST_DESTROYED else AbemaRenewalBackgroundObservation.Guard.RESUMED,
+                snapshot.guard)
+            assertSame(snapshot, background.freeze())
+        }
+    }
+
+    @Test fun refusalKeepsTheSameAtomicCompletionDiagnosticAndDoesNotReadAnUnacceptedAccount() {
+        val f = Fixture(); val ticket = f.start()
+        val diagnostic = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.LIFETIME, AbemaRenewalDiagnostic.Reason.DEADLINE,
+            cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        val producer = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.REGION, AbemaRenewalDiagnostic.Reason.REGION_REJECTED,
+            cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        f.coordinator.finish(ticket, Status.TEMPORARY_FAILURE, true, diagnostic, producer)
+        val observation = AbemaRenewalObservation(f.expected, { error("Atomic evidence must be used") },
+            { true }, { error("Refusal must not read candidate storage") }, f.store::usable, { false }, { f.wall },
+            evidence = { f.coordinator.evidence(f.instance) { it == "original" } })
+        assertEquals(AbemaRenewalObservation.Step.REFUSED, observation.poll())
+        assertEquals(Completion.TEMPORARY_FAILURE, observation.observedCompletion)
+        assertEquals(diagnostic, observation.observedDiagnostic)
+        assertEquals(producer, observation.observedProducerDiagnostic)
+        assertEquals(AbemaRenewalObservation.Guard.COMPLETION_REFUSED, observation.firstFailedGuard)
+    }
+
     @Test fun privateMutationSummaryIncludesInventoryChangesAndNeverTreatsJournalLookalikesAsTheJournal() {
         val selected = "selected"
         val removed = "shared_prefs/PRIVATE.xml"

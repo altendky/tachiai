@@ -7,6 +7,8 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
     private val cooldownMs: Long = 60_000) {
     enum class Status { READY, LAUNCH, WAIT, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
     enum class Completion { ABSENT, PENDING, CLEANUP_UNCONFIRMED, READY, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
+    data class Evidence(val completion: Completion, val diagnostic: AbemaRenewalDiagnostic? = null,
+        val producerDiagnostic: AbemaRenewalDiagnostic? = null)
     class Decision(val status: Status, val ticket: String? = null) {
         override fun toString() = "AbemaRenewalDecision(${status.name})"
     }
@@ -17,6 +19,8 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         var finished: Long? = null
         var terminal = Status.FAILURE
         var cleanupRefused = false
+        var diagnostic: AbemaRenewalDiagnostic? = null
+        var producerDiagnostic: AbemaRenewalDiagnostic? = null
     }
     private val entries = mutableListOf<Entry<T>>()
     private var lastElapsed = 0L
@@ -78,25 +82,34 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
     }
     // Read-only evidence of the existing completion boundary. In particular,
     // do not call now(), prune entries or turn a published record into READY.
-    @Synchronized fun completion(instance: String, matches: (T) -> Boolean): Completion {
+    fun completion(instance: String, matches: (T) -> Boolean): Completion = evidence(instance, matches).completion
+    @Synchronized fun evidence(instance: String, matches: (T) -> Boolean): Evidence {
         val entry = entries.filter { it.instance == instance && matches(it.value) }.singleOrNull()
-            ?: return Completion.ABSENT
-        if (entry.cleanupRefused) return Completion.CLEANUP_UNCONFIRMED
-        if (entry.finished == null || !entry.released) return Completion.PENDING
-        return when (entry.terminal) {
+            ?: return Evidence(Completion.ABSENT)
+        if (entry.cleanupRefused) return Evidence(Completion.CLEANUP_UNCONFIRMED, entry.diagnostic, entry.producerDiagnostic)
+        if (entry.finished == null || !entry.released) return Evidence(Completion.PENDING)
+        return Evidence(when (entry.terminal) {
             Status.READY -> if (entry.claimed) Completion.READY else Completion.FAILURE
             Status.FAILURE -> Completion.FAILURE
             Status.TEMPORARY_FAILURE -> Completion.TEMPORARY_FAILURE
             Status.INTERACTION_REQUIRED -> Completion.INTERACTION_REQUIRED
             Status.STORAGE_FAILURE -> Completion.STORAGE_FAILURE
             else -> Completion.FAILURE
-        }
+        }, entry.diagnostic, entry.producerDiagnostic)
     }
     fun finish(ticket: String, success: Boolean) = finish(ticket, if (success) Status.READY else Status.FAILURE)
-    @Synchronized fun finish(ticket: String, result: Status, cleanupConfirmed: Boolean = true) {
+    @Synchronized fun finish(ticket: String, result: Status, cleanupConfirmed: Boolean = true,
+        diagnostic: AbemaRenewalDiagnostic? = null, producerDiagnostic: AbemaRenewalDiagnostic? = null) {
         val now = now() ?: 0
         val entry = entries.singleOrNull { it.ticket == ticket } ?: return
         if (!cleanupConfirmed) entry.cleanupRefused = true
+        // A coordinator deadline may publish its terminal status before the
+        // operation finishes cleanup. Retain that operation's first receipt
+        // when it releases the claim; never replace an already captured cause.
+        if (entry.diagnostic == null) entry.diagnostic = diagnostic
+        if (entry.producerDiagnostic == null) entry.producerDiagnostic = producerDiagnostic
+        entry.diagnostic = entry.diagnostic?.copy(cleanup = if (entry.cleanupRefused)
+            AbemaRenewalDiagnostic.Cleanup.UNCONFIRMED else AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
         entry.released = cleanupConfirmed && !entry.cleanupRefused
         if (entry.finished != null) return
         entry.terminal = when {

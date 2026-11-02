@@ -55,6 +55,38 @@ Closed first-failure phase/guard fields survive independent bounded host closure
 and record-preservation attempts, including early assertion failures. This is
 diagnostic test infrastructure, not a change to renewal/adoption behavior.
 
+### Implemented renewal diagnostics
+
+Renewal now retains two fixed RAM-only diagnostic snapshots: the parent's first
+observed cause and last progress, and the first validated producer receipt from
+the browser service. Each uses closed phase/reason and existing account, region,
+transport or startup-cleanup categories, with an independent sticky cleanup
+verdict. Their cross-owner chronological order is not inferred. The original
+same-UID request envelope and exact owner/predecessor observation binding remain
+in place. Returned profile/email refusals are recorded before transport cleanup,
+so a later close failure preserves that categorical cause. Browser cause/progress
+admission retires when closure starts; cleanup evidence can still settle.
+
+A closed reply admitted within the existing receiver lifetime can supply the
+producer snapshot after a local deadline or cancellation. Once the receiver
+retires or the operation force-finishes, unavailable producer evidence stays
+unavailable. These records change no renewal result, candidate/adoption decision,
+lifetime, account/route validation or storage authority. No raw provider text,
+exceptions, URLs, grants, identities or persistent diagnostic writes are added.
+
+The debug fixture also reports bounded changed/added/removed counts for exact
+known private-file families, including their source-defined auxiliary markers.
+Unknown names and lookalikes remain unknown; file names, identifiers and digests
+are not emitted. The original strict inventory/digest preservation assertion
+remains unchanged. Background observation freezes before host teardown and
+preserves genuine earlier lifecycle failures.
+
+Provider-free verification passed 71 JVM cases in seven suites with zero failures,
+debug lint, instrumentation Kotlin compilation and release isolation. No APK was
+assembled, and no device operation or provider trial was performed for this slice.
+The earlier 17-second renewal failure's cause remains unknown, and broader
+[#294 acceptance](https://github.com/altendky/tachiai/issues/294) remains open.
+
 On October 27, 2026, one observation using the earlier fixture on verified
 `tachiai-dev`, Android 16/API 36 and WebView 133.0.6943.137, failed its generic
 assertion after 21.754 seconds. Local-only preflight changed from EXPIRED_READY

@@ -99,6 +99,13 @@ establish audible output or timing within a sampling interval.
 Finish with Sources, or enter `stop` in the host terminal, and wait for cleanup.
 Closing a page/process alone cannot establish provider cleanup.
 
+Preparation workers retain the parent's selected Node tool directory alongside
+the OS default executable path. The terminal accepts LF/CRLF Stop lines. If a
+parent pipe or stderr failure interrupts the normal loop, it admits no further
+source work and drains a bounded authoritative terminal receipt. That receipt
+remains diagnostic evidence; it cannot turn the original host failure into a
+successful trial or manufacture missing cleanup.
+
 The host combines the existing authenticated ABEMA route and exact Twitch System
 bypass with the scoped development Headerly-equivalent continuation mechanism.
 It does not change host routes, cookies, status codes, TLS validation or response
@@ -125,3 +132,31 @@ their respective guides. Named-browser live/live, live/replay, replay/replay,
 provider duplicates, audible output, sustained playback, advertisements,
 entitlement and renewal remain separate acceptance. No full web app or provider
 Quality parity is established here.
+
+### First combined provider observation
+
+One November 2, 2026 trial failed on Ubuntu 26.04.1 LTS/Linux 7.0.0-34-generic
+x86-64 and fresh headed Google Chrome 156.0.8078.79. Host source was
+`713a4b954adefdfdb470e924a3512a1ffb0d7ba1`; its ordinary Go route runner had a
+clean matching VCS stamp. Existing generated public assets were used without a
+revision manifest, so their exact source identity is unestablished. A later
+provider trial must rebuild from reviewed source and retain its public asset
+hashes.
+
+The owner confirmed the saved Tokyo WireGuard peer was unused, completed fresh
+Twitch activation, and supplied a screenshot showing rendered Virtual Japan
+content while ABEMA replay displayed Playback failed. The owner reported
+pressing Retry; the host recorded four ABEMA attempts. Each backend attempt closed, and none
+published the source packet/public bundles. Static host verification found Node
+only in the parent's selected toolchain, absent from the worker's stripped
+default PATH. The nested browser snapshot therefore could not launch. No ABEMA
+decode or combined audio acceptance was established. The intended route was the
+existing Tokyo export for ABEMA and System for Twitch; exit region and complete
+route coverage were not independently measured.
+
+Terminal Stop then triggered a separately reproduced bytearray parsing error.
+The old owner abandoned its output loop and retained no final browser receipt.
+Backend attempts, the owned browser group and route reported closed, but player,
+CDM and temporary-grant closure remained unconfirmed. This failed observation
+is not retroactively upgraded by the local tool-handoff, Stop and bounded-drain
+regressions. No second provider trial followed it.

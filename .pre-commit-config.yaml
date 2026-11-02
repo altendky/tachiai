@@ -256,6 +256,13 @@ repos:
         files: '^apps/web/scripts/(provider-pair-browser|mixed-(route-browser|browser-headers))\.mjs$|^scripts/tests/web-provider-pair-browser\.test\.mjs$'
         pass_filenames: false
 
+      - id: web-provider-pair-owner-tests
+        name: Provider pair real owner-loop cleanup tests
+        entry: uv run scripts/tests/web-provider-pair-owner.test.py
+        language: system
+        files: '^apps/web/scripts/provider-pair-route\.py$|^scripts/tests/web-provider-pair-owner\.test\.py$'
+        pass_filenames: false
+
       - id: web-abema-browser-episode-eme-tests
         name: Web ABEMA bounded browser EME protocol tests
         entry: node --test scripts/tests/web-abema-browser-episode-eme.test.mjs

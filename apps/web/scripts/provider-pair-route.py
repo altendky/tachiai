@@ -76,7 +76,13 @@ class FreshJob:
                 self.cleanup_confirmed = self.reaped = True
                 return None
             self.root.mkdir(mode=0o700)
-            env = {"PATH": os.defpath, "LANG": "C.UTF-8", "TMPDIR": str(self.root)}
+            node = shutil.which("node")
+            if node is None:
+                raise bootstrap.Refused()
+            # The worker's nested browser snapshot also needs the selected
+            # Node toolchain; it need not live in the OS default PATH.
+            env = {"PATH": os.path.dirname(os.path.abspath(node)) + os.pathsep + os.defpath,
+                   "LANG": "C.UTF-8", "TMPDIR": str(self.root)}
             for key in ("DISPLAY", "XAUTHORITY"):
                 if key in os.environ:
                     env[key] = os.environ[key]
@@ -228,6 +234,39 @@ class BrowserTrial:
         self.output.write(json.dumps(value, separators=(",", ":")) + "\n")
         self.output.flush()
 
+    def terminal_receipt(self, process, pending):
+        """Drain cleanup evidence after failure, without admitting more work."""
+        end = min(self.deadline, time.monotonic() + 20)
+        rows = 0
+        with selectors.DefaultSelector() as drain:
+            for stream in (process.stdout, process.stderr):
+                drain.register(stream, selectors.EVENT_READ)
+            while time.monotonic() < end:
+                while b"\n" in pending:
+                    row, _, rest = pending.partition(b"\n")
+                    pending = bytearray(rest)
+                    rows += 1
+                    if rows > 32 or len(row) > 16384:
+                        raise bootstrap.Refused()
+                    value = bootstrap.strict_json(bytes(row), 16384)
+                    if isinstance(value, dict) and value.get("event") == "finished":
+                        if pending:
+                            raise bootstrap.Refused()
+                        return validate_control(bytes(row))
+                    # Late controls cannot launch a new job during retirement.
+                if not drain.get_map():
+                    return None
+                for key, _ in drain.select(min(0.1, max(0, end - time.monotonic()))):
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        drain.unregister(key.fileobj)
+                    elif key.fileobj is process.stdout:
+                        pending.extend(chunk)
+                        if len(pending) > 32768:
+                            raise bootstrap.Refused()
+                    # Stderr remains untrusted and is never retained or logged.
+        return None
+
     def run(self):
         process, selected = None, selectors.DefaultSelector()
         executor = ThreadPoolExecutor(max_workers=2)
@@ -291,7 +330,7 @@ class BrowserTrial:
                         while b"\n" in user_input:
                             row, _, rest = user_input.partition(b"\n")
                             user_input = bytearray(rest)
-                            if row in {b"stop", b"stop\r"} and not stop_sent:
+                            if bytes(row) in {b"stop", b"stop\r"} and not stop_sent:
                                 write_private(process, {"type": "stop"}, time.monotonic() + 1)
                                 stop_sent = True
                         continue
@@ -336,7 +375,7 @@ class BrowserTrial:
                 except BlockingIOError:
                     child_clean = False
         except BaseException:
-            pass
+            child_clean = False
         finally:
             with bootstrap.completing_cleanup():
                 if process is not None and process.poll() is None:
@@ -346,8 +385,14 @@ class BrowserTrial:
                         pass
                 for job in self.jobs.values():
                     job.cancel()
-                executor.shutdown(wait=True, cancel_futures=True)
                 selected.close()
+                if process is not None and received is None:
+                    try:
+                        received = self.terminal_receipt(process, pending)
+                        self.browser_receipt = received
+                    except BaseException:
+                        pass
+                executor.shutdown(wait=True, cancel_futures=True)
                 if process is not None:
                     if process.poll() is None:
                         process.terminate()

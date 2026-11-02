@@ -274,6 +274,7 @@ jobs:
           npm run test:provider:runtime --prefix apps/web
           npm run test:provider:pair --prefix apps/web
           uv run scripts/tests/web-provider-pair-route.test.py
+          uv run scripts/tests/web-provider-pair-owner.test.py
           node --test scripts/tests/web-provider-pair-browser.test.mjs
 
       - name: Test mixed routing and scoped header continuation with owned endpoints

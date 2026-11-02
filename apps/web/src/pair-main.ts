@@ -4,19 +4,21 @@ import { PairFixture, SIDES, TIMING_STEPS, pairBounds, type Side } from './pair'
 import { qualityTitle, observedQualityTitle, qualityExplanation, sameRequest } from './quality';
 import { controlDockWidth, viewerLayout, type ViewerLayout } from './viewer-layout';
 import { ViewerHistory, type ViewerHistoryPanel } from './viewer-history';
+import { takePairBootstrap } from './pair-bootstrap';
 import './pair-style.css';
 
 declare global { interface Window { pair: PairFixture } }
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const base = import.meta.env.BASE_URL;
-const fixtures = [
+const bootstrap = takePairBootstrap([
   { id: 'a-dash', label: 'Fixture A · DASH', manifest: `${base}media/a/manifest.mpd`, kind: 'fixture' },
   { id: 'a-hls', label: 'Fixture A · HLS', manifest: `${base}media/a/master.m3u8`, kind: 'fixture' },
   { id: 'b-dash', label: 'Fixture B · DASH', manifest: `${base}media/b/manifest.mpd`, kind: 'fixture' },
   { id: 'b-hls', label: 'Fixture B · HLS', manifest: `${base}media/b/master.m3u8`, kind: 'fixture' },
   { id: 'quality-dash', label: 'Quality fixture · DASH', manifest: `${base}media/quality/manifest.mpd`, kind: 'fixture' },
-] as const;
+] as const);
+const fixtures = bootstrap.sources;
 const core: TimingCore = await import(/* @vite-ignore */ `${base}core/tachiai_core_web.js`);
 await core.default();
 shaka.polyfill.installAll();
@@ -112,10 +114,11 @@ const render = () => {
     const label = fixtures.find((source) => source.id === state.selected[side])?.label ?? side;
     element(`chip-${side}`).textContent = `${side} · ${label}`;
     const message = element(`message-${side}`);
-    message.hidden = feed?.state === 'ready';
-    message.querySelector('span')!.textContent = feed?.state === 'failed' ? 'Playback failed.' :
+    const failed = feed?.state === 'failed' || state.results[side] === 'failed';
+    message.hidden = !failed && feed?.state === 'ready';
+    message.querySelector('span')!.textContent = failed ? 'Playback failed.' :
       state.retrying[side] ? 'Retrying this feed…' : 'Preparing this feed…';
-    element(`retry-${side}`).hidden = feed?.state !== 'failed';
+    element(`retry-${side}`).hidden = !failed;
     element<HTMLButtonElement>(`retry-${side}`).disabled = state.busy || state.retrying[side];
     const muted = side === 'A' ? state.mix.muteA : state.mix.muteB;
     element(`mute-${side}`).textContent = `${muted ? 'Unmute' : 'Mute'} ${side}`;
@@ -209,7 +212,8 @@ for (const side of SIDES) for (const kind of ['video', 'audio'] as const) {
   reset.onclick = () => { void pair.saveQualityDefault(side, kind, true); reveal(); };
   field.append(legend, select, readback, capability, save, reset); element('quality-fields').append(field);
 }
-pair = new PairFixture(core, { A: element('mount-A'), B: element('mount-B') }, fixtures, render);
+pair = new PairFixture(core, { A: element('mount-A'), B: element('mount-B') }, fixtures, render,
+  bootstrap.qualityStore, bootstrap.factory);
 window.pair = pair;
 for (const source of fixtures) {
   const row = document.createElement('tr'), name = document.createElement('th');

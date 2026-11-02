@@ -119,6 +119,41 @@ Chrome behavior, not provider-session restoration or other-engine acceptance.
 
 ## Run and verification
 
+### Owned encrypted DASH and clear HLS
+
+`/harness/pair-owned-mixed.html` reuses this viewer, source assignment, controls
+and history behavior with two closed owned choices: encrypted DASH and clear
+HLS. Its player factory mounts either the existing video element or a same-origin
+iframe surface. The encrypted player, temporary CDM session and media element
+remain in the child document; no media element is adopted into the parent.
+The standalone provider decoder keeps its earlier boundary.
+
+The loopback fixture server admits only the fixed synthetic license operation.
+The child uses the existing one-exchange protected player with the documented
+public synthetic key and an exact fixture manifest. Its original lifetime is at
+most 120 seconds, including child loading and blocked Play retries. Synchronous
+joint Play reaches the native child media method within the user action.
+Retirement closes the CDM session and detaches MediaKeys before the parent
+removes the iframe. A lost document or unconfirmed closure retains the surface
+and prevents replacement. The iframe adds no user-facing navigation layer.
+
+Run `npm run test:owned-mixed` for the 17 owned-only browser regressions.
+They cover simultaneous decoded frames and five seconds of media advancement,
+one actual synthetic CDM exchange and confirmed closure, transport, software
+gain/mute, shared Rust timing, quality, retained layout/Fit and browser Back.
+Factory/load refusal produces a failed-feed message and independent retry while
+the partner can play. Encrypted DASH exposes separate video/audio choices; clear HLS currently exposes
+Auto where manual audio selection is unavailable. Missing format observations
+remain unknown. Requests outside the loopback origin are blocked, and captures
+are disabled. The eight child-owner cases also exercise deadlines, blocked Play,
+held license retirement and sticky cleanup failure.
+
+These are controlled-fixture results. This page supplies no provider account,
+route or Twitch CORS handling; actual mixed-provider playback, acoustic output,
+advertisements, provider seek/quality and renewal remain separate acceptance.
+
+### Original clear fixtures
+
 Use the [web harness build procedure](../../../apps/web/README.md), then visit
 `/harness/pair.html`. The production build includes both diagnostic pages; the
 existing single-player harness and its checks remain available at `/harness/`.

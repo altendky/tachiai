@@ -1,4 +1,4 @@
-import { Harness, type CommandResult, type Observation, type Source, type TimingCore } from './player';
+import { Harness, type CommandResult, type Observation, type PlayerFactory, type Source, type TimingCore } from './player';
 import { copyRequest, validRequest, type QualityKind, type QualityRequest } from './quality';
 import { FixtureQualityStore, type QualityDefaults, type QualityStore } from './quality-store';
 
@@ -95,11 +95,12 @@ export class PairFixture {
 
   constructor(core: TimingCore, mounts: Record<Side, HTMLElement>, sources: readonly Source[],
     private readonly changed: () => void,
-    private readonly store: QualityStore = new FixtureQualityStore(sources.map(source => source.id))) {
+    private readonly store: QualityStore = new FixtureQualityStore(sources.map(source => source.id)),
+    factory?: PlayerFactory) {
     this.sources = new Map(sources.map((source) => [source.id, source]));
     this.slots = {
-      A: new Harness(core, mounts.A, () => this.publish()),
-      B: new Harness(core, mounts.B, () => this.publish()),
+      A: new Harness(core, mounts.A, () => this.publish(), factory),
+      B: new Harness(core, mounts.B, () => this.publish(), factory),
     };
     this.store.subscribe(() => { void this.reloadDefaults(); });
     void this.reloadDefaults();
@@ -393,7 +394,7 @@ export class PairFixture {
 
   async retry(side: Side): Promise<CommandResult> {
     if (this.mode !== 'viewer' || this.timing || this.qualitySave || this.retrying[side] ||
-        this.slots[side].current?.observe().state !== 'failed') return 'unavailable';
+        this.slots[side].current?.observe().state !== 'failed' && this.results[side] !== 'failed') return 'unavailable';
     const generation = this.generation, restore = this.positions[side];
     this.retrying[side] = true;
     this.adjustmentValid = false;

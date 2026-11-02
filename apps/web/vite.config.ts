@@ -11,6 +11,8 @@ export default defineConfig({
       input: {
         harness: fileURLToPath(new URL('index.html', import.meta.url)),
         pair: fileURLToPath(new URL('pair.html', import.meta.url)),
+        ownedMixedPair: fileURLToPath(new URL('pair-owned-mixed.html', import.meta.url)),
+        ownedProtectedFrame: fileURLToPath(new URL('owned-protected-frame.html', import.meta.url)),
         twitchProof: fileURLToPath(new URL('twitch-proof.html', import.meta.url)),
         twitchPairProof: fileURLToPath(new URL('twitch-pair-proof.html', import.meta.url)),
         twitchNativeProof: fileURLToPath(new URL('twitch-native-proof.html', import.meta.url)),

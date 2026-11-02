@@ -135,6 +135,19 @@ This adds no product controls or platform UX exception.
 
 <https://github.com/altendky/tachiai/blob/7c10e906ede38a0bfa88cb97b0f895a8c0c38148/apps/web/src/pair.ts>
 
+### Controlled encrypted/clear browser pair
+
+The separate [owned encrypted/clear pair](web-pair-fixture.md#owned-encrypted-dash-and-clear-hls)
+reuses the common viewer through an injectable player-session interface. Its
+encrypted DASH SDK/media/CDM owner stays in a same-origin child document; the
+parent retains the iframe surface and copies bounded observations. Clear HLS
+keeps the existing parent video owner. Android keeps native Media3/DRM ownership.
+Both browser adapters share the Rust seek planner and browser seek-settlement
+rules. Direct synchronous child Play preserves the user-action call; confirmed
+CDM closure and MediaKeys detachment precede iframe removal. Uncertain cleanup
+blocks replacement. This is owned-only diagnostic wiring, with no provider route,
+account, ad or UX exception. The original bounded protected decoder is unchanged.
+
 ### Controlled browser fixture formats
 
 The provider-free browser fixture now reports bounded audio/video format

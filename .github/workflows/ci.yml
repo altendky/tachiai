@@ -265,6 +265,9 @@ jobs:
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-episode-playback.test.mjs
           npm run test:abema:protected --prefix apps/web
 
+      - name: Test the common viewer with owned encrypted DASH and clear HLS
+        run: npm run test:owned-mixed --prefix apps/web
+
       - name: Test Twitch media diagnostic boundaries with local fixtures
         run: npm run test:twitch:media --prefix apps/web
 

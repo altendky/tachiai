@@ -94,6 +94,25 @@ orientation/settings controls and provider/account/route/quality integration
 remain pending. See the [fixture scope and remaining acceptance](
 ../../docs/src/project/web-pair-fixture.md). Issue #368 remains open.
 
+### Owned encrypted/clear pair
+
+The separate `/harness/pair-owned-mixed.html` uses the same viewer and controls
+with owned encrypted DASH and clear HLS. After asset preparation, run
+`npm run dev:owned-mixed` and open that path on loopback port 4198. This server
+provides one fixed synthetic license endpoint; the ordinary Vite preview does
+not provide it. `npm run test:owned-mixed` starts its own server and runs both
+mixed-viewer and child-owner regressions, without provider requests or captures.
+
+An injectable player session keeps the encrypted SDK, media element and temporary
+CDM session in a same-origin child document while the common viewer retains its
+surface. The child must confirm session closure and MediaKeys detachment before
+removal; uncertain cleanup prevents replacement. A single original lifetime of
+at most 120 seconds includes loading and blocked Play retries. The fixture's
+public synthetic key never represents provider content. Software gain, quality
+and timing checks do not establish acoustic output, provider controls or an
+ABEMA/Twitch pair. See the [mixed fixture scope](
+../../docs/src/project/web-pair-fixture.md#owned-encrypted-dash-and-clear-hls).
+
 ## Twitch provider diagnostic
 
 The separate opt-in [Twitch provider diagnostic](../../docs/src/project/web-twitch-proof.md)

@@ -18,6 +18,8 @@ internal interface AbemaAccountConnectionBinding {
     fun sameOwner(owner: AbemaCatalogRouteOwner): Boolean
     fun bootstrap(owner: AbemaCatalogRouteOwner, gate: () -> Boolean, foreground: () -> Boolean): AbemaAccountBootstrap
     fun transport(owner: AbemaCatalogRouteOwner, gate: () -> Boolean): AbemaAccountTransport
+    fun accepted() {}
+    fun forgotten() {}
 }
 internal enum class AbemaAccountProgress { IDLE, READING, PREPARING, CHECKING, APPROVAL_READY, WAITING_APPROVAL, POLLING, FORGETTING, ENFORCEMENT_PROVEN, ENFORCEMENT_NOT_PROVEN }
 internal data class AbemaAccountConnectionState(val status: AbemaAccountStatus = AbemaAccountStatus.MISSING,
@@ -274,6 +276,7 @@ internal class AbemaAccountConnectionController(
                 }) throw AbemaAccountException(if (renewal != null && (!same(run, prepared.owner) || emailLink !== prepared ||
                     !renewal.clock(elapsedMs(), wallMs())))
                     AbemaAccountFailure.CANCELLED else AbemaAccountFailure.STORAGE_FAILED)
+            runCatching(binding::accepted)
             val replacement = if (renewal == null) null else binding.store.readSnapshot().also { saved ->
                 val value = saved.record
                 if (!same(run, prepared.owner) || emailLink !== prepared || !renewal.clock(elapsedMs(), wallMs()) ||
@@ -463,6 +466,7 @@ internal class AbemaAccountConnectionController(
                             canCommitLocally = { current(run) && binding.routeCurrent && elapsedMs() < deadline }) {
                             same(run, prepared.owner) && elapsedMs() < deadline })
                         throw AbemaAccountException(if (elapsedMs() >= deadline) AbemaAccountFailure.EXPIRED else AbemaAccountFailure.STORAGE_FAILED)
+                    runCatching(binding::accepted)
                     post { if (current(run) && link === prepared) link = null }
                 }
                 is AbemaAccountTokenResult.Failed -> {
@@ -585,6 +589,7 @@ internal class AbemaAccountConnectionController(
         if (closed) return
         if (!forgetting.compareAndSet(false, true)) return
         cancel(false); session.forgetImmediately(); publish(AbemaAccountProgress.FORGETTING)
+        runCatching(binding::forgotten)
         worker.execute {
             try { binding.store.forget() } catch (_: Exception) { diagnostics.report(FailureStage.CATALOG_AUTH_STORAGE); session.failed(AbemaAccountFailure.STORAGE_FAILED) }
             finally { forgetting.set(false) }

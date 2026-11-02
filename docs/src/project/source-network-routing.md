@@ -294,10 +294,9 @@ profile reservation. Unknown cleanup remains retained, and rejected completion
 delivery preserves the exact computed outcome through an in-process fallback.
 No lease, operation, Network or candidate grant is persisted.
 
-This is an internal control boundary for a future job caller. It adds no
-JobScheduler integration, durable attempt history, background trigger, permission
-or product flow. Runtime supplied-Network and background execution acceptance
-remain separate from host regression coverage.
+Admission itself adds no scheduling or product flow. The expiry-based job below
+uses that control boundary. Runtime supplied-Network and background execution
+acceptance remain separate from host regression coverage.
 
 Local verification passed 2,436 debug JVM tests, including 34 new admission and
 operation cases, plus main/instrumentation compilation, debug lint and release
@@ -306,6 +305,74 @@ Coverage includes abandoned reservations, delayed expiry delivery, rejected or
 partial dispatch, active/stale callback isolation, unknown cleanup retention and
 actual operation adoption/cancellation ordering. No APK was assembled or deployed,
 and no provider operation or saved device/profile mutation was performed.
+
+### Expiry-based Android renewal job
+
+On Android API 28 and newer, ordinary-process startup reconciles saved ABEMA
+instances with a persisted, network-constrained JobScheduler job. It uses the
+saved grant's natural expiry as its earliest due time. Execution rechecks unlocked
+protected storage, instance/route ownership, the decoded expiry and current grant
+generation. An unexpired, missing or invalid record causes no provider attempt.
+The supplied JobParameters Network is captured once for the original at-most
+90-second operation; it does not fall back to the ambient network. System,
+WireGuard, HTTP CONNECT and SOCKS5 routes use the existing bound transports.
+Bound OpenVPN/OpenConnect remains unsupported and defers before provider work.
+API 26/27 retains foreground renewal because the assigned job Network API is
+unavailable there.
+
+Default-process initialization does not run in the approval, guest or playback
+process. The JobService requires the system BIND_JOB_SERVICE permission; normal
+ACCESS_NETWORK_STATE and RECEIVE_BOOT_COMPLETED permissions support its network
+constraint and persisted scheduling. It adds no background Activity, notification,
+foreground service, account screen or alternate sign-in flow. Interaction
+requirements defer to the existing foreground account flow.
+
+The private no-backup scheduling file contains only bounded public metadata:
+opaque instance/schedule IDs, job ID, public grant generation/acceptance/expiry
+times, due time, attempt count and a closed disposition. It contains no grant,
+identity, owner proof, route, Network or diagnostic. A RUNNING marker is committed
+before activation. Cold recovery converts an interrupted attempt to a durable
+deferral; corrupt or unreadable metadata disables dispatch instead of resetting
+attempt history. Repeated reconciliation of the same generation cannot clear a
+deferral. Every actual scheduling call publishes a fresh invocation key, including
+rearming an early delivery; late Stop/Network callbacks cannot control a successor.
+
+Stop and Network changes retire only the owned lease. Job completion is separate
+from actual cleanup; unknown cleanup retains the operation and prevents automatic
+retry. Only a confirmed pre-TLS availability failure permits retry, with at most
+three provider attempts per generation and two-/ten-minute backoffs. TLS, generic
+IO, interaction, storage and interrupted/uncertain outcomes defer. Configuration
+wakeups recheck protected owner/generation and leave unrelated providers alone.
+Accepted replacements and Forget update scheduling after their existing account
+boundaries; tentative storage writes are not scheduling hooks.
+
+Scheduling failure preserves desired metadata for later reconciliation without
+consuming a provider attempt. Running jobs are not replaced merely to update
+metadata. API 34 adds the Network-change callback; older supported versions rely
+on JobScheduler stop/failure handling while their captured network binding still
+prevents ambient migration. Android quotas, battery/network constraints, force
+stop and process death prevent promises of exact timing or guaranteed closed-app
+execution.
+
+The reviewed implementation passed 2,469 local JVM tests, including durable
+consume/crash recovery, finite retries, stale callbacks, targeted mutation checks,
+Stop/receipt ordering and callback isolation. Compilation, debug lint with the
+same baseline findings, release isolation and 15 manifest-isolation fixtures
+passed. App/test APKs were built and both matched the shared debug certificate.
+An explicitly approved provider-free smoke then passed on a fresh API 36
+Android 16/x86-64 AVD with software rendering and KVM. One opt-in test took
+2.035 seconds and observed unforced system delivery, production service binding
+and retirement of a synthetic job without account authority. Its 99.931-second
+driver pass receipt also includes fresh boot and installation; it is not a
+provider-operation duration. Persistent AVD data and the phone were untouched.
+
+The immediate post-shutdown inventory guard refused confirmation. Its original
+receipt remains distinct from a later postflight under the global emulator lock,
+which confirmed the owned PID, emulator process and ADB device were absent.
+The transient guard's exact cause remains unknown. No second fixture was run.
+This smoke does not exercise provider renewal, a remembered session, actual
+Network Parcelable delivery or process-death recovery. Cold closed-app renewal
+and physical naturally expired acceptance remain open.
 
 ## Recommendation and scope
 

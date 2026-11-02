@@ -255,7 +255,15 @@ class AbemaAutomaticRenewalDeviceTest {
                 val comparison = boundedProbeCheck(5_000, { resourcesRetained = true }) {
                     val after = protectedRecords(context.noBackupFilesDir, File(context.applicationInfo.dataDir, "shared_prefs"))
                     if (baseline != null && selected != null) {
-                        val unchanged = baseline.keys == after.keys && baseline.filterKeys { it != selected }.all { (name, digest) ->
+                        // The separately classified public scheduling ledger may
+                        // change after accepted renewal. Its bytes were strictly
+                        // decoded below; private inventory remains exact.
+                        fun privateKeys(records: Map<String, ByteArray>) = records.keys.filter {
+                            abemaRenewalRecordFamily(it, selected) != AbemaRenewalRecordFamily.RENEWAL_SCHEDULE
+                        }.toSet()
+                        val unchanged = privateKeys(baseline) == privateKeys(after) && baseline.filterKeys {
+                            it != selected && abemaRenewalRecordFamily(it, selected) != AbemaRenewalRecordFamily.RENEWAL_SCHEDULE
+                        }.all { (name, digest) ->
                             after[name]?.let { MessageDigest.isEqual(digest, it) } == true
                         }
                         val changed = baseline[selected]?.let { old -> after[selected]?.let { !MessageDigest.isEqual(old, it) } ?: true }
@@ -338,6 +346,8 @@ class AbemaAutomaticRenewalDeviceTest {
                 val bytes = file.readBytes()
                 try {
                     check(abemaRenewalRecordWithinLimit(prefix, file.name, bytes.size.toLong()))
+                    if (abemaRenewalRecordFamily("$prefix/${file.name}", "") == AbemaRenewalRecordFamily.RENEWAL_SCHEDULE)
+                        decodeAbemaRenewalJobMetadata(bytes)
                     result["$prefix/${file.name}"] = MessageDigest.getInstance("SHA-256").digest(bytes)
                 }
                 finally { bytes.fill(0) }
@@ -359,6 +369,7 @@ internal fun returnAbemaRenewalTask(context: Context, taskId: Int, component: Co
 
 internal fun abemaRenewalRecordWithinLimit(prefix: String, name: String, size: Long): Boolean {
     val limit = if (prefix == "no_backup" && name == "failure-diagnostics.tsv") FailureJournalCodec.MAX_BYTES
+        else if (abemaRenewalRecordFamily("$prefix/$name", "") == AbemaRenewalRecordFamily.RENEWAL_SCHEDULE) AbemaRenewalJobLedger.MAX_BYTES
         else PRIVATE_SECRET_LIMIT + 29
     return size in 0..limit.toLong()
 }
@@ -416,5 +427,13 @@ class AbemaAutomaticRenewalRecordGuardDeviceTest {
             assertFalse(abemaRenewalRecordWithinLimit(prefix, name, 8_222))
         }
         assertFalse(abemaRenewalRecordWithinLimit("no_backup", "failure-diagnostics.tsv", -1))
+    }
+    @Test fun onlyExactPublicScheduleFilesHaveTheirOwnMetadataBound() {
+        for (suffix in listOf("", ".bak", ".new")) {
+            assertTrue(abemaRenewalRecordWithinLimit("no_backup", AbemaRenewalJobLedger.FILE_NAME + suffix, 16_384))
+            assertFalse(abemaRenewalRecordWithinLimit("no_backup", AbemaRenewalJobLedger.FILE_NAME + suffix, 16_385))
+        }
+        assertFalse(abemaRenewalRecordWithinLimit("shared_prefs", AbemaRenewalJobLedger.FILE_NAME, 16_384))
+        assertFalse(abemaRenewalRecordWithinLimit("no_backup", AbemaRenewalJobLedger.FILE_NAME + ".extra", 16_384))
     }
 }

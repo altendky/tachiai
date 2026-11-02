@@ -112,6 +112,8 @@ internal object AndroidAbemaRenewalReadiness {
         authoritative = { work, outcome ->
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
                 AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
+            if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
+                work.binding.accepted()
         })
 
     fun check(service: Service, target: AbemaReadinessTarget, deadline: Long,

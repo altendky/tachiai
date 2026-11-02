@@ -394,7 +394,7 @@ intervals, contributing 123 and 139 decoded frames. Its natural lifecycle
 observation was ADMITTED once, RESPONSE_SETTLED, previous CONTINUE_RESPONSE / OK,
 same request tuple, no Network terminal yet, then response error Failed and
 the missing-job acknowledgement. No duplicate event or protocol error was
-injected. This identifies a later failed-response event after successful
+injected. In this anonymous run, this identifies a later failed-response event after successful
 response continuation, rather than the earlier cancellation-order hypothesis.
 The acknowledgement was observed without a fatal failure or cancellation claim.
 
@@ -402,8 +402,9 @@ Explicit Stop destroyed both players and removed both video elements, with
 paused/reset/disconnected surfaces and no attached media keys. CDP transport
 disposal reported DONE; context, Chrome, owned process and process group, Vite,
 page server, pending fresh requests and deny proxy closed. Both completed
-comparison runtimes were removed after these checks. Anonymous operation had
-no OAuth grant to revoke and no protected-media/CDM session was established.
+comparison runtimes were removed after these checks. No OAuth grant was held;
+sampled and stopped surfaces had no attached MediaKeys. Session creation was
+not instrumented.
 This is bounded real replay and driver recovery evidence, not authenticated
 cross-provider playback, audio/fade acceptance, renewal or sustained reliability.
 

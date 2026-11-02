@@ -235,6 +235,20 @@ repos:
         files: '^apps/web/scripts/abema-(backend-(bootstrap|episode-(source|manifest|eme))|route-(comparison|eme))\.py$|^scripts/tests/web-abema-episode-eme\.test\.py$'
         pass_filenames: false
 
+      - id: web-provider-pair-route-tests
+        name: Provider pair private host and backend protocol tests
+        entry: uv run scripts/tests/web-provider-pair-route.test.py
+        language: system
+        files: '^apps/web/scripts/provider-pair-.*\.py$|^scripts/tests/web-provider-pair-route\.test\.py$'
+        pass_filenames: false
+
+      - id: web-provider-pair-browser-tests
+        name: Provider pair owned action and cleanup protocol tests
+        entry: node --test scripts/tests/web-provider-pair-browser.test.mjs
+        language: system
+        files: '^apps/web/scripts/(provider-pair-browser|mixed-(route-browser|browser-headers))\.mjs$|^scripts/tests/web-provider-pair-browser\.test\.mjs$'
+        pass_filenames: false
+
       - id: web-abema-browser-episode-eme-tests
         name: Web ABEMA bounded browser EME protocol tests
         entry: node --test scripts/tests/web-abema-browser-episode-eme.test.mjs

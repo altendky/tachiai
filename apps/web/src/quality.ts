@@ -12,6 +12,7 @@ export interface QualityPreferences { video: QualityRequest; audio: QualityReque
 export interface QualityControl {
   requested: QualityRequest; outcome: 'AUTO' | 'PENDING' | 'REQUESTED' | 'UNAVAILABLE';
   options: QualityTrack[]; omitted: number;
+  selectionPolicy?: 'sdk-default-only';
 }
 export interface QualitySnapshot {
   video: QualityControl; audio: QualityControl; bandwidthEstimateBps?: number;
@@ -52,6 +53,8 @@ export function observedQualityTitle(value?: PlayheadFormat): string {
     `${value.codec} ${rate} kb/s ${value.channelCount ?? '?'} ch ${value.sampleRateHz ?? '?'} Hz`;
 }
 export function qualityExplanation(control: QualityControl): string {
+  if (control.selectionPolicy === 'sdk-default-only') return control.requested ?
+    'Manual preference unavailable; default player selection' : 'Default player selection; manual preferences unavailable';
   return { AUTO: 'Auto selection', PENDING: 'Waiting for supported tracks; Auto until available',
     REQUESTED: 'Manual selection requested; actual format is reported separately',
     UNAVAILABLE: 'Requested quality unavailable or ambiguous; Auto until available' }[control.outcome];

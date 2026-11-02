@@ -9,12 +9,17 @@ export type SessionState = 'loading' | 'ready' | 'failed' | 'disposed';
 export type CommandResult = 'completed' | 'cancelled' | 'unavailable' | 'unsupported' |
   'blocked' | 'failed' | 'invalid' | 'unchanged' | 'outside-window' | 'ad-blocked';
 
-export interface Source {
+export interface FixtureSource {
   readonly id: string;
   readonly manifest: string;
   // Controlled, ad-free fixtures only; provider sources remain separate work.
   readonly kind: 'fixture';
 }
+export interface DiagnosticProviderSource {
+  readonly id: string;
+  readonly kind: 'provider-diagnostic';
+}
+export type Source = FixtureSource | DiagnosticProviderSource;
 
 export interface Observation {
   id: string;
@@ -34,6 +39,9 @@ export interface Observation {
   activeQuality?: number;
   playheadFormats: PlayheadFormats;
   quality: QualitySnapshot;
+  // Optional bounded native frame-callback evidence, never pixel/media data.
+  decodedFrames?: number;
+  mediaAdvanceMs?: number;
 }
 
 export interface PlayerAdapter {
@@ -73,10 +81,11 @@ export class BrowserPlayer implements PlayerAdapter, PlayerSession {
   private readonly quality = new PlayerQuality();
 
   constructor(
-    readonly source: Source,
+    readonly source: FixtureSource,
     private readonly core: TimingCore,
     private readonly changed: () => void,
   ) {
+    if (source.kind !== 'fixture') throw new Error('Controlled fixture required.');
     this.video.playsInline = true;
     this.video.muted = true;
     this.video.setAttribute('aria-label', 'Controlled fixture playback');
@@ -254,7 +263,10 @@ export class Harness {
 
   constructor(private readonly core: TimingCore, private readonly mount: HTMLElement,
     private readonly changed: () => void,
-    private readonly factory: PlayerFactory = (source, timing, changed) => new BrowserPlayer(source, timing, changed)) {}
+    private readonly factory: PlayerFactory = (source, timing, changed) => {
+      if (source.kind !== 'fixture') throw new Error('Controlled fixture required.');
+      return new BrowserPlayer(source, timing, changed);
+    }) {}
 
   async open(source: Source): Promise<CommandResult> {
     const generation = ++this.generation;

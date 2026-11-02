@@ -4,6 +4,10 @@ import { FixtureQualityStore, type QualityDefaults, type QualityStore } from './
 
 export type Side = 'A' | 'B';
 export const SIDES: readonly Side[] = ['A', 'B'];
+export interface PairLifecycle {
+  canWatch(selected: Readonly<Record<Side, string | undefined>>): boolean;
+  retire(): Promise<void>;
+}
 export const TIMING_STEPS = [100, 250, 500, 1000, 5000] as const;
 export interface Mix { overall: number; balance: number; muteA: boolean; muteB: boolean }
 export interface Position { x: number; y: number }
@@ -28,6 +32,7 @@ export interface PairObservation {
   savingQuality: boolean;
   qualityMessage?: 'save-failed' | 'read-failed' | 'video-saved' | 'audio-saved' | 'video-reset' | 'audio-reset';
   qualityApplication: Record<Side, CommandResult | undefined>;
+  watchAllowed: boolean;
 }
 
 export function gains(mix: Mix): Record<Side, number> {
@@ -91,12 +96,17 @@ export class PairFixture {
   private qualitySave?: object;
   private qualityApplication: PairObservation['qualityApplication'] = { A: undefined, B: undefined };
   private readGeneration = 0;
+  private readonly store: QualityStore;
+  private presentationActive = false;
+  private retirement?: Promise<void>;
   get revision(): number { return this.generation; }
 
   constructor(core: TimingCore, mounts: Record<Side, HTMLElement>, sources: readonly Source[],
     private readonly changed: () => void,
-    private readonly store: QualityStore = new FixtureQualityStore(sources.map(source => source.id)),
-    factory?: PlayerFactory) {
+    store?: QualityStore, factory?: PlayerFactory, private readonly lifecycle?: PairLifecycle) {
+    if (sources.some(source => source.kind !== 'fixture') && (!store || !factory || !lifecycle))
+      throw new Error('Provider presentation dependencies required.');
+    this.store = store ?? new FixtureQualityStore(sources.map(source => source.id));
     this.sources = new Map(sources.map((source) => [source.id, source]));
     this.slots = {
       A: new Harness(core, mounts.A, () => this.publish(), factory),
@@ -186,6 +196,13 @@ export class PairFixture {
     this.changed();
   }
 
+  refresh(): void { this.publish(); }
+
+  private watchAvailable(): boolean {
+    if (this.stopping || this.cleanupFailed || this.qualityStore !== 'ready' || this.qualitySave || !this.selected.A || !this.selected.B) return false;
+    try { return this.lifecycle?.canWatch({ ...this.selected }) ?? true; } catch { return false; }
+  }
+
   observe(): PairObservation {
     return {
       mode: this.mode, selected: { ...this.selected },
@@ -196,6 +213,7 @@ export class PairFixture {
       requestedAdjustmentMs: this.adjustment, adjustmentValid: this.adjustmentValid, status: this.status,
       qualityStore: this.qualityStore, savingQuality: this.qualitySave !== undefined, qualityMessage: this.qualityMessage,
       qualityApplication: { ...this.qualityApplication },
+      watchAllowed: this.watchAvailable(),
     };
   }
 
@@ -207,7 +225,8 @@ export class PairFixture {
   }
 
   async watch(): Promise<CommandResult> {
-    if (this.stopping || this.cleanupFailed || this.qualityStore !== 'ready' || this.qualitySave || !this.selected.A || !this.selected.B) return 'unavailable';
+    if (!this.watchAvailable()) return 'unavailable';
+    this.presentationActive = true; this.retirement = undefined;
     const run = ++this.generation;
     ++this.playGeneration;
     this.pendingPlay = undefined;
@@ -269,9 +288,16 @@ export class PairFixture {
       this.qualityApplication[side] = player.setQualityPreferences({ video: this.readQuality(side, 'video').effective, audio: this.readQuality(side, 'audio').effective });
       this.applyMix();
       if (restore !== undefined && restore > 0) {
-        const position = player.observe().positionMs;
-        outcome = position === undefined ? 'unavailable' : restore === position ? 'completed' :
-          await player.seekRelative(BigInt(restore - position), true);
+        const observation = player.observe(), position = observation.positionMs;
+        if (observation.seekable) {
+          if (position === undefined) outcome = 'unavailable';
+          else if (restore !== position) {
+            const delta = BigInt(restore - position);
+            // Unsupported restoration starts the fresh feed without claiming
+            // to restore a position; Retry already invalidated its timing anchor.
+            if (player.relativePlan(delta).outcome !== 'unsupported') outcome = await player.seekRelative(delta, true);
+          }
+        }
       }
       if (!current() || this.slots[side].current !== player) return 'cancelled';
       if (outcome === 'completed' && this.desiredPlaying) {
@@ -368,9 +394,14 @@ export class PairFixture {
       const adjustment = this.adjustment + (side === 'A' ? stepMs : -stepMs);
       if (!Number.isSafeInteger(adjustment)) { this.status = 'invalid'; return 'invalid'; }
       const forward = named.relativePlan(step);
+      const backward = forward.outcome === 'requested' ? undefined : other.relativePlan(-step);
       const chosen = forward.outcome === 'requested' ? { player: named, movement: step } :
-        other.relativePlan(-step).outcome === 'requested' ? { player: other, movement: -step } : undefined;
+        backward?.outcome === 'requested' ? { player: other, movement: -step } : undefined;
       let outcome: CommandResult = 'outside-window';
+      if (!chosen) {
+        const refused = ['failed', 'cancelled', 'invalid', 'ad-blocked', 'unsupported', 'unavailable'] as const;
+        outcome = refused.find(value => forward.outcome === value || backward?.outcome === value) ?? 'outside-window';
+      }
       if (chosen) {
         // Exactly one attempt, including uncertain dispatch/settlement failure.
         let accepted = false;
@@ -416,7 +447,16 @@ export class PairFixture {
     this.qualityApplication = { A: undefined, B: undefined };
     this.retrying = { A: false, B: false };
     this.publish();
-    const outcomes = await Promise.allSettled(SIDES.map((side) => this.slots[side].stop()));
+    // There is no media presentation to retire while Sources is authorizing.
+    // This lets provider-controlled activation continue in an external tab.
+    if (this.presentationActive) {
+      this.presentationActive = false;
+      try { this.retirement = this.lifecycle?.retire(); }
+      catch { this.retirement = Promise.reject(new Error('Presentation cleanup failed.')); }
+    }
+    const cleanup = SIDES.map((side) => this.slots[side].stop());
+    if (this.retirement) cleanup.push(this.retirement);
+    const outcomes = await Promise.allSettled(cleanup);
     if (outcomes.some((outcome) => outcome.status === 'rejected')) this.cleanupFailed = true;
     if (generation === this.generation) {
       this.stopping = false;

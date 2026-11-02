@@ -216,7 +216,7 @@ def validate_control(raw):
         if "transportDiagnostic" in value:
             diagnostic = value["transportDiagnostic"]
             fields = {"failure", "stage", "command", "disposal"}
-            if (not isinstance(diagnostic, dict) or set(diagnostic) not in (fields, fields | {"canceledContinuationObserved"})
+            if (not isinstance(diagnostic, dict) or not fields <= set(diagnostic) <= fields | {"canceledContinuationObserved", "continuationFailure"}
                     or any(type(diagnostic[field]) is not str for field in fields)
                     or "canceledContinuationObserved" in diagnostic and type(diagnostic["canceledContinuationObserved"]) is not bool
                     or diagnostic["failure"] not in {"NONE", "CONTINUATION_FAILED", "RESPONSE_BINDING_MISMATCH",
@@ -226,6 +226,19 @@ def validate_control(raw):
                     or diagnostic["command"] not in {"NONE", "CONTINUE_REQUEST", "CONTINUE_RESPONSE", "CONTINUE_AUTH"}
                     or diagnostic["disposal"] not in {"OPEN", "RUNNING", "DONE", "FAILED"}):
                 raise bootstrap.Refused()
+            if "continuationFailure" in diagnostic:
+                detail = diagnostic["continuationFailure"]
+                if (diagnostic["failure"] != "CONTINUATION_FAILED" or not isinstance(detail, dict)
+                        or set(detail) != {"error", "response", "cancellation"}
+                        or any(type(item) is not str for item in detail.values())
+                        or detail["error"] not in {"INVALID_INTERCEPTION_ID", "OTHER"}
+                        or detail["response"] not in {"NOT_RESPONSE", "TRACKED_ERROR", "TRACKED_STATUS", "UNTRACKED_ERROR", "UNTRACKED_STATUS"}
+                        or detail["cancellation"] not in {"NOT_RESPONSE", "NO_ENTRY", "RETIRED_ENTRY", "MISSING_REQUEST_NETWORK_ID",
+                            "MISSING_RESPONSE_NETWORK_ID", "NETWORK_ID_MISMATCH", "RESPONSE_BINDING_MISMATCH",
+                            "AMBIGUOUS_NETWORK_ID", "NOT_PENDING", "NO_PRIOR_CANCEL", "PRIOR_CANCEL"}
+                        or (diagnostic["stage"] == "RESPONSE") != (detail["response"] != "NOT_RESPONSE")
+                        or (diagnostic["stage"] == "RESPONSE") != (detail["cancellation"] != "NOT_RESPONSE")):
+                    raise bootstrap.Refused()
         return value
     raise bootstrap.Refused()
 

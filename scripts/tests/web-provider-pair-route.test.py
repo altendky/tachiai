@@ -154,6 +154,20 @@ class HostTests(unittest.TestCase):
         self.assertEqual(host.validate_control(host.wire(value)), value)
         observed = {**receipt, "transportDiagnostic": {**diagnostic, "canceledContinuationObserved": True}}
         self.assertEqual(host.validate_control(host.wire(observed)), observed)
+        detail = {"error": "INVALID_INTERCEPTION_ID", "response": "UNTRACKED_ERROR", "cancellation": "NO_ENTRY"}
+        detailed = {**receipt, "transportDiagnostic": {**diagnostic, "continuationFailure": detail}}
+        self.assertEqual(host.validate_control(host.wire(detailed)), detailed)
+        both = {**receipt, "transportDiagnostic": {**diagnostic, "continuationFailure": detail, "canceledContinuationObserved": False}}
+        self.assertEqual(host.validate_control(host.wire(both)), both)
+        self.assertFalse(host.trial_succeeded(detailed, True))
+        for bad in (None, [], {}, {**detail, "url": PRIVATE}, {**detail, "error": PRIVATE},
+                    {**detail, "response": PRIVATE}, {**detail, "cancellation": PRIVATE}, {**detail, "error": []},
+                    {**detail, "response": "NOT_RESPONSE"}, {**detail, "cancellation": "NOT_RESPONSE"}):
+            with self.assertRaises(bootstrap.Refused):
+                host.validate_control(host.wire({**receipt, "transportDiagnostic": {**diagnostic, "continuationFailure": bad}}))
+        for change in ({"failure": "NONE"}, {"stage": "AUTH"}):
+            with self.assertRaises(bootstrap.Refused):
+                host.validate_control(host.wire({**receipt, "transportDiagnostic": {**diagnostic, **change, "continuationFailure": detail}}))
         self.assertFalse(host.trial_succeeded(value, True))
         for change in ({"url": PRIVATE}, {"failure": PRIVATE}, {"stage": []}, {"command": "Fetch.getResponseBody"},
                        {"disposal": 1}, {"canceledContinuationObserved": PRIVATE}, {"canceledContinuationObserved": 0}):

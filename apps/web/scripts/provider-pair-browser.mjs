@@ -108,7 +108,7 @@ export function terminalCleanup(observation) {
 }
 
 export function validateTransportDiagnostic(value) {
-  if (!subset(value, ['failure', 'stage', 'command', 'disposal'], ['canceledContinuationObserved']) ||
+  if (!subset(value, ['failure', 'stage', 'command', 'disposal'], ['canceledContinuationObserved', 'continuationFailure']) ||
       Object.hasOwn(value, 'canceledContinuationObserved') && typeof value.canceledContinuationObserved !== 'boolean' ||
       !['NONE', 'CONTINUATION_FAILED', 'RESPONSE_BINDING_MISMATCH', 'REQUEST_HEADERS_INVALID',
         'RESPONSE_HEADERS_INVALID', 'CAPACITY', 'AUTH_EVENT_INVALID', 'REQUEST_EVENT_INVALID',
@@ -116,6 +116,18 @@ export function validateTransportDiagnostic(value) {
       !['NONE', 'REQUEST', 'RESPONSE', 'AUTH', 'CLOSE', 'DETACH'].includes(value.stage) ||
       !['NONE', 'CONTINUE_REQUEST', 'CONTINUE_RESPONSE', 'CONTINUE_AUTH'].includes(value.command) ||
       !['OPEN', 'RUNNING', 'DONE', 'FAILED'].includes(value.disposal)) throw refused();
+  if (Object.hasOwn(value, 'continuationFailure')) {
+    const detail = value.continuationFailure;
+    if (value.failure !== 'CONTINUATION_FAILED' || !exact(detail, ['error', 'response', 'cancellation']) ||
+        !['INVALID_INTERCEPTION_ID', 'OTHER'].includes(detail.error) ||
+        !['NOT_RESPONSE', 'TRACKED_ERROR', 'TRACKED_STATUS', 'UNTRACKED_ERROR', 'UNTRACKED_STATUS'].includes(detail.response) ||
+        !['NOT_RESPONSE', 'NO_ENTRY', 'RETIRED_ENTRY', 'MISSING_REQUEST_NETWORK_ID', 'MISSING_RESPONSE_NETWORK_ID',
+          'NETWORK_ID_MISMATCH', 'RESPONSE_BINDING_MISMATCH', 'AMBIGUOUS_NETWORK_ID', 'NOT_PENDING',
+          'NO_PRIOR_CANCEL', 'PRIOR_CANCEL'].includes(detail.cancellation) ||
+        (value.stage === 'RESPONSE') !== (detail.response !== 'NOT_RESPONSE') ||
+        (value.stage === 'RESPONSE') !== (detail.cancellation !== 'NOT_RESPONSE')) throw refused();
+    return { ...value, continuationFailure: { ...detail } };
+  }
   return { ...value };
 }
 

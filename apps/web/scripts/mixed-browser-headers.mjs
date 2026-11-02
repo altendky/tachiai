@@ -64,6 +64,7 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   let session, failed = false, disposed = false, disposal;
   let failure = 'NONE', failureStage = 'NONE', failureCommand = 'NONE', disposalState = 'OPEN';
   let canceledContinuationObserved = false;
+  let continuationFailure;
   const attempts = new Set(), responses = new Map(), pending = new Set();
   const retire = (id, entry) => { if (responses.get(id) === entry) responses.delete(id); };
   const matchesResponse = (entry, event) => event.request?.url === entry.url && event.request?.method === entry.method &&
@@ -80,29 +81,45 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
   };
   const networkFailed = event => networkTerminal(event, true);
   const networkFinished = event => networkTerminal(event, false);
-  const canceledInterception = (error, method, id, entry) => {
-    if (disposed || failed || !entry?.responsePending || !entry.cancelEligible || !entry.canceled || responses.get(id) !== entry ||
-      [...responses.values()].filter(value => value.networkId === entry.networkId).length !== 1) return false;
+  const protocolError = (error, method) => {
     try {
       // Exact public Chrome/Playwright protocol message, never a substring of
       // an arbitrary transport/provider error. No error text is retained.
       return error?.message === `cdpSession.send: Protocol error (${method}): Invalid InterceptionId.` ||
-        error?.message === `Protocol error (${method}): Invalid InterceptionId.`;
-    } catch { return false; }
+        error?.message === `Protocol error (${method}): Invalid InterceptionId.` ? 'INVALID_INTERCEPTION_ID' : 'OTHER';
+    } catch { return 'OTHER'; }
   };
-  const record = (value, stage, command = 'NONE') => {
+  const canceledInterception = (error, method, id, entry) => {
+    if (disposed || failed || !entry?.responsePending || !entry.cancelEligible || !entry.canceled || responses.get(id) !== entry ||
+      [...responses.values()].filter(value => value.networkId === entry.networkId).length !== 1) return false;
+    return protocolError(error, method) === 'INVALID_INTERCEPTION_ID';
+  };
+  const continuationEvidence = (error, method, id, stage, entry, response) => {
+    let cancellation = 'NOT_RESPONSE';
+    if (stage === 'RESPONSE') {
+      cancellation = !entry ? 'NO_ENTRY' : responses.get(id) !== entry ? 'RETIRED_ENTRY' :
+        !identifier(entry.networkId) ? 'MISSING_REQUEST_NETWORK_ID' : !response.networkIdPresent ? 'MISSING_RESPONSE_NETWORK_ID' :
+          !response.networkIdMatches ? 'NETWORK_ID_MISMATCH' : !response.bindingMatches ? 'RESPONSE_BINDING_MISMATCH' :
+            [...responses.values()].filter(value => value.networkId === entry.networkId).length !== 1 ? 'AMBIGUOUS_NETWORK_ID' :
+              !entry.responsePending ? 'NOT_PENDING' : entry.canceled ? 'PRIOR_CANCEL' : 'NO_PRIOR_CANCEL';
+    }
+    return { error: protocolError(error, method), response: response?.kind ?? 'NOT_RESPONSE', cancellation };
+  };
+  const record = (value, stage, command = 'NONE', evidence) => {
     if (failure !== 'NONE') return;
     failure = value; failureStage = stage; failureCommand = command;
+    if (value === 'CONTINUATION_FAILED') continuationFailure = Object.freeze({ ...evidence });
   };
-  const fail = (value, stage, command = 'NONE') => {
-    record(value, stage, command); failed = true; responses.clear(); void page.close().catch(() => {});
+  const fail = (value, stage, command = 'NONE', evidence) => {
+    record(value, stage, command, evidence); failed = true; responses.clear(); void page.close().catch(() => {});
   };
-  const send = (method, fields, stage, entry) => {
+  const send = (method, fields, stage, entry, response) => {
     const command = { 'Fetch.continueRequest': 'CONTINUE_REQUEST', 'Fetch.continueResponse': 'CONTINUE_RESPONSE',
       'Fetch.continueWithAuth': 'CONTINUE_AUTH' }[method];
     const rejected = (error, synchronous = false) => {
       if (stage === 'RESPONSE' && canceledInterception(error, method, fields.requestId, entry)) canceledContinuationObserved = true;
-      else if (synchronous || !disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command);
+      else if (synchronous || !disposed && !page.isClosed()) fail('CONTINUATION_FAILED', stage, command,
+        continuationEvidence(error, method, fields.requestId, stage, entry, response));
     };
     const settled = () => { if (stage === 'RESPONSE' && entry) retire(fields.requestId, entry); };
     try {
@@ -120,13 +137,16 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
       if (stage === 'RESPONSE') {
         reason = 'RESPONSE_BINDING_MISMATCH';
         const captured = responses.get(id);
+        const response = { kind: `${captured ? 'TRACKED' : 'UNTRACKED'}_${event.responseErrorReason !== undefined ? 'ERROR' : 'STATUS'}`,
+          networkIdPresent: identifier(event.networkId), networkIdMatches: event.networkId === captured?.networkId,
+          bindingMatches: !!captured && matchesResponse(captured, event) };
         if (captured?.responsePending) throw refused();
         if (captured) {
           captured.responsePending = true;
           captured.cancelEligible = matchesResponse(captured, event) && identifier(event.networkId) && event.networkId === captured.networkId;
         }
         if (!captured || event.responseErrorReason !== undefined) {
-          send('Fetch.continueRequest', { requestId: id }, stage, captured); return;
+          send('Fetch.continueRequest', { requestId: id }, stage, captured, response); return;
         }
         reason = 'RESPONSE_BINDING_MISMATCH';
         if (!matchesResponse(captured, event) || !Number.isInteger(event.responseStatusCode) ||
@@ -137,7 +157,7 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
         // Preserve status and all other headers. No body API, fulfillment,
         // redirect, cookie, request URL/method or TLS override exists here.
         send('Fetch.continueResponse', { requestId: id, responseCode: event.responseStatusCode,
-          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) }, stage, captured);
+          responseHeaders: headers, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}) }, stage, captured, response);
         return;
       }
       const request = event.request;
@@ -187,7 +207,8 @@ export async function installMixedRouteHeaders(context, page, descriptor, select
     throw refused();
   }
   return Object.freeze({
-    diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState, canceledContinuationObserved }); },
+    diagnostic() { return Object.freeze({ failure, stage: failureStage, command: failureCommand, disposal: disposalState, canceledContinuationObserved,
+      ...(continuationFailure ? { continuationFailure: Object.freeze({ ...continuationFailure }) } : {}) }); },
     assertHealthy() { if (failed || disposed) throw refused(); },
     dispose() {
       if (disposal) return disposal;

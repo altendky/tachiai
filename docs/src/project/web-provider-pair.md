@@ -235,5 +235,33 @@ diagnostics remain accepted; the optional boolean is strictly validated by both
 Node and Python. It is not playback, account or cleanup authority. All original
 origin, frame, method, response, header, status/body and TLS guards remain.
 Owned real-Chrome tests retain a failed fetch while keeping the viewer alive;
-independent media/CDM/grant cleanup is still required. No provider trial has
-used this cancellation fix yet.
+independent media/CDM/grant cleanup is still required.
+
+### Repaired replay retest and remaining diagnostic gap
+
+A fifth provider trial used signed `ebd3710173fef0504919b6ebcb5019c56570cac5`,
+fresh hashed public assets and the matching clean route runner on the same
+Ubuntu/Chrome host. The owner confirmed the Tokyo peer was unused and activated
+a fresh Twitch grant. Both feeds selected replay 2080217716 on System network;
+there was no ABEMA preparation. The owner reported that the window closed
+immediately. The first diagnostic remained CONTINUATION_FAILED / RESPONSE /
+CONTINUE_REQUEST / FAILED, with canceledContinuationObserved=false. No sampled
+joint advancement or acoustic acceptance was recorded. Backend, browser/group
+and route closure were confirmed; renderer, CDM, grant and auth cleanup remained
+unconfirmed. Host routes were unchanged.
+
+The boolean reports whether the full narrow cancellation exception was applied.
+False alone cannot distinguish missing cancellation from a missing/ambiguous
+tracked entry, mismatched response identity, or a different protocol error.
+The provider retest therefore does not establish the cause of this refusal or
+validate the cancellation fix for this provider path. No automatic retry or
+additional activation follows from that result.
+
+The optional continuationFailure diagnostic now classifies only the first
+failed continuation: exact known invalid-interception error versus Other;
+tracked/untracked response with error/status versus a non-response stage; and
+the current bounded cancellation eligibility state. All values are fixed enums.
+No URL, request or Network ID, header, token, raw error or provider payload is
+projected. Node and Python reject unknown fields/values and accept historical
+diagnostics. These details do not broaden cancellation tolerance, change
+request/header policy or turn process closure into a cleanup receipt.

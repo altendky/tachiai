@@ -218,6 +218,26 @@ test('transport diagnostics admit only closed classifications without private fi
     assert.throws(() => validateTransportDiagnostic(bad));
 });
 
+test('continuation detail remains closed, copied and separate from cleanup authority', () => {
+  const value = { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE', command: 'CONTINUE_REQUEST', disposal: 'FAILED' };
+  const detail = { error: 'INVALID_INTERCEPTION_ID', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' };
+  const validated = validateTransportDiagnostic({ ...value, continuationFailure: detail });
+  assert.deepEqual(validated.continuationFailure, detail);
+  assert.notEqual(validated.continuationFailure, detail);
+  for (const response of ['TRACKED_ERROR', 'TRACKED_STATUS', 'UNTRACKED_ERROR', 'UNTRACKED_STATUS'])
+    for (const cancellation of ['NO_ENTRY', 'RETIRED_ENTRY', 'MISSING_REQUEST_NETWORK_ID', 'MISSING_RESPONSE_NETWORK_ID',
+      'NETWORK_ID_MISMATCH', 'RESPONSE_BINDING_MISMATCH', 'AMBIGUOUS_NETWORK_ID', 'NOT_PENDING', 'NO_PRIOR_CANCEL', 'PRIOR_CANCEL'])
+      assert.doesNotThrow(() => validateTransportDiagnostic({ ...value, continuationFailure: { ...detail, response, cancellation } }));
+  assert.doesNotThrow(() => validateTransportDiagnostic({ ...value, stage: 'REQUEST',
+    continuationFailure: { error: 'OTHER', response: 'NOT_RESPONSE', cancellation: 'NOT_RESPONSE' } }));
+  for (const bad of [null, [], {}, { ...detail, url: 'PRIVATE' }, { ...detail, error: 'PRIVATE' },
+    { ...detail, response: 'PRIVATE' }, { ...detail, cancellation: 'PRIVATE' }, { ...detail, error: [] },
+    { ...detail, response: 'NOT_RESPONSE' }, { ...detail, cancellation: 'NOT_RESPONSE' }])
+    assert.throws(() => validateTransportDiagnostic({ ...value, continuationFailure: bad }));
+  assert.throws(() => validateTransportDiagnostic({ ...value, failure: 'NONE', continuationFailure: detail }));
+  assert.throws(() => validateTransportDiagnostic({ ...value, stage: 'AUTH', continuationFailure: detail }));
+});
+
 async function wholeHostFixture(late = false, transportFailure = false, canceledContinuation = false) {
   const runtime = await mkdtemp(join(tmpdir(), 'pair-host-owned-'));
   const originalArgs = process.argv, originalWrite = process.stdout.write, originalExit = process.exitCode;
@@ -314,7 +334,8 @@ test('closed header failure survives lost renderer cleanup without fabricating g
   assert.equal(result.grantCleanup, 'unconfirmed'); assert.equal(result.authCleanupConfirmed, false);
   assert.equal(result.browserCleanupConfirmed, true);
   assert.deepEqual(result.transportDiagnostic, { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE',
-    command: 'CONTINUE_RESPONSE', disposal: 'FAILED', canceledContinuationObserved: false });
+    command: 'CONTINUE_RESPONSE', disposal: 'FAILED', canceledContinuationObserved: false,
+    continuationFailure: { error: 'OTHER', response: 'TRACKED_STATUS', cancellation: 'NO_PRIOR_CANCEL' } });
 });
 
 test('positively retired continuation keeps the host alive and retains independent cleanup', async () => {

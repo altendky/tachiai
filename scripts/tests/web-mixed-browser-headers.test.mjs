@@ -158,9 +158,11 @@ test('continuation failures identify the exact closed stage and command without 
     else f.session.emit('Fetch.requestPaused', stage === 'REQUEST' ? base : { ...base, responseStatusCode: 206, responseHeaders: [] });
     await tick();
     assert.equal(f.page.isClosed(), true);
-    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'OPEN', canceledContinuationObserved: false });
+    const continuationFailure = { error: 'OTHER', response: stage === 'RESPONSE' ? 'TRACKED_STATUS' : 'NOT_RESPONSE',
+      cancellation: stage === 'RESPONSE' ? 'MISSING_REQUEST_NETWORK_ID' : 'NOT_RESPONSE' };
+    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'OPEN', canceledContinuationObserved: false, continuationFailure });
     await assert.rejects(hook.dispose(), /^Error: MIXED_BROWSER_HEADERS_REFUSED$/);
-    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'FAILED', canceledContinuationObserved: false });
+    assert.deepEqual(hook.diagnostic(), { failure: 'CONTINUATION_FAILED', stage, command, disposal: 'FAILED', canceledContinuationObserved: false, continuationFailure });
     assert.equal(JSON.stringify(hook.diagnostic()).includes('PRIVATE'), false);
   }
 });
@@ -283,10 +285,13 @@ test('settled cancellation receipts cannot authorize a later interception or sur
   const f = await heldResponse();
   f.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
   f.reject(invalidInterception()); await tick(); f.hook.assertHealthy();
+  assert.equal(Object.hasOwn(f.hook.diagnostic(), 'continuationFailure'), false);
   f.session.send = async () => { throw invalidInterception(); };
   f.session.emit('Fetch.requestPaused', { ...f.base, responseErrorReason: 'Failed' }); await tick();
   assert.equal(f.hook.diagnostic().failure, 'CONTINUATION_FAILED');
   assert.equal(f.hook.diagnostic().canceledContinuationObserved, true);
+  assert.deepEqual(f.hook.diagnostic().continuationFailure,
+    { error: 'INVALID_INTERCEPTION_ID', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' });
   await assert.rejects(f.hook.dispose());
   const closing = await heldResponse(), disposal = closing.hook.dispose();
   closing.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
@@ -303,6 +308,66 @@ test('terminal requests release bounded registry capacity without retaining canc
   }
   await tick(); hook.assertHealthy(); assert.equal(hook.diagnostic().canceledContinuationObserved, false);
   await hook.dispose();
+});
+
+test('continuation evidence distinguishes exact protocol errors and current response ownership barriers', async () => {
+  for (const [options, cancellation, response] of [
+    [{}, 'NO_PRIOR_CANCEL', 'TRACKED_ERROR'],
+    [{ missingRequestId: true }, 'MISSING_REQUEST_NETWORK_ID', 'TRACKED_ERROR'],
+    [{ missingResponseId: true }, 'MISSING_RESPONSE_NETWORK_ID', 'TRACKED_ERROR'],
+    [{ changedResponse: { networkId: 'other-network' } }, 'NETWORK_ID_MISMATCH', 'TRACKED_ERROR'],
+    [{ changedResponse: { frameId: 'other-frame' } }, 'RESPONSE_BINDING_MISMATCH', 'TRACKED_ERROR'],
+    [{ ambiguous: true }, 'AMBIGUOUS_NETWORK_ID', 'TRACKED_ERROR'],
+    [{ earlyCancellation: true }, 'NO_ENTRY', 'UNTRACKED_ERROR'],
+  ]) {
+    const f = await heldResponse(options);
+    f.reject(invalidInterception()); await tick();
+    assert.deepEqual(f.hook.diagnostic().continuationFailure, { error: 'INVALID_INTERCEPTION_ID', response, cancellation });
+    await assert.rejects(f.hook.dispose());
+  }
+  const canceled = await heldResponse();
+  canceled.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+  canceled.reject(Error('PRIVATE_ARBITRARY_ERROR')); await tick();
+  assert.deepEqual(canceled.hook.diagnostic().continuationFailure, { error: 'OTHER', response: 'TRACKED_ERROR', cancellation: 'PRIOR_CANCEL' });
+  assert.equal(canceled.hook.diagnostic().canceledContinuationObserved, false);
+  await assert.rejects(canceled.hook.dispose());
+});
+
+test('tracked and untracked status failures keep separate closed evidence with no private error text', async () => {
+  const tracked = await heldResponse({ changedResponse: { responseErrorReason: undefined, responseStatusCode: 206, responseHeaders: [] } });
+  tracked.reject(invalidInterception('Fetch.continueResponse')); await tick();
+  assert.deepEqual(tracked.hook.diagnostic().continuationFailure,
+    { error: 'INVALID_INTERCEPTION_ID', response: 'TRACKED_STATUS', cancellation: 'NO_PRIOR_CANCEL' });
+  await assert.rejects(tracked.hook.dispose());
+  for (const errorResponse of [false, true]) {
+    const f = fake(), hook = await installMixedRouteHeaders(f.context, f.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+    f.session.send = async () => { throw Error('PRIVATE_URL_HEADER_TOKEN_MUST_NOT_ESCAPE'); };
+    f.session.emit('Fetch.requestPaused', packet(errorResponse ? { responseErrorReason: 'Failed' } : { responseStatusCode: 403, responseHeaders: [] }));
+    await tick();
+    assert.deepEqual(hook.diagnostic().continuationFailure,
+      { error: 'OTHER', response: errorResponse ? 'UNTRACKED_ERROR' : 'UNTRACKED_STATUS', cancellation: 'NO_ENTRY' });
+    assert.equal(JSON.stringify(hook.diagnostic()).includes('PRIVATE'), false);
+    await assert.rejects(hook.dispose());
+  }
+});
+
+test('nested continuation evidence is immutable, independent and belongs only to the first failure', async () => {
+  const f = await heldResponse(); f.reject(invalidInterception()); await tick();
+  const first = f.hook.diagnostic(), next = f.hook.diagnostic();
+  assert.ok(Object.isFrozen(first.continuationFailure)); assert.notEqual(first.continuationFailure, next.continuationFailure);
+  assert.throws(() => { first.continuationFailure.error = 'PRIVATE'; }, TypeError);
+  f.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+  f.page.isClosed = () => false; f.page.close = async () => { throw Error('PRIVATE_LATER_CLEANUP_ERROR'); };
+  await assert.rejects(f.hook.dispose());
+  assert.deepEqual(f.hook.diagnostic(), { ...first, disposal: 'FAILED' });
+  const safe = await heldResponse(); safe.session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
+  safe.reject(invalidInterception()); await tick(); safe.hook.assertHealthy();
+  assert.equal(Object.hasOwn(safe.hook.diagnostic(), 'continuationFailure'), false);
+  await safe.hook.dispose();
+  const other = fake(), hook = await installMixedRouteHeaders(other.context, other.page, route, mixedTwitchHeaderPolicy(origin, 'live:virtualjapan'));
+  other.session.emit('Fetch.requestPaused', packet({ requestId: null })); await tick();
+  assert.equal(Object.hasOwn(hook.diagnostic(), 'continuationFailure'), false);
+  await assert.rejects(hook.dispose());
 });
 
 const local = { skip: process.env.TACHIAI_LOCAL_CHROME_TEST !== '1', timeout: 60000 };

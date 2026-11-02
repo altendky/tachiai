@@ -100,7 +100,7 @@ class DownloadTests(unittest.TestCase):
             args = call["args"]
             self.assertEqual(args[0], "--disable")
             self.assertFalse(call["partial_existed"])
-            self.assertIn("https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz", args)
+            self.assertIn("https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/ffmpeg/7:8.1-3ubuntu3/ffmpeg_8.1.orig.tar.xz", args)
             for option, value in (("--proto", "=https"), ("--proto-redir", "=https"),
                                   ("--connect-timeout", "15"), ("--max-time", "120"), ("--max-redirs", "2")):
                 self.assertEqual(args[args.index(option) + 1], value)

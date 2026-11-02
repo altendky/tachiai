@@ -51,7 +51,8 @@ else
     rm -f -- "$fixture_stage/ffmpeg-8.1.tar.xz"
     if curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 15 --max-time 120 --max-redirs 2 \
-        https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz --output "$fixture_stage/ffmpeg-8.1.tar.xz"; then
+        https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/ffmpeg/7:8.1-3ubuntu3/ffmpeg_8.1.orig.tar.xz \
+        --output "$fixture_stage/ffmpeg-8.1.tar.xz"; then
       break
     else
       fixture_status=$?

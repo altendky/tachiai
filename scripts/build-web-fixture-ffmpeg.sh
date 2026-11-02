@@ -42,12 +42,32 @@ fi
 
 fixture_stage=$(mktemp -d "$fixture_tools/.ffmpeg-8.1.XXXXXXXX")
 trap 'rm -rf -- "$fixture_stage"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [[ -e "$fixture_archive" || -L "$fixture_archive" ]]; then
   [[ -f "$fixture_archive" && ! -L "$fixture_archive" ]] || { printf '%s\n' 'Owned FFmpeg archive cache is not a regular file.' >&2; exit 1; }
 else
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --connect-timeout 15 --max-time 120 --max-redirs 2 \
-    https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz --output "$fixture_stage/ffmpeg-8.1.tar.xz"
+  for fixture_attempt in 1 2 3; do
+    rm -f -- "$fixture_stage/ffmpeg-8.1.tar.xz"
+    if curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 15 --max-time 120 --max-redirs 2 \
+        https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/ffmpeg/7:8.1-3ubuntu3/ffmpeg_8.1.orig.tar.xz \
+        --output "$fixture_stage/ffmpeg-8.1.tar.xz"; then
+      break
+    else
+      fixture_status=$?
+      rm -f -- "$fixture_stage/ffmpeg-8.1.tar.xz"
+      case "$fixture_status" in
+        6|7|18|28|52|55|56) ;; # Fresh bounded retry for transport availability only.
+        *) printf 'Owned FFmpeg source download refused (curl exit %s).\n' "$fixture_status" >&2; exit "$fixture_status" ;;
+      esac
+      if [[ "$fixture_attempt" == 3 ]]; then
+        printf 'Owned FFmpeg source download failed after 3 attempts (curl exit %s).\n' "$fixture_status" >&2
+        exit "$fixture_status"
+      fi
+      sleep 2
+    fi
+  done
   printf '%s  %s\n' "$fixture_sha256" "$fixture_stage/ffmpeg-8.1.tar.xz" | sha256sum --check --status
   mv -- "$fixture_stage/ffmpeg-8.1.tar.xz" "$fixture_archive"
 fi

@@ -54,6 +54,13 @@ repos:
         files: '^apps/android/openconnect-fixture/(fetch-sources\.sh|sources\.tsv)$|^scripts/tests/native-source-downloads\.test\.py$'
         pass_filenames: false
 
+      - id: web-fixture-source-download-tests
+        name: Owned web fixture source download retry tests
+        entry: uv run scripts/tests/web-fixture-source-download.test.py
+        language: system
+        files: '^scripts/(build-web-fixture-ffmpeg\.sh|tests/web-fixture-source-download\.test\.py)$'
+        pass_filenames: false
+
       - id: failure-diagnostics-tests
         name: Safe failure diagnostic collector tests
         entry: uv run scripts/tests/failure-diagnostics.test.py

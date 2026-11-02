@@ -2,6 +2,7 @@ package net.fstab.tachiai.provider.abema.account
 
 import java.util.UUID
 import java.util.concurrent.Executor
+import java.util.concurrent.ConcurrentHashMap
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.provider.abema.AbemaCatalogRouteOwner
@@ -13,6 +14,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaAccountRenewalOperationTest {
+    private class Owned(val lease: AbemaRenewalOwnerLease,
+        val operations: ConcurrentHashMap<String, AbemaAccountRenewalOperation>,
+        val coordinator: AbemaRenewalReadinessCoordinator<Unit>)
     private class Work : Executor {
         val queue = ArrayDeque<Runnable>()
         override fun execute(command: Runnable) { queue.add(command) }
@@ -54,6 +58,10 @@ class AbemaAccountRenewalOperationTest {
         val worker = Work(); val cancellation = Work(); val main = ArrayDeque<() -> Unit>()
         val later = mutableListOf<Pair<Long, () -> Unit>>()
         val outcomes = mutableListOf<AbemaRenewalOperationOutcome>()
+        var completionHook: (AbemaRenewalOperationOutcome) -> Unit = {}
+        var completionPostFails = false
+        var allPostsFail = false
+        var timersFail = false
         val inbox = AbemaEmailGrantInbox({ elapsed }, { wall })
         var request: AbemaApprovalBrowserRequest? = null
         var returned: ((AbemaRenewalBrowserResult) -> Unit)? = null
@@ -105,9 +113,23 @@ class AbemaAccountRenewalOperationTest {
         }
         val deadline = elapsed + 90_000
         val operation = AbemaAccountRenewalOperation(binding, owner, expected, deadline, browser, inbox,
-            worker, cancellation, { main.add(it) }, { wait, action -> later.add(elapsed + wait to action) },
+            worker, cancellation, {
+                check(!allPostsFail && (!completionPostFails || store.revision() <= expected.revision)) { "Owned completion dispatcher refused" }
+                main.add(it)
+            }, { wait, action -> check(!timersFail) { "Owned timer dispatcher refused" }; later.add(elapsed + wait to action) },
             { elapsed }, { wall }, { scopeHook(); scope }, { id, deadline, gate -> startupAdmission ?:
-                if (beforeApproval(id, deadline, gate)) ProviderStartupCleanupAdmission.READY else ProviderStartupCleanupAdmission.CANCELLED }, outcomes::add)
+                if (beforeApproval(id, deadline, gate)) ProviderStartupCleanupAdmission.READY else ProviderStartupCleanupAdmission.CANCELLED },
+            { outcomes.add(it); completionHook(it) }, completionUnavailable = { outcomes.add(it); completionHook(it) })
+        fun owned(): Owned {
+            val coordinator = AbemaRenewalReadinessCoordinator<Unit>({ elapsed }, { "a".repeat(32) })
+            val operations = ConcurrentHashMap<String, AbemaAccountRenewalOperation>()
+            val admission = AbemaRenewalOwnedAdmission(coordinator, operations,
+                validate = { ticket, _ -> coordinator.current(ticket) }, dispatch = { main.add(it); true },
+                elapsed = { elapsed }, schedulePending = { deadline, action -> later.add(deadline to action); true })
+            val reservation = admission.reserve(id, "same-account", Unit, deadline, { scope },
+                construct = { _, _, done -> completionHook = done; operation }) as AbemaRenewalReservation.Owned
+            return Owned(reservation.lease, operations, coordinator)
+        }
         fun pump() {
             repeat(200) {
                 var worked = worker.one() || cancellation.one()
@@ -142,6 +164,69 @@ class AbemaAccountRenewalOperationTest {
             browserDone(result)
         }
         fun onlyResult() = outcomes.single().result
+    }
+
+    @Test fun ownedCancellationBeforeActivationProducesOnlyAZeroResourceReceipt() {
+        val f = Fixture(); val owned = f.owned()
+        assertEquals(0, f.requests); assertEquals(0, f.profiles)
+        owned.lease.cancel(); assertFalse(owned.lease.activate()); f.pump()
+        assertEquals(AbemaAutomaticRenewalResult.CANCELLED, f.onlyResult())
+        assertTrue(owned.lease.outcome()!!.cleanupConfirmed)
+        assertTrue(owned.operations.isEmpty()); assertEquals(0, f.requests); assertEquals(0, f.profiles)
+        assertArrayEquals(f.prior, f.storage.bytes)
+        f.elapsed += 90_000; f.pump(); assertEquals(1, f.outcomes.size)
+    }
+
+    @Test fun ownerLeaseCancellationDuringActualCasPublicationUsesTheOperationLockAndRollsBack() {
+        val f = Fixture(); val owned = f.owned()
+        owned.lease.activate(); f.pump(); assertTrue(f.deliver())
+        val ticket = owned.operations.keys.single()
+        f.storage.writeHook = {
+            owned.lease.cancel()
+            assertTrue(owned.coordinator.current(ticket))
+        }
+        f.browserDone()
+        assertEquals(AbemaAutomaticRenewalResult.CANCELLED, f.onlyResult())
+        assertEquals(AbemaAutomaticRenewalResult.CANCELLED, owned.lease.outcome()!!.result)
+        assertArrayEquals(f.prior, f.storage.bytes); assertTrue(owned.operations.isEmpty())
+    }
+
+    @Test fun actualCommitBeforeOwnerCancelRemainsSuccessWhileItsReceiptIsStillQueued() {
+        val f = Fixture(); val owned = f.owned()
+        owned.lease.activate(); f.pump(); assertTrue(f.deliver())
+        checkNotNull(f.returned)(AbemaRenewalBrowserResult.DELIVERED)
+        assertTrue(f.worker.one()) // Commit and cleanup finish before the main completion callback.
+        assertTrue(f.outcomes.isEmpty()); assertNull(owned.lease.outcome())
+        assertEquals(f.expected.record!!.generation + 1, f.store.readSnapshot().record!!.generation)
+        val ticket = owned.operations.keys.single()
+        owned.lease.cancel(); assertTrue(owned.coordinator.current(ticket))
+        f.pump()
+        assertEquals(AbemaAutomaticRenewalResult.SUCCESS, f.onlyResult())
+        assertEquals(AbemaAutomaticRenewalResult.SUCCESS, owned.lease.outcome()!!.result)
+        assertTrue(owned.lease.outcome()!!.cleanupConfirmed); assertTrue(owned.operations.isEmpty())
+    }
+
+    @Test fun rejectedCompletionPostFallsBackToTheExactActualClosedOutcome() {
+        val f = Fixture(); val owned = f.owned()
+        owned.lease.activate(); f.pump(); f.completionPostFails = true
+        assertTrue(f.deliver()); f.browserDone()
+        assertEquals(AbemaAutomaticRenewalResult.SUCCESS, f.onlyResult())
+        assertSame(f.outcomes.single(), owned.lease.outcome())
+        assertTrue(owned.lease.outcome()!!.cleanupConfirmed); assertTrue(owned.operations.isEmpty())
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.READY,
+            owned.coordinator.evidence(f.id) { true }.completion)
+    }
+
+    @Test fun rejectedTimerOrMainPostsDoNotInventCleanupUncertaintyWithoutAnyProviderResources() {
+        for (timer in listOf(false, true)) {
+            val f = Fixture(); val owned = f.owned()
+            if (timer) f.timersFail = true else f.allPostsFail = true
+            owned.lease.activate(); f.pump()
+            assertTrue(owned.lease.outcome()!!.cleanupConfirmed)
+            assertTrue(owned.operations.isEmpty())
+            assertEquals(0, f.requests); assertEquals(0, f.profiles); assertEquals(0, f.emails)
+            assertArrayEquals(f.prior, f.storage.bytes)
+        }
     }
 
     @Test fun sameAccountExtensionAdoptsAfterBrowserAndNativeCleanupWithoutForegroundSession() {

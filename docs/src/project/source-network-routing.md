@@ -272,6 +272,41 @@ coalescing, bootstrap refusal and partial/cancelled cleanup. Go inputs are
 unchanged from the verified two-ABI prerequisite build. No APK deployment,
 provider operation or persistent device/profile change was performed.
 
+### Owned renewal admission
+
+Readiness now separates an internal owner reservation from observation. Only
+the caller receiving a RAM-only lease can activate or cancel that exact
+operation; another observer cannot replace its captured Network or deadline.
+Reservation constructs the owner before dispatch, so a caller can retain its
+lease before any provider work starts. The existing foreground check activates
+its reservation immediately and retains the same observer-facing result.
+
+An unactivated or queued reservation expires against its original deadline.
+Its expiry handler and reconciliation before readiness observation cancel only
+that still-pending owner. Active work retains its existing operation lifetime;
+stale callbacks cannot cancel an active operation or a successor. Refused
+dispatch or expiry scheduling also goes through actual operation cancellation.
+
+Cancellation takes the operation's existing adoption lock before coordinator
+invalidation. A committed replacement remains successful if cancellation arrives
+after commit. Only the operation's actual cleanup receipt releases the owner and
+profile reservation. Unknown cleanup remains retained, and rejected completion
+delivery preserves the exact computed outcome through an in-process fallback.
+No lease, operation, Network or candidate grant is persisted.
+
+This is an internal control boundary for a future job caller. It adds no
+JobScheduler integration, durable attempt history, background trigger, permission
+or product flow. Runtime supplied-Network and background execution acceptance
+remain separate from host regression coverage.
+
+Local verification passed 2,436 debug JVM tests, including 34 new admission and
+operation cases, plus main/instrumentation compilation, debug lint and release
+isolation. Lint retained the same 29 warnings and one hint as the handoff baseline.
+Coverage includes abandoned reservations, delayed expiry delivery, rejected or
+partial dispatch, active/stale callback isolation, unknown cleanup retention and
+actual operation adoption/cancellation ordering. No APK was assembled or deployed,
+and no provider operation or saved device/profile mutation was performed.
+
 ## Recommendation and scope
 
 Keep the external system VPN as the current baseline. If routing becomes an

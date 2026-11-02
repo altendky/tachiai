@@ -35,7 +35,8 @@ internal class AbemaAccountRenewalOperation(
     private val scopeCurrent: () -> Boolean,
     private val beforeApproval: (String, Long, () -> Boolean) -> ProviderStartupCleanupAdmission,
     private val completed: (AbemaRenewalOperationOutcome) -> Unit,
-) {
+    private val completionUnavailable: ((AbemaRenewalOperationOutcome) -> Unit)? = null,
+) : AbemaRenewalOwnedOperation {
     private val diagnostics = AbemaRenewalDiagnostics()
     private var producerDiagnostic: AbemaRenewalDiagnostic? = null
     @Volatile private var phase = Phase.ADMISSION
@@ -77,7 +78,7 @@ internal class AbemaAccountRenewalOperation(
         binding.store.usable(expected.revision) && abemaRenewalSnapshotMatches(expected,
             binding.store.readSnapshot(), wallMs()) && binding.store.usable(expected.revision) && scalarCurrent()
 
-    fun start() {
+    override fun start() {
         synchronized(lock) { check(!started); started = true }
         diagnostics.progress(Progress.STARTED)
         val began = elapsedMs()
@@ -289,7 +290,7 @@ internal class AbemaAccountRenewalOperation(
         }
     }
 
-    fun cancel() = requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.CANCELLED, Phase.OPERATION)
+    override fun cancel() = requestEnd(AbemaAutomaticRenewalResult.CANCELLED, Reason.CANCELLED, Phase.OPERATION)
     private fun requestEnd(result: AbemaAutomaticRenewalResult, reason: Reason = Reason.REFUSED, at: Phase = phase,
         account: AbemaAccountFailure? = null, transportEvidence: ProviderTransportEvidence? = null,
         startup: ProviderStartupCleanupAdmission? = null) {
@@ -304,16 +305,24 @@ internal class AbemaAccountRenewalOperation(
         // takes its cancellation lock before invoking the scalar receiver.
         inbox.unregister(nonce)
         synchronized(lock) { registered = false; candidate = null }
-        post { if (synchronized(lock) { browserStarted && !browserSettled }) runCatching(browser::cancel) }
+        if (synchronized(lock) { browserStarted && !browserSettled }) {
+            try { post { if (synchronized(lock) { browserStarted && !browserSettled }) runCatching(browser::cancel) } }
+            catch (_: Throwable) {
+                synchronized(lock) { if (browserStarted && !browserSettled) cleanupUncertain = true }
+            }
+        }
         transport.get()?.let { owned ->
             try { cancellation.execute { runCatching(owned::cancelActiveRequest) } }
             catch (_: Throwable) { synchronized(lock) { cleanupUncertain = true } }
         }
-        if (begin) delay(7000) {
-            synchronized(lock) {
-                if (!ended && (workers != 0 || browserStarted && !browserSettled || transport.get() != null)) cleanupUncertain = true
+        if (begin) {
+            val expireCleanup = {
+                synchronized(lock) {
+                    if (!ended && (workers != 0 || browserStarted && !browserSettled || transport.get() != null)) cleanupUncertain = true
+                }
+                maybeFinish(force = true)
             }
-            maybeFinish(force = true)
+            try { delay(7000, expireCleanup) } catch (_: Throwable) { expireCleanup() }
         }
         maybeFinish()
     }
@@ -329,7 +338,11 @@ internal class AbemaAccountRenewalOperation(
         }
         inbox.unregister(nonce)
         synchronized(lock) { registered = false; candidate = null }
-        post { completed(outcome) }
+        try { post { completed(outcome) } }
+        catch (error: Throwable) {
+            val delivered = completionUnavailable?.let { fallback -> runCatching { fallback(outcome) }.isSuccess } ?: false
+            if (!delivered) throw error
+        }
     }
     override fun toString() = "AbemaAccountRenewalOperation(redacted)"
 }

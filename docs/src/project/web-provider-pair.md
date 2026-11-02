@@ -305,3 +305,64 @@ and all response binding checks, and releases the entry at settlement or owner
 disposal. The failed Fetch remains failed while the page can finish its normal
 cleanup. No additional API tracking, provider permission, header change,
 continuation retry or inferred grant/CDM cleanup is introduced.
+
+### Missing interception acknowledgement and focused investigation
+
+A seventh trial used signed `71f2f2844e147a9fbcce6f99ac69c590773b79aa`,
+fresh hashed assets and matching clean runner after readiness and unused-peer
+confirmation. A selected ABEMA replay and B selected Twitch replay 2080217716.
+The owner reported that the window disappeared immediately after activation.
+The first failed continuation again classified INVALID_INTERCEPTION_ID /
+UNTRACKED_ERROR / NO_ENTRY; canceledContinuationObserved was false. There was
+one fresh ABEMA preparation attempt, no sampled joint advancement and no
+acoustic acceptance. Browser/group, backend and route closure were confirmed;
+renderer/CDM/grant/auth cleanup remained unconfirmed. The retained canceled-entry
+change therefore did not fix this provider failure. Further activation and
+combined-provider checks were suspended to isolate the browser driver.
+
+The installed Chrome was 156.0.8078.79, revision
+`a21ce95c24ce3964416f09ae1862f53f319eb4d0`. Chromium's
+[interception job lookup](https://raw.githubusercontent.com/chromium/chromium/a21ce95c24ce3964416f09ae1862f53f319eb4d0/content/browser/devtools/devtools_url_loader_interceptor.h)
+returns the exact invalid-interception error when its job map has no matching
+entry. Its
+[continuation dispatcher](https://raw.githubusercontent.com/chromium/chromium/a21ce95c24ce3964416f09ae1862f53f319eb4d0/content/browser/devtools/devtools_url_loader_interceptor.cc)
+performs that lookup before applying modifications. For a requestId-only
+continuation, that acknowledgement means the command applied nothing and has
+no job to resume. It does not establish cancellation, successful media or the
+reason the job disappeared.
+
+The owner now accepts only this narrow asynchronous acknowledgement: the
+original pause was an untracked failed response with a declared Network error
+reason and no HTTP response status; no entry existed or replaced it; the same
+live page/session/owner sent exactly Fetch.continueRequest with requestId only;
+and Chrome returned the exact known missing-interception error. Synchronous
+throws, changed owners, tracked or replaced entries, authentication, header
+modifications and other protocol errors remain fatal. The existing tracked
+cancellation exception remains separate. No network admission, CDN permission,
+header or credential policy changes.
+
+Optional absentInterception and untrackedFailure diagnostics preserve the first
+bounded lifecycle snapshot for these cases. They contain only validated enums,
+booleans and capped counts/sequences, with no URLs, request/Network IDs, headers,
+tokens, raw errors or provider payloads. Retirement denotes the first observed
+retirement of that Fetch ID. Tuple relations use a temporary keyed digest only
+inside the owner; no digest is projected. History overflow reports incomplete
+observation and never grants admission or cleanup authority. Node and Python
+share the strict field schema and accept historical diagnostics. An absent-job
+acknowledgement does not set canceledContinuationObserved or imply cleanup.
+
+Local verification passed 69 Node tests, including the opt-in real Chrome
+checks, and 12 Python boundary tests. The focused Chrome check delivers a
+controlled duplicate of a real failed-response event after its job has ended;
+the resulting command receives Chrome's actual missing-job error. Both owned
+videos then have more than five seconds of sampled joint advancement, followed
+by explicit video removal, one owned revoke POST and normal browser cleanup.
+This verifies handling of the actual negative acknowledgement, not the event
+order of the provider failure or provider grant/CDM cleanup. The separate host
+test verifies its explicit Stop and authoritative synthetic cleanup receipt.
+
+A fresh anonymous token request and manifest request for the exact Twitch
+replay both returned HTTP 200 without cookies, saved accounts or Authorization.
+The token and manifest remained in memory. This permits a focused diagnostic
+through the unchanged Twitch player without another owner activation; manifest
+acceptance alone does not establish playback, audio or authenticated behavior.

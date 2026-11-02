@@ -238,7 +238,31 @@ test('continuation detail remains closed, copied and separate from cleanup autho
   assert.throws(() => validateTransportDiagnostic({ ...value, stage: 'AUTH', continuationFailure: detail }));
 });
 
-async function wholeHostFixture(late = false, transportFailure = false, canceledContinuation = false) {
+const lifecycleFixture = (changes = {}) => ({ firstRequest: 'UNSEEN', lastRequest: 'UNSEEN', requestCount: 0,
+  firstRequestSequence: 0, lastRequestSequence: 0, retirement: 'NONE', retirementSequence: 0,
+  previousCommand: 'NONE', previousResult: 'NONE', responseSequence: 1, ackSequence: 2, relatedRequests: 0,
+  tupleRelation: 'NONE', networkTerminal: 'NONE', initiator: 'UNSEEN', errorReason: 'Failed', redirected: false,
+  complete: true, ...changes });
+
+test('absent-interception observations are closed diagnostics and do not establish cleanup', () => {
+  const value = { failure: 'NONE', stage: 'NONE', command: 'NONE', disposal: 'DONE' };
+  const lifecycle = lifecycleFixture();
+  const result = validateTransportDiagnostic({ ...value, absentInterception: lifecycle });
+  assert.deepEqual(result.absentInterception, lifecycle); assert.notEqual(result.absentInterception, lifecycle);
+  for (const change of [{ url: 'PRIVATE' }, { errorReason: 'PRIVATE' }, { requestCount: true },
+    { ackSequence: -1 }, { relatedRequests: 2049 }, { complete: 1 }, { firstRequest: [] }, { errorReason: 'NONE' }])
+    assert.throws(() => validateTransportDiagnostic({ ...value, absentInterception: lifecycleFixture(change) }));
+  const failure = { failure: 'CONTINUATION_FAILED', stage: 'RESPONSE', command: 'CONTINUE_REQUEST', disposal: 'FAILED',
+    continuationFailure: { error: 'OTHER', response: 'UNTRACKED_ERROR', cancellation: 'NO_ENTRY' } };
+  assert.deepEqual(validateTransportDiagnostic({ ...failure, untrackedFailure: lifecycle }).untrackedFailure, lifecycle);
+  for (const change of [{ failure: 'NONE' }, { stage: 'AUTH' }, { command: 'CONTINUE_AUTH' },
+    { continuationFailure: undefined }])
+    assert.throws(() => validateTransportDiagnostic({ ...failure, ...change, untrackedFailure: lifecycle }));
+  const laterFailure = validateTransportDiagnostic({ ...failure, absentInterception: lifecycle });
+  assert.equal(laterFailure.failure, 'CONTINUATION_FAILED');
+});
+
+async function wholeHostFixture(late = false, transportFailure = false, canceledContinuation = false, absentInterception = false) {
   const runtime = await mkdtemp(join(tmpdir(), 'pair-host-owned-'));
   const originalArgs = process.argv, originalWrite = process.stdout.write, originalExit = process.exitCode;
   const commands = [], events = []; let stdout = '', samples = 0, pausedAfterDecode = 0, pageClosed = false;
@@ -249,6 +273,8 @@ async function wholeHostFixture(late = false, transportFailure = false, canceled
       session.emit('Network.loadingFailed', { requestId: 'owned-network', canceled: true });
       throw new Error('cdpSession.send: Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
     }
+    if (absentInterception && method === 'Fetch.continueRequest' && fields.requestId === 'owned-request' && !fields.headers)
+      throw new Error('cdpSession.send: Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
     if (transportFailure && method === 'Fetch.continueResponse') throw new Error('PRIVATE_SYNTHETIC_ERROR');
   };
   session.detach = async () => { commands.push('detach'); };
@@ -269,11 +295,11 @@ async function wholeHostFixture(late = false, transportFailure = false, canceled
       if (text.includes('.begin(')) { assert(commands.includes('commonUIEnabled')); commands.push('begin'); return 'completed'; }
       if (text.includes('.stop(')) { commands.push('explicitStop'); return final; }
       assert(text.includes('.observe(')); samples++;
-      if ((transportFailure || canceledContinuation) && samples === 2) {
+      if ((transportFailure || canceledContinuation || absentInterception) && samples === 2) {
         const request = { url: 'https://dgeft87wbj63p.cloudfront.net/owned.m3u8', method: 'GET', headers: { Origin: new URL(url).origin } };
         const event = { requestId: 'owned-request', networkId: 'owned-network', request, frameId: 'owned-frame', resourceType: 'Fetch' };
-        session.emit('Fetch.requestPaused', event);
-        session.emit('Fetch.requestPaused', { ...event, ...(canceledContinuation ? { responseErrorReason: 'Failed' } :
+        if (!absentInterception) session.emit('Fetch.requestPaused', event);
+        session.emit('Fetch.requestPaused', { ...event, ...(canceledContinuation || absentInterception ? { responseErrorReason: 'Failed' } :
           { responseStatusCode: 206, responseHeaders: [] }) });
         await new Promise(resolve => setImmediate(resolve));
         if (pageClosed) throw new Error('Owned page is closed');
@@ -346,4 +372,17 @@ test('positively retired continuation keeps the host alive and retains independe
   assert.equal(result.grantCleanup, 'revoked');
   assert.deepEqual(result.transportDiagnostic, { failure: 'NONE', stage: 'NONE', command: 'NONE',
     disposal: 'DONE', canceledContinuationObserved: true });
+});
+
+test('the observed untracked failed-response rejection keeps the host alive through explicit Stop and cleanup', async () => {
+  const { result, events, commands } = await wholeHostFixture(false, false, false, true);
+  assert.equal(result.decodeObserved, true); assert.equal(result.playbackFailureObserved, false);
+  assert.equal(events.filter(value => value.event === 'decodeObserved').length, 1);
+  assert(commands.includes('explicitStop'));
+  assert.equal(result.rendererCleanupConfirmed, true); assert.equal(result.cdmCleanupConfirmed, true);
+  assert.equal(result.grantCleanup, 'revoked'); assert.equal(result.authCleanupConfirmed, true);
+  assert.equal(result.transportDiagnostic.failure, 'NONE');
+  assert.equal(result.transportDiagnostic.canceledContinuationObserved, false);
+  assert.equal(result.transportDiagnostic.absentInterception.errorReason, 'Failed');
+  assert.equal(result.transportDiagnostic.absentInterception.firstRequest, 'UNSEEN');
 });

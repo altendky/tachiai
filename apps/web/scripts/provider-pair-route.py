@@ -31,6 +31,18 @@ ALLOWED_HOSTS = comparison.ALLOWED_HOSTS + ",license.p-c3-e.abema-tv.com"
 HOST_SECONDS, ROUTE_SECONDS, CLEANUP_SECONDS = 450, 480, 90
 JOB_CLEANUP_SECONDS = 25
 ID = re.compile(r"[a-f0-9]{32}")
+LIFECYCLE_SCHEMA = json.loads(Path(__file__).with_name("mixed-browser-lifecycle-schema.json").read_text())
+
+
+def validate_lifecycle(value):
+    fields = set(LIFECYCLE_SCHEMA["enums"]) | set(LIFECYCLE_SCHEMA["integers"]) | set(LIFECYCLE_SCHEMA["booleans"])
+    if not isinstance(value, dict) or set(value) != fields:
+        raise bootstrap.Refused()
+    if (any(type(value[key]) is not str or value[key] not in allowed for key, allowed in LIFECYCLE_SCHEMA["enums"].items())
+            or any(type(value[key]) is not int or not 0 <= value[key] <= maximum for key, maximum in LIFECYCLE_SCHEMA["integers"].items())
+            or any(type(value[key]) is not bool for key in LIFECYCLE_SCHEMA["booleans"])):
+        raise bootstrap.Refused()
+    return dict(value)
 
 
 def wire(value):
@@ -216,7 +228,8 @@ def validate_control(raw):
         if "transportDiagnostic" in value:
             diagnostic = value["transportDiagnostic"]
             fields = {"failure", "stage", "command", "disposal"}
-            if (not isinstance(diagnostic, dict) or not fields <= set(diagnostic) <= fields | {"canceledContinuationObserved", "continuationFailure"}
+            if (not isinstance(diagnostic, dict) or not fields <= set(diagnostic) <= fields | {
+                    "canceledContinuationObserved", "continuationFailure", "absentInterception", "untrackedFailure"}
                     or any(type(diagnostic[field]) is not str for field in fields)
                     or "canceledContinuationObserved" in diagnostic and type(diagnostic["canceledContinuationObserved"]) is not bool
                     or diagnostic["failure"] not in {"NONE", "CONTINUATION_FAILED", "RESPONSE_BINDING_MISMATCH",
@@ -238,6 +251,15 @@ def validate_control(raw):
                             "AMBIGUOUS_NETWORK_ID", "NOT_PENDING", "NO_PRIOR_CANCEL", "PRIOR_CANCEL"}
                         or (diagnostic["stage"] == "RESPONSE") != (detail["response"] != "NOT_RESPONSE")
                         or (diagnostic["stage"] == "RESPONSE") != (detail["cancellation"] != "NOT_RESPONSE")):
+                    raise bootstrap.Refused()
+            for key in ("absentInterception", "untrackedFailure"):
+                if key not in diagnostic:
+                    continue
+                detail = validate_lifecycle(diagnostic[key])
+                if (key == "absentInterception" and detail["errorReason"] in {"NONE", "OTHER"}
+                        or key == "untrackedFailure" and (diagnostic["failure"] != "CONTINUATION_FAILED"
+                            or diagnostic["stage"] != "RESPONSE" or diagnostic["command"] != "CONTINUE_REQUEST"
+                            or diagnostic.get("continuationFailure", {}).get("response") != "UNTRACKED_ERROR")):
                     raise bootstrap.Refused()
         return value
     raise bootstrap.Refused()

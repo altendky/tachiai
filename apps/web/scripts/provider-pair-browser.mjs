@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mixedRouteBrowserOptions, MIXED_TWITCH_CASES } from './mixed-route-browser.mjs';
 import { installMixedRouteHeaders, mixedTwitchHeaderPolicy } from './mixed-browser-headers.mjs';
+import { isResponseErrorReason, validateLifecycleObservation } from './mixed-browser-lifecycle.mjs';
 import { validateRouteDescriptor } from './abema-route-browser.mjs';
 import { validateOwnedRuntimePath } from './abema-browser-manifest.mjs';
 import { readProofAssets } from './abema-browser-episode-playback.mjs';
@@ -108,7 +109,8 @@ export function terminalCleanup(observation) {
 }
 
 export function validateTransportDiagnostic(value) {
-  if (!subset(value, ['failure', 'stage', 'command', 'disposal'], ['canceledContinuationObserved', 'continuationFailure']) ||
+  if (!subset(value, ['failure', 'stage', 'command', 'disposal'],
+    ['canceledContinuationObserved', 'continuationFailure', 'absentInterception', 'untrackedFailure']) ||
       Object.hasOwn(value, 'canceledContinuationObserved') && typeof value.canceledContinuationObserved !== 'boolean' ||
       !['NONE', 'CONTINUATION_FAILED', 'RESPONSE_BINDING_MISMATCH', 'REQUEST_HEADERS_INVALID',
         'RESPONSE_HEADERS_INVALID', 'CAPACITY', 'AUTH_EVENT_INVALID', 'REQUEST_EVENT_INVALID',
@@ -116,6 +118,7 @@ export function validateTransportDiagnostic(value) {
       !['NONE', 'REQUEST', 'RESPONSE', 'AUTH', 'CLOSE', 'DETACH'].includes(value.stage) ||
       !['NONE', 'CONTINUE_REQUEST', 'CONTINUE_RESPONSE', 'CONTINUE_AUTH'].includes(value.command) ||
       !['OPEN', 'RUNNING', 'DONE', 'FAILED'].includes(value.disposal)) throw refused();
+  const result = { ...value };
   if (Object.hasOwn(value, 'continuationFailure')) {
     const detail = value.continuationFailure;
     if (value.failure !== 'CONTINUATION_FAILED' || !exact(detail, ['error', 'response', 'cancellation']) ||
@@ -126,9 +129,17 @@ export function validateTransportDiagnostic(value) {
           'NO_PRIOR_CANCEL', 'PRIOR_CANCEL'].includes(detail.cancellation) ||
         (value.stage === 'RESPONSE') !== (detail.response !== 'NOT_RESPONSE') ||
         (value.stage === 'RESPONSE') !== (detail.cancellation !== 'NOT_RESPONSE')) throw refused();
-    return { ...value, continuationFailure: { ...detail } };
+    result.continuationFailure = { ...detail };
   }
-  return { ...value };
+  for (const key of ['absentInterception', 'untrackedFailure']) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (!validateLifecycleObservation(value[key])) throw refused();
+    result[key] = { ...value[key] };
+    if (key === 'absentInterception' && !isResponseErrorReason(result[key].errorReason) ||
+        key === 'untrackedFailure' && (value.failure !== 'CONTINUATION_FAILED' || value.stage !== 'RESPONSE' ||
+          value.command !== 'CONTINUE_REQUEST' || value.continuationFailure?.response !== 'UNTRACKED_ERROR')) throw refused();
+  }
+  return result;
 }
 
 export class PairedDecodeWindow {

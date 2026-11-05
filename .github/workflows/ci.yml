@@ -216,13 +216,38 @@ jobs:
           rustup component add rustfmt clippy
           rustup target add wasm32-unknown-unknown
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg xvfb build-essential curl xz-utils
+          sudo apt-get install --yes ffmpeg xvfb build-essential curl xz-utils unzip
 
       - name: Install browser test dependencies
         working-directory: apps/web
         run: |
           npm ci --ignore-scripts
-          npx playwright install --with-deps chrome
+          npx playwright install-deps chrome
+
+      - name: Install the verified Chrome 156 local test fixture
+        run: |
+          # Provider adapter fixtures require the verified Chrome 156 identity.
+          # Keep the existing chrome channel; never replace it with moving stable.
+          task_browser_root="$RUNNER_TEMP/tachiai-chrome"
+          mkdir -p "$task_browser_root"
+          curl --disable --fail --location --proto '=https' --proto-redir '=https' \
+            --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 2 \
+            https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.47/linux64/chrome-linux64.zip \
+            --output "$task_browser_root/chrome-linux64.zip"
+          printf '%s  %s\n' e6c94490f0b6b337225aeb2d2a5034858516b7017356980ba94f5176d8774a50 \
+            "$task_browser_root/chrome-linux64.zip" | sha256sum --check --strict
+          unzip -q "$task_browser_root/chrome-linux64.zip" -d "$task_browser_root"
+          ln -s chrome "$task_browser_root/chrome-linux64/google-chrome"
+          # Keep the executable and its matching resource payload together.
+          sudo mkdir -p /opt/google
+          if test -e /opt/google/chrome; then
+            sudo mv /opt/google/chrome "$task_browser_root/system-chrome"
+          fi
+          sudo ln -s "$task_browser_root/chrome-linux64" /opt/google/chrome
+          printf '%s\n' "$task_browser_root/chrome-linux64" >> "$GITHUB_PATH"
+          export PATH="$task_browser_root/chrome-linux64:$PATH"
+          test "$(google-chrome --product-version)" = 156.0.8078.47
+          test "$(/opt/google/chrome/chrome --product-version)" = 156.0.8078.47
 
       - run: mise run web
 

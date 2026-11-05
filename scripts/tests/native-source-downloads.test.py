@@ -123,10 +123,62 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [call for call in state["calls"] if call["name"] == name]
         self.assertEqual(len(calls), 3)
+        self.assertTrue(all(self.rows[0][1] in call["args"] for call in calls))
         self.assertTrue(all(not call["partial_existed"] for call in calls))
         self.assertEqual(state["delays"], [["2"], ["2"]])
         self.assertEqual((self.cache / name).read_bytes(), PAYLOAD)
         self.assert_no_partial()
+
+    def test_gnutls_timeout_uses_verified_mirror_within_existing_budget(self):
+        name, url, _ = next(row for row in self.rows if row[0] == "gnutls-3.8.13.tar.xz")
+        mirror = "https://mirrors.dotsrc.org/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz"
+        result, state = self.run_download({name: [28, 0]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [call for call in state["calls"] if call["name"] == name]
+        self.assertEqual(len(calls), 2)
+        self.assertIn(url, calls[0]["args"])
+        self.assertIn(mirror, calls[1]["args"])
+        for call in calls:
+            self.assertFalse(call["partial_existed"])
+            self.assertEqual(call["args"][0], "--disable")
+            for option in ("--proto", "--proto-redir"):
+                self.assertEqual(call["args"][call["args"].index(option) + 1], "=https")
+            for flag in ("--fail", "--location", "--tlsv1.2"):
+                self.assertIn(flag, call["args"])
+            self.assertNotIn("--insecure", call["args"])
+        self.assertEqual(state["delays"], [["2"]])
+        self.assertEqual((self.cache / name).read_bytes(), PAYLOAD)
+        self.assert_no_partial()
+
+    def test_gnutls_corrupt_mirror_is_terminal_and_never_cached(self):
+        name, url, _ = next(row for row in self.rows if row[0] == "gnutls-3.8.13.tar.xz")
+        mirror = "https://mirrors.dotsrc.org/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz"
+        result, state = self.run_download({name: [28, "bad", 0]})
+        self.assertEqual(result.returncode, 1)
+        calls = [call for call in state["calls"] if call["name"] == name]
+        self.assertEqual(len(calls), 2)
+        self.assertIn(url, calls[0]["args"])
+        self.assertIn(mirror, calls[1]["args"])
+        self.assertTrue(all(not call["partial_existed"] for call in calls))
+        self.assertEqual(state["delays"], [["2"]])
+        self.assertIn(f"Checksum mismatch for pinned archive: {name}", result.stderr)
+        self.assertEqual([call["name"] for call in state["calls"]], [self.rows[0][0], name, name])
+        self.assertFalse((self.cache / name).exists())
+        self.assert_no_partial()
+
+    def test_gnutls_http_and_certificate_failures_do_not_select_mirror(self):
+        name, url, _ = next(row for row in self.rows if row[0] == "gnutls-3.8.13.tar.xz")
+        for code in (22, 60):
+            with self.subTest(code=code):
+                self.state.write_text(json.dumps({"calls": [], "delays": []}))
+                result, state = self.run_download({name: [code]})
+                self.assertEqual(result.returncode, code)
+                calls = [call for call in state["calls"] if call["name"] == name]
+                self.assertEqual(len(calls), 3)
+                self.assertTrue(all(url in call["args"] for call in calls))
+                self.assertEqual(state["delays"], [["2"], ["2"]])
+                self.assertFalse((self.cache / name).exists())
+                self.assert_no_partial()
 
     def test_exhaustion_preserves_last_exit_names_archive_and_stops_queue(self):
         name = self.rows[1][0]

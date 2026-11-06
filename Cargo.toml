@@ -12,8 +12,8 @@ repository = "https://github.com/altendky/tachiai"
 [workspace.dependencies]
 tachiai-core = { path = "packages/core", version = "0.1.0" }
 uniffi = { version = "=0.32.2", default-features = false }
-wasm-bindgen = "=0.2.129"
-js-sys = "=0.3.106"
+wasm-bindgen = "=0.2.130"
+js-sys = "=0.3.107"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

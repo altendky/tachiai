@@ -19,6 +19,7 @@
   - [Implementation difference ledger](project/implementation-differences.md)
   - [Casting: screen mirroring and TV applications](project/casting.md)
   - [Controlled mirroring media fixture](project/controlled-mirroring-fixture.md)
+  - [Chromecast hardware acceptance](project/chromecast-hardware-acceptance.md)
   - [Android TV and Google TV review](project/android-tv-interface-review.md)
   - [iOS interface and library review](project/ios-interface-review.md)
   - [Apple TV / tvOS review](project/tvos-interface-review.md)

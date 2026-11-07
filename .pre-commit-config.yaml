@@ -54,6 +54,13 @@ repos:
         files: '^apps/android/openconnect-fixture/(fetch-sources\.sh|sources\.tsv)$|^scripts/tests/native-source-downloads\.test\.py$'
         pass_filenames: false
 
+      - id: build-toolchain-tests
+        name: Declared build compiler identity tests
+        entry: uv run --no-project scripts/tests/build-toolchains.test.py
+        language: system
+        files: '^scripts/(check-build-toolchain\.py|build-(core-bindings|android-routebridge)\.sh|tests/build-toolchains\.test\.py)$|^(mise|rust-toolchain)\.toml$'
+        pass_filenames: false
+
       - id: web-fixture-source-download-tests
         name: Owned web fixture source download retry tests
         entry: uv run scripts/tests/web-fixture-source-download.test.py

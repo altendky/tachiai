@@ -7,7 +7,7 @@ task_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 task_bridge="$task_root/apps/android/routebridge"
 task_mobile_version=v0.0.0-20260908204917-8b95e45f8d3e
 task_ndk_version=30.0.16248370
-test "$(go env GOVERSION)" = go1.27.2
+uv run --no-project "$task_root/scripts/check-build-toolchain.py" go
 : "${ANDROID_HOME:?Use the disposable Android build SDK}"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$task_ndk_version"
 test -f "$ANDROID_NDK_HOME/source.properties"

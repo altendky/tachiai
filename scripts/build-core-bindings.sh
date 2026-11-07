@@ -3,7 +3,7 @@ set -euo pipefail
 
 task_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$task_root"
-test "$(rustc --version | cut -d ' ' -f 2)" = 1.98.1
+uv run --no-project "$task_root/scripts/check-build-toolchain.py" rust
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$task_root/build/core/target}"
 case "$(uname -s)" in
   Linux) task_library=libtachiai_core_ffi.so ;;

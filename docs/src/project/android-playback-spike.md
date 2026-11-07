@@ -289,13 +289,19 @@ bash ../../scripts/build-android-routebridge.sh
 bash gradlew --no-daemon testDebugUnitTest testDiagnosticUnitTest lintDebug lintDiagnostic assembleDebug assembleDiagnostic
 ```
 
-The debug native route bindings require pinned Go 1.27.2 and Android NDK
+The debug native route bindings require the exact Go build version pinned in
+`mise.toml` and Android NDK
 30.0.16248370 in that disposable SDK. The bridge script runs its fixture tests
 and cross-compiles ARM64/x86_64, then verifies 16-KiB ELF load alignment. It
 packages required dependency notices; the AAR remains generated/ignored under
 `routebridge/build/`. Build it before Gradle. These native bindings currently
 limit this debug APK to 64-bit ARM/x86 devices; 32-bit Android and Shield
 interoperability remain unverified. No emulated ARM compiler is used.
+
+Before native dependency downloads or compilation, the bridge verifies its active
+Go compiler against that declared pin with automatic toolchain switching disabled. This
+keeps toolchain updates reproducible without duplicating the version in the
+build script; it does not change the supported Go module minimum below.
 
 The routebridge module's supported Go minimum remains 1.26.0, independently of
 the newer binding-build toolchain. Required CI runs its ordinary Go tests with

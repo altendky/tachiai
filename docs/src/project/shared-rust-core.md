@@ -69,9 +69,16 @@ than importing platform enums or provider/browser implementation details.
 
 ## Build and verification
 
-Use the pinned Rust/tooling configuration through mise. Provision the check tools
-and Wasm target explicitly on a fresh machine: mise selects the toolchain but
-does not necessarily install the components requested by `rust-toolchain.toml`.
+Use the pinned Rust/tooling configuration through mise.
+
+The binding build verifies the active Rust version against `rust-toolchain.toml`
+and requires its pin to agree with `mise.toml`; a toolchain update therefore does
+not require a second version literal in the build script. An unpinned or
+mismatched compiler still fails before compilation.
+
+Provision the check tools and Wasm target explicitly on a fresh machine: mise
+selects the toolchain but does not necessarily install the components requested
+by `rust-toolchain.toml`.
 From the repository root:
 
 ```sh

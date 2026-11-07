@@ -63,7 +63,7 @@ jobs:
         working-directory: apps/android/routebridge
         env:
           # Dependency artifact updates can raise go.mod even without a Go update PR.
-          GOTOOLCHAIN: go1.26.0
+          GOTOOLCHAIN: go1.27.3
           GOWORK: "off"
         run: go test -mod=readonly ./...
 

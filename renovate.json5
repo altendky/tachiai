@@ -21,7 +21,24 @@
     "**/.mise/locks/**"
   ],
 
+  // gVisor's master tree needs Bazel; ordinary Go consumers use its generated branch.
+  "customDatasources": {
+    "gvisor-go": {
+      "defaultRegistryUrlTemplate": "https://proxy.golang.org/gvisor.dev/gvisor/@v/go.info",
+      "format": "json",
+      "transformTemplates": [
+        "{\"releases\":[{\"version\":Version,\"digest\":$split(Version,\"-\")[-1],\"releaseTimestamp\":Time}],\"sourceUrl\":\"https://github.com/google/gvisor\"}"
+      ]
+    }
+  },
+
   "packageRules": [
+    {
+      "description": "Keep gVisor on the publisher's generated Go distribution",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["gvisor.dev/gvisor"],
+      "overrideDatasource": "custom.gvisor-go"
+    },
     {
       "description": "Keep Python on the selected minor release",
       "matchManagers": [

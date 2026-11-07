@@ -18,8 +18,8 @@ restrict reverse engineering to debug modifications to these libraries.
 ## Rebuild from the exact source
 
 Extract the companion and verify `sha256sum --check SHA256SUMS` from its root.
-Use the versions in `mise.toml`/`mise.lock`: Rust 1.98.1, Go 1.27.2, Java 21 and
-the Android SDK/NDK versions declared by the provided scripts/Gradle sources. The native
+Use the exact build-tool versions in `mise.toml`/`mise.lock` and the Android
+SDK/NDK versions declared by the provided scripts/Gradle sources. The native
 helpers require a Linux C build environment with make, autoconf, automake,
 gettext, libtool, pkg-config, cmake, ninja, perl, curl, tar, patch and uv.
 

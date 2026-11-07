@@ -7,7 +7,8 @@ versions and integrity hashes are in `go.mod` and `go.sum`.
 - WireGuard Go, WireGuard LLC: MIT, `licenses/WIREGUARD-MIT.txt`.
 - gVisor netstack, The gVisor Authors: Apache-2.0 and BSD-3-Clause portions,
   `licenses/GVISOR-Apache-2.0.txt` and `licenses/GO-BSD-3-Clause.txt`.
-- Go runtime and golang.org/x/mobile, x/crypto, x/net, x/sys, x/time,
+  The retained gVisor root notice includes its additional BSD-3-Clause text.
+- Go runtime and golang.org/x/mobile, x/crypto, x/net, x/sys, x/time, x/exp,
   The Go Authors: BSD-3-Clause, `licenses/GO-BSD-3-Clause.txt`.
   The SOCKS5 backend imports the pinned x/net/proxy client; it adds no module
   or separate cryptographic implementation.

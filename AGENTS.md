@@ -104,6 +104,10 @@ storage. Do not inject scripts on login pages,
 expose native JavaScript bridges to provider content, transfer session cookies
 between devices, bypass TLS errors, or log URLs that may contain tokens.
 
+When asking the user to activate a provider, include the activation code in the
+URL whenever the provider supports it, preferably using its supplied complete
+verification URL. Otherwise provide the code beside the activation link.
+
 The user-approved, local-only `inspect` build is an explicit exception to
 screenshot, UI hierarchy and DevTools restrictions, including provider login and
 account pages. Agents may observe these surfaces and use local debugging tools

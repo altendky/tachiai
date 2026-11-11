@@ -31,6 +31,7 @@ import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.prepareAndroidTwitchCatalogStartup
 import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogConnectionWrites
 import net.fstab.tachiai.provider.twitch.catalog.hasPendingAndroidTwitchCatalogForget
+import net.fstab.tachiai.provider.youtube.YouTubeCatalog
 
 class ManageStreamsActivity : ComponentActivity() {
     companion object {
@@ -88,7 +89,7 @@ class ManageStreamsActivity : ComponentActivity() {
             if (!shared) clean.putExtra(PROVIDER_DETAILS, requestedProviderDetails)
         }
         enableEdgeToEdge()
-        if (providerDetails) net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
+        net.fstab.tachiai.platform.web.DeveloperAccess.allowScreenCapture(window)
         setContent { TachiaiPrototypeTheme {
             BackHandler { if (controller?.back() != true) finish() }
             val preferenceState = preferences?.state?.collectAsState()?.value
@@ -154,6 +155,7 @@ class ManageStreamsActivity : ComponentActivity() {
                                 (accountActionPending || ProviderStartupScopeCleanup.isReady(preferenceState.instance.id)) &&
                                 routeStartup?.progress?.phase != ProviderStartupPhase.CLEANUP_UNCONFIRMED,
                             onExitCheck = { accountExitCheck = it }, expectedOwnerProof = detailOwnerProof) { page(it) }
+                        PrototypeService.YOUTUBE -> page({ YouTubeAccountSettings(enabled = !reading && !savingWhileLeaving) })
                     }
                 }
             else page(null)
@@ -250,11 +252,16 @@ class ManageStreamsActivity : ComponentActivity() {
                         check(startup.holdForMutation(handoffOwner.proof) is ProviderStartupResult.HeldForMutation)
                     }
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
-                    if (routeScope.configuredInstance.service == PrototypeService.ABEMA)
-                        prepareAndroidAbemaChannelCatalogStartup(this@ManageStreamsActivity, id, setups, startup,
+                    when (routeScope.configuredInstance.service) {
+                        PrototypeService.ABEMA -> prepareAndroidAbemaChannelCatalogStartup(this@ManageStreamsActivity, id, setups, startup,
                             canUse = { resumed && revision == current })
-                    else prepareAndroidTwitchCatalogStartup(this@ManageStreamsActivity, id, startup,
-                        canUse = { resumed && revision == current })
+                        PrototypeService.TWITCH -> prepareAndroidTwitchCatalogStartup(this@ManageStreamsActivity, id, startup,
+                            canUse = { resumed && revision == current })
+                        // Public-link import is local and does not validate a network route or account.
+                        PrototypeService.YOUTUBE -> startup.runReadOnly { _, attempt ->
+                            ProviderStartupAttempt.Admitted(YouTubeCatalog(id) { resumed && revision == current && attempt.canContinue() })
+                        }
+                    }
                 }
                 if (!resumed || revision != current) return@launch
                 val effective = when (prepared) {
@@ -292,11 +299,13 @@ class ManageStreamsActivity : ComponentActivity() {
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
                     val qualities = streamQualityStore(this@ManageStreamsActivity).read()
                     val catalog = if (prepared is ProviderStartupResult.Ready) prepared.value
-                        else if (owner.service == PrototypeService.ABEMA)
-                        androidAbemaChannelCatalog(this@ManageStreamsActivity, owner.id, setups,
+                        else when (owner.service) {
+                        PrototypeService.ABEMA -> androidAbemaChannelCatalog(this@ManageStreamsActivity, owner.id, setups,
                             canUse = { resumed && revision == current && prepared !is ProviderStartupResult.Failed }, expectedOwnerProof = ownerProof)
-                        else androidTwitchProviderCatalog(this@ManageStreamsActivity, owner.id,
+                        PrototypeService.TWITCH -> androidTwitchProviderCatalog(this@ManageStreamsActivity, owner.id,
                             canUse = { resumed && revision == current && prepared !is ProviderStartupResult.Failed }, expectedOwnerProof = ownerProof)
+                        PrototypeService.YOUTUBE -> YouTubeCatalog(owner.id) { resumed && revision == current }
+                        }
                     Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
                         legacyConfiguredSources(owner, setups, qualities)
                 }
@@ -305,9 +314,11 @@ class ManageStreamsActivity : ComponentActivity() {
                 catalogRoutes = parts.first.setup.routes
                 controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
                     diagnostics = diagnostics,
-                    notice = if (parts.first.service == PrototypeService.ABEMA)
-                        "Browse channels and Schedule, search ABEMA, or paste a public link. Open a series or season to choose an episode. Add saves the item to Tachiai, including offline or future content. Playback depends on current provider access. My List and History require a connected ABEMA account."
-                    else "Connect Twitch account in Providers for Following, channel search, published replays and playback. Live channels is a live listing; search and exact lookup also find offline channels. Without available account access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback availability is checked when opening the viewer.").also { it.load() }
+                    notice = when (parts.first.service) {
+                    PrototypeService.ABEMA -> "Browse channels and Schedule, search ABEMA, or paste a public link. Open a series or season to choose an episode. Add saves the item to Tachiai, including offline or future content. Playback depends on current provider access. My List and History require a connected ABEMA account."
+                    PrototypeService.TWITCH -> "Connect Twitch account in Providers for Following, channel search, published replays and playback. Live channels is a live listing; search and exact lookup also find offline channels. Without available account access, only bare public Twitch video links can be imported; their metadata and playback are not checked. Adding saves only to Tachiai. Playback availability is checked when opening the viewer."
+                    PrototypeService.YOUTUBE -> "Paste a public YouTube video or live-stream link to add it. Titles and availability are not checked during import. Playback availability is checked when opening the viewer. YouTube account connection and subscriptions are not yet available in Tachiai."
+                    }).also { it.load() }
                 reading = false
                 val handoff = pendingPreview
                 if (handoff != null) {

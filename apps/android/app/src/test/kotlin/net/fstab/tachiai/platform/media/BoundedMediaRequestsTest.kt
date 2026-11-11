@@ -23,16 +23,29 @@ import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportPhase
+import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
+import net.fstab.tachiai.platform.network.ProviderTransportOperation
 import net.fstab.tachiai.platform.network.ProgressingMediaResponse
 import net.fstab.tachiai.platform.network.RoutedHttpsConnection
 import net.fstab.tachiai.platform.network.RoutedHttpsFailureCategory
 import net.fstab.tachiai.platform.network.RoutedHttpsCallPhase
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.*
 import org.junit.Test
 
 @UnstableApi
 class BoundedMediaRequestsTest {
+    @Test fun progressiveMetadataHintNeverAdmitsCredentialsOrArbitraryHeaders() {
+        assertTrue(allowedNativeMediaHeaders(emptyMap(), false))
+        assertFalse(allowedNativeMediaHeaders(mapOf("Icy-MetaData" to "1"), false))
+        assertTrue(allowedNativeMediaHeaders(mapOf("Icy-MetaData" to "1"), true))
+        for (headers in listOf(mapOf("Authorization" to "synthetic"), mapOf("Cookie" to "synthetic"),
+            mapOf("Icy-MetaData" to "2"), mapOf("Icy-MetaData" to "1", "Cookie" to "synthetic")))
+            assertFalse(allowedNativeMediaHeaders(headers, true))
+    }
     private val uri = URI("https://media.ttvnw.net/fixture.m3u8?token=synthetic")
     private open class Connection(url: URL, val status: Int = 200, val length: Long = -1,
         val body: ByteArray = "#EXTM3U\n".toByteArray(), val beforeResponse: () -> Unit = {},
@@ -59,6 +72,21 @@ class BoundedMediaRequestsTest {
         clock: () -> Long = { 1_000L }, events: MutableList<NativeMediaEvent> = mutableListOf()) =
         BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { it.host == uri.host },
             { event, _ -> events += event }, canRequest, { connection }, clock)
+
+    @Test fun progressiveResponseAllowanceDoesNotWidenDefaultMediaOrManifestLimits() {
+        val size = 40 * 1024 * 1024L
+        val standard = requests(Connection(uri.toURL(), length = size)).create(C.DATA_TYPE_MEDIA)
+        assertThrows(IOException::class.java) { standard.openUri(uri) }
+        standard.close()
+        val progressive = requests(Connection(uri.toURL(), length = size))
+            .create(C.DATA_TYPE_MEDIA, 4L * 1024 * 1024 * 1024)
+        assertEquals(size, progressive.openUri(uri))
+        progressive.close()
+        val manifest = requests(Connection(uri.toURL(), length = size))
+            .create(C.DATA_TYPE_MANIFEST, 4L * 1024 * 1024 * 1024)
+        assertThrows(IOException::class.java) { manifest.openUri(uri) }
+        manifest.close()
+    }
 
     @Test fun ownedRoutedRequestsAttachBeforeDispatchAndRetainIndependentObserversWithinTheCap() {
         val seen = mutableListOf<NativeMediaTransportDiagnostic>()
@@ -219,8 +247,14 @@ class BoundedMediaRequestsTest {
             SocketTimeoutException(secret) to NativeMediaRequestFailure.TIMEOUT,
             SSLHandshakeException(secret) to NativeMediaRequestFailure.TLS,
             IOException(secret) to NativeMediaRequestFailure.IO,
+            java.io.EOFException(secret) to NativeMediaRequestFailure.IO,
+            java.net.SocketException("Connection reset $secret") to NativeMediaRequestFailure.IO,
             ProviderTransportException(ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT,
                 ProviderTransportPhase.RESPONSE)) to NativeMediaRequestFailure.TIMEOUT,
+            ProviderTransportException(ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN,
+                ProviderTransportPhase.RESPONSE, exceptionKind = ProviderTransportExceptionKind.EOF,
+                operation = ProviderTransportOperation.RESPONSE_BODY, phaseAvailable = true,
+                proxyPresent = true)) to NativeMediaRequestFailure.TRANSPORT_UNKNOWN,
         )
         for ((original, expected) in failures) {
             for (opening in listOf(true, false)) {
@@ -242,6 +276,10 @@ class BoundedMediaRequestsTest {
                 val (stage, observed) = seen.single()
                 assertEquals(if (opening) NativeFailureStage.MEDIA_REQUEST_OPEN else NativeFailureStage.MEDIA_REQUEST_READ, stage)
                 assertEquals(expected, (observed as NativeMediaRequestException).failure)
+                if (original is ProviderTransportException) assertSame(original.evidence, observed.transportEvidence)
+                if (original is java.io.EOFException) assertEquals(ProviderTransportExceptionKind.EOF, observed.transportEvidence?.exceptionKind)
+                if (original is java.net.SocketException && original !is ConnectException)
+                    assertEquals(ProviderTransportExceptionKind.SOCKET, observed.transportEvidence?.exceptionKind)
                 assertNull(observed.cause); assertTrue(observed.suppressed.isEmpty())
                 assertFalse(observed.stackTraceToString().contains(secret))
                 assertTrue(connection.disconnected)
@@ -499,9 +537,11 @@ class BoundedMediaRequestsTest {
         assertEquals(2, source.read(buffer, 0, 8))
         assertEquals(C.RESULT_END_OF_INPUT, source.read(buffer, 0, 8))
         source.close()
-        assertThrows(IOException::class.java) {
-            requests(Connection(uri.toURL(), status = 200)).create(C.DATA_TYPE_MEDIA).openUri(uri, position = 5)
-        }
+        val events = mutableListOf<Pair<NativeMediaEvent, Int>>()
+        val ignoredRange = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true },
+            { event, code -> events += event to code }, openConnection = { Connection(uri.toURL(), status = 200) })
+        assertThrows(IOException::class.java) { ignoredRange.create(C.DATA_TYPE_MEDIA).openUri(uri, position = 5) }
+        assertTrue(NativeMediaEvent.RANGE_NOT_HONORED to 200 in events)
     }
 
     @Test fun `provider exceptions lose their message cause and signed source`() {
@@ -515,6 +555,157 @@ class BoundedMediaRequestsTest {
         assertEquals("Native media read failed", error.message)
         assertNull(error.cause)
         source.close()
+    }
+
+    @Test fun openPhaseDiagnosticFailureCannotSkipConnectionCleanup() {
+        val connection = Connection(uri.toURL(), beforeResponse = { throw IOException("Synthetic private detail") })
+        val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true },
+            { event, _ -> if (event == NativeMediaEvent.RESPONSE_OPEN_FAILED) throw AssertionError("Broken diagnostic") },
+            openConnection = { connection })
+        val error = assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MEDIA).openUri(uri) }
+        assertEquals("Native media request failed", error.message)
+        assertNull(error.cause)
+        assertTrue(connection.disconnected)
+    }
+
+    @Test fun repeatedSeekCancellationKeepsFeedBudgetAndCleanupReceiptUsable() {
+        val budget = NativePlaybackBudget.continuous({ true })
+        val receipt = NativeCleanupReceipt()
+        val failures = mutableListOf<Throwable>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                .body("fixture".toResponseBody()).build()
+        }.build()
+        val requests = BoundedMediaRequests(budget, { true }, { _, _ -> },
+            openConnection = { url -> receipt.allocate(20, {
+                RoutedHttpsConnection(url, client, { true }, allowProgressingMediaBody = true)
+            }) { it.disconnect() } },
+            openInput = { request -> receipt.input { request.inputStream } },
+            onFailure = { stage, error ->
+                failures += error
+                if (stage == NativeFailureStage.MEDIA_DISCONNECT) receipt.failed()
+            })
+        receipt.own(10) { requests.close() }
+        try {
+            repeat(5) {
+                val source = requests.create(C.DATA_TYPE_MEDIA)
+                source.openUri(uri)
+                assertEquals(1, source.read(ByteArray(1), 0, 1))
+                try {
+                    Thread.currentThread().interrupt()
+                    source.close()
+                    assertTrue(Thread.currentThread().isInterrupted)
+                } finally { Thread.interrupted() }
+                assertTrue(budget.active)
+                assertTrue(failures.isEmpty())
+            }
+        } finally { receipt.close() }
+        assertTrue(receipt.confirmed)
+    }
+
+    @Test fun cancelledLoaderNeverEntersOrPoisonsAdmissionAndAFreshLoadStillWorks() {
+        for (duringAdmission in listOf(false, true)) {
+            var admissions = 0; var opened = 0; var cancel = duringAdmission
+            val failures = mutableListOf<Throwable>()
+            val events = mutableListOf<NativeMediaEvent>()
+            val budget = NativePlaybackBudget.continuous({ true })
+            val requests = BoundedMediaRequests(budget, { true }, { event, _ -> events += event },
+                canRequest = {
+                    admissions++
+                    if (cancel) { Thread.currentThread().interrupt(); false } else true
+                }, openConnection = { opened++; Connection(it) }, onFailure = { _, error -> failures += error })
+            try {
+                if (!duringAdmission) Thread.currentThread().interrupt()
+                assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MEDIA).openUri(uri) }
+                assertTrue(Thread.currentThread().isInterrupted)
+                assertEquals(if (duringAdmission) 1 else 0, admissions)
+                assertEquals(0, opened)
+                assertTrue(events.contains(NativeMediaEvent.REQUEST_CANCELLED))
+                assertFalse(events.contains(NativeMediaEvent.REQUEST_FAILED))
+                assertTrue(failures.isEmpty())
+            } finally { Thread.interrupted(); cancel = false }
+            assertTrue(budget.active)
+            val fresh = requests.create(C.DATA_TYPE_MEDIA)
+            fresh.openUri(uri); assertEquals(1, fresh.read(ByteArray(1), 0, 1)); fresh.close()
+            assertEquals(1, opened); assertTrue(failures.isEmpty())
+            requests.close()
+        }
+    }
+
+    @Test fun interruptedReadClosesItsLoadWithoutReportingAStreamFailure() {
+        val events = mutableListOf<NativeMediaEvent>()
+        val failures = mutableListOf<Throwable>()
+        val connection = Connection(uri.toURL(), stream = object : InputStream() {
+            override fun read(): Int { Thread.currentThread().interrupt(); throw IOException("Synthetic cancelled read") }
+            override fun read(buffer: ByteArray, offset: Int, length: Int) = read()
+        })
+        val budget = NativePlaybackBudget.continuous({ true })
+        val requests = BoundedMediaRequests(budget, { true }, { event, _ -> events += event },
+            openConnection = { connection }, onFailure = { _, error -> failures += error })
+        val source = requests.create(C.DATA_TYPE_MEDIA); source.openUri(uri)
+        try {
+            assertThrows(IOException::class.java) { source.read(ByteArray(1), 0, 1) }
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertTrue(connection.disconnected)
+            assertTrue(events.contains(NativeMediaEvent.REQUEST_CANCELLED))
+            assertFalse(events.contains(NativeMediaEvent.REQUEST_FAILED))
+            assertTrue(failures.isEmpty())
+        } finally { Thread.interrupted(); source.close() }
+        assertTrue(budget.active)
+        requests.close()
+    }
+
+    @Test fun loaderCancellationStillReportsActualCleanupFailure() {
+        val closeFailure = IOException("Synthetic close refusal")
+        val failures = mutableListOf<Pair<NativeFailureStage, Throwable>>()
+        val connection = Connection(uri.toURL(), stream = object : ByteArrayInputStream(byteArrayOf(1)) {
+            override fun close() { throw closeFailure }
+        })
+        val requests = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+            openConnection = { connection }, onFailure = { stage, error -> failures += stage to error })
+        val source = requests.create(C.DATA_TYPE_MEDIA); source.openUri(uri)
+        try {
+            Thread.currentThread().interrupt()
+            assertThrows(IOException::class.java) { source.read(ByteArray(1), 0, 1) }
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertTrue(connection.disconnected)
+            assertEquals(listOf(NativeFailureStage.MEDIA_DISCONNECT to closeFailure), failures)
+        } finally { Thread.interrupted() }
+    }
+
+    @Test fun typedTransportCancellationIsNotFatalAfterTheTransportConsumesTheInterrupt() {
+        val events = mutableListOf<NativeMediaEvent>()
+        val failures = mutableListOf<Throwable>()
+        var cancelled = true
+        val requests = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true },
+            { event, _ -> events += event }, openConnection = {
+                if (cancelled) throw ProviderTransportException(ProviderTransportEvidence(
+                    ProviderTransportFailure.CANCELLED, ProviderTransportPhase.RESPONSE))
+                Connection(it)
+            }, onFailure = { _, error -> failures += error })
+        assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MEDIA).openUri(uri) }
+        assertFalse(Thread.currentThread().isInterrupted)
+        assertTrue(events.contains(NativeMediaEvent.REQUEST_CANCELLED))
+        assertFalse(events.contains(NativeMediaEvent.REQUEST_FAILED))
+        assertTrue(failures.isEmpty())
+        cancelled = false
+        val fresh = requests.create(C.DATA_TYPE_MEDIA)
+        fresh.openUri(uri); assertEquals(1, fresh.read(ByteArray(1), 0, 1)); fresh.close()
+        requests.close()
+    }
+
+    @Test fun bareInterruptedIoWithoutCancellationProofStillReportsFatalRequestFailure() {
+        val events = mutableListOf<NativeMediaEvent>()
+        val failures = mutableListOf<Throwable>()
+        val requests = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true },
+            { event, _ -> events += event }, openConnection = { throw java.io.InterruptedIOException("Synthetic transport failure") },
+            onFailure = { _, error -> failures += error })
+        assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MEDIA).openUri(uri) }
+        assertFalse(Thread.currentThread().isInterrupted)
+        assertTrue(events.contains(NativeMediaEvent.REQUEST_FAILED))
+        assertFalse(events.contains(NativeMediaEvent.REQUEST_CANCELLED))
+        assertEquals(1, failures.size)
+        requests.close()
     }
 
     @Test fun `only a bounded manifest 404 body reaches the rejection classifier`() {

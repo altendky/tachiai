@@ -18,7 +18,8 @@ internal data class CatalogResource(
     init {
         require(providerId.value.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
         require(kind.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
-        require(identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")))
+        require(identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")) ||
+            providerId.value == "youtube" && kind == "video" && identity.matches(Regex("[A-Za-z0-9_-]{11}")))
     }
 }
 

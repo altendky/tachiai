@@ -10,7 +10,7 @@ const bindings = await import(pathToFileURL(path.join(output, 'tachiai_core_web.
 const wasm = await readFile(path.join(output, 'tachiai_core_web_bg.wasm'));
 await bindings.default({ module_or_path: wasm });
 
-const { SeekContext, SeekPlanKind } = bindings;
+const { SeekContext, SeekPlanKind, eventMarkOffsetMs } = bindings;
 const context = new SeekContext(5_000n, 10_000n, 100_000n, 9_000n, true, true, true, false);
 const expectPlan = (plan, kind, targetMs) => {
   try {
@@ -64,6 +64,27 @@ try {
 
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
+assert.equal(eventMarkOffsetMs(100n, 150n, 9_000_000n, 9_000_050n), 0n);
+assert.equal(eventMarkOffsetMs(100n, 175n, 5_000n, 5_050n), 25n);
+assert.equal(eventMarkOffsetMs(100n, 150n, 5_000n, 5_075n), -25n);
+assert.equal(eventMarkOffsetMs(100n, 100n, 5_000n, 5_025n), -25n);
+assert.equal(eventMarkOffsetMs(100n, 75n, 5_000n, 5_000n), -25n);
+assert.equal(eventMarkOffsetMs(0n, max, 1n, 0n), undefined);
+for (let field = 0; field < 4; field++) {
+  for (const invalid of [min - 1n, max + 1n, 1n << 1024n]) {
+    const clocks = [0n, 0n, 0n, 0n];
+    clocks[field] = invalid;
+    assert.throws(() => eventMarkOffsetMs(...clocks), RangeError);
+  }
+  for (const invalid of [1, '1', undefined]) {
+    const clocks = [0n, 0n, 0n, 0n];
+    clocks[field] = invalid;
+    assert.throws(() => eventMarkOffsetMs(...clocks), TypeError);
+  }
+  const clocks = [0n, 0n, 0n, 0n];
+  clocks[field] = -1n;
+  assert.equal(eventMarkOffsetMs(...clocks), undefined);
+}
 const limits = new SeekContext(0n, max, 0n, max, true, true, true, false);
 try {
   expectPlan(limits.planAbsoluteSeek(max), SeekPlanKind.Requested, max);

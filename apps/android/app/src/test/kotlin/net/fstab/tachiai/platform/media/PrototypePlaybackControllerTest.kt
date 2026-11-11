@@ -397,6 +397,90 @@ class PrototypePlaybackControllerTest {
         assertTrue(b.sample.playWhenReady)
     }
 
+    @Test fun `playing single live recovery resumes after settlement without explicit Play intent`() {
+        for (side in NativeMixedSide.entries) {
+            var focus = 0
+            val feed = Member(live.copy(playing = true, playWhenReady = true))
+            val controller = PrototypePlaybackController({ focus++; true }, playAllowed = { false })
+            controller.setMember(side, feed)
+            assertEquals(NativeSeekOutcome.REQUESTED, controller.catchUp(side).outcome)
+            assertFalse(feed.sample.playWhenReady)
+            feed.sample = feed.sample.copy(state = 2)
+            controller.poll(); assertTrue(controller.busy); assertEquals(0, feed.playRequests)
+            feed.sample = feed.sample.copy(state = 3)
+            controller.poll()
+            assertFalse(controller.busy); assertTrue(feed.sample.playWhenReady)
+            assertEquals(1, focus); assertEquals(1, feed.playRequests); assertEquals(1, feed.defaultRequests)
+            controller.poll(); assertEquals(1, feed.playRequests)
+        }
+    }
+
+    @Test fun `single recovery restoration never survives explicit cancellation or member replacement`() {
+        for (cancel in 0..4) {
+            val feed = Member(live.copy(playing = true, playWhenReady = true))
+            val controller = PrototypePlaybackController({ true })
+            controller.setMember(NativeMixedSide.A, feed)
+            controller.catchUp(NativeMixedSide.A)
+            when (cancel) {
+                0 -> controller.pause()
+                1 -> controller.focusLost()
+                2 -> controller.setMember(NativeMixedSide.A, null)
+                3 -> controller.setMember(NativeMixedSide.B, Member(replay))
+                else -> controller.close()
+            }
+            val status = controller.status
+            controller.poll()
+            assertEquals(0, feed.playRequests); assertEquals(status, controller.status)
+        }
+    }
+
+    @Test fun `single recovery restoration rechecks focus ownership and held current window`() {
+        for (refusal in 0..4) {
+            var admitted = true
+            val feed = Member(live.copy(playing = true, playWhenReady = true))
+            lateinit var controller: PrototypePlaybackController
+            controller = PrototypePlaybackController({
+                if (refusal == 1) controller.pause()
+                if (refusal == 2) admitted = false
+                if (refusal == 3) feed.sample = feed.sample.copy(positionMs = -1)
+                refusal != 0
+            }, admission = { admitted })
+            controller.setMember(NativeMixedSide.A, feed)
+            controller.catchUp(NativeMixedSide.A)
+            if (refusal == 4) admitted = false
+            controller.poll()
+            assertEquals(0, feed.playRequests); assertFalse(feed.sample.playWhenReady)
+            assertFalse(controller.busy)
+        }
+    }
+
+    @Test fun `new explicit Play during recovery focus supersedes old automatic restoration`() {
+        val feed = Member(live.copy(playing = true, playWhenReady = true))
+        var nestedPlay = false
+        lateinit var controller: PrototypePlaybackController
+        controller = PrototypePlaybackController({
+            if (!nestedPlay) { nestedPlay = true; assertTrue(controller.play()) }
+            true
+        })
+        controller.setMember(NativeMixedSide.A, feed)
+        controller.catchUp(NativeMixedSide.A); controller.poll()
+        assertTrue(nestedPlay); assertTrue(feed.sample.playWhenReady)
+        assertEquals(1, feed.playRequests); assertEquals(1, feed.pauseRequests)
+        assertFalse(controller.busy)
+    }
+
+    @Test fun `single recovery focus callback cannot start or pause a replacement`() {
+        val feed = Member(live.copy(playing = true, playWhenReady = true))
+        val replacement = Member(replay.copy(playing = true, playWhenReady = true))
+        lateinit var controller: PrototypePlaybackController
+        controller = PrototypePlaybackController({ controller.setMember(NativeMixedSide.A, replacement); true })
+        controller.setMember(NativeMixedSide.A, feed)
+        controller.catchUp(NativeMixedSide.A); controller.poll()
+        assertEquals(0, feed.playRequests + replacement.playRequests)
+        assertEquals(0, replacement.pauseRequests); assertTrue(replacement.sample.playWhenReady)
+        assertSame(replacement, controller.member(NativeMixedSide.A))
+    }
+
     @Test fun `either surviving live feed uses one default and held settlement with explicit play`() {
         for (side in NativeMixedSide.entries) {
             var focus = 0

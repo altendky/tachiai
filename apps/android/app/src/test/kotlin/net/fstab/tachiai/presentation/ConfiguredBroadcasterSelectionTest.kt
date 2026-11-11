@@ -59,9 +59,9 @@ class ConfiguredBroadcasterSelectionTest {
         val abema = instances.single { it.service == PrototypeService.ABEMA }
         val historical = legacyConfiguredSources(abema, defaultSourceSetups(), emptyMap()).first()
         val mixed = resolve(historical, source) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(PrototypeSource.ABEMA_LIVE, mixed.selection.a.historicalSource)
-        assertEquals(source.entry.resource, mixed.selection.b.resource)
-        assertNull(mixed.selection.b.historicalSource)
+        assertEquals(PrototypeSource.ABEMA_LIVE, checkNotNull(mixed.selection.a).historicalSource)
+        assertEquals(source.entry.resource, checkNotNull(mixed.selection.b).resource)
+        assertNull(checkNotNull(mixed.selection.b).historicalSource)
         val duplicate = resolve() as ConfiguredPrototypeSelectionResult.Ready
         assertEquals(listOf(source.choice, source.choice), duplicate.selection.feeds.map { it.choice })
     }

@@ -13,9 +13,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.Espresso.onData
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.espresso.matcher.RootMatchers.isPlatformPopup
+import org.hamcrest.Matchers.hasToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
@@ -47,7 +50,7 @@ class NativePairViewerRemoteTest {
         override fun close() {}
     }
 
-    private class Fixture(activity: ComponentActivity, playing: Boolean) {
+    private class Fixture(private val activity: ComponentActivity, playing: Boolean) {
         val a = Member(playing)
         val b = Member(playing)
         val pair = NativeMixedPair(a, b, { true }, {})
@@ -76,8 +79,13 @@ class NativePairViewerRemoteTest {
         }
         fun layout() {
             fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
-            viewer.measure(View.MeasureSpec.makeMeasureSpec(dp(960), View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(dp(540), View.MeasureSpec.EXACTLY))
+            // Keep popup anchors inside the real host window, including when a
+            // phone runs this synthetic TV configuration in a narrow window.
+            val decor = activity.window.decorView
+            val width = decor.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
+            val height = decor.height.takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels
+            viewer.measure(View.MeasureSpec.makeMeasureSpec(minOf(dp(960), width), View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(minOf(dp(540), height), View.MeasureSpec.EXACTLY))
             viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
         }
         fun close() { viewer.endSession(); pair.close() }
@@ -136,7 +144,7 @@ class NativePairViewerRemoteTest {
     @Test fun systemRemoteBackDismissesMenuPanelAndToolbarBeforeReturningToSources() = withFixture { scenario, fixture ->
         focus(scenario, fixture, "Audio"); key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         focus(scenario, fixture, "More"); key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
-        onView(withText("Playback status")).check(androidx.test.espresso.assertion.ViewAssertions.matches(
+        onData(hasToString("Playback status")).inRoot(isPlatformPopup()).check(androidx.test.espresso.assertion.ViewAssertions.matches(
             androidx.test.espresso.matcher.ViewMatchers.isDisplayed()))
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         idle()
@@ -164,7 +172,7 @@ class NativePairViewerRemoteTest {
         key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         scenario.onActivity {
             assertEquals(View.VISIBLE, fixture.dock.visibility)
-            assertTrue(button(fixture.viewer, "Play").isFocused)
+            assertTrue("Revealing controls restores the last toolbar action", button(fixture.viewer, "Audio").isFocused)
             assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
         }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
@@ -231,8 +239,8 @@ class NativePairViewerRemoteTest {
         scenario.onActivity { fixture.layout(); originalWidth = fixture.stage.getChildAt(1).width }
         focus(scenario, fixture, "More"); key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         onView(withText("Portrait / stacked layout")).check(doesNotExist())
-        onView(withText("Floating feed position")).perform(click())
-        onView(withText("Bottom left")).perform(click())
+        onData(hasToString("Floating feed position")).inRoot(isPlatformPopup()).perform(click())
+        onData(hasToString("Bottom left")).inRoot(isPlatformPopup()).perform(click())
         idle()
         scenario.onActivity {
             fixture.layout()
@@ -242,8 +250,8 @@ class NativePairViewerRemoteTest {
             assertTrue(button(fixture.viewer, "More").isFocused)
         }
         key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
-        onView(withText("Floating feed size")).perform(click())
-        onView(withText("Large")).perform(click())
+        onData(hasToString("Floating feed size")).inRoot(isPlatformPopup()).perform(click())
+        onData(hasToString("Large")).inRoot(isPlatformPopup()).perform(click())
         idle()
         scenario.onActivity {
             fixture.layout()

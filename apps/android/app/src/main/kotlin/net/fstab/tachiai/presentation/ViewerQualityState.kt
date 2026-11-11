@@ -18,18 +18,23 @@ internal data class ViewerQualityReadback(
 // The Activity owns this object for one watch session. Duplicate source keys
 // share saved defaults, but their nullable per-kind overrides remain independent.
 internal class ViewerQualityState<Key>(
-    sources: List<Key>,
+    sources: List<Key?>,
     defaults: Map<Key, NativeQualityPreferences>,
 ) {
-    init { require(sources.size == 2) }
+    init { require(sources.size == 2 && sources.any { it != null }) }
     private val sources = sources.toList()
     private var defaults = defaults.toMap()
     private val overrides = mutableMapOf<Pair<NativeMixedSide, NativeQualityKind>, NativeQualityRequest>()
-    fun read(side: NativeMixedSide, kind: NativeQualityKind) = ViewerQualityReadback(
-        (defaults[sources[side.ordinal]] ?: NativeQualityPreferences()).get(kind), overrides[side to kind])
+    fun read(side: NativeMixedSide, kind: NativeQualityKind): ViewerQualityReadback {
+        val source = sources[side.ordinal]
+        return ViewerQualityReadback(
+            (if (source == null) NativeQualityPreferences() else defaults[source] ?: NativeQualityPreferences()).get(kind),
+            overrides[side to kind])
+    }
     fun effective(side: NativeMixedSide) = NativeQualityPreferences(
         read(side, NativeQualityKind.VIDEO).effective, read(side, NativeQualityKind.AUDIO).effective)
     fun setOverride(side: NativeMixedSide, kind: NativeQualityKind, request: NativeQualityRequest?) {
+        if (sources[side.ordinal] == null) return
         request?.track?.let { require(it.kind == kind) }
         if (request == null) overrides.remove(side to kind) else overrides[side to kind] = request
     }

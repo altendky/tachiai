@@ -28,6 +28,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -123,7 +124,7 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,
                 { name, route -> onSave(instance.id, name, route) }, { editing = null }, { twitchLogin(instance.id) })
             onManageStreams?.let { manage -> Button(onClick = { manage(instance.id) }, enabled = !busy) { Text("Manage streams") } }
-            if (instance.service in setOf(PrototypeService.TWITCH, PrototypeService.ABEMA)) onCatalogConnection?.let { connect ->
+            if (instance.service in setOf(PrototypeService.TWITCH, PrototypeService.ABEMA, PrototypeService.YOUTUBE)) onCatalogConnection?.let { connect ->
                 Button(onClick = { connect(instance.id) }, enabled = !busy) { Text("${instance.service.title} account") }
             }
             }
@@ -364,6 +365,26 @@ private fun ProviderRouteEditor(instance: ProviderInstance, instances: List<Prov
             onSave(if (validName) name else instance.customName, route)
         }, onRoutes, !busy)
     if (instance.service == PrototypeService.TWITCH) twitchLogin()
+    if (instance.service == PrototypeService.YOUTUBE) YouTubeAccountSettings(enabled = !busy)
+}
+
+@Composable
+internal fun YouTubeAccountSettings(enabled: Boolean) {
+    val context = LocalContext.current
+    var failed by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("YouTube account", style = MaterialTheme.typography.titleMedium)
+        Text("YouTube account connection is not configured in Tachiai. Subscriptions require Google authorization and are not available here yet.")
+        Text("You can sign in and view subscriptions on YouTube in your browser. This does not connect an account to Tachiai. Paste a public video link to add it here.")
+        Button(onClick = {
+            failed = runCatching {
+                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse("https://www.youtube.com/feed/subscriptions"))
+                    .addCategory(android.content.Intent.CATEGORY_BROWSABLE))
+            }.isFailure
+        }, enabled = enabled) { Text("Open YouTube subscriptions") }
+        if (failed) Text("YouTube could not open. Open youtube.com in a browser to sign in and view subscriptions.")
+    }
 }
 
 @Composable

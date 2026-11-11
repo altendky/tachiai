@@ -54,6 +54,11 @@ The initial [web playback harness](web-client.md) implements controlled HLS/DASH
 playback and shared Rust/Wasm timing integration. The complete web client and its
 provider/account/route integration remain separate work.
 
+The initial [YouTube integration](youtube.md) adds public video-link import and
+an unofficial native playback adapter. Google account connection and the
+subscriptions catalogue remain unimplemented; the integration record separates
+extraction evidence from Android playback acceptance.
+
 Android phone/tablet is the implemented baseline. The same application now has
 an Android TV/Google TV presentation with remote controls and bounded TV-emulator
 local-media acceptance, recorded in the [TV implementation review](android-tv-interface-review.md).
@@ -78,13 +83,14 @@ retroactively approved by being documented.
 
 The agreed preliminary interaction model is:
 
-- Select two sources, including two copies of the same source, then explicitly
+- Select one or two sources, including two copies of the same source, then explicitly
   open the viewer. The current catalogue has fixed live/replay entries for
   ABEMA and Twitch, with Izgonnabemei, Chillhop Radio and Virtual Japan as Twitch
   live choices. Each pane shows preparation or a safe error while available
   feeds play. Sources returns to the picker; richer channel selection remains
   future work.
-- Portrait stacks the feeds without forcing equal heights. Landscape uses a
+- One selected feed fills the video stage, with no unused or floating second
+  pane. Portrait with two selections stacks the feeds without forcing equal heights. Landscape uses a
   full-screen primary and movable floating secondary; tapping the secondary
   swaps roles without replacing either session.
 - Joint Play/Pause is primary; individual transport controls are not yet in

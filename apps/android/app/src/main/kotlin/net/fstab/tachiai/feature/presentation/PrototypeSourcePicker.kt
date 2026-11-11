@@ -74,9 +74,10 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     onScreenSharing: ((ScreenSharingTarget) -> Boolean)? = null,
     obsoleteSetup: Boolean = false, onResetStreamSettings: () -> Unit = {},
     playbackAvailable: Boolean = true, recoveryMessage: String? = null, onRecovery: (() -> Unit)? = null,
+    assignmentRestoreGeneration: Long = 0,
     onWatch: (ConfiguredFeedAssignments) -> Unit) {
-    var a by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
-    var b by rememberSaveable { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
+    var a by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.a)) }
+    var b by rememberSaveable(assignmentRestoreGeneration) { mutableStateOf<String?>(encodeConfiguredFeedChoice(initialAssignments.b)) }
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
     var sharingSetupOpen by rememberSaveable { mutableStateOf(false) }
     val assignments = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
@@ -225,7 +226,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
 }
 
 internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFailure): String = when (reason) {
-    ConfiguredPrototypeSelectionFailure.MISSING_CHOICE -> "Choose a configured stream for each feed before opening the viewer."
+    ConfiguredPrototypeSelectionFailure.MISSING_CHOICE -> "Choose at least one configured stream before opening the viewer."
     ConfiguredPrototypeSelectionFailure.STALE_ITEM -> "A selected item was removed. Choose another configured stream."
     ConfiguredPrototypeSelectionFailure.STALE_INSTANCE -> "A selected provider instance was removed. Choose another instance."
     ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH -> "A selected item does not belong to its provider. Review it in Providers."

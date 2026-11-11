@@ -18,7 +18,7 @@ class AbemaAccountConnectionActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        DeveloperAccess.protectScreen(window)
+        DeveloperAccess.allowScreenCapture(window)
         val id = intent.getStringExtra(INSTANCE_ID).orEmpty()
         setContent { TachiaiPrototypeTheme {
             Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),

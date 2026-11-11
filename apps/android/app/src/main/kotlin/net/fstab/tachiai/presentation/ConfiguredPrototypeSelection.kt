@@ -16,7 +16,11 @@ internal enum class ConfiguredPrototypeSelectionFailure {
 }
 
 internal sealed interface ConfiguredPrototypeSelectionResult {
-    data class Ready(val selection: ConfiguredPlaybackSelection, val sources: List<ConfiguredSource>) : ConfiguredPrototypeSelectionResult
+    data class Ready(val selection: ConfiguredPlaybackSelection, val sources: List<ConfiguredSource>) : ConfiguredPrototypeSelectionResult {
+        val sourceSlots: List<ConfiguredSource?> = Collections.unmodifiableList(selection.slots.map { feed ->
+            feed?.let { selected -> sources.firstOrNull { it.choice == selected.choice } }
+        })
+    }
     data class Failure(val reason: ConfiguredPrototypeSelectionFailure) : ConfiguredPrototypeSelectionResult
 }
 
@@ -32,10 +36,11 @@ internal fun resolveConfiguredPrototypeSelection(
 ): ConfiguredPrototypeSelectionResult {
     fun failure(reason: ConfiguredPrototypeSelectionFailure) = ConfiguredPrototypeSelectionResult.Failure(reason)
     val choices = listOf(assignments.a, assignments.b)
-    if (choices.any { it == null }) return failure(ConfiguredPrototypeSelectionFailure.MISSING_CHOICE)
+    if (choices.all { it == null }) return failure(ConfiguredPrototypeSelectionFailure.MISSING_CHOICE)
     val selected = mutableListOf<ConfiguredSource>()
-    val feeds = mutableListOf<ConfiguredPlaybackFeed>()
-    for (choice in choices.filterNotNull()) {
+    val feeds = arrayOfNulls<ConfiguredPlaybackFeed>(2)
+    for ((index, choice) in choices.withIndex()) {
+        if (choice == null) continue
         val source = choice.resolve(sources) ?: return failure(ConfiguredPrototypeSelectionFailure.STALE_ITEM)
         val instance = instances.singleOrNull { it.id == choice.instanceId }
             ?: return failure(ConfiguredPrototypeSelectionFailure.STALE_INSTANCE)
@@ -61,6 +66,8 @@ internal fun resolveConfiguredPrototypeSelection(
         } else if (supportedConfiguredAbemaSlot(source.entry.resource)) {
             if (!allowConfiguredAbemaSlots) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY)
+        } else if (net.fstab.tachiai.provider.youtube.supportedYouTubeResource(source.entry.resource)) {
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.YOUTUBE, PrototypePlaybackKind.REPLAY)
         } else if (supportedConfiguredTwitchVideo(source.entry.resource)) {
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.TWITCH, PrototypePlaybackKind.REPLAY)
         } else if (broadcaster) {
@@ -68,7 +75,7 @@ internal fun resolveConfiguredPrototypeSelection(
         } else return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
         if (supported.service != instance.service) return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
         selected += source
-        feeds += supported
+        feeds[index] = supported
     }
     return ConfiguredPrototypeSelectionResult.Ready(
         ConfiguredPlaybackSelection(feeds[0], feeds[1]),

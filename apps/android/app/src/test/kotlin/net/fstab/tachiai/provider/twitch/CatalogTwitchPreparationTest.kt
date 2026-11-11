@@ -21,6 +21,125 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CatalogTwitchPreparationTest {
+    @Test fun alreadyCanceledLoaderDoesNoProtectedReadsAndFreshLoaderKeepsFullAdmission() {
+        val fixture = Fixture(); fixture.connect()
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        val reads = fixture.memory.reads; val owners = fixture.ownerReads
+        try {
+            Thread.currentThread().interrupt()
+            assertFalse(preparation.checkStored())
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertEquals(reads, fixture.memory.reads); assertEquals(owners, fixture.ownerReads)
+        } finally { Thread.interrupted() }
+        assertTrue(preparation.canContinue()); assertTrue(preparation.checkStored())
+        preparation.close()
+    }
+
+    @Test fun interruptedProtectedReadOrOwnerCheckDoesNotPoisonTheSharedPreparation() {
+        for (ownerRead in listOf(false, true)) {
+            val fixture = Fixture(); fixture.connect()
+            val preparation = fixture.preparation(); fixture.resolve(preparation)
+            val writes = fixture.memory.writes
+            val interrupt = { throw InterruptedException("Synthetic canceled loader") }
+            if (ownerRead) fixture.onOwner = interrupt else fixture.memory.onRead = interrupt
+            try {
+                assertFalse(preparation.checkStored())
+                assertTrue(Thread.currentThread().isInterrupted)
+            } finally { Thread.interrupted(); fixture.onOwner = {}; fixture.memory.onRead = {} }
+            assertTrue(preparation.canContinue()); assertTrue(preparation.checkStored())
+            assertEquals(writes, fixture.memory.writes)
+            fixture.store.forget()
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue())
+            preparation.close()
+        }
+    }
+
+    @Test fun interruptedFinalSuccessorReadKeepsReceiptForAFreshFullyValidatedAdmission() {
+        val fixture = Fixture(shared = true); fixture.connect()
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        fixture.peerSession().use { peer ->
+            assertNotNull(peer.onUnauthorized(peer.validate().lease!!).lease)
+            var reads = 0
+            fixture.memory.onRead = { if (++reads == 3) throw InterruptedException("Synthetic canceled read") }
+            val writes = fixture.memory.writes
+            try {
+                assertFalse(preparation.checkStored())
+                assertTrue(Thread.currentThread().isInterrupted)
+                assertEquals(3, reads)
+            } finally { Thread.interrupted(); fixture.memory.onRead = {} }
+            assertTrue(preparation.canContinue())
+            assertTrue(preparation.checkStored())
+            assertTrue(preparation.canContinue()); assertEquals(writes, fixture.memory.writes)
+        }
+        preparation.close()
+    }
+
+    @Test fun interruptedMaintenanceWaitDoesNotConsumeAFalseFailureOrRenewItsDeadline() {
+        val fixture = Fixture(shared = true); fixture.connect()
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        val peer = fixture.peerSession()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val worker = AtomicReference<Thread>()
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            fixture.onValidate = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val validation = executor.submit<TwitchCatalogSessionResult> { peer.validate(force = true) }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            val admission = executor.submit<Pair<Boolean, Boolean>> {
+                worker.set(Thread.currentThread())
+                try { preparation.checkStored() to Thread.currentThread().isInterrupted }
+                finally { Thread.interrupted() }
+            }
+            val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (worker.get()?.state != Thread.State.TIMED_WAITING && System.nanoTime() < until) Thread.yield()
+            assertEquals(Thread.State.TIMED_WAITING, worker.get()?.state)
+            worker.get().interrupt()
+            assertEquals(false to true, admission.get(2, TimeUnit.SECONDS))
+            assertTrue(preparation.canContinue())
+            release.countDown(); assertNotNull(validation.get(5, TimeUnit.SECONDS).lease)
+            fixture.onValidate = {}
+            assertTrue(preparation.checkStored()); assertTrue(preparation.canContinue())
+            assertEquals(40_000L, preparation.acceptanceDeadlineMs)
+        } finally {
+            release.countDown(); fixture.onValidate = {}; executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS)); peer.close(); preparation.close()
+        }
+    }
+
+    @Test fun interruptAfterAttachmentEnrollmentKeepsTheCommittedSuccessorForFreshWorkerAdmission() {
+        val fixture = Fixture(shared = true, withTimerProbe = true); fixture.connect()
+        val preparation = fixture.preparation(); fixture.resolve(preparation)
+        fixture.peerSession().use { peer ->
+            assertNotNull(peer.onUnauthorized(peer.validate().lease!!).lease)
+            var reads = 0
+            var interruptedAfterEnroll = false
+            fixture.memory.onRead = { reads++ }
+            // Enrollment calls coordinator.armTimer only after committing its
+            // new origin; the third protected read is its final precommit read.
+            fixture.onCoordinatorClock = {
+                if (reads >= 3 && !interruptedAfterEnroll) {
+                    interruptedAfterEnroll = true
+                    Thread.currentThread().interrupt()
+                }
+            }
+            val writes = fixture.memory.writes
+            val requests = fixture.validationCalls + fixture.refreshCalls
+            try {
+                assertFalse(preparation.checkStored())
+                assertTrue(interruptedAfterEnroll)
+                assertTrue(Thread.currentThread().isInterrupted)
+            } finally { Thread.interrupted(); fixture.memory.onRead = {}; fixture.onCoordinatorClock = {} }
+            assertTrue(preparation.canContinue())
+            assertTrue(preparation.checkStored())
+            assertTrue(preparation.canContinue())
+            assertEquals(writes, fixture.memory.writes)
+            assertEquals(requests, fixture.validationCalls + fixture.refreshCalls)
+            assertEquals(40_000L, preparation.acceptanceDeadlineMs)
+            fixture.store.forget()
+            assertFalse(preparation.checkStored()); assertFalse(preparation.canContinue())
+        }
+        preparation.close()
+    }
     private class Memory : PrivateSecretStore {
         var bytes: ByteArray? = null
         var forbidden = false
@@ -46,7 +165,7 @@ class CatalogTwitchPreparationTest {
         override fun getInputStream() = ByteArrayInputStream(response.toByteArray())
         override fun getOutputStream() = written
     }
-    private inner class Fixture(private val shared: Boolean = false) {
+    private inner class Fixture(private val shared: Boolean = false, private val withTimerProbe: Boolean = false) {
         val id = UUID.randomUUID().toString()
         val routeId = UUID.randomUUID().toString()
         val profile = parseConnectionProfile("http://fixture.example.test:3128".toByteArray())
@@ -64,6 +183,7 @@ class CatalogTwitchPreparationTest {
         var sessionOpened = 0
         var ownerReads = 0
         var onOwner: () -> Unit = {}
+        var onCoordinatorClock: () -> Unit = {}
         var validationCalls = 0
         var refreshCalls = 0
         var transportCloses = 0
@@ -83,7 +203,9 @@ class CatalogTwitchPreparationTest {
         private val maintenance by lazy {
             if (shared) TwitchCatalogMaintenanceCoordinator(store, { transport() }, {
                 admission && owner.sameOwnership(route.presentation)
-            }, { wall }, { mono }) else null
+            }, { wall }, { onCoordinatorClock(); mono },
+                schedule = if (withTimerProbe) { _, _ -> AutoCloseable { } } else null,
+                dispatch = if (withTimerProbe) { _ -> false } else null) else null
         }
         fun peerSession() = TwitchCatalogSession(store, { transport() }, { wall }, { mono }, {
             admission && owner.sameOwnership(route.presentation)

@@ -45,7 +45,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
         val entries = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt(); check(version in 1..3)
             val count = input.readInt()
-            check(count in (if (version < 3) PrototypeService.entries.size else 0)..MAX_PROVIDER_INSTANCES)
+            check(count in (if (version < 3) 2 else 0)..MAX_PROVIDER_INSTANCES)
             fun choice(): SourceRouteChoice {
                 val mode = SourceRouteMode.valueOf(input.readUTF())
                 return if (mode == SourceRouteMode.SAVED_CONNECTION) SourceRouteChoice(mode, input.readUTF(), input.readUTF())
@@ -65,7 +65,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
                     ProviderSetup(routes.firstOrNull(), List(previousCount) { choice() }, routes.drop(1)))
             }
             check(input.read() == -1)
-            if (version < 3) PrototypeService.entries.forEach { service ->
+            if (version < 3) listOf(PrototypeService.ABEMA, PrototypeService.TWITCH).forEach { service ->
                 check(entries.singleOrNull { it.id == defaultProviderInstanceId(service) }?.service == service)
             }
             validate(entries)

@@ -87,16 +87,17 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
     fun readOwner(): Snapshot {
         require(validProviderInstanceId(instanceId))
         var resolved: TwitchCatalogRouteOwner? = null
-        val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false }) { expected ->
-            runCatching {
+        val matched = routeAdmission.check({ sharedMaintenance.get()?.canContinue() != false },
+            readCancelled = { Thread.currentThread().isInterrupted }) { expected ->
+            twitchCatalogOwnerProof({
                 captureTwitchCatalogSystemRegistryOwner(instanceId, instances,
                     { legacyProviderSettings(application) },
                     profiles::snapshot, expected,
                     onInstanceObserved = displayInstance::set).also { resolved = it }.proof
-            }
-                .onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrNull()
+            }, { error -> diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, error) })
         }
         if (!routeAdmission.canContinue()) sharedMaintenance.get()?.revoke()
+        throwIfTwitchCatalogReadCancelled()
         if (!matched) resolved = null
         val owner = resolved
         return if (owner != null) Snapshot(owner.presentation, owner.profile, owner.proof) else {
@@ -114,7 +115,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         !TwitchCatalogConnectionWrites.isPending(instanceId) && !TwitchCatalogConnectionWrites.isFailed(instanceId) &&
         runCatching { val current = readOwner().presentation
             current.routeUsable && captured.presentation.sameOwnership(current)
-        }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
+        }.onFailure { throwIfTwitchCatalogReadCancelled(it); diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
     val storage = "${application.packageName}|${application.noBackupFilesDir.canonicalPath}|" +
         twitchCatalogInstanceBindingName(instanceId)
     val maintenance = twitchCatalogMaintenance.acquire(TwitchCatalogMaintenanceScope(storage,
@@ -149,7 +150,7 @@ internal fun androidTwitchCatalogConnectionBinding(context: Context,
         private fun currentOwner(): Boolean = canPublishLocally() &&
             runCatching { val current = readOwner().presentation
                 current.routeUsable && captured.presentation.sameOwnership(current)
-            }.onFailure { diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
+            }.onFailure { throwIfTwitchCatalogReadCancelled(it); diagnostics.report(FailureStage.CATALOG_AUTH_OWNER, it) }.getOrDefault(false)
         override fun owner() = readOwner().presentation
         override val cleanupConfirmed get() = !TwitchContinueWatchingAdmission.poisoned(instanceId) &&
             synchronized(lock) { !cleanupFailed && transports.all { (it as? OwnedTwitchCatalogTransport)?.cleanupConfirmed == true } &&

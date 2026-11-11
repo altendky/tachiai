@@ -69,24 +69,29 @@ internal class BoundedNativeDashPlayer(
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
+    private val diagnostics = NativePlayerDiagnostics()
+    private val observedFailure: NativeFailureObserver = { stage, error ->
+        diagnostics.recordFailure(stage, error)
+        onFailure(stage, error)
+    }
     private val cleanup = NativeCleanupReceipt(onCleanupUnconfirmed).also(onCleanupOwner).also { it.own(0, ownerThread = true) {
-        observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure, beforeRelease)
+        observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, observedFailure, beforeRelease)
     } }
     private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
-        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) },
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); observedFailure(stage, error) },
         transportObserver = transportObserver)
         .also { owned -> cleanup.own(10) { owned.close() } }
     private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
-        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); onFailure(stage, error) },
+        onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); observedFailure(stage, error) },
         transportObserver = transportObserver)
         .also { owned -> cleanup.own(20) { owned.close() } }
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {
-        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { owned.close() }
+        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, observedFailure) { owned.close() }
     } }
 
     init {
@@ -137,7 +142,7 @@ internal class BoundedNativeDashPlayer(
                     if (!released && budget.active) onEvent(NativeDashEvent.DRM_PREWARM_KEYS_LOADED, 0)
                 }
                 override fun onDrmSessionManagerError(windowIndex: Int, mediaPeriodId: MediaSource.MediaPeriodId?, error: Exception) {
-                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, onFailure, error)
+                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, observedFailure, error)
                     if (!released && budget.active) onEvent(NativeDashEvent.DRM_PREWARM_FAILED, 0)
                 }
             })
@@ -157,12 +162,12 @@ internal class BoundedNativeDashPlayer(
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
             .build().also { owned ->
                 cleanup.own(-10, ownerThread = true) {
-                    observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure) {
+                    observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, observedFailure) {
                         owned.playWhenReady = false
                         owned.volume = 0f
                     }
                 }
-                cleanup.ownPlayer(owned, { released }, onFailure)
+                cleanup.ownPlayer(owned, { released }, observedFailure)
             }
         try {
             quality.bind(player)
@@ -185,8 +190,9 @@ internal class BoundedNativeDashPlayer(
                     if (!released) onEvent(NativeDashEvent.VIDEO_FRAME, 0)
                 }
                 override fun onPlayerError(error: PlaybackException) {
-                    if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
-                    if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(onFailure, ::close) }
+                    diagnostics.recordPlayerError(error.errorCode)
+                    if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, observedFailure, error)
+                    if (!released) { onEvent(NativeDashEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(observedFailure, ::close) }
                 }
             })
             player.addAnalyticsListener(object : AnalyticsListener {
@@ -194,7 +200,7 @@ internal class BoundedNativeDashPlayer(
                     if (!released) onEvent(NativeDashEvent.DRM_KEYS_LOADED, 0)
                 }
                 override fun onDrmSessionManagerError(eventTime: AnalyticsListener.EventTime, error: Exception) {
-                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, onFailure, error)
+                    if (!released && budget.active) reportNativeFailure(NativeFailureStage.DRM_ERROR, observedFailure, error)
                     if (!released) onEvent(NativeDashEvent.DRM_FAILED, 0)
                 }
             })
@@ -216,7 +222,7 @@ internal class BoundedNativeDashPlayer(
     private val ticker = object : Runnable {
         override fun run() {
             if (released) return
-            if (!budget.active) { onEvent(NativeDashEvent.LIMIT_REACHED, 0); cleanup.stopInternally(onFailure, ::close) }
+            if (!budget.active) { onEvent(NativeDashEvent.LIMIT_REACHED, 0); cleanup.stopInternally(observedFailure, ::close) }
             else handler.postDelayed(this, 250)
         }
     }
@@ -245,6 +251,17 @@ internal class BoundedNativeDashPlayer(
             player.isCurrentMediaItemSeekable && player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             player.isCommandAvailable(Player.COMMAND_SEEK_TO_DEFAULT_POSITION), player.isPlayingAd,
             player.isPlaying, player.playWhenReady, player.playbackState, player.playbackParameters.speed)
+    }
+
+    override fun diagnosticSnapshot(): NativePlaybackDiagnosticSnapshot? {
+        if (released || !budget.active || Looper.myLooper() != player.applicationLooper)
+            return diagnostics.snapshot(released)
+        return diagnostics.capture(player, runCatching { timingSnapshot() }.getOrNull())
+    }
+
+    override fun timelineEvidence(): NativeTimelineEvidence? {
+        if (released || !budget.active || Looper.myLooper() != player.applicationLooper) return null
+        return nativePlayerTimelineEvidence(player)
     }
 
     fun shiftByMs(deltaMs: Long): NativeSeekPlan = applySeek(nativeRelativeSeekPlan(timingSnapshot(), deltaMs))
@@ -281,11 +298,13 @@ internal class BoundedNativeDashPlayer(
 
     override fun close() {
         if (released) { if (!cleanup.pending) cleanup.close(); return }
+        if (Looper.myLooper() == player.applicationLooper)
+            diagnostics.capture(player, runCatching { timingSnapshot() }.getOrNull())
         released = true
         cleanup.seal()
         handler.removeCallbacks(ticker)
         budget.stop()
-        cleanup.closePlayer(handler, onFailure, onCleanupChanged)
+        cleanup.closePlayer(handler, observedFailure, onCleanupChanged)
         onEvent(NativeDashEvent.STOPPED, 0)
     }
 }

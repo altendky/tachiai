@@ -2,6 +2,8 @@ package net.fstab.tachiai.platform.media
 
 internal interface NativePairMember : AutoCloseable {
     fun timingSnapshot(): NativeTimingSnapshot?
+    fun diagnosticSnapshot(): NativePlaybackDiagnosticSnapshot? = null
+    fun timelineEvidence(): NativeTimelineEvidence? = null
     fun qualitySnapshot(): NativeQualitySnapshot? = null
     fun setQualityPreferences(preferences: NativeQualityPreferences): Boolean = false
     fun seekToMs(targetMs: Long): NativeSeekPlan

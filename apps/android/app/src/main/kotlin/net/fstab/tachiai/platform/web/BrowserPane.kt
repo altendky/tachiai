@@ -342,7 +342,7 @@ private class TachiaiWebChromeClient(
             isUserGesture, resultMsg, request.logNativePageEvents, adapter::diagnosticResourceCategory, onPopupEvent)
     }
 
-    // Default JS dialogs use a separate window which does not inherit FLAG_SECURE.
+    // Script-dialog handling remains separate from user-controlled screen capture.
     override fun onJsAlert(view: WebView, url: String, message: String, result: android.webkit.JsResult): Boolean {
         if (!suppressScriptDialogs(request)) {
             diagnostics.record(PageEventKind.SCRIPT_ALERT_DELEGATED)

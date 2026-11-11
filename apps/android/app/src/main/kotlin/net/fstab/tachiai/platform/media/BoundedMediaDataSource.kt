@@ -18,8 +18,17 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.network.ProgressingMediaResponse
 import net.fstab.tachiai.platform.network.RoutedHttpsConnection
+import net.fstab.tachiai.platform.network.ProviderTransportException
+import net.fstab.tachiai.platform.network.ProviderTransportFailure
 
 private class NativeMediaCleanupException : IOException("Native media cleanup unconfirmed")
+
+// Media3 adds this metadata hint to progressive loads, including video. It is
+// ignored by our transport; credentials and arbitrary request headers stay denied.
+internal fun allowedNativeMediaHeaders(headers: Map<String, String>, allowIcyMetadata: Boolean): Boolean =
+    headers.isEmpty() || allowIcyMetadata && headers.size == 1 && headers.entries.single().let {
+        it.key.equals("Icy-MetaData", ignoreCase = true) && it.value == "1"
+    }
 
 @UnstableApi
 internal class BoundedMediaRequests(
@@ -44,7 +53,8 @@ internal class BoundedMediaRequests(
     fun report(event: NativeMediaEvent, http: Int = 0) {
         if (reported.add(event)) onEvent(event, http)
     }
-    fun create(type: Int): Source = Source(type)
+    fun create(type: Int, mediaResponseLimitBytes: Long = 32 * 1024 * 1024L,
+        allowIcyMetadata: Boolean = false): Source = Source(type, mediaResponseLimitBytes, allowIcyMetadata)
     override fun close() {
         budget.stop()
         try {
@@ -54,7 +64,9 @@ internal class BoundedMediaRequests(
         } finally { active.clear() }
     }
 
-    internal inner class Source(private val type: Int) : BaseDataSource(true) {
+    internal inner class Source(private val type: Int, private val mediaResponseLimitBytes: Long,
+        private val allowIcyMetadata: Boolean) : BaseDataSource(true) {
+        init { require(mediaResponseLimitBytes in 1..4L * 1024 * 1024 * 1024) }
         private var connection: HttpsURLConnection? = null
         private var input: InputStream? = null
         private var source: URI? = null
@@ -67,13 +79,19 @@ internal class BoundedMediaRequests(
         private var inputEnded = false
         private var costs: NativeMediaReadCosts.Request? = null
         private val diagnosticOwner = transportDiagnostics?.let { AtomicReference<Any?>() }
-        private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else 32 * 1024 * 1024L
+        private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else mediaResponseLimitBytes
+        private fun requestCancelled(error: Exception) = Thread.currentThread().isInterrupted ||
+            error is NativeMediaRequestException && error.failure in setOf(NativeMediaRequestFailure.CANCELLED,
+                NativeMediaRequestFailure.TRANSPORT_CANCELLED) ||
+            error is ProviderTransportException && error.evidence.failure == ProviderTransportFailure.CANCELLED
         private fun checkActive() {
+            if (Thread.currentThread().isInterrupted) throw NativeMediaRequestException(NativeMediaRequestFailure.CANCELLED)
             if (!budget.active) throw NativeMediaRequestException(NativeMediaRequestFailure.PLAYBACK_INACTIVE)
             // This boolean includes owner, acceptance deadline and provider
             // grant/admission checks. A refusal does not identify which failed.
             val admission = costs?.begin(NativeMediaReadCostPhase.ADMISSION)
             val admitted = try { canRequest() } finally { costs?.end(admission) }
+            if (Thread.currentThread().isInterrupted) throw NativeMediaRequestException(NativeMediaRequestFailure.CANCELLED)
             if (!admitted) throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
             if (!mediaBodyAccepted && clockMs() - requestStarted >= 30_000)
                 throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_DEADLINE)
@@ -84,11 +102,12 @@ internal class BoundedMediaRequests(
         override fun open(dataSpec: DataSpec): Long {
             val uri = try {
                 require(dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET && dataSpec.httpBody == null &&
-                    dataSpec.httpRequestHeaders.isEmpty())
+                    allowedNativeMediaHeaders(dataSpec.httpRequestHeaders, allowIcyMetadata))
                 transferInitializing(dataSpec)
                 URI(dataSpec.uri.toString())
             } catch (error: Exception) {
-                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
+                if (requestCancelled(error)) report(NativeMediaEvent.REQUEST_CANCELLED)
+                else reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
                 throw IOException("Native media request failed")
             }
             return try { openUri(uri, dataSpec.position, dataSpec.length, dataSpec) }
@@ -100,8 +119,9 @@ internal class BoundedMediaRequests(
             transferSpec: DataSpec? = null): Long {
             var openingCosts: NativeMediaReadCosts.Request? = null
             var failureObserved = false
+            var openFailureEvent = NativeMediaEvent.REQUEST_SETUP_FAILED
             fun observeFailure(error: Exception) {
-                if (failureObserved || error is NativeMediaCleanupException) return
+                if (failureObserved || error is NativeMediaCleanupException || requestCancelled(error)) return
                 failureObserved = true
                 reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
             }
@@ -114,6 +134,7 @@ internal class BoundedMediaRequests(
                 })
                 costs = openingCosts
                 mediaBodyAccepted = false
+                responseHttp = 0
                 requestStarted = clockMs()
                 checkActive()
                 if (type == C.DATA_TYPE_DRM) {
@@ -123,6 +144,7 @@ internal class BoundedMediaRequests(
                 require(position >= 0 && (length == C.LENGTH_UNSET.toLong() || length > 0))
                 // Never inherit a process-wide cookie store. WebView uses its own profile.
                 require(CookieHandler.getDefault() == null)
+                openFailureEvent = NativeMediaEvent.CONNECTION_OPEN_FAILED
                 val request = openConnection(uri.toURL())
                 connection = request
                 onConnectionOwned(request)
@@ -151,9 +173,11 @@ internal class BoundedMediaRequests(
                         Math.addExact(position, length - 1).toString()
                     request.setRequestProperty("Range", "bytes=$position-$end")
                 }
+                openFailureEvent = NativeMediaEvent.RESPONSE_OPEN_FAILED
                 val headers = costs?.begin(NativeMediaReadCostPhase.HEADERS)
                 val status = try { request.responseCode } finally { costs?.end(headers) }
                 responseHttp = status
+                openFailureEvent = NativeMediaEvent.RESPONSE_POLICY_FAILED
                 checkActive()
                 if (status !in listOf(200, 206)) {
                     report(NativeMediaEvent.HTTP_REJECTED, status)
@@ -189,11 +213,15 @@ internal class BoundedMediaRequests(
                     }
                     throw IOException()
                 }
-                if (position != 0L && status != 206) throw IOException()
+                if (position != 0L && status != 206) {
+                    report(NativeMediaEvent.RANGE_NOT_HONORED, status)
+                    throw IOException()
+                }
                 if (request.contentLengthLong > limit || length > limit) {
                     report(NativeMediaEvent.LIMIT_REACHED); throw IOException()
                 }
                 source = uri
+                openFailureEvent = NativeMediaEvent.INPUT_OPEN_FAILED
                 val acquireInput = costs?.begin(NativeMediaReadCostPhase.INPUT_OPEN)
                 input = try { openInput(request) } finally { costs?.end(acquireInput) }
                 readBytes = 0
@@ -215,9 +243,11 @@ internal class BoundedMediaRequests(
                 if (remaining == 0L) costs?.bodyComplete()
                 return remaining
             } catch (error: Exception) {
+                val cancelled = requestCancelled(error)
                 openingCosts?.openFailed()
                 observeFailure(error)
-                close(); report(NativeMediaEvent.REQUEST_FAILED)
+                if (!cancelled) runCatching { report(openFailureEvent, responseHttp) }
+                close(); report(if (cancelled) NativeMediaEvent.REQUEST_CANCELLED else NativeMediaEvent.REQUEST_FAILED)
                 // Neither URI nor provider exception is attached as a cause.
                 throw IOException("Native media request failed")
             }
@@ -254,10 +284,11 @@ internal class BoundedMediaRequests(
                 costs?.readFinished(reading)
                 return count
             } catch (error: Exception) {
+                val cancelled = requestCancelled(error)
                 costs?.readFinished(reading, error = true)
-                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, onFailure, nativeMediaRequestException(error))
+                if (!cancelled) reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_READ, onFailure, nativeMediaRequestException(error))
                 close()
-                report(NativeMediaEvent.REQUEST_FAILED)
+                report(if (cancelled) NativeMediaEvent.REQUEST_CANCELLED else NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")
             }
         }

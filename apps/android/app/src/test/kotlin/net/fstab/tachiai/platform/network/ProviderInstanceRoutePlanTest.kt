@@ -20,7 +20,7 @@ class ProviderInstanceRoutePlanTest {
     @Test fun failedAbemaStartupRemainsFailedWhileTheTwitchWinnerKeepsItsExactProofThroughViewerRevalidation() {
         val defaults = defaultProviderInstances()
         val abema = defaults.first().copy(setup = ProviderSetup(choice(secondId), fallbackRoutes = listOf(SourceRouteChoice.system)))
-        val twitch = defaults.last().copy(setup = ProviderSetup(choice(routeId), fallbackRoutes = listOf(choice(duplicateRouteId))))
+        val twitch = defaults.single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId), fallbackRoutes = listOf(choice(duplicateRouteId))))
         val instances = listOf(abema, twitch)
         val first = ConfiguredPlaybackFeed(ConfiguredFeedChoice(routeId, abema.id),
             prototypeCatalogResource(PrototypeSource.ABEMA_LIVE), PrototypeService.ABEMA,
@@ -51,7 +51,7 @@ class ProviderInstanceRoutePlanTest {
 
     @Test fun poolCapturePreservesMissingPrimaryForOneSharedStartupAndPlansTheActualWinnerWithoutRewritingSettings() {
         val primary = choice(routeId); val alternative = choice(duplicateRouteId)
-        val instance = defaultProviderInstances().last().copy(setup = ProviderSetup(primary, fallbackRoutes = listOf(alternative)))
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(primary, fallbackRoutes = listOf(alternative)))
         val feed = video(instance.id)
         val selection = ConfiguredPlaybackSelection(feed, feed)
         val saved = profile("http://second-exit.example.test:8080")
@@ -81,7 +81,7 @@ class ProviderInstanceRoutePlanTest {
 
     @Test fun aFallbackWinnerSurvivesUnchangedHandoffButNeitherPoolEditsNorProfileLossCanRebindItToPrimary() {
         val primary = choice(routeId); val alternative = choice(duplicateRouteId)
-        val instance = defaultProviderInstances().last().copy(setup = ProviderSetup(primary, fallbackRoutes = listOf(alternative)))
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(primary, fallbackRoutes = listOf(alternative)))
         val feed = video(instance.id); val selection = ConfiguredPlaybackSelection(feed, feed)
         val profiles = mapOf(routeId to profile("http://first-exit.example.test:8080"),
             duplicateRouteId to profile("http://second-exit.example.test:8080"))
@@ -147,7 +147,7 @@ class ProviderInstanceRoutePlanTest {
     }
 
     @Test fun viewerCaptureSharesTheExactPoolCandidateAcrossDuplicateFeeds() {
-        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId),
+        val first = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId),
             fallbackRoutes = listOf(SourceRouteChoice.system)))
         var instances = listOf(first)
         val feed = video(first.id)
@@ -171,7 +171,7 @@ class ProviderInstanceRoutePlanTest {
     }
 
     @Test fun unavailableCaptureCannotBecomeAnImplicitFallbackDuringReadiness() {
-        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId),
+        val first = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId),
             fallbackRoutes = listOf(SourceRouteChoice.system)))
         val feed = video(first.id)
         val selection = ConfiguredPlaybackSelection(feed, feed)
@@ -203,7 +203,7 @@ class ProviderInstanceRoutePlanTest {
         }).abemaCompatible)
     }
     @Test fun exactVideosKeepOwningRoutesAndDuplicateFeedsReadOneSnapshot() {
-        val first = defaultProviderInstances().last().copy(setup = ProviderSetup(choice(routeId)))
+        val first = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId)))
         val second = ProviderInstance(secondId, PrototypeService.TWITCH, "Twitch 2", setup = ProviderSetup(choice(duplicateRouteId)))
         val a = video(first.id)
         var reads = 0
@@ -219,7 +219,7 @@ class ProviderInstanceRoutePlanTest {
             routeConfigurationKey(distinct.profiles[second.id]!!.getOrThrow()!!))
     }
     @Test fun exactVideoRouteFailureNeverSubstitutesDefaultOrReadsAmbiguousOwner() {
-        val first = defaultProviderInstances().last()
+        val first = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
         val stale = video(secondId)
         assertTrue(planProviderInstanceRoutes(ConfiguredPlaybackSelection(stale, stale), listOf(first)) {
             error("Must not replace absent owner")
@@ -243,11 +243,11 @@ class ProviderInstanceRoutePlanTest {
             ConfiguredFeedChoice(routeId, abema.id), prototypeCatalogResource(PrototypeSource.ABEMA_LIVE),
             PrototypeService.ABEMA, PrototypePlaybackKind.LIVE, PrototypeSource.ABEMA_LIVE,
         )
-        val mixed = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, video(defaults.last().id)),
-            listOf(abema, defaults.last())) { error("Deleted ABEMA route") }
+        val mixed = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, video(defaults.single { it.service == PrototypeService.TWITCH }.id)),
+            listOf(abema, defaults.single { it.service == PrototypeService.TWITCH })) { error("Deleted ABEMA route") }
         assertTrue(mixed.abemaCompatible)
         assertTrue(mixed.profiles[abema.id]!!.isFailure)
-        assertTrue(mixed.profiles[defaults.last().id]!!.isSuccess)
+        assertTrue(mixed.profiles[defaults.single { it.service == PrototypeService.TWITCH }.id]!!.isSuccess)
         val second = abema.copy(id = secondId)
         val other = historical.copy(choice = historical.choice.copy(instanceId = secondId))
         val conflict = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, other), listOf(abema, second)) {
@@ -274,7 +274,7 @@ class ProviderInstanceRoutePlanTest {
     }
     @Test fun duplicateFeedsUseOneProfileSnapshotButDifferentTwitchInstancesKeepDistinctRoutes() {
         val defaults = defaultProviderInstances()
-        val first = defaults.last().copy(setup = ProviderSetup(choice(routeId)))
+        val first = defaults.single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId)))
         val other = ProviderInstance(secondId, PrototypeService.TWITCH, "Twitch 2", setup = ProviderSetup(choice(duplicateRouteId)))
         val instances = listOf(defaults.first(), first, other)
         var reads = 0

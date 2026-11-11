@@ -146,7 +146,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         if (!current()) return failure(AbemaAccountFailure.CANCELLED)
         return value
     }
-    private fun transact(what: Int, expected: Int, waitMs: Long): Map<String, Any>? {
+    private fun transact(what: Int, expected: Int, waitMs: Long,
+        checkWait: ((CountDownLatch) -> Boolean)? = null): Map<String, Any>? {
         val pending = synchronized(lock) {
             if (operation != null || !live() || sequence == Long.MAX_VALUE) return null
             Operation(++sequence, expected).also { operation = it }
@@ -156,26 +157,34 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             catch (_: Throwable) { pending.done.countDown(); revoked.set(true); close() }
         }
         try {
-            if (!await(pending.done, waitMs, true)) { revoked.set(true); close(); return null }
+            val completed = checkWait?.invoke(pending.done) ?: await(pending.done, waitMs, true)
+            if (!completed) { revoked.set(true); close(); return null }
             return pending.fields.takeIf { live() }
         } finally { synchronized(lock) { if (operation === pending) operation = null }; pending.fields = null }
     }
     fun checkWorker(): Boolean {
         if (!worker() || !current()) return false
         val start = SystemClock.elapsedRealtime()
-        val locked = try { checks.tryLock(AbemaAccountAccessIpc.IPC_MS, TimeUnit.MILLISECONDS) }
-        catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
-        if (!locked) { revoked.set(true); close(); return false }
+        when (acquireAbemaAccountCheckLock(checks, AbemaAccountAccessIpc.IPC_MS)) {
+            AbemaAccountCheckLock.INTERRUPTED -> return false
+            AbemaAccountCheckLock.TIMED_OUT -> { revoked.set(true); close(); return false }
+            AbemaAccountCheckLock.ACQUIRED -> Unit
+        }
         try {
+            // A cancellation between acquiring the lock and dispatch has no
+            // outstanding service operation to drain or lease to revoke.
+            if (Thread.currentThread().isInterrupted) return false
             val now = SystemClock.elapsedRealtime()
             val left = AbemaAccountAccessIpc.IPC_MS - (now - start)
+            var interrupted = false
             val fields = if (now >= start && left > 0 && current())
-                transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, left) else null
-            val seq = fields?.get("sequence") as? Long
-            val okay = fields != null && seq != null && fields.keys == AbemaAccountAccessIpc.base(request, seq).keys + "current" &&
-                fields["current"] == true && current()
+                transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, left) { done ->
+                    awaitAbemaAccountCheck(done, start, start + AbemaAccountAccessIpc.IPC_MS,
+                        SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
+                } else null
+            val okay = abemaAccountCheckAccepted(fields, request) && current()
             if (!okay) { revoked.set(true); close() }
-            return okay
+            return okay && !interrupted && !Thread.currentThread().isInterrupted
         } finally { checks.unlock() }
     }
     override fun close() {

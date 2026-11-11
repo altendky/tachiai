@@ -18,6 +18,22 @@ fn optional_ms(value: Option<BigInt>) -> Result<Option<i64>, JsValue> {
     value.as_ref().map(checked_ms).transpose()
 }
 
+/// Compare each feed's progress from its own user-marked event clock.
+#[wasm_bindgen(js_name = eventMarkOffsetMs)]
+pub fn event_mark_offset_ms(
+    marked_a_ms: BigInt,
+    current_a_ms: BigInt,
+    marked_b_ms: BigInt,
+    current_b_ms: BigInt,
+) -> Result<Option<i64>, JsValue> {
+    Ok(tachiai_core::event_mark_offset_ms(
+        checked_ms(&marked_a_ms)?,
+        checked_ms(&current_a_ms)?,
+        checked_ms(&marked_b_ms)?,
+        checked_ms(&current_b_ms)?,
+    ))
+}
+
 /// Immutable player snapshot. Millisecond integers use JavaScript `bigint`.
 #[wasm_bindgen]
 pub struct SeekContext {

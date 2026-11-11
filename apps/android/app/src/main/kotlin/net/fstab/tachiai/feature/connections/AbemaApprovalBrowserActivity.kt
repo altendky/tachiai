@@ -40,7 +40,7 @@ class AbemaApprovalBrowserActivity : ComponentActivity() {
             } else false) }.getOrNull()
         intent.removeExtra(VERIFICATION_URI)
         if (request == null || !request.current(SystemClock.elapsedRealtime())) { finishDirect(); return }
-        net.fstab.tachiai.platform.web.DeveloperAccess.protectScreen(window)
+        net.fstab.tachiai.platform.web.DeveloperAccess.allowScreenCapture(window)
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(column) { host, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())

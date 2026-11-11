@@ -176,8 +176,10 @@ SERIAL install -r apps/android/app/build/outputs/apk/debug/app-debug.apk`; do no
 uninstall or clear app data. The persistent-emulator install helper consumes the
 ordinary debug APK, so use the explicit command above for inspect.
 
-All app windows, including provider login pages and popup dialogs, permit capture
-in inspect. Every WebView process keeps DevTools enabled, including after closing
+All builds permit user-controlled screenshots, including provider login pages
+and popup dialogs, following the user's 2026-11-10 request to remove app-imposed
+capture blocking. Inspect additionally keeps WebView DevTools enabled in every
+process, including after closing
 another browser surface. Use Chrome's `chrome://inspect/#devices` with the
 explicitly connected device to inspect live WebViews. The user has authorized
 screenshots, UI hierarchy inspection and interactive DOM tooling on these login

@@ -17,6 +17,7 @@ import androidx.media3.common.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsDataSourceFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistParserFactory
@@ -57,6 +58,11 @@ internal class BoundedNativePlayer(
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
     private var released = false
+    private val diagnostics = NativePlayerDiagnostics()
+    private val observedFailure: NativeFailureObserver = { stage, error ->
+        diagnostics.recordFailure(stage, error)
+        onFailure(stage, error)
+    }
     private val cleanup = NativeCleanupReceipt(onCleanupUnconfirmed).also(onCleanupOwner)
     private val requests = BoundedMediaRequests(budget, allowedUri, onEvent,
         canRequest = { canRequest() && (acceptedPlaylist.get() || System.nanoTime() / 1_000_000 < acceptanceDeadlineMs) },
@@ -65,12 +71,12 @@ internal class BoundedNativePlayer(
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
         onFailure = { stage, error ->
             if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
-            onFailure(stage, error)
+            observedFailure(stage, error)
         }, readCosts = readCosts, coalesceMediaReads = coalesceMediaReads, transportObserver = transportObserver)
         .also { owned -> cleanup.own(10) { owned.close() } }
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {
-        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, onFailure) { owned.close() }
+        observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, observedFailure) { owned.close() }
     } }
 
     init {
@@ -83,12 +89,12 @@ internal class BoundedNativePlayer(
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
             .build().also { owned ->
                 cleanup.own(-10, ownerThread = true) {
-                    observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, onFailure) {
+                    observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, observedFailure) {
                         owned.playWhenReady = false
                         owned.volume = 0f
                     }
                 }
-                cleanup.ownPlayer(owned, { released }, onFailure)
+                cleanup.ownPlayer(owned, { released }, observedFailure)
             }
         quality.bind(player)
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
@@ -115,9 +121,10 @@ internal class BoundedNativePlayer(
                 timingSnapshot()?.let { onTimingDiscontinuity(it, reason) }
             }
             override fun onPlayerError(error: PlaybackException) {
-                if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, onFailure, error)
+                diagnostics.recordPlayerError(error.errorCode)
+                if (!released) reportNativeFailure(NativeFailureStage.PLAYER_ERROR, observedFailure, error)
                 // Never report error.message, cause, MediaItem or signed source.
-                if (!released) { onEvent(NativeMediaEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(onFailure, ::close) }
+                if (!released) { onEvent(NativeMediaEvent.PLAYER_FAILED, error.errorCode); cleanup.stopInternally(observedFailure, ::close) }
             }
         })
         } catch (error: Throwable) {
@@ -133,20 +140,30 @@ internal class BoundedNativePlayer(
             if (released) return
             if (!budget.active || (!acceptedPlaylist.get() && System.nanoTime() / 1_000_000 >= acceptanceDeadlineMs)) {
                 onEvent(NativeMediaEvent.LIMIT_REACHED, 0)
-                cleanup.stopInternally(onFailure, ::close)
+                cleanup.stopInternally(observedFailure, ::close)
             } else handler.postDelayed(this, 250)
         }
     }
 
-    fun start(uri: URI, playWhenReady: Boolean = true) {
+    fun start(uri: URI, playWhenReady: Boolean = true, progressive: Boolean = false) {
         check(!released)
         budget.check()
-        val source = HlsMediaSource.Factory(HlsDataSourceFactory { requests.create(it) })
+        val source = if (progressive) ProgressiveMediaSource.Factory {
+            // Stream long progressive resources without buffering the complete
+            // response. HLS requests retain their smaller segment bound.
+            requests.create(C.DATA_TYPE_MEDIA, 4L * 1024 * 1024 * 1024, allowIcyMetadata = true)
+        }
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(0))
+            .createMediaSource(MediaItem.fromUri(uri.toString()))
+        else HlsMediaSource.Factory(HlsDataSourceFactory { requests.create(it) })
             .setPlaylistParserFactory(UnencryptedPlaylistParserFactory())
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(0))
             .createMediaSource(MediaItem.Builder().setUri(uri.toString())
                 .setMimeType(MimeTypes.APPLICATION_M3U8).build())
         player.setMediaSource(source)
+        // Progressive resources have no playlist callback. Their requests still
+        // pass through the same origin, lifetime and byte-budget checks.
+        if (progressive) acceptedPlaylist.set(true)
         player.prepare()
         player.playWhenReady = playWhenReady
         handler.post(ticker)
@@ -161,12 +178,26 @@ internal class BoundedNativePlayer(
         if (!timingActive() || player.currentTimeline.isEmpty) return null
         val window = player.currentTimeline.getWindow(player.currentMediaItemIndex, Timeline.Window())
         fun known(value: Long): Long? = value.takeIf { it != C.TIME_UNSET && it >= 0 }
+        // Both positions are relative to a sliding live window; retained
+        // buffered footage can have a negative current and buffered endpoint.
         return NativeTimingSnapshot(player.currentPosition.takeIf { it != C.TIME_UNSET }, known(player.duration),
-            known(player.bufferedPosition), player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
+            player.bufferedPosition.takeIf { it != C.TIME_UNSET && it != C.TIME_END_OF_SOURCE },
+            player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
             known(window.defaultPositionMs), player.isCurrentMediaItemLive, player.isCurrentMediaItemDynamic,
             player.isCurrentMediaItemSeekable && player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             player.isCommandAvailable(Player.COMMAND_SEEK_TO_DEFAULT_POSITION), player.isPlayingAd,
             player.isPlaying, player.playWhenReady, player.playbackState, player.playbackParameters.speed)
+    }
+
+    override fun diagnosticSnapshot(): NativePlaybackDiagnosticSnapshot? {
+        if (released || !budget.active || Looper.myLooper() != player.applicationLooper)
+            return diagnostics.snapshot(released)
+        return diagnostics.capture(player, runCatching { timingSnapshot() }.getOrNull())
+    }
+
+    override fun timelineEvidence(): NativeTimelineEvidence? {
+        if (released || !budget.active || Looper.myLooper() != player.applicationLooper) return null
+        return nativePlayerTimelineEvidence(player)
     }
 
     fun shiftByMs(deltaMs: Long): NativeSeekPlan = applySeek(nativeRelativeSeekPlan(timingSnapshot(), deltaMs))
@@ -202,11 +233,13 @@ internal class BoundedNativePlayer(
 
     override fun close() {
         if (released) { if (!cleanup.pending) cleanup.close(); return }
+        if (Looper.myLooper() == player.applicationLooper)
+            diagnostics.capture(player, runCatching { timingSnapshot() }.getOrNull())
         released = true
         budget.stop()
         cleanup.seal()
         handler.removeCallbacks(ticker)
-        cleanup.closePlayer(handler, onFailure, onCleanupChanged)
+        cleanup.closePlayer(handler, observedFailure, onCleanupChanged)
         onEvent(NativeMediaEvent.STOPPED, 0)
     }
 

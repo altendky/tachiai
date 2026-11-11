@@ -56,14 +56,16 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
     // Adopt only shared proof, optionally waiting for work already underway;
     // these checks never start validation or refresh and do not renew the source.
     override fun checkStored(force: Boolean): Boolean {
+        if (Thread.currentThread().isInterrupted) return false
         val began = monotonicMs()
         fun inBudget(): Boolean = began >= 0 && monotonicMs().let { it >= began && it - began < 30_000L }
         return synchronized(storedLock) {
+            if (Thread.currentThread().isInterrupted) return false
             if (!canContinue()) return false
             val current = runCatching {
                 val connection = checkNotNull(session.get())
                 val previous = checkNotNull(lease)
-                when (connection.admitIdleViewer(previous) { inBudget() && canContinue() }) {
+                when (connection.admitIdleViewer(previous) { !Thread.currentThread().isInterrupted && inBudget() && canContinue() }) {
                     TwitchCatalogIdleViewerAdmission.ADMITTED -> true
                     TwitchCatalogIdleViewerAdmission.REFUSED -> false
                     TwitchCatalogIdleViewerAdmission.MAINTENANCE_REQUIRED -> {
@@ -76,7 +78,8 @@ internal class CatalogTwitchPreparation(context: Context, private val instanceId
                         }
                     }
                 }
-            }.getOrDefault(false)
+            }.onFailure { error -> runCatching { throwIfTwitchCatalogReadCancelled(error) } }.getOrDefault(false)
+            if (Thread.currentThread().isInterrupted) return false
             val admitted = current && canContinue() && inBudget()
             if (!admitted) valid.set(false)
             admitted

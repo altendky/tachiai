@@ -341,9 +341,9 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             if (mode == Mode.CHANNEL) channelScope = ConfiguredTwitchChannelScope(source.entry.resource)
             val resolved = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(source.choice, source.choice),
                 sourceList, listOf(owner.instance)) as? ConfiguredPrototypeSelectionResult.Ready ?: throw Refusal()
-            val feed = resolved.selection.a
-            admit(feed.choice == source.choice && resolved.selection.b.choice == source.choice &&
-                feed.resource == source.entry.resource && resolved.selection.b.resource == feed.resource &&
+            val feed = checkNotNull(resolved.selection.a)
+            admit(feed.choice == source.choice && checkNotNull(resolved.selection.b).choice == source.choice &&
+                feed.resource == source.entry.resource && checkNotNull(resolved.selection.b).resource == feed.resource &&
                 feed.service == PrototypeService.TWITCH && feed.kind ==
                     (if (mode == Mode.REPLAY) PrototypePlaybackKind.REPLAY else PrototypePlaybackKind.LIVE), Failure.SETUP)
             val grantStore = TwitchCatalogGrantStore(readOnly(AndroidPrivateSecretStore.twitchCatalogInstance(context, instanceId),

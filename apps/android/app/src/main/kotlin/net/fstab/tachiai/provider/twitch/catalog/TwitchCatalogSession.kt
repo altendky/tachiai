@@ -462,7 +462,7 @@ internal class TwitchCatalogSession(
 
     private fun applyMaintenance(outcome: TwitchCatalogMaintenanceOutcome, local: Long,
         attached: TwitchCatalogMaintenanceCoordinator.Attachment,
-        admission: () -> Boolean = { true }): TwitchCatalogSessionResult {
+        admission: () -> Boolean = { true }, onCommitted: () -> Unit = {}): TwitchCatalogSessionResult {
         fun inBudget(): Boolean {
             if (!admission()) return false
             val now = monotonicMs()
@@ -506,6 +506,10 @@ internal class TwitchCatalogSession(
                     if (!inBudget()) return timedOut()
                     if (!allowed(local, current.revision) || !canParticipate()) return reject()
                     if (!inBudget()) return timedOut()
+                    // No protected reads remain after this point. Attachment
+                    // origin and the provisional session lease now commit as
+                    // one adoption; cancellation must not restore its old lease.
+                    onCommitted()
                     attached.enroll(current, outcome)
                 }
                 attached.consume(outcome)
@@ -543,23 +547,47 @@ internal class TwitchCatalogSession(
             val attached = attachment.get() ?: return@synchronized if (waitForExistingFlight) stopped() else null
             if (waitForExistingFlight) {
                 val coordinator = maintenance ?: return@synchronized null
+                throwIfTwitchCatalogReadCancelled()
+                val previousSummary = lastSummary
+                val previousObservedGeneration = observedGeneration
+                var committed = false
                 // After connected() constructs the target lease, identity has
                 // changed intentionally. The old epoch/time/retention admission
                 // must nevertheless survive every protected read and return.
-                fun oldAdmission(): Boolean = !closed && foreground &&
+                fun oldAdmission(): Boolean {
+                    // After attachment enrollment, finish the same bounded
+                    // memory/time checks with the interrupt still preserved.
+                    if (!committed) throwIfTwitchCatalogReadCancelled()
+                    return !closed && foreground &&
                     localRevision.get() == expectedLease.localRevision && canParticipate() &&
                     coordinator.canPublishLocally && !retentionExpired(expectedLease.grant) &&
                     store.isRevisionCurrent(expectedLease.grant.revision) &&
                     monotonicMs().let { it >= began && it < expectedLease.deadlineMs }
+                }
                 viewerAdoptionStartedMs = began
                 viewerPredecessor = expectedLease
                 var admitted = false
                 try {
                     val successor = coordinator.awaitSuccessor(attached, expectedLease.grant, began, ::oldAdmission)
                         ?: return@synchronized null
-                    val result = applyMaintenance(successor, expectedLease.localRevision, attached, ::oldAdmission)
+                    // An interrupted waiter has no maintenance failure proof.
+                    // Do not consume it or detach the shared healthy lease.
+                    throwIfTwitchCatalogReadCancelled()
+                    val result = applyMaintenance(successor, expectedLease.localRevision, attached, ::oldAdmission,
+                        onCommitted = { committed = true })
                     admitted = result.lease != null
                     return@synchronized result
+                } catch (error: TwitchCatalogReadCancelled) {
+                    // connected() may have constructed a provisional successor
+                    // before a later protected read was canceled. Retain the
+                    // predecessor for a fresh worker's full durable admission.
+                    if (!committed && !closed && foreground && localRevision.get() == expectedLease.localRevision &&
+                        attachment.get() === attached) {
+                        lease = expectedLease
+                        lastSummary = previousSummary
+                        observedGeneration = previousObservedGeneration
+                    }
+                    throw error
                 } finally { if (!admitted) viewerPredecessor = null }
             }
             val successor = attached.successor(expectedLease.grant) ?: return@synchronized null

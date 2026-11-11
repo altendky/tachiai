@@ -135,6 +135,21 @@ must never sign production.
 
 ## Local inspection build approval — 2026-10-15
 
+### User-controlled screen capture — 2026-11-10
+
+The user explicitly requested removal of Tachiai's screenshot blocking so bugs
+can be shared. All builds now allow user-controlled screenshots, including
+provider settings, account screens and browser popup windows. The shared window
+helper clears `FLAG_SECURE` unconditionally; the source guard rejects adding it
+elsewhere or making capture depend on the inspection build. This supersedes the
+app-imposed screenshot restrictions described in historical experiments below.
+Provider credential entry remains user-controlled and sensitive data must not
+be automatically collected or retained. WebView DevTools and UI-hierarchy
+inspection retain their separate policies. Android/DRM may still independently
+protect media surfaces; Tachiai does not bypass those protections.
+
+### Inspection scope
+
 For [issue #248](https://github.com/altendky/tachiai/issues/248), the user approved
 a full-application, local-only `inspect` build that permits screenshots, UI
 hierarchy access and WebView DevTools throughout the app, including provider
@@ -158,8 +173,9 @@ requires explicit local opt-in and is refused under `CI` or `GITHUB_ACTIONS`.
 CI checks the boundaries without building this variant. Ordinary debug,
 diagnostic and release policies remain distinct.
 
-Central screenshot and WebView-debugging policies remove app-imposed inspection
-barriers in this variant, including popup windows and teardown paths. TLS,
+The central WebView-debugging policy removes app-imposed inspection
+barriers in this variant. Screen capture is permitted in all builds, including
+popup windows and teardown paths. TLS,
 safe-browsing, selected-route ownership, destination policy, provider permissions,
 account validation and profile isolation remain unchanged. The inspect-only
 navigation dispatcher offers closed destinations; it does not bypass a login

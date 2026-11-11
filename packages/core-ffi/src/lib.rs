@@ -60,6 +60,16 @@ pub fn content_time_ms(context: SeekContext) -> Option<i64> {
 }
 
 #[uniffi::export]
+pub fn event_mark_offset_ms(
+    marked_a_ms: i64,
+    current_a_ms: i64,
+    marked_b_ms: i64,
+    current_b_ms: i64,
+) -> Option<i64> {
+    tachiai_core::event_mark_offset_ms(marked_a_ms, current_a_ms, marked_b_ms, current_b_ms)
+}
+
+#[uniffi::export]
 pub fn plan_absolute_seek(context: Option<SeekContext>, target_ms: i64) -> SeekPlan {
     let context = context.as_ref().map(Into::into);
     tachiai_core::plan_absolute_seek(context.as_ref(), target_ms).into()

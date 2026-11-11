@@ -1,6 +1,6 @@
 package net.fstab.tachiai.presentation
 
-internal enum class PrototypeService(val title: String) { ABEMA("ABEMA"), TWITCH("Twitch") }
+internal enum class PrototypeService(val title: String) { ABEMA("ABEMA"), TWITCH("Twitch"), YOUTUBE("YouTube") }
 internal enum class PrototypePlaybackKind { LIVE, REPLAY }
 
 // A small initial catalogue, not a restriction that a service has one channel.

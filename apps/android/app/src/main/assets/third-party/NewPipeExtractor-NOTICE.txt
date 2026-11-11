@@ -1,0 +1,5 @@
+NewPipeExtractor v0.26.5
+Copyright Team NewPipe and contributors
+License: GNU General Public License v3.0 or later
+Source: https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.26.5
+The corresponding license text is NewPipeExtractor-LICENSE.txt.

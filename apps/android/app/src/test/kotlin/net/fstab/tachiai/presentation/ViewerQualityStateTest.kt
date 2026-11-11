@@ -10,6 +10,43 @@ class ViewerQualityStateTest {
         channelCount = 2, sampleRateHz = 48_000))
     private val source = PrototypeSource.ABEMA_REPLAY
 
+    @Test fun singleFeedDefaultsAndOverridesStayOnTheirOriginalSide() {
+        for (present in NativeMixedSide.entries) {
+            val absent = if (present == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A
+            val sources = if (present == NativeMixedSide.A) listOf(source, null) else listOf(null, source)
+            val state = ViewerQualityState(sources, mapOf(source to NativeQualityPreferences(video, audio)))
+            assertEquals(NativeQualityPreferences(video, audio), state.effective(present))
+            assertEquals(NativeQualityPreferences(), state.effective(absent))
+            state.setOverride(present, NativeQualityKind.VIDEO, NativeQualityRequest.auto)
+            state.setOverride(absent, NativeQualityKind.AUDIO, audio)
+            assertNull(state.read(absent, NativeQualityKind.AUDIO).feedOverride)
+            assertEquals(NativeQualityPreferences(), state.effective(absent))
+            assertEquals(NativeQualityPreferences(audio = audio), state.effective(present))
+            state.replaceDefaults(mapOf(source to NativeQualityPreferences(video = video)))
+            assertEquals(NativeQualityPreferences(), state.effective(present))
+            state.clearOverrides()
+            assertEquals(NativeQualityPreferences(video = video), state.effective(present))
+            assertEquals(NativeQualityPreferences(), state.effective(absent))
+        }
+    }
+
+    @Test fun anAbsentSlotCannotReadNullKeyDefaultsOrAcquireAnOverride() {
+        val state = ViewerQualityState<PrototypeSource?>(listOf(null, source),
+            mapOf(null to NativeQualityPreferences(video, audio), source to NativeQualityPreferences(audio = audio)))
+        state.setOverride(NativeMixedSide.A, NativeQualityKind.VIDEO, video)
+        assertEquals(NativeQualityPreferences(), state.effective(NativeMixedSide.A))
+        assertNull(state.read(NativeMixedSide.A, NativeQualityKind.VIDEO).feedOverride)
+        assertEquals(NativeQualityPreferences(audio = audio), state.effective(NativeMixedSide.B))
+    }
+
+    @Test fun emptyOrMalformedSlotListsCannotCreateAQualitySession() {
+        for (sources in listOf(emptyList(), listOf(source), listOf(null, null), listOf(source, source, source))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                ViewerQualityState<PrototypeSource>(sources, emptyMap())
+            }
+        }
+    }
+
     @Test fun feedOverridesTakePrecedenceAndExplicitAutoDiffersFromInheritance() {
         val state = ViewerQualityState(listOf(source, source), mapOf(source to NativeQualityPreferences(video, audio)))
         assertEquals(video, state.effective(NativeMixedSide.A).video)

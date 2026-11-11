@@ -154,6 +154,7 @@ android {
     sourceSets.getByName("testInspect").kotlin.directories += "src/testDebug/kotlin"
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -204,6 +205,8 @@ listOf("Implementation", "RuntimeOnly", "CompileOnly").forEach { suffix ->
 }
 
 dependencies {
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.5")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation(project(":core"))
     implementation(libs.activity.compose)
     implementation(libs.core.ktx)
@@ -240,6 +243,7 @@ dependencies {
 }
 
 tasks.withType<Test>().configureEach {
+    inputs.property("youtubeHostSmoke", providers.environmentVariable("TACHIAI_YOUTUBE_HOST_SMOKE").orElse("false"))
     systemProperty("jna.library.path",
         rootProject.layout.projectDirectory.dir("../../build/core/native/host").asFile.absolutePath)
 }

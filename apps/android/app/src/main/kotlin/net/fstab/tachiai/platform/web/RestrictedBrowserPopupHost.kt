@@ -92,7 +92,7 @@ internal class RestrictedBrowserPopupHost {
             addView(browser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         window.setContentView(layout)
-        window.window?.let { DeveloperAccess.protectScreen(it) }
+        window.window?.let { DeveloperAccess.allowScreenCapture(it) }
         var terminal = false
         val navigation = BrowserPopupNavigation(hosts)
         fun fail(kind: PopupEventKind, destination: PopupDestinationClass? = null, code: Int? = null) {

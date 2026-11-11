@@ -11,6 +11,7 @@ internal fun sameProviderInstanceName(first: String, second: String): Boolean =
 internal fun defaultProviderInstanceId(service: PrototypeService): String = when (service) {
     PrototypeService.ABEMA -> "00000000-0000-0000-0000-000000000001"
     PrototypeService.TWITCH -> "00000000-0000-0000-0000-000000000002"
+    PrototypeService.YOUTUBE -> "00000000-0000-0000-0000-000000000003"
 }
 
 internal fun validProviderInstanceId(id: String): Boolean = runCatching {

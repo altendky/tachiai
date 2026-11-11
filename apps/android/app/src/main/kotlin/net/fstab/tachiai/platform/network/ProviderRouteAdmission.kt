@@ -13,15 +13,21 @@ internal class ProviderRouteAdmission(expectedProof: String? = null) {
     val ownerProof: String? get() = selected.get()
     fun canContinue(): Boolean = !refused.get()
 
-    fun check(canRemainActive: () -> Boolean = { true }, readOwnerProof: (String?) -> String?): Boolean {
-        if (!canContinue() || !canRemainActive()) return false
-        val observed = runCatching { readOwnerProof(selected.get()) }.getOrNull()
-        if (observed == null || !validProof(observed)) refused.set(true)
+    fun check(canRemainActive: () -> Boolean = { true }, readCancelled: () -> Boolean = { false },
+        readOwnerProof: (String?) -> String?): Boolean {
+        if (!canContinue() || !canRemainActive() || readCancelled()) return false
+        val result = runCatching { readOwnerProof(selected.get()) }
+        val observed = result.getOrNull()
+        // Cancellation is not evidence of a changed/unreadable owner. An actual
+        // observed mismatch still revokes even if the same read was canceled.
+        if (result.exceptionOrNull() is ProviderRoutePoolException) refused.set(true)
+        else if (observed == null) { if (!readCancelled()) refused.set(true) }
+        else if (!validProof(observed)) refused.set(true)
         else {
             selected.compareAndSet(null, observed)
             if (selected.get() != observed) refused.set(true)
         }
-        return canContinue() && canRemainActive()
+        return canContinue() && canRemainActive() && !readCancelled()
     }
 
     override fun toString() = "ProviderRouteAdmission(redacted)"

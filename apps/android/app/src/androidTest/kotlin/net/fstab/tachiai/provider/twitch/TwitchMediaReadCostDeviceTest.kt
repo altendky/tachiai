@@ -209,7 +209,7 @@ class TwitchMediaReadCostDeviceTest {
             val source = sources.first { supportedConfiguredTwitchVideo(it.entry.resource) }.also { selected = it }
             val resolved = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(source.choice, source.choice),
                 sources, instances) as? ConfiguredPrototypeSelectionResult.Ready ?: error("Unsupported configured replay")
-            val feed = resolved.selection.a
+            val feed = checkNotNull(resolved.selection.a)
             check(feed.instanceId == owner.id && feed.resource == source.entry.resource &&
                 feed.service == PrototypeService.TWITCH && feed.kind == PrototypePlaybackKind.REPLAY)
             phase.set(ObservationPhase.SOURCE_SELECTED)

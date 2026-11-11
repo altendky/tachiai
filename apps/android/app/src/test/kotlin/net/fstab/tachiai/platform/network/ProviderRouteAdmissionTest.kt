@@ -11,6 +11,51 @@ class ProviderRouteAdmissionTest {
     private val first = "a".repeat(64)
     private val second = "b".repeat(64)
 
+    @Test fun typedRouteFailureAlwaysRevokesEvenIfItsReadWasInterrupted() {
+        for (reason in ProviderRoutePoolFailure.entries) {
+            val admission = ProviderRouteAdmission(first)
+            try {
+                assertFalse(admission.check(readCancelled = { Thread.currentThread().isInterrupted }) {
+                    Thread.currentThread().interrupt()
+                    throw ProviderRoutePoolException(reason)
+                })
+                assertTrue(Thread.currentThread().isInterrupted)
+                assertFalse(admission.canContinue())
+            } finally { Thread.interrupted() }
+            assertFalse(admission.check { first })
+        }
+    }
+
+    @Test fun canceledUnknownReadRefusesOnlyItsCallerButObservedMismatchStillRevokes() {
+        val admission = ProviderRouteAdmission(first)
+        var canceled = true
+        var reads = 0
+        assertFalse(admission.check(readCancelled = { canceled }) { reads++; first })
+        assertEquals(0, reads); assertTrue(admission.canContinue())
+        canceled = false
+        assertFalse(admission.check(readCancelled = { canceled }) { canceled = true; null })
+        assertTrue(admission.canContinue()); assertEquals(first, admission.ownerProof)
+        canceled = false
+        assertTrue(admission.check(readCancelled = { canceled }) { first })
+        for (observed in listOf(second, "invalid")) {
+            val changed = ProviderRouteAdmission(first)
+            canceled = false
+            assertFalse(changed.check(readCancelled = { canceled }) { canceled = true; observed })
+            assertFalse(changed.canContinue())
+        }
+    }
+
+    @Test fun cancellationCannotUndoConcurrentActualOwnerRevocation() {
+        val admission = ProviderRouteAdmission(first)
+        var canceled = false
+        assertFalse(admission.check(readCancelled = { canceled }) {
+            assertFalse(admission.check { second })
+            canceled = true
+            null
+        })
+        assertFalse(admission.canContinue())
+    }
+
     @Test fun aStandaloneBindingPinsFirstCandidateAndCannotReselectAfterAnObservedPoolEdit() {
         val original = defaultProviderInstances().first().copy(setup = ProviderSetup(SourceRouteChoice.system))
         var instance = original

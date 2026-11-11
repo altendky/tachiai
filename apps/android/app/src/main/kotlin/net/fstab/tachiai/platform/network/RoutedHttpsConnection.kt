@@ -86,6 +86,7 @@ internal class RoutedHttpsConnection(
     private val firstDiagnostic = AtomicReference<RoutedHttpsFailureDiagnostic?>()
     private val phase = AtomicReference(RoutedHttpsCallPhase.NOT_STARTED)
     private val phaseAvailable = AtomicBoolean()
+    private val bodyReadStarted = AtomicBoolean()
     val failureDiagnostic: RoutedHttpsFailureDiagnostic? get() = firstDiagnostic.get()
     fun observeFailures(observer: (RoutedHttpsFailureDiagnostic) -> Unit): Boolean = synchronized(lock) {
         if (connected || disconnected || failureObserver != null) false
@@ -265,9 +266,29 @@ internal class RoutedHttpsConnection(
             RoutedHttpsCallPhase.RESPONSE_HEADERS, RoutedHttpsCallPhase.RESPONSE_BODY -> ProviderTransportPhase.RESPONSE
             else -> ProviderTransportPhase.UNKNOWN
         }
-        val evidence = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
+        val classified = providerTransportEvidence(error)
+        val base = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
             else if (setupExpired) ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT, observedPhase)
-            else providerTransportEvidence(error).let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
+            else classified.let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
+        // OkHttp can report responseBodyStart only after a first body read has
+        // made progress. Our owned stream knows a read was entered even when
+        // that first read times out. Keep coarse route/retry evidence unchanged.
+        val operation = if (!phaseAvailable.get()) ProviderTransportOperation.UNKNOWN
+        else if (bodyReadStarted.get()) ProviderTransportOperation.RESPONSE_BODY else when (phase.get()) {
+            RoutedHttpsCallPhase.NOT_STARTED -> ProviderTransportOperation.UNKNOWN
+            RoutedHttpsCallPhase.CALL -> ProviderTransportOperation.CALL
+            RoutedHttpsCallPhase.DNS -> ProviderTransportOperation.DNS
+            RoutedHttpsCallPhase.CONNECT -> ProviderTransportOperation.CONNECT
+            RoutedHttpsCallPhase.TLS -> ProviderTransportOperation.TLS
+            RoutedHttpsCallPhase.REQUEST_HEADERS -> ProviderTransportOperation.REQUEST_HEADERS
+            RoutedHttpsCallPhase.REQUEST_HEADERS_COMPLETE -> ProviderTransportOperation.REQUEST_HEADERS_COMPLETE
+            RoutedHttpsCallPhase.REQUEST_BODY -> ProviderTransportOperation.REQUEST_BODY
+            RoutedHttpsCallPhase.RESPONSE_HEADERS -> ProviderTransportOperation.RESPONSE_HEADERS
+            RoutedHttpsCallPhase.RESPONSE_BODY -> ProviderTransportOperation.RESPONSE_BODY
+        }
+        val evidence = base.copy(exceptionKind = classified.exceptionKind,
+            operation = classified.operation.takeUnless { it == ProviderTransportOperation.UNKNOWN } ?: operation,
+            phaseAvailable = classified.phaseAvailable || phaseAvailable.get(), proxyPresent = usingProxy())
         val observers = synchronized(lock) { failureObserver to additionalFailureObserver }
         if (observers.first == null && observers.second == null) return evidence
         val category = if (setupExpired && !cancelled) RoutedHttpsFailureCategory.SOCKET_TIMEOUT else when (error) {
@@ -301,7 +322,7 @@ internal class RoutedHttpsConnection(
         }
         deadline?.close()
         pending?.cancel()
-        withResponseBodyLock {
+        withResponseBodyCleanupLock {
             closeResponseBody()
             synchronized(lock) { call = null; reply = null }
         }
@@ -319,6 +340,25 @@ internal class RoutedHttpsConnection(
         }
         if (!acquired) throw IOException("Routed response ownership could not be confirmed")
         try { return action() } finally { responseBodyLock.unlock() }
+    }
+
+    // Media3 interrupts a cancelled loader before it closes that load's body.
+    // Finish this bounded teardown despite that interrupt, then restore it. Reads
+    // and input acquisition remain interruptible; actual close errors still fail.
+    private fun <T> withResponseBodyCleanupLock(action: () -> T): T {
+        val started = System.nanoTime()
+        val limit = TimeUnit.MILLISECONDS.toNanos(RESPONSE_CLOSE_WAIT_MS)
+        var interrupted = false
+        try {
+            while (true) {
+                val remaining = limit - (System.nanoTime() - started)
+                if (remaining <= 0) throw IOException("Routed response ownership could not be confirmed")
+                val acquired = try { responseBodyLock.tryLock(remaining, TimeUnit.NANOSECONDS) }
+                catch (_: InterruptedException) { interrupted = true; continue }
+                if (!acquired) throw IOException("Routed response ownership could not be confirmed")
+                try { return action() } finally { responseBodyLock.unlock() }
+            }
+        } finally { if (interrupted) Thread.currentThread().interrupt() }
     }
 
     // Called only with responseBodyLock held. A failed close remains owned and
@@ -340,6 +380,7 @@ internal class RoutedHttpsConnection(
             private val input = response.body.byteStream()
             private fun <T> readBody(action: () -> T): T = withResponseBodyLock {
                 checkBodyReadable()
+                bodyReadStarted.set(true)
                 val result = try { action() } catch (error: IOException) {
                     throw ProviderTransportException(rememberDiagnostic(error))
                 }
@@ -351,7 +392,7 @@ internal class RoutedHttpsConnection(
                 readBody { input.read(bytes, offset, length) }
             override fun skip(count: Long): Long = readBody { input.skip(count) }
             override fun available(): Int = readBody { input.available() }
-            override fun close() = withResponseBodyLock { closeResponseBody() }
+            override fun close() = withResponseBodyCleanupLock { closeResponseBody() }
         }.also { responseStream = it }
     }
 

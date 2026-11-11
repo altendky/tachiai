@@ -30,12 +30,15 @@ internal data class ConfiguredPlaybackFeed(
                     kind == PrototypePlaybackKind.LIVE && supportedConfiguredAbemaChannel(resource)) ||
                 service == PrototypeService.TWITCH &&
                     (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredTwitchVideo(resource) ||
-                        kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)))
+                        kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)) ||
+                service == PrototypeService.YOUTUBE && kind == PrototypePlaybackKind.REPLAY &&
+                    net.fstab.tachiai.provider.youtube.supportedYouTubeResource(resource))
         }
     }
 
     val instanceId: String get() = choice.instanceId
     val diagnosticName: String get() = historicalSource?.name ?: when {
+        service == PrototypeService.YOUTUBE -> "YOUTUBE_CONFIGURED_VIDEO"
         service == PrototypeService.ABEMA && resource.kind == "slot" -> "ABEMA_CONFIGURED_SLOT"
         service == PrototypeService.ABEMA -> if (kind == PrototypePlaybackKind.LIVE) "ABEMA_CONFIGURED_CHANNEL" else "ABEMA_CONFIGURED_EPISODE"
         kind == PrototypePlaybackKind.LIVE -> "TWITCH_CONFIGURED_BROADCASTER"
@@ -47,7 +50,11 @@ internal data class ConfiguredPlaybackFeed(
             resource.providerId.value == it.service.name.lowercase(Locale.ROOT) }
 }
 
-internal data class ConfiguredPlaybackSelection(val a: ConfiguredPlaybackFeed, val b: ConfiguredPlaybackFeed) {
+internal data class ConfiguredPlaybackSelection(val a: ConfiguredPlaybackFeed?, val b: ConfiguredPlaybackFeed?) {
+    init { require(a != null || b != null) }
     // Duplicate choices still own independent presentation slots.
-    val feeds: List<ConfiguredPlaybackFeed> = Collections.unmodifiableList(listOf(a, b))
+    val slots: List<ConfiguredPlaybackFeed?> = Collections.unmodifiableList(listOf(a, b))
+    // Compact only for ownership/provider aggregates; indexes are not slot IDs.
+    val feeds: List<ConfiguredPlaybackFeed> = Collections.unmodifiableList(slots.filterNotNull())
+    val isPair: Boolean get() = a != null && b != null
 }

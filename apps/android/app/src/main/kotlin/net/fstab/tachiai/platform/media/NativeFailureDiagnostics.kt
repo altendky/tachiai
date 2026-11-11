@@ -3,6 +3,7 @@ package net.fstab.tachiai.platform.media
 import java.io.IOException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportFailureCarrier
+import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.providerTransportEvidence
 
 // The release media layer knows only operations, never a diagnostic store or
@@ -15,13 +16,14 @@ internal enum class NativeMediaRequestFailure {
     IO, ILLEGAL_STATE, ILLEGAL_ARGUMENT, SECURITY, CANCELLED, NETWORK_ON_MAIN_THREAD, OTHER,
 }
 
-// Only a fixed category crosses the request observer boundary. In particular,
-// never retain the original transport exception, private text or URL as a cause.
-internal class NativeMediaRequestException(val failure: NativeMediaRequestFailure) :
+// Only fixed categories and already-sanitized transport values cross the
+// request observer boundary. Never retain the original exception or private text.
+internal class NativeMediaRequestException(val failure: NativeMediaRequestFailure,
+    val transportEvidence: ProviderTransportEvidence? = null) :
     IOException("Native media request failed")
 
 internal fun nativeMediaRequestException(error: Exception): NativeMediaRequestException {
-    if (error is NativeMediaRequestException) return NativeMediaRequestException(error.failure)
+    if (error is NativeMediaRequestException) return NativeMediaRequestException(error.failure, error.transportEvidence)
     val transport = providerTransportEvidence(error)
     val failure = when {
         transport.localCancellationRequested -> NativeMediaRequestFailure.TRANSPORT_CANCELLED
@@ -41,7 +43,9 @@ internal fun nativeMediaRequestException(error: Exception): NativeMediaRequestEx
         error is SecurityException -> NativeMediaRequestFailure.SECURITY
         else -> NativeMediaRequestFailure.OTHER
     }
-    return NativeMediaRequestException(failure)
+    return NativeMediaRequestException(failure, transport.takeIf {
+        error is IOException || error is ProviderTransportFailureCarrier || it.failure != ProviderTransportFailure.UNKNOWN
+    })
 }
 
 internal typealias NativeFailureObserver = (NativeFailureStage, Throwable) -> Unit

@@ -149,7 +149,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun backRestoresLoadedQueryCursorAndContextWhileKeepingChildAdds() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last())
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH })
         val memory = Memory()
         store(memory, catalog.instance).add(catalog.series) { emptyList() }
         val controller = controller(this, catalog, memory)
@@ -180,7 +180,7 @@ class StreamManagementControllerTest {
 
     @Test fun backDuringChildLoadRejectsLateSuccessAndAccessFailure() = runBlocking {
         for (lateFailure in listOf(null, CatalogFailure.ACCESS_REQUIRED)) {
-            val catalog = Catalog(defaultProviderInstances().last())
+            val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH })
             val controller = controller(this, catalog, Memory(), io = Dispatchers.IO)
             controller.load(); val parent = idle(controller)
             val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -203,7 +203,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun backDuringAcceptedChildWriteKeepsSavingAndPublishesCommittedItems() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val controller = controller(this, catalog, memory, io = Dispatchers.IO)
         controller.load(); val parent = idle(controller)
         controller.children(catalog.parent); idle(controller)
@@ -222,7 +222,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun observedAccessLossAndRootTransitionsDiscardRetainedPrivateDiscovery() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory())
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val controller = controller(this, catalog, Memory())
         controller.load(); idle(controller)
         controller.children(catalog.parent); val child = idle(controller)
         catalog.failure = CatalogFailure.ACCESS_REQUIRED
@@ -249,7 +249,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun parentRetentionIsBoundedWithoutDroppingTheExistingReturnPath() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory())
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val controller = controller(this, catalog, Memory())
         controller.load(); idle(controller)
         repeat(MAX_DISCOVERY_PARENTS) { controller.children(catalog.parent); idle(controller) }
         val before = controller.state.value
@@ -318,7 +318,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun inaccessibleInitialCollectionKeepsConfiguredItemsAndDoesNotMasqueradeAsEmptySuccess() = runBlocking {
-        val instance = defaultProviderInstances().last()
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
         val catalog = Catalog(instance, CatalogAccess.AUTHORIZATION_REQUIRED).apply {
             browseTitle = "Live channels"; initialCollectionId = collectionId
         }
@@ -350,7 +350,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun lookupRetryKeepsExactInputRatherThanReopeningTheDefaultCollection() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()).apply { initialCollectionId = collectionId }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { initialCollectionId = collectionId }
         val controller = controller(this, catalog, Memory())
         controller.load(); idle(controller)
         val calls = catalog.browses
@@ -392,7 +392,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun allAndCollectionAddsDeduplicateAndLocalChangesPersistWithoutChangingProviderItems() = runBlocking {
-        val instance = defaultProviderInstances().last(); val catalog = Catalog(instance); val memory = Memory()
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }; val catalog = Catalog(instance); val memory = Memory()
         val controller = controller(this, catalog, memory)
         controller.load(); idle(controller)
         controller.add(catalog.offline); var state = idle(controller)
@@ -429,7 +429,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun temporaryRateLimitAndThrownErrorsAreSafeAndRetryDoesNotEraseConfiguration() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val observations = mutableListOf<FailureObservation>()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val observations = mutableListOf<FailureObservation>()
         val controller = controller(this, catalog, Memory(), diagnostics = FailureReporter({ observations.add(it) }))
         controller.load(); idle(controller); controller.add(catalog.episode); val saved = idle(controller).configured
         catalog.failure = CatalogFailure.RATE_LIMITED
@@ -447,7 +447,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun failedStorageReadBlocksWritesAndExplicitRetryReadsWithoutDefaultReplacement() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory().apply { failRead = true }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory().apply { failRead = true }
         val observations = mutableListOf<FailureObservation>()
         val controller = controller(this, catalog, memory, diagnostics = FailureReporter({ observations.add(it) }))
         controller.load(); var state = idle(controller)
@@ -461,7 +461,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun failedCapabilitiesRetryReloadsTheAdapterAndStorageFailuresAfterSuccessStillBlockWrites() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()).apply { throwCapabilities = true }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { throwCapabilities = true }
         val memory = Memory(); val controller = controller(this, catalog, memory)
         controller.load(); var state = idle(controller)
         assertNull(state.capabilities); assertFalse(state.storageFailed)
@@ -478,7 +478,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun failedMutationsPreservePriorListAndReportBoundedDiagnostics() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val observations = mutableListOf<FailureObservation>()
         val controller = controller(this, catalog, memory, diagnostics = FailureReporter({ observations.add(it) }))
         controller.load(); idle(controller); controller.add(catalog.offline); val saved = idle(controller).configured
@@ -493,7 +493,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun twoInstancesKeepDistinctLocalListsAndWrongProviderResultsCannotBeAdded() = runBlocking {
-        val first = defaultProviderInstances().last()
+        val first = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
         val second = ProviderInstance("12345678-1234-1234-1234-123456789abc", first.service, "Second account")
         val firstCatalog = Catalog(first); val secondCatalog = Catalog(second)
         val firstMemory = Memory(); val secondMemory = Memory()
@@ -512,7 +512,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun lateSearchResultsCannotReplaceAChangedQuery() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory(), Dispatchers.Default)
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val controller = controller(this, catalog, Memory(), Dispatchers.Default)
         controller.load(); idle(controller)
         val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
         catalog.onBrowse = { query -> if (query.search == "Offline") {
@@ -530,7 +530,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun acceptedWriteFinishesAfterCloseWhileLatePublicationAndCatalogUseAreStopped() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val controller = controller(this, catalog, memory, Dispatchers.Default)
         controller.load(); idle(controller)
         val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
@@ -556,7 +556,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun recreatedControllerReadsAfterAPreviouslyAcceptedWriteEvenWithNoOldControllerReference() = runBlocking {
-        val instance = defaultProviderInstances().last(); val memory = Memory()
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }; val memory = Memory()
         val first = controller(this, Catalog(instance), memory, Dispatchers.Default)
         first.load(); idle(first)
         val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
@@ -574,7 +574,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun staleMutationCallbacksDuringReloadCannotRaceAnOlderReadSnapshot() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val controller = controller(this, catalog, memory, Dispatchers.Default)
         controller.load(); idle(controller)
         controller.add(catalog.offline); val saved = idle(controller).configured!!
@@ -593,7 +593,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun retryWaitsForTheProviderDeadlineThenAllowsANewRequest() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); var now = 10_000L
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); var now = 10_000L
         val controller = controller(this, catalog, Memory(), clockMs = { now })
         controller.load(); idle(controller)
         catalog.failure = CatalogFailure.RATE_LIMITED
@@ -641,7 +641,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun tabsRestoreTheirRootRowsPaginationAndScrollIdentityWithoutWriting() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()).apply { historyAccess = CatalogAccess.AVAILABLE }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { historyAccess = CatalogAccess.AVAILABLE }
         val memory = Memory(); val controller = controller(this, catalog, memory)
         controller.load(); val all = idle(controller)
         assertEquals(DISCOVERY_ALL_TAB, all.selectedTabId)
@@ -670,7 +670,7 @@ class StreamManagementControllerTest {
 
     @Test fun restoredTabsBackAndDismissedLookupRebuildProviderExpiredContinuations() = runBlocking {
         for (operation in listOf("tab", "child", "lookup")) {
-            val catalog = Catalog(defaultProviderInstances().last()).apply { expireContinuations = true }
+            val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { expireContinuations = true }
             val controller = controller(this, catalog, Memory())
             controller.load(); val initial = idle(controller)
             when (operation) {
@@ -689,7 +689,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun tabSwitchCancelsLatePrivateResultAndObservedAccessLossInvalidatesEveryRoot() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()).apply { historyAccess = CatalogAccess.AVAILABLE }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { historyAccess = CatalogAccess.AVAILABLE }
         val controller = controller(this, catalog, Memory(), Dispatchers.Default)
         controller.load(); val all = idle(controller)
         val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
@@ -722,7 +722,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun failedContinuationRebuildRetainsTheCachedRowsAndCanBeRetriedSafely() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()).apply { expireContinuations = true }
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { expireContinuations = true }
         val controller = controller(this, catalog, Memory())
         controller.load(); val root = idle(controller)
         controller.collection(catalog.collectionId); idle(controller); controller.all(); idle(controller)
@@ -739,7 +739,7 @@ class StreamManagementControllerTest {
 
     @Test fun reloadFromChildrenReloadsTheSelectedTabOrGlobalSearchRoot() = runBlocking {
         for (searchRoot in listOf(false, true)) {
-            val catalog = Catalog(defaultProviderInstances().last()).apply { initialCollectionId = collectionId }
+            val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }).apply { initialCollectionId = collectionId }
             val controller = controller(this, catalog, Memory())
             controller.load(); idle(controller)
             if (searchRoot) { controller.search("Offline"); idle(controller) }
@@ -758,7 +758,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun unavailableTabRetentionIsBoundedAndReloadDiscardsEverySnapshot() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last())
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH })
         val controller = controller(this, catalog, Memory())
         controller.load(); idle(controller)
         repeat(MAX_DISCOVERY_TABS + 5) { controller.collection("unavailable-$it"); idle(controller) }
@@ -769,7 +769,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun linkResolutionIsAnExplicitPreviewAndWriteFailuresStayInTheDialog() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val controller = controller(this, catalog, memory)
         controller.load(); val discovery = idle(controller)
         controller.openLink()
@@ -796,7 +796,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun linkValidationLookupFailuresDuplicatesAndLimitNeverCommit() = runBlocking {
-        val catalog = Catalog(defaultProviderInstances().last()); val memory = Memory()
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val memory = Memory()
         val controller = controller(this, catalog, memory)
         controller.load(); idle(controller); controller.openLink()
         for (input in listOf(" ", "x".repeat(2049), "\n${catalog.offline.resource.identity}", "invisible\u200b")) {
@@ -833,7 +833,7 @@ class StreamManagementControllerTest {
 
     @Test fun dismissAndReopenRejectsLateLookupAndAccessLossClearsPrivateTabSnapshots() = runBlocking {
         for (failure in listOf(null, CatalogFailure.ACCESS_REQUIRED)) {
-            val catalog = Catalog(defaultProviderInstances().last()); val controller = controller(this, catalog, Memory(), Dispatchers.Default)
+            val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.TWITCH }); val controller = controller(this, catalog, Memory(), Dispatchers.Default)
             controller.load(); val root = idle(controller)
             controller.collection(catalog.collectionId); idle(controller)
             val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)
@@ -858,7 +858,7 @@ class StreamManagementControllerTest {
     }
 
     @Test fun acceptedLinkWriteClosesOnlyAfterCommitAndSurvivesControllerReplacement() = runBlocking {
-        val instance = defaultProviderInstances().last(); val memory = Memory(); val catalog = Catalog(instance)
+        val instance = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }; val memory = Memory(); val catalog = Catalog(instance)
         val first = controller(this, catalog, memory, Dispatchers.Default)
         first.load(); idle(first); first.openLink(); first.resolveLink(catalog.episode.resource.identity); linkIdle(first)
         val entered = CompletableDeferred<Unit>(); val release = CountDownLatch(1)

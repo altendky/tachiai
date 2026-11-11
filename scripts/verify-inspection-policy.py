@@ -86,20 +86,14 @@ def verify_external_source(text):
                 raise PolicyFailure("LITERAL_SECURE_FLAG_CALL")
     if re.search(r"\.\s*flags\s*(?:[|&^+\-]?=)(?!=)", text):
         raise PolicyFailure("DIRECT_FLAG_ASSIGNMENT")
-    # The Twitch screen restores prior protection through the policy, so reading
-    # the previous flag is allowed. Aliases/imports/other references are refused.
-    text = re.sub(r"window\s*\.\s*attributes\s*\.\s*flags\s+and\s+"
-                  r"WindowManager\s*\.\s*LayoutParams\s*\.\s*FLAG_SECURE\s*!=\s*0", "", text)
     if re.search(r"\bFLAG_SECURE\b", text):
         raise PolicyFailure("UNREVIEWED_SECURE_FLAG_REFERENCE")
 
 
 def verify_policy(text):
     text = compact(text)
-    screen = ("funprotectScreen(window:Window,protectedNormally:Boolean=true){"
-              "if(protectedNormally&&!BuildConfig.LOCAL_INSPECTION){"
-              "window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)"
-              "}else{window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)}}")
+    screen = ("funallowScreenCapture(window:Window){"
+              "window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)}")
     web = ("funconfigureWebInspection(enabledNormally:Boolean=false){"
            "WebView.setWebContentsDebuggingEnabled(BuildConfig.LOCAL_INSPECTION||enabledNormally)}")
     if screen not in text or web not in text:
@@ -265,9 +259,10 @@ class InspectionPolicyTests(unittest.TestCase):
                                '// WebView.setWebContentsDebuggingEnabled(false)\n'
                                'window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)')
 
-    def test_prior_protection_can_be_read(self):
-        verify_external_source('val previous = window.attributes.flags and '
-                               'WindowManager.LayoutParams.FLAG_SECURE != 0')
+    def test_prior_protection_cannot_be_retained_or_restored_outside_the_capture_policy(self):
+        with self.assertRaises(PolicyFailure):
+            verify_external_source('val previous = window.attributes.flags and '
+                                   'WindowManager.LayoutParams.FLAG_SECURE != 0')
 
     def test_direct_inspection_toggle_and_method_reference_are_refused(self):
         for source in ('WebView\n.setWebContentsDebuggingEnabled\n(false)',
@@ -286,14 +281,29 @@ class InspectionPolicyTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(PolicyFailure):
                 verify_external_source(source)
 
-    def test_policy_cannot_disable_capture_or_inspection(self):
-        source = (ROOT / POLICY).read_text()
+    def test_capture_cannot_be_blocked_or_conditioned_on_a_build_flag(self):
+        source = compact((ROOT / POLICY).read_text())
         verify_policy(source)
-        for old, new in (('!BuildConfig.LOCAL_INSPECTION', 'BuildConfig.LOCAL_INSPECTION'),
-                         ('BuildConfig.LOCAL_INSPECTION || enabledNormally', 'enabledNormally'),
-                         ('window.clearFlags', 'window.addFlags')):
+        clear = 'window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)'
+        self.assertIn(clear, source)
+        for new in ('window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)',
+                    f'if(BuildConfig.LOCAL_INSPECTION){{{clear}}}',
+                    f'if(!BuildConfig.LOCAL_INSPECTION){{{clear}}}',
+                    f'if(BuildConfig.DEBUG){{{clear}}}'):
             with self.subTest(new=new), self.assertRaises(PolicyFailure):
-                verify_policy(source.replace(old, new))
+                verify_policy(source.replace(clear, new))
+        for extra in ('window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)', 'window.addFlags(8192)'):
+            with self.subTest(extra=extra), self.assertRaises(PolicyFailure):
+                verify_policy(source + f'fun block(window:Window){{{extra}}}')
+
+    def test_capture_permission_does_not_weaken_web_inspection_policy(self):
+        source = compact((ROOT / POLICY).read_text())
+        verify_policy(source)
+        guard = 'BuildConfig.LOCAL_INSPECTION||enabledNormally'
+        self.assertIn(guard, source)
+        for replacement in ('enabledNormally', 'BuildConfig.DEBUG||enabledNormally', 'true', 'false'):
+            with self.subTest(replacement=replacement), self.assertRaises(PolicyFailure):
+                verify_policy(source.replace(guard, replacement))
 
     def test_build_guards_cannot_be_removed(self):
         source = (ROOT / "apps/android/app/build.gradle.kts").read_text()

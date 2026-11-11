@@ -25,6 +25,7 @@ import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.ResponseBody
 import okhttp3.Response
 import okhttp3.Protocol
 import okhttp3.tls.HandshakeCertificates
@@ -514,6 +515,10 @@ class RoutedHttpsConnectionTest {
             assertEquals("Routed HTTPS request failed", error.message)
             assertEquals(ProviderTransportFailure.TLS, providerTransportEvidence(error).failure)
             assertFalse(providerTransportEvidence(error).retryableAvailability)
+            val evidence = providerTransportEvidence(error)
+            assertEquals(ProviderTransportExceptionKind.TLS_HANDSHAKE, evidence.exceptionKind)
+            assertEquals(ProviderTransportOperation.TLS, evidence.operation)
+            assertTrue(evidence.phaseAvailable); assertTrue(evidence.proxyPresent)
             assertNull(error.cause)
             assertNull(connection.failureDiagnostic)
             assertNull(fixture.originHeaders.get())
@@ -551,12 +556,14 @@ class RoutedHttpsConnectionTest {
         ProxyFixture(refusal = true).use { fixture ->
             val connection = RoutedHttpsConnection(url, fixture.client(), { true })
             assertTrue(connection.observeFailures { })
-            assertThrows(IOException::class.java) { connection.responseCode }
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
             val diagnostic = checkNotNull(connection.failureDiagnostic)
             assertEquals(RoutedHttpsFailureCategory.IO, diagnostic.category)
             assertEquals(RoutedHttpsCallPhase.CONNECT, diagnostic.phase)
             assertTrue(diagnostic.proxyPresent); assertTrue(diagnostic.phaseAvailable)
             assertFalse(diagnostic.localCancellationRequested)
+            assertEquals(ProviderTransportExceptionKind.IO, providerTransportEvidence(failure).exceptionKind)
+            assertEquals(ProviderTransportOperation.CONNECT, providerTransportEvidence(failure).operation)
             assertNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
             connection.disconnect()
         }
@@ -622,6 +629,10 @@ class RoutedHttpsConnectionTest {
             val diagnostic = checkNotNull(connection.failureDiagnostic)
             assertEquals(RoutedHttpsFailureCategory.SOCKET_TIMEOUT, diagnostic.category)
             assertEquals(RoutedHttpsCallPhase.REQUEST_HEADERS_COMPLETE, diagnostic.phase)
+            val safe = providerTransportEvidence(failure)
+            assertEquals(ProviderTransportExceptionKind.SOCKET_TIMEOUT, safe.exceptionKind)
+            assertEquals(ProviderTransportOperation.REQUEST_HEADERS_COMPLETE, safe.operation)
+            assertTrue(safe.phaseAvailable); assertTrue(safe.proxyPresent)
             assertTrue(diagnostic.phaseAvailable); assertTrue(diagnostic.proxyPresent)
             assertFalse(diagnostic.localCancellationRequested)
             assertNotNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
@@ -641,6 +652,8 @@ class RoutedHttpsConnectionTest {
                 assertFalse(worker.isAlive); assertTrue(caught.get() is IOException)
                 assertEquals(ProviderTransportFailure.CANCELLED, providerTransportEvidence(checkNotNull(caught.get())).failure)
                 assertFalse(providerTransportEvidence(checkNotNull(caught.get())).retryableAvailability)
+                assertTrue(providerTransportEvidence(checkNotNull(caught.get())).localCancellationRequested)
+                assertEquals(ProviderTransportOperation.CONNECT, providerTransportEvidence(checkNotNull(caught.get())).operation)
                 assertNull(caught.get()?.cause)
                 val diagnostic = checkNotNull(connection.failureDiagnostic)
                 assertTrue(diagnostic.localCancellationRequested)
@@ -665,9 +678,13 @@ class RoutedHttpsConnectionTest {
             val client = fixture.client().newBuilder().eventListenerFactory { factories.incrementAndGet(); existing }.build()
             val connection = RoutedHttpsConnection(url, client, { true })
             assertTrue(connection.observeFailures { })
-            assertThrows(IOException::class.java) { connection.responseCode }
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
             val diagnostic = checkNotNull(connection.failureDiagnostic)
             assertFalse(diagnostic.phaseAvailable); assertEquals(RoutedHttpsCallPhase.NOT_STARTED, diagnostic.phase)
+            val safe = providerTransportEvidence(failure)
+            assertEquals(ProviderTransportOperation.UNKNOWN, safe.operation)
+            assertFalse(safe.phaseAvailable); assertTrue(safe.proxyPresent)
+            assertEquals(ProviderTransportExceptionKind.IO, safe.exceptionKind)
             assertEquals(RoutedHttpsFailureCategory.IO, diagnostic.category)
             assertEquals(1, factories.get()); assertEquals(1, starts.get()); assertEquals(1, connects.get()); assertEquals(1, failures.get())
             assertTrue(diagnostic.proxyPresent); assertFalse(diagnostic.localCancellationRequested)
@@ -692,6 +709,31 @@ class RoutedHttpsConnectionTest {
         connection.disconnect()
     }
 
+    @Test fun fineFailureEvidenceSurvivesWithoutObserverAndNeverParsesSocketMessages() {
+        val errors = listOf(
+            java.io.EOFException("https://private.example/token") to ProviderTransportExceptionKind.EOF,
+            java.net.SocketException("Connection reset private") to ProviderTransportExceptionKind.SOCKET,
+            java.net.SocketException("Socket closed private") to ProviderTransportExceptionKind.SOCKET,
+            IOException("private IO detail") to ProviderTransportExceptionKind.IO,
+        )
+        for ((original, kind) in errors) {
+            val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addInterceptor { throw original }.build()
+            val connection = RoutedHttpsConnection(url, client, { true })
+            try {
+                val thrown = assertThrows(IOException::class.java) { connection.responseCode }
+                val evidence = providerTransportEvidence(thrown)
+                assertEquals(ProviderTransportFailure.UNKNOWN, evidence.failure)
+                assertEquals(kind, evidence.exceptionKind)
+                assertEquals(ProviderTransportOperation.CALL, evidence.operation)
+                assertTrue(evidence.phaseAvailable); assertFalse(evidence.proxyPresent)
+                assertFalse(evidence.retryableAvailability); assertFalse(evidence.localCancellationRequested)
+                assertNull(connection.failureDiagnostic); assertNull(thrown.cause)
+                assertFalse(evidence.toString().contains("private"))
+                assertFalse(thrown.stackTraceToString().contains("private.example"))
+            } finally { connection.disconnect() }
+        }
+    }
+
     @Test fun realPreTlsConnectTimeoutHasTypedEvidenceWithoutDiagnosticOptIn() {
         ProxyFixture(block = true).use { fixture ->
             val connection = RoutedHttpsConnection(url, fixture.client(), { true })
@@ -701,6 +743,9 @@ class RoutedHttpsConnectionTest {
                 assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
                 assertEquals(ProviderTransportPhase.CONNECT, error.evidence.phase)
                 assertTrue(error.evidence.retryableAvailability)
+                assertEquals(ProviderTransportExceptionKind.SOCKET_TIMEOUT, error.evidence.exceptionKind)
+                assertEquals(ProviderTransportOperation.CONNECT, error.evidence.operation)
+                assertTrue(error.evidence.phaseAvailable); assertTrue(error.evidence.proxyPresent)
                 assertNull(connection.failureDiagnostic); assertNull(fixture.originHeaders.get())
             } finally { connection.disconnect() }
         }
@@ -717,6 +762,9 @@ class RoutedHttpsConnectionTest {
                 assertEquals(ProviderTransportFailure.TIMEOUT, error.evidence.failure)
                 assertEquals(ProviderTransportPhase.RESPONSE, error.evidence.phase)
                 assertFalse(error.evidence.retryableAvailability)
+                assertEquals(ProviderTransportExceptionKind.SOCKET_TIMEOUT, error.evidence.exceptionKind)
+                assertEquals(ProviderTransportOperation.RESPONSE_BODY, error.evidence.operation)
+                assertTrue(error.evidence.phaseAvailable); assertTrue(error.evidence.proxyPresent)
                 assertEquals(RoutedHttpsFailureCategory.SOCKET_TIMEOUT, checkNotNull(connection.failureDiagnostic).category)
                 assertNotNull(fixture.originHeaders.get())
             } finally { connection.disconnect() }
@@ -799,7 +847,7 @@ class RoutedHttpsConnectionTest {
     }
 
     @Test fun responseOwnershipTimeoutRetainsUnconfirmedConnectionForCleanupRetry() {
-        ProxyFixture(slowBody = true).use { fixture ->
+        for (interruptClose in listOf(false, true)) ProxyFixture(slowBody = true).use { fixture ->
             val unregisters = AtomicInteger()
             val connection = RoutedHttpsConnection(url, fixture.client(), { true }) { unregisters.incrementAndGet() }
             assertEquals(200, connection.responseCode)
@@ -811,7 +859,9 @@ class RoutedHttpsConnectionTest {
                 reader.start()
                 assertTrue(fixture.bodyReadStarted.await(3, TimeUnit.SECONDS))
                 val started = System.nanoTime()
+                if (interruptClose) Thread.currentThread().interrupt()
                 val error = assertThrows(IOException::class.java) { connection.disconnect() }
+                assertEquals(interruptClose, Thread.currentThread().isInterrupted)
                 val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
                 assertEquals("Routed response ownership could not be confirmed", error.message)
                 assertTrue("Ownership waiting must be bounded", elapsedMs < 2_000)
@@ -819,6 +869,7 @@ class RoutedHttpsConnectionTest {
                 assertEquals(0, fixture.responseBodyCloses.get())
                 assertThrows(IOException::class.java) { connection.responseCode }
             } finally {
+                Thread.interrupted()
                 fixture.releaseCancelledBodyRead.countDown()
                 reader.join(3_000)
                 connection.disconnect()
@@ -832,6 +883,84 @@ class RoutedHttpsConnectionTest {
             assertEquals(1, fixture.responseBodyCloses.get())
             assertEquals(1, unregisters.get())
         }
+    }
+
+    @Test fun seekCancellationCanCloseResponseOnInterruptedLoaderWithoutLosingInterrupt() {
+        for (closeStreamFirst in listOf(true, false)) ProxyFixture().use { fixture ->
+            val unregisters = AtomicInteger()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true }) { unregisters.incrementAndGet() }
+            assertEquals(200, connection.responseCode)
+            val input = connection.inputStream
+            try {
+                Thread.currentThread().interrupt()
+                if (closeStreamFirst) {
+                    input.close()
+                    assertTrue(Thread.currentThread().isInterrupted)
+                }
+                connection.disconnect()
+                assertTrue(Thread.currentThread().isInterrupted)
+                input.close(); connection.disconnect()
+                assertTrue(Thread.currentThread().isInterrupted)
+                assertEquals(1, fixture.responseBodyCloses.get())
+                assertEquals(1, unregisters.get())
+            } finally {
+                Thread.interrupted()
+                connection.disconnect()
+            }
+        }
+    }
+
+    @Test fun interruptedInputAcquisitionStillAllowsConfirmedDisconnect() {
+        ProxyFixture().use { fixture ->
+            val unregisters = AtomicInteger()
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true }) { unregisters.incrementAndGet() }
+            assertEquals(200, connection.responseCode)
+            try {
+                Thread.currentThread().interrupt()
+                assertThrows(IOException::class.java) { connection.inputStream }
+                assertTrue(Thread.currentThread().isInterrupted)
+                connection.disconnect()
+                assertTrue(Thread.currentThread().isInterrupted)
+                assertEquals(1, fixture.responseBodyCloses.get())
+                assertEquals(1, unregisters.get())
+            } finally {
+                Thread.interrupted()
+                connection.disconnect()
+            }
+        }
+    }
+
+    @Test fun interruptedCleanupStillRefusesActualBodyCloseFailure() {
+        val refuseClose = AtomicBoolean(true)
+        val unregisters = AtomicInteger()
+        val body = "fixture".toResponseBody()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                .body(object : ResponseBody() {
+                    override fun contentType() = body.contentType()
+                    override fun contentLength() = body.contentLength()
+                    override fun source() = body.source()
+                    override fun close() {
+                        if (refuseClose.get()) throw IOException("Synthetic close refusal")
+                        body.close()
+                    }
+                }).build()
+        }.build()
+        val connection = RoutedHttpsConnection(url, client, { true }) { unregisters.incrementAndGet() }
+        val input = connection.inputStream
+        try {
+            Thread.currentThread().interrupt()
+            assertThrows(IOException::class.java) { input.close() }
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertThrows(IOException::class.java) { connection.disconnect() }
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertEquals(0, unregisters.get())
+        } finally {
+            Thread.interrupted()
+            refuseClose.set(false)
+            connection.disconnect()
+        }
+        assertEquals(1, unregisters.get())
     }
 
     @Test fun redirectsRemainResponsesAndBodiesAreBoundedBeforeConnecting() {

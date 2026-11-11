@@ -22,8 +22,13 @@ class NativeMixedPairTest {
         var throwClose = false
         var snapshotCalls = 0
         var secondSample: NativeTimingSnapshot? = null
+        var snapshotHook: () -> Unit = {}
+        var pauseHook: () -> Unit = {}
+        var playHook: () -> Unit = {}
+        var playRequests = 0
         override fun timingSnapshot(): NativeTimingSnapshot? {
             snapshotCalls++
+            snapshotHook()
             if (snapshotCalls == 2) secondSample?.let { sample = it }
             if (throwSnapshot) throw IllegalStateException()
             return if (closed) null else sample
@@ -40,6 +45,7 @@ class NativeMixedPairTest {
             playingCalls++
             if (closed || playing && refusePlay || !playing && refusePause) return false
             sample = sample.copy(playing = playing, playWhenReady = playing)
+            if (playing) { playRequests++; playHook() } else pauseHook()
             return true
         }
         override fun setVolume(volume: Float): Boolean {
@@ -48,6 +54,122 @@ class NativeMixedPairTest {
             return true
         }
         override fun close() { closed = true; if (throwClose) throw IllegalStateException() }
+    }
+
+    @Test fun `untouched playing negative live point continues buffered data after a B advance only`() {
+        for (operation in 0..2) {
+            val a = Member(live.copy(positionMs = -2_000, bufferedMs = 5_000, playing = true, playWhenReady = true))
+            val b = Member(replay.copy(playing = true, playWhenReady = true))
+            val pair = NativeMixedPair(a, b, { true }, {}, requireCurrentLiveWindowOnPlay = true)
+            val result = when (operation) {
+                0 -> pair.shift(NativeMixedSide.B, 1_000)
+                1 -> pair.shiftRelative(-1_000)
+                else -> pair.alignRelative(-1_000)
+            }
+            assertEquals(NativeSeekOutcome.REQUESTED, result.outcome)
+            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            // Its window moved, but the held existing footage did not.
+            a.sample = a.sample.copy(windowStartMs = 1_001_000, positionMs = -3_000, bufferedMs = 4_000)
+            pair.poll()
+            assertFalse(pair.busy); assertTrue(a.sample.playing); assertTrue(b.sample.playing)
+            assertEquals(1, a.playRequests); assertEquals(1, b.playRequests)
+            assertEquals(-1_000L, pair.requestedAdjustmentMs)
+            pair.pause()
+            assertFalse("Explicit Play keeps the strict live-window policy", pair.play())
+            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            pair.close()
+        }
+    }
+
+    @Test fun `negative buffered continuation requires actual original playback and fresh buffer clock kind proof`() {
+        for (marked in listOf(false, true)) for (invalid in 0..6) {
+            val original = live.copy(positionMs = -2_000, bufferedMs = 5_000, playing = true, playWhenReady = true)
+            val a = Member(when (invalid) {
+                0 -> original.copy(playing = false)
+                1 -> original.copy(playWhenReady = false, playing = false)
+                else -> original
+            })
+            val b = Member(replay.copy(playing = true, playWhenReady = true))
+            val pair = NativeMixedPair(a, b, { true }, {}, requireCurrentLiveWindowOnPlay = true)
+            val result = if (marked) pair.alignRelative(-1_000) else pair.shiftRelative(-1_000)
+            assertEquals(NativeSeekOutcome.REQUESTED, result.outcome)
+            a.sample = when (invalid) {
+                2 -> a.sample.copy(bufferedMs = null)
+                3 -> a.sample.copy(bufferedMs = a.sample.positionMs)
+                4 -> a.sample.copy(windowStartMs = 1_000_101)
+                5 -> a.sample.copy(live = false, dynamic = false)
+                6 -> a.sample.copy(windowStartMs = null)
+                else -> a.sample
+            }
+            pair.poll()
+            assertFalse(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(0, a.playRequests + b.playRequests)
+            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            pair.close()
+        }
+    }
+
+    @Test fun `buffered continuation cannot survive owner focus source or transaction cancellation`() {
+        for (marked in listOf(false, true)) for (cancel in 0..5) {
+            val a = Member(live.copy(positionMs = -2_000, bufferedMs = 5_000, playing = true, playWhenReady = true))
+            val b = Member(replay.copy(playing = true, playWhenReady = true))
+            var allowed = true
+            var focus = true
+            val pair = NativeMixedPair(a, b, { focus }, {}, requireCurrentLiveWindowOnPlay = true,
+                admission = { allowed })
+            assertEquals(NativeSeekOutcome.REQUESTED,
+                (if (marked) pair.alignRelative(-1_000) else pair.shiftRelative(-1_000)).outcome)
+            when (cancel) {
+                0 -> allowed = false
+                1 -> focus = false
+                2 -> pair.detach() // A replacement source retires this coordinator.
+                3 -> pair.focusLost()
+                4 -> pair.pause()
+                else -> a.snapshotHook = { a.snapshotHook = {}; pair.pause() }
+            }
+            pair.poll()
+            assertFalse(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(0, a.playRequests + b.playRequests)
+            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            pair.close()
+        }
+    }
+
+    @Test fun `peer clock jump while pausing cannot create a continuation proof for another point`() {
+        for (marked in listOf(false, true)) {
+            val a = Member(live.copy(positionMs = -2_000, bufferedMs = 5_000, playing = true, playWhenReady = true))
+            val b = Member(replay.copy(playing = true, playWhenReady = true))
+            a.pauseHook = { a.sample = a.sample.copy(windowStartMs = 1_000_101) }
+            val pair = NativeMixedPair(a, b, { true }, {}, requireCurrentLiveWindowOnPlay = true)
+            assertEquals(NativeSeekOutcome.REQUESTED,
+                (if (marked) pair.alignRelative(-1_000) else pair.shiftRelative(-1_000)).outcome)
+            pair.poll()
+            assertFalse(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(0, a.playRequests + b.playRequests)
+            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            pair.close()
+        }
+    }
+
+    @Test fun `focus callback and first resumed member cannot bypass continuation lifetime or clock checks`() {
+        for (marked in listOf(false, true)) for (change in 0..2) {
+            val a = Member(live.copy(positionMs = -2_000, bufferedMs = 5_000, playing = true, playWhenReady = true))
+            val b = Member(replay.copy(playing = true, playWhenReady = true))
+            lateinit var pair: NativeMixedPair
+            pair = NativeMixedPair(a, b, {
+                if (change == 0) a.sample = a.sample.copy(windowStartMs = 1_000_101)
+                if (change == 1) pair.pause()
+                true
+            }, {}, requireCurrentLiveWindowOnPlay = true)
+            if (change == 2) a.playHook = { pair.pause() }
+            assertEquals(NativeSeekOutcome.REQUESTED,
+                (if (marked) pair.alignRelative(-1_000) else pair.shiftRelative(-1_000)).outcome)
+            pair.poll()
+            assertFalse(pair.busy); assertFalse(a.sample.playing); assertFalse(b.sample.playing)
+            assertEquals(0, b.playRequests)
+            assertEquals(if (change == 2) 1 else 0, a.playRequests)
+            pair.close()
+        }
     }
 
     @Test fun `each member shifts its own unrelated clock and scalar has relative sign`() {

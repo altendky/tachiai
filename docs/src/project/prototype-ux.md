@@ -545,8 +545,11 @@ initial-estimate resets. Scoped repository checks and documentation build passed
 no actual provider manual-switching, new audio observation, TV, casting or
 physical-device performance result is claimed here.
 
+### Relative timing and event marks
+
 The native viewer's Timing panel has two direct-action rows, **Advance A** and
-**Advance B**, each with 0.1 s, 0.25 s, 0.5 s, 1 s and 5 s buttons in that order.
+**Advance B**, each with 0.1 s, 0.25 s, 0.5 s, 1 s and 5 s buttons followed by
+**Mark**.
 A press immediately requests that feed's relative advance; there is no shared
 step selector. Descriptions name both sources and the duration, and directional
 focus follows the rows. All steps are disabled while an adjustment is busy or
@@ -554,6 +557,204 @@ two playable feeds are unavailable. Feedback still reports requested timing,
 not measured synchronization. Compact layouts retain scrollable controls and
 48 dp button targets. Cancelling More preserves the open controls and panel;
 Hide and video/background taps retain their explicit dismissal behavior.
+
+Mark aligns a matching event. Press the first feed's Mark when an event appears
+or is heard, then the other feed's Mark when the same event happens there. The
+second mark automatically requests the full measured relative adjustment using
+bounded seeks. It uses one feed when possible; otherwise it can split the exact
+correction across both current windows, leaving room from their edges. Both
+targets must settle before playback resumes. A zero gap needs no seek; an unavailable
+full step is refused with visible feedback, without repeated automatic attempts.
+The panel estimates which feed is ahead and which Advance row reduces any
+remaining gap. It uses elapsed footage within each feed's own
+clock, never a subtraction of unrelated provider timestamps. The estimate
+updates after manual adjustments and while playback progresses; pauses and
+buffering do not substitute wall time for footage. It is a human-marked estimate,
+not a synchronization lock or a claim of frame/audio precision. Playback resumes
+after a successful adjustment if both feeds were playing, following the existing
+Advance behavior.
+
+A later pair of Marks measures the remaining gap from the already adjusted
+playback, adding or subtracting its finer correction rather than replacing the
+first correction. Planning compares both single-feed options and can split a
+correction when that leaves substantially more live-window headroom. It still
+requests the exact correction and does not add a minimum-window-margin refusal.
+
+A selected live target must be legal when dispatched. If its window advances
+during loading, an originally playing Mark transaction may continue the same
+SDK-confirmed held READY target only with its exact own clock, unchanged clock
+kind and buffered data ahead, rechecked after focus and before each start. Both
+current and buffered positions can be negative relative to a sliding window.
+This follows the [Media3 readiness contract](https://developer.android.com/reference/androidx/media3/common/Player#STATE_READY)
+and [live-window position model](https://developer.android.com/media/media3/exoplayer/live-streaming).
+It adds no negative seek, retry or authorization renewal. A paused transaction
+whose selected target expires does not claim settlement; ordinary explicit Play
+and Back to live retain their separate window guards.
+
+Unknown historical adjustment totals remain unknown. They are labeled separately
+from the latest Mark result, so an earlier failure does not keep branding a
+successful fresh correction as an invalid anchor. A failed seek still reports
+its specific readiness, clock, window, authorization or deadline cause, and a
+refused pause retains its Stop-required warning.
+
+Each mark stays in memory for the current pair. Mark requires two ready feeds
+with known playback positions, outside advertisements and timing transactions.
+The estimate waits during unavailable positions. Pressing an already **Marked**
+button clears both marks without recording a replacement or undoing an applied
+alignment. The next press starts a fresh measurement. A marked button can clear
+the pair while clock positions are unavailable, once a timing transaction ends.
+Successful alignment also clears both selections automatically, after the exact
+requested settlement is observed. A zero-gap confirmed result clears them
+immediately. A request, refusal or unfinished/canceled transaction does not claim
+success or clear the marks. The saved immutable correspondence remains available
+after the visible selections clear.
+Changing a feed/session or its clock kind clears the marks. Swapping the floating
+and primary panes preserves their A/B identities and marks. The same controls,
+labels and behavior apply on Android phone, tablet and TV.
+
+The Mark work passed shared Rust tests and the browser-binding smoke, the Android
+JVM regression suite and focused timing/controller checks. Eight provider-free
+UI fixtures passed on the physical Pixel 6 (Android 17/API 37), covering both
+marking orders, exact correction dispatch and playback restoration, refused and
+zero corrections, stale/retired controls, row focus and 48 dp targets in compact
+portrait/landscape fixtures. These use synthetic playback members, not provider
+video or an acoustic/frame comparison. Saved routes/accounts were preserved.
+The ordinary debug build was installed and its shared signing identity verified;
+the phone was returned to the normal launcher. Its APK SHA-256 is
+`dabf821eaf5fce28545220259b4171494eaf350c5082fa3230bd2ef9039ee4dc`.
+At the user's request, that same ordinary APK was also installed in place on the
+NVIDIA SHIELD Android TV (Android 11/API 30), retaining its saved app data. This
+confirms deployment, not a physical-TV playback or marked-alignment observation.
+
+### Timing and overlay focus
+
+A focused control keeps its identity across temporary busy/disabled states and
+asynchronous updates. When it becomes available again, focus returns to that
+same action. Select presses made while that action is temporarily unavailable
+are consumed, including repeat and release events; they cannot activate an
+automatically focused Pause button. Explicit navigation, touch, another action,
+panel/menu changes and session changes supersede an older focus restoration.
+Media Pause remains available. Reopened panels remember their last control,
+including recreated Quality controls. Focused controls keep the overlay visible.
+These rules apply to keyboard/remote focus across Android phone, tablet and TV;
+they do not create focus in response to touch alone.
+
+### Remembered pair offsets
+
+The video panes currently omit their A/B source-title chips. Timing, source
+selection and accessibility descriptions retain the feed identities. This
+shared rule applies to Android phone, tablet and TV.
+
+Timing includes an **Offset: On / Off** control and separate offset-value and
+applied-offset readbacks. A successfully settled Advance or Mark adjustment
+updates the pair's remembered correction automatically. Disabling removes the
+currently applied correction through an exact bounded adjustment and retains
+its value; enabling reapplies the saved relationship when its timelines appear
+consistent, otherwise the session's seconds correction. The control changes its applied state
+only after settlement, and a refused inverse does not report Off. It retains
+focus across the same busy/save transitions as other timing controls.
+
+The user approved automatic application when reopening a pair on 2026-11-07.
+Both the fallback seconds correction and a settled Mark pair's own event
+timestamps are now saved. Later manual adjustments update the correspondence's
+desired residual without rewriting the actual event timestamps. Zero-gap marks
+also save their correspondence. Refused, canceled or unconfirmed adjustments
+preserve the previous saved data; clearing visible marks retains it until a new
+measurement succeeds.
+
+Once both feeds are prepared and READY, an enabled preference is tried once.
+Consistent timeline evidence recalculates the needed movement from each feed's
+elapsed footage since its marked event. It does not seek back to that event,
+which can be outside the current DVR window. The actual movement can differ
+from the fallback seconds correction; disabling reverses only the confirmed
+movement from this session's baseline. A detected change or missing evidence
+keeps the seconds correction as a fallback estimate, reported separately in
+Timing. There is no partial clamp, periodic retry or additional live-default
+seek. Disabled preferences do not restore; a zero correction does not seek.
+
+Timeline evidence is deliberately conservative: native DASH compares the
+presentation epoch and period start; HLS requires program date/time and
+overlapping sequence samples with matching clock mapping and discontinuity.
+No overlap remains unverified. Replay compares duration within the exact saved
+resource identity. These are consistency heuristics, not content-version proof
+or confirmation of matching displayed frames, unchanged broadcaster delay or
+audio synchronization. Only closed numeric metadata is retained, never signed
+URLs, manifest contents or provider/account credentials.
+
+While a viewer remains open, consistent overlapping observations advance an
+in-memory witness without changing the marked event timestamps. This permits a
+later feed retry to compare with the recently observed window. Unknown evidence
+cannot advance a witness, and a new discontinuity is a change even when older
+segments still overlap. A fresh application session starts from persisted
+evidence; an expired HLS overlap can therefore remain unverified.
+
+On 2026-11-10 the user approved using the previous offset as a better retry
+estimate than zero when timestamp continuity is unavailable. Observations now
+continue independently for the surviving feed while its partner is absent.
+After Retry, both playing feeds first try the marked timestamp relationship.
+Without consistent timestamps, the viewer estimates the movement needed to
+recover its last settled playing relationship, using each live feed's distance
+behind its own window end and replay position, sampled on a monotonic clock.
+This avoids adding the entire saved correction again when the surviving feed
+already retains part or all of it. If that session observation is unavailable,
+the saved seconds correction is the fallback guess. Disabled offsets and
+explicit superseding transport/timing actions still prevent automatic restore.
+Existing readiness, advertisement, seek-window and settlement checks apply;
+refused or unconfirmed movement never replaces the saved preference. Estimates
+are not timeline-continuity proof, and changed live latency/window ends can
+make them inaccurate. A retry still leaves the reversible scalar baseline
+unknown, so it does not claim that the complete old correction can be toggled
+off through an exact inverse.
+
+Each device stores its own encrypted, bounded pair preferences. Identity uses
+the exact public source and provider-instance identities, excluding titles,
+routes, authorization and local catalogue-item IDs. Reassigning distinct sources
+between A/B reverses the correction/residual signs and swaps timestamp/evidence
+sides; swapping the visible primary pane
+does not. Identical exact sources retain logical A/B slot orientation because
+their assignments cannot identify a reversal.
+
+The existing v1 seconds records remain readable and migrate only on a successful
+write. The v2 encrypted record remains bounded to 64 pairs and 8 KiB; timestamp
+metadata can reach the byte limit sooner. Capacity failures preserve existing
+records without eviction.
+
+Requested-delta history is never saved as proof of a completed adjustment.
+Pause/focus loss cancel pending restoration; Back to live, a replaced feed or an
+uncertain movement makes the applied baseline unknown without deleting the
+preference. After a feed replacement, an enabled consistent timestamp mapping
+may restore once both current feeds are playing; unknown mapping does not cause
+an automatic seek. This preserves the unknown scalar baseline, so automatic
+reversal and remembering a new scalar total still require reopening the pair.
+Fresh marks can save a new timestamp mapping independently of that baseline.
+Explicit user
+actions supersede a delayed startup restore. Read/write failures remain visible,
+keep existing records and never imply a saved or applied result.
+
+The ordinary debug build containing this feature passed 2,582 JVM cases with
+one opt-in test skipped, scoped repository checks and the shared debug
+certificate check. APK SHA-256 is
+`eee934a0b04dd0f8fc7aeb13ebee7970421d3914fcd5b5ecc7d6dcf13a56618c`.
+It was installed in place on the Pixel 6 and NVIDIA SHIELD without clearing
+their saved state. All 25 provider-free timing, focus and offset-control cases
+passed on the SHIELD, including both phone/TV configurations in offset/focus
+fixtures. The phone had relocked before the new offset UI run, so that run was
+not attempted; the earlier Back-to-live timing/focus run passed there while
+unlocked. Synthetic clocks, storage and controls do not establish actual
+provider alignment, persistence across provider latency changes or acoustic
+synchronization. A fresh live marked-alignment retest remains outstanding.
+
+The later timestamp-correspondence, automatic-mark-clearing and last-selection
+update passed 2,699 JVM cases with one opt-in case skipped. App and test APKs use
+the stable debug certificate. The latest app APK SHA-256 is
+`cdc4f45e2919b96009a29ca4f585238d4bdf403b3adb8aa91ff117a02076e34f`.
+Before the user's TV hold, 22 of 23 provider-free Mark/timing cases passed on the
+SHIELD; the remaining case's old ad-state assertion was updated to test clearing
+an existing mark during an ad and passed its targeted rerun. That run predates
+automatic clearing and durable A/B selection. Their newer UI fixtures compile;
+the phone was locked at the availability check and no further TV operation was
+performed after the user asked to leave it alone. These checks do not establish
+live-provider continuity, frame precision or acoustic synchronization.
 
 System Back dismisses an open More menu first, then an Audio, Timing, Quality or
 Status panel. Dismissing a panel keeps playback, volume/mute state and pane
@@ -589,7 +790,12 @@ a valid live default in its current window.
 
 Returning to live pauses every available feed and requests the selected feed's
 SDK live default once. It waits at most eight seconds for the selected player to
-be held READY within its current live window; **Play** is explicit afterward.
+be held READY within its current live window. When the available feed, or both
+feeds in a pair, were playing before the action, playback resumes after fresh
+ownership, audio-focus and position checks. An untouched peer can retain its
+verified existing buffered live point under the same narrow continuation rules
+as relative timing. Previously paused playback stays paused; a canceled or
+failed check cannot restart it.
 With two feeds, the attempted seek invalidates the timing anchor. Returning to
 live does not restore alignment or establish an exact live-edge timestamp.
 Pause, focus loss, member replacement/removal and session disposal cancel the
@@ -682,7 +888,7 @@ The catalogue now also offers Twitch Chillhop Radio and Virtual Japan live,
 alongside Izgonnabemei. These are fixed public channel choices; availability is
 determined during preparation, not assumed from the catalogue.
 
-Open viewer immediately presents two labelled panes. Each starts with a
+With two selections, Open viewer immediately presents two labelled panes. Each starts with a
 preparation message and independently becomes video or a scrollable error.
 A successful feed starts without waiting for the other feed. A failed feed
 closes its own session while a healthy feed continues. If both fail, the viewer
@@ -842,6 +1048,36 @@ physical-device playback, audio or performance.
 
 ## Source assignment follow-up
 
+The picker accepts one or two selected feeds. Clearing both leaves Watch
+disabled; selecting only A or only B opens that exact slot full-stage in
+portrait, landscape and TV layouts. No unused pane, floating rectangle, player,
+provider preparation or route is created for the empty slot. A selected but
+preparing or failed feed retains its pane and recovery actions; two selections
+retain the two-pane layout even when one fails. Invalid selected items still
+block Watch instead of being silently discarded.
+
+Single-feed playback retains Play/Pause, overall volume, its mute and quality
+controls, and applicable live recovery. Pair timing, mix/fade and floating-feed
+actions are hidden. The selected feed uses overall gain directly; a missing
+partner does not halve its volume. A/B remain logical identities, so B-only
+playback retains B's session overrides, diagnostics and retry attribution.
+Saved pair alignment is neither read nor applied for a singleton, and its stored
+data remains intact. Last-selected A/B persistence retains an empty counterpart.
+
+The single-feed update passed 2,709 JVM cases with one opt-in case skipped,
+native-core build checks and app/test APK assembly with the stable debug
+certificate. On the physical SHIELD (Android 11/API 30), 36 provider-free
+viewer/timing/selection-restoration cases passed, followed by all 28 picker
+cases after their phone-only checkbox/sharing fixtures were made explicit and
+an incomplete provider setup fixture was repaired. The initial run was obscured
+by the TV screensaver; the awake rerun established these results. A-only and
+B-only geometry, volume/quality controls, selected failure recovery, two-selected
+failure layout, Mark settlement and persisted partial selections are covered by
+synthetic sources. This does not establish fresh provider decoding or audio.
+The ordinary APK, SHA-256
+`3d20fb1a614faba102347e55133cd71af85f9d82157bc759d0766a560b5a0422`,
+was installed in place on the SHIELD and the ordinary app was reopened.
+
 The subsequent provider-tree picker groups the options under ABEMA and Twitch
 headings, with all children visible and indented. Source rows retain independent
 A/B checkboxes. A small read-only dash indicator in each provider's A/B column
@@ -851,10 +1087,21 @@ accessibility descriptions and viewer labels retain the full source identity.
 
 The picker now renders one catalogue with independent A/B checkboxes. Checking
 a row replaces only that slot's previous source; both boxes on one row are
-allowed. Unchecking the current choice leaves that slot unassigned and disables
-Open viewer until both have choices. Source identities remain saveable across
-rotation, and only a complete ordered selection reaches existing preparation.
+allowed. Unchecking the current choice leaves that slot unassigned; Watch stays
+available when the other selected source is valid. Source identities remain
+saveable across rotation, and only validated selected sources reach preparation.
 This changes selection UI, not duplicate-host ownership or provider handling.
+
+Last-selected A/B choices also persist in their own encrypted no-backup record
+across application restarts. Changes save both slots together, preserving partial,
+empty and duplicate choices. Cold-start hydration restores the picker; Watch
+still starts playback. Saved Activity state and explicit recovery checkpoints
+take priority, including empty slots. A user edit supersedes a delayed read.
+Only assignment state resets when hydration arrives, preserving picker navigation.
+Removed source/provider-instance references remain unresolved with no substituted
+source. Selection reads and writes share a process-level serial lane so Activity
+recreation cannot let an older accepted write replace a newer choice. Storage
+failures are visible and invalid records are not silently replaced.
 Build and device verification for this follow-up are recorded separately below.
 
 The October 7 follow-up passed the controlled SDK 37.2 `test`, lint,

@@ -11,6 +11,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven("https://jitpack.io") {
+            content {
+                includeGroup("com.github.teamnewpipe")
+                includeGroup("com.github.TeamNewPipe")
+            }
+        }
     }
 }
 

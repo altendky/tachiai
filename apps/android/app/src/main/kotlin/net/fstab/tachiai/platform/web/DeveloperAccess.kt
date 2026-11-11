@@ -5,14 +5,10 @@ import android.view.WindowManager
 import android.webkit.WebView
 import net.fstab.tachiai.BuildConfig
 
-/** Compile-time local inspection policy, shared by every app process/window. */
+/** Shared capture policy and compile-time WebView inspection policy. */
 internal object DeveloperAccess {
-    fun protectScreen(window: Window, protectedNormally: Boolean = true) {
-        if (protectedNormally && !BuildConfig.LOCAL_INSPECTION) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        } else {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
+    fun allowScreenCapture(window: Window) {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
 
     // This is process-global. Teardown must also respect the inspection build.

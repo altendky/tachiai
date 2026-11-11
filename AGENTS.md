@@ -108,14 +108,20 @@ When asking the user to activate a provider, include the activation code in the
 URL whenever the provider supports it, preferably using its supplied complete
 verification URL. Otherwise provide the code beside the activation link.
 
+Tachiai permits user-controlled screenshots in ordinary and inspection builds.
+On 2026-11-10 the user explicitly requested removal of app-imposed screenshot
+blocking for sharing bugs. Do not add window-level capture blocking; Android/DRM
+may independently protect media surfaces. This does not authorize automatic
+collection or retention of credentials, secrets or protected media.
+
 The user-approved, local-only `inspect` build is an explicit exception to
-screenshot, UI hierarchy and DevTools restrictions, including provider login and
+UI hierarchy and DevTools restrictions, including provider login and
 account pages. Agents may observe these surfaces and use local debugging tools
 for DOM inspection and interaction without asking for another inspection approval.
 Provider credential entry remains user-controlled; do not collect passwords or
 automatically log or retain secrets. This does not authorize app-injected login
 scripts, native JavaScript bridges, TLS bypasses, route/account-validation changes
-or protected-media extraction. Ordinary builds retain their protections. Follow
+or protected-media extraction. Ordinary builds retain those inspection protections. Follow
 the [inspection build guide](docs/src/project/android-development.md#local-inspection-build)
 and [scope](docs/src/project/security-and-privacy.md#local-inspection-build-approval--2026-10-15).
 

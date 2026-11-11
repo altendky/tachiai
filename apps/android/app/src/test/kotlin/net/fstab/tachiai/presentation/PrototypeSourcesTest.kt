@@ -15,7 +15,7 @@ class PrototypeSourcesTest {
         assertEquals(36, choices)
     }
     @Test fun `catalogue has live and replay for each initial service`() {
-        for (service in PrototypeService.entries) {
+        for (service in PrototypeSource.entries.map { it.service }.distinct()) {
             assertEquals(PrototypePlaybackKind.entries.toSet(),
                 PrototypeSource.entries.filter { it.service == service }.map { it.kind }.toSet())
         }

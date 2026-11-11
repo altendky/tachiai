@@ -6,7 +6,7 @@ import org.junit.Test
 
 class SampleProviderCatalogTest {
     @Test fun samplesAreExistingPublicChoicesWithUnknownStatusAndUnconnectedAccountCollections() {
-        defaultProviderInstances().forEach { instance ->
+        defaultProviderInstances().filter { instance -> PrototypeSource.entries.any { it.service == instance.service } }.forEach { instance ->
             val catalog: ProviderCatalog = SampleProviderCatalog(instance, defaultSourceSetups())
             val page = (catalog.browse(CatalogQuery()) as CatalogResult.Value<CatalogPage>).value
             assertEquals(PrototypeSource.entries.filter { it.service == instance.service }.map(::prototypeCatalogResource),

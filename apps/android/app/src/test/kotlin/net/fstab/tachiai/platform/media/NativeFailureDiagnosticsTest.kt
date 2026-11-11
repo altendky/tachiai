@@ -9,10 +9,37 @@ import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportPhase
+import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
+import net.fstab.tachiai.platform.network.ProviderTransportOperation
 import org.junit.Assert.*
 import org.junit.Test
 
 class NativeFailureDiagnosticsTest {
+    @Test fun `sanitized media exception preserves closed transport detail through repeated projection`() {
+        val safe = ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN, ProviderTransportPhase.RESPONSE,
+            exceptionKind = ProviderTransportExceptionKind.EOF, operation = ProviderTransportOperation.RESPONSE_BODY,
+            phaseAvailable = true, proxyPresent = true)
+        val raw = ProviderTransportException(safe).also {
+            it.initCause(IOException("https://private.example/token"))
+            it.addSuppressed(IOException("private suppressed detail"))
+        }
+        val projected = nativeMediaRequestException(raw)
+        assertEquals(NativeMediaRequestFailure.TRANSPORT_UNKNOWN, projected.failure)
+        assertSame(safe, projected.transportEvidence)
+        assertSame(safe, nativeMediaRequestException(projected).transportEvidence)
+        assertNull(projected.cause); assertTrue(projected.suppressed.isEmpty())
+        assertFalse(projected.stackTraceToString().contains("private"))
+        for ((error, kind) in listOf(java.io.EOFException("private") to ProviderTransportExceptionKind.EOF,
+            java.net.SocketException("Connection reset private") to ProviderTransportExceptionKind.SOCKET,
+            IOException("private") to ProviderTransportExceptionKind.IO)) {
+            val result = nativeMediaRequestException(error)
+            assertEquals(NativeMediaRequestFailure.IO, result.failure)
+            assertEquals(kind, result.transportEvidence?.exceptionKind)
+            assertNull(result.cause)
+        }
+        assertNull(nativeMediaRequestException(IllegalArgumentException("private")).transportEvidence)
+    }
+
     @Test fun `media request projection classifies transport without retaining private exception metadata`() {
         val secret = "https://private.example/path?token=synthetic-secret"
         val failures = listOf(

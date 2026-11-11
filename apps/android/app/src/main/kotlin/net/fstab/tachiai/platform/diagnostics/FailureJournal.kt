@@ -14,6 +14,7 @@ import java.util.UUID
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.platform.media.NativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
@@ -259,13 +260,21 @@ internal class FailureReporter(
     private val fallback: () -> Unit = {},
     private val sessionId: String = newId(),
     private val slot: FailureSlot = FailureSlot.NONE,
+    private val nativeEvidence: ((FailureSlot, NativeFailureStage, ProviderTransportEvidence) -> Unit)? = null,
 ) {
     companion object {
         val NONE = FailureReporter({})
         internal fun newId(): String = UUID.randomUUID().toString().replace("-", "")
     }
-    fun newSession(): FailureReporter = FailureReporter(sink, clock, thread, fallback, slot = slot)
-    fun forSlot(value: FailureSlot): FailureReporter = FailureReporter(sink, clock, thread, fallback, sessionId, value)
+    fun newSession(): FailureReporter = FailureReporter(sink, clock, thread, fallback, slot = slot, nativeEvidence = nativeEvidence)
+    fun forSlot(value: FailureSlot): FailureReporter = FailureReporter(sink, clock, thread, fallback, sessionId, value, nativeEvidence)
+    fun withNativeEvidence(sink: (FailureSlot, NativeFailureStage, ProviderTransportEvidence) -> Unit) =
+        FailureReporter(this.sink, clock, thread, fallback, sessionId, slot, sink)
+    fun observeNativeEvidence(stage: NativeFailureStage, evidence: ProviderTransportEvidence) {
+        try { nativeEvidence?.invoke(slot, stage, evidence) } catch (_: Throwable) {
+            try { fallback() } catch (_: Throwable) { /* Diagnostics cannot replace playback failure. */ }
+        }
+    }
     internal val diagnosticSlot: FailureSlot get() = slot
     fun report(stage: FailureStage, error: Throwable? = null, reason: PrototypeFailureReason? = null) =
         record(stage, { SafeFailure.capture(error) }, false, reason)

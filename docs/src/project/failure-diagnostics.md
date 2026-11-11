@@ -142,6 +142,52 @@ provider entitlement, admission, retries or recovery decisions. Local fixture
 tests establish observation boundaries only. No new device/provider trial or
 cause for the intermittent failures in #297 is established by this change.
 
+## Playback health and retry intent
+
+The native viewer also retains a separate `playback-health.tsv` journal in
+app-private, no-backup storage. Its closed vocabulary and numeric fields record
+application play intent, feed preparation/retry state, timing work, Media3 play
+intent, playback state, suppression reason and error code. Relative position,
+buffered position, clock-progress age and renderer counters help distinguish a
+held player from buffering, a stalled media clock, or a clock advancing without
+renderer progress. Renderer output counts do not prove that a frame reached the
+display, and these observations do not identify matching events across feeds.
+Released players retain cached evidence with its age; diagnostics do not query
+a released SDK player.
+
+Typed transport evidence includes the immediate exception category, observed
+operation, phase availability and proxy/local-cancellation flags. Unknown phase
+or subtype remains unknown. Source-preparation failures before a player exists
+use the same safe projection, tied to the current feed attempt. No exception
+messages, URLs, provider identities, request contents or absolute source clocks
+enter this journal. The original failure journal's v1 format is unchanged.
+
+The health journal retains at most 24 records and 32 KiB. State transitions and
+explicit failure/retry events trigger writes; advancing counters alone do not.
+Atomic replacement and a stable lock coordinate writers. Invalid history is
+left intact, and diagnostic failures cannot replace playback failures.
+
+A SHIELD observation during retry debugging showed ABEMA READY with play intent
+false while Twitch continued advancing. This establishes a held player, not a
+decoder stall. Code inspection found that native timing restoration can resume players
+while the Activity's broader play-intent flag remains false. An accepted feed
+retry now captures a one-shot resume request when application intent or the
+exact sibling player requests playback. After replacement preparation, it uses
+the ordinary original-player isolation barrier, with current attempt, lifecycle,
+budget and sibling checks. Rejoining an already-playing sibling starts only the
+replacement, preserving the sibling's buffered live playback. A buffering sibling
+keeps the target-only request pending rather than falling back to paired Play.
+Explicit Play retains its existing live-window policy. Explicit Pause, focus loss
+or another timing operation cancels that request. This does not restore alignment
+certainty or establish the cause of the earlier transport failure.
+
+Verification passed 2,643 Android JVM cases with one opt-in case skipped. The
+fixtures cover both rejoin sides, a healthy negative live position, target-only
+rollback, focus/admission/ownership changes, and a newer Play superseding the
+same SDK member. Health-journal bounds/validation and typed transport-body timeout
+evidence also passed. These tests do not establish live provider recovery,
+physical rendering or audio behavior after a retry.
+
 ## Cached ABEMA helper evidence
 
 Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first
@@ -669,3 +715,186 @@ ordinary test APK SHA-256 is
 `d8d9e10fb6818e75f36277ec0252d82968a12fb08460fd49d9a3791f8427f284`.
 This establishes bounded diagnostic fixtures and a success regression, not the
 cause of the earlier transient failure or sustained/physical-device behavior.
+
+## Physical Pixel 6 seek failure — 2026-11-07
+
+The user reproduced a failed relative timing adjustment on a Pixel 6 running
+Android 17/API 37 with WebView 157.0.8103.38. The ordinary debug application used
+native ABEMA playback and a configured Twitch broadcaster. The captured failing
+selection was an ABEMA broadcast slot resolved to its current live channel.
+Saved routes and accounts were retained; exit region and account entitlement
+were not independently inspected. No media was captured and audio was not
+independently checked.
+
+The user estimated an approximately 25-second content difference. Two requested
+five-second advances of B failed in the initial report; a subsequent reproduction
+failed on the first click soon after ABEMA started. The diagnostic build showed
+that the relative planner selected A backward by exactly five seconds. ABEMA
+received HTTP 200, then reported input setup failure and unconfirmed cleanup;
+the run stopped both feeds. There was no byte-range refusal in this reproduction.
+This evidence does not establish that the retained live window supports the full
+25-second adjustment.
+
+Two local TLS regression tests reproduced a transport defect: closing a response
+or disconnecting on an already interrupted loader thread failed even without
+lock contention. Media3 cancels old loads during seeks by interrupting their
+worker. Response cleanup now retains its original bounded ownership deadline,
+finishes despite interruption, and restores the interrupt flag. Reads and input
+acquisition remain interruptible; real ownership timeouts and close failures
+remain failures.
+
+The account-check client had a related cancellation hazard: interruption while
+waiting for its check lock or reply could revoke the whole playback lease.
+Cancellation before dispatch now refuses only that caller. A dispatched check
+drains its exact reply while holding the check lock under the original deadline,
+then refuses the interrupted caller and restores its flag. A later caller issues
+a fresh check. False, malformed or misbound replies, expired ownership and actual
+timeouts still refuse authorization; acquisition cancellation is unchanged.
+
+The corrected ordinary debug APK was installed in place on the same phone after
+2,496 JVM tests passed (one opt-in network test skipped), targeted repository
+checks passed and the shared debug certificate was verified. Its SHA-256 is
+`4f0eae59b13724eb706ef0f45823d1435865d5523f173ff1993a262160b89995`.
+The user subsequently confirmed that the adjustments worked and that they could
+align the two streams. This is bounded acceptance on that phone and pairing,
+not a general guarantee of live-window depth or provider timing precision.
+
+## SHIELD ABEMA/Twitch timing follow-up — 2026-11-07
+
+The user subsequently reported a 26.4-second Mark correction refusal and stalls
+after repeated five-second adjustments, then after an isolated one-second step.
+The physical device was NVIDIA SHIELD Android TV, Android 11/API 30, with its
+existing saved provider configuration. Region/account entitlement were not
+independently inspected and no media was captured. These reports concern ABEMA
+plus Twitch. The one-second request selected Twitch forward by one second; the
+logs then showed a Twitch request-admission refusal and network failure. Before
+the request, ABEMA was still playing with a negative moving-window position.
+
+Expected loader cancellation is now distinct from a fatal media request failure.
+An interrupted load refuses before or after durable admission, closes its owned
+resources and still throws the sanitized SDK I/O error, but emits
+`REQUEST_CANCELLED` rather than poisoning the stream. Positively typed owned
+transport cancellation is also recognized after a transport consumes the thread
+interrupt. Bare I/O/interrupted-I/O without cancellation proof, timeouts, HTTP
+refusal and real cleanup errors remain failures.
+
+Twitch's canceled protected reads no longer invalidate a healthy shared route or
+lease. Actual observed route failures and Forget/revision changes still revoke.
+Successor adoption distinguishes its provisional and committed states, so a
+canceled caller cannot leave session and attachment identities inconsistent;
+fresh callers must perform full durable admission under the original deadline.
+
+Automatic timing restoration can continue an untouched peer's existing buffered
+negative live point only when it was already READY and playing before the hold,
+has the same held own clock within 100 ms and still reports data ahead. It does
+not seek that peer to an expired point, widen selected seek targets, or change
+the strict window guard for ordinary explicit Play. Ownership, focus, identity
+and transaction cancellation still prevent late automatic restoration.
+
+The [shared focus contract](prototype-ux.md#timing-and-overlay-focus) separately
+prevents a repeated Select from landing on fallback Pause while the chosen
+timing action is disabled. Mark alignment can combine the verified movement
+available in both current windows, with interior targets and exact dual-clock
+settlement. Neither buffered continuation nor combined windows promise that
+every measured offset is available.
+
+The follow-up passed 2,539 JVM tests with no failures/errors and one opt-in test
+skipped. The ordinary debug APK, SHA-256
+`7945693065b7dbf898b9cb2d8b0d70683859b65f1d90a808e3d326dcf4cf2bab`,
+was installed in place on the same SHIELD and Pixel 6 after verifying the shared
+debug certificate. Account/route data was not reset. Provider-free physical UI
+checks exercise synthetic source clocks and controls; they do not establish
+recovery or alignment of the actual ABEMA/Twitch streams after these fixes.
+
+On each physical device, 38 of 39 provider-free timing, focus, remote, Quality
+and dismissal cases passed together. The remaining remote Back/reveal case
+expected the former fallback to Play; after updating it to require the last
+toolbar action (Audio), that case passed separately on both devices. All six
+new focus cases and all fourteen timing cases passed, including the synthetic
+26.4-second split correction and joint restoration. Popup fixtures render/scroll
+their actual menu rows and keep synthetic viewports inside the host window;
+these checks do not reset provider state or capture media. Both devices were
+returned to the ordinary Tachiai launcher afterward.
+
+## Back to live restoration follow-up — 2026-11-07
+
+The user then reported that Back to live disrupted playback on the same SHIELD.
+Fixed-vocabulary logs showed the selected seek reaching SDK READY, followed by
+the former explicit-Play-required state with both feeds paused. Their held
+content clocks stayed fixed while the advertised windows advanced: the untouched
+Twitch position eventually reached -32 seconds and ABEMA -12 seconds. This
+trace shows the recovery leaving playback held; it does not show a fresh
+provider/network failure. The previous recovery deliberately never resumed and
+subsequent explicit Play could reject or retire those now-expired positions.
+
+Back to live now preserves an originally playing feed or pair's intent through
+the bounded recovery transaction, resuming after fresh held-window, ownership
+and audio-focus checks. An untouched peer uses the existing verified buffered
+continuation rule; no extra seek is sent to it. Originally paused playback stays
+paused. Pause, focus loss, membership changes and newer explicit Play supersede
+an older automatic restoration. Refused/expired recovery does not retry, renew a
+provider session or imply an exact live-edge position. The same behavior applies
+on phone, tablet and TV.
+
+The corrected ordinary debug build passed 2,552 JVM cases (one opt-in test
+skipped), scoped repository checks and shared-debug-certificate verification.
+APK SHA-256:
+`951be6f9bcc88387e6d4b932d2becb1101f8bc8ad5f8cba2f2a8e66ecc73c178`.
+It was installed in place on both named devices. All 21 provider-free timing
+and focus cases passed together on the unlocked Pixel 6. On SHIELD, 20 passed
+together; the single-feed case still checked the old explanatory text, and
+passed separately after that expectation was updated, alongside the new
+playing-pair Back-to-live case. An earlier locked/dozing phone run could not
+keep its activity foreground and is not playback evidence. Both devices were
+returned to ordinary Tachiai. These are synthetic control/clock checks; the
+actual provider pairing still needs a post-fix live retest.
+
+While the remembered-offset build was being prepared, the user reported another
+two-Mark "timing anchor invalid" result on the installed Back-to-live-only
+SHIELD build. They explicitly deferred investigation until trying the latest
+build. That report remains unresolved live feedback, not a successful marked
+alignment observation. The subsequently installed saved-offset build is
+identified in the [remembered pair offsets](prototype-ux.md#remembered-pair-offsets)
+record; it must not be described as fixing this new report without a live retest.
+
+## Repeated Mark investigation — 2026-11-07
+
+After the saved-offset build, the user reported another incorrect mark pair and
+more invalid-anchor feedback on the same SHIELD. The available fixed-tag buffer
+showed both native players READY but paused, with their content clocks held and
+their advertised window positions moving negative. The initiating request and
+target checks had already been evicted. The user deferred a fresh reproduction;
+the attempted bounded capture was stopped. This is insufficient to attribute
+that particular failure to one cause.
+
+Code review and regressions identified three distinct cases: a persistent
+historical validity warning after a later successful correction; selection of a
+near-edge single target despite a safer alternative; and refusal to resume an
+exact held READY target already buffered after its window advanced. The follow-up
+implements the [updated Mark contract](prototype-ux.md#relative-timing-and-event-marks)
+and preserves unknown historical totals without mislabeling a successful fresh
+operation. Paused expired targets cannot publish settlement, and a failed pause
+cannot claim that both feeds paused. Successive coarse/fine mark pairs are
+covered in both correction directions.
+
+Unconfirmed dispatched timing operations now retain at most eight bounded local
+records in `no_backup/timing-failures.tsv`. The strict numeric/enum schema stores
+relative positions, durations, signed buffered endpoints, own-target clock
+errors, elapsed checks and player flags. It stores no provider identities,
+absolute provider clocks, URLs, credentials, freeform status or exception text.
+Writes run on the worker with a stable lock and atomic replacement. Corrupt
+records are refused without a silent reset. Ordinary user cancellation does not
+create a failure record. These diagnostics survive ordinary log-buffer eviction;
+they do not constitute provider playback acceptance.
+
+The follow-up ordinary debug APK passed 2,604 JVM cases with zero failures/errors
+and one opt-in test skipped. Both APK certificates matched the shared debug key;
+the ordinary APK SHA-256 is
+`c2ba9c842c0050fd67fb1d04af71d5f185bc63ce9bfe8723f431885994d1dab0`.
+It was installed in place on the same phone and SHIELD. Four focused
+provider-free Mark UI cases passed on the SHIELD: ordinary second-mark dispatch,
+the 26.4-second split, successive fine corrections in both directions, and
+successful fresh alignment with an unknown historical total. The normal app was
+reopened afterward. The user deferred the actual live reproduction; this build
+still requires that retest rather than being claimed as fixing the specific
+reported incident from synthetic checks alone.

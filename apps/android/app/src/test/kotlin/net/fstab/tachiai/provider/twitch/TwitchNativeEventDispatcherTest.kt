@@ -8,6 +8,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TwitchNativeEventDispatcherTest {
+    @Test fun canceledLoaderFailureDoesNotLatchButActualHttpAndPlayerFailuresRemainFatal() {
+        val canceled = Fixture()
+        try {
+            Thread.currentThread().interrupt()
+            canceled.event(NativeMediaEvent.REQUEST_FAILED)
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertNull(canceled.first.failure); assertTrue(canceled.logged.isEmpty())
+            canceled.event(NativeMediaEvent.HTTP_REJECTED, 403)
+            assertEquals(PrototypeFailureReason.HTTP_REJECTED, canceled.first.failure?.reason)
+        } finally { Thread.interrupted() }
+        val real = Fixture()
+        real.event(NativeMediaEvent.REQUEST_FAILED)
+        real.event(NativeMediaEvent.PLAYER_FAILED, 2000)
+        real.drain()
+        assertEquals(PrototypeFailureReason.NETWORK_FAILED, real.first.failure?.reason)
+        assertEquals(listOf(NativeMediaEvent.PLAYER_FAILED to 2000), real.delivered)
+    }
     private class Fixture {
         val queued = ArrayDeque<() -> Unit>()
         val logged = mutableListOf<Pair<NativeMediaEvent, Int>>()

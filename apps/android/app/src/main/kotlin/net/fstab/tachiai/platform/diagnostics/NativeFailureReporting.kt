@@ -5,8 +5,13 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.platform.media.NativeFailureObserver
 import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.media.NativeMediaTransportObserver
+import net.fstab.tachiai.platform.media.NativeMediaRequestException
+import net.fstab.tachiai.platform.network.ProviderTransportException
 
 internal fun FailureReporter.nativeObserver(): NativeFailureObserver = { stage, error ->
+    val transport = (error as? NativeMediaRequestException)?.transportEvidence
+        ?: (error as? ProviderTransportException)?.evidence
+    if (transport != null) observeNativeEvidence(stage, transport)
     if (BuildConfig.DEBUG && error is NativePlayerReleaseTimeoutException) runCatching {
         // Ephemeral, closed numeric evidence; never print the Throwable itself.
         Log.i("TachiaiNativeRelease", "event=PLAYER_RELEASE_TIMEOUT code=${error.errorCode} elapsedMs=${error.elapsedMs}")

@@ -15,6 +15,9 @@ internal class TwitchNativeEventDispatcher(
 ) {
     fun dispatch(event: NativeMediaEvent, code: Int) {
         if (event == NativeMediaEvent.MANIFEST_BYTES || event == NativeMediaEvent.MEDIA_BYTES) return
+        // Media3 interrupts an old loader when a seek supersedes its request.
+        // That request refuses locally; the shared session remains usable.
+        if (event == NativeMediaEvent.REQUEST_FAILED && Thread.currentThread().isInterrupted) return
         log(event, code)
         val reason = when (event) {
             NativeMediaEvent.HTTP_REJECTED -> if (code == 404) PrototypeFailureReason.MEDIA_NOT_FOUND else PrototypeFailureReason.HTTP_REJECTED

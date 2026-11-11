@@ -10,7 +10,7 @@ import net.fstab.tachiai.presentation.defaultProviderInstanceId
 import net.fstab.tachiai.presentation.PrototypeService
 
 internal enum class AbemaRenewalRecordFamily {
-    ROUTE_PROFILES, LEGACY_SETUP, PROVIDER_REGISTRY, QUALITY, CONFIGURED_SOURCE, ABEMA_ACCOUNT,
+    ROUTE_PROFILES, LEGACY_SETUP, PROVIDER_REGISTRY, QUALITY, PAIR_OFFSET, CONFIGURED_SOURCE, ABEMA_ACCOUNT,
     TWITCH_AUTHORIZATION, TWITCH_FORGET_PENDING, COORDINATION_LOCK, DIAGNOSTIC_JOURNAL, CDN_REVIEW_JOURNAL,
     RECOVERY_CHECKPOINT, SELECTED_ACCOUNT_AUXILIARY, ACCOUNT_AUXILIARY, PRIVATE_RECORD_AUXILIARY,
     SHARED_PREFERENCES, RENEWAL_SCHEDULE, UNKNOWN,
@@ -30,9 +30,11 @@ private fun encryptedFamily(name: String): AbemaRenewalRecordFamily? {
     PrivateAuthorizationSlot.entries.singleOrNull { it.bindingName + ".enc" == name }?.let { slot ->
         return when (slot) {
             PrivateAuthorizationSlot.CONNECTION_PROFILES -> AbemaRenewalRecordFamily.ROUTE_PROFILES
-            PrivateAuthorizationSlot.SOURCE_SETUP, PrivateAuthorizationSlot.PROVIDER_SETUP -> AbemaRenewalRecordFamily.LEGACY_SETUP
+            PrivateAuthorizationSlot.SOURCE_SETUP, PrivateAuthorizationSlot.PROVIDER_SETUP,
+            PrivateAuthorizationSlot.VIEWER_SELECTION -> AbemaRenewalRecordFamily.LEGACY_SETUP
             PrivateAuthorizationSlot.PROVIDER_INSTANCES -> AbemaRenewalRecordFamily.PROVIDER_REGISTRY
             PrivateAuthorizationSlot.STREAM_QUALITY -> AbemaRenewalRecordFamily.QUALITY
+            PrivateAuthorizationSlot.PAIR_OFFSETS -> AbemaRenewalRecordFamily.PAIR_OFFSET
             PrivateAuthorizationSlot.TWITCH_PROVIDER_PLAYBACK, PrivateAuthorizationSlot.TWITCH_PROVIDER_SMART_TV,
             PrivateAuthorizationSlot.TWITCH_PROVIDER_SMART_TV_LOCAL -> AbemaRenewalRecordFamily.TWITCH_AUTHORIZATION
         }
@@ -61,13 +63,13 @@ internal fun abemaRenewalRecordFamily(key: String, selected: String): AbemaRenew
         "twitch-catalog-$it"
     }) return AbemaRenewalRecordFamily.TWITCH_FORGET_PENDING
     if (name in setOf("connection-profiles.lock", "source-setup.lock", "provider-setup.lock", "provider-instances.lock",
-            "stream-quality.lock", "failure-diagnostics.tsv.lock") ||
+            "stream-quality.lock", "pair-offsets.lock", "viewer-selection.lock", "failure-diagnostics.tsv.lock", "timing-failures.tsv.lock", "playback-health.tsv.lock") ||
         dynamic(name, "configured-provider-instance-", ".lock", ::configuredProviderInstanceBindingName) ||
         dynamic(name, "twitch-catalog-", ".lock") { "twitch-catalog-$it" }) return AbemaRenewalRecordFamily.COORDINATION_LOCK
     when (name) {
         AbemaRenewalJobLedger.FILE_NAME, AbemaRenewalJobLedger.FILE_NAME + ".bak",
         AbemaRenewalJobLedger.FILE_NAME + ".new" -> return AbemaRenewalRecordFamily.RENEWAL_SCHEDULE
-        "failure-diagnostics.tsv" -> return AbemaRenewalRecordFamily.DIAGNOSTIC_JOURNAL
+        "failure-diagnostics.tsv", "timing-failures.tsv", "playback-health.tsv" -> return AbemaRenewalRecordFamily.DIAGNOSTIC_JOURNAL
         "abema-cdn-review.tsv" -> return AbemaRenewalRecordFamily.CDN_REVIEW_JOURNAL
         "prototype-cached-recovery.tsv", "prototype-player-recovery.tsv" -> return AbemaRenewalRecordFamily.RECOVERY_CHECKPOINT
     }

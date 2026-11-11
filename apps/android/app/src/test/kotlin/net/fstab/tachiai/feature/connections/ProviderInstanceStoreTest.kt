@@ -109,10 +109,10 @@ class ProviderInstanceStoreTest {
         }
         assertFalse(legacy.committed); assertEquals(1, reads)
         previous.clear()
-        assertEquals(listOf(japan), legacy.instances.last().setup.previousRoutes)
+        assertEquals(listOf(japan), legacy.instances.single { it.service == PrototypeService.TWITCH }.setup.previousRoutes)
         assertThrows(UnsupportedOperationException::class.java) { (legacy.instances as MutableList<*>).clear() }
         assertThrows(UnsupportedOperationException::class.java) {
-            (legacy.instances.last().setup.previousRoutes as MutableList<*>).clear()
+            (legacy.instances.single { it.service == PrototypeService.TWITCH }.setup.previousRoutes as MutableList<*>).clear()
         }
         store.saveRoutes(defaultProviderInstanceId(PrototypeService.TWITCH), null,
             listOf(SourceRouteChoice.system, japan), ::defaults)
@@ -120,7 +120,7 @@ class ProviderInstanceStoreTest {
         val saved = store.readSnapshot { error("No legacy read") }
         assertTrue(saved.committed); assertEquals(before + 1, reads)
         assertThrows(UnsupportedOperationException::class.java) {
-            (saved.instances.last().setup.fallbackRoutes as MutableList<*>).clear()
+            (saved.instances.single { it.service == PrototypeService.TWITCH }.setup.fallbackRoutes as MutableList<*>).clear()
         }
         RandomAccessFile(file, "rw").use { it.channel.tryLock().use { lock -> assertNotNull(lock) } }
         assertEquals("ProviderInstanceRegistrySnapshot(redacted)", saved.toString())
@@ -140,7 +140,7 @@ class ProviderInstanceStoreTest {
         assertNull(initial.first { it.service == PrototypeService.ABEMA }.setup.route)
         assertEquals(japan, initial.first { it.service == PrototypeService.TWITCH }.setup.route)
         val created = store.create(PrototypeService.TWITCH, ::legacy)
-        assertEquals(initial, created.take(2))
+        assertEquals(initial, created.take(initial.size))
         assertEquals("Twitch 2", created.last().name)
         assertEquals(SourceRouteChoice.system, created.last().setup.route)
         val restored = ProviderInstanceStore(memory).read { error("Explicit registry must not read legacy settings") }
@@ -215,7 +215,9 @@ class ProviderInstanceStoreTest {
         val initial = store.read(::defaults)
         val remaining = store.remove(initial.first().id, ::defaults)
         assertEquals(initial.drop(1), remaining)
-        assertTrue(store.remove(remaining.single().id, ::defaults).isEmpty())
+        var current = remaining
+        remaining.forEach { current = store.remove(it.id, ::defaults) }
+        assertTrue(current.isEmpty())
         assertTrue(ProviderInstanceStore(memory).read { error("Empty registry must not remigrate") }.isEmpty())
         val empty = memory.bytes!!.copyOf()
         assertThrows(Exception::class.java) { store.save(initial.first().id, null, japan, ::defaults) }

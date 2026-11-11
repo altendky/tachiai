@@ -37,6 +37,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
+// Checkbox and phone-sharing fixtures use phone presentation explicitly, even
+// when hosted on a TV. The singleton regression below also exercises TV mode.
 class PrototypeSourcePickerTest {
     @get:Rule val compose = createComposeRule()
     private val providers = defaultProviderInstances()
@@ -45,10 +47,59 @@ class PrototypeSourcePickerTest {
         net.fstab.tachiai.presentation.prototypeCatalogResource(source) }
     private fun expected(a: PrototypeSource, b: PrototypeSource) = ConfiguredFeedAssignments(item(a).choice, item(b).choice)
 
+    @Test fun eitherSingleFeedCanWatchOnPhoneAndTelevisionWhileNoSelectionStaysBlocked() {
+        val initial = mutableStateOf(ConfiguredFeedAssignments(null, null))
+        val generation = mutableStateOf(0L)
+        val television = mutableStateOf(false)
+        var opened: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme(television = television.value) {
+            PrototypeSourcePicker(null, initialAssignments = initial.value,
+                assignmentRestoreGeneration = generation.value, onWatch = { opened = it })
+        } }
+        for (tv in listOf(false, true)) {
+            compose.runOnIdle {
+                television.value = tv; initial.value = ConfiguredFeedAssignments(null, null)
+                generation.value++; opened = null
+            }
+            compose.onNodeWithText("Watch").assertIsNotEnabled()
+            compose.onNodeWithText("Choose at least one configured stream before opening the viewer.").assertExists()
+            for (assignments in listOf(ConfiguredFeedAssignments(item(PrototypeSource.ABEMA_LIVE).choice, null),
+                ConfiguredFeedAssignments(null, item(PrototypeSource.TWITCH_LIVE).choice))) {
+                compose.runOnIdle { initial.value = assignments; generation.value++; opened = null }
+                compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+                compose.runOnIdle { assertEquals(assignments, opened) }
+            }
+        }
+    }
+
+    @Test fun aValidFeedDoesNotSilentlyDropAnExplicitlySelectedUnavailableFeed() {
+        val unavailable = item(PrototypeSource.ABEMA_LIVE)
+        val good = item(PrototypeSource.TWITCH_LIVE).choice
+        val initial = mutableStateOf(ConfiguredFeedAssignments(good, unavailable.choice))
+        val generation = mutableStateOf(0L)
+        var watched: ConfiguredFeedAssignments? = null
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
+            PrototypeSourcePicker(null, configuredSources = configured.map {
+                if (it.id == unavailable.id) it.copy(entry = it.entry.copy(availability = CatalogAvailability.UNAVAILABLE)) else it
+            }, initialAssignments = initial.value, assignmentRestoreGeneration = generation.value,
+                onWatch = { watched = it })
+        } }
+        for (assignments in listOf(ConfiguredFeedAssignments(good, unavailable.choice),
+            ConfiguredFeedAssignments(unavailable.choice, good), ConfiguredFeedAssignments(null, unavailable.choice))) {
+            compose.runOnIdle { initial.value = assignments; generation.value++ }
+            compose.onNodeWithText("Watch").assertIsNotEnabled()
+            compose.onNodeWithText("A selected item is not available now. It stays configured for later.").assertExists()
+            compose.runOnIdle { assertNull(watched) }
+        }
+        compose.runOnIdle { initial.value = ConfiguredFeedAssignments(null, good); generation.value++ }
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(ConfiguredFeedAssignments(null, good), watched) }
+    }
+
     @Test fun developerToolsIsAvailableOnlyThroughOverflowAndDoesNotOpenPlayback() {
         var developerTools = 0
         var watched = false
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onDeveloperTools = { developerTools++ }, onWatch = { watched = true })
         } }
         compose.onNodeWithText("Developer tools").assertDoesNotExist()
@@ -61,7 +112,7 @@ class PrototypeSourcePickerTest {
     @Test fun screenSharingWithoutDeveloperToolsPreservesChoicesAndDoesNotStartPlayback() {
         val launches = mutableListOf<ScreenSharingTarget>()
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onScreenSharing = { launches += it; true }, onWatch = { opened = it })
         } }
         assignment(PrototypeSource.ABEMA_REPLAY, "B").performScrollTo().performClick()
@@ -77,7 +128,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun unavailableHomeKeepsCastSettingsAndHelpAvailableWithoutConnectedClaim() {
         val launches = mutableListOf<ScreenSharingTarget>()
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onScreenSharing = { launches += it; it == ScreenSharingTarget.CAST_SETTINGS }, onWatch = {})
         } }
         compose.onNodeWithContentDescription("More options").performClick()
@@ -93,7 +144,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun unavailableSettingsAndClosingGuidanceLeaveAssignmentsIntact() {
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onScreenSharing = { false }, onWatch = { opened = it })
         } }
         compose.onNodeWithContentDescription("More options").performClick()
@@ -112,7 +163,7 @@ class PrototypeSourcePickerTest {
                 net.fstab.tachiai.presentation.ProviderId("twitch"), "broadcaster", "789", CatalogIntent.CHANNEL),
                 "Saved channel", availability = CatalogAvailability.OFFLINE))
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(channel),
                 initialAssignments = ConfiguredFeedAssignments(channel.choice, channel.choice), onWatch = { opened = it })
         } }
@@ -129,7 +180,7 @@ class PrototypeSourcePickerTest {
         val second = first.copy(id = "12345678-1234-1234-1234-123456789abd", entry = first.entry.copy(
             resource = first.entry.resource.copy(identity = "98765432101234567890"), title = "Other replay"))
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(first, second),
                 initialAssignments = ConfiguredFeedAssignments(first.choice, second.choice), onWatch = { opened = it })
         } }
@@ -145,7 +196,7 @@ class PrototypeSourcePickerTest {
         val long = ConfiguredSource("12345678-1234-1234-1234-123456789abc", twitch.id,
             net.fstab.tachiai.provider.catalog.CatalogEntry(net.fstab.tachiai.provider.catalog.CatalogResource(
                 net.fstab.tachiai.presentation.ProviderId("twitch"), "video", "1".repeat(21), CatalogIntent.VIDEO), "Long video"))
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, providerInstances = listOf(twitch), configuredSources = listOf(long),
                 initialAssignments = ConfiguredFeedAssignments(long.choice, long.choice), onWatch = { error("Unsupported choice opened") })
         } }
@@ -158,7 +209,7 @@ class PrototypeSourcePickerTest {
         var routes = false
         var providers = false
         var recovery = false
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onConnections = { routes = true },
                 onProviders = { providers = true }, playbackAvailable = false,
                 recoveryMessage = "Playback cleanup could not be confirmed.", onRecovery = { recovery = true }, onWatch = {})
@@ -174,7 +225,7 @@ class PrototypeSourcePickerTest {
     @Test fun compactRecoveryKeepsAssignmentsBlockedViewerAndRecoveryReachable() {
         var recovery = false
         var assignments: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             Box(Modifier.height(240.dp)) {
                 PrototypeSourcePicker(null, playbackAvailable = false,
                     recoveryMessage = "Playback blocked. Recovery category: PLAYBACK_CLEANUP_UNCONFIRMED.",
@@ -190,7 +241,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun duplicateChoiceReachesOpenViewerWithoutFiltering() {
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) { opened = it } } }
         compose.waitForIdle()
         PrototypeSource.entries.forEach { compose.onAllNodesWithText(it.optionTitle).assertCountEquals(1) }
         assignment(PrototypeSource.ABEMA_LIVE, "B").performScrollTo().performClick()
@@ -203,13 +254,14 @@ class PrototypeSourcePickerTest {
 
     @Test fun reassignmentAndClearingPreserveTheOtherSlot() {
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) { opened = it } } }
         compose.waitForIdle()
         assignment(PrototypeSource.ABEMA_REPLAY, "A").performScrollTo().performClick()
         assignment(PrototypeSource.ABEMA_LIVE, "A").assertIsOff()
         assignment(PrototypeSource.TWITCH_LIVE, "B").assertIsOn()
         assignment(PrototypeSource.ABEMA_REPLAY, "A").performClick()
-        compose.onNodeWithText("Watch").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(ConfiguredFeedAssignments(null, item(PrototypeSource.TWITCH_LIVE).choice), opened) }
         assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().performClick()
         compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle {
@@ -221,7 +273,7 @@ class PrototypeSourcePickerTest {
         compose.onNodeWithContentDescription("Assign ${source.title} to feed $slot")
 
     @Test fun providerTreeKeepsOptionsBelowTheirHeadings() {
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) {} } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) {} } }
         compose.waitForIdle()
         for (service in PrototypeService.entries) {
             val heading = compose.onNodeWithText(service.title).fetchSemanticsNode()
@@ -234,7 +286,7 @@ class PrototypeSourcePickerTest {
     }
 
     @Test fun providerIndicatorsFollowEachColumnWithoutOfferingAssignmentActions() {
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) {} } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) {} } }
         compose.waitForIdle()
         fun indicator(service: PrototypeService, slot: String, selected: Boolean) {
             val description = if (selected) "${service.title}: a stream is selected for feed $slot"
@@ -254,12 +306,12 @@ class PrototypeSourcePickerTest {
         assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().performClick()
         indicator(PrototypeService.TWITCH, "B", false)
         indicator(PrototypeService.TWITCH, "A", true)
-        compose.onNodeWithText("Watch").assertIsNotEnabled()
+        compose.onNodeWithText("Watch").assertIsEnabled()
     }
 
     @Test fun additionalLiveChannelsReachTheirAssignedViewerSlots() {
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) { opened = it } } }
         compose.waitForIdle()
         assignment(PrototypeSource.TWITCH_CHILLHOP_LIVE, "A").performScrollTo().performClick()
         assignment(PrototypeSource.TWITCH_VIRTUAL_JAPAN_LIVE, "B").performScrollTo().performClick()
@@ -271,7 +323,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun rapidSlotChangesBeforeRecompositionDoNotOverwriteEachOther() {
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme { PrototypeSourcePicker(null) { opened = it } } }
+        compose.setContent { TachiaiPrototypeTheme(television = false) { PrototypeSourcePicker(null) { opened = it } } }
         compose.waitForIdle()
         val source = PrototypeSource.ABEMA_REPLAY
         val assignA = assignment(source, "A").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
@@ -284,7 +336,7 @@ class PrototypeSourcePickerTest {
     @Test fun routesAndProvidersHaveSeparateEntrypointsWithoutPerStreamSetupButtons() {
         var routes = false
         var providers = false
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, onConnections = { routes = true },
                 onProviders = { providers = true }, onWatch = {})
         } }
@@ -304,7 +356,7 @@ class PrototypeSourcePickerTest {
         val customName = "ABEMA · My replay"
         val setups = defaultSourceSetups() + (source to SourceSetup(customName))
         val renamed = providers.flatMap { legacyConfiguredSources(it, setups, emptyMap()) }
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = renamed, onWatch = { opened = it })
         } }
         compose.waitForIdle()
@@ -320,7 +372,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun unreadSetupKeepsRoutesAvailableButDisablesProvidersAndPlayback() {
         var routes = false
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker("Setup could not be read.",
                 onConnections = { routes = true }, setupReady = false, onProviders = {}, onWatch = {})
         } }
@@ -338,10 +390,10 @@ class PrototypeSourcePickerTest {
     @Test fun providerSummariesDistinguishSavedRoutesFromRequiredReview() {
         val saved = SourceRouteChoice(SourceRouteMode.SAVED_CONNECTION,
             "00000000-0000-0000-0000-000000000001", "Japan route")
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null,
-                providerInstances = defaultProviderInstances(mapOf(PrototypeService.ABEMA to ProviderSetup(saved),
-                    PrototypeService.TWITCH to ProviderSetup(null))), onProviders = {}, onWatch = {})
+                providerInstances = defaultProviderInstances(providers.associate { it.service to it.setup } +
+                    mapOf(PrototypeService.ABEMA to ProviderSetup(saved), PrototypeService.TWITCH to ProviderSetup(null))), onProviders = {}, onWatch = {})
         } }
         compose.waitForIdle()
         compose.onNodeWithText("Japan route").assertExists()
@@ -352,7 +404,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun obsoleteSettingsOfferOnlyAnExplicitResetWithoutOpeningPlayback() {
         var resets = 0
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker("Stream settings are obsolete.", setupReady = false,
                 onProviders = {}, obsoleteSetup = true, onResetStreamSettings = { resets++ }, onWatch = {})
         } }
@@ -366,7 +418,7 @@ class PrototypeSourcePickerTest {
 
     @Test fun explicitEmptyConfiguredListDoesNotResurrectPrototypeChoices() {
         var providersOpened = false
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = emptyList(),
                 onProviders = { providersOpened = true }, onWatch = {})
         } }
@@ -379,7 +431,7 @@ class PrototypeSourcePickerTest {
     @Test fun removedSavedItemKeepsTheOtherFeedAndRequiresExplicitReassignment() {
         val removed = item(PrototypeSource.ABEMA_LIVE)
         var opened: ConfiguredFeedAssignments? = null
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = configured.filterNot { it.id == removed.id },
                 initialAssignments = expected(PrototypeSource.ABEMA_LIVE, PrototypeSource.TWITCH_LIVE),
                 onWatch = { opened = it })
@@ -397,7 +449,7 @@ class PrototypeSourcePickerTest {
         val original = item(PrototypeSource.ABEMA_REPLAY)
         val collection = original.copy(entry = original.entry.copy(title = "Saved sumo series",
             resource = original.entry.resource.copy(kind = "series", identity = "394-72", intent = CatalogIntent.COLLECTION)))
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = configured.map { if (it.id == original.id) collection else it },
                 initialAssignments = ConfiguredFeedAssignments(collection.choice, item(PrototypeSource.TWITCH_LIVE).choice), onWatch = {})
         } }
@@ -410,7 +462,7 @@ class PrototypeSourcePickerTest {
     @Test fun availabilityUpdatesRetainSelectionAndBlockOnlyKnownUnavailableStates() {
         val original = item(PrototypeSource.ABEMA_LIVE)
         val availability = mutableStateOf(CatalogAvailability.UNKNOWN)
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = configured.map {
                 if (it.id == original.id) it.copy(entry = it.entry.copy(availability = availability.value)) else it
             }, onWatch = {})
@@ -434,7 +486,7 @@ class PrototypeSourcePickerTest {
         val original = item(PrototypeSource.ABEMA_LIVE)
         val unsupported = original.copy(entry = original.entry.copy(title = "Another saved channel",
             resource = original.entry.resource.copy(kind = "unsupported", identity = "another-channel")))
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = configured.map { if (it.id == original.id) unsupported else it },
                 onWatch = {})
         } }
@@ -446,7 +498,7 @@ class PrototypeSourcePickerTest {
     @Test fun unsupportedResourceWithLegacyLookingTitleKeepsItsExactTitle() {
         val original = item(PrototypeSource.ABEMA_LIVE)
         val unsupported = original.copy(entry = original.entry.copy(resource = original.entry.resource.copy(kind = "unsupported", identity = "another-channel")))
-        compose.setContent { TachiaiPrototypeTheme {
+        compose.setContent { TachiaiPrototypeTheme(television = false) {
             PrototypeSourcePicker(null, configuredSources = configured.map { if (it.id == original.id) unsupported else it },
                 onWatch = {})
         } }

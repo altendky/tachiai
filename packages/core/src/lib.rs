@@ -53,6 +53,30 @@ pub fn content_time_ms(context: &SeekContext) -> Option<i64> {
         .filter(|value| *value >= 0)
 }
 
+/// Measure relative progress since the user marked the same event in each feed.
+///
+/// Each marked/current pair must use its own stable content clock. Their origins
+/// need not agree: only progress within each clock is compared. Positive means
+/// A is ahead of B. Pauses and seeks are reflected in the observed progress;
+/// this is neither a synchronization claim nor a plan to move either player.
+/// Negative input clocks or checked-arithmetic overflow produce no measurement.
+pub fn event_mark_offset_ms(
+    marked_a_ms: i64,
+    current_a_ms: i64,
+    marked_b_ms: i64,
+    current_b_ms: i64,
+) -> Option<i64> {
+    if [marked_a_ms, current_a_ms, marked_b_ms, current_b_ms]
+        .iter()
+        .any(|value| *value < 0)
+    {
+        return None;
+    }
+    let progress_a = current_a_ms.checked_sub(marked_a_ms)?;
+    let progress_b = current_b_ms.checked_sub(marked_b_ms)?;
+    progress_a.checked_sub(progress_b)
+}
+
 /// Plan an absolute window-relative seek, clamping to its inclusive bounds.
 ///
 /// Missing position or nonpositive/unknown duration takes precedence over an

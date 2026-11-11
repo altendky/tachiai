@@ -411,11 +411,11 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val resource = source.entry.resource
             val selected = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(source.choice, source.choice),
                 listOf(source), listOf(owner.instance)) as? ConfiguredPrototypeSelectionResult.Ready ?: error("Selection refused")
-            val feed = selected.selection.a
-            check(feed.resource == resource && selected.selection.b.choice == feed.choice)
+            val feed = checkNotNull(selected.selection.a)
+            check(feed.resource == resource && checkNotNull(selected.selection.b).choice == feed.choice)
             val replay = feed.kind == PrototypePlaybackKind.REPLAY
             if (mode in setOf(ObservationMode.CONFIGURED_SLOT, ObservationMode.CONTINUOUS_SLOT)) check(replay && feed.historicalSource == null &&
-                selected.selection.b.resource == resource && AbemaSlotRequest.from(feed.resource)?.resource == resource)
+                checkNotNull(selected.selection.b).resource == resource && AbemaSlotRequest.from(feed.resource)?.resource == resource)
             scenario = ActivityScenario.launch(AbemaEpisodeObservationActivity::class.java)
             val surface = AtomicReference<AbemaEpisodeObservationActivity>()
             scenario.onActivity { surface.set(it) }

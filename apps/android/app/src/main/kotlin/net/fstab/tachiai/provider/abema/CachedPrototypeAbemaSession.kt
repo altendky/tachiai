@@ -669,7 +669,7 @@ internal class CachedPrototypeAbemaSession(
                     onFailure = { stage, error ->
                         if (stage == NativeFailureStage.MEDIA_DISCONNECT) { transportCleanup.failed(); cleanupFailed = true }
                         diagnostics.nativeObserver()(stage, error)
-                    })
+                    }, transportObserver = diagnostics.nativeTransportObserver())
                 sourceRequests.set(requests)
                 nativePreparationEvidence.observe(AbemaNativePreparationPhase.MANIFEST_READ, current(run))
                 val source = try { readSource(uri, requests) }

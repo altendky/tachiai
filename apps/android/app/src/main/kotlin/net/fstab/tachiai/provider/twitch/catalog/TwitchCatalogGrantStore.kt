@@ -117,10 +117,10 @@ internal class TwitchCatalogGrantStore(
         val file = lockFile
         if (file == null) action() else {
             val handle = try { RandomAccessFile(file, "rw") }
-            catch (_: java.io.IOException) { throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
+            catch (error: java.io.IOException) { throwIfTwitchCatalogReadCancelled(error); throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
             handle.use {
                 val fileLock = try { handle.channel.lock() }
-                catch (_: java.io.IOException) { throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
+                catch (error: java.io.IOException) { throwIfTwitchCatalogReadCancelled(error); throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
                 fileLock.use { action() }
             }
         }
@@ -135,7 +135,7 @@ internal class TwitchCatalogGrantStore(
     private fun readUnlocked(ignorePendingClear: Boolean = false): TwitchCatalogStoredGrant? {
         if (!ignorePendingClear) checkPendingClear()
         val bytes = try { storage.read() }
-        catch (_: Exception) { throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
+        catch (error: Exception) { throwIfTwitchCatalogReadCancelled(error); throw TwitchCatalogStoreException(TwitchCatalogStoreFailure.STORAGE) }
         if (bytes == null) return null
         try {
             check(bytes.size in 1..PRIVATE_SECRET_LIMIT)

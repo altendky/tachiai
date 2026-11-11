@@ -11,6 +11,7 @@
   - [ABEMA public Search and exact Seasons](project/abema-search.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)
   - [Twitch catalog access](project/twitch-catalog-access.md)
+  - [YouTube integration](project/youtube.md)
   - [Twitch catalog authorization prototype](project/twitch-catalog-authorization.md)
   - [Connected Twitch catalog prototype](project/twitch-connected-catalog.md)
   - [Provider watch-history access](project/provider-history-access.md)

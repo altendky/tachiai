@@ -26,7 +26,8 @@ internal fun legacyProviderSetups(streams: Map<PrototypeSource, SourceSetup>): M
             .distinctBy { it.mode to it.connectionId }
         // Explicit old feed overrides need review even when their current effective routes agree.
         val overrides = settings.any { it.feedA.mode != SourceRouteMode.SOURCE_DEFAULT || it.feedB.mode != SourceRouteMode.SOURCE_DEFAULT }
-        ProviderSetup(if (routes.size == 1 && !overrides) routes.single() else null, routes)
+        if (settings.isEmpty()) ProviderSetup(SourceRouteChoice.system)
+        else ProviderSetup(if (routes.size == 1 && !overrides) routes.single() else null, routes)
     }
 
 internal fun unsupportedProviderRoutes(selection: PrototypeSelection, providers: Map<PrototypeService, ProviderSetup>): List<PrototypeSlot> =

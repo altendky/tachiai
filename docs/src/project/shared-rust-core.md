@@ -7,6 +7,14 @@ It is used by the Android application's existing HLS and DASH hosts through a
 separate Android library module. It does not own players, accounts, routes,
 networking, secrets, persistence or a user interface.
 
+Event-mark offset measurement compares each feed's progress from its own marked
+event clock: `(current A - marked A) - (current B - marked B)`. A positive result
+means A is ahead. The four clocks must be nonnegative; arithmetic overflow makes
+the measurement unavailable. Unrelated feed clock origins are never compared.
+The host owns ephemeral marks and validates their source/clock continuity;
+pauses and seeks remain part of measured progress. A measurement does not seek
+either player or establish acoustic synchronization.
+
 ## Packages and consumers
 
 | Item | Purpose | Consumer |

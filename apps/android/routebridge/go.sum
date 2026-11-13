@@ -78,3 +78,5 @@ gvisor.dev/gvisor v0.0.0-20261113024246-c70c1d53aa85 h1:CMGSBAkzphLcKdV59NX/POTA
 gvisor.dev/gvisor v0.0.0-20261113024246-c70c1d53aa85/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=
 gvisor.dev/gvisor v0.0.0-20261113073812-969b303fce7b h1:+1W/kn1HQA/8PBlm08C3/Nxm0mR4OfmhUd4ew5d8y7g=
 gvisor.dev/gvisor v0.0.0-20261113073812-969b303fce7b/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=
+gvisor.dev/gvisor v0.0.0-20261113213324-74f4c25d0c4b h1:znscvgppa/u7hgPE+jQxPI9aFNdYIDH9H2p6qb2Nynk=
+gvisor.dev/gvisor v0.0.0-20261113213324-74f4c25d0c4b/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=

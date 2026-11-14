@@ -43,9 +43,11 @@ See the [platform landscape](platforms.md).
    return to the picker, then tap Watch. This entry is included in ordinary
    builds independently of developer tools. Missing/restricted launch handlers
    leave guidance and the other action available.
-2. [Physical acceptance, #305](https://github.com/altendky/tachiai/issues/305),
-   dependent on #304: verify complete output, audio, routes and lifecycle on a
-   named phone/Chromecast pair before claiming playback support.
+2. [Physical acceptance record](chromecast-hardware-acceptance.md), consolidating
+   #305 and dependent on the delivered #304: verify complete output, audio,
+   routes and lifecycle on a named phone/Chromecast pair before claiming
+   playback support. The user deferred hardware testing on 2026-10-18; this
+   work remains in a draft PR until explicitly resumed.
 
 The [controlled media fixture](controlled-mirroring-fixture.md) supplies two
 locally generated, unprotected clips and a bounded test-APK-only viewer for

@@ -13,17 +13,20 @@ internal enum class NativeFailureStage { MEDIA_REQUEST_OPEN, MEDIA_REQUEST_READ,
 internal enum class NativeMediaRequestFailure {
     DNS, CONNECT, TIMEOUT, TLS, TRANSPORT_CANCELLED, TRANSPORT_UNKNOWN,
     REQUEST_DEADLINE, REQUEST_ADMISSION_REFUSED, PLAYBACK_INACTIVE,
+    HTTP_REJECTED, RANGE_NOT_HONORED, RESPONSE_LIMIT,
     IO, ILLEGAL_STATE, ILLEGAL_ARGUMENT, SECURITY, CANCELLED, NETWORK_ON_MAIN_THREAD, OTHER,
 }
+internal enum class NativeMediaOpenPhase { REQUEST_SETUP, CONNECTION_OPEN, RESPONSE_OPEN, RESPONSE_POLICY, INPUT_OPEN }
 
 // Only fixed categories and already-sanitized transport values cross the
 // request observer boundary. Never retain the original exception or private text.
 internal class NativeMediaRequestException(val failure: NativeMediaRequestFailure,
-    val transportEvidence: ProviderTransportEvidence? = null) :
+    val transportEvidence: ProviderTransportEvidence? = null, val openPhase: NativeMediaOpenPhase? = null) :
     IOException("Native media request failed")
 
-internal fun nativeMediaRequestException(error: Exception): NativeMediaRequestException {
-    if (error is NativeMediaRequestException) return NativeMediaRequestException(error.failure, error.transportEvidence)
+internal fun nativeMediaRequestException(error: Exception, openPhase: NativeMediaOpenPhase? = null): NativeMediaRequestException {
+    if (error is NativeMediaRequestException)
+        return NativeMediaRequestException(error.failure, error.transportEvidence, openPhase ?: error.openPhase)
     val transport = providerTransportEvidence(error)
     val failure = when {
         transport.localCancellationRequested -> NativeMediaRequestFailure.TRANSPORT_CANCELLED
@@ -45,7 +48,7 @@ internal fun nativeMediaRequestException(error: Exception): NativeMediaRequestEx
     }
     return NativeMediaRequestException(failure, transport.takeIf {
         error is IOException || error is ProviderTransportFailureCarrier || it.failure != ProviderTransportFailure.UNKNOWN
-    })
+    }, openPhase)
 }
 
 internal typealias NativeFailureObserver = (NativeFailureStage, Throwable) -> Unit

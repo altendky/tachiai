@@ -195,6 +195,29 @@ class AbemaAccountConnectionControllerTest {
         assertEquals(1, completed.size); assertEquals(0, f.tokens); assertEquals(0, f.preparations)
     }
 
+    @Test fun settingsOwnerMountedAfterReadinessLoadsReplacementEvenWhenRouteProofIsUnchanged() {
+        val f = Fixture(); val expired = f.expiredSnapshot(); val ownerProof = f.owner.proof()
+        f.controller.load(); f.pump()
+        assertEquals(AbemaAccountStatus.RECONNECT_REQUIRED, f.controller.state.value.status)
+        assertTrue(f.profileBearers.isEmpty())
+        // Simulate the already-validated renewal owner's publication while the
+        // settings page is waiting. Route identity remains unchanged.
+        val freshGrant = f.renewedGrant()
+        assertEquals(freshGrant, f.store.replace(freshGrant, f.wall, expired.revision) { true }.grant)
+        assertEquals(ownerProof, f.owner.proof())
+        assertEquals(AbemaAccountStatus.RECONNECT_REQUIRED, f.controller.state.value.status)
+        val fresh = AbemaAccountConnectionController(f.binding, f.worker, f.cancel,
+            { f.main.add(it) }, { _, _ -> }, { f.now }, { f.wall })
+        try {
+            fresh.load(); f.pump()
+            assertEquals(AbemaAccountStatus.CONNECTED, fresh.state.value.status)
+            assertEquals(listOf(freshGrant.bearer), f.profileBearers)
+            assertEquals(listOf(freshGrant.userId), f.profileIds)
+            assertEquals(0, f.tokens); assertEquals(0, f.preparations)
+            assertFalse(fresh.state.value.busy)
+        } finally { fresh.close(); f.controller.close(); f.pump() }
+    }
+
     @Test fun renewalUsesOneClippedOriginalDeadlineForInboxBrowserAndValidation() {
         val f = Fixture(); val original = f.expiredSnapshot(); val completed = mutableListOf<AbemaAutomaticRenewalResult>()
         var request: AbemaApprovalBrowserRequest? = null

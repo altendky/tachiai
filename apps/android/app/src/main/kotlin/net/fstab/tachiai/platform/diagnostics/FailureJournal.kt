@@ -30,6 +30,8 @@ import net.fstab.tachiai.provider.twitch.catalog.TwitchCatalogStoreFailure
 import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixException
 import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixFailure
 import net.fstab.tachiai.provider.twitch.catalog.TwitchHelixNetworkException
+import net.fstab.tachiai.provider.abema.account.AbemaAccountException
+import net.fstab.tachiai.provider.abema.account.AbemaAccountFailure
 
 internal enum class FailureStage {
     VIEWER_OPEN, VIEWER_BLOCKED, VIEWER_END_SESSION, VIEWER_DISPOSE, FEED_CLOSE,
@@ -46,7 +48,7 @@ internal enum class FailureStage {
     PROVIDER_SETUP_READ, STREAM_SETTINGS_RESET, QUALITY_SETTINGS_SAVE, ORIGINAL_PLAYER_PAUSE,
     VIEWER_END, FEED_CLEANUP_UNCONFIRMED, ROUTE_CLEAR_TIMEOUT, ROUTE_INSTALL_TIMEOUT,
     ROUTE_CLOSE, ROUTE_CANCEL_UNCONFIRMED, DISPOSING_FEED_FAILED,
-    CACHED_ABEMA_BUNDLE_PREPARE, CACHED_ABEMA_SOURCE_PREPARE, ABEMA_SOURCE_PREPARE,
+    CACHED_ABEMA_BUNDLE_PREPARE, CACHED_ABEMA_SOURCE_PREPARE, CACHED_ABEMA_ACCOUNT_PREPARE, ABEMA_SOURCE_PREPARE,
     ABEMA_PLAYER_CREATE, TWITCH_PREPARE, TWITCH_PLAYER_CREATE, BUNDLE_TRANSPORT_CLOSE,
     SOURCE_REQUESTS_CLOSE, HELPER_STOP, NATIVE_HOST_CLOSE, SCRIPT_REGISTRATION_REMOVE,
     WEBVIEW_STOP, WEBVIEW_PAUSE, WEBVIEW_DETACH, WEBVIEW_DESTROY, RESOURCES_CLEAR,
@@ -54,6 +56,9 @@ internal enum class FailureStage {
     BEFORE_PLAYER_RELEASE, BUNDLE_DISCONNECT, DRM_ERROR, OPENVPN_PREPARE, OPENCONNECT_PREPARE,
     RECOVERY_RESTART, CONFIGURED_SOURCES_READ, CONFIGURED_SOURCES_WRITE, CATALOG_LOAD, CATALOG_CLOSE,
     CATALOG_AUTH_REQUEST, CATALOG_AUTH_STORAGE, CATALOG_AUTH_OWNER, CATALOG_AUTH_CLEANUP,
+    MEDIA_REQUEST_SETUP, MEDIA_CONNECTION_OPEN, MEDIA_RESPONSE_OPEN, MEDIA_RESPONSE_POLICY, MEDIA_INPUT_OPEN,
+    STARTUP_STATUS_IGNORED, CACHED_ABEMA_RESOURCE_REFUSED,
+    CACHED_ABEMA_CONNECTION_REFUSED, CACHED_ABEMA_RENDERER_GONE,
 }
 
 internal enum class FailureSlot { NONE, A, B }
@@ -61,6 +66,11 @@ internal enum class FailureThread { MAIN, WORKER }
 // SECONDARY is chronological association with a run, not inferred causality.
 internal enum class FailureRelation { FIRST, SECONDARY, BLOCKED }
 internal enum class FailureCategory {
+    ABEMA_RENDERER_CRASHED, ABEMA_RENDERER_KILLED,
+    ABEMA_BOOTSTRAP_POLICY, ABEMA_BOOTSTRAP_CLOSED, ABEMA_BOOTSTRAP_SUPERSEDED,
+    ABEMA_BOOTSTRAP_OWNER_INACTIVE, ABEMA_BOOTSTRAP_BUDGET_INACTIVE, ABEMA_BOOTSTRAP_DEADLINE,
+    ABEMA_BOOTSTRAP_SELECTION, ABEMA_BOOTSTRAP_ROUTE, ABEMA_BOOTSTRAP_ACCOUNT,
+    ABEMA_BOOTSTRAP_AVAILABILITY, ABEMA_BOOTSTRAP_PREMIUM, ABEMA_BOOTSTRAP_CHASE,
     NONE, NETWORK_ON_MAIN_THREAD, IO, ILLEGAL_STATE, ILLEGAL_ARGUMENT, SECURITY, CANCELLED, OTHER,
     ABEMA_CHANNEL_INVALID_RESPONSE, ABEMA_CHANNEL_RESPONSE_LIMIT, ABEMA_CHANNEL_POLICY_REFUSED, ABEMA_CHANNEL_COOKIE_HANDLER_REFUSED, ABEMA_CHANNEL_CANCELLED, ABEMA_CHANNEL_TIME_LIMIT_REACHED, ABEMA_CHANNEL_NETWORK_FAILED, ABEMA_CHANNEL_CLEANUP_FAILED,
     TWITCH_CATALOG_AUTH_INVALID_RESPONSE, TWITCH_CATALOG_AUTH_REJECTED, TWITCH_CATALOG_AUTH_CLIENT_MISMATCH, TWITCH_CATALOG_AUTH_USER_MISMATCH, TWITCH_CATALOG_AUTH_SCOPE_MISMATCH, TWITCH_CATALOG_AUTH_EXPIRED, TWITCH_CATALOG_AUTH_NETWORK,
@@ -69,8 +79,14 @@ internal enum class FailureCategory {
     TWITCH_CATALOG_STORE_STORAGE, TWITCH_CATALOG_STORE_INVALID_RECORD, TWITCH_CATALOG_STORE_CLIENT_MISMATCH,
     ABEMA_CACHED_TIMER_EXPIRED, ABEMA_CACHED_OWNED_CANCELLED, ABEMA_CACHED_FETCH_REJECTED_BEFORE_HTTP,
     ABEMA_CACHED_HTTP_REFUSED, ABEMA_CACHED_RESPONSE_VALIDATION_REFUSED, ABEMA_CACHED_UNKNOWN,
+    ABEMA_ACCOUNT_REFUSED, ABEMA_ACCOUNT_NOT_VERIFIED, ABEMA_ACCOUNT_TEMPORARY,
+    ABEMA_ACCOUNT_TIME_LIMIT_REACHED, ABEMA_ACCOUNT_EXPIRED, ABEMA_ACCOUNT_CANCELLED,
+    ABEMA_ACCOUNT_CLEANUP_FAILED, ABEMA_ACCOUNT_STORAGE_FAILED,
+    ABEMA_READINESS_FAILURE, ABEMA_READINESS_TEMPORARY_FAILURE,
+    ABEMA_READINESS_INTERACTION_REQUIRED, ABEMA_READINESS_STORAGE_FAILURE,
     TRANSPORT_DNS, TRANSPORT_CONNECT, TRANSPORT_TIMEOUT, TRANSPORT_TLS, TRANSPORT_CANCELLED, TRANSPORT_UNKNOWN,
     MEDIA_REQUEST_DEADLINE, MEDIA_REQUEST_ADMISSION_REFUSED, MEDIA_PLAYBACK_INACTIVE,
+    MEDIA_HTTP_REJECTED, MEDIA_RANGE_NOT_HONORED, MEDIA_RESPONSE_LIMIT,
     PLAYER_RELEASE_TIMEOUT,
 }
 
@@ -146,6 +162,9 @@ internal data class SafeFailure(
             NativeMediaRequestFailure.REQUEST_DEADLINE -> FailureCategory.MEDIA_REQUEST_DEADLINE
             NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED -> FailureCategory.MEDIA_REQUEST_ADMISSION_REFUSED
             NativeMediaRequestFailure.PLAYBACK_INACTIVE -> FailureCategory.MEDIA_PLAYBACK_INACTIVE
+            NativeMediaRequestFailure.HTTP_REJECTED -> FailureCategory.MEDIA_HTTP_REJECTED
+            NativeMediaRequestFailure.RANGE_NOT_HONORED -> FailureCategory.MEDIA_RANGE_NOT_HONORED
+            NativeMediaRequestFailure.RESPONSE_LIMIT -> FailureCategory.MEDIA_RESPONSE_LIMIT
             NativeMediaRequestFailure.IO -> FailureCategory.IO
             NativeMediaRequestFailure.ILLEGAL_STATE -> FailureCategory.ILLEGAL_STATE
             NativeMediaRequestFailure.ILLEGAL_ARGUMENT -> FailureCategory.ILLEGAL_ARGUMENT
@@ -157,6 +176,17 @@ internal data class SafeFailure(
 
         // Map typed, closed adapter values explicitly; provider strings and grant
         // fields never become diagnostic vocabulary.
+        private fun providerCategory(value: AbemaAccountFailure): FailureCategory = when (value) {
+            AbemaAccountFailure.REFUSED -> FailureCategory.ABEMA_ACCOUNT_REFUSED
+            AbemaAccountFailure.NOT_VERIFIED -> FailureCategory.ABEMA_ACCOUNT_NOT_VERIFIED
+            AbemaAccountFailure.TEMPORARY -> FailureCategory.ABEMA_ACCOUNT_TEMPORARY
+            AbemaAccountFailure.TIME_LIMIT_REACHED -> FailureCategory.ABEMA_ACCOUNT_TIME_LIMIT_REACHED
+            AbemaAccountFailure.EXPIRED -> FailureCategory.ABEMA_ACCOUNT_EXPIRED
+            AbemaAccountFailure.CANCELLED -> FailureCategory.ABEMA_ACCOUNT_CANCELLED
+            AbemaAccountFailure.CLEANUP_FAILED -> FailureCategory.ABEMA_ACCOUNT_CLEANUP_FAILED
+            AbemaAccountFailure.STORAGE_FAILED -> FailureCategory.ABEMA_ACCOUNT_STORAGE_FAILED
+        }
+
         private fun providerCategory(value: AbemaChannelFailure): FailureCategory = when (value) {
             AbemaChannelFailure.INVALID_RESPONSE -> FailureCategory.ABEMA_CHANNEL_INVALID_RESPONSE
             AbemaChannelFailure.RESPONSE_LIMIT -> FailureCategory.ABEMA_CHANNEL_RESPONSE_LIMIT
@@ -206,6 +236,7 @@ internal data class SafeFailure(
                 // Avoid an Android dependency in the pure JVM codec/tests.
                 value.javaClass.name == "android.os.NetworkOnMainThreadException" -> FailureCategory.NETWORK_ON_MAIN_THREAD
                 value is AbemaChannelException -> providerCategory(value.category)
+                value is AbemaAccountException -> providerCategory(value.category)
                 value is TwitchCatalogAuthException -> providerCategory(value.failure)
                 value is TwitchHelixException -> providerCategory(value.failure)
                 value is TwitchCatalogNetworkException -> providerCategory(value.category)

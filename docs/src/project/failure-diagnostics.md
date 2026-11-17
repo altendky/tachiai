@@ -144,6 +144,39 @@ cause for the intermittent failures in #297 is established by this change.
 
 ## Playback health and retry intent
 
+Automatic recovery adds closed health events for scheduling, starting and
+exhausting a retry burst. Media-open failures also persist their exact boundary:
+request setup, connection creation, response opening, response policy or body
+opening. HTTP rejection, an unhonored range and response-limit refusal have
+separate fixed categories. These extra records retain the existing v1 journal
+shape and first-error association; no request URL, body or secret is retained.
+
+Cached ABEMA account preparation now preserves its closed account subcategory
+(including expired, unverified, refused, canceled or storage failure). Readiness
+preflight failures similarly distinguish temporary, interaction and storage
+outcomes. A generic account-unavailable label alone is not proof of login expiry.
+
+Late startup status cannot replace an active viewer with the source picker.
+A current startup cancellation suppressed during viewing records
+`STARTUP_STATUS_IGNORED` / `CANCELLED` in the failure journal. This identifies a
+discarded UI update; it does not establish why the startup scope was canceled.
+The provider route's admitted lifetime remains independent of startup UI.
+
+ABEMA bootstrap resource refusals retain a closed category naming the first
+failed lifetime, selection, route, account, availability or entitlement check.
+These observations reuse the original short-circuit checks without repeating
+protected reads. Continuous-session admission loss reports stopped playback or
+an unavailable account, rather than claiming a prototype time/request quota.
+Actual playback limits are retained as feed failures; both declared and streamed
+response-size refusals preserve `MEDIA_RESPONSE_LIMIT`. Existing response bounds,
+finite diagnostic windows and provider admission remain enforced.
+
+The same first-refusal categories cover ABEMA's connection factory before any
+network connection opens. Ownership refusal carries typed request-admission
+failure instead of a plain I/O exception; it cannot acquire transport-retry
+authority. Helper-renderer loss records Android's crashed/killed distinction.
+Neither observation stores private request details or changes admission rules.
+
 The native viewer also retains a separate `playback-health.tsv` journal in
 app-private, no-backup storage. Its closed vocabulary and numeric fields record
 application play intent, feed preparation/retry state, timing work, Media3 play

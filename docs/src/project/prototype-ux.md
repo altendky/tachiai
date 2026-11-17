@@ -634,10 +634,44 @@ same action. Select presses made while that action is temporarily unavailable
 are consumed, including repeat and release events; they cannot activate an
 automatically focused Pause button. Explicit navigation, touch, another action,
 panel/menu changes and session changes supersede an older focus restoration.
+The guard survives restoration itself: a later queued fallback focus change
+cannot redirect the next Select to Sources or another control. That press is
+consumed and the intended control regains focus; a fresh press can activate it.
 Media Pause remains available. Reopened panels remember their last control,
 including recreated Quality controls. Focused controls keep the overlay visible.
 These rules apply to keyboard/remote focus across Android phone, tablet and TV;
 they do not create focus in response to touch alone.
+
+### Automatic feed recovery
+
+Following the user's request on 2026-11-10, native viewing schedules recovery
+independently for either or both selected feeds after eligible failures during
+actual playback. A recent media DNS/connect/timeout or plain I/O failure,
+transient HTTP response, or expired live window can start a bounded retry burst.
+There are at most three automatic attempts, delayed by one, three and ten
+seconds, and six attempts per ten-minute interval. Only a minute of sustained
+clock/render progress resets the consecutive budget; READY alone does not.
+
+Recovery uses the ordinary failed-slot cleanup and fresh preparation path,
+keeping the healthy sibling's playback intact. Both-feed recovery can join a
+newly prepared sibling within the same unchanged viewer request. Explicit
+transport/timing actions cancel queued recovery and automatic resumption;
+background/Stop ends the viewer. Existing route, provider-account, entitlement,
+media-origin and cleanup checks apply to every attempt. TLS/cancellation,
+licensing, policy and unsafe cleanup do not start an automatic retry loop.
+Repeated failures leave the manual recovery action available.
+
+ABEMA retries first check the existing account-readiness service, including
+verified non-interactive renewal through the remembered browser session.
+An account expiry signal may request that check once per incident; refusal or
+a need for interaction stops recovery. The shared **Check connection** action
+offers the same bounded check manually. Account settings wait for readiness
+before loading their status, avoiding a stale reconnect warning after renewal,
+and distinguish **Checking account connection…** from reading stream settings.
+
+Recovery retains the pair's pre-failure enabled-offset intent across simultaneous
+failures. Automatic resumption reuses the saved alignment hierarchy below;
+an explicit Back-to-live or disabled offset is not silently re-enabled.
 
 ### Remembered pair offsets
 

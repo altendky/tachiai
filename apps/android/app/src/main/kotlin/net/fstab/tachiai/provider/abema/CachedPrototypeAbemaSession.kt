@@ -55,6 +55,8 @@ import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.NativeFailureStage
+import net.fstab.tachiai.platform.media.NativeMediaRequestException
+import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
 import net.fstab.tachiai.platform.media.PrototypeFeedEvent
 import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.platform.media.awaitOpaqueResponse
@@ -226,17 +228,46 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun allows(value: String?) = value == AbemaNativeBootstrapPolicy.PAGE
-    private fun preparationAdmitted(run: Long) = !closed.get() && revision.get() == run && active() &&
-        budget?.active == true && ownership?.canContinue() != false && routeOwnership?.canContinue() != false &&
-        (!accountAdmitted.get() || accountClient.get()?.current() == true) &&
-        playbackAvailability.get()?.current() != false && slotPremiumCurrent(run) && slotChaseCurrent(run)
+    private fun preparationRefusal(run: Long) = abemaBootstrapRefusal(
+        lifetime = { when {
+            closed.get() -> AbemaBootstrapRefusal.CLOSED
+            revision.get() != run -> AbemaBootstrapRefusal.SUPERSEDED
+            !active() -> AbemaBootstrapRefusal.OWNER_INACTIVE
+            budget?.active != true -> AbemaBootstrapRefusal.BUDGET_INACTIVE
+            else -> null
+        } },
+        selection = { ownership?.canContinue() != false },
+        route = { routeOwnership?.canContinue() != false },
+        account = { !accountAdmitted.get() || accountClient.get()?.current() == true },
+        availability = { playbackAvailability.get()?.current() != false },
+        premium = { slotPremiumCurrent(run) }, chase = { slotChaseCurrent(run) })
+    private fun preparationAdmitted(run: Long) = preparationRefusal(run) == null
     private fun preparationCurrent(run: Long) = SystemClock.elapsedRealtime() < deadline && preparationAdmitted(run)
     private fun current(run: Long) = preparationCurrent(run) && routeCurrent.get()
-    private fun workerOwned(): Boolean = ownership?.checkWorker() != false &&
-        (routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker()) &&
-        (!accountAdmitted.get() || accountClient.get()?.checkWorker() == true) &&
-        playbackAvailability.get()?.current() != false &&
-        slotPremiumCurrent(revision.get()) && slotChaseCurrent(revision.get())
+    private fun workerRefusal() = abemaBootstrapRefusal(
+        selection = { ownership?.checkWorker() != false },
+        route = { routeOwnership == null || routeOwnership === ownership || routeOwnership.checkWorker() },
+        account = { !accountAdmitted.get() || accountClient.get()?.checkWorker() == true },
+        availability = { playbackAvailability.get()?.current() != false },
+        premium = { slotPremiumCurrent(revision.get()) }, chase = { slotChaseCurrent(revision.get()) })
+    private fun workerOwned(): Boolean = workerRefusal() == null
+    private fun reportBootstrapRefusal(stage: FailureStage, refusal: AbemaBootstrapRefusal?) {
+        val category = when (refusal) {
+            null -> FailureCategory.ABEMA_BOOTSTRAP_POLICY
+            AbemaBootstrapRefusal.CLOSED -> FailureCategory.ABEMA_BOOTSTRAP_CLOSED
+            AbemaBootstrapRefusal.SUPERSEDED -> FailureCategory.ABEMA_BOOTSTRAP_SUPERSEDED
+            AbemaBootstrapRefusal.OWNER_INACTIVE -> FailureCategory.ABEMA_BOOTSTRAP_OWNER_INACTIVE
+            AbemaBootstrapRefusal.BUDGET_INACTIVE -> FailureCategory.ABEMA_BOOTSTRAP_BUDGET_INACTIVE
+            AbemaBootstrapRefusal.DEADLINE -> FailureCategory.ABEMA_BOOTSTRAP_DEADLINE
+            AbemaBootstrapRefusal.SELECTION -> FailureCategory.ABEMA_BOOTSTRAP_SELECTION
+            AbemaBootstrapRefusal.ROUTE -> FailureCategory.ABEMA_BOOTSTRAP_ROUTE
+            AbemaBootstrapRefusal.ACCOUNT -> FailureCategory.ABEMA_BOOTSTRAP_ACCOUNT
+            AbemaBootstrapRefusal.AVAILABILITY -> FailureCategory.ABEMA_BOOTSTRAP_AVAILABILITY
+            AbemaBootstrapRefusal.PREMIUM -> FailureCategory.ABEMA_BOOTSTRAP_PREMIUM
+            AbemaBootstrapRefusal.CHASE -> FailureCategory.ABEMA_BOOTSTRAP_CHASE
+        }
+        diagnostics.reportCategory(stage, category)
+    }
     private fun slotPremiumCurrent(run: Long): Boolean {
         return slotLinearAdmission.current {
             val receipt = slotPremiumReceipt.get()
@@ -258,7 +289,14 @@ internal class CachedPrototypeAbemaSession(
             receipt.current(scope, System.currentTimeMillis(), SystemClock.elapsedRealtime())
     }
     private fun openConnection(url: URL): HttpsURLConnection {
-        if (!workerOwned()) throw java.io.IOException("Selected playback owner unavailable")
+        workerRefusal()?.let { refusal ->
+            // A seek can interrupt this request's durable check without
+            // revoking its account lease. Do not turn that into a feed failure.
+            if (Thread.currentThread().isInterrupted)
+                throw NativeMediaRequestException(NativeMediaRequestFailure.CANCELLED)
+            reportBootstrapRefusal(FailureStage.CACHED_ABEMA_CONNECTION_REFUSED, refusal)
+            throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
+        }
         return route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
     }
     override fun canContinue(): Boolean = current(revision.get())
@@ -323,7 +361,9 @@ internal class CachedPrototypeAbemaSession(
             }
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val uri = runCatching { URI(request.url.toString()) }.getOrNull()
-                val live = preparationCurrent(revision.get()) && workerOwned()
+                val refusal = if (SystemClock.elapsedRealtime() >= deadline) AbemaBootstrapRefusal.DEADLINE
+                    else preparationRefusal(revision.get()) ?: workerRefusal()
+                val live = refusal == null
                 val allowed = uri != null && live &&
                     AbemaNativeBootstrapPolicy.allows(uri, request.isForMainFrame, request.method, episodeResource?.identity,
                         channelResource?.identity, slotResource?.identity, modernChannelContext = modernChannelPreparation,
@@ -333,7 +373,9 @@ internal class CachedPrototypeAbemaSession(
                         AbemaNativeBootstrapPolicy.refusalCategory(uri, request.isForMainFrame, request.method)
                     handler.post { if (!closed.get()) {
                         record("resource=REFUSED category=$category")
-                        fail(PrototypeFeedFailure(if (live) PrototypeFailureReason.MEDIA_BLOCKED else PrototypeFailureReason.PLAYBACK_LIMIT))
+                        reportBootstrapRefusal(FailureStage.CACHED_ABEMA_RESOURCE_REFUSED, refusal)
+                        fail(PrototypeFeedFailure(refusal?.failureReason(budget?.isTimeBounded == true)
+                            ?: PrototypeFailureReason.MEDIA_BLOCKED))
                     } }
                     return refusedResource()
                 }
@@ -368,6 +410,8 @@ internal class CachedPrototypeAbemaSession(
                 ssl.cancel(); fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (!closed.get()) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_RENDERER_GONE,
+                    if (detail.didCrash()) FailureCategory.ABEMA_RENDERER_CRASHED else FailureCategory.ABEMA_RENDERER_KILLED)
                 fail(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)); return true
             }
         }
@@ -552,6 +596,8 @@ internal class CachedPrototypeAbemaSession(
                     }
                 }
             } catch (error: AbemaAccountException) {
+                if (!closed.get() && revision.get() == run)
+                    diagnostics.report(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, error)
                 val reason = when (error.category) {
                     AbemaAccountFailure.TEMPORARY -> PrototypeFailureReason.NETWORK_FAILED
                     AbemaAccountFailure.TIME_LIMIT_REACHED -> PrototypeFailureReason.PREPARATION_TIMEOUT

@@ -9,12 +9,17 @@ import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.presentation.PrototypeFailureReason
 import net.fstab.tachiai.platform.media.NativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativeMediaRequestFailure
+import net.fstab.tachiai.platform.media.NativeMediaOpenPhase
+import net.fstab.tachiai.platform.media.NativeFailureStage
+import net.fstab.tachiai.platform.media.nativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.provider.abema.AbemaChannelException
 import net.fstab.tachiai.provider.abema.AbemaChannelFailure
+import net.fstab.tachiai.provider.abema.account.AbemaAccountException
+import net.fstab.tachiai.provider.abema.account.AbemaAccountFailure
 import net.fstab.tachiai.provider.twitch.DeviceNetworkFailure
 import net.fstab.tachiai.provider.twitch.catalog.*
 import org.junit.Assert.*
@@ -25,6 +30,33 @@ import org.junit.rules.TemporaryFolder
 class FailureJournalTest {
     @get:Rule val temporary = TemporaryFolder()
     private fun journalFile() = File(temporary.newFolder(), "failure-diagnostics.tsv")
+
+    @Test fun `request open substage is durable without replacing first error or storing exception contents`() {
+        val boundaries = listOf(FailureStage.MEDIA_REQUEST_SETUP, FailureStage.MEDIA_CONNECTION_OPEN,
+            FailureStage.MEDIA_RESPONSE_OPEN, FailureStage.MEDIA_RESPONSE_POLICY, FailureStage.MEDIA_INPUT_OPEN)
+        for ((phase, boundary) in NativeMediaOpenPhase.entries.zip(boundaries)) {
+            val file = journalFile(); val journal = FailureJournal(file)
+            val reporter = FailureReporter(journal::record, clock = { 100_000 })
+            reporter.nativeObserver()(NativeFailureStage.MEDIA_REQUEST_OPEN,
+                nativeMediaRequestException(IOException("https://private.example/?secret=synthetic-private"), phase))
+            val records = journal.read()
+            assertEquals(listOf(FailureStage.MEDIA_REQUEST_OPEN, boundary), records.map { it.stage })
+            assertEquals(listOf(FailureRelation.FIRST, FailureRelation.SECONDARY), records.map { it.relation })
+            assertTrue(records.all { it.failure.category == FailureCategory.IO })
+            assertFalse(file.readText().contains("synthetic-private"))
+        }
+    }
+
+    @Test fun `account preparation preserves closed failure categories without grant or transport contents`() {
+        val file = journalFile(); val journal = FailureJournal(file)
+        val reporter = FailureReporter(journal::record, clock = { 100_000 })
+        for (value in AbemaAccountFailure.entries)
+            reporter.report(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, AbemaAccountException(value))
+        val records = journal.read()
+        assertEquals(AbemaAccountFailure.entries.map { "ABEMA_ACCOUNT_${it.name}" }, records.map { it.failure.category.name })
+        assertEquals(records, FailureJournalCodec.decode(FailureJournalCodec.encode(records)))
+        assertTrue(records.all { it.failure.causes.isEmpty() && it.failure.frames.isEmpty() })
+    }
 
     @Test fun `typed release timeout survives v1 codec independently of generic cleanup uncertainty`() {
         val file = journalFile()
@@ -77,6 +109,9 @@ class FailureJournalTest {
             NativeMediaRequestFailure.REQUEST_DEADLINE to FailureCategory.MEDIA_REQUEST_DEADLINE,
             NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED to FailureCategory.MEDIA_REQUEST_ADMISSION_REFUSED,
             NativeMediaRequestFailure.PLAYBACK_INACTIVE to FailureCategory.MEDIA_PLAYBACK_INACTIVE,
+            NativeMediaRequestFailure.HTTP_REJECTED to FailureCategory.MEDIA_HTTP_REJECTED,
+            NativeMediaRequestFailure.RANGE_NOT_HONORED to FailureCategory.MEDIA_RANGE_NOT_HONORED,
+            NativeMediaRequestFailure.RESPONSE_LIMIT to FailureCategory.MEDIA_RESPONSE_LIMIT,
             NativeMediaRequestFailure.IO to FailureCategory.IO,
             NativeMediaRequestFailure.ILLEGAL_STATE to FailureCategory.ILLEGAL_STATE,
             NativeMediaRequestFailure.ILLEGAL_ARGUMENT to FailureCategory.ILLEGAL_ARGUMENT,

@@ -9,15 +9,16 @@ internal class FeedRetryPlaybackReceipt internal constructor(internal val index:
 // request or directly starts a player. Saving diagnostics/settings is unrelated.
 internal class FeedRetryPlaybackIntent {
     private data class Pending(val receipt: FeedRetryPlaybackReceipt, val retryToken: Any,
-        val siblingMember: Any?, val resumeRequested: Boolean)
+        val siblingMember: Any?, val resumeRequested: Boolean, val allowSiblingReplacement: Boolean)
     private val pending = arrayOfNulls<Pending>(2)
     private var generation = 0L
 
-    fun arm(index: Int, retryToken: Any, siblingMember: Any?, resumeRequested: Boolean): FeedRetryPlaybackReceipt {
+    fun arm(index: Int, retryToken: Any, siblingMember: Any?, resumeRequested: Boolean,
+        allowSiblingReplacement: Boolean = false): FeedRetryPlaybackReceipt {
         require(index in pending.indices)
         check(generation < Long.MAX_VALUE) { "Retry intent generation exhausted" }
         val receipt = FeedRetryPlaybackReceipt(index, ++generation)
-        pending[index] = Pending(receipt, retryToken, siblingMember, resumeRequested)
+        pending[index] = Pending(receipt, retryToken, siblingMember, resumeRequested, allowSiblingReplacement)
         return receipt
     }
 
@@ -27,7 +28,8 @@ internal class FeedRetryPlaybackIntent {
         // its owner reused the same retry token or restored the same sibling.
         if (current.receipt !== receipt || current.receipt.generation != receipt.generation) return false
         pending[receipt.index] = null
-        return current.retryToken === retryToken && current.siblingMember === siblingMember && current.resumeRequested
+        return current.retryToken === retryToken && current.resumeRequested &&
+            (current.siblingMember === siblingMember || current.allowSiblingReplacement)
     }
 
     fun cancel(index: Int) {

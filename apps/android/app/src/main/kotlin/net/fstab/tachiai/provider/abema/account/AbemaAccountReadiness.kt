@@ -137,6 +137,9 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
         override fun onNullBinding(name: ComponentName) { finish(AbemaAccountReadinessResult.FAILURE) }
     }
     fun onResume() { if (!closed) resumed = true }
+    fun cancelCheck() {
+        generation++; pending?.detach(); main.removeCallbacksAndMessages(null)
+    }
     fun onPause() { resumed = false; generation++; pending?.detach(); main.removeCallbacksAndMessages(null) }
     fun ensure(targets: List<AbemaReadinessTarget>, complete: (AbemaAccountReadinessResult) -> Unit) {
         check(Looper.myLooper() == Looper.getMainLooper())

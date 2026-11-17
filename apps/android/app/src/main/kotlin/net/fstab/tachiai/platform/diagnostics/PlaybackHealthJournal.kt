@@ -17,7 +17,10 @@ import net.fstab.tachiai.platform.network.ProviderTransportOperation
 import net.fstab.tachiai.platform.network.ProviderTransportPhase
 
 internal enum class PlaybackHealthSlot { A, B }
-internal enum class PlaybackHealthReason { SAMPLE_STATE_CHANGED, FEED_FAILURE, RETRY_REQUESTED, FEED_PREPARED, RETRY_REJOIN }
+internal enum class PlaybackHealthReason {
+    SAMPLE_STATE_CHANGED, FEED_FAILURE, RETRY_REQUESTED, FEED_PREPARED, RETRY_REJOIN,
+    AUTO_RETRY_SCHEDULED, AUTO_RETRY_STARTED, AUTO_RETRY_EXHAUSTED,
+}
 internal enum class PlaybackHealthIntent {
     STARTUP, USER_PLAY, USER_PAUSE, FOCUS_LOSS, TIMING, BACK_TO_LIVE, OFFSET, RETRY_REJOIN,
     PLAY_REFUSED, OFFSET_UNCONFIRMED, BACKGROUND, STOP,

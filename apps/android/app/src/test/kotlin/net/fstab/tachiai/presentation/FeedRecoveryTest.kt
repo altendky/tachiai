@@ -16,7 +16,7 @@ class FeedRecoveryTest {
     }
 
     @Test fun `authorization license policy and unsafe cleanup never offer playback retry`() {
-        for (reason in listOf(PrototypeFailureReason.LOGIN_REJECTED, PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE,
+        for (reason in listOf(PrototypeFailureReason.LOGIN_REJECTED,
             PrototypeFailureReason.LICENSE_FAILED, PrototypeFailureReason.MEDIA_BLOCKED,
             PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED, PrototypeFailureReason.CLEANUP_FAILED,
             PrototypeFailureReason.ROUTE_FAILED)) assertNull(PrototypeFeedFailure(reason).recoveryAction())
@@ -26,6 +26,8 @@ class FeedRecoveryTest {
             assertNull(PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = status).recoveryAction())
         assertEquals(FeedRecoveryAction.RETRY,
             PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 503).recoveryAction())
+        assertEquals(FeedRecoveryAction.CHECK_CONNECTION,
+            PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE).recoveryAction())
     }
 
     @Test fun `duplicate taps and late old events cannot replace a retry in flight`() {

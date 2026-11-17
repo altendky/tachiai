@@ -8,7 +8,6 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 
 // Worker acquisition/checks; main admission is RAM/clock only. The ordinary
@@ -35,7 +34,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     private var sequence = 1L
     private var operation: Operation? = null
     @Volatile private var credential: AbemaAccountGrant? = null
-    private val minimumWall = AtomicLong()
+    private val wallClock = AbemaAccountWallClock(System::currentTimeMillis)
     @Volatile private var cleanupConfirmed = false
     private var connection: Connection? = null // Main-owned.
     private class Operation(val sequence: Long, val expected: Int) {
@@ -49,10 +48,9 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             runCatching(canUse).getOrDefault(false)
     }
     fun current(): Boolean {
-        val wall = System.currentTimeMillis()
-        val previous = minimumWall.getAndUpdate { minimum -> maxOf(minimum, wall) }
+        val wall = wallClock.sample()
         val value = credential
-        val okay = acquired.get() && live() && wall >= previous && (value == null || wall < value.expiresAtMs)
+        val okay = acquired.get() && live() && wall != null && (value == null || wall < value.expiresAtMs)
         if (!okay && acquired.get()) { revoked.set(true); close() }
         return okay
     }
@@ -141,7 +139,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
         if (value.status == AbemaAccountAccessIpc.Status.FAILURE) { close(); return value }
         if (!live()) { close(); return failure(AbemaAccountFailure.CANCELLED) }
         credential = value.grant
-        minimumWall.accumulateAndGet(System.currentTimeMillis()) { minimum, now -> maxOf(minimum, now) }
+        if (wallClock.sample() == null) return failure(AbemaAccountFailure.EXPIRED)
         acquired.set(true)
         if (!current()) return failure(AbemaAccountFailure.CANCELLED)
         return value

@@ -144,6 +144,67 @@ cause for the intermittent failures in #297 is established by this change.
 
 ## Playback health and retry intent
 
+Debug builds emit a closed numeric `TachiaiPairOffset` record every five seconds.
+The saved seconds target and last confirmed applied movement are separate from
+the current error against a marked correspondence. Positive marked error means
+A is ahead of its target relationship; unavailable or changed timelines report
+unknown rather than an invented offset. The applied movement is not a continuing
+measurement of content alignment.
+
+A separate session baseline measures the difference between each feed's own
+content-clock progress. Positive drift means A progressed farther than B since
+that baseline. Pair replacement, a new timing operation or playback intent,
+buffering, pause, advertisements, missing clocks and uncertain timeline continuity
+retire the baseline. Consistent overlapping timeline witnesses advance between
+samples so a rolling live playlist does not by itself end a continuous segment.
+Records contain relative errors, baseline age, closed states and playback speeds;
+they contain no provider identities, URLs, absolute source clocks or media.
+These are passive playback-clock observations. They neither identify matching
+displayed frames nor trigger automatic realignment.
+
+### ABEMA account clock ordering follow-up — 2026-11-17
+
+The SHIELD live ABEMA/Twitch investigation observed ABEMA account-admission
+refusals, including one before a media connection opened. A generic network
+failure at that boundary does not establish a transport outage or expired login.
+Source analysis found an independent concurrency bug: sampling wall time before
+the shared high-water update lets a later caller publish first, making an older
+in-flight sample appear to be a clock rollback and revoke a valid lease. The
+observed failure journal does not establish that this race caused those incidents.
+
+The account client now samples and commits its high-water clock under one short
+monitor. The account owner likewise samples, compares and updates its clock
+under its existing monitor. External ownership callbacks, durable storage reads
+and transport work remain outside those monitors. Actual backward samples and
+grant expiry still refuse access; a revoked lease cannot recover merely because
+wall time catches up. Regression coverage includes concurrent increasing samples,
+an actual shared-lease race, rollback and expiry. This is an account-admission
+correction, not evidence that retry preserves exact displayed-content alignment.
+
+The user then confirmed visual alignment after a restart and a one-second
+adjustment. A bounded capture starting at 04:41:12 UTC collected 118 continuously
+measuring samples spanning 593 seconds within a 600-second capture. Relative to
+its first sample, the difference in feed-clock progress ranged from -18 to +6 ms
+and ended at -8 ms. The saved target and last confirmed applied movement remained
+-25,846 ms. No baseline reset or unavailable sample occurred. This provides no
+evidence for accumulating drift requiring periodic realignment in that segment;
+it does not measure matching video frames or establish stability over hours.
+The earlier retry/restart transitions are separate alignment discontinuities.
+
+This observation used the physical NVIDIA SHIELD (`mdarcy`, Android 11/API 30),
+WebView 157.0.8103.38, the existing account configuration and live ABEMA/Twitch
+sources. Region and account status were not independently inspected. The installed
+passive diagnostic APK SHA-256 was
+`b031d552ee76f57f9113dc1d50b97e69704e71583d51adb4774af826f52b7561`.
+The subsequent account-clock fix passed 2,788 JVM cases (one opt-in skip), lint,
+debug assembly and Android test-source compilation. Its APK SHA-256 is
+`18de6ae0d3da6db97f88378f2b9b801e6de76ac8391f2ae1a24b5310ed842afc`;
+the shared debug certificate matched. That fix was not installed during this
+measurement. After another reported failure, it was installed in place on the
+same SHIELD at 04:53 UTC, preserving app data; the installed APK hash matched and
+the ordinary launcher reopened. No post-fix provider playback observation has
+been established yet.
+
 Automatic recovery adds closed health events for scheduling, starting and
 exhausting a retry burst. Media-open failures also persist their exact boundary:
 request setup, connection creation, response opening, response policy or body

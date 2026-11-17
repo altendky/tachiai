@@ -5,6 +5,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -14,6 +15,7 @@ class AbemaAccountAccessOwnerTest {
         val instance = UUID.randomUUID().toString()
         val store = AbemaAccountGrantStore(instance, storage)
         @Volatile var wall = 1000000L
+        var wallHook: () -> Long = { wall }
         @Volatile var elapsed = 0L
         var elapsedHook: () -> Long = { elapsed }
         @Volatile var ownerCurrent = true
@@ -38,7 +40,7 @@ class AbemaAccountAccessOwnerTest {
         }
         init {
             if (saved) store.replace(decodedAbemaGrant(fixtureAccountToken(), "intended-account", wall), wall, store.revision()) { true }
-            owner = AbemaAccountAccessOwner(instance, "fixture-owner", store, { wall }, { elapsedHook() },
+            owner = AbemaAccountAccessOwner(instance, "fixture-owner", store, { wallHook() }, { elapsedHook() },
                 { ownerChecks++; ownerHook(); ownerCurrent }, { gate -> object : AbemaAccountTransport {
                     override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
                         assertTrue(gate()); profiles.incrementAndGet(); profileAction(); return profile
@@ -117,6 +119,46 @@ class AbemaAccountAccessOwnerTest {
             assertFalse(lease.checkWorker()); assertFalse(lease.current())
             if (loss <= 1) { f.wall = 1000000; assertFalse(lease.current()) }
             attachment.close()
+        }
+    }
+    @Test fun concurrentIncreasingWallSamplesCannotRevokeAValidSharedLease() {
+        val f = Fixture(); val attachment = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        val base = f.wall
+        val enteredA = CountDownLatch(1); val attemptedB = CountDownLatch(1); val completedB = CountDownLatch(1)
+        val firstThread = AtomicReference<Thread?>()
+        f.wallHook = {
+            if (Thread.currentThread() === firstThread.get()) {
+                val captured = base
+                enteredA.countDown()
+                check(attemptedB.await(3, TimeUnit.SECONDS))
+                // A bounded wait forces the old outside-monitor sampler to
+                // commit B's newer clock first. With sampling under the owner
+                // monitor, B waits and both genuine forward samples succeed.
+                completedB.await(500, TimeUnit.MILLISECONDS)
+                captured
+            } else base + 1
+        }
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val a = executor.submit<Boolean> { firstThread.set(Thread.currentThread()); lease.current() }
+            assertTrue(enteredA.await(3, TimeUnit.SECONDS))
+            val b = executor.submit<Boolean> {
+                attemptedB.countDown()
+                try { lease.current() } finally { completedB.countDown() }
+            }
+            assertTrue(a.get(3, TimeUnit.SECONDS))
+            assertTrue(b.get(3, TimeUnit.SECONDS))
+            f.wall = base + 1; f.wallHook = { f.wall }
+            assertTrue(lease.current()); assertTrue(lease.checkWorker())
+        } finally {
+            attemptedB.countDown(); completedB.countDown()
+            executor.shutdownNow()
+            try { assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS)) }
+            finally {
+                f.wallHook = { f.wall }
+                attachment.close(); f.owner.close()
+            }
         }
     }
     @Test fun durableCheckRejectsChangedRecordEvenWhenExternalChangeDidNotAdvanceRevision() {

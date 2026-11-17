@@ -38,6 +38,10 @@ state_path.write_text(json.dumps(state))
 plan = json.loads(os.environ["TEST_DOWNLOAD_PLAN"])
 sequence = plan.get(name, [0])
 code = sequence[min(attempt, len(sequence) - 1)]
+if code == "slow":
+    # A progressing transfer that needs two minutes must not restart its
+    # partial bytes every minute. Keep the fixture instantaneous.
+    code = 0 if int(args[args.index("--max-time") + 1]) >= 120 else 28
 if code == "signal":
     import signal
     output.write_bytes(b"partial before termination")
@@ -101,11 +105,12 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(state["delays"], [])
         for row, call in zip(self.rows, state["calls"], strict=True):
             name, url, _ = row
+            timeout = "300" if name == "openconnect-9.21.tar.gz" else "60"
             self.assertEqual(call["name"], name)
             self.assertEqual(call["args"][0], "--disable")
             self.assertIn(url, call["args"])
             for option, value in (("--proto", "=https"), ("--proto-redir", "=https"),
-                                  ("--connect-timeout", "10"), ("--max-time", "60")):
+                                  ("--connect-timeout", "10"), ("--max-time", timeout)):
                 self.assertEqual(call["args"][call["args"].index(option) + 1], value)
             for flag in ("--fail", "--location", "--tlsv1.2"):
                 self.assertIn(flag, call["args"])
@@ -114,6 +119,15 @@ class DownloadTests(unittest.TestCase):
             self.assertFalse(call["partial_existed"])
             self.assertIn(f"{name} (attempt 1/3)", result.stdout)
             self.assertEqual((self.cache / name).read_bytes(), PAYLOAD)
+        self.assert_no_partial()
+
+    def test_slow_pinned_openconnect_transfer_finishes_without_restarting_partial_bytes(self):
+        name = "openconnect-9.21.tar.gz"
+        result, state = self.run_download({name: ["slow"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([call for call in state["calls"] if call["name"] == name]), 1)
+        self.assertEqual(state["delays"], [])
+        self.assertEqual((self.cache / name).read_bytes(), PAYLOAD)
         self.assert_no_partial()
 
     def test_dns_and_timeout_then_success_are_bounded_and_remove_partial_bytes(self):

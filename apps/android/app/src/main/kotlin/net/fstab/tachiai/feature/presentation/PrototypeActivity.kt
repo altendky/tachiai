@@ -57,6 +57,14 @@ import net.fstab.tachiai.presentation.PairOffsetCommand
 import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
 import net.fstab.tachiai.presentation.FeedRetryPlaybackIntent
 import net.fstab.tachiai.presentation.FeedRetryPlaybackReceipt
+import net.fstab.tachiai.presentation.FeedAutoRecoveryState
+import net.fstab.tachiai.presentation.FeedAutoRecoveryRequest
+import net.fstab.tachiai.presentation.FeedAutoRecoveryDecision
+import net.fstab.tachiai.presentation.ViewerStartupStatus
+import net.fstab.tachiai.platform.diagnostics.FailureCategory
+import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
+import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
+import net.fstab.tachiai.platform.media.latestNativePlaybackTransport
 import net.fstab.tachiai.presentation.PairOffsetCorrespondence
 import net.fstab.tachiai.presentation.PairOffsetTimelineCheck
 import net.fstab.tachiai.presentation.checkPairOffsetTimeline
@@ -254,6 +262,12 @@ open class PrototypeActivity : ComponentActivity() {
     private val initialCatchUp = BooleanArray(2)
     private val catchUpDeadline = LongArray(2)
     private var feedRetries = List(2) { FeedRetryState() }
+    private var automaticRecovery = List(2) { FeedAutoRecoveryState() }
+    private var automaticPairRestoreWanted: Boolean? = null
+    private val retryAccountReady = BooleanArray(2)
+    private data class RetryAccountCheck(val index: Int, val retry: FeedRetryState,
+        val run: Long, val budget: NativePlaybackBudget)
+    private var retryAccountCheck: RetryAccountCheck? = null
     private val retryPlaybackIntent = FeedRetryPlaybackIntent()
     private data class RetryPlaybackJoin(val receipt: FeedRetryPlaybackReceipt, val token: Any,
         val retry: FeedRetryState, val run: Long, val budget: NativePlaybackBudget, val preserveSibling: Boolean)
@@ -366,6 +380,9 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun showPicker(message: String?) {
+        // An asynchronous startup status cannot replace a viewer that still
+        // owns players. Intentional navigation disposes that viewer first.
+        if (budget != null) return
         root = null; progress = null; returnButton = null
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         styleSystemBars(false)
@@ -465,7 +482,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun watchScoped(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?) {
-        if (checkingAccount || !resumed.get() || isFinishing || isDestroyed) return
+        if (checkingAccount || budget != null || !resumed.get() || isFinishing || isDestroyed) return
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
             allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema,
@@ -487,11 +504,17 @@ open class PrototypeActivity : ComponentActivity() {
                 val pool = captured.getOrThrow()
                 check(ProviderStartupScopeCleanup.awaitReady(id, SystemClock.elapsedRealtime() + 45_000L, ::active) ==
                     ProviderStartupCleanupAdmission.READY)
-                val startup = androidProviderRouteStartup(this, pool) { status -> handler.post {
-                    if (active()) showPicker(if (pool.configuredInstance.service == PrototypeService.YOUTUBE &&
+                val startupStatus = ViewerStartupStatus(
+                    post = { action -> handler.post(action) }, current = ::active,
+                    checking = { checkingAccount }, viewerOpen = { budget != null },
+                    show = { status -> showPicker(if (pool.configuredInstance.service == PrototypeService.YOUTUBE &&
                         status.phase == net.fstab.tachiai.platform.network.ProviderStartupPhase.HELD_FOR_MUTATION)
-                        "Using ${status.label.orEmpty()} · preparing playback" else providerStartupStatus(status))
-                } }
+                        "Using ${status.label.orEmpty()} · preparing playback" else providerStartupStatus(status)) })
+                startupStatus.onDiscard = { status ->
+                    if (active() && budget != null && status.phase == net.fstab.tachiai.platform.network.ProviderStartupPhase.CANCELLED)
+                        diagnostics.reportCategory(FailureStage.STARTUP_STATUS_IGNORED, FailureCategory.CANCELLED)
+                }
+                val startup = androidProviderRouteStartup(this, pool, startupStatus::publish)
                 val registered = synchronized(startupLock) {
                     if (!active()) false else { startupScopes = startupScopes + (id to startup); true }
                 }
@@ -616,6 +639,9 @@ open class PrototypeActivity : ComponentActivity() {
         loadPairOffset(selected, run)
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
+        automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
+        automaticPairRestoreWanted = null
+        retryAccountCheck = null
         setPlaybackIntent(true, PlaybackHealthIntent.STARTUP); lastAuthorizationPoll = 0; lastSample = 0
         lastHealthSampleMs = 0
         healthOwners.fill(null); healthSignatures.fill(null)
@@ -908,6 +934,7 @@ open class PrototypeActivity : ComponentActivity() {
                 viewer?.refresh()
                 return
             }
+            processAutomaticRecovery()
             processFeedRetries(currentBudget)
             if (budget !== currentBudget) return
             sessions.forEachIndexed { index, host ->
@@ -1025,8 +1052,18 @@ open class PrototypeActivity : ComponentActivity() {
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal
-                if (feedRetries[index].retrying) "Retrying this feed…"
-                else failures[index]?.let { it.viewerMessage }
+                if (retryAccountCheck?.index == index) "Checking account connection…"
+                else if (feedRetries[index].retrying) {
+                    if (automaticRecovery[index].automaticAttemptActive)
+                        "Retrying automatically (attempt ${automaticRecovery[index].attemptCount} of 3)…"
+                    else "Retrying this feed…"
+                } else failures[index]?.let { failure ->
+                    when {
+                        automaticRecovery[index].pending != null -> "${failure.viewerMessage}\nRetrying automatically shortly…"
+                        automaticRecovery[index].exhausted -> "${failure.viewerMessage}\nAutomatic recovery stopped after repeated failures. Retry when ready."
+                        else -> failure.viewerMessage
+                    }
+                }
                     ?: if (!prepared[index]) "Preparing this feed…" else null
             }, feedRecovery = { side ->
                 val index = side.ordinal
@@ -1358,6 +1395,10 @@ open class PrototypeActivity : ComponentActivity() {
                 healthSignatures[index] = null
             }
             val snapshot = member?.diagnosticSnapshot()
+            if (reason == PlaybackHealthReason.SAMPLE_STATE_CHANGED) automaticRecovery[index].observe(
+                member, snapshot, SystemClock.elapsedRealtime(),
+                blocked = playback?.busy == true || pairOffsetSession?.state?.busy == true,
+                playingAd = member?.timingSnapshot()?.playingAd == true)
             val observation = healthTrackers[index].observe(snapshot)
             val player = snapshot?.let {
                 PlaybackHealthPlayer(it.sampleAgeMs.coerceAtLeast(0), it.released, it.playWhenReady, it.playing,
@@ -1372,13 +1413,9 @@ open class PrototypeActivity : ComponentActivity() {
                     it.decoderGeneration?.takeIf { value -> value >= 0 })
             }
             val now = SystemClock.elapsedRealtime()
-            val early = earlyTransportFailures.get(index)?.takeIf {
-                it.run == epoch.get() && it.retry === feedRetries[index] && it.retry.current(it.attempt)
-            }?.let { PlaybackHealthTransport((now - it.at).coerceAtLeast(0), it.evidence, it.stage) }
-            val native = snapshot?.transportFailure?.let {
+            val transport = latestFeedTransport(index, snapshot, now)?.let {
                 PlaybackHealthTransport(it.ageMs.coerceAtLeast(0), it.evidence, it.stage)
             }
-            val transport = listOfNotNull(early, native).minByOrNull { it.ageMs }
             val retry = feedRetries[index]
             val record = PlaybackHealthRecord(System.currentTimeMillis().coerceAtLeast(0),
                 PlaybackHealthSlot.valueOf(NativeMixedSide.entries[index].name), reason, observation.state,
@@ -1636,10 +1673,30 @@ open class PrototypeActivity : ComponentActivity() {
     private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
         if (selection?.slots?.getOrNull(index) == null) return
         if (failures[index] != null) return
-        // Deadline/normal stop is an expected lifecycle outcome, not a new error.
-        if (failure.reason !in setOf(PrototypeFailureReason.STOPPED, PrototypeFailureReason.PLAYBACK_LIMIT))
+        val member = sessions.getOrNull(index)?.member ?: playback?.member(NativeMixedSide.entries[index])
+        val snapshot = runCatching { member?.diagnosticSnapshot() }.getOrNull()
+        val now = SystemClock.elapsedRealtime()
+        val offset = pairOffsetSession?.state
+        // Capture once before either failed member invalidates the shared pair.
+        // The second failure must not turn the first receipt's active offset off.
+        if (automaticPairRestoreWanted == null)
+            automaticPairRestoreWanted = offset?.preference?.enabled == true && offset.enabledApplied
+        val autoDecision = automaticRecovery[index].failed(member, failure,
+            latestFeedTransport(index, snapshot, now),
+            live = snapshot?.liveClock ?: (selection?.slots?.getOrNull(index)?.kind == PrototypePlaybackKind.LIVE),
+            allowRecovery = canRetryFeed(index) && resumed.get() && !disposing && !explicitPlaybackHeld(),
+            restoreOffset = automaticPairRestoreWanted == true,
+            nowMs = now,
+            authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null)
+        // A normal stop is expected; a limit needs retained failure evidence.
+        if (failure.reason != PrototypeFailureReason.STOPPED)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
         recordPlaybackHealth(index, PlaybackHealthReason.FEED_FAILURE)
+        when (autoDecision) {
+            FeedAutoRecoveryDecision.SCHEDULED -> recordPlaybackHealth(index, PlaybackHealthReason.AUTO_RETRY_SCHEDULED)
+            FeedAutoRecoveryDecision.EXHAUSTED -> recordPlaybackHealth(index, PlaybackHealthReason.AUTO_RETRY_EXHAUSTED)
+            FeedAutoRecoveryDecision.SKIPPED -> Unit
+        }
         failures[index] = failure
         retryPlaybackIntent.cancel(index); retryPlaybackJoins[index] = null
         retryPlaybackStart = null
@@ -1676,26 +1733,63 @@ open class PrototypeActivity : ComponentActivity() {
         budget?.active == true && cachedRun?.let(cachedCleanup::current) == true &&
         selection?.slots?.getOrNull(index)?.instanceId?.let(routes::containsKey) == true
 
-    private fun requestFeedRetry(index: Int) {
-        if (!canRetryFeed(index) || failures[index]?.recoveryAction() == null || !feedRetries[index].request()) return
+    private fun requestFeedRetry(index: Int, automatic: FeedAutoRecoveryRequest? = null): Boolean {
+        if (automatic != null && !automaticRecovery[index].current(automatic)) return false
+        if (!canRetryFeed(index) || failures[index]?.recoveryAction() == null || !feedRetries[index].request()) return false
+        if (automatic == null) {
+            automaticRecovery[index].cancel()
+            automaticPairRestoreWanted = pairOffsetSession?.state?.preference?.enabled == true
+        }
         // This fresh explicit retry supersedes older timing actions. A later
         // Pause/focus loss/new adjustment will suppress restoration again.
-        pairOffsetSkipStartup = false
-        val currentBudget = budget ?: return
+        pairOffsetSkipStartup = automatic != null && !automatic.restoreOffset && automaticPairRestoreWanted != true
+        retryAccountReady[index] = false
+        val currentBudget = budget ?: return false
         val sibling = playback?.member(NativeMixedSide.entries[1 - index])
         val siblingRequested = runCatching { sibling?.timingSnapshot()?.playWhenReady == true }.getOrDefault(false)
         val token = Any()
-        val receipt = retryPlaybackIntent.arm(index, token, sibling, desiredPlaying || siblingRequested)
+        val receipt = retryPlaybackIntent.arm(index, token, sibling, automatic != null || desiredPlaying || siblingRequested,
+            allowSiblingReplacement = automatic != null)
         retryPlaybackJoins[index] = RetryPlaybackJoin(receipt, token, feedRetries[index], epoch.get(), currentBudget, siblingRequested)
         retryDeadline[index] = SystemClock.elapsedRealtime() + 20_000
         recordPlaybackHealth(index, PlaybackHealthReason.RETRY_REQUESTED)
+        if (automatic != null) recordPlaybackHealth(index, PlaybackHealthReason.AUTO_RETRY_STARTED)
         viewer?.refresh()
+        return true
     }
 
     private fun cancelRetryPlaybackIntent() {
+        automaticPairRestoreWanted = null
+        automaticRecovery.forEachIndexed { index, recovery ->
+            if (recovery.automaticAttemptActive && feedRetries[index].requested) feedRetries[index].invalidate()
+            recovery.cancel()
+        }
+        retryAccountCheck?.let {
+            if (!it.retry.requested) { retryAccountCheck = null; accountReadiness.cancelCheck() }
+        }
         retryPlaybackIntent.cancelAll()
         retryPlaybackJoins.fill(null)
         retryPlaybackStart = null
+    }
+
+    private fun explicitPlaybackHeld() = playbackIntentReason in setOf(PlaybackHealthIntent.USER_PAUSE,
+        PlaybackHealthIntent.FOCUS_LOSS, PlaybackHealthIntent.BACKGROUND, PlaybackHealthIntent.STOP)
+
+    private fun latestFeedTransport(index: Int, snapshot: NativePlaybackDiagnosticSnapshot?, now: Long): NativePlaybackTransportFailure? {
+        val early = earlyTransportFailures.get(index)?.takeIf {
+            it.run == epoch.get() && it.retry === feedRetries[index] && it.retry.current(it.attempt)
+        }?.let { NativePlaybackTransportFailure(it.stage, (now - it.at).coerceAtLeast(0), it.evidence) }
+        return latestNativePlaybackTransport(snapshot, early)
+    }
+
+    private fun processAutomaticRecovery() {
+        automaticRecovery.forEachIndexed { index, state ->
+            if (state.pending == null) return@forEachIndexed
+            if (!resumed.get() || explicitPlaybackHeld() || !canRetryFeed(index)) { state.cancel(); return@forEachIndexed }
+            state.takeDue(SystemClock.elapsedRealtime())?.let { request ->
+                if (!requestFeedRetry(index, request)) state.cancel()
+            }
+        }
     }
 
     private fun processFeedRetries(currentBudget: NativePlaybackBudget) {
@@ -1711,10 +1805,43 @@ open class PrototypeActivity : ComponentActivity() {
             if (!cachedCleanup.retireClosedFeed(owned, index)) return@forEachIndexed
             val selected = selection ?: return@forEachIndexed
             val setup = root?.getChildAt(0) as? LinearLayout ?: return@forEachIndexed
+            val source = selected.slots[index] ?: return@forEachIndexed
+            if (source.service == PrototypeService.ABEMA && !retryAccountReady[index]) {
+                if (retryAccountCheck == null) {
+                    val check = RetryAccountCheck(index, retry, epoch.get(), currentBudget)
+                    val proof = routeOwners[source.instanceId]?.proof
+                    if (proof == null) {
+                        failures[index] = null
+                        failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+                        return@forEachIndexed
+                    }
+                    retryAccountCheck = check
+                    viewer?.refresh()
+                    accountReadiness.ensure(listOf(net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(source.instanceId, proof))) { result ->
+                        if (retryAccountCheck !== check) return@ensure
+                        retryAccountCheck = null
+                        if (epoch.get() != check.run || budget !== currentBudget || !resumed.get() ||
+                            feedRetries[index] !== retry || !retry.requested || !canRetryFeed(index)) return@ensure
+                        if (result == AbemaAccountReadinessResult.READY) retryAccountReady[index] = true
+                        else {
+                            val category = when (result) {
+                                AbemaAccountReadinessResult.TEMPORARY_FAILURE -> FailureCategory.ABEMA_READINESS_TEMPORARY_FAILURE
+                                AbemaAccountReadinessResult.STORAGE_FAILURE -> FailureCategory.ABEMA_READINESS_STORAGE_FAILURE
+                                AbemaAccountReadinessResult.INTERACTION_REQUIRED -> FailureCategory.ABEMA_READINESS_INTERACTION_REQUIRED
+                                else -> FailureCategory.ABEMA_READINESS_FAILURE
+                            }
+                            feedDiagnostics(index).reportCategory(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, category)
+                            failures[index] = null
+                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+                        }
+                        viewer?.refresh()
+                    }
+                }
+                return@forEachIndexed
+            }
             failures[index] = null
             prepared[index] = false; initialCatchUp[index] = false; catchUpDeadline[index] = 0
             replayRestoreTarget[index] = null
-            val source = selected.slots[index] ?: return@forEachIndexed
             createFeeds(selected, currentBudget, epoch.get(), setup, setOf(source.service), setOf(index))
         }
     }

@@ -106,10 +106,12 @@ class CollectorTests(unittest.TestCase):
     def test_media_origin_categories_and_stages_round_trip_with_independent_cleanup(self):
         expected = {"TRANSPORT_DNS", "TRANSPORT_CONNECT", "TRANSPORT_TIMEOUT", "TRANSPORT_TLS",
                     "TRANSPORT_CANCELLED", "TRANSPORT_UNKNOWN", "MEDIA_REQUEST_DEADLINE",
-                    "MEDIA_REQUEST_ADMISSION_REFUSED", "MEDIA_PLAYBACK_INACTIVE"}
+                    "MEDIA_REQUEST_ADMISSION_REFUSED", "MEDIA_PLAYBACK_INACTIVE",
+                    "MEDIA_HTTP_REJECTED", "MEDIA_RANGE_NOT_HONORED", "MEDIA_RESPONSE_LIMIT"}
         words = module.vocabulary()
         self.assertEqual({value for value in words["FailureCategory"] if value.startswith(("TRANSPORT_", "MEDIA_"))}, expected)
-        for stage in ("MEDIA_REQUEST_OPEN", "MEDIA_REQUEST_READ"):
+        for stage in ("MEDIA_REQUEST_OPEN", "MEDIA_REQUEST_READ", "MEDIA_REQUEST_SETUP", "MEDIA_CONNECTION_OPEN",
+                      "MEDIA_RESPONSE_OPEN", "MEDIA_RESPONSE_POLICY", "MEDIA_INPUT_OPEN"):
             self.assertIn(stage, words["FailureStage"])
             for category in expected:
                 data = self.journal([self.row(**{"4": stage, "9": category, "11": ""}),

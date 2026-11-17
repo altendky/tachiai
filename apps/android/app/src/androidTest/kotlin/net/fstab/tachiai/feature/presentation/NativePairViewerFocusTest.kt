@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.AdapterView
+import android.widget.ImageButton
 import androidx.activity.ComponentActivity
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
@@ -55,6 +56,7 @@ class NativePairViewerFocusTest {
         var saving = false
         var advances = 0
         var pauses = 0
+        var sources = 0
         val context = activity.createConfigurationContext(Configuration(activity.resources.configuration).apply {
             uiMode = uiMode and Configuration.UI_MODE_TYPE_MASK.inv() or
                 if (television) Configuration.UI_MODE_TYPE_TELEVISION else Configuration.UI_MODE_TYPE_NORMAL
@@ -63,12 +65,16 @@ class NativePairViewerFocusTest {
         val viewer = NativePairViewer(context, PlayerView(context), PlayerView(context), "Alpha", "Beta", { pair },
             {}, { pauses++ }, { advances++; busy = true }, {}, {}, {}, {},
             playbackBusy = { busy },
+            onSources = { sources++ },
             qualityState = { _, _ -> ViewerQualityReadback(NativeQualityRequest.auto, null, saving = saving) },
             onSaveQuality = { _, _ -> saving = true })
         init { activity.setContentView(viewer); viewer.open() }
         fun button(label: String) = descendants(viewer).filterIsInstance<Button>().single { it.text == label }
-        fun advance() = descendants(viewer).filterIsInstance<Button>().single {
-            it.contentDescription?.toString() == "Advance Beta by 5 s relative to Alpha"
+        fun advance(step: String = "5 s") = descendants(viewer).filterIsInstance<Button>().single {
+            it.contentDescription?.toString() == "Advance Beta by $step relative to Alpha"
+        }
+        fun sourcesControl() = descendants(viewer).filterIsInstance<ImageButton>().single {
+            it.contentDescription?.toString() == "Back to sources"
         }
         fun qualitySave() = descendants(viewer).filterIsInstance<Button>().single {
             it.contentDescription?.toString() == "Save Alpha video preference as stream default"
@@ -155,6 +161,60 @@ class NativePairViewerFocusTest {
         select(scenario, fixture)
         scenario.onActivity {
             assertEquals(2, fixture.advances)
+            assertEquals(0, fixture.pauses)
+        }
+    }
+
+    @Test fun fallbackSourcesFocusAfterCompletionCannotStealTheNextOneSecondActivation() = forEachInputConfiguration { scenario, fixture ->
+        scenario.onActivity {
+            fixture.openTiming()
+            assertTrue(fixture.advance("1 s").requestFocus())
+            fixture.advance("1 s").performClick()
+            assertFalse(fixture.advance("1 s").isEnabled)
+            fixture.busy = false
+            fixture.viewer.refresh() // Queues the pending Advance focus restore.
+            fixture.viewer.post {
+                // Android may finish a previously queued layout/focus fallback
+                // after our restoration ran. This is not explicit navigation.
+                assertTrue(fixture.sourcesControl().requestFocus())
+            }
+        }
+        idle()
+        scenario.onActivity { assertTrue(fixture.sourcesControl().isFocused) }
+        select(scenario, fixture)
+        scenario.onActivity {
+            assertEquals(0, fixture.sources)
+            assertEquals(0, fixture.pauses)
+            assertEquals(1, fixture.advances)
+            assertTrue(fixture.advance("1 s").isFocused)
+        }
+        select(scenario, fixture)
+        scenario.onActivity {
+            assertEquals(2, fixture.advances)
+            assertEquals(0, fixture.sources)
+            assertEquals(0, fixture.pauses)
+        }
+    }
+
+    @Test fun explicitNavigationAfterOneSecondCompletionStillPermitsSources() = forEachInputConfiguration { scenario, fixture ->
+        scenario.onActivity {
+            fixture.openTiming()
+            assertTrue(fixture.advance("1 s").requestFocus())
+            fixture.advance("1 s").performClick()
+            fixture.busy = false; fixture.viewer.refresh()
+        }
+        idle()
+        scenario.onActivity {
+            assertTrue(fixture.advance("1 s").isFocused)
+            val now = SystemClock.uptimeMillis()
+            dispatch(fixture.viewer, KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP, 0))
+            dispatch(fixture.viewer, KeyEvent(now, now + 1, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP, 0))
+            assertTrue(fixture.sourcesControl().requestFocus())
+        }
+        select(scenario, fixture)
+        scenario.onActivity {
+            assertEquals(1, fixture.sources)
+            assertEquals(1, fixture.advances)
             assertEquals(0, fixture.pauses)
         }
     }

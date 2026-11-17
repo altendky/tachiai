@@ -7,6 +7,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.platform.network.ProviderTransportFailureCarrier
 
+// A recorded player failure owns its transport projection, including an
+// explicitly cleared local/policy cause. Preparation evidence is a fallback
+// only before the player has recorded a failure of its own.
+internal fun latestNativePlaybackTransport(snapshot: NativePlaybackDiagnosticSnapshot?,
+    early: NativePlaybackTransportFailure?): NativePlaybackTransportFailure? =
+    if (snapshot?.failureStage != null) snapshot.transportFailure
+    else listOfNotNull(early, snapshot?.transportFailure).minByOrNull { it.ageMs }
+
 // Main-thread SDK sampling plus worker-safe, cause-free failure projections.
 // Decoder counters describe Media3's renderer output, not screen presentation.
 @UnstableApi
@@ -26,6 +34,8 @@ internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemC
         failure.updateAndGet { previous -> if (previous == null || now >= previous.at) Failure(stage, now) else previous }
         val safeTransport = (error as? NativeMediaRequestException)?.transportEvidence
             ?: (error as? ProviderTransportFailureCarrier)?.transportFailure
+        if (stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) && safeTransport == null)
+            transport.set(null) // A new local/policy failure must not inherit an older transport cause.
         safeTransport?.let { evidence -> transport.updateAndGet { previous ->
             if (previous == null || now >= previous.at) Transport(stage, now, evidence) else previous
         } }

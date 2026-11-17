@@ -335,7 +335,9 @@ internal class NativePairViewer(
             try {
                 fun focus(view: View?): Boolean = view?.isShown == true && view.isEnabled && view.isFocusable && view.requestFocus()
                 if (focus(target)) {
-                    if (pendingFocus == pending) pendingFocus = null
+                    // Keep the semantic owner until a real click, navigation,
+                    // touch or scope change supersedes it. Android may deliver
+                    // another fallback focus gain after this restore task.
                     rememberControlFocus()
                     return@post
                 }
@@ -359,9 +361,14 @@ internal class NativePairViewer(
         }
         val activation = event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_SPACE)
-        if (event.action == KeyEvent.ACTION_DOWN && activation && pendingFocus != null) {
-            suppressedFocusPress = press
-            return true
+        if (activation && pendingFocus != null) {
+            val intent = checkNotNull(pendingFocus)
+            val target = findControl(intent.key)
+            if (target?.isEnabled != true || !target.isFocused) {
+                if (event.action == KeyEvent.ACTION_DOWN) suppressedFocusPress = press
+                if (target?.isEnabled == true) restoreRemoteFocus(key = intent.key, pending = intent)
+                return true
+            }
         }
         if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP,
                 KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_TAB)) {
@@ -862,7 +869,8 @@ internal class NativePairViewer(
         }
         pendingFocus?.let { intent ->
             if (intent.generation != focusGeneration || intent.panel != panel) pendingFocus = null
-            else if (findControl(intent.key)?.isEnabled == true) restoreRemoteFocus(key = intent.key, pending = intent)
+            else if (findControl(intent.key)?.let { it.isEnabled && !it.isFocused } == true)
+                restoreRemoteFocus(key = intent.key, pending = intent)
         }
     }
     private fun refreshControls() {

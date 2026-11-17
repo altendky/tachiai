@@ -42,6 +42,7 @@ class ManageStreamsActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var controller by mutableStateOf<StreamManagementController?>(null)
     private var reading by mutableStateOf(true)
+    private var checkingAccount by mutableStateOf(false)
     private var message by mutableStateOf<String?>(null)
     @Volatile private var revision = 0L
     @Volatile private var resumed = false
@@ -113,7 +114,8 @@ class ManageStreamsActivity : ComponentActivity() {
                                 if (resumed && !isDestroyed && !savingWhileLeaving)
                                     startActivity(Intent(this@ManageStreamsActivity, ConnectionProfilesActivity::class.java)) }
                         }, enabled = !savingWhileLeaving, startupStatus = startupStatus)
-                    accountContent?.invoke() ?: Text("Account actions will be available when the connection is saved.")
+                    accountContent?.invoke() ?: Text(if (checkingAccount) "Account actions will be available after the connection check."
+                        else "Account actions will be available when the connection is saved.")
                 }
             }) else null
             val current = controller
@@ -134,7 +136,8 @@ class ManageStreamsActivity : ComponentActivity() {
                 else item { SettingsPageHeader(if (providerDetails) "Provider" else "Manage streams", onBack = ::finish,
                     backDescription = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
                 item {
-                Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?: "Reading configured streams…")
+                Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?:
+                    if (checkingAccount) "Checking account connection…" else "Reading configured streams…")
                 if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
                 }
             }
@@ -184,7 +187,7 @@ class ManageStreamsActivity : ComponentActivity() {
         controller?.close()
         controller = null
         detailOwnerProof = null
-        reading = true; message = null
+        reading = true; checkingAccount = false; message = null
         startupStatus = "Waiting for route"
         readJob = scope.launch {
             try {
@@ -271,14 +274,16 @@ class ManageStreamsActivity : ComponentActivity() {
                         .getOrNull(startup.progress.ordinal - 1)?.let { runCatching { routeScope.resolve(it.proof) }.getOrNull() }
                 }
                 val ownerProof = effective?.proof ?: routeScope.candidates.first().proof
-                detailOwnerProof = ownerProof
                 val needsAccountCheck = routeScope.configuredInstance.service == PrototypeService.ABEMA && prepared !is ProviderStartupResult.Failed
                 if (needsAccountCheck) {
+                    checkingAccount = true
                     val readiness = suspendCancellableCoroutine { continuation ->
                         accountReadiness.ensure(listOf(AbemaReadinessTarget(id, checkNotNull(ownerProof)))) { result ->
                             if (continuation.isActive) continuation.resumeWith(Result.success(result))
                         }
                     }
+                    if (!resumed || revision != current) return@launch
+                    checkingAccount = false
                     if (readiness != AbemaAccountReadinessResult.READY) {
                         renewalHandoff = readiness == AbemaAccountReadinessResult.HANDOFF
                         if (renewalHandoff) pendingStartupOwner = effective
@@ -292,6 +297,10 @@ class ManageStreamsActivity : ComponentActivity() {
                         message = null
                     }
                 }
+                // Account readiness can replace the grant under the same route
+                // proof. Mount its owner only after that operation has settled,
+                // so its first load cannot retain the expired prior record.
+                detailOwnerProof = ownerProof
                 val loaded = withContext(Dispatchers.IO) {
                     val owner = routeScope.configuredInstance
                     check(sharedOwnerProvider == null || sharedOwnerProvider ==
@@ -347,6 +356,8 @@ class ManageStreamsActivity : ComponentActivity() {
                     reading = false
                     message = "Provider or stream settings could not be read. Nothing was replaced. Retry or return to providers."
                 }
+            } finally {
+                if (revision == current) checkingAccount = false
             }
         }
     }
@@ -367,7 +378,7 @@ class ManageStreamsActivity : ComponentActivity() {
         retireRouteStartup()
         revision++; readJob?.cancel(); controller?.close(); controller = null
         if (!accountActionPending) detailOwnerProof = null
-        reading = false; message = "Updating provider access…"
+        reading = false; checkingAccount = false; message = "Updating provider access…"
     }
     override fun onPause() {
         resumed = false

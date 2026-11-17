@@ -16,6 +16,75 @@ import org.junit.Test
 
 @UnstableApi
 class NativePlayerDiagnosticsTest {
+    private fun capture(diagnostics: NativePlayerDiagnostics): NativePlaybackDiagnosticSnapshot {
+        val player = Proxy.newProxyInstance(ExoPlayer::class.java.classLoader, arrayOf(ExoPlayer::class.java)) { _, method, _ ->
+            when (method.name) {
+                "getVideoFormat", "getPlayerError" -> null
+                "getPlayWhenReady", "isPlaying" -> true
+                "getPlaybackState" -> 3
+                "getPlaybackSuppressionReason" -> 0
+                else -> error("Unexpected SDK read")
+            }
+        } as ExoPlayer
+        return checkNotNull(diagnostics.capture(player, NativeTimingSnapshot(12_000, 60_000, 20_000,
+            null, null, null, false, false, true, false, false, true, true, 3, 1f)))
+    }
+
+    @Test fun `player error after local admission failure cannot resurrect earlier network evidence`() {
+        for (stage in listOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ)) {
+            var now = 100L
+            val diagnostics = NativePlayerDiagnostics { now }
+            capture(diagnostics)
+            val evidence = ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN,
+                exceptionKind = ProviderTransportExceptionKind.IO)
+            val early = NativePlaybackTransportFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, evidence)
+            diagnostics.recordFailure(NativeFailureStage.MEDIA_REQUEST_OPEN,
+                NativeMediaRequestException(NativeMediaRequestFailure.IO, evidence))
+            assertEquals(evidence, diagnostics.snapshot(false)?.transportFailure?.evidence)
+            now = 101
+            diagnostics.recordFailure(stage, NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED))
+            assertNull(diagnostics.snapshot(false)?.transportFailure)
+            now = 102
+            diagnostics.recordPlayerError(2001)
+            diagnostics.recordFailure(NativeFailureStage.PLAYER_ERROR, IOException("Synthetic player error"))
+            val failed = checkNotNull(diagnostics.snapshot(false))
+            assertEquals(NativeFailureStage.PLAYER_ERROR, failed.failureStage)
+            assertEquals(2001, failed.errorCode)
+            assertNull(failed.transportFailure)
+            assertNull(latestNativePlaybackTransport(failed, early))
+        }
+    }
+
+    @Test fun `recorded player failure retains its own transport even when early evidence appears fresher`() {
+        var now = 100L
+        val diagnostics = NativePlayerDiagnostics { now }
+        capture(diagnostics)
+        val ownEvidence = ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT)
+        diagnostics.recordFailure(NativeFailureStage.MEDIA_REQUEST_READ,
+            NativeMediaRequestException(NativeMediaRequestFailure.TIMEOUT, ownEvidence))
+        now = 120
+        diagnostics.recordFailure(NativeFailureStage.PLAYER_ERROR, IOException("Synthetic player error"))
+        val failed = checkNotNull(diagnostics.snapshot(false))
+        val early = NativePlaybackTransportFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0,
+            ProviderTransportEvidence(ProviderTransportFailure.CONNECT))
+        assertEquals(ownEvidence, latestNativePlaybackTransport(failed, early)?.evidence)
+    }
+
+    @Test fun `early evidence and freshest projection remain available before any recorded player failure`() {
+        val diagnostics = NativePlayerDiagnostics { 100L }
+        val healthy = capture(diagnostics)
+        assertNull(healthy.failureStage)
+        val early = NativePlaybackTransportFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 10,
+            ProviderTransportEvidence(ProviderTransportFailure.CONNECT))
+        assertEquals(early, latestNativePlaybackTransport(null, early))
+        assertEquals(early, latestNativePlaybackTransport(healthy, early))
+        assertNull(latestNativePlaybackTransport(healthy, null))
+        val native = NativePlaybackTransportFailure(NativeFailureStage.MEDIA_REQUEST_READ, 20,
+            ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT))
+        assertEquals(early, latestNativePlaybackTransport(healthy.copy(transportFailure = native), early))
+        assertEquals(native, latestNativePlaybackTransport(healthy.copy(transportFailure = native), early.copy(ageMs = 30)))
+    }
+
     @Test fun `cached released snapshot keeps numeric error and context without consulting SDK`() {
         var now = 100L
         val counters = DecoderCounters().apply { renderedOutputBufferCount = 20; droppedBufferCount = 2 }

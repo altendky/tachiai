@@ -143,8 +143,8 @@ internal class AbemaAccountAccessOwner(
         notifyRetiredIdle()
     }
     private fun cheap(value: Proof, attachment: Attachment? = null): Boolean {
-        val now = wallMs()
         return synchronized(lock) {
+            val now = wallMs()
             val stable = store.usable(value.snapshot.revision) && now >= maxOf(value.minimumWall, lastWall) &&
                 (value.snapshot.record?.grant?.expiresAtMs?.let { now < it } != false)
             if (!stable && proof === value) { generation++; proof = null }
@@ -253,13 +253,14 @@ internal class AbemaAccountAccessOwner(
                 checkTime()
                 if (!store.usable(expected.revision) || current.revision != expected.revision || !sameRecord(current.record, expected.record))
                     throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
-                val wall = wallMs()
-                val minimum = synchronized(lock) { lastWall }
-                if (wall < maxOf(expected.record?.acceptedWallMs ?: 0, minimum)) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
-                expected.record?.grant?.let {
-                    if (decodedAbemaGrant(it.bearer, it.userId, wall).expiresAtMs != it.expiresAtMs) accountRefused()
+                synchronized(lock) {
+                    val wall = wallMs()
+                    if (wall < maxOf(expected.record?.acceptedWallMs ?: 0, lastWall)) throw AbemaAccountException(AbemaAccountFailure.EXPIRED)
+                    expected.record?.grant?.let {
+                        if (decodedAbemaGrant(it.bearer, it.userId, wall).expiresAtMs != it.expiresAtMs) accountRefused()
+                    }
+                    lastWall = wall
                 }
-                synchronized(lock) { lastWall = maxOf(lastWall, wall) }
             }
             checkTime()
             if (!flightCurrent(work)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)

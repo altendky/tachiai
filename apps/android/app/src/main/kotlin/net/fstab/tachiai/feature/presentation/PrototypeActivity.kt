@@ -53,6 +53,7 @@ import net.fstab.tachiai.presentation.PairOffsetIdentity
 import net.fstab.tachiai.presentation.PairOffsetPreference
 import net.fstab.tachiai.presentation.PairOffsetSession
 import net.fstab.tachiai.presentation.PairOffsetRetryEstimate
+import net.fstab.tachiai.presentation.PairOffsetDriftObserver
 import net.fstab.tachiai.presentation.PairOffsetCommand
 import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
 import net.fstab.tachiai.presentation.FeedRetryPlaybackIntent
@@ -243,6 +244,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var pairOffsetSkipStartup = false
     private var pairOffsetBaselineLost = false
     private var pairOffsetRetryEstimate = PairOffsetRetryEstimate()
+    private val pairOffsetDrift = PairOffsetDriftObserver()
     private var pairOffsetSaveId: Long? = null
     private data class TimingEvidenceRequest(val pair: NativeMixedPair, val kind: TimingFailureKind,
         val deltaMs: Long, val beforeRevision: Long, var targets: List<NativePendingSeekDiagnostic>)
@@ -984,6 +986,7 @@ open class PrototypeActivity : ComponentActivity() {
             }
             if (now - lastSample >= 5_000) {
                 lastSample = now
+                logPairOffsetDrift(now)
                 NativeMixedSide.entries.forEach { side ->
                     playback?.member(side)?.timingSnapshot()?.let { value ->
                         Log.d("TachiaiPrototype", "slot=${side.name} state=${value.state} playing=${value.playing} positionMs=${value.positionMs} durationMs=${value.durationMs}")
@@ -1456,6 +1459,30 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
+    private fun logPairOffsetDrift(nowMs: Long) {
+        if (!BuildConfig.DEBUG) return
+        runCatching {
+            val pair = playback?.pair
+            val a = pair?.a?.timingSnapshot()
+            val b = pair?.b?.timingSnapshot()
+            val ta = pair?.a?.timelineEvidence()
+            val tb = pair?.b?.timelineEvidence()
+            val state = pairOffsetSession?.state
+            val anchor = currentPairTimelineCheck()
+            val sample = pairOffsetDrift.observe(pair, playbackIntentRevision, pair?.lastTimingAttempt,
+                a, b, ta, tb, nowMs, blocked = pair?.busy == true || state?.busy == true || pairOffsetLoading)
+            val error = anchor.correctionMs?.let { Math.negateExact(it) }
+            fun speed(value: Float?) = value?.takeIf { it.isFinite() && it > 0f && it <= 8f }
+                ?.let { (it * 1_000_000).toLong() }
+            Log.d("TachiaiPairOffset", "run=${epoch.get()} segment=${sample.segment} state=${sample.status}" +
+                " ageMs=${sample.baselineAgeMs} driftMs=${sample.driftMs}" +
+                " targetMs=${state?.preference?.offsetMs} appliedMs=${state?.appliedOffsetMs}" +
+                " enabled=${state?.preference?.enabled == true} active=${state?.enabledApplied == true}" +
+                " consistency=${anchor.consistency} anchorErrorMs=$error" +
+                " aSpeedPpm=${speed(a?.speed)} bSpeedPpm=${speed(b?.speed)}")
+        }.onFailure { Log.d("TachiaiPairOffset", "state=UNAVAILABLE") }
+    }
+
     private fun prepareViewerSlot(index: Int, host: PrototypeFeedSession) {
         if (replayRestoreTarget[index] != null && SystemClock.elapsedRealtime() >= catchUpDeadline[index]) {
             failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
@@ -1874,6 +1901,7 @@ open class PrototypeActivity : ComponentActivity() {
         qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
         pairOffsetSession = null; pairOffsetIdentity = null; pairOffsetOwner = null
         pairOffsetRetryEstimate = PairOffsetRetryEstimate()
+        pairOffsetDrift.clear()
         timingEvidenceRequest = null
         pairOffsetLoading = false; pairOffsetReadFailed = false; pairOffsetSaveId = null
         if (useCachedAbema) {

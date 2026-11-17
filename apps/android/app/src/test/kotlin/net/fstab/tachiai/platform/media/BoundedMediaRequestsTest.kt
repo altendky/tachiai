@@ -38,6 +38,42 @@ import org.junit.Test
 
 @UnstableApi
 class BoundedMediaRequestsTest {
+    @Test fun requestFailureRetainsItsExactOpenBoundaryAndPolicyReasonWithoutPrivateText() {
+        val phases = listOf(NativeMediaOpenPhase.CONNECTION_OPEN, NativeMediaOpenPhase.RESPONSE_OPEN,
+            NativeMediaOpenPhase.RESPONSE_POLICY, NativeMediaOpenPhase.RESPONSE_POLICY,
+            NativeMediaOpenPhase.RESPONSE_POLICY, NativeMediaOpenPhase.INPUT_OPEN, NativeMediaOpenPhase.REQUEST_SETUP,
+            NativeMediaOpenPhase.CONNECTION_OPEN)
+        val failures = listOf(NativeMediaRequestFailure.IO, NativeMediaRequestFailure.IO,
+            NativeMediaRequestFailure.HTTP_REJECTED, NativeMediaRequestFailure.RANGE_NOT_HONORED,
+            NativeMediaRequestFailure.RESPONSE_LIMIT, NativeMediaRequestFailure.IO, NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED,
+            NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
+        for (case in phases.indices) {
+            val seen = mutableListOf<NativeMediaRequestException>()
+            val connection = Connection(uri.toURL(), status = if (case == 2) 503 else 200,
+                length = if (case == 4) 40 * 1024 * 1024L else -1,
+                beforeResponse = { if (case == 1) throw IOException("synthetic-private-response") })
+            val request = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true }, { _, _ -> },
+                canRequest = { case != 6 },
+                openConnection = { when (case) {
+                    0 -> throw IOException("synthetic-private-connection")
+                    7 -> throw NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED)
+                    else -> connection
+                } },
+                openInput = { if (case == 5) throw IOException("synthetic-private-input") else it.inputStream },
+                onFailure = { _, error -> seen += error as NativeMediaRequestException }).create(C.DATA_TYPE_MEDIA)
+            assertThrows(IOException::class.java) { request.openUri(uri, position = if (case == 3) 1 else 0) }
+            val failure = seen.single()
+            assertEquals(phases[case], failure.openPhase)
+            assertEquals(failures[case], failure.failure)
+            assertNull(failure.cause)
+            assertFalse(failure.toString().contains("synthetic-private"))
+            if (case == 7) {
+                assertNull(failure.transportEvidence)
+                assertFalse(connection.bodyRead)
+            }
+        }
+    }
+
     @Test fun progressiveMetadataHintNeverAdmitsCredentialsOrArbitraryHeaders() {
         assertTrue(allowedNativeMediaHeaders(emptyMap(), false))
         assertFalse(allowedNativeMediaHeaders(mapOf("Icy-MetaData" to "1"), false))
@@ -477,13 +513,17 @@ class BoundedMediaRequestsTest {
         val oversized = ByteArray(512 * 1024 + 1)
         for (length in listOf(-1L, oversized.size.toLong())) {
             val connection = Connection(uri.toURL(), length = length, body = oversized)
-            val source = requests(connection).create(C.DATA_TYPE_MANIFEST)
+            val failures = mutableListOf<NativeMediaRequestException>()
+            val source = BoundedMediaRequests(NativePlaybackBudget.continuous({ true }), { true }, { _, _ -> },
+                openConnection = { connection },
+                onFailure = { _, error -> failures += error as NativeMediaRequestException }).create(C.DATA_TYPE_MANIFEST)
             assertThrows(IOException::class.java) {
                 source.openUri(uri)
                 source.read(oversized, 0, oversized.size)
             }
             source.close()
             assertTrue(connection.disconnected)
+            assertEquals(NativeMediaRequestFailure.RESPONSE_LIMIT, failures.single().failure)
         }
     }
 
@@ -630,6 +670,27 @@ class BoundedMediaRequestsTest {
             assertEquals(1, opened); assertTrue(failures.isEmpty())
             requests.close()
         }
+    }
+
+    @Test fun cancelledConnectionFactoryDoesNotInventTransportFailureOrPoisonTheNextLoad() {
+        var cancelled = true
+        val events = mutableListOf<NativeMediaEvent>()
+        val failures = mutableListOf<Throwable>()
+        val budget = NativePlaybackBudget.continuous({ true })
+        val requests = BoundedMediaRequests(budget, { true }, { event, _ -> events += event },
+            openConnection = {
+                if (cancelled) throw NativeMediaRequestException(NativeMediaRequestFailure.CANCELLED)
+                Connection(it)
+            }, onFailure = { _, error -> failures += error })
+        assertThrows(IOException::class.java) { requests.create(C.DATA_TYPE_MEDIA).openUri(uri) }
+        assertTrue(events.contains(NativeMediaEvent.REQUEST_CANCELLED))
+        assertFalse(events.contains(NativeMediaEvent.REQUEST_FAILED))
+        assertTrue(failures.isEmpty()); assertTrue(budget.active)
+        cancelled = false
+        val fresh = requests.create(C.DATA_TYPE_MEDIA)
+        fresh.openUri(uri); assertEquals(1, fresh.read(ByteArray(1), 0, 1)); fresh.close()
+        assertTrue(failures.isEmpty()); assertTrue(budget.active)
+        requests.close()
     }
 
     @Test fun interruptedReadClosesItsLoadWithoutReportingAStreamFailure() {

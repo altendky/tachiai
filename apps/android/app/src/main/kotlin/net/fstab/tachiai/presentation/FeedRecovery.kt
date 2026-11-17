@@ -1,13 +1,14 @@
 package net.fstab.tachiai.presentation
 
-internal enum class FeedRecoveryAction(val label: String) { GO_LIVE("Go live"), RETRY("Retry") }
+internal enum class FeedRecoveryAction(val label: String) { GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection") }
 
 // A user-requested fresh attempt still passes normal account, route and media
-// admission. Authentication, policy, licensing and unsafe cleanup need settings
-// or process recovery rather than an invitation to repeatedly retry playback.
+// admission. An account check may reuse an existing verified renewal path;
+// refusal, policy, licensing and unsafe cleanup never authorize repeated playback.
 internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
     if (httpStatus in setOf(401, 403)) return null
     return when (reason) {
+        PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE -> FeedRecoveryAction.CHECK_CONNECTION
         PrototypeFailureReason.LIVE_WINDOW_EXPIRED -> FeedRecoveryAction.GO_LIVE
         PrototypeFailureReason.PLAYER_FAILED -> when (playerCode) {
             1002 -> FeedRecoveryAction.GO_LIVE

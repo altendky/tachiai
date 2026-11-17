@@ -107,7 +107,8 @@ internal class BoundedMediaRequests(
                 URI(dataSpec.uri.toString())
             } catch (error: Exception) {
                 if (requestCancelled(error)) report(NativeMediaEvent.REQUEST_CANCELLED)
-                else reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
+                else reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure,
+                    nativeMediaRequestException(error, NativeMediaOpenPhase.REQUEST_SETUP))
                 throw IOException("Native media request failed")
             }
             return try { openUri(uri, dataSpec.position, dataSpec.length, dataSpec) }
@@ -123,7 +124,14 @@ internal class BoundedMediaRequests(
             fun observeFailure(error: Exception) {
                 if (failureObserved || error is NativeMediaCleanupException || requestCancelled(error)) return
                 failureObserved = true
-                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error))
+                val phase = when (openFailureEvent) {
+                    NativeMediaEvent.CONNECTION_OPEN_FAILED -> NativeMediaOpenPhase.CONNECTION_OPEN
+                    NativeMediaEvent.RESPONSE_OPEN_FAILED -> NativeMediaOpenPhase.RESPONSE_OPEN
+                    NativeMediaEvent.RESPONSE_POLICY_FAILED -> NativeMediaOpenPhase.RESPONSE_POLICY
+                    NativeMediaEvent.INPUT_OPEN_FAILED -> NativeMediaOpenPhase.INPUT_OPEN
+                    else -> NativeMediaOpenPhase.REQUEST_SETUP
+                }
+                reportNativeFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, onFailure, nativeMediaRequestException(error, phase))
             }
             try {
                 check(connection == null && !transferOpen)
@@ -211,14 +219,15 @@ internal class BoundedMediaRequests(
                         checkActive()
                         onManifestRejection(status, body)
                     }
-                    throw IOException()
+                    throw NativeMediaRequestException(NativeMediaRequestFailure.HTTP_REJECTED)
                 }
                 if (position != 0L && status != 206) {
                     report(NativeMediaEvent.RANGE_NOT_HONORED, status)
-                    throw IOException()
+                    throw NativeMediaRequestException(NativeMediaRequestFailure.RANGE_NOT_HONORED)
                 }
                 if (request.contentLengthLong > limit || length > limit) {
-                    report(NativeMediaEvent.LIMIT_REACHED); throw IOException()
+                    report(NativeMediaEvent.LIMIT_REACHED)
+                    throw NativeMediaRequestException(NativeMediaRequestFailure.RESPONSE_LIMIT)
                 }
                 source = uri
                 openFailureEvent = NativeMediaEvent.INPUT_OPEN_FAILED
@@ -276,7 +285,10 @@ internal class BoundedMediaRequests(
                     return C.RESULT_END_OF_INPUT
                 }
                 readBytes += count
-                if (readBytes > limit) { report(NativeMediaEvent.LIMIT_REACHED); throw IOException() }
+                if (readBytes > limit) {
+                    report(NativeMediaEvent.LIMIT_REACHED)
+                    throw NativeMediaRequestException(NativeMediaRequestFailure.RESPONSE_LIMIT)
+                }
                 if (remaining >= 0) remaining -= count
                 if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)

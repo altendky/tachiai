@@ -14,13 +14,20 @@ while IFS=$'\t' read -r task_name task_url task_sha; do
   if [[ ! -f "$task_archive" ]]; then
     task_partial="$task_archive.part"
     task_download_url="$task_url"
-    # Three 60-second attempts and two 2-second delays: at most 184 seconds
-    # of transfer/delay budget per archive, without curl's extra retries.
+    task_max_time=60
+    # This official server can deliver its pinned 3 MB archive slowly enough
+    # to exceed one minute. Keep the longer budget specific to that source.
+    if [[ "$task_name" = openconnect-9.21.tar.gz &&
+          "$task_url" = https://www.infradead.org/openconnect/download/openconnect-9.21.tar.gz ]]; then
+      task_max_time=300
+    fi
+    # Three bounded attempts and two 2-second delays: at most 904 seconds for
+    # OpenConnect, 184 for other archives, without curl's extra retries.
     for task_attempt in 1 2 3; do
       rm -f -- "$task_partial"
       printf 'Downloading pinned archive: %s (attempt %s/3)\n' "$task_name" "$task_attempt"
       if curl --disable --fail --location --proto '=https' --proto-redir '=https' \
-        --tlsv1.2 --connect-timeout 10 --max-time 60 \
+        --tlsv1.2 --connect-timeout 10 --max-time "$task_max_time" \
         "$task_download_url" --output "$task_partial"; then
         if ! printf '%s  %s\n' "$task_sha" "$task_partial" | sha256sum --check --status; then
           printf 'Checksum mismatch for pinned archive: %s\n' "$task_name" >&2

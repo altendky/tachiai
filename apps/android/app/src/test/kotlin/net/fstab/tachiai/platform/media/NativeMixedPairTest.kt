@@ -2,6 +2,7 @@ package net.fstab.tachiai.platform.media
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,6 +55,168 @@ class NativeMixedPairTest {
             return true
         }
         override fun close() { closed = true; if (throwClose) throw IllegalStateException() }
+    }
+
+    private inner class ExpiredRelativeTarget(val side: NativeMixedSide = NativeMixedSide.A,
+        initiallyPlaying: Boolean = true) : AutoCloseable {
+        val a = Member(live.copy(positionMs = if (side == NativeMixedSide.A) 4_500 else 21_656,
+            durationMs = 48_000, bufferedMs = 26_000, seekable = side == NativeMixedSide.A,
+            playing = initiallyPlaying, playWhenReady = initiallyPlaying))
+        val b = Member(live.copy(windowStartMs = 9_000_000,
+            positionMs = if (side == NativeMixedSide.B) 2_500 else 21_656, durationMs = 30_000,
+            bufferedMs = 26_000, seekable = side == NativeMixedSide.B,
+            playing = initiallyPlaying, playWhenReady = initiallyPlaying))
+        val target get() = if (side == NativeMixedSide.A) a else b
+        var now = 0L
+        var allowed = true
+        var focused = true
+        var onFocus: () -> Unit = {}
+        val pair = NativeMixedPair(a, b, { onFocus(); focused }, {}, { now },
+            requireCurrentLiveWindowOnPlay = true, admission = { allowed })
+        fun dispatchAndExpire() {
+            assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(-1_000).outcome)
+            assertEquals(side, pair.lastRelativePlan?.side)
+            assertEquals(3_500L, target.sample.positionMs)
+            now = 4_000
+            a.sample = a.sample.copy(windowStartMs = 1_004_000,
+                positionMs = if (side == NativeMixedSide.A) -500 else 17_656, bufferedMs = 26_134)
+            b.sample = b.sample.copy(windowStartMs = 9_004_000,
+                positionMs = if (side == NativeMixedSide.B) -500 else 17_656, bufferedMs = 26_134)
+            target.sample = target.sample.copy(bufferedMs = 500)
+        }
+        override fun close() = pair.close()
+    }
+
+    @Test fun relativeTargetExpiredDuringSettlementResumesOnlyItsExactBufferedPoint() {
+        val a = Member(live.copy(positionMs = 4_500, durationMs = 48_000, bufferedMs = 8_000,
+            playing = true, playWhenReady = true))
+        // Isolate target resumption from candidate selection: only A can seek.
+        val b = Member(live.copy(windowStartMs = 9_000_000, positionMs = 21_656, durationMs = 30_000,
+            bufferedMs = 26_000, seekable = false, playing = true, playWhenReady = true))
+        var now = 0L
+        val pair = NativeMixedPair(a, b, { true }, {}, { now }, requireCurrentLiveWindowOnPlay = true)
+        try {
+            assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(-1_000).outcome)
+            assertEquals(NativeMixedSide.A, pair.lastRelativePlan?.side)
+            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+            assertEquals(3_500L, a.sample.positionMs)
+            val targetClock = a.sample.contentTimeMs
+            assertTrue(pair.busy)
+            assertFalse(a.sample.playWhenReady || b.sample.playWhenReady)
+
+            // Four seconds of buffering slide the window beyond the accepted
+            // target, while its exact own clock and playable buffer survive.
+            now = 4_000
+            a.sample = a.sample.copy(windowStartMs = 1_004_000, positionMs = -500, bufferedMs = 500)
+            b.sample = b.sample.copy(windowStartMs = 9_004_000, positionMs = 17_656, bufferedMs = 26_134)
+            assertEquals(targetClock, a.sample.contentTimeMs)
+            pair.poll()
+            assertFalse(pair.busy)
+            assertTrue(a.sample.playing && b.sample.playing)
+            assertTrue(a.sample.playWhenReady && b.sample.playWhenReady)
+            assertEquals(1, a.playRequests); assertEquals(1, b.playRequests)
+            assertEquals(-1_000L, pair.lastTimingSettlement?.deltaMs)
+            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+
+            // The transaction's proof cannot authorize a later explicit Play.
+            assertTrue(pair.pause())
+            assertFalse(pair.play())
+            assertFalse(a.sample.playWhenReady || b.sample.playWhenReady)
+            assertEquals(1, a.playRequests); assertEquals(1, b.playRequests)
+            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+        } finally { pair.close() }
+    }
+
+    @Test fun ordinaryExpiredTargetCannotResumeWithoutItsBufferAndPlaybackWindow() {
+        for (missing in listOf("buffer", "exhausted buffer", "duration", "empty window")) {
+            ExpiredRelativeTarget().use { fixture ->
+                fixture.dispatchAndExpire()
+                fixture.target.sample = when (missing) {
+                    "buffer" -> fixture.target.sample.copy(bufferedMs = null)
+                    "exhausted buffer" -> fixture.target.sample.copy(bufferedMs = -500)
+                    "duration" -> fixture.target.sample.copy(durationMs = null)
+                    else -> fixture.target.sample.copy(durationMs = 0)
+                }
+                fixture.pair.poll()
+                assertFalse(fixture.pair.busy)
+                assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
+                assertFalse(fixture.a.sample.playWhenReady || fixture.b.sample.playWhenReady)
+                assertNull(fixture.pair.lastTimingSettlement)
+                assertEquals(1, fixture.a.seekCalls); assertEquals(0, fixture.b.seekCalls)
+            }
+        }
+    }
+
+    @Test fun ordinaryExpiredTargetIsRecheckedAfterFocusBeforeEitherFeedResumes() {
+        for (changed in listOf("buffer", "clock", "kind", "ad", "duration", "admission", "generation", "deadline", "focus")) {
+            ExpiredRelativeTarget().use { fixture ->
+                fixture.dispatchAndExpire()
+                fixture.onFocus = {
+                    when (changed) {
+                        "buffer" -> fixture.target.sample = fixture.target.sample.copy(bufferedMs = null)
+                        "clock" -> fixture.target.sample = fixture.target.sample.copy(windowStartMs = 1_004_101)
+                        "kind" -> fixture.target.sample = fixture.target.sample.copy(live = false, dynamic = false)
+                        "ad" -> fixture.target.sample = fixture.target.sample.copy(playingAd = true)
+                        "duration" -> fixture.target.sample = fixture.target.sample.copy(durationMs = 0)
+                        "admission" -> fixture.allowed = false
+                        "generation" -> fixture.pair.pause()
+                        "deadline" -> fixture.now = 8_000
+                        else -> fixture.focused = false
+                    }
+                }
+                fixture.pair.poll()
+                assertFalse(fixture.pair.busy)
+                assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
+                assertFalse(fixture.a.sample.playWhenReady || fixture.b.sample.playWhenReady)
+                assertNull(fixture.pair.lastTimingSettlement)
+                assertEquals(1, fixture.a.seekCalls); assertEquals(0, fixture.b.seekCalls)
+            }
+        }
+    }
+
+    @Test fun ordinarySecondTargetLosingItsBufferAfterFirstFeedPlayCannotResumeOrSettle() {
+        ExpiredRelativeTarget(NativeMixedSide.B).use { fixture ->
+            fixture.dispatchAndExpire()
+            fixture.a.playHook = { fixture.b.sample = fixture.b.sample.copy(bufferedMs = null) }
+            fixture.pair.poll()
+            assertFalse(fixture.pair.busy)
+            assertEquals(1, fixture.a.playRequests); assertEquals(0, fixture.b.playRequests)
+            assertFalse(fixture.a.sample.playWhenReady || fixture.b.sample.playWhenReady)
+            assertNull(fixture.pair.lastTimingSettlement)
+            assertEquals(0, fixture.a.seekCalls); assertEquals(1, fixture.b.seekCalls)
+        }
+    }
+
+    @Test fun initiallyPausedRelativeTargetCannotAcquireAutomaticResumeAuthority() {
+        ExpiredRelativeTarget(initiallyPlaying = false).use { fixture ->
+            fixture.dispatchAndExpire()
+            fixture.pair.poll()
+            assertFalse(fixture.pair.busy)
+            assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
+            assertFalse(fixture.a.sample.playWhenReady || fixture.b.sample.playWhenReady)
+            assertFalse(fixture.pair.play())
+            assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
+            assertEquals(1, fixture.a.seekCalls); assertEquals(0, fixture.b.seekCalls)
+        }
+    }
+
+    @Test fun directHistoricalShiftRetainsItsHundredMillisecondResumeTolerance() {
+        val a = Member(live.copy(positionMs = 4_500, playing = true, playWhenReady = true))
+        val b = Member(replay.copy(playing = true, playWhenReady = true))
+        var now = 0L
+        val pair = NativeMixedPair(a, b, { true }, {}, { now }, requireCurrentLiveWindowOnPlay = true)
+        try {
+            assertEquals(NativeSeekOutcome.REQUESTED, pair.shift(NativeMixedSide.A, -100).outcome)
+            now = 5_000
+            // Own-clock error is +75 ms: legal for the historical direct shift,
+            // beyond half of its 100 ms movement used by full relative nudges.
+            a.sample = a.sample.copy(windowStartMs = 1_005_000, positionMs = -525, bufferedMs = 500)
+            pair.poll()
+            assertFalse(pair.busy)
+            assertTrue(a.sample.playing && b.sample.playing)
+            assertEquals(NativeTimingSettlement(1, -100), pair.lastTimingSettlement)
+            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+        } finally { pair.close() }
     }
 
     @Test fun `untouched playing negative live point continues buffered data after a B advance only`() {
@@ -190,7 +353,7 @@ class NativeMixedPairTest {
     }
 
     @Test fun `relative full step on A holds resumes and reports its selection`() {
-        val a = Member(live); val b = Member(replay)
+        val a = Member(live); val b = Member(replay.copy(seekable = false))
         val pair = NativeMixedPair(a, b, { true }, {})
         pair.play()
         assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(5_000).outcome)
@@ -219,10 +382,13 @@ class NativeMixedPairTest {
                 val pair = NativeMixedPair(a, b, { true }, {})
                 pair.play()
                 assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(delta).outcome)
-                assertEquals(sampleA.positionMs!! + delta, a.sample.positionMs)
-                assertEquals(sampleB.positionMs, b.sample.positionMs)
+                val movementA = checkNotNull(a.sample.positionMs) - checkNotNull(sampleA.positionMs)
+                val movementB = checkNotNull(b.sample.positionMs) - checkNotNull(sampleB.positionMs)
+                assertEquals(delta, movementA - movementB)
+                assertEquals(if (a.seekCalls == 1) delta else 0L, movementA)
+                assertEquals(if (b.seekCalls == 1) -delta else 0L, movementB)
                 assertEquals(delta, pair.requestedAdjustmentMs)
-                assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+                assertEquals(1, a.seekCalls + b.seekCalls)
                 assertFalse(a.sample.playing); assertFalse(b.sample.playing)
                 pair.poll()
                 assertFalse(pair.busy); assertTrue(a.sample.playing); assertTrue(b.sample.playing)

@@ -102,6 +102,12 @@
 
 ## ABEMA
 
+- Did a canceled loader's protected ownership read cause the SHIELD's
+  2026-11-18 selection/account-unavailable failure? The
+  [file-lock regression](failure-diagnostics.md#interrupted-abema-ownership-reads--2026-11-18)
+  proves a cancellation bug compatible with the symptoms. Reopening the same
+  pair restored playback without sign-in, but the original trigger and post-fix
+  device stability remain unverified.
 - What supported structured catalog/My List access and instance-owned account
   connection can Tachiai provide? The
   [2026-10-09 catalog research](abema-catalog-access.md) documents public resource
@@ -436,6 +442,10 @@
   another intact-player approach provide useful retained delay and recovery?
 - What is the typical ABEMA-versus-`midnightsumo` latency difference?
 - Does that difference drift materially during one match day?
+- Do the [one-second adjustment fixes](failure-diagnostics.md#one-second-live-adjustment-expiry--2026-11-18)
+  retain playback reliably on the SHIELD when a held live target expires during
+  settlement? The old-build journal and local regression establish that refusal;
+  post-fix provider playback still needs verification.
 - Which feed normally needs delaying?
 - What adjustment granularity is useful and reliable?
   The same-VOD Pixel 6 test matched +250 ms, +1 s, and +5 s paused seeks on both

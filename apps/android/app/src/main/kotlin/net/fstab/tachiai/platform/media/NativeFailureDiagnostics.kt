@@ -21,12 +21,14 @@ internal enum class NativeMediaOpenPhase { REQUEST_SETUP, CONNECTION_OPEN, RESPO
 // Only fixed categories and already-sanitized transport values cross the
 // request observer boundary. Never retain the original exception or private text.
 internal class NativeMediaRequestException(val failure: NativeMediaRequestFailure,
-    val transportEvidence: ProviderTransportEvidence? = null, val openPhase: NativeMediaOpenPhase? = null) :
-    IOException("Native media request failed")
+    val transportEvidence: ProviderTransportEvidence? = null, val openPhase: NativeMediaOpenPhase? = null,
+    val httpStatus: Int? = null) : IOException("Native media request failed") {
+    init { require(httpStatus == null || failure == NativeMediaRequestFailure.HTTP_REJECTED && httpStatus in 100..599) }
+}
 
 internal fun nativeMediaRequestException(error: Exception, openPhase: NativeMediaOpenPhase? = null): NativeMediaRequestException {
     if (error is NativeMediaRequestException)
-        return NativeMediaRequestException(error.failure, error.transportEvidence, openPhase ?: error.openPhase)
+        return NativeMediaRequestException(error.failure, error.transportEvidence, openPhase ?: error.openPhase, error.httpStatus)
     val transport = providerTransportEvidence(error)
     val failure = when {
         transport.localCancellationRequested -> NativeMediaRequestFailure.TRANSPORT_CANCELLED

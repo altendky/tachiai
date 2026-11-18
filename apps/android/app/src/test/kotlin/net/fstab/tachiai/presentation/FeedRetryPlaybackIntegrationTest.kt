@@ -38,7 +38,9 @@ class FeedRetryPlaybackIntegrationTest {
             sibling.value = sibling.value.copy(live = true, dynamic = true,
                 positionMs = -20_000, bufferedMs = -2_000, windowStartMs = 1_000_000)
             val intent = FeedRetryPlaybackIntent(); val token = Any()
-            val receipt = intent.arm(side.ordinal, token, sibling, desired || sibling.timingSnapshot()!!.playWhenReady)
+            val decision = ViewerRetryIntentPolicy().plan(true, null, null, desired,
+                sibling.timingSnapshot()!!.playWhenReady, explicitPlaybackHeld = false)
+            val receipt = intent.arm(side.ordinal, token, sibling, decision.resumePlayback)
             val replacement = Member(false)
             controller.setMember(side, replacement)
             assertFalse(replacement.value.playWhenReady)
@@ -50,6 +52,28 @@ class FeedRetryPlaybackIntegrationTest {
             assertEquals(0, a.closes + b.closes + replacement.closes)
             assertTrue(sibling.transport.isEmpty())
             assertEquals(listOf(true), replacement.transport)
+        }
+    }
+
+    @Test fun `manual retry after explicit hold cannot use stale sibling PWR to start its replacement`() {
+        for (side in NativeMixedSide.entries) {
+            val sibling = Member(true) // SDK still reports PWR after a refused/stale Pause.
+            val replacement = Member(false)
+            var desired = false
+            val controller = PrototypePlaybackController({ true }, playAllowed = { desired })
+            val other = if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A
+            controller.setMember(other, sibling)
+            val decision = ViewerRetryIntentPolicy().plan(true, null, null, desired,
+                sibling.value.playWhenReady, explicitPlaybackHeld = true)
+            val intent = FeedRetryPlaybackIntent(); val token = Any()
+            val receipt = intent.arm(side.ordinal, token, sibling, decision.resumePlayback)
+            controller.setMember(side, replacement)
+            if (intent.consume(receipt, token, controller.member(other))) desired = true
+            if (desired) controller.rejoin(side, replacement, sibling)
+            assertFalse(desired)
+            assertFalse(replacement.value.playWhenReady)
+            assertTrue(replacement.transport.isEmpty())
+            assertTrue(sibling.transport.isEmpty())
         }
     }
 

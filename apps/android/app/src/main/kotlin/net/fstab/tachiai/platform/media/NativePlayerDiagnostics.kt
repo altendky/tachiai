@@ -6,6 +6,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.platform.network.ProviderTransportFailureCarrier
+import net.fstab.tachiai.platform.network.ProviderTransportFailure
+import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 
 // A recorded player failure owns its transport projection, including an
 // explicitly cleared local/policy cause. Preparation evidence is a fallback
@@ -20,25 +22,41 @@ internal fun latestNativePlaybackTransport(snapshot: NativePlaybackDiagnosticSna
 @UnstableApi
 internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemClock::elapsedRealtime) {
     private data class Failure(val stage: NativeFailureStage, val at: Long)
-    private data class Transport(val stage: NativeFailureStage, val at: Long,
-        val evidence: net.fstab.tachiai.platform.network.ProviderTransportEvidence)
-    private val failure = AtomicReference<Failure?>()
-    private val transport = AtomicReference<Transport?>()
+    private data class MediaFailure(val stage: NativeFailureStage, val at: Long,
+        val transport: net.fstab.tachiai.platform.network.ProviderTransportEvidence?, val httpStatus: Int?)
+    private data class FailureState(val failure: Failure? = null, val media: MediaFailure? = null,
+        val terminalRecorded: Boolean = false, val terminalMedia: MediaFailure? = null,
+        val terminalVeto: MediaFailure? = null)
+    private val failures = AtomicReference(FailureState())
     private val errorCode = AtomicReference<Int?>()
     private val cached = AtomicReference<NativePlaybackDiagnosticSnapshot?>()
     private val video = NativeVideoCounterTracker()
 
-    fun recordFailure(stage: NativeFailureStage, error: Throwable) {
+    @Synchronized fun recordFailure(stage: NativeFailureStage, error: Throwable) {
         val now = clockMs()
         if (error is PlaybackException) errorCode.set(error.errorCode)
-        failure.updateAndGet { previous -> if (previous == null || now >= previous.at) Failure(stage, now) else previous }
         val safeTransport = (error as? NativeMediaRequestException)?.transportEvidence
             ?: (error as? ProviderTransportFailureCarrier)?.transportFailure
-        if (stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) && safeTransport == null)
-            transport.set(null) // A new local/policy failure must not inherit an older transport cause.
-        safeTransport?.let { evidence -> transport.updateAndGet { previous ->
-            if (previous == null || now >= previous.at) Transport(stage, now, evidence) else previous
-        } }
+        val mediaObserved = stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) || safeTransport != null
+        val http = (error as? NativeMediaRequestException)?.httpStatus
+        val protected = http in setOf(401, 403) || safeTransport?.let {
+            !it.localCancellationRequested && (it.failure == ProviderTransportFailure.TLS ||
+                it.exceptionKind in setOf(ProviderTransportExceptionKind.TLS_HANDSHAKE,
+                    ProviderTransportExceptionKind.TLS_PEER, ProviderTransportExceptionKind.TLS_OTHER))
+        } == true
+        failures.updateAndGet { previous ->
+            // One immutable record replaces both projections. A local/policy
+            // failure clears old HTTP and transport authority; a delayed older
+            // callback cannot resurrect either after a newer refusal.
+            val terminal = stage == NativeFailureStage.PLAYER_ERROR && !previous.terminalRecorded
+            FailureState(
+                if (previous.failure == null || now >= previous.failure.at) Failure(stage, now) else previous.failure,
+                if (mediaObserved && (previous.media == null || now >= previous.media.at))
+                    MediaFailure(stage, now, safeTransport, http) else previous.media,
+                previous.terminalRecorded || terminal, if (terminal) previous.media else previous.terminalMedia,
+                if (previous.terminalRecorded && mediaObserved && protected)
+                    MediaFailure(stage, now, safeTransport, http) else previous.terminalVeto)
+        }
     }
     fun recordPlayerError(code: Int) { errorCode.set(code) }
 
@@ -77,11 +95,17 @@ internal class NativePlayerDiagnostics(private val clockMs: () -> Long = SystemC
             }), now)
     }
     private fun withFailures(value: NativePlaybackDiagnosticSnapshot, now: Long): NativePlaybackDiagnosticSnapshot {
-        val latest = failure.get()
-        val latestTransport = transport.get()
+        val state = failures.get()
+        val latest = state.failure
+        // Native teardown can report inactive requests after a player error.
+        // The fatal player owns its already-observed request cause, including
+        // an explicitly empty local/policy projection, through that cleanup.
+        val media = state.terminalVeto ?: if (state.terminalRecorded) state.terminalMedia else state.media
         return value.copy(failureStage = latest?.stage, failureAgeMs = nativeDiagnosticAge(now, latest?.at),
-            transportFailure = latestTransport?.let { evidence -> nativeDiagnosticAge(now, evidence.at)?.let { age ->
-                NativePlaybackTransportFailure(evidence.stage, age, evidence.evidence)
+            transportFailure = media?.let { evidence -> evidence.transport?.let { transport ->
+                nativeDiagnosticAge(now, evidence.at)?.let { age -> NativePlaybackTransportFailure(evidence.stage, age, transport) }
+            } }, httpFailure = media?.let { evidence -> evidence.httpStatus?.let { status ->
+                nativeDiagnosticAge(now, evidence.at)?.let { age -> NativePlaybackHttpFailure(evidence.stage, age, status) }
             } })
     }
 }

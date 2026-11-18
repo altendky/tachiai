@@ -38,6 +38,21 @@ import org.junit.Test
 
 @UnstableApi
 class BoundedMediaRequestsTest {
+    @Test fun `HTTP reporting retains later distinct authentication refusal without byte event spam`() {
+        val events = mutableListOf<Pair<NativeMediaEvent, Int>>()
+        val requests = BoundedMediaRequests(NativePlaybackBudget(120_000, { true }), { true },
+            { event, code -> events += event to code })
+        requests.report(NativeMediaEvent.HTTP_REJECTED, 503)
+        requests.report(NativeMediaEvent.HTTP_REJECTED, 503)
+        requests.report(NativeMediaEvent.HTTP_REJECTED, 403)
+        requests.report(NativeMediaEvent.HTTP_REJECTED, 403)
+        requests.report(NativeMediaEvent.MEDIA_BYTES, 1)
+        requests.report(NativeMediaEvent.MEDIA_BYTES, 2)
+        assertEquals(listOf(NativeMediaEvent.HTTP_REJECTED to 503, NativeMediaEvent.HTTP_REJECTED to 403,
+            NativeMediaEvent.MEDIA_BYTES to 1), events)
+        requests.close()
+    }
+
     @Test fun requestFailureRetainsItsExactOpenBoundaryAndPolicyReasonWithoutPrivateText() {
         val phases = listOf(NativeMediaOpenPhase.CONNECTION_OPEN, NativeMediaOpenPhase.RESPONSE_OPEN,
             NativeMediaOpenPhase.RESPONSE_POLICY, NativeMediaOpenPhase.RESPONSE_POLICY,
@@ -65,6 +80,7 @@ class BoundedMediaRequestsTest {
             val failure = seen.single()
             assertEquals(phases[case], failure.openPhase)
             assertEquals(failures[case], failure.failure)
+            assertEquals(if (case == 2) 503 else null, failure.httpStatus)
             assertNull(failure.cause)
             assertFalse(failure.toString().contains("synthetic-private"))
             if (case == 7) {

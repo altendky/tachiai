@@ -12,6 +12,7 @@ internal class TwitchNativeEventDispatcher(
     private val post: (() -> Unit) -> Unit,
     private val current: () -> Boolean,
     private val deliver: (NativeMediaEvent, Int) -> Unit,
+    private val rememberTerminal: (PrototypeFeedFailure) -> Unit = remember,
 ) {
     fun dispatch(event: NativeMediaEvent, code: Int) {
         if (event == NativeMediaEvent.MANIFEST_BYTES || event == NativeMediaEvent.MEDIA_BYTES) return
@@ -28,9 +29,13 @@ internal class TwitchNativeEventDispatcher(
             NativeMediaEvent.PLAYER_FAILED -> PrototypeFailureReason.PLAYER_FAILED
             else -> null
         }
-        if (reason != null) remember(PrototypeFeedFailure(reason,
-            httpStatus = if (event == NativeMediaEvent.HTTP_REJECTED) code.takeIf { it in 100..599 } else null,
-            playerCode = if (event == NativeMediaEvent.PLAYER_FAILED) code.takeIf { it in 1000..9999 } else null))
+        if (reason != null) {
+            val value = PrototypeFeedFailure(reason,
+                httpStatus = if (event == NativeMediaEvent.HTTP_REJECTED) code.takeIf { it in 100..599 } else null,
+                playerCode = if (event == NativeMediaEvent.PLAYER_FAILED) code.takeIf { it in 1000..9999 } else null)
+            if (event == NativeMediaEvent.PLAYER_FAILED || event == NativeMediaEvent.LIMIT_REACHED)
+                rememberTerminal(value) else remember(value)
+        }
         when (event) {
             NativeMediaEvent.READY, NativeMediaEvent.VIDEO_FRAME, NativeMediaEvent.PLAYER_FAILED,
             NativeMediaEvent.LIMIT_REACHED, NativeMediaEvent.STOPPED -> post { if (current()) deliver(event, code) }

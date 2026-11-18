@@ -162,28 +162,15 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     }
     fun checkWorker(): Boolean {
         if (!worker() || !current()) return false
-        val start = SystemClock.elapsedRealtime()
-        when (acquireAbemaAccountCheckLock(checks, AbemaAccountAccessIpc.IPC_MS)) {
-            AbemaAccountCheckLock.INTERRUPTED -> return false
-            AbemaAccountCheckLock.TIMED_OUT -> { revoked.set(true); close(); return false }
-            AbemaAccountCheckLock.ACQUIRED -> Unit
-        }
-        try {
-            // A cancellation between acquiring the lock and dispatch has no
-            // outstanding service operation to drain or lease to revoke.
-            if (Thread.currentThread().isInterrupted) return false
-            val now = SystemClock.elapsedRealtime()
-            val left = AbemaAccountAccessIpc.IPC_MS - (now - start)
-            var interrupted = false
-            val fields = if (now >= start && left > 0 && current())
-                transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, left) { done ->
+        return performAbemaAccountCheck(checks, AbemaAccountAccessIpc.IPC_MS, SystemClock::elapsedRealtime, ::current,
+            dispatch = { start, left ->
+                var interrupted = false
+                val fields = transact(AbemaAccountAccessIpc.CHECK, AbemaAccountAccessIpc.CHECKED, left) { done ->
                     awaitAbemaAccountCheck(done, start, start + AbemaAccountAccessIpc.IPC_MS,
                         SystemClock::elapsedRealtime, ::live).also { interrupted = it.interrupted }.completed
-                } else null
-            val okay = abemaAccountCheckAccepted(fields, request) && current()
-            if (!okay) { revoked.set(true); close() }
-            return okay && !interrupted && !Thread.currentThread().isInterrupted
-        } finally { checks.unlock() }
+                }
+                AbemaAccountCheckCompletion(abemaAccountCheckAccepted(fields, request), interrupted)
+            }, revoke = { revoked.set(true); close() })
     }
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

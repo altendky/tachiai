@@ -134,6 +134,7 @@ import net.fstab.tachiai.platform.media.PrototypeFeedSession
 import net.fstab.tachiai.presentation.PrototypePlayBarrier
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.FeedRetryState
+import net.fstab.tachiai.presentation.ViewerRetryIntentPolicy
 import net.fstab.tachiai.presentation.recoveryAction
 import net.fstab.tachiai.presentation.viewerMessage
 import net.fstab.tachiai.presentation.PrototypeFailureReason
@@ -271,6 +272,7 @@ open class PrototypeActivity : ComponentActivity() {
         val run: Long, val budget: NativePlaybackBudget)
     private var retryAccountCheck: RetryAccountCheck? = null
     private val retryPlaybackIntent = FeedRetryPlaybackIntent()
+    private var retryIntentPolicy = ViewerRetryIntentPolicy()
     private data class RetryPlaybackJoin(val receipt: FeedRetryPlaybackReceipt, val token: Any,
         val retry: FeedRetryState, val run: Long, val budget: NativePlaybackBudget, val preserveSibling: Boolean)
     private val retryPlaybackJoins = arrayOfNulls<RetryPlaybackJoin>(2)
@@ -642,6 +644,7 @@ open class PrototypeActivity : ComponentActivity() {
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
         automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
+        retryIntentPolicy = ViewerRetryIntentPolicy()
         automaticPairRestoreWanted = null
         retryAccountCheck = null
         setPlaybackIntent(true, PlaybackHealthIntent.STARTUP); lastAuthorizationPoll = 0; lastSample = 0
@@ -1127,6 +1130,7 @@ open class PrototypeActivity : ComponentActivity() {
             pairOffsetRetryEstimate.clear()
         if (pair != null && playback?.pair === pair && pair.lastTimingAttempt !== beforeAttempt) {
             pairOffsetBaselineLost = true
+            retryIntentPolicy.backToLiveDispatched()
             pairOffsetSession?.invalidate(pair, "Returned to live; reopen this pair to reapply its saved offset.")
         }
         Log.d("TachiaiPrototype", "timing=BACK_TO_LIVE side=$side outcome=${result.outcome}")
@@ -1290,6 +1294,7 @@ open class PrototypeActivity : ComponentActivity() {
         pairOffsetSkipStartup = true
         state.planToggle(pair, enabled, pair.lastTimingSettlement?.revision ?: 0L,
             if (enabled) currentPairTimelineCheck().correctionMs else null)?.let {
+            retryIntentPolicy.offsetToggleRequested(enabled)
             setPlaybackIntent(false, PlaybackHealthIntent.OFFSET)
             dispatchPairOffset(it)
         }
@@ -1324,6 +1329,10 @@ open class PrototypeActivity : ComponentActivity() {
         val identity = pairOffsetIdentity ?: return
         val request = state.pendingSave ?: return
         if (pairOffsetSaveId == request.id) return
+        // Only settled manual/toggle changes publish a save request. This new
+        // user alignment supersedes an earlier session restoration opt-out,
+        // independently of whether the encrypted preference write succeeds.
+        retryIntentPolicy.settledOffsetPreference(request.preference.enabled)
         val preference = identity.toCanonical(request.preference)
         if (preference == null) { state.saveCompleted(request.id, false); return }
         val run = epoch.get()
@@ -1714,7 +1723,8 @@ open class PrototypeActivity : ComponentActivity() {
             allowRecovery = canRetryFeed(index) && resumed.get() && !disposing && !explicitPlaybackHeld(),
             restoreOffset = automaticPairRestoreWanted == true,
             nowMs = now,
-            authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null)
+            authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null,
+            httpFailure = snapshot?.httpFailure)
         // A normal stop is expected; a limit needs retained failure evidence.
         if (failure.reason != PrototypeFailureReason.STOPPED)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
@@ -1763,19 +1773,24 @@ open class PrototypeActivity : ComponentActivity() {
     private fun requestFeedRetry(index: Int, automatic: FeedAutoRecoveryRequest? = null): Boolean {
         if (automatic != null && !automaticRecovery[index].current(automatic)) return false
         if (!canRetryFeed(index) || failures[index]?.recoveryAction() == null || !feedRetries[index].request()) return false
+        val sibling = playback?.member(NativeMixedSide.entries[1 - index])
+        val siblingRequested = runCatching { sibling?.timingSnapshot()?.playWhenReady == true }.getOrDefault(false)
+        val intent = retryIntentPolicy.plan(
+            savedOffsetEnabled = pairOffsetSession?.state?.preference?.enabled == true,
+            automaticRestoreOffset = automatic?.restoreOffset, incidentRestoreWanted = automaticPairRestoreWanted,
+            desiredPlaying = desiredPlaying, siblingRequested = siblingRequested,
+            explicitPlaybackHeld = explicitPlaybackHeld())
         if (automatic == null) {
             automaticRecovery[index].cancel()
-            automaticPairRestoreWanted = pairOffsetSession?.state?.preference?.enabled == true
+            automaticPairRestoreWanted = intent.restoreOffset
         }
         // This fresh explicit retry supersedes older timing actions. A later
         // Pause/focus loss/new adjustment will suppress restoration again.
-        pairOffsetSkipStartup = automatic != null && !automatic.restoreOffset && automaticPairRestoreWanted != true
+        pairOffsetSkipStartup = intent.skipOffsetStartup
         retryAccountReady[index] = false
         val currentBudget = budget ?: return false
-        val sibling = playback?.member(NativeMixedSide.entries[1 - index])
-        val siblingRequested = runCatching { sibling?.timingSnapshot()?.playWhenReady == true }.getOrDefault(false)
         val token = Any()
-        val receipt = retryPlaybackIntent.arm(index, token, sibling, automatic != null || desiredPlaying || siblingRequested,
+        val receipt = retryPlaybackIntent.arm(index, token, sibling, intent.resumePlayback,
             allowSiblingReplacement = automatic != null)
         retryPlaybackJoins[index] = RetryPlaybackJoin(receipt, token, feedRetries[index], epoch.get(), currentBudget, siblingRequested)
         retryDeadline[index] = SystemClock.elapsedRealtime() + 20_000

@@ -6,6 +6,9 @@ import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 // a provider timestamp to persist. No identity, format, URI or exception object.
 internal data class NativePlaybackTransportFailure(val stage: NativeFailureStage, val ageMs: Long,
     val evidence: ProviderTransportEvidence)
+internal data class NativePlaybackHttpFailure(val stage: NativeFailureStage, val ageMs: Long, val status: Int) {
+    init { require(status in 100..599) }
+}
 internal data class NativePlaybackDiagnosticSnapshot(
     val observedAtElapsedMs: Long,
     val sampleAgeMs: Long,
@@ -27,6 +30,7 @@ internal data class NativePlaybackDiagnosticSnapshot(
     val positionMs: Long? = null,
     val durationMs: Long? = null,
     val bufferedMs: Long? = null,
+    val httpFailure: NativePlaybackHttpFailure? = null,
 )
 
 internal enum class NativePlaybackLivenessState {

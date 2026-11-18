@@ -558,6 +558,11 @@ not measured synchronization. Compact layouts retain scrollable controls and
 48 dp button targets. Cancelling More preserves the open controls and panel;
 Hide and video/background taps retain their explicit dismissal behavior.
 
+An Advance request uses one complete legal movement: advancing that feed or
+equivalently delaying its peer. Planning compares both options and prefers more
+live-window headroom, with A retained on equal margins. It does not split a nudge
+or dispatch an alternative after an uncertain seek.
+
 Mark aligns a matching event. Press the first feed's Mark when an event appears
 or is heard, then the other feed's Mark when the same event happens there. The
 second mark automatically requests the full measured relative adjustment using
@@ -581,13 +586,13 @@ correction when that leaves substantially more live-window headroom. It still
 requests the exact correction and does not add a minimum-window-margin refusal.
 
 A selected live target must be legal when dispatched. If its window advances
-during loading, an originally playing Mark transaction may continue the same
+during loading, an originally playing Advance or Mark transaction may continue the same
 SDK-confirmed held READY target only with its exact own clock, unchanged clock
 kind and buffered data ahead, rechecked after focus and before each start. Both
 current and buffered positions can be negative relative to a sliding window.
 This follows the [Media3 readiness contract](https://developer.android.com/reference/androidx/media3/common/Player#STATE_READY)
 and [live-window position model](https://developer.android.com/media/media3/exoplayer/live-streaming).
-It adds no negative seek, retry or authorization renewal. A paused transaction
+It adds no negative seek, retry or authorization renewal. A paused Mark transaction
 whose selected target expires does not claim settlement; ordinary explicit Play
 and Back to live retain their separate window guards.
 

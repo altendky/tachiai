@@ -2,7 +2,9 @@ package net.fstab.tachiai.presentation
 
 import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
+import net.fstab.tachiai.platform.media.NativePlaybackHttpFailure
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
+import net.fstab.tachiai.platform.media.latestNativePlaybackTransport
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
@@ -10,6 +12,115 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FeedAutoRecoveryStateTest {
+    @Test fun `terminal unspecified IO with fresh typed network evidence retains network recovery`() {
+        val state = FeedAutoRecoveryState(); val member = Any()
+        state.observe(member, sample(0), 0)
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, fail(state, member, 1,
+            PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000)))
+        assertNotNull(state.pending)
+    }
+
+    @Test fun `unspecified IO accepts only current typed media network or retryable HTTP evidence`() {
+        val network = listOf(transport(ProviderTransportFailure.DNS), transport(ProviderTransportFailure.CONNECT),
+            transport(ProviderTransportFailure.TIMEOUT), transport(), transport(stage = NativeFailureStage.MEDIA_REQUEST_READ))
+        for (live in listOf(false, true)) {
+            for (evidence in network) {
+                val state = FeedAutoRecoveryState(); val member = Any()
+                state.observe(member, sample(0).copy(liveClock = live), 0)
+                assertEquals(FeedAutoRecoveryDecision.SCHEDULED, fail(state, member, 1,
+                    PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000), evidence, live = live))
+            }
+            for (status in listOf(408, 429, 500, 503, 599, 404)) {
+                for (stage in listOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ)) {
+                    val state = FeedAutoRecoveryState(); val member = Any()
+                    state.observe(member, sample(0).copy(liveClock = live), 0)
+                    assertEquals("live=$live status=$status stage=$stage",
+                        if (status == 404 && !live) FeedAutoRecoveryDecision.SKIPPED else FeedAutoRecoveryDecision.SCHEDULED,
+                        fail(state, member, 1, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000),
+                            evidence = null, live = live, httpFailure = NativePlaybackHttpFailure(stage, 0, status)))
+                }
+            }
+        }
+    }
+
+    @Test fun `unspecified IO refuses stale missing local policy and untyped network evidence`() {
+        val member = Any()
+        val localFailure = sample(0).copy(failureStage = NativeFailureStage.MEDIA_REQUEST_OPEN, failureAgeMs = 0)
+        val refused = listOf(null, transport(age = -1), transport(age = 5_001),
+            transport(stage = NativeFailureStage.MEDIA_DISCONNECT),
+            transport(kind = ProviderTransportExceptionKind.UNKNOWN),
+            transport(kind = ProviderTransportExceptionKind.PROTOCOL),
+            transport(kind = ProviderTransportExceptionKind.OTHER),
+            latestNativePlaybackTransport(localFailure, transport()))
+        for (evidence in refused) {
+            val state = FeedAutoRecoveryState(); state.observe(member, sample(0), 0)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, fail(state, member, 1,
+                PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000), evidence))
+        }
+        for (http in listOf(
+            NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, -1, 503),
+            NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 5_001, 503),
+            NativePlaybackHttpFailure(NativeFailureStage.MEDIA_DISCONNECT, 0, 503),
+            NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, 400),
+            NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_READ, 0, 418))) {
+            val state = FeedAutoRecoveryState(); state.observe(member, sample(0), 0)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, fail(state, member, 1,
+                PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000), evidence = null, httpFailure = http))
+        }
+    }
+
+    @Test fun `fresh HTTP authorization denial blocks every older recovery reason and verified refresh`() {
+        val failures = listOf(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED),
+            PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 503),
+            PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000),
+            PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 1002),
+            PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+        for (status in listOf(401, 403)) for (failure in failures) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, state.failed(member, failure, transport(), true, true, true, 1,
+                authorizationRefreshSupported = true,
+                httpFailure = NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, status)))
+            assertNull(state.pending)
+        }
+    }
+
+    @Test fun `fresh retryable HTTP cannot bypass TLS cancellation hard reasons or other player codes`() {
+        val http = NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, 503)
+        val terminal = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000)
+        for (evidence in listOf(transport(ProviderTransportFailure.TLS), transport(ProviderTransportFailure.CANCELLED),
+            transport(cancelled = true), transport(kind = ProviderTransportExceptionKind.INTERRUPTED_IO),
+            transport(kind = ProviderTransportExceptionKind.TLS_HANDSHAKE),
+            transport(kind = ProviderTransportExceptionKind.TLS_PEER), transport(kind = ProviderTransportExceptionKind.TLS_OTHER))) {
+            val state = FeedAutoRecoveryState(); val member = Any(); state.observe(member, sample(0), 0)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, fail(state, member, 1, terminal, evidence, httpFailure = http))
+        }
+        val refused = listOf(PrototypeFailureReason.LICENSE_FAILED, PrototypeFailureReason.MEDIA_BLOCKED,
+            PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED, PrototypeFailureReason.CLEANUP_FAILED,
+            PrototypeFailureReason.STOPPED, PrototypeFailureReason.PLAYBACK_LIMIT,
+            PrototypeFailureReason.NETWORK_SECURITY_FAILED).map { PrototypeFeedFailure(it) } +
+            listOf(null, 1000, 2001, 2002, 6001).map { PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = it) } +
+            listOf(401, 403, 503).map { terminal.copy(httpStatus = it) }
+        for (failure in refused) {
+            val state = FeedAutoRecoveryState(); val member = Any(); state.observe(member, sample(0), 0)
+            assertEquals("failure=$failure", FeedAutoRecoveryDecision.SKIPPED,
+                fail(state, member, 1, failure, httpFailure = http))
+        }
+    }
+
+    @Test fun `typed unspecified IO cannot bypass missing exact playback intent or lifecycle permission`() {
+        for (mode in 0..4) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            if (mode != 0) state.observe(member, sample(0), 0)
+            if (mode == 2) state.cancel()
+            if (mode == 3) state.observe(member, sample(1).copy(playing = false, playWhenReady = false), 1)
+            assertEquals("mode=$mode", FeedAutoRecoveryDecision.SKIPPED,
+                fail(state, if (mode == 1) Any() else member, 1,
+                    PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 2000), allowed = mode != 4,
+                    httpFailure = NativePlaybackHttpFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, 503)))
+        }
+    }
+
     @Test fun `verified provider renewal capability allows only one account refresh per incident`() {
         val state = FeedAutoRecoveryState(); val member = Any()
         state.observe(member, sample(0), 0)
@@ -46,8 +157,8 @@ class FeedAutoRecoveryStateTest {
     private fun fail(state: FeedAutoRecoveryState, member: Any?, now: Long,
         failure: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED),
         evidence: NativePlaybackTransportFailure? = transport(), live: Boolean = true,
-        allowed: Boolean = true, restore: Boolean = true) =
-        state.failed(member, failure, evidence, live, allowed, restore, now)
+        allowed: Boolean = true, restore: Boolean = true, httpFailure: NativePlaybackHttpFailure? = null) =
+        state.failed(member, failure, evidence, live, allowed, restore, now, httpFailure = httpFailure)
     private fun firstAttempt(state: FeedAutoRecoveryState, member: Any, now: Long = 0): FeedAutoRecoveryRequest {
         state.observe(member, sample(now), now)
         assertEquals(FeedAutoRecoveryDecision.SCHEDULED, fail(state, member, now))
@@ -65,6 +176,77 @@ class FeedAutoRecoveryStateTest {
         assertEquals(FeedAutoRecoveryDecision.SCHEDULED, fail(state, member, 5_004))
         assertEquals(0, state.attemptCount)
         assertFalse(state.automaticAttemptActive)
+    }
+
+    @Test fun `fresh continuous buffering preserves previously playing intent until a terminal network failure`() {
+        val state = FeedAutoRecoveryState(); val member = Any()
+        state.observe(member, sample(0), 0)
+        state.observe(member, sample(1_000), 1_000)
+        for (now in 2_000L..12_000L step 1_000L) {
+            state.observe(member, sample(now, clock = 21_000, frames = 101).copy(
+                state = 2, playing = false), now)
+        }
+        state.observe(member, sample(12_100).copy(state = 1, playing = false, errorCode = 2001), 12_100)
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, fail(state, member, 12_100))
+        assertEquals(0, state.attemptCount)
+        assertNotNull(state.pending)
+    }
+
+    @Test fun `buffering alone cannot establish actual playing provenance`() {
+        val state = FeedAutoRecoveryState(); val member = Any()
+        for (now in 0L..12_000L step 1_000L) {
+            state.observe(member, sample(now).copy(state = 2, playing = false), now)
+        }
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, fail(state, member, 12_000))
+        assertNull(state.pending)
+    }
+
+    @Test fun `unobserved buffering gap cannot be bridged by later fresh buffering samples`() {
+        val state = FeedAutoRecoveryState(); val member = Any()
+        state.observe(member, sample(0), 0)
+        state.observe(member, sample(1_000).copy(state = 2, playing = false), 1_000)
+        for (now in 6_001L..12_001L step 1_000L) {
+            state.observe(member, sample(now).copy(state = 2, playing = false), now)
+        }
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, fail(state, member, 12_001))
+    }
+
+    @Test fun `invalid buffering observation breaks playing intent even when fresh buffering returns`() {
+        for (mode in 0..9) {
+            val state = FeedAutoRecoveryState(); val member = Any(); val replacement = Any()
+            state.observe(member, sample(0), 0)
+            state.observe(member, sample(1_000).copy(state = 2, playing = false), 1_000)
+            val buffering = sample(2_000).copy(state = 2, playing = false)
+            val invalid = when (mode) {
+                0 -> buffering.copy(sampleAgeMs = 1)
+                1 -> buffering.copy(observedAtElapsedMs = 0)
+                2 -> buffering.copy(released = true)
+                3 -> buffering.copy(playWhenReady = false)
+                4 -> buffering.copy(suppressionReason = 1)
+                5 -> sample(2_000).copy(playing = false, playWhenReady = false)
+                6 -> null
+                else -> buffering
+            }
+            val current = if (mode == 9) replacement else member
+            state.observe(current, invalid, 2_000, blocked = mode == 7, playingAd = mode == 8)
+            state.observe(current, sample(3_000).copy(state = 2, playing = false), 3_000)
+            assertEquals("mode=$mode", FeedAutoRecoveryDecision.SKIPPED, fail(state, current, 3_000))
+            assertNull(state.pending)
+        }
+    }
+
+    @Test fun `buffering continuity does not renew transport evidence or bypass explicit cancellation`() {
+        for (cancel in listOf(false, true)) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            for (now in 1_000L..8_000L step 1_000L) {
+                state.observe(member, sample(now).copy(state = 2, playing = false), now)
+            }
+            if (cancel) state.cancel()
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED,
+                fail(state, member, 8_000, evidence = if (cancel) transport() else transport(age = 5_001)))
+            assertNull(state.pending)
+        }
     }
 
     @Test fun `failure idle snapshot preserves previous playing proof and duplicate delivery cannot replace pending retry`() {

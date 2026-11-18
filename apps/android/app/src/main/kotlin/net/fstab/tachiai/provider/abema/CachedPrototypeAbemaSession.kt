@@ -207,6 +207,7 @@ internal class CachedPrototypeAbemaSession(
     private var lastMetadata: String? = null
     private val helperEvidence = AbemaCachedHelperEvidence()
     private val firstFailure = PrototypeFeedFailureLatch()
+    private val continuationRefusalReported = AtomicBoolean(false)
     private var helperFailure: PrototypeFeedFailure? = null
     override val failure: PrototypeFeedFailure? get() = firstFailure.failure
     @Volatile override var cleanupFailed: Boolean = false
@@ -286,7 +287,7 @@ internal class CachedPrototypeAbemaSession(
         return scope.client === accountClient.get() && scope.run == run && slotResource != null &&
             scope.instanceId == ownership?.instanceId && scope.ownerProof == ownership.ownerProof &&
             scope.channelId == slotChannelId && scope.slotId == slotId && scope.playbackDeadline == deadline &&
-            receipt.current(scope, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+            receipt.current(scope, System::currentTimeMillis, SystemClock::elapsedRealtime)
     }
     private fun openConnection(url: URL): HttpsURLConnection {
         workerRefusal()?.let { refusal ->
@@ -299,11 +300,32 @@ internal class CachedPrototypeAbemaSession(
         }
         return route?.open(url) ?: (url.openConnection() as HttpsURLConnection)
     }
-    override fun canContinue(): Boolean = current(revision.get())
+    private fun rememberContinuationRefusal(refusal: AbemaBootstrapRefusal,
+        reason: PrototypeFailureReason = refusal.failureReason(budget?.isTimeBounded == true)) {
+        if (closed.get() || refusal in setOf(AbemaBootstrapRefusal.CLOSED, AbemaBootstrapRefusal.SUPERSEDED)) return
+        if (continuationRefusalReported.compareAndSet(false, true))
+            reportBootstrapRefusal(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, refusal)
+        firstFailure.rememberTerminalFailure(PrototypeFeedFailure(reason))
+    }
+    override fun canContinue(): Boolean {
+        val run = revision.get()
+        // Preserve admission order and evaluate each protected check only once.
+        // This terminal-facing poll must expose why a healthy native player is
+        // being retired; background current() checks remain observation-only.
+        val refusal = if (SystemClock.elapsedRealtime() >= deadline) AbemaBootstrapRefusal.DEADLINE
+            else preparationRefusal(run) ?: if (!routeCurrent.get()) AbemaBootstrapRefusal.ROUTE else null
+        if (refusal != null) rememberContinuationRefusal(refusal)
+        return refusal == null
+    }
     override fun checkAuthorization(): Boolean {
-        if (!closed.get() && accountAdmitted.get() &&
-            (accountClient.get()?.current() != true || !slotPremiumCurrent(revision.get()) || !slotChaseCurrent(revision.get()))) {
-            firstFailure.remember(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+        val refusal = if (!closed.get() && accountAdmitted.get()) when {
+            accountClient.get()?.current() != true -> AbemaBootstrapRefusal.ACCOUNT
+            !slotPremiumCurrent(revision.get()) -> AbemaBootstrapRefusal.PREMIUM
+            !slotChaseCurrent(revision.get()) -> AbemaBootstrapRefusal.CHASE
+            else -> null
+        } else null
+        if (refusal != null) {
+            rememberContinuationRefusal(refusal, PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
             return false
         }
         return canContinue()
@@ -311,9 +333,17 @@ internal class CachedPrototypeAbemaSession(
 
     private fun monitorAccount(run: Long) {
         if (closed.get() || revision.get() != run) return
-        if (active() && budget?.active == true && SystemClock.elapsedRealtime() < deadline &&
-            accountAdmitted.get() && (accountClient.get()?.current() != true || !slotPremiumCurrent(run) || !slotChaseCurrent(run))) {
-            fail(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)); return
+        if (active() && budget?.active == true && SystemClock.elapsedRealtime() < deadline && accountAdmitted.get()) {
+            val refusal = when {
+                accountClient.get()?.current() != true -> AbemaBootstrapRefusal.ACCOUNT
+                !slotPremiumCurrent(run) -> AbemaBootstrapRefusal.PREMIUM
+                !slotChaseCurrent(run) -> AbemaBootstrapRefusal.CHASE
+                else -> null
+            }
+            if (refusal != null) {
+                rememberContinuationRefusal(refusal, PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
+                fail(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)); return
+            }
         }
         handler.postDelayed({ monitorAccount(run) }, 200)
     }
@@ -407,7 +437,9 @@ internal class CachedPrototypeAbemaSession(
                 if (!allows(url) && documentStarted) fail(PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED))
             }
             override fun onReceivedSslError(view: WebView, ssl: SslErrorHandler, error: SslError) {
-                ssl.cancel(); fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+                ssl.cancel()
+                if (!closed.get()) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, FailureCategory.TRANSPORT_TLS)
+                fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_SECURITY_FAILED))
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 if (!closed.get()) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_RENDERER_GONE,
@@ -1023,24 +1055,37 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun rememberNative(event: NativeDashEvent, code: Int) {
+        if (event == NativeDashEvent.PLAYER_FAILED) {
+            if (!closed.get() && active()) firstFailure.rememberPlayerFailure(code.takeIf { it in 1000..9999 })
+            return
+        }
         val reason = when (event) {
             NativeDashEvent.DRM_REFUSED, NativeDashEvent.DRM_FAILED, NativeDashEvent.DRM_PREWARM_FAILED -> PrototypeFailureReason.LICENSE_FAILED
-            NativeDashEvent.PLAYER_FAILED -> PrototypeFailureReason.PLAYER_FAILED
             NativeDashEvent.LIMIT_REACHED -> PrototypeFailureReason.PLAYBACK_LIMIT
             NativeDashEvent.STOPPED -> PrototypeFailureReason.STOPPED
             else -> return
         }
-        remember(PrototypeFeedFailure(reason, playerCode = if (event == NativeDashEvent.PLAYER_FAILED)
-            code.takeIf { it in 1000..9999 } else null))
+        if (event == NativeDashEvent.STOPPED) remember(PrototypeFeedFailure(reason))
+        else if (!closed.get() && active()) firstFailure.rememberTerminalFailure(PrototypeFeedFailure(reason))
     }
 
-    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED),
+    private fun fail(value: PrototypeFeedFailure? = null,
         readinessDeadline: Boolean = false, admissionLost: Boolean = false) {
-        val observed = if (networkReviewNeeded.get()) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED) else value
+        val prior = failure
+        val reviewNeeded = networkReviewNeeded.get()
+        val observed = if (reviewNeeded) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED)
+            else value ?: prior ?: PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)
         // A current native readiness callback owns its STOPPED result even
         // after active admission is lost. Request/teardown callbacks keep
         // their existing active guard; an earlier cause always wins.
-        if (admissionLost && !closed.get()) firstFailure.remember(observed) else remember(observed)
+        // A default failure finishes the already observed cause; it does not
+        // invent a second preparation refusal after a terminal player event.
+        if (value != null || prior == null || reviewNeeded) {
+            if (!closed.get() && (admissionLost || active())) {
+                if (value == null && !reviewNeeded) firstFailure.rememberFallbackIfEmpty(observed)
+                else firstFailure.rememberTerminalFailure(observed)
+            }
+        }
         // The existing atomic latch decides the first cause. A concurrent
         // unrelated failure cannot acquire this native deadline marker.
         if (readinessDeadline && observed.reason == PrototypeFailureReason.PREPARATION_TIMEOUT && failure === observed)

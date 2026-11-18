@@ -134,7 +134,7 @@ class NativeMarkedAlignmentTest {
         assertTrue(pair.status.contains("expired while playback was paused"))
     }
 
-    @Test fun `selected buffered continuation is Mark only and never authorizes an explicit Play`() {
+    @Test fun `selected buffered continuation supports both timing operations but never an explicit Play`() {
         for (marked in listOf(true, false)) for (side in NativeMixedSide.entries) {
             val a = Member(sample(20_000, 1_000_000).copy(seekable = side == NativeMixedSide.A))
             val b = Member(sample(30_000, 9_000_000).copy(seekable = side == NativeMixedSide.B))
@@ -145,8 +145,8 @@ class NativeMarkedAlignmentTest {
             selected.value = selected.value.copy(windowStartMs = if (side == NativeMixedSide.A) 1_016_000 else 9_036_000,
                 positionMs = -1_000, bufferedMs = 5_000)
             pair.poll(); assertFalse(pair.busy)
-            assertEquals(if (marked) 2 else 0, a.plays + b.plays)
-            assertEquals(if (marked) NativeTimingSettlement(1, -5_000) else null, pair.lastTimingSettlement)
+            assertEquals(2, a.plays + b.plays)
+            assertEquals(NativeTimingSettlement(1, -5_000), pair.lastTimingSettlement)
             assertTrue((a.seekTargets + b.seekTargets).all { it >= 0 })
             pair.pause(); assertFalse(pair.play())
         }

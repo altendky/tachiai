@@ -2,6 +2,8 @@ package net.fstab.tachiai.provider.abema.account
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
@@ -120,6 +122,72 @@ class AbemaAccountCheckWaitTest {
             }
             join(waiter, failed)
         } finally { lock.unlock() }
+    }
+
+    @Test fun queuedCheckTimeoutDoesNotRevokeTheHealthyCheckAlreadyInFlight() {
+        val lock = ReentrantLock()
+        val firstEntered = CountDownLatch(1); val finishFirst = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val valid = AtomicBoolean(true)
+        val revocations = AtomicInteger()
+        val dispatched = AtomicInteger()
+        val firstResult = AtomicReference<Boolean?>()
+        val revoke = { revocations.incrementAndGet(); valid.set(false) }
+        val first = worker(failure) {
+            firstResult.set(performAbemaAccountCheck(lock, 2_000, ::now, valid::get,
+                dispatch = { _, _ ->
+                    dispatched.incrementAndGet(); firstEntered.countDown()
+                    check(finishFirst.await(2, TimeUnit.SECONDS))
+                    AbemaAccountCheckCompletion(accepted = true, interrupted = false)
+                }, revoke = revoke))
+        }
+        try {
+            assertTrue(firstEntered.await(1, TimeUnit.SECONDS))
+            assertFalse(performAbemaAccountCheck(lock, 20, ::now, valid::get,
+                dispatch = { _, _ -> dispatched.incrementAndGet(); AbemaAccountCheckCompletion(true, false) }, revoke = revoke))
+            assertEquals(1, dispatched.get())
+            assertEquals("A local queue timeout owns no remote CHECK to revoke", 0, revocations.get())
+            assertTrue(valid.get())
+        } finally { finishFirst.countDown(); join(first, failure) }
+        assertEquals(true, firstResult.get())
+        assertEquals(0, revocations.get())
+    }
+
+    @Test fun budgetExhaustedBeforeDispatchDoesNotRevokeAnOtherwiseCurrentLease() {
+        for (elapsed in listOf(100L, 101L)) {
+            val lock = ReentrantLock()
+            var reads = 0
+            var valid = true
+            var dispatched = 0
+            var revocations = 0
+            assertFalse(performAbemaAccountCheck(lock, 100, { if (reads++ == 0) 1_000 else 1_000 + elapsed }, { valid },
+                dispatch = { _, _ -> dispatched++; AbemaAccountCheckCompletion(true, false) },
+                revoke = { revocations++; valid = false }))
+            assertEquals(0, dispatched)
+            assertEquals("Expired pre-dispatch work must not revoke the account", 0, revocations)
+            assertTrue(valid)
+            assertFalse(lock.isLocked)
+            assertTrue(performAbemaAccountCheck(lock, 100, { 2_000 }, { valid },
+                dispatch = { _, _ -> dispatched++; AbemaAccountCheckCompletion(true, false) },
+                revoke = { revocations++; valid = false }))
+            assertEquals(1, dispatched)
+        }
+    }
+
+    @Test fun aDispatchedRefusalStillRevokesEvenWhenItsCallerWasInterrupted() {
+        val lock = ReentrantLock()
+        var valid = true
+        var revocations = 0
+        try {
+            assertFalse(performAbemaAccountCheck(lock, 100, { 1_000 }, { valid },
+                dispatch = { _, _ ->
+                    Thread.currentThread().interrupt()
+                    AbemaAccountCheckCompletion(accepted = false, interrupted = true)
+                }, revoke = { revocations++; valid = false }))
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertFalse(valid); assertEquals(1, revocations)
+            assertFalse(lock.isLocked)
+        } finally { Thread.interrupted() }
     }
 
     @Test fun falseMalformedOrMisboundRepliesRemainRefusedEvenAfterACanceledWaitDrains() {

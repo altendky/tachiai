@@ -38,8 +38,10 @@ internal class NativeMixedPair(
     // It is never a seek target or permission for an explicit Play operation.
     private data class BufferedContinuation(val side: NativeMixedSide, val member: NativePairMember,
         val heldClockMs: Long)
-    private data class MarkedTargetProof(val target: NativeAlignmentTarget, val member: NativePairMember)
-    private data class MarkedResumeProof(val targets: List<MarkedTargetProof>, val startedMs: Long)
+    private data class TimingTargetProof(val side: NativeMixedSide, val member: NativePairMember,
+        val targetClockMs: Long, val liveClock: Boolean, val toleranceMs: Long)
+    private data class TimingResumeProof(val targets: List<TimingTargetProof>, val startedMs: Long,
+        val targetLabel: String)
     private data class AlignmentPending(val targets: List<NativeAlignmentTarget>, val resume: Boolean,
         val startedMs: Long, val generation: Long, val continuation: BufferedContinuation?, val deltaMs: Long)
     private var alignmentPending: AlignmentPending? = null
@@ -510,7 +512,8 @@ internal class NativeMixedPair(
             }) return
             if (!admitted()) return
             val targetProblem = transaction.targets.firstNotNullOfOrNull { target ->
-                markedTargetProblem(target, values[target.side], allowBufferedExpired = transaction.resume)
+                timingTargetProblem(timingTargetProof(target), values[target.side],
+                    allowBufferedExpired = transaction.resume, label = "Marked target")
             }
             if (targetProblem != null) {
                 if (current()) { pause(); status = "$targetProblem; both paused." }
@@ -519,7 +522,7 @@ internal class NativeMixedPair(
             status = "All marked target clocks observed held; no frame/audio precision claim."
             if (transaction.resume) resumeTiming(transaction.generation, transaction.targets.associate { it.side to it.liveClock },
                 transaction.continuation, "Marked alignment", ::current,
-                MarkedResumeProof(transaction.targets.map { MarkedTargetProof(it, member(it.side)) }, transaction.startedMs))
+                TimingResumeProof(transaction.targets.map(::timingTargetProof), transaction.startedMs, "Marked target"))
             if (current()) { recordSettlement(transaction.deltaMs); alignmentPending = null; busy = false }
             return
         }
@@ -577,65 +580,70 @@ internal class NativeMixedPair(
             difference > transaction.settlementToleranceMs || !admitted()) return
         status = "Selected held target observed within ${transaction.settlementToleranceMs} ms; no frame/audio precision claim."
         if (transaction.resume) resumeTiming(transaction.generation, mapOf(transaction.side to transaction.liveClock),
-            transaction.continuation, "Timing", ::current)
+            transaction.continuation, "Timing", ::current,
+            TimingResumeProof(listOf(TimingTargetProof(transaction.side, member(transaction.side),
+                transaction.targetClockMs, transaction.liveClock, transaction.settlementToleranceMs)),
+                transaction.startedMs, "Timing target"))
         if (current()) { recordSettlement(transaction.deltaMs); pending = null; busy = false }
     }
 
-    private fun markedTargetProblem(target: NativeAlignmentTarget, value: NativeTimingSnapshot?,
-        allowBufferedExpired: Boolean): String? {
-        if (!heldReady(value) || value == null) return "Marked target is no longer held READY outside advertisements"
-        if ((value.live || value.dynamic) != target.liveClock) return "Marked target clock kind changed"
+    private fun timingTargetProof(target: NativeAlignmentTarget) = TimingTargetProof(target.side, member(target.side),
+        target.targetClockMs, target.liveClock, minOf(100L, kotlin.math.abs(target.movementMs) / 2))
+
+    private fun timingTargetProblem(target: TimingTargetProof, value: NativeTimingSnapshot?,
+        allowBufferedExpired: Boolean, label: String): String? {
+        if (target.member !== member(target.side)) return "$label session changed"
+        if (!heldReady(value) || value == null) return "$label is no longer held READY outside advertisements"
+        if ((value.live || value.dynamic) != target.liveClock) return "$label clock kind changed"
         val clock = if (target.liveClock) value.contentTimeMs else value.positionMs
         val difference = if (clock == null || clock < 0) null else try {
             Math.subtractExact(clock, target.targetClockMs)
         } catch (_: ArithmeticException) { null }
-        val tolerance = minOf(100L, kotlin.math.abs(target.movementMs) / 2)
-        if (difference == null || difference !in -tolerance..tolerance) return "Marked target clock moved after confirmation"
-        val position = value.positionMs ?: return "Marked target position is unavailable"
-        val duration = value.durationMs ?: return "Marked target playback window is unavailable"
-        if (duration <= 0) return "Marked target playback window is unavailable"
+        if (difference == null || difference !in -target.toleranceMs..target.toleranceMs) return "$label clock moved after confirmation"
+        val position = value.positionMs ?: return "$label position is unavailable"
+        val duration = value.durationMs ?: return "$label playback window is unavailable"
+        if (duration <= 0) return "$label playback window is unavailable"
         if (position in 0..duration) return null
         if (position < 0 && target.liveClock) {
-            if (!allowBufferedExpired) return "Marked target expired while playback was paused"
+            if (!allowBufferedExpired) return "$label expired while playback was paused"
             if (value.bufferedMs?.let { it > position } == true) return null
-            return "Marked target expired and its buffered continuation is unavailable"
+            return "$label expired and its buffered continuation is unavailable"
         }
-        return "Marked target is beyond its playback window"
+        return "$label is beyond its playback window"
     }
 
     private fun resumeTiming(expected: Long, targeted: Map<NativeMixedSide, Boolean>, continuation: BufferedContinuation?,
-        label: String, current: () -> Boolean, markedProof: MarkedResumeProof? = null) {
-        var markedFailure = "Marked alignment authorization changed"
+        label: String, current: () -> Boolean, targetProof: TimingResumeProof? = null) {
+        var targetFailure = "$label authorization changed"
         fun admitted(): Boolean {
             if (!current() || !timingAdmitted(expected) || !current()) {
-                markedFailure = "Marked alignment authorization changed"; return false
+                targetFailure = "$label authorization changed"; return false
             }
-            if (markedProof != null) {
-                val elapsed = try { Math.subtractExact(clockMs(), markedProof.startedMs) }
+            if (targetProof != null) {
+                val elapsed = try { Math.subtractExact(clockMs(), targetProof.startedMs) }
                     catch (_: ArithmeticException) { Long.MAX_VALUE }
                 if (elapsed < 0 || elapsed >= 8_000) {
-                    markedFailure = "Marked alignment resume timed out"; return false
+                    targetFailure = "$label resume timed out"; return false
                 }
             }
-            return markedProof == null || current() && timingAdmitted(expected) && current()
+            return targetProof == null || current() && timingAdmitted(expected) && current()
         }
         fun fail(default: String) {
             if (current()) {
                 val held = pause()
-                val cause = if (markedProof != null) markedFailure else default.removeSuffix("; both paused.")
+                val cause = if (targetProof != null) targetFailure else default.removeSuffix("; both paused.")
                 status = if (held) "$cause; both paused." else "$cause; pause refused; Stop required."
             }
         }
         fun playable(side: NativeMixedSide, value: NativeTimingSnapshot?): Boolean {
-            val proof = markedProof?.targets?.singleOrNull { it.target.side == side }
+            val proof = targetProof?.targets?.singleOrNull { it.side == side }
             if (proof != null) {
-                val problem = if (proof.member !== member(side)) "Marked target session changed"
-                    else markedTargetProblem(proof.target, value, allowBufferedExpired = true)
-                if (problem != null) { markedFailure = problem; return false }
+                val problem = timingTargetProblem(proof, value, allowBufferedExpired = true, label = targetProof.targetLabel)
+                if (problem != null) { targetFailure = problem; return false }
                 return true
             }
             if (!heldReady(value) || value == null) {
-                if (markedProof != null) markedFailure = "Marked alignment untouched feed is no longer held READY"
+                if (targetProof != null) targetFailure = "$label untouched feed is no longer held READY"
                 return false
             }
             val position = value.positionMs
@@ -644,12 +652,12 @@ internal class NativeMixedPair(
             val inWindow = position != null && duration != null && duration > 0 && position in 0..duration
             if (side in targeted) return targeted[side] == liveClock && inWindow
             if (continuation?.side == side && !liveClock) {
-                if (markedProof != null) markedFailure = "Marked alignment untouched feed clock kind changed"
+                if (targetProof != null) targetFailure = "$label untouched feed clock kind changed"
                 return false
             }
             if (!liveClock || inWindow) return true
             return canContinueBuffered(continuation, side, value).also {
-                if (!it) markedFailure = "Marked alignment untouched feed cannot continue its buffered point"
+                if (!it) targetFailure = "$label untouched feed cannot continue its buffered point"
             }
         }
         fun ready(): Boolean {
@@ -663,7 +671,7 @@ internal class NativeMixedPair(
         }
         val focused = try { acquireFocus() } catch (_: Exception) { false }
         if (!focused || !ready()) {
-            if (!focused) markedFailure = "Marked alignment audio focus denied"
+            if (!focused) targetFailure = "$label audio focus denied"
             fail("$label resume denied; both paused.")
             return
         }
@@ -674,7 +682,7 @@ internal class NativeMixedPair(
             val accepted = playing(member(side), true)
             if (!current()) return
             if (!accepted || !admitted()) {
-                if (!accepted) markedFailure = "Marked alignment playback request was refused"
+                if (!accepted) targetFailure = "$label playback request was refused"
                 fail("$label resume denied; both paused."); return
             }
         }

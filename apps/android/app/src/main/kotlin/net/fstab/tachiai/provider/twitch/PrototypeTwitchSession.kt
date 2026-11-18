@@ -106,17 +106,15 @@ internal class PrototypeTwitchSession(
     private val mediaEvents = TwitchNativeEventDispatcher(
         log = { event, code -> Log.d("TachiaiPrototypeTwitch", "event=${event.name} code=$code") },
         remember = ::remember, post = { action -> handler.post(action) },
-        current = { !closed.get() && active() }, deliver = { event, code ->
+        current = { !closed.get() && active() }, deliver = { event, _ ->
             when (event) {
                 NativeMediaEvent.READY -> onEvent(PrototypeFeedEvent.READY)
                 NativeMediaEvent.VIDEO_FRAME -> onEvent(PrototypeFeedEvent.VIDEO_FRAME)
-                NativeMediaEvent.PLAYER_FAILED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED,
-                    playerCode = code.takeIf { it in 1000..9999 }))
-                NativeMediaEvent.LIMIT_REACHED -> fail(PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT))
+                NativeMediaEvent.PLAYER_FAILED, NativeMediaEvent.LIMIT_REACHED -> fail()
                 NativeMediaEvent.STOPPED -> fail(PrototypeFeedFailure(PrototypeFailureReason.STOPPED))
                 else -> Unit
             }
-        })
+        }, rememberTerminal = ::rememberTerminal)
 
     override fun prepare(budget: NativePlaybackBudget) {
         check(started.compareAndSet(false, true))
@@ -264,9 +262,17 @@ internal class PrototypeTwitchSession(
         if (!closed.get() && active()) firstFailure.remember(value)
     }
 
-    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)) {
+    private fun rememberTerminal(value: PrototypeFeedFailure) {
+        if (!closed.get() && active()) firstFailure.rememberTerminalFailure(value)
+    }
+
+    private fun fail(value: PrototypeFeedFailure? = null) {
         if (closed.get() || !active()) return
-        remember(value)
+        // Completing a native failure must not invent a preparation refusal
+        // after its synchronous, typed terminal observation.
+        if (value == null) firstFailure.rememberFallbackIfEmpty(PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED))
+        else if (value.reason == PrototypeFailureReason.STOPPED) remember(value)
+        else rememberTerminal(value)
         close()
         onEvent(PrototypeFeedEvent.FAILED)
     }

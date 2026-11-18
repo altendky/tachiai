@@ -15,6 +15,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativeFailureDiagnosticsTest {
+    @Test fun `only bounded HTTP rejection status survives sanitized reprojection`() {
+        val original = NativeMediaRequestException(NativeMediaRequestFailure.HTTP_REJECTED, httpStatus = 503)
+        val projected = nativeMediaRequestException(original, NativeMediaOpenPhase.RESPONSE_POLICY)
+        assertEquals(503, projected.httpStatus)
+        assertNull(projected.cause)
+        for (status in listOf(0, 99, 600, Int.MAX_VALUE))
+            assertThrows(IllegalArgumentException::class.java) {
+                NativeMediaRequestException(NativeMediaRequestFailure.HTTP_REJECTED, httpStatus = status)
+            }
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeMediaRequestException(NativeMediaRequestFailure.REQUEST_ADMISSION_REFUSED, httpStatus = 503)
+        }
+    }
     @Test fun `sanitized media exception preserves closed transport detail through repeated projection`() {
         val safe = ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN, ProviderTransportPhase.RESPONSE,
             exceptionKind = ProviderTransportExceptionKind.EOF, operation = ProviderTransportOperation.RESPONSE_BODY,

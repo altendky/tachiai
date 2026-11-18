@@ -2,6 +2,7 @@ package net.fstab.tachiai.presentation
 
 import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
+import net.fstab.tachiai.platform.media.NativePlaybackHttpFailure
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
@@ -75,11 +76,18 @@ internal class FeedAutoRecoveryState {
             snapshot.suppressionReason == 0 && snapshot.errorCode == null
         if (!playing) {
             // A failure may expose IDLE/error before failed() is delivered.
-            // Retain only its recent exact-member playing observation. A held
-            // READY/ended player or an explicitly blocked observation retires it.
-            if (blocked || playingAd || member == null || snapshot?.state == 4 ||
-                snapshot?.let { it.errorCode == null && (it.state == 3 && !it.playing ||
-                    it.state in setOf(2, 3) && !it.playWhenReady) } == true) {
+            // Fresh buffering can maintain already-established playing intent,
+            // but cannot establish it or bridge an unobserved interval. Keep
+            // terminal IDLE/error delivery's existing short receipt window.
+            val buffering = member != null && fresh && snapshot != null && !blocked && !playingAd &&
+                snapshot.state == 2 && snapshot.playWhenReady && snapshot.suppressionReason == 0 &&
+                snapshot.errorCode == null
+            if (buffering && playedMember === member && playedAt?.let { nowMs - it in 0..RECENT_MS } == true) {
+                playedAt = nowMs
+            } else if (blocked || playingAd || member == null || snapshot == null || snapshot.state == 4 ||
+                snapshot.state == 2 && snapshot.errorCode == null ||
+                snapshot.errorCode == null && (snapshot.state == 3 && !snapshot.playing ||
+                    snapshot.state in setOf(2, 3) && !snapshot.playWhenReady)) {
                 playedMember = null; playedAt = null
             }
             resetObservation(); sampleMember = member
@@ -123,9 +131,28 @@ internal class FeedAutoRecoveryState {
         }
     }
 
+    private fun networkFailure(transport: NativePlaybackTransportFailure?): Boolean {
+        val recent = transport?.takeIf { it.ageMs in 0..RECENT_MS } ?: return false
+        val evidence = recent.evidence
+        return recent.stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) &&
+            (evidence.failure in setOf(ProviderTransportFailure.DNS, ProviderTransportFailure.CONNECT,
+                ProviderTransportFailure.TIMEOUT) || evidence.failure == ProviderTransportFailure.UNKNOWN &&
+                evidence.exceptionKind == ProviderTransportExceptionKind.IO)
+    }
+
+    private fun retryableHttpFailure(httpFailure: NativePlaybackHttpFailure?, live: Boolean): Boolean {
+        val recent = httpFailure?.takeIf { it.ageMs in 0..RECENT_MS } ?: return false
+        return recent.stage in setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) &&
+            (recent.status in setOf(408, 429) || recent.status in 500..599 || live && recent.status == 404)
+    }
+
+    private fun protectedHttpFailure(httpFailure: NativePlaybackHttpFailure?) =
+        httpFailure?.let { it.ageMs in 0..RECENT_MS && it.status in setOf(401, 403) } == true
+
     private fun eligible(failure: PrototypeFeedFailure, transport: NativePlaybackTransportFailure?,
-        live: Boolean, continuation: Boolean): Boolean {
+        live: Boolean, continuation: Boolean, httpFailure: NativePlaybackHttpFailure?): Boolean {
         if (failure.httpStatus in setOf(401, 403)) return false
+        if (protectedHttpFailure(httpFailure)) return false
         val recent = transport?.takeIf { it.ageMs in 0..RECENT_MS }
         val evidence = recent?.evidence
         if (evidence?.localCancellationRequested == true || evidence?.failure in
@@ -134,16 +161,13 @@ internal class FeedAutoRecoveryState {
                 ProviderTransportExceptionKind.TLS_PEER, ProviderTransportExceptionKind.TLS_OTHER,
                 ProviderTransportExceptionKind.INTERRUPTED_IO)) return false
         return when (failure.reason) {
-            PrototypeFailureReason.NETWORK_FAILED -> recent?.stage in
-                setOf(NativeFailureStage.MEDIA_REQUEST_OPEN, NativeFailureStage.MEDIA_REQUEST_READ) &&
-                (evidence?.failure in setOf(ProviderTransportFailure.DNS, ProviderTransportFailure.CONNECT,
-                    ProviderTransportFailure.TIMEOUT) || evidence?.failure == ProviderTransportFailure.UNKNOWN &&
-                    evidence.exceptionKind == ProviderTransportExceptionKind.IO)
+            PrototypeFailureReason.NETWORK_FAILED -> networkFailure(transport)
             PrototypeFailureReason.HTTP_REJECTED -> failure.httpStatus == 408 || failure.httpStatus == 429 ||
                 failure.httpStatus?.let { it in 500..599 } == true
             PrototypeFailureReason.MEDIA_NOT_FOUND, PrototypeFailureReason.LIVE_WINDOW_EXPIRED,
             PrototypeFailureReason.LIVE_POSITION_FAILED -> live
-            PrototypeFailureReason.PLAYER_FAILED -> live && failure.playerCode == 1002
+            PrototypeFailureReason.PLAYER_FAILED -> live && failure.playerCode == 1002 ||
+                failure.playerCode == 2000 && (networkFailure(transport) || retryableHttpFailure(httpFailure, live))
             PrototypeFailureReason.PREPARATION_TIMEOUT -> continuation
             else -> false
         }
@@ -151,14 +175,23 @@ internal class FeedAutoRecoveryState {
 
     fun failed(member: Any?, failure: PrototypeFeedFailure, transport: NativePlaybackTransportFailure?,
         live: Boolean, allowRecovery: Boolean, restoreOffset: Boolean, nowMs: Long,
-        authorizationRefreshSupported: Boolean = false): FeedAutoRecoveryDecision {
+        authorizationRefreshSupported: Boolean = false,
+        httpFailure: NativePlaybackHttpFailure? = null): FeedAutoRecoveryDecision {
         if (!time(nowMs)) return FeedAutoRecoveryDecision.SKIPPED
+        // A player failure and an HTTP/provider failure are separate evidence;
+        // mixed or misattributed numeric codes cannot grant retry authority.
+        if (failure.playerCode != null &&
+            (failure.reason != PrototypeFailureReason.PLAYER_FAILED || failure.httpStatus != null)) {
+            retire()
+            return FeedAutoRecoveryDecision.SKIPPED
+        }
         val continuation = (automaticAttemptActive || pending != null) && incidentRestoreOffset != null
         val played = member != null && playedMember === member && playedAt?.let { nowMs - it in 0..RECENT_MS } == true
         // A provider may expose an existing verified, non-interactive renewal
         // path. At most one check per incident; refusal is never retried in a loop.
         val recent = transport?.takeIf { it.ageMs in 0..RECENT_MS }?.evidence
-        val protectedRefusal = failure.httpStatus in setOf(401, 403) || recent?.localCancellationRequested == true ||
+        val protectedRefusal = failure.httpStatus in setOf(401, 403) || protectedHttpFailure(httpFailure) ||
+            recent?.localCancellationRequested == true ||
             recent?.failure in setOf(ProviderTransportFailure.TLS, ProviderTransportFailure.CANCELLED) ||
             recent?.exceptionKind in setOf(ProviderTransportExceptionKind.TLS_HANDSHAKE,
                 ProviderTransportExceptionKind.TLS_PEER, ProviderTransportExceptionKind.TLS_OTHER,
@@ -166,7 +199,7 @@ internal class FeedAutoRecoveryState {
         val refresh = authorizationRefreshSupported && !authorizationRefreshUsed && !protectedRefusal && failure.reason in setOf(
             PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE, PrototypeFailureReason.LOGIN_EXPIRED,
             PrototypeFailureReason.LOGIN_UNAVAILABLE)
-        if (!allowRecovery || !refresh && !eligible(failure, transport, live, continuation) || !continuation && !played) {
+        if (!allowRecovery || !refresh && !eligible(failure, transport, live, continuation, httpFailure) || !continuation && !played) {
             retire()
             return FeedAutoRecoveryDecision.SKIPPED
         }

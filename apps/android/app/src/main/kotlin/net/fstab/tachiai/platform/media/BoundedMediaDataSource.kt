@@ -48,10 +48,14 @@ internal class BoundedMediaRequests(
     transportObserver: NativeMediaTransportObserver? = null,
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
-    private val reported = Collections.newSetFromMap(ConcurrentHashMap<NativeMediaEvent, Boolean>())
+    private data class ReportedEvent(val event: NativeMediaEvent, val status: Int = 0)
+    private val reported = Collections.newSetFromMap(ConcurrentHashMap<ReportedEvent, Boolean>())
     private val transportDiagnostics = transportObserver?.let(::NativeMediaTransportDiagnostics)
     fun report(event: NativeMediaEvent, http: Int = 0) {
-        if (reported.add(event)) onEvent(event, http)
+        // A later authentication refusal must not be hidden by an earlier
+        // availability response. Other notifications retain per-event dedup.
+        val status = if (event == NativeMediaEvent.HTTP_REJECTED) http.takeIf { it in 100..599 } ?: 0 else 0
+        if (reported.add(ReportedEvent(event, status))) onEvent(event, http)
     }
     fun create(type: Int, mediaResponseLimitBytes: Long = 32 * 1024 * 1024L,
         allowIcyMetadata: Boolean = false): Source = Source(type, mediaResponseLimitBytes, allowIcyMetadata)
@@ -219,7 +223,8 @@ internal class BoundedMediaRequests(
                         checkActive()
                         onManifestRejection(status, body)
                     }
-                    throw NativeMediaRequestException(NativeMediaRequestFailure.HTTP_REJECTED)
+                    throw NativeMediaRequestException(NativeMediaRequestFailure.HTTP_REJECTED,
+                        httpStatus = status.takeIf { it in 100..599 })
                 }
                 if (position != 0L && status != 206) {
                     report(NativeMediaEvent.RANGE_NOT_HONORED, status)

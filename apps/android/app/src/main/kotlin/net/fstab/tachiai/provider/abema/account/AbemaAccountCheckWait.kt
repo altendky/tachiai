@@ -18,6 +18,39 @@ internal fun acquireAbemaAccountCheckLock(lock: ReentrantLock, timeoutMs: Long):
 }
 
 internal data class AbemaAccountCheckWait(val completed: Boolean, val interrupted: Boolean)
+internal data class AbemaAccountCheckCompletion(val accepted: Boolean, val interrupted: Boolean)
+
+// The Android client retains IPC dispatch, exact reply validation and lease
+// validity. This owns their serialized operation and cleanup boundary.
+internal fun performAbemaAccountCheck(
+    lock: ReentrantLock,
+    timeoutMs: Long,
+    nowMs: () -> Long,
+    current: () -> Boolean,
+    dispatch: (beganMs: Long, remainingMs: Long) -> AbemaAccountCheckCompletion,
+    revoke: () -> Unit,
+): Boolean {
+    val start = nowMs()
+    when (acquireAbemaAccountCheckLock(lock, timeoutMs)) {
+        AbemaAccountCheckLock.INTERRUPTED -> return false
+        AbemaAccountCheckLock.TIMED_OUT -> return false
+        AbemaAccountCheckLock.ACQUIRED -> Unit
+    }
+    try {
+        if (Thread.currentThread().isInterrupted) return false
+        val now = nowMs()
+        if (now < start) { revoke(); return false }
+        val left = timeoutMs - (now - start)
+        // Queueing can consume this caller's budget without creating a remote
+        // operation. Only dispatched uncertainty or lost validity owns revoke.
+        if (left <= 0) return false
+        if (!current()) { revoke(); return false }
+        val completion = dispatch(start, left)
+        val okay = completion.accepted && current()
+        if (!okay) revoke()
+        return okay && !completion.interrupted && !Thread.currentThread().isInterrupted
+    } finally { lock.unlock() }
+}
 
 internal fun abemaAccountCheckAccepted(fields: Map<String, Any>?, request: AbemaAccountAccessIpc.Request): Boolean {
     val sequence = fields?.get("sequence") as? Long ?: return false

@@ -32,11 +32,11 @@ internal enum class PrototypeFailureReason(val message: String) {
 
 // Loader callbacks and main-thread teardown may report the same failure.
 // Preserve its first cause through later request/player/cleanup notifications.
-// An explicit terminal live-window error can supersede a bare transient network
+// An explicit terminal failure can supersede a bare transient network
 // observation, but must never hide a more specific refusal observed around it.
 internal class PrototypeFeedFailureLatch {
     private data class State(val first: PrototypeFeedFailure? = null,
-        val terminalPlayer: PrototypeFeedFailure? = null, val specific: PrototypeFeedFailure? = null)
+        val terminal: PrototypeFeedFailure? = null, val specific: PrototypeFeedFailure? = null)
     private val state = AtomicReference(State())
     private fun bareNetwork(value: PrototypeFeedFailure?) = value?.reason == PrototypeFailureReason.NETWORK_FAILED &&
         value.httpStatus == null && value.playerCode == null
@@ -54,10 +54,17 @@ internal class PrototypeFeedFailureLatch {
             else -> true
         }
     }
+    private fun authorizationRefresh(value: PrototypeFeedFailure) = value.httpStatus == null && value.playerCode == null &&
+        value.reason in setOf(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE, PrototypeFailureReason.LOGIN_EXPIRED,
+            PrototypeFailureReason.LOGIN_UNAVAILABLE)
+    private fun specific(previous: PrototypeFeedFailure?, value: PrototypeFeedFailure): PrototypeFeedFailure =
+        if (previous == null || authorizationRefresh(previous) && !authorizationRefresh(value)) value else previous
+    private fun terminalAttributable(value: PrototypeFeedFailure) = value.reason != PrototypeFailureReason.PLAYER_FAILED ||
+        value.playerCode == 1002
     val failure: PrototypeFeedFailure? get() {
         val value = state.get()
-        return if (bareNetwork(value.first) && value.terminalPlayer?.playerCode == 1002)
-            value.specific ?: value.terminalPlayer else value.first
+        return if (bareNetwork(value.first) && value.terminal != null)
+            value.specific ?: value.terminal.takeIf(::terminalAttributable) ?: value.first else value.first
     }
     fun remember(value: PrototypeFeedFailure) {
         state.updateAndGet { previous -> when {
@@ -65,18 +72,25 @@ internal class PrototypeFeedFailureLatch {
             // Retryable availability observations cannot become stale recovery
             // authority or outrank a later authentication/policy refusal.
             bareNetwork(previous.first) && blocksTerminalRecovery(value) &&
-                value != previous.terminalPlayer &&
+                value != previous.terminal &&
                 // Internal player teardown emits STOPPED after PLAYER_FAILED.
-                !(value.reason == PrototypeFailureReason.STOPPED && previous.terminalPlayer?.playerCode == 1002) ->
-                previous.copy(specific = previous.specific ?: value)
+                !(value.reason == PrototypeFailureReason.STOPPED && previous.terminal?.let(::terminalAttributable) == true) ->
+                previous.copy(specific = specific(previous.specific, value))
             else -> previous
         } }
     }
     fun rememberPlayerFailure(code: Int?) {
         val value = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = code)
+        rememberTerminalFailure(value)
+    }
+    fun rememberTerminalFailure(value: PrototypeFeedFailure) {
         state.updateAndGet { previous -> when {
             previous.first == null -> previous.copy(first = value)
-            bareNetwork(previous.first) && previous.terminalPlayer == null -> previous.copy(terminalPlayer = value)
+            bareNetwork(previous.first) && previous.terminal == null -> previous.copy(terminal = value,
+                specific = if (terminalAttributable(value) && blocksTerminalRecovery(value)) specific(previous.specific, value)
+                    else previous.specific)
+            bareNetwork(previous.first) && blocksTerminalRecovery(value) && value != previous.terminal ->
+                previous.copy(specific = specific(previous.specific, value))
             else -> previous
         } }
     }

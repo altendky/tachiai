@@ -357,6 +357,41 @@ It was installed in place on the same SHIELD at 01:51 UTC; the installed hash
 matched and Tachiai reopened, preserving app data. A repeated live one-second
 adjustment on this build is still awaiting user verification.
 
+## Terminal admission attribution — 2026-11-18
+
+The ordinary recovery build with APK SHA-256
+`44959296f8b2edc27c3db7071a134beb3a565320227fa406bdf89a7c3a8403bb`
+was installed in place on the same physical SHIELD (Android 11/API 30,
+WebView 157.0.8103.50), preserving configured accounts and routes. Both live
+feeds progressed after startup and a timing adjustment. At 03:46:25 UTC, ABEMA
+was retired while its final native snapshot still reported READY, playing,
+no player error and advancing rendered frames. The exposed failure was again
+an earlier bare network observation; no fresh native player-error record was
+present. Region and account validity were not independently inspected. This
+does not establish another behind-live-window error or identify the actual
+account, source, entitlement or route refusal.
+
+The terminal-facing ABEMA continuation check now records its first closed
+bootstrap-refusal category at `CACHED_ABEMA_SOURCE_PREPARE`, evaluating the
+existing admission predicates once. Closed and superseded owners are excluded;
+an inactive owner at this public boundary is recorded because it may indicate
+revoked startup admission. Background admission checks retain their existing behavior.
+Account checks, explicit terminal preparation failures and native DRM/limit
+failures now use terminal attribution as well: an older bare network observation
+cannot hide that current refusal. Specific HTTP, license, policy and cleanup
+refusals retain precedence over conditional account refresh, and consequential
+native STOPPED notifications do not replace the terminal cause. Existing retry
+eligibility, verified account refresh, entitlement and cleanup checks remain
+authoritative. The WebView SSL-error callback also records a closed TLS category
+without retaining the error or URL. The new account-attribution regression failed before the fix.
+The corrected build passed 2,823 JVM cases (zero failures/errors, one opt-in
+skip), lint, Android test-source compilation and scoped repository checks. Its
+debug certificate matched the shared identity. APK SHA-256
+`311e849d0872b1d9c33ce49f55e4a1602ac1dc8a85346c5bae59751a812ee569`
+was installed in place on the same SHIELD at 04:08 UTC and verified against the
+installed package; the ordinary launcher reopened. Post-fix device recovery and
+the cause of the 03:46 stop remain unverified.
+
 ## Terminal live-window recovery attribution — 2026-11-18
 
 On that installed SHIELD build, health records at 03:02:53–55 UTC showed both

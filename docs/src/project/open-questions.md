@@ -102,6 +102,10 @@
 
 ## ABEMA
 
+- Which [terminal admission or native refusal](failure-diagnostics.md#terminal-admission-attribution--2026-11-18)
+  stopped the SHIELD's ABEMA feed at 03:46:25 UTC despite a final READY/playing
+  snapshot without a player error? The old network observation masked this
+  stop too; the new closed refusal diagnostic still needs a device observation.
 - Does corrected [terminal live-window attribution](failure-diagnostics.md#terminal-live-window-recovery-attribution--2026-11-18)
   let the existing bounded recovery restore the SHIELD feed after player error
   1002? Its previous build resumed both feeds after timing but then hid that

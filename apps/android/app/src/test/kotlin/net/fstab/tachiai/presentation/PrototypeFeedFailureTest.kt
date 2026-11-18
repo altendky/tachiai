@@ -16,6 +16,124 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrototypeFeedFailureTest {
+    @Test fun `current terminal account failure supersedes an earlier bare network observation`() {
+        val latch = PrototypeFeedFailureLatch()
+        val account = PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
+        latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+        latch.rememberTerminalFailure(account)
+        assertEquals(account, latch.failure)
+    }
+
+    @Test fun `each verified-refresh terminal reason supersedes only the old bare network observation`() {
+        val network = PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED)
+        for (account in refreshFailures()) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(network)
+            latch.remember(account)
+            assertEquals(network, latch.failure) // An observation alone is not a terminal receipt.
+            latch.rememberTerminalFailure(account)
+            assertEquals(account, latch.failure)
+            latch.remember(network)
+            assertEquals(account, latch.failure)
+        }
+    }
+
+    @Test fun `hard refusal around account terminal cannot become verified refresh authority`() {
+        for (account in refreshFailures()) for (hard in hardRefusals()) for (before in listOf(false, true)) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            latch.remember(account) // A duplicate weak observation cannot pin priority.
+            if (before) latch.remember(hard)
+            latch.rememberTerminalFailure(account)
+            if (!before) latch.remember(hard)
+            assertEquals(hard, latch.failure)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport(),
+                authorizationRefreshSupported = true))
+        }
+    }
+
+    @Test fun `native license and playback limit terminals replace stale network without granting recovery`() {
+        for (reason in listOf(PrototypeFailureReason.LICENSE_FAILED, PrototypeFailureReason.PLAYBACK_LIMIT)) {
+            val latch = PrototypeFeedFailureLatch()
+            val terminal = PrototypeFeedFailure(reason)
+            latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            latch.rememberTerminalFailure(terminal)
+            assertEquals(terminal, latch.failure)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport(),
+                authorizationRefreshSupported = true))
+        }
+    }
+
+    @Test fun `first equally hard refusal wins across generic and explicit terminal channels`() {
+        val license = PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED)
+        val denied = PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 403)
+        for ((first, second) in listOf(license to denied, denied to license)) {
+            for (terminalFirst in listOf(false, true)) {
+                val latch = PrototypeFeedFailureLatch()
+                latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+                if (terminalFirst) {
+                    latch.rememberTerminalFailure(first)
+                    latch.remember(second)
+                } else {
+                    latch.remember(first)
+                    latch.rememberTerminalFailure(second)
+                }
+                assertEquals(first, latch.failure)
+            }
+        }
+    }
+
+    @Test fun `generic cleanup stop is consequential only after an attributable terminal receipt`() {
+        val stopped = PrototypeFeedFailure(PrototypeFailureReason.STOPPED)
+        val terminals = refreshFailures() + listOf(
+            PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED),
+            PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT))
+        for (terminal in terminals) for (before in listOf(false, true)) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            if (before) latch.remember(stopped)
+            latch.rememberTerminalFailure(terminal)
+            if (!before) latch.remember(stopped)
+            assertEquals(if (before) stopped else terminal, latch.failure)
+        }
+        for (account in refreshFailures()) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            latch.rememberTerminalFailure(account)
+            latch.rememberTerminalFailure(stopped) // Explicit refusal is not cleanup noise.
+            assertEquals(stopped, latch.failure)
+        }
+    }
+
+    @Test fun `account terminal with stale transport requires verified refresh and exact playing ownership`() {
+        for (account in refreshFailures()) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            latch.rememberTerminalFailure(account)
+            val failure = checkNotNull(latch.failure)
+            val stale = transport(ageMs = 320_228)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(failure, stale))
+            assertEquals(FeedAutoRecoveryDecision.SCHEDULED, recover(failure, stale,
+                authorizationRefreshSupported = true))
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(failure, stale, observedPlaying = false,
+                authorizationRefreshSupported = true))
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(failure, stale, sameMember = false,
+                authorizationRefreshSupported = true))
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(failure, stale, allowed = false,
+                authorizationRefreshSupported = true))
+            for (evidence in listOf(
+                ProviderTransportEvidence(ProviderTransportFailure.TLS),
+                ProviderTransportEvidence(ProviderTransportFailure.CANCELLED),
+                ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN, localCancellationRequested = true),
+                ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN,
+                    exceptionKind = ProviderTransportExceptionKind.INTERRUPTED_IO))) {
+                assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(failure,
+                    NativePlaybackTransportFailure(NativeFailureStage.MEDIA_REQUEST_OPEN, 0, evidence),
+                    authorizationRefreshSupported = true))
+            }
+        }
+    }
+
     @Test fun `fresh behind-live player failure supersedes an earlier bare network failure`() {
         val latch = PrototypeFeedFailureLatch()
         latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
@@ -201,6 +319,9 @@ class PrototypeFeedFailureTest {
         }
     }
 
+    private fun refreshFailures() = listOf(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE,
+        PrototypeFailureReason.LOGIN_EXPIRED, PrototypeFailureReason.LOGIN_UNAVAILABLE).map { PrototypeFeedFailure(it) }
+
     private fun hardRefusals() = listOf(
         PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 401),
         PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 403),
@@ -227,12 +348,12 @@ class PrototypeFeedFailureTest {
 
     private fun recover(failure: PrototypeFeedFailure, transport: NativePlaybackTransportFailure?,
         observedPlaying: Boolean = true, sameMember: Boolean = true, live: Boolean = true,
-        allowed: Boolean = true): FeedAutoRecoveryDecision {
+        allowed: Boolean = true, authorizationRefreshSupported: Boolean = false): FeedAutoRecoveryDecision {
         val state = FeedAutoRecoveryState(); val member = Any()
         if (observedPlaying) state.observe(member, NativePlaybackDiagnosticSnapshot(1_000, 0, false, true,
             true, 3, 0, null, 20_000, true, 30, 0, 1, 0, null, null, null), 1_000)
         return state.failed(if (sameMember) member else Any(), failure, transport, live, allowed,
-            restoreOffset = true, nowMs = 1_100)
+            restoreOffset = true, nowMs = 1_100, authorizationRefreshSupported = authorizationRefreshSupported)
     }
 
     @Test fun `catalog access failures direct users to the shared Twitch account`() {

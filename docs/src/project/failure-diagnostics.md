@@ -357,6 +357,45 @@ It was installed in place on the same SHIELD at 01:51 UTC; the installed hash
 matched and Tachiai reopened, preserving app data. A repeated live one-second
 adjustment on this build is still awaiting user verification.
 
+## Terminal live-window recovery attribution — 2026-11-18
+
+On that installed SHIELD build, health records at 03:02:53–55 UTC showed both
+live feeds resuming and progressing after another timing transaction, including
+buffered playback behind the advertised window. At 03:03:24–25 UTC ABEMA then
+reported native player error 1002 and released its player. The feed exposed an
+older generic network failure instead, with transport evidence 320,228 ms old;
+the recovery scheduler correctly refused that stale network evidence. This was
+later than the successful joint resume, not the earlier unconfirmed-seek freeze.
+
+A regression reproduced the attribution bug: the first-only session latch hid
+the current native live-window error behind a transient request failure. Explicit
+current player failure 1002 can now supersede only an earlier bare network
+observation. Specific authorization, policy, licence, cleanup and other hard
+refusals observed before or after it retain precedence. Retryable availability
+observations do not become stale retry authority; unknown terminal codes cannot
+be replaced by a later 1002. Consequential player teardown's Stop event and the
+default failure-finishing path do not invent a new preparation refusal.
+
+The existing live/recent-exact-member recovery policy, retry bounds and owned
+cleanup/source preparation remain in force. Mixed or misattributed player/HTTP
+metadata is refused rather than granting retry authority. Original network
+observations remain in the failure journal. Post-fix physical recovery remains
+unverified.
+
+Verification passed 2,816 JVM cases with zero failures/errors and one opt-in skip,
+lint, debug assembly and Android test-source compilation. The stale-network/fresh
+1002 regression failed before the attribution fix and passed afterward. Tests
+retain hard-refusal precedence through mixed availability outcomes and concurrent
+updates, the live/recent-member retry gates, and cleanup-event ordering. The shared
+debug certificate matched; APK SHA-256 is
+`44959296f8b2edc27c3db7071a134beb3a565320227fa406bdf89a7c3a8403bb`.
+It was installed in place on the same SHIELD at 03:31 UTC, with matching installed
+hash and ordinary Tachiai foreground. App data was preserved. Recovery from a
+fresh native 1002 on this build still needs device observation.
+At 03:32:24–25 UTC, both feeds were playing with progressing renderer counters
+and no player error. This establishes a fresh successful start, not recovery
+from a repeated live-window failure.
+
 ## Cached ABEMA helper evidence
 
 Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first

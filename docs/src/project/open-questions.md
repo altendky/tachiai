@@ -102,6 +102,11 @@
 
 ## ABEMA
 
+- Does corrected [terminal live-window attribution](failure-diagnostics.md#terminal-live-window-recovery-attribution--2026-11-18)
+  let the existing bounded recovery restore the SHIELD feed after player error
+  1002? Its previous build resumed both feeds after timing but then hid that
+  terminal error behind an older generic network failure; post-fix device
+  recovery still needs verification.
 - Did a canceled loader's protected ownership read cause the SHIELD's
   2026-11-18 selection/account-unavailable failure? The
   [file-lock regression](failure-diagnostics.md#interrupted-abema-ownership-reads--2026-11-18)

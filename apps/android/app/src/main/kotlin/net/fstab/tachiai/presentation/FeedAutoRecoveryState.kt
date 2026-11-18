@@ -153,6 +153,13 @@ internal class FeedAutoRecoveryState {
         live: Boolean, allowRecovery: Boolean, restoreOffset: Boolean, nowMs: Long,
         authorizationRefreshSupported: Boolean = false): FeedAutoRecoveryDecision {
         if (!time(nowMs)) return FeedAutoRecoveryDecision.SKIPPED
+        // A player failure and an HTTP/provider failure are separate evidence;
+        // mixed or misattributed numeric codes cannot grant retry authority.
+        if (failure.playerCode != null &&
+            (failure.reason != PrototypeFailureReason.PLAYER_FAILED || failure.httpStatus != null)) {
+            retire()
+            return FeedAutoRecoveryDecision.SKIPPED
+        }
         val continuation = (automaticAttemptActive || pending != null) && incidentRestoreOffset != null
         val played = member != null && playedMember === member && playedAt?.let { nowMs - it in 0..RECENT_MS } == true
         // A provider may expose an existing verified, non-interactive renewal

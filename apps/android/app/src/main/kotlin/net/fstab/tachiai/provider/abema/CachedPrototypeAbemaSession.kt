@@ -1023,24 +1023,33 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun rememberNative(event: NativeDashEvent, code: Int) {
+        if (event == NativeDashEvent.PLAYER_FAILED) {
+            if (!closed.get() && active()) firstFailure.rememberPlayerFailure(code.takeIf { it in 1000..9999 })
+            return
+        }
         val reason = when (event) {
             NativeDashEvent.DRM_REFUSED, NativeDashEvent.DRM_FAILED, NativeDashEvent.DRM_PREWARM_FAILED -> PrototypeFailureReason.LICENSE_FAILED
-            NativeDashEvent.PLAYER_FAILED -> PrototypeFailureReason.PLAYER_FAILED
             NativeDashEvent.LIMIT_REACHED -> PrototypeFailureReason.PLAYBACK_LIMIT
             NativeDashEvent.STOPPED -> PrototypeFailureReason.STOPPED
             else -> return
         }
-        remember(PrototypeFeedFailure(reason, playerCode = if (event == NativeDashEvent.PLAYER_FAILED)
-            code.takeIf { it in 1000..9999 } else null))
+        remember(PrototypeFeedFailure(reason))
     }
 
-    private fun fail(value: PrototypeFeedFailure = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED),
+    private fun fail(value: PrototypeFeedFailure? = null,
         readinessDeadline: Boolean = false, admissionLost: Boolean = false) {
-        val observed = if (networkReviewNeeded.get()) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED) else value
+        val prior = failure
+        val reviewNeeded = networkReviewNeeded.get()
+        val observed = if (reviewNeeded) PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED)
+            else value ?: prior ?: PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)
         // A current native readiness callback owns its STOPPED result even
         // after active admission is lost. Request/teardown callbacks keep
         // their existing active guard; an earlier cause always wins.
-        if (admissionLost && !closed.get()) firstFailure.remember(observed) else remember(observed)
+        // A default failure finishes the already observed cause; it does not
+        // invent a second preparation refusal after a terminal player event.
+        if (value != null || prior == null || reviewNeeded) {
+            if (admissionLost && !closed.get()) firstFailure.remember(observed) else remember(observed)
+        }
         // The existing atomic latch decides the first cause. A concurrent
         // unrelated failure cannot acquire this native deadline marker.
         if (readinessDeadline && observed.reason == PrototypeFailureReason.PREPARATION_TIMEOUT && failure === observed)

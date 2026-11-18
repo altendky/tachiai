@@ -15,7 +15,7 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
             null, 1000, 1001, 1003, 2000, 2001, 2002 -> FeedRecoveryAction.RETRY
             else -> null
         }
-        PrototypeFailureReason.NETWORK_FAILED, PrototypeFailureReason.PREPARATION_TIMEOUT,
+        PrototypeFailureReason.NETWORK_FAILED, PrototypeFailureReason.NETWORK_SECURITY_FAILED, PrototypeFailureReason.PREPARATION_TIMEOUT,
         PrototypeFailureReason.LIVE_POSITION_FAILED, PrototypeFailureReason.MEDIA_NOT_FOUND,
         PrototypeFailureReason.CATALOG_RATE_LIMITED -> FeedRecoveryAction.RETRY
         PrototypeFailureReason.HTTP_REJECTED -> FeedRecoveryAction.RETRY.takeIf {

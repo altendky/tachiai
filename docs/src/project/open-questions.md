@@ -102,6 +102,10 @@
 
 ## ABEMA
 
+- Do the [reliability review fixes](failure-diagnostics.md#playback-reliability-review--2026-11-18)
+  reduce real playback interruptions and improve recovery under sustained
+  ABEMA/Twitch use? Regressions reproduce the code defects; they do not identify
+  every previous device outage or establish long-running playback acceptance.
 - Which [terminal admission or native refusal](failure-diagnostics.md#terminal-admission-attribution--2026-11-18)
   stopped the SHIELD's ABEMA feed at 03:46:25 UTC despite a final READY/playing
   snapshot without a player error? The old network observation masked this

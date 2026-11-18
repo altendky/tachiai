@@ -40,13 +40,21 @@ internal class AbemaSlotAuthorityReceipt private constructor(
 
     // RAM/clock only: safe for native presentation admission and the main
     // monitor. A lost scope or clock rollback permanently ends authority.
+    fun current(expected: AbemaSlotAuthorityScope, wallMs: () -> Long, elapsedMs: () -> Long): Boolean = synchronized(lock) {
+        currentLocked(expected, wallMs(), elapsedMs())
+    }
+
     fun current(expected: AbemaSlotAuthorityScope, wall: Long, elapsed: Long): Boolean = synchronized(lock) {
+        currentLocked(expected, wall, elapsed)
+    }
+
+    private fun currentLocked(expected: AbemaSlotAuthorityScope, wall: Long, elapsed: Long): Boolean {
         val okay = !refused && expected === scope && wall >= minimumWall && elapsed >= minimumElapsed &&
             wall < expiresAtMs && elapsed < scope.playbackDeadline
         if (!okay) refused = true
         minimumWall = maxOf(minimumWall, wall)
         minimumElapsed = maxOf(minimumElapsed, elapsed)
-        okay
+        return okay
     }
     override fun toString() = "AbemaSlotAuthorityReceipt(redacted)"
 }

@@ -16,6 +16,78 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrototypeFeedFailureTest {
+    @Test fun `fallback only fills an empty latch and never overwrites a concurrently recorded cause`() {
+        val fallback = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)
+        val empty = PrototypeFeedFailureLatch()
+        empty.rememberFallbackIfEmpty(fallback)
+        assertEquals(fallback, empty.failure)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            repeat(50) {
+                val latch = PrototypeFeedFailureLatch()
+                latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+                val start = CountDownLatch(1)
+                val terminal = executor.submit { check(start.await(3, TimeUnit.SECONDS)); latch.rememberPlayerFailure(1002) }
+                val completion = executor.submit { check(start.await(3, TimeUnit.SECONDS)); latch.rememberFallbackIfEmpty(fallback) }
+                start.countDown()
+                terminal.get(3, TimeUnit.SECONDS); completion.get(3, TimeUnit.SECONDS)
+                assertEquals(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 1002), latch.failure)
+            }
+        } finally {
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun `unknown terminal player failure cannot inherit transient network retry authority`() {
+        val latch = PrototypeFeedFailureLatch()
+        val terminal = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 6001)
+        latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+        latch.rememberPlayerFailure(6001)
+        assertEquals(terminal, latch.failure)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport()))
+    }
+
+    @Test fun `old retryable HTTP response cannot hide a terminal license refusal`() {
+        val latch = PrototypeFeedFailureLatch()
+        val license = PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED)
+        latch.remember(PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 503))
+        latch.rememberTerminalFailure(license)
+        assertEquals(license, latch.failure)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport()))
+    }
+
+    @Test fun `first terminal account failure cannot mask a later license refusal`() {
+        val latch = PrototypeFeedFailureLatch()
+        val license = PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED)
+        latch.rememberTerminalFailure(PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+        latch.rememberTerminalFailure(license)
+        assertEquals(license, latch.failure)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport(),
+            authorizationRefreshSupported = true))
+    }
+
+    @Test fun `all earlier availability failures yield to a current hard terminal refusal`() {
+        for (earlier in softAvailability()) for (hard in hardRefusals()) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.remember(earlier)
+            latch.rememberTerminalFailure(hard)
+            assertEquals(hard, latch.failure)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport()))
+        }
+    }
+
+    @Test fun `terminal TLS refusal cannot inherit fresh IO retry authority`() {
+        val latch = PrototypeFeedFailureLatch()
+        val tls = PrototypeFeedFailure(PrototypeFailureReason.NETWORK_SECURITY_FAILED)
+        latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+        latch.rememberTerminalFailure(tls)
+        assertEquals(tls, latch.failure)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport(),
+            authorizationRefreshSupported = true))
+        assertEquals(FeedRecoveryAction.RETRY, tls.recoveryAction())
+    }
+
     @Test fun `current terminal account failure supersedes an earlier bare network observation`() {
         val latch = PrototypeFeedFailureLatch()
         val account = PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
@@ -142,7 +214,8 @@ class PrototypeFeedFailureTest {
     }
 
     @Test fun `first specific reason HTTP metadata or known player code always survives a later behind-live error`() {
-        val initialFailures = PrototypeFailureReason.entries.filter { it != PrototypeFailureReason.NETWORK_FAILED }
+        val initialFailures = PrototypeFailureReason.entries.filter { it !in setOf(PrototypeFailureReason.NETWORK_FAILED,
+            PrototypeFailureReason.MEDIA_NOT_FOUND, PrototypeFailureReason.LIVE_WINDOW_EXPIRED, PrototypeFailureReason.LIVE_POSITION_FAILED) }
             .map { PrototypeFeedFailure(it) } + listOf(
                 PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED, httpStatus = 401),
                 PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED, httpStatus = 403),
@@ -247,7 +320,7 @@ class PrototypeFeedFailureTest {
         }
     }
 
-    @Test fun `generic remember and a first unknown terminal code cannot authorize a later behind-live promotion`() {
+    @Test fun `generic observation cannot promote and an unknown terminal code cannot acquire behind-live retry authority`() {
         val network = PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED)
         val generic = PrototypeFeedFailureLatch()
         generic.remember(network)
@@ -258,7 +331,7 @@ class PrototypeFeedFailureTest {
             latch.remember(network)
             latch.rememberPlayerFailure(code)
             latch.rememberPlayerFailure(1002)
-            assertEquals(network, latch.failure)
+            assertEquals(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = code), latch.failure)
             val empty = PrototypeFeedFailureLatch()
             empty.rememberPlayerFailure(code)
             assertEquals(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = code), empty.failure)
@@ -326,6 +399,7 @@ class PrototypeFeedFailureTest {
         PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 401),
         PrototypeFeedFailure(PrototypeFailureReason.HTTP_REJECTED, httpStatus = 403),
         PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED),
+        PrototypeFeedFailure(PrototypeFailureReason.NETWORK_SECURITY_FAILED),
         PrototypeFeedFailure(PrototypeFailureReason.MEDIA_BLOCKED),
         PrototypeFeedFailure(PrototypeFailureReason.MEDIA_APPROVAL_REQUIRED),
         PrototypeFeedFailure(PrototypeFailureReason.CLEANUP_FAILED),

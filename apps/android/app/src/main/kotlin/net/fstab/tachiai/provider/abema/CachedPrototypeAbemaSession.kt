@@ -287,7 +287,7 @@ internal class CachedPrototypeAbemaSession(
         return scope.client === accountClient.get() && scope.run == run && slotResource != null &&
             scope.instanceId == ownership?.instanceId && scope.ownerProof == ownership.ownerProof &&
             scope.channelId == slotChannelId && scope.slotId == slotId && scope.playbackDeadline == deadline &&
-            receipt.current(scope, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+            receipt.current(scope, System::currentTimeMillis, SystemClock::elapsedRealtime)
     }
     private fun openConnection(url: URL): HttpsURLConnection {
         workerRefusal()?.let { refusal ->
@@ -439,7 +439,7 @@ internal class CachedPrototypeAbemaSession(
             override fun onReceivedSslError(view: WebView, ssl: SslErrorHandler, error: SslError) {
                 ssl.cancel()
                 if (!closed.get()) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, FailureCategory.TRANSPORT_TLS)
-                fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+                fail(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_SECURITY_FAILED))
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 if (!closed.get()) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_RENDERER_GONE,
@@ -1081,7 +1081,10 @@ internal class CachedPrototypeAbemaSession(
         // A default failure finishes the already observed cause; it does not
         // invent a second preparation refusal after a terminal player event.
         if (value != null || prior == null || reviewNeeded) {
-            if (!closed.get() && (admissionLost || active())) firstFailure.rememberTerminalFailure(observed)
+            if (!closed.get() && (admissionLost || active())) {
+                if (value == null && !reviewNeeded) firstFailure.rememberFallbackIfEmpty(observed)
+                else firstFailure.rememberTerminalFailure(observed)
+            }
         }
         // The existing atomic latch decides the first cause. A concurrent
         // unrelated failure cannot acquire this native deadline marker.

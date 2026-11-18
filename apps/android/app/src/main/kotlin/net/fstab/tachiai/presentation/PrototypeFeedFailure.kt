@@ -14,6 +14,7 @@ internal enum class PrototypeFailureReason(val message: String) {
     MEDIA_NOT_FOUND("The stream could not be found. A live channel may be offline."),
     HTTP_REJECTED("The provider rejected a playback request."),
     NETWORK_FAILED("A playback network request failed. Check your connection."),
+    NETWORK_SECURITY_FAILED("A secure playback connection could not be established."),
     ROUTE_FAILED("The selected route could not be prepared. No System-network fallback was used."),
     MEDIA_BLOCKED("A media destination was blocked by this prototype's network policy."),
     MEDIA_APPROVAL_REQUIRED("A new media destination is blocked pending approval."),
@@ -32,7 +33,7 @@ internal enum class PrototypeFailureReason(val message: String) {
 
 // Loader callbacks and main-thread teardown may report the same failure.
 // Preserve its first cause through later request/player/cleanup notifications.
-// An explicit terminal failure can supersede a bare transient network
+// An explicit terminal failure can supersede an earlier retryable observation
 // observation, but must never hide a more specific refusal observed around it.
 internal class PrototypeFeedFailureLatch {
     private data class State(val first: PrototypeFeedFailure? = null,
@@ -54,27 +55,33 @@ internal class PrototypeFeedFailureLatch {
             else -> true
         }
     }
-    private fun authorizationRefresh(value: PrototypeFeedFailure) = value.httpStatus == null && value.playerCode == null &&
+    private fun conditionalRecovery(value: PrototypeFeedFailure) = value.httpStatus == null && value.playerCode == null &&
         value.reason in setOf(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE, PrototypeFailureReason.LOGIN_EXPIRED,
-            PrototypeFailureReason.LOGIN_UNAVAILABLE)
+            PrototypeFailureReason.LOGIN_UNAVAILABLE, PrototypeFailureReason.PREPARATION_TIMEOUT)
+    private fun replaceable(value: PrototypeFeedFailure?) = value != null &&
+        (!blocksTerminalRecovery(value) || conditionalRecovery(value))
     private fun specific(previous: PrototypeFeedFailure?, value: PrototypeFeedFailure): PrototypeFeedFailure =
-        if (previous == null || authorizationRefresh(previous) && !authorizationRefresh(value)) value else previous
-    private fun terminalAttributable(value: PrototypeFeedFailure) = value.reason != PrototypeFailureReason.PLAYER_FAILED ||
-        value.playerCode == 1002
+        if (previous == null || priority(value) > priority(previous)) value else previous
+    private fun priority(value: PrototypeFeedFailure) = when {
+        !conditionalRecovery(value) -> 3
+        value.reason == PrototypeFailureReason.PREPARATION_TIMEOUT -> 2
+        else -> 1
+    }
     val failure: PrototypeFeedFailure? get() {
         val value = state.get()
-        return if (bareNetwork(value.first) && value.terminal != null)
-            value.specific ?: value.terminal.takeIf(::terminalAttributable) ?: value.first else value.first
+        return if (replaceable(value.first) && value.terminal != null)
+            value.specific ?: value.terminal else value.first
     }
     fun remember(value: PrototypeFeedFailure) {
         state.updateAndGet { previous -> when {
-            previous.first == null -> previous.copy(first = value)
+            previous.first == null -> previous.copy(first = value,
+                specific = value.takeIf(::blocksTerminalRecovery))
             // Retryable availability observations cannot become stale recovery
             // authority or outrank a later authentication/policy refusal.
-            bareNetwork(previous.first) && blocksTerminalRecovery(value) &&
+            replaceable(previous.first) && blocksTerminalRecovery(value) &&
                 value != previous.terminal &&
                 // Internal player teardown emits STOPPED after PLAYER_FAILED.
-                !(value.reason == PrototypeFailureReason.STOPPED && previous.terminal?.let(::terminalAttributable) == true) ->
+                !(value.reason == PrototypeFailureReason.STOPPED && previous.terminal != null) ->
                 previous.copy(specific = specific(previous.specific, value))
             else -> previous
         } }
@@ -83,13 +90,18 @@ internal class PrototypeFeedFailureLatch {
         val value = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = code)
         rememberTerminalFailure(value)
     }
+    fun rememberFallbackIfEmpty(value: PrototypeFeedFailure) {
+        state.updateAndGet { previous -> if (previous.first == null)
+            previous.copy(first = value, specific = value.takeIf(::blocksTerminalRecovery)) else previous }
+    }
     fun rememberTerminalFailure(value: PrototypeFeedFailure) {
         state.updateAndGet { previous -> when {
-            previous.first == null -> previous.copy(first = value)
-            bareNetwork(previous.first) && previous.terminal == null -> previous.copy(terminal = value,
-                specific = if (terminalAttributable(value) && blocksTerminalRecovery(value)) specific(previous.specific, value)
+            previous.first == null -> previous.copy(first = value, terminal = value,
+                specific = value.takeIf(::blocksTerminalRecovery))
+            replaceable(previous.first) && previous.terminal == null -> previous.copy(terminal = value,
+                specific = if (blocksTerminalRecovery(value)) specific(previous.specific, value)
                     else previous.specific)
-            bareNetwork(previous.first) && blocksTerminalRecovery(value) && value != previous.terminal ->
+            replaceable(previous.first) && blocksTerminalRecovery(value) && value != previous.terminal ->
                 previous.copy(specific = specific(previous.specific, value))
             else -> previous
         } }

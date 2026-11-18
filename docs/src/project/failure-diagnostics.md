@@ -357,6 +357,86 @@ It was installed in place on the same SHIELD at 01:51 UTC; the installed hash
 matched and Tachiai reopened, preserving app data. A repeated live one-second
 adjustment on this build is still awaiting user verification.
 
+## Playback reliability review — 2026-11-18
+
+A follow-up review of ABEMA, Twitch, playback recovery and relative timing found
+additional reproducible defects. Focused regressions failed before their fixes;
+these are code-level findings, not retrospective attribution of every device stop.
+
+- Recovery previously required actual playing within five seconds of failure.
+  A feed that had played, then remained buffering with playback still requested,
+  lost recovery eligibility after five seconds. Fresh, uninterrupted buffering
+  observations now maintain that exact member's established playback intent.
+  Buffering cannot establish intent, bridge stale/missing observations, resume a
+  paused feed or refresh network evidence; retry limits remain unchanged.
+- A protected ABEMA account CHECK waiting behind another CHECK could exhaust
+  its local lock or dispatch budget and revoke the valid account lease without
+  sending IPC. Pre-dispatch local timeout now refuses only that caller. Genuine
+  rollback, lost account validity and dispatched negative/unconfirmed replies
+  retain revocation. This does not make the failed media request succeed or
+  prove that local contention caused an observed device outage.
+- Slot authority sampled clocks before serializing validation. Two concurrent,
+  increasing samples could arrive out of order and falsely latch a rollback.
+  The production slot receipt now samples both clocks under the same monitor
+  as comparison and high-water updates. Actual rollback, expiry and scope loss
+  remain sticky; this finding concerns slot entitlement, not proven failure of
+  the configured plain live channel.
+- Twitch's native dispatcher still recorded terminal errors as observations,
+  and default completion could invent a preparation failure. Both providers
+  now record explicit terminal causes before UI delivery and atomically add a
+  default failure only if no cause exists. Older retryable HTTP/availability
+  observations cannot hide a current hard refusal; an unknown player error
+  cannot inherit a network error's retry authority. WebView SSL rejection has
+  a separate fixed security-failure reason and permits no automatic recovery.
+  Media3 1.11.1 maps the bounded data source's bare I/O exceptions to error 2000,
+  so that exact code retains recovery only with fresh typed request-network or
+  retryable HTTP evidence. HTTP status is bounded and request-linked; before a
+  terminal error, a newer local refusal clears prior authority. Fatal player errors pin their observed
+  request cause through induced inactive-request cleanup. A concurrent genuine
+  TLS or 401/403 refusal can still veto recovery, and later retryable callbacks
+  cannot create authority or remove that veto. Distinct HTTP status reporting
+  prevents an earlier availability response from hiding a later authentication
+  refusal. The stored diagnostic journal schema and privacy limits are unchanged.
+- Manual Retry could restore an old saved offset after an explicit Back to live,
+  or borrow a sibling's stale playback request despite explicit Pause/focus loss.
+  Session retry policy now retains those choices. Normal retries still default
+  to the last enabled saved offset. A newly settled manual mark or adjustment
+  supersedes the earlier opt-out; refused, canceled and automatic restoration
+  attempts do not. Integration regressions exercise actual offset settlement
+  and native retry receipts, including native timing-owned playback restoration.
+
+The review did not establish a further production-reachable ordinary-nudge
+window race: synthetic pause-hook reentrancy alone does not prove Media3 can
+interleave timeline updates within that main-thread operation. No speculative
+seek-policy change was made. Real grant/source expiry and native DRM
+rotation/reacquisition remain separate authority constraints. The one-exchange
+CDM gate, source binding, entitlement, cleanup and origin checks were not relaxed.
+Sustained device recovery still needs observation with the corrected build.
+
+During this review, the earlier terminal-attribution APK
+`311e849d0872b1d9c33ce49f55e4a1602ac1dc8a85346c5bae59751a812ee569`
+was also installed in place on the requested Pixel 6 (Android 17, WebView
+157.0.8103.38). Its installed hash matched, and the ordinary launcher reopened.
+Configured grants and routes were retained; region and account validity were
+not independently inspected. The live ABEMA/Twitch pair subsequently progressed
+through several timing adjustments. At 04:33:20 UTC, ABEMA reported native error
+1002 with its final position outside the window. Automatic retry was scheduled,
+started at 04:33:21, prepared a replacement at 04:33:35 and rejoined the still
+playing peer. Both feeds then reported progress. Offset state remained
+unconfirmed; no acoustic or common-event alignment was measured. This confirms
+one actual phone recovery with the earlier build, not every reviewed fix or
+sustained SHIELD recovery.
+
+The final review build passed 2,870 JVM cases with zero failures/errors and one
+opt-in skip, Android lint, debug assembly, instrumentation-source compilation
+and scoped repository checks. Its shared debug certificate matched the required
+identity. APK SHA-256
+`cdbe658a6a6032ebb858ed2c7095aa6c71580d15ab9e6db03219b22d5ae15e16`
+was installed in place on the same Pixel 6 at 04:52 UTC; the installed hash
+matched and Tachiai returned to the viewer. No TV update was performed during
+this review deployment. Sustained playback and recovery with this final build
+remain device-verification work.
+
 ## Terminal admission attribution — 2026-11-18
 
 The ordinary recovery build with APK SHA-256

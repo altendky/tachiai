@@ -32,10 +32,54 @@ internal enum class PrototypeFailureReason(val message: String) {
 
 // Loader callbacks and main-thread teardown may report the same failure.
 // Preserve its first cause through later request/player/cleanup notifications.
+// An explicit terminal live-window error can supersede a bare transient network
+// observation, but must never hide a more specific refusal observed around it.
 internal class PrototypeFeedFailureLatch {
-    private val first = AtomicReference<PrototypeFeedFailure?>()
-    val failure: PrototypeFeedFailure? get() = first.get()
-    fun remember(value: PrototypeFeedFailure) { first.compareAndSet(null, value) }
+    private data class State(val first: PrototypeFeedFailure? = null,
+        val terminalPlayer: PrototypeFeedFailure? = null, val specific: PrototypeFeedFailure? = null)
+    private val state = AtomicReference(State())
+    private fun bareNetwork(value: PrototypeFeedFailure?) = value?.reason == PrototypeFailureReason.NETWORK_FAILED &&
+        value.httpStatus == null && value.playerCode == null
+    private fun blocksTerminalRecovery(value: PrototypeFeedFailure): Boolean {
+        if (value.httpStatus in setOf(401, 403)) return true
+        return when (value.reason) {
+            PrototypeFailureReason.NETWORK_FAILED -> !bareNetwork(value)
+            PrototypeFailureReason.HTTP_REJECTED -> value.playerCode != null ||
+                !(value.httpStatus in setOf(408, 429) || value.httpStatus?.let { it in 500..599 } == true)
+            PrototypeFailureReason.MEDIA_NOT_FOUND -> value.playerCode != null ||
+                value.httpStatus?.let { it != 404 } == true
+            PrototypeFailureReason.LIVE_WINDOW_EXPIRED, PrototypeFailureReason.LIVE_POSITION_FAILED ->
+                value.httpStatus != null || value.playerCode != null
+            PrototypeFailureReason.PLAYER_FAILED -> value.playerCode != 1002 || value.httpStatus != null
+            else -> true
+        }
+    }
+    val failure: PrototypeFeedFailure? get() {
+        val value = state.get()
+        return if (bareNetwork(value.first) && value.terminalPlayer?.playerCode == 1002)
+            value.specific ?: value.terminalPlayer else value.first
+    }
+    fun remember(value: PrototypeFeedFailure) {
+        state.updateAndGet { previous -> when {
+            previous.first == null -> previous.copy(first = value)
+            // Retryable availability observations cannot become stale recovery
+            // authority or outrank a later authentication/policy refusal.
+            bareNetwork(previous.first) && blocksTerminalRecovery(value) &&
+                value != previous.terminalPlayer &&
+                // Internal player teardown emits STOPPED after PLAYER_FAILED.
+                !(value.reason == PrototypeFailureReason.STOPPED && previous.terminalPlayer?.playerCode == 1002) ->
+                previous.copy(specific = previous.specific ?: value)
+            else -> previous
+        } }
+    }
+    fun rememberPlayerFailure(code: Int?) {
+        val value = PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = code)
+        state.updateAndGet { previous -> when {
+            previous.first == null -> previous.copy(first = value)
+            bareNetwork(previous.first) && previous.terminalPlayer == null -> previous.copy(terminalPlayer = value)
+            else -> previous
+        } }
+    }
 }
 
 // Only closed reasons and bounded numeric diagnostics cross the provider boundary.

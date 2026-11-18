@@ -282,6 +282,120 @@ same SDK member. Health-journal bounds/validation and typed transport-body timeo
 evidence also passed. These tests do not establish live provider recovery,
 physical rendering or audio behavior after a retry.
 
+## Interrupted ABEMA ownership reads — 2026-11-18
+
+On the physical SHIELD (`mdarcy`, Android 11/API 30, WebView 157.0.8103.50),
+the existing live ABEMA/Twitch pair reported `ABEMA_BOOTSTRAP_SELECTION` followed
+by `ABEMA_ACCOUNT_UNAVAILABLE` at 00:53:39 UTC. The installed account-clock-fix
+APK matched SHA-256
+`18de6ae0d3da6db97f88378f2b9b801e6de76ac8391f2ae1a24b5310ed842afc`.
+The user reopened the same pair through Sources without signing in or changing
+its account/routes. At 01:03:53–57 UTC, closed diagnostics showed manifest/media
+HTTP 200, native DRM keys loaded, playing and video frames; the health journal
+reported ABEMA progressing, matching the user's observation. Region and account
+status were not independently inspected. This establishes fresh-session recovery,
+not the original refusal's exact cause.
+
+A regression using a real file-channel lock reproduced a separate concrete bug:
+interrupting a protected ownership read permanently revoked the selection guard
+even though its owner was unchanged. The account client depends on that guard,
+so the revocation can become an account-unavailable failure. Attempting to record
+the initial exception can also fail because the journal takes another interruptible
+file lock on the same thread. Missing preparation evidence does not exclude this
+path, but it does not prove this incident used it.
+
+The guard now refuses interrupted callers without reading, and treats an
+interrupted unknown read as cancellation of that request. It preserves the
+interrupt and the existing binding; the next request must still reconcile the
+exact protected owner. Actual returned mismatches, typed route failures and
+non-cancellation storage failures remain sticky. Bounded cause inspection fails
+closed on incomplete/cyclic chains and does not mistake a socket timeout for
+thread interruption. No account, route, entitlement or network policy is relaxed.
+Post-fix provider playback remains unverified.
+
+Local verification passed 2,795 JVM cases with zero failures/errors and one opt-in
+skip, lint, Android test-source compilation and debug assembly. The real file-lock
+regression failed before the fix and passed afterward; the ten ownership cases
+also cover concurrent genuine revocation and cancellation/failure precedence.
+The shared debug certificate matched. The new APK SHA-256 is
+`d2803bd5388966e763c3bbeeb5c87cbe6d030757b1b60ec42a11282c84e5e9ed`;
+it was not installed during the user's recovered playback.
+
+## One-second live adjustment expiry — 2026-11-18
+
+On the same SHIELD and installed APK described above, the user reported frozen
+video/audio after Advance B by one second. At 01:32:39–42 UTC the timing journal
+recorded a relative delta of -1,000 ms, delivered by seeking A backward. Its own
+target clock matched exactly after 3,491 ms, but its moving-window position had
+become -499 ms with buffered endpoint +528 ms and a 48,000 ms window. The untouched
+B was held at 17,656 ms in a 30,000 ms window. Both players were READY and paused;
+the application's intent became `OFFSET_UNCONFIRMED`. There was no new concurrent
+account failure. This evidence identifies a timing-resume refusal, not a new
+account-admission failure or proof of decoder failure.
+
+A provider-free regression reproduced the exact target expiring while held even
+though buffered footage remained. Ordinary timing resume formerly required the
+target to remain in the advertised window; marked alignment already had an exact,
+transaction-scoped buffered-target proof. Both now use that proof, carrying their
+own settlement tolerances and rechecking member, clock kind, held READY state,
+buffer, admission, generation, focus and the original eight-second deadline.
+Explicit Play and catch-up retain their separate window policies. A failed proof
+still refuses joint resume without publishing a settlement.
+
+Relative planning also compares the two equivalent complete one-seek movements
+and prefers the target with more live-window headroom, keeping A on ties. This
+reduces avoidable expiry while retaining exact steps, no clamped fallback, no
+split nudge and no second dispatch after an uncertain seek. These local fixes
+have not yet been tested against this provider pair on the physical TV.
+
+The combined ownership/timing fix passed 2,804 JVM cases with zero failures/errors
+and one opt-in skip, lint, debug assembly and Android test-source compilation.
+The expired-target regression failed before the timing change and passed after
+it. The shared debug certificate matched; APK SHA-256 is
+`91930fe4fc330b01976ca7192e0a3f46c276fd57211ff1fe539c247560d97adf`.
+It was installed in place on the same SHIELD at 01:51 UTC; the installed hash
+matched and Tachiai reopened, preserving app data. A repeated live one-second
+adjustment on this build is still awaiting user verification.
+
+## Terminal live-window recovery attribution — 2026-11-18
+
+On that installed SHIELD build, health records at 03:02:53–55 UTC showed both
+live feeds resuming and progressing after another timing transaction, including
+buffered playback behind the advertised window. At 03:03:24–25 UTC ABEMA then
+reported native player error 1002 and released its player. The feed exposed an
+older generic network failure instead, with transport evidence 320,228 ms old;
+the recovery scheduler correctly refused that stale network evidence. This was
+later than the successful joint resume, not the earlier unconfirmed-seek freeze.
+
+A regression reproduced the attribution bug: the first-only session latch hid
+the current native live-window error behind a transient request failure. Explicit
+current player failure 1002 can now supersede only an earlier bare network
+observation. Specific authorization, policy, licence, cleanup and other hard
+refusals observed before or after it retain precedence. Retryable availability
+observations do not become stale retry authority; unknown terminal codes cannot
+be replaced by a later 1002. Consequential player teardown's Stop event and the
+default failure-finishing path do not invent a new preparation refusal.
+
+The existing live/recent-exact-member recovery policy, retry bounds and owned
+cleanup/source preparation remain in force. Mixed or misattributed player/HTTP
+metadata is refused rather than granting retry authority. Original network
+observations remain in the failure journal. Post-fix physical recovery remains
+unverified.
+
+Verification passed 2,816 JVM cases with zero failures/errors and one opt-in skip,
+lint, debug assembly and Android test-source compilation. The stale-network/fresh
+1002 regression failed before the attribution fix and passed afterward. Tests
+retain hard-refusal precedence through mixed availability outcomes and concurrent
+updates, the live/recent-member retry gates, and cleanup-event ordering. The shared
+debug certificate matched; APK SHA-256 is
+`44959296f8b2edc27c3db7071a134beb3a565320227fa406bdf89a7c3a8403bb`.
+It was installed in place on the same SHIELD at 03:31 UTC, with matching installed
+hash and ordinary Tachiai foreground. App data was preserved. Recovery from a
+fresh native 1002 on this build still needs device observation.
+At 03:32:24–25 UTC, both feeds were playing with progressing renderer counters
+and no player error. This establishes a fresh successful start, not recovery
+from a repeated live-window failure.
+
 ## Cached ABEMA helper evidence
 
 Issue [#171](https://github.com/altendky/tachiai/issues/171) retains the first

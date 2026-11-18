@@ -305,7 +305,8 @@ internal class CachedPrototypeAbemaSession(
         if (closed.get() || refusal in setOf(AbemaBootstrapRefusal.CLOSED, AbemaBootstrapRefusal.SUPERSEDED)) return
         if (continuationRefusalReported.compareAndSet(false, true))
             reportBootstrapRefusal(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, refusal)
-        firstFailure.rememberTerminalFailure(PrototypeFeedFailure(reason))
+        firstFailure.rememberTerminalFailure(PrototypeFeedFailure(reason),
+            fromInactivePlayerBudget = refusal == AbemaBootstrapRefusal.BUDGET_INACTIVE)
     }
     override fun canContinue(): Boolean {
         val run = revision.get()

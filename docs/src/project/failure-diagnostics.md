@@ -437,6 +437,37 @@ matched and Tachiai returned to the viewer. No TV update was performed during
 this review deployment. Sustained playback and recovery with this final build
 remain device-verification work.
 
+## Native child-budget callback ordering — 2026-11-18
+
+A further ordering regression reproduced a missed-recovery path after the first
+review PR merged. Native player failure is recorded synchronously, but its
+adapter posts failure delivery to the main thread. Native teardown then stops
+the child playback budget and starts asynchronous cleanup. An already-queued
+viewer poll can run before failure delivery while the member still exists,
+observe the inactive budget and promote a new STOPPED refusal over error 1002.
+The original player error is then ineligible for automatic recovery.
+
+The latch now tracks explicit native player-failure observation atomically.
+Only a bare STOPPED value from that adapter's actual BUDGET_INACTIVE boundary
+is consequential after this observation. It preserves the recorded failure,
+including an earlier account failure followed by a player failure. A stop that
+precedes the player failure, an explicit unrelated stop, finite playback limits
+and ownership, route, security or cleanup refusals retain their existing effect.
+The shared parent budget and fresh replacement admission checks remain required.
+Both new positive regressions failed before the correction; a third regression
+covers the protected refusal and real-stop boundaries. This proves the callback
+ordering defect, not its frequency in previous device interruptions.
+
+The follow-up passed 2,873 JVM cases with zero failures/errors and one opt-in
+skip, lint, debug assembly, Android test-source compilation and scoped checks.
+Native route artifacts were rebuilt against updated main dependencies; Go tests,
+both ABI dependency closures and 16 KiB alignment verification passed. The final
+APK's shared debug certificate matched the required identity. APK SHA-256
+`11775e449c73762b9101c8122f620c7ba051f20c8755d2f40fc1af17bf84d141`
+was verified against the installed Pixel 6 package at 06:25 UTC with app data
+preserved. The launcher request returned successfully; visible playback and
+post-fix recovery were not observed during this deployment.
+
 ## Terminal admission attribution — 2026-11-18
 
 The ordinary recovery build with APK SHA-256

@@ -5,6 +5,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackDiagnosticSnapshot
+import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.NativePlaybackTransportFailure
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
@@ -16,6 +17,56 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrototypeFeedFailureTest {
+    @Test fun `real stops limits and protected refusals remain binding around native child cleanup`() {
+        val stopped = PrototypeFeedFailure(PrototypeFailureReason.STOPPED)
+        val early = PrototypeFeedFailureLatch()
+        early.rememberTerminalFailure(stopped, fromInactivePlayerBudget = true)
+        early.rememberPlayerFailure(1002)
+        assertEquals(stopped, early.failure)
+        val explicit = PrototypeFeedFailureLatch()
+        explicit.rememberPlayerFailure(1002)
+        explicit.rememberTerminalFailure(stopped)
+        assertEquals(stopped, explicit.failure)
+        val limit = PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)
+        val finite = PrototypeFeedFailureLatch()
+        finite.rememberPlayerFailure(1002)
+        finite.rememberTerminalFailure(limit, fromInactivePlayerBudget = true)
+        assertEquals(limit, finite.failure)
+        for (hard in hardRefusals()) {
+            val latch = PrototypeFeedFailureLatch()
+            latch.rememberPlayerFailure(1002)
+            latch.rememberTerminalFailure(hard)
+            latch.rememberTerminalFailure(stopped, fromInactivePlayerBudget = true)
+            assertEquals(hard, latch.failure)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, recover(checkNotNull(latch.failure), transport()))
+        }
+    }
+
+    @Test fun `polling a stopped native child budget before failure delivery preserves behind-live recovery`() {
+        for (networkFirst in listOf(false, true)) {
+            val budget = NativePlaybackBudget.continuous({ true })
+            val latch = PrototypeFeedFailureLatch()
+            if (networkFirst) latch.remember(PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED))
+            latch.rememberPlayerFailure(1002)
+            budget.stop() // Native close starts asynchronous cleanup before posted UI failure delivery.
+            assertFalse(budget.active)
+            latch.rememberTerminalFailure(PrototypeFeedFailure(PrototypeFailureReason.STOPPED),
+                fromInactivePlayerBudget = !budget.active)
+            assertEquals(PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED, playerCode = 1002), latch.failure)
+            assertEquals(FeedAutoRecoveryDecision.SCHEDULED,
+                recover(checkNotNull(latch.failure), transport(ageMs = 320_228)))
+        }
+    }
+
+    @Test fun `native budget cleanup cannot hide an account failure already followed by a player failure`() {
+        val latch = PrototypeFeedFailureLatch()
+        val account = PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
+        latch.rememberTerminalFailure(account)
+        latch.rememberPlayerFailure(1002)
+        latch.rememberTerminalFailure(PrototypeFeedFailure(PrototypeFailureReason.STOPPED), fromInactivePlayerBudget = true)
+        assertEquals(account, latch.failure)
+    }
+
     @Test fun `fallback only fills an empty latch and never overwrites a concurrently recorded cause`() {
         val fallback = PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED)
         val empty = PrototypeFeedFailureLatch()

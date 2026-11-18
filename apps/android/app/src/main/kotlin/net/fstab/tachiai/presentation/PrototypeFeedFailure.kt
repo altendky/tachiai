@@ -37,7 +37,8 @@ internal enum class PrototypeFailureReason(val message: String) {
 // observation, but must never hide a more specific refusal observed around it.
 internal class PrototypeFeedFailureLatch {
     private data class State(val first: PrototypeFeedFailure? = null,
-        val terminal: PrototypeFeedFailure? = null, val specific: PrototypeFeedFailure? = null)
+        val terminal: PrototypeFeedFailure? = null, val specific: PrototypeFeedFailure? = null,
+        val playerFailureObserved: Boolean = false)
     private val state = AtomicReference(State())
     private fun bareNetwork(value: PrototypeFeedFailure?) = value?.reason == PrototypeFailureReason.NETWORK_FAILED &&
         value.httpStatus == null && value.playerCode == null
@@ -94,17 +95,25 @@ internal class PrototypeFeedFailureLatch {
         state.updateAndGet { previous -> if (previous.first == null)
             previous.copy(first = value, specific = value.takeIf(::blocksTerminalRecovery)) else previous }
     }
-    fun rememberTerminalFailure(value: PrototypeFeedFailure) {
-        state.updateAndGet { previous -> when {
-            previous.first == null -> previous.copy(first = value, terminal = value,
-                specific = value.takeIf(::blocksTerminalRecovery))
-            replaceable(previous.first) && previous.terminal == null -> previous.copy(terminal = value,
-                specific = if (blocksTerminalRecovery(value)) specific(previous.specific, value)
-                    else previous.specific)
-            replaceable(previous.first) && blocksTerminalRecovery(value) && value != previous.terminal ->
-                previous.copy(specific = specific(previous.specific, value))
-            else -> previous
-        } }
+    fun rememberTerminalFailure(value: PrototypeFeedFailure, fromInactivePlayerBudget: Boolean = false) {
+        state.updateAndGet { previous ->
+            val updated = when {
+                // Native close stops its child budget before posted failure
+                // delivery. A poll during asynchronous cleanup is consequential;
+                // it must not turn the recorded player failure into a new refusal.
+                fromInactivePlayerBudget && value.reason == PrototypeFailureReason.STOPPED &&
+                    value.httpStatus == null && value.playerCode == null && previous.playerFailureObserved -> previous
+                previous.first == null -> previous.copy(first = value, terminal = value,
+                    specific = value.takeIf(::blocksTerminalRecovery))
+                replaceable(previous.first) && previous.terminal == null -> previous.copy(terminal = value,
+                    specific = if (blocksTerminalRecovery(value)) specific(previous.specific, value)
+                        else previous.specific)
+                replaceable(previous.first) && blocksTerminalRecovery(value) && value != previous.terminal ->
+                    previous.copy(specific = specific(previous.specific, value))
+                else -> previous
+            }
+            if (value.reason == PrototypeFailureReason.PLAYER_FAILED) updated.copy(playerFailureObserved = true) else updated
+        }
     }
 }
 

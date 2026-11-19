@@ -313,22 +313,23 @@ main page is tracked separately in #550.
   label supported collections as playing the newest episode. Ordinary
   availability, ownership, route and provider checks still run first.
 - **Resolution.** Each new Watch resolves afresh through the owning instance's
-  ABEMA catalog adapter, before route startup and account readiness. Its fresh
-  guest operation requests the provider's own newest-first series order:
-  descending `seq`, as the provider's episode-list consumer requests it. Each
-  row also carries its `broadcastAt` epoch seconds. The first row broadcast by
-  now is chosen; later rows are upcoming and skipped, continuing to later pages
-  up to five pages. Broadcast times must not increase across every row read
-  through the chosen page, and no row before the choice may lack one.
-  Otherwise, or past the page bound, Watch reports that the newest episode
-  could not be determined. Rows after the chosen page are not read, so a
-  provider order that restarts on a later page is not detected. A broadcast
+  ABEMA catalog adapter, before route startup and account readiness, after any
+  retiring startup scope of that instance. Its fresh guest operation requests
+  the provider's own newest-first series order: descending `seq`, as the
+  provider's episode-list consumer requests it. Program rows have no
+  publication-start field, so a row in this on-demand list is published unless
+  it carries a provider `broadcastAt` (epoch seconds) after now. Such rows are
+  upcoming and skipped, continuing to later pages up to five pages. The first
+  remaining row is chosen. Every row read, through the chosen page, must carry
+  a provider episode number that strictly decreases, and any broadcast times
+  must not increase. Otherwise, or past the page bound, Watch reports that the
+  newest episode could not be determined. Rows after the chosen page are not
+  read, so an order that restarts on a later page is not detected. A broadcast
   that has started may not yet be playable; that feed then fails visibly.
   Resolution needs the guest series operation, so on API 26–27 collections
-  keep the existing refusal. Empty collections,
-  collections with no published episode, unsupported resolution and request
-  failures each have a distinct message. None falls back to another item, a
-  channel or a sample.
+  keep the existing refusal. Empty collections, collections with no published
+  episode, unsupported resolution and request failures each have a distinct
+  message. None falls back to another item, a channel or a sample.
 - **Binding.** The resolved exact episode is bound to its slot, configured
   item and collection for that viewer session. It plays through the unchanged
   configured episode path with fresh eligibility checks. Retries, recovery and
@@ -340,9 +341,30 @@ main page is tracked separately in #550.
 
 The resolution step adds one fresh guest series request, or more when upcoming
 rows fill the first page, before playback startup. Provider-free JVM and JS
-fixtures cover ordering across pages, upcoming, empty and contradictory
-listings, version drift, ownership changes and slot binding. Real ABEMA
-acceptance is recorded separately from those fixtures.
+fixtures cover ordering across pages, upcoming, missing-number, empty and
+contradictory listings, version drift, ownership changes and slot binding.
+
+#### Real ABEMA observation — 2026-11-19
+
+The device was a SHIELD Android TV (Android 11), signed in to ABEMA, routed
+through the saved Windscribe Tokyo WireGuard profile. The saved collection was
+series `394-72` (ABEMA大相撲2026), on A, with a Twitch broadcaster on B.
+
+- **First attempt.** Requiring `broadcastAt` refused as not established.
+  A shape-only diagnostic (field names, flags, episode numbers, relative
+  times; no identifiers or titles) showed what the first newest-first page
+  holds:
+  - 20 rows, none with `broadcastAt`;
+  - every row labeled free, with future `freeEndAt`, `endAt` and advertising
+    terms;
+  - episode numbers strictly decreasing in provider order with gaps (9060,
+    9030, 8541–8530, then 6759–6754).
+- **With the episode-number check.** Resolution took 32.9 s and chose the
+  first row. The configured episode path then reached its first video frame
+  27 s later, 60 s after Watch, with Twitch playing on B.
+
+That the chosen row matches the provider site's newest episode is pending the
+user's comparison.
 
 ### Android public-link sharing
 

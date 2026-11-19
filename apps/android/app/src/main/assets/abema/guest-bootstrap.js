@@ -763,8 +763,13 @@
                 const broadcast = item.broadcastAt;
                 if (broadcast !== undefined && broadcast !== null && broadcast !== 0 &&
                   (!Number.isSafeInteger(broadcast) || broadcast < 1 || broadcast >= 100000000000)) throw new Error();
+                // The provider's episode number; absent stays null for the native order check.
+                const number = item.episode.number;
+                if (number !== undefined && number !== null &&
+                  (!Number.isSafeInteger(number) || number < 1 || number > 999999999)) throw new Error();
                 return Object.freeze({ id: item.id, title: item.episode.title.trim(),
-                  broadcastAt: broadcast === undefined || broadcast === null || broadcast === 0 ? null : broadcast });
+                  broadcastAt: broadcast === undefined || broadcast === null || broadcast === 0 ? null : broadcast,
+                  number: number ?? null });
               });
               return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs,
                 ...(seriesRequest.seasonId !== undefined ? { seasonId: seriesRequest.seasonId } : {}) });

@@ -63,6 +63,7 @@ internal object AbemaSeriesMetadataIpc {
                 .put("programs", JSONArray().apply { page.entries.forEachIndexed { index, entry ->
                     put(JSONObject().put("id", entry.resource.identity).put("title", entry.title).apply {
                         page.broadcastAtSeconds?.let { put("broadcastAt", it[index] ?: JSONObject.NULL) }
+                        page.episodeNumbers?.let { put("number", it[index] ?: JSONObject.NULL) }
                     })
                 } })
             page.seasonId?.let { projection.put("seasonId", it) }

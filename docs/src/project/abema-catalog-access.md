@@ -976,8 +976,8 @@ guest-process instrumentation targeting was restored to the ordinary manifest.
 Series browsing does not imply global video search or timetable/slot resolution.
 The separate interim
 [newest-episode default](configured-catalog.md#interim-newest-episode-for-saved-abema-collections)
-reuses this operation with the consumer's descending `-seq` order and an
-additional `broadcastAt` projection. Browsing itself still uses ascending
+reuses this operation with the consumer's descending `-seq` order and
+additional `broadcastAt` and episode-number projections. Browsing itself still uses ascending
 `seq` and leaves availability UNKNOWN.
 
 ### Exact configured broadcast metadata

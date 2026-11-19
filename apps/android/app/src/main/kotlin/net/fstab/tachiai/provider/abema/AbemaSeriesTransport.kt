@@ -37,12 +37,18 @@ internal class AbemaSeriesPageRequest(val seriesId: String, val offset: Int = 0,
     override fun toString() = "AbemaSeriesPageRequest(redacted)"
 }
 internal const val ABEMA_BROADCAST_AT_LIMIT_SECONDS = 100_000_000_000L
+internal const val ABEMA_EPISODE_NUMBER_MAX = 999_999_999L
 internal class AbemaSeriesPage(val seriesId: String, entries: List<CatalogEntry>, val version: String, val seasonId: String? = null,
-    broadcastAtSeconds: List<Long?>? = null) {
+    broadcastAtSeconds: List<Long?>? = null, episodeNumbers: List<Long?>? = null) {
     val entries: List<CatalogEntry> = Collections.unmodifiableList(entries.toList())
     // Present only for newest-first pages; null rows had no provider broadcast time.
     val broadcastAtSeconds: List<Long?>? = broadcastAtSeconds?.let { Collections.unmodifiableList(it.toList()) }
+    // Present only for newest-first pages; null rows had no provider episode number.
+    val episodeNumbers: List<Long?>? = episodeNumbers?.let { Collections.unmodifiableList(it.toList()) }
     init {
+        require((broadcastAtSeconds == null) == (episodeNumbers == null))
+        require(episodeNumbers == null || episodeNumbers.size == entries.size &&
+            episodeNumbers.all { it == null || it in 1..ABEMA_EPISODE_NUMBER_MAX })
         require(broadcastAtSeconds == null || broadcastAtSeconds.size == entries.size &&
             broadcastAtSeconds.all { it == null || it in 1 until ABEMA_BROADCAST_AT_LIMIT_SECONDS })
         require(validAbemaSeriesId(seriesId) && entries.size <= ABEMA_SERIES_PAGE_LIMIT && safeAbemaSeriesText(version, 256))

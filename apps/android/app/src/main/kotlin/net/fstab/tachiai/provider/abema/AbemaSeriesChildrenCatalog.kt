@@ -14,6 +14,9 @@ internal class AbemaSeriesChildrenCatalog(
     private val transportFactory: ((canRequest: () -> Boolean) -> AbemaSeriesTransport)?,
     private val canPublish: () -> Boolean = { true },
     private val wallMs: () -> Long = System::currentTimeMillis,
+    // Closed shape summary of each newest-first page: counts and order checks
+    // only, never identities, titles or times.
+    private val onLatestPage: (String) -> Unit = {},
 ) : ProviderCatalog by delegate {
     init { require(delegate.providerId.value == "abema" && net.fstab.tachiai.presentation.validProviderInstanceId(delegate.instanceId)) }
     private class Cursor(val parent: CatalogResource, val request: AbemaSeriesPageRequest,
@@ -112,13 +115,14 @@ internal class AbemaSeriesChildrenCatalog(
         return result
     }
 
-    // Pages the provider's descending `-seq` order (its own newest-first view)
-    // and returns the first row broadcast by now; later broadcast times are
-    // upcoming and skipped. Every row read, through the end of the chosen
-    // page, must keep broadcast times non-increasing, and no row before the
-    // choice may lack a broadcast time. Otherwise seq and broadcast order
-    // disagree or a row cannot be placed, and the newest is not established.
-    // Rows after the chosen page are not read.
+    // Pages the provider's descending `-seq` order (its own newest-first view).
+    // Its program rows carry no publication start; a row in this on-demand
+    // list is published unless a provider broadcast time lies in the future,
+    // which marks it upcoming and skips it. Every row read, through the end of
+    // the chosen page, must carry a provider episode number that strictly
+    // decreases, and any broadcast times must not increase. Otherwise the
+    // order cannot be confirmed and the newest is not established. Rows after
+    // the chosen page are not read.
     override fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> {
         clear()
         if (collection.providerId != providerId || collection.kind !in setOf("series", "season") ||
@@ -136,26 +140,36 @@ internal class AbemaSeriesChildrenCatalog(
             val seen = mutableSetOf<String>()
             var any = false
             var previous: Long? = null
+            var previousNumber: Long? = null
             repeat(ABEMA_LATEST_MAX_PAGES) {
                 val page = when (val result = fetchPage(local, factory, request)) {
                     is CatalogResult.Failure -> return@synchronized result
                     is CatalogResult.Value -> result.value
                 }
                 val broadcasts = page.broadcastAtSeconds
-                if (broadcasts == null || page.seriesId != seriesId || page.seasonId != seasonId ||
+                val numbers = page.episodeNumbers
+                if (broadcasts == null || numbers == null || page.seriesId != seriesId || page.seasonId != seasonId ||
                     request.version != null && page.version != request.version ||
                     page.entries.any { !seen.add(it.resource.identity) }) {
                     clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
                 }
                 any = any || page.entries.isNotEmpty()
                 val nowSeconds = wallMs() / 1000
+                runCatching { onLatestPage("offset=${request.offset} rows=${page.entries.size} " +
+                    "numbered=${numbers.count { it != null }} timed=${broadcasts.count { it != null }} " +
+                    "upcoming=${broadcasts.count { it != null && it > nowSeconds }}") }
                 val unverified = CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.ORDER_UNVERIFIED))
                 var chosen: Int? = null
-                for ((index, time) in broadcasts.withIndex()) {
-                    if (time == null) { if (chosen == null) return@synchronized unverified else continue }
-                    if (previous != null && time > previous!!) return@synchronized unverified
-                    previous = time
-                    if (chosen == null && time <= nowSeconds) chosen = index
+                for (index in page.entries.indices) {
+                    val number = numbers[index] ?: return@synchronized unverified
+                    if (previousNumber != null && number >= previousNumber!!) return@synchronized unverified
+                    previousNumber = number
+                    val time = broadcasts[index]
+                    if (time != null) {
+                        if (previous != null && time > previous!!) return@synchronized unverified
+                        previous = time
+                    }
+                    if (chosen == null && (time == null || time <= nowSeconds)) chosen = index
                 }
                 if (chosen != null)
                     return@synchronized CatalogResult.Value(CatalogLatest.Found(CatalogPlaybackResource(page.entries[chosen].resource)))

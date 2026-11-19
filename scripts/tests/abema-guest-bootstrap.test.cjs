@@ -596,11 +596,11 @@ test('series page refuses mismatched duplicate malformed oversized rows and unsu
   const drift = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest('series-A', 20, 'old'), series: { programs: [], version: 'new' } });
   drift.start(); await settle(); assert.equal(drift.state().failure, 'SERIES_RESPONSE');
 });
-test('newest-first series pages use descending seq and project only broadcast seconds', async () => {
+test('newest-first series pages use descending seq and project only broadcast seconds and episode numbers', async () => {
   const resourceId = { ...seriesRequest(), order: '-seq' };
   const rows = [
-    { id: 'episode-C', series: { id: 'series-A' }, episode: { title: 'Day 3' }, broadcastAt: 1800000000, label: { newest: true } },
-    { id: 'episode-B', series: { id: 'series-A' }, episode: { title: 'Day 2' }, broadcastAt: 0 },
+    { id: 'episode-C', series: { id: 'series-A' }, episode: { title: 'Day 3', number: 9060 }, broadcastAt: 1800000000, label: { newest: true } },
+    { id: 'episode-B', series: { id: 'series-A' }, episode: { title: 'Day 2', number: 9030 }, broadcastAt: 0 },
     { id: 'episode-A', series: { id: 'series-A' }, episode: { title: 'Day 1' } },
   ];
   const f = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: rows, version: 'v1' } });
@@ -608,8 +608,14 @@ test('newest-first series pages use descending seq and project only broadcast se
   assert.deepEqual(f.state(), { state: 'EXACT_SERIES_PAGE', failure: 'NONE' });
   assert.equal(f.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=-seq&limit=20&offset=0');
   assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)), { seriesId: 'series-A', version: 'v1', programs: [
-    { id: 'episode-C', title: 'Day 3', broadcastAt: 1800000000 }, { id: 'episode-B', title: 'Day 2', broadcastAt: null },
-    { id: 'episode-A', title: 'Day 1', broadcastAt: null }] });
+    { id: 'episode-C', title: 'Day 3', broadcastAt: 1800000000, number: 9060 },
+    { id: 'episode-B', title: 'Day 2', broadcastAt: null, number: 9030 },
+    { id: 'episode-A', title: 'Day 1', broadcastAt: null, number: null }] });
+  for (const number of ['9060', 0, -1, 1.5, 1000000000, true]) {
+    const bad = fixture({ operation: 'FETCH_SERIES', resourceId,
+      series: { programs: [{ ...rows[0], episode: { title: 'Day 3', number } }], version: 'v1' } });
+    bad.start(); await settle(); assert.deepEqual(bad.state(), { state: 'REFUSED', failure: 'SERIES_RESPONSE' });
+  }
   for (const broadcastAt of ['1800000000', -1, 1.5, 100000000000, 1800000000000, true, {}]) {
     const bad = fixture({ operation: 'FETCH_SERIES', resourceId,
       series: { programs: [{ ...rows[0], broadcastAt }], version: 'v1' } });

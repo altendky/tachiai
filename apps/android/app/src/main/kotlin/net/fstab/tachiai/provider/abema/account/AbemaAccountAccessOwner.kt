@@ -45,6 +45,8 @@ internal class AbemaAccountAccessOwner(
     private val ownerCurrent: () -> Boolean,
     private val transportFactory: (canRequest: () -> Boolean) -> AbemaAccountTransport,
     private val transportCleanupConfirmed: (AbemaAccountTransport) -> Boolean,
+    // Closed timing markers only; never account, route or response values.
+    private val mark: (String) -> Unit = {},
 ) : AutoCloseable {
     companion object {
         // A late native return cannot turn an uncertain cleanup into a success.
@@ -222,7 +224,7 @@ internal class AbemaAccountAccessOwner(
             cached = proof
             if (cached != null) null else flight ?: Flight(generation, began, deadline).also { flight = it; leader = true }
         }
-        cached?.let { return boundedResult(it) }
+        cached?.let { mark("PROOF_REUSED"); return boundedResult(it) }
         val work = pending ?: return AbemaAccountAccessResult.Failed(AbemaAccountFailure.CANCELLED)
         if (leader) {
             try { workers.execute { validate(work) } }
@@ -308,7 +310,9 @@ internal class AbemaAccountAccessOwner(
                 }
                 cancel?.start()
                 check()
+                mark("PROFILE_BEGIN")
                 val profile = transport.profile(record.grant.userId, record.grant.bearer)
+                mark("PROFILE_DONE")
                 check()
                 when (profile) {
                     is AbemaAccountProfileResult.Identity -> if (profile.id != record.grant.userId) accountRefused()
@@ -317,6 +321,7 @@ internal class AbemaAccountAccessOwner(
                 }
                 check()
                 val email = transport.emailRegistration(record.grant.userId, record.grant.bearer)
+                mark("EMAIL_DONE")
                 check()
                 when (email) {
                     AbemaAccountEmailResult.REGISTERED -> Unit

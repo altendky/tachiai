@@ -169,7 +169,7 @@ internal object AndroidAbemaAccountAccessOwners {
                 { gate -> binding.transport(captured, gate) },
                 { transport -> ((transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true).also { confirmed ->
                     if (!confirmed) { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) }
-                } })
+                } }, { marker -> android.util.Log.d("TachiaiAbemaAccount", "owner=$marker") })
         }
         // A reused registry owner does not replace the fresh caller's scope
         // check. Durable acquire/lease checks still validate the shared grant

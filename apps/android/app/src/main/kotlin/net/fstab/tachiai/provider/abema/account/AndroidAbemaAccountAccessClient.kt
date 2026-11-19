@@ -139,8 +139,10 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             } catch (_: Throwable) { finishConnection(true) }
         }
         if (!await(ready, AbemaAccountAccessIpc.IPC_MS, true)) { close(); return failure(AbemaAccountFailure.TIME_LIMIT_REACHED) }
+        android.util.Log.d("TachiaiAbemaAccount", "client=BOUND")
         val fields = transact(AbemaAccountAccessIpc.ACQUIRE, AbemaAccountAccessIpc.RESULT, 30000)
             ?: return failure(AbemaAccountFailure.CANCELLED)
+        android.util.Log.d("TachiaiAbemaAccount", "client=RESULT")
         val seq = fields["sequence"] as? Long ?: return failure(AbemaAccountFailure.REFUSED)
         val value = AbemaAccountAccessIpc.result(fields, request, seq, System.currentTimeMillis())
             ?: run { close(); return failure(AbemaAccountFailure.REFUSED) }

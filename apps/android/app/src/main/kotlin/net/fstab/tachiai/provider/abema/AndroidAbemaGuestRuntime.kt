@@ -110,7 +110,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             }
         }
         override fun cancel() { sealInitialize(); preparing.cancel(); account.get()?.close() }
-        override fun cancelTransport() { download.get()?.close(); account.get()?.close() }
+        // The preparation thread's own close confirms the download receipt.
+        override fun cancelTransport() { try { download.get()?.cancel() } finally { account.get()?.close() } }
         override fun checkAccess() = account.get()?.checkWorker() != false
         override val cleanupConfirmed get() = preparing.cleanupConfirmed && routeReceipt.cleanupConfirmed &&
             download.get()?.cleanupConfirmed != false && accountClosed.get()

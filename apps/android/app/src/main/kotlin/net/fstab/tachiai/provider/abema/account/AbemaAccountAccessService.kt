@@ -19,6 +19,8 @@ import net.fstab.tachiai.presentation.validProviderInstanceId
 internal object AbemaAccountAccessIpc {
     const val OPEN = 1; const val ACQUIRE = 2; const val CHECK = 3; const val CLOSE = 4
     const val READY = 5; const val RESULT = 6; const val CHECKED = 7; const val CLOSED = 8; const val REVOKED = 9
+    // Service to client: the acquired lease now expires later (same account).
+    const val RENEWED = 10
     const val IPC_MS = 5000L
     enum class Status { ACCOUNT, GUEST, FAILURE }
     class Request(val nonce: String, val instance: String, val proof: String, val source: String,
@@ -139,7 +141,6 @@ internal class AbemaAccountAccessOwnerRegistry {
             created.owner.close() // Unattached factory allocation owns no transport.
         }
     }
-    fun invalidate(instanceId: String, ownerProof: String) { shared["$instanceId|$ownerProof"]?.owner?.invalidate() }
 }
 
 // Only the ordinary process constructs stores/route owners. Cleanup poison is
@@ -147,11 +148,6 @@ internal class AbemaAccountAccessOwnerRegistry {
 internal object AndroidAbemaAccountAccessOwners {
     private val owners = AbemaAccountAccessOwnerRegistry()
     private val blocked = ConcurrentHashMap.newKeySet<String>()
-    fun invalidate(instanceId: String, ownerProof: String) {
-        // A durably renewed account needs a fresh profile proof for surviving
-        // consumers. Retain the owner and any cleanup poison; never replace it.
-        owners.invalidate(instanceId, ownerProof)
-    }
     fun poison(request: AbemaAccountAccessIpc.Request) {
         blocked.add(request.instance)
         AbemaAccountWorkers.poisoned(request.instance).set(true)
@@ -173,7 +169,7 @@ internal object AndroidAbemaAccountAccessOwners {
                 { gate -> binding.transport(captured, gate) },
                 { transport -> ((transport as? OwnedAbemaAccountTransport)?.cleanupConfirmed == true).also { confirmed ->
                     if (!confirmed) { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) }
-                } })
+                } }, { marker -> android.util.Log.d("TachiaiAbemaAccount", "owner=$marker") })
         }
         // A reused registry owner does not replace the fresh caller's scope
         // check. Durable acquire/lease checks still validate the shared grant
@@ -244,6 +240,7 @@ class AbemaAccountAccessService : Service() {
         @Volatile private var attachment: AbemaAccountAccessOwner.Attachment? = null
         @Volatile private var lease: AbemaAccountAccessLease? = null
         private var acquireStarted = false
+        private var announcedExpiry: Long? = null // Main-owned.
         private val death = IBinder.DeathRecipient { main.post { end(sequence) } }
         private fun current(): Boolean {
             val now = SystemClock.elapsedRealtime()
@@ -257,6 +254,12 @@ class AbemaAccountAccessService : Service() {
         }
         private fun pulse() {
             if (!current()) { send(AbemaAccountAccessIpc.REVOKED, sequence); end(sequence); return }
+            val announced = announcedExpiry
+            val expiry = if (announced == null) null else runCatching { lease?.expiresAtMs() }.getOrNull()
+            if (announced != null && expiry != null && expiry > announced) {
+                announcedExpiry = expiry
+                send(AbemaAccountAccessIpc.RENEWED, sequence, mapOf("expiry" to expiry))
+            }
             main.postAtTime({ pulse() }, this, SystemClock.uptimeMillis() + 100)
         }
         private fun worker(action: () -> Unit) {
@@ -308,6 +311,7 @@ class AbemaAccountAccessService : Service() {
                     observed.failure?.let { values["failure"] = it.name }
                     if (observed.status != AbemaAccountAccessIpc.Status.FAILURE && !current()) { end(seq); return@post }
                     send(AbemaAccountAccessIpc.RESULT, seq, values)
+                    announcedExpiry = observed.grant?.expiresAtMs
                 }
             }
         }

@@ -62,13 +62,13 @@ browser `ProviderAdapter`, native `PrototypeFeedSession` and media-control
 resolved resource behind those boundaries. Collection navigation and account
 access do not automatically confer playback entitlement or native compatibility.
 
-The legacy bridge resolves only an exact supported public resource back to its
-original sample. Removing and re-adding that resource may change its local UUID
-without changing playback support. A different identity, provider, kind or intent
-cannot become the fixed News or replay sample through that bridge. Consumers
-validate the item's owning instance before preparing playback. Provider-specific
-dynamic channel resolution is subsequent integration work. Exact Twitch videos
-also use the bounded native replay path described below without a sample bridge.
+Product playback has no built-in sources or sample bridge. A saved item whose
+resource matches a former built-in sample is an ordinary configured item: saved
+ABEMA News plays as a configured channel with its instance's saved account
+ownership (no guest path), and the former ABEMA and Twitch replays play as a
+configured episode and video. Consumers validate the item's owning instance
+before preparing playback. Exact Twitch videos use the bounded native replay
+path described below.
 
 ## Persistence and migration
 
@@ -79,22 +79,25 @@ key aliases and other provider/route/grant records are unchanged. JVM and file
 locks cover read-modify-write; writes use the existing encrypted AtomicFile path.
 An invalid or unknown-version record fails rather than regenerating samples.
 
-An absent list is a read-only legacy projection. It seeds that instance with
-the existing sample sources for its service, preserving custom source labels
-and copying legacy quality defaults. Deterministic item UUIDs derive from
-instance UUID and legacy source name. The first explicit list mutation commits
-the validated projection. An explicitly empty saved list remains empty on
-restart and is never reseeded.
+An absent list is empty; built-in samples are never seeded. Lists saved by the
+former legacy projection keep their deterministic item UUIDs (derived from
+instance UUID and legacy source name) and play through the ordinary configured
+paths. The exception is the former built-in Twitch live entries: they name a
+login rather than the catalog broadcaster identity configured playback needs,
+so a read drops exactly those entries and rewrites the list under the store
+lock. An explicitly empty saved list remains empty on restart.
 
 Routes and authorization remain owned by their existing stores. Legacy source
-metadata and quality records are not rewritten by projection. The existing
+metadata and quality records keep decoding unchanged and are not rewritten. The existing
 explicit reset/review policy for obsolete four-source settings is preserved;
 the catalog does not guess routes from those records.
 
 Configured feed references encode local item and instance UUIDs with a version
 marker. Historical enum/instance references map deterministically to these IDs.
 Null and malformed slots remain unassigned; stale references cannot select
-another instance or sample. The configured recovery reader accepts historical
+another instance or item. Once provider setup loads, a restored selection or
+checkpoint choice that no longer resolves becomes an empty slot, which is
+persisted, so Watch is never blocked by an uncleared stale slot. The configured recovery reader accepts historical
 and new formats on the same bounded private checkpoint path, and writes only
 local identities. It consumes only valid records; malformed data remains visible
 as a restoration failure.
@@ -102,7 +105,7 @@ as a restoration failure.
 ## Delivery boundaries
 
 The foundation in [issue #96](https://github.com/altendky/tachiai/issues/96)
-provides models, contract, store, codecs, migration and the exact legacy bridge.
+provided models, contract, store, codecs, migration and the former exact legacy bridge.
 [Issue #97](https://github.com/altendky/tachiai/issues/97) activates configured
 lists and local item/instance references in the common management/selection flow.
 Providers → Manage streams opens the selected instance's saved list and a shared
@@ -113,7 +116,7 @@ instance snapshots before preparation. Saved quality defaults are item-owned;
 duplicate feeds share those defaults and retain independent session overrides.
 Restart checkpoints use the same local references and accept old enum choices.
 
-Historical sample adapters retain **Prototype samples**, with unknown
+Historical sample catalog adapters retain **Prototype samples**, with unknown
 availability and unverified account collections. The ABEMA manager now uses the
 [public Channels adapter](abema-catalog-access.md#public-channels-adapter) for
 real channel browsing, local search, lookup and refresh, while My List and
@@ -127,7 +130,7 @@ The explicit metadata-refresh action below can update that snapshot in place.
 Shared controller and UI fixtures exercise paging,
 account access states and explicit collection children. These fixtures do not
 establish either provider's real API support. Arbitrary resources and collections
-cannot silently resolve to the News or replay sample. Known unavailable items
+cannot silently resolve to another item. Known unavailable items
 remain saved; the broadcaster-specific offline assessment below is the only
 exception to blocking their saved availability state before preparation.
 
@@ -207,21 +210,21 @@ Unavailable metadata routes do not select System as a fallback.
 
 [Issue #126](https://github.com/altendky/tachiai/issues/126) connects exact Twitch
 video resources to the existing debug native replay prototype. Both connected
-catalog videos and locally imported video links can be selected without becoming
-the historical replay sample. Watch freezes the exact resource, configured-item
+catalog videos and locally imported video links can be selected as exact
+configured videos. Watch freezes the exact resource, configured-item
 UUID and owning provider-instance UUID. Duplicate choices create independent
 feed sessions; saved quality defaults and UUID-only recovery remain unchanged.
 
 Only canonical positive video IDs within the native resolver's existing limit of
 20 ASCII digits are supported. Longer IDs remain configured and fail as unsupported
 before route/session preparation. Collections and other unsupported identities
-do not select a sample. Known unavailable video items
+do not select another item. Known unavailable video items
 stay configured and retain their existing playback block.
 
 Preparation uses the selected instance's exact route and unified Smart TV
 connection, shared with discovery. Missing
-routes or grants never fall back to another instance. New videos start at zero;
-the exact historical replay retains its 70-minute experimental start position.
+routes or grants never fall back to another instance. Every video, including a
+saved former built-in replay, starts at zero.
 This adds no endpoints, protocol, scope, media origin, DRM behavior or background
 playback. Existing rejection, foreground, retention and cleanup gates still apply.
 

@@ -73,10 +73,10 @@ internal fun planProviderInstanceRoutes(selection: ConfiguredPlaybackSelection, 
     val keys = profiles.filterValues { it.isSuccess }.mapValues { (_, profile) ->
         profile.getOrNull()?.let(::routeConfigurationKey) ?: "SYSTEM"
     }
-    val historicalFeeds = selection.feeds.mapNotNull { feed ->
-        feed.historicalSource?.let { PrototypeFeedChoice(it, feed.instanceId) }
-    }
-    return ProviderInstanceRoutePlan(profiles, compatibleAbemaInstanceRoutes(historicalFeeds, keys))
+    // WebView's ABEMA proxy is process-wide for every ABEMA feed, whatever its catalog kind.
+    val abema = selection.feeds.filter { it.service == PrototypeService.ABEMA }.map { it.instanceId }.distinct()
+    val abemaKeys = abema.map { keys[it] }
+    return ProviderInstanceRoutePlan(profiles, abema.size <= 1 || abemaKeys.none { it == null } && abemaKeys.distinct().size == 1)
 }
 
 // Worker-only snapshot/preflight. No RouteSession, socket or provider request is

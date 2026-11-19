@@ -64,7 +64,7 @@
         <activity
             android:name=".feature.connections.AbemaApprovalBrowserActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
-            android:configChanges="orientation|screenSize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|keyboard|keyboardHidden|navigation|density|fontScale"
             android:excludeFromRecents="true"
             android:exported="false"
             android:process=":abema_approval_browser" />
@@ -108,7 +108,7 @@
             android:name=".feature.presentation.CachedPrototypeActivity"
             android:theme="@style/Theme.Tachiai.Prototype"
             android:exported="true"
-            android:configChanges="orientation|screenSize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|keyboard|keyboardHidden|navigation|density|fontScale"
             android:process=":prototype_cached_player" />
         <activity
             android:name=".feature.presentation.PlaybackRestartActivity"

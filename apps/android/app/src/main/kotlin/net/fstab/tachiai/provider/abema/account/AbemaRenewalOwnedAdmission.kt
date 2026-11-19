@@ -251,6 +251,11 @@ internal class AbemaRenewalOwnedAdmission<W, O : AbemaRenewalOwnedOperation>(
         }
         coordinator.finish(entry.ticket, status(outcome.result), outcome.cleanupConfirmed,
             outcome.diagnostic, outcome.producerDiagnostic)
+        // An owner/job-system cancellation (for example a network change or
+        // onStopJob) is not a renewal failure. Once its cleanup is confirmed,
+        // a waiting readiness observer may start a fresh renewal immediately.
+        if (outcome.result == AbemaAutomaticRenewalResult.CANCELLED && outcome.cleanupConfirmed &&
+            synchronized(lock) { entry.cancelSent }) coordinator.retireCancelled(entry.ticket)
         if (synchronized(lock) { entry.delivered }) runCatching { entry.notify(outcome) }
     }
 
@@ -268,7 +273,7 @@ internal class AbemaRenewalOwnedAdmission<W, O : AbemaRenewalOwnedOperation>(
             AbemaAutomaticRenewalResult.INTERACTION_REQUIRED -> AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED
             AbemaAutomaticRenewalResult.STORAGE_FAILURE -> AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE
             AbemaAutomaticRenewalResult.TEMPORARY_FAILURE -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
-            AbemaAutomaticRenewalResult.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.FAILURE
+            AbemaAutomaticRenewalResult.CANCELLED -> AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE
         }
     }
 }

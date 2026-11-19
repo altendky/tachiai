@@ -13,14 +13,11 @@ import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.connections.configuredSourceStore
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.feature.connections.providerInstanceStore
-import net.fstab.tachiai.feature.connections.sourceSetupStore
-import net.fstab.tachiai.feature.connections.streamQualityStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.diagnostics.FailureJournalCodec
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
-import net.fstab.tachiai.presentation.legacyConfiguredSources
 import net.fstab.tachiai.provider.abema.account.abemaRenewalSnapshotMatches
 import net.fstab.tachiai.provider.abema.account.androidAbemaAccountConnectionBinding
 import net.fstab.tachiai.provider.catalog.CatalogIntent
@@ -85,17 +82,16 @@ class AbemaLocalConfiguredContextDeviceTest {
             phase = Phase.SETUP
             check(inBudget())
             val id = defaultProviderInstanceId(PrototypeService.ABEMA)
-            val setups = sourceSetupStore(context).read()
             val registry = providerInstanceStore(context).readSnapshot { legacyProviderSettings(context) }
             registryOrigin = if (registry.committed) Origin.COMMITTED_RECORD else Origin.LEGACY_DERIVED
             val instance = checkNotNull(registry.instances.singleOrNull { it.id == id && it.service == PrototypeService.ABEMA })
-            val quality = streamQualityStore(context).read()
             phase = Phase.CONFIGURED
             check(inBudget())
             var legacyDerived = false
+            // A missing record is an empty list; built-ins are never seeded.
             val sources = configuredSourceStore(context, instance).read {
                 legacyDerived = true
-                legacyConfiguredSources(instance, setups, quality)
+                emptyList()
             }
             origin = if (legacyDerived) Origin.LEGACY_DERIVED else Origin.COMMITTED_RECORD
             count = sources.size

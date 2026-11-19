@@ -20,12 +20,16 @@ internal sealed interface AbemaAccountAccessResult {
 
 // current is safe on the main thread. checkWorker deliberately performs
 // protected owner/storage checks and must run off the UI thread.
+// A lease follows its owner's proof across a direct same-account renewal, so
+// its current expiry can move later than the grant it was acquired with.
 internal class AbemaAccountAccessLease internal constructor(
     val grant: AbemaAccountGrant?, private val memoryCurrent: () -> Boolean,
     private val durableCurrent: () -> Boolean,
+    private val currentExpiry: () -> Long? = { grant?.expiresAtMs },
 ) {
     fun current() = memoryCurrent()
     fun checkWorker() = durableCurrent()
+    fun expiresAtMs(): Long? = currentExpiry()
     override fun toString() = "AbemaAccountAccessLease(redacted)"
 }
 
@@ -41,6 +45,8 @@ internal class AbemaAccountAccessOwner(
     private val ownerCurrent: () -> Boolean,
     private val transportFactory: (canRequest: () -> Boolean) -> AbemaAccountTransport,
     private val transportCleanupConfirmed: (AbemaAccountTransport) -> Boolean,
+    // Closed timing markers only; never account, route or response values.
+    private val mark: (String) -> Unit = {},
 ) : AutoCloseable {
     companion object {
         // A late native return cannot turn an uncertain cleanup into a success.
@@ -61,7 +67,9 @@ internal class AbemaAccountAccessOwner(
     private var flight: Flight? = null
     private val cleanup = mutableListOf<AbemaAccountCleanupReceipt<AbemaAccountTransport>>()
     private var retiredIdle: (() -> Unit)? = null
-    private class Proof(val snapshot: AbemaAccountSnapshot, val generation: Long, val minimumWall: Long)
+    // A renewal successor keeps its predecessor's lineage and generation.
+    private class Proof(val snapshot: AbemaAccountSnapshot, val generation: Long, val minimumWall: Long,
+        val lineage: Any = Any())
     private class Flight(val generation: Long, val began: Long, val deadline: Long) {
         val finished = CountDownLatch(1)
         var transport: AbemaAccountTransport? = null
@@ -142,40 +150,59 @@ internal class AbemaAccountAccessOwner(
         cancelled?.start()
         notifyRetiredIdle()
     }
-    private fun cheap(value: Proof, attachment: Attachment? = null): Boolean {
+    private fun cheap(value: Proof, attachment: Attachment? = null): Boolean = currentProof(value, attachment) != null
+    // The proof currently standing for value's lineage, adopting the store's
+    // direct same-account renewal successor in place of an obsolete revision.
+    private fun currentProof(value: Proof, attachment: Attachment? = null): Proof? {
         return synchronized(lock) {
             val now = wallMs()
-            val stable = store.usable(value.snapshot.revision) && now >= maxOf(value.minimumWall, lastWall) &&
-                (value.snapshot.record?.grant?.expiresAtMs?.let { now < it } != false)
-            if (!stable && proof === value) { generation++; proof = null }
+            val held = proof?.takeIf { it.lineage === value.lineage }
+            val next = if (held == null || held.generation != generation || store.usable(held.snapshot.revision)) null
+                else store.successor(held.snapshot)
+            val current = if (held == null || next == null) held else Proof(next, held.generation,
+                maxOf(held.minimumWall, checkNotNull(next.record).acceptedWallMs), held.lineage).also { proof = it }
+            val checked = current ?: value
+            val stable = store.usable(checked.snapshot.revision) && now >= maxOf(checked.minimumWall, lastWall) &&
+                (checked.snapshot.record?.grant?.expiresAtMs?.let { now < it } != false)
+            if (!stable && current != null && proof === current) { generation++; proof = null }
             val okay = !closed && !poisoned && attachments > 0 && attachment?.active() != false &&
-                generation == value.generation && proof === value && stable
+                generation == value.generation && current != null && proof === current && stable
             if (okay) lastWall = now
-            okay
+            if (okay) current else null
         }
     }
     private fun sameRecord(a: AbemaStoredAccount?, b: AbemaStoredAccount?): Boolean =
         if (a == null || b == null) a == null && b == null else
             a.grant.userId == b.grant.userId && a.grant.bearer == b.grant.bearer &&
                 a.grant.expiresAtMs == b.grant.expiresAtMs && a.acceptedWallMs == b.acceptedWallMs && a.generation == b.generation
-    private fun durable(value: Proof, attachment: Attachment): Boolean {
-        if (!cheap(value, attachment)) return false
-        val okay = try {
-            ownerCurrent() && cheap(value, attachment) && store.readSnapshot().let {
-                it.revision == value.snapshot.revision && store.usable(it.revision) && sameRecord(it.record, value.snapshot.record)
-            } && ownerCurrent() && cheap(value, attachment)
-        } catch (_: Throwable) { false }
+    private fun durable(value: Proof, attachment: Attachment): Boolean = durableProof(value, attachment) != null
+    // The checked proof for value's lineage. A read that waited for a renewal
+    // publication compares against the successor adopted afterwards.
+    private fun durableProof(value: Proof, attachment: Attachment): Proof? {
+        if (!cheap(value, attachment)) return null
+        val checked = try {
+            val first = if (ownerCurrent()) currentProof(value, attachment) else null
+            val read = if (first == null) null else store.readSnapshot()
+            val current = if (read == null || read.revision == first?.snapshot?.revision) first
+                else currentProof(value, attachment)
+            current?.takeIf { read != null &&
+                read.revision == it.snapshot.revision && store.usable(read.revision) && sameRecord(read.record, it.snapshot.record) &&
+                ownerCurrent() && currentProof(value, attachment) === it }
+        } catch (_: Throwable) { null }
+        val okay = checked != null
         if (!okay && attachment.active()) {
             val cancelled = synchronized(lock) {
-                if (generation == value.generation && proof === value) revokeLocked() else null
+                if (generation == value.generation && proof?.lineage === value.lineage) revokeLocked() else null
             }
             cancelled?.start()
         }
-        return okay
+        return checked
     }
     private fun result(value: Proof, attachment: Attachment): AbemaAccountAccessResult {
-        if (!durable(value, attachment)) return AbemaAccountAccessResult.Failed(AbemaAccountFailure.CANCELLED)
-        val lease = AbemaAccountAccessLease(value.snapshot.record?.grant, { cheap(value, attachment) }, { durable(value, attachment) })
+        // A cached proof may have just adopted a renewal; issue its current grant.
+        val current = durableProof(value, attachment) ?: return AbemaAccountAccessResult.Failed(AbemaAccountFailure.CANCELLED)
+        val lease = AbemaAccountAccessLease(current.snapshot.record?.grant, { cheap(value, attachment) }, { durable(value, attachment) },
+            { currentProof(value, attachment)?.snapshot?.record?.grant?.expiresAtMs })
         return if (lease.grant == null) AbemaAccountAccessResult.Guest(lease) else AbemaAccountAccessResult.Account(lease)
     }
     private fun acquire(attachment: Attachment, began: Long, deadline: Long): AbemaAccountAccessResult {
@@ -197,7 +224,7 @@ internal class AbemaAccountAccessOwner(
             cached = proof
             if (cached != null) null else flight ?: Flight(generation, began, deadline).also { flight = it; leader = true }
         }
-        cached?.let { return boundedResult(it) }
+        cached?.let { mark("PROOF_REUSED"); return boundedResult(it) }
         val work = pending ?: return AbemaAccountAccessResult.Failed(AbemaAccountFailure.CANCELLED)
         if (leader) {
             try { workers.execute { validate(work) } }
@@ -283,7 +310,9 @@ internal class AbemaAccountAccessOwner(
                 }
                 cancel?.start()
                 check()
+                mark("PROFILE_BEGIN")
                 val profile = transport.profile(record.grant.userId, record.grant.bearer)
+                mark("PROFILE_DONE")
                 check()
                 when (profile) {
                     is AbemaAccountProfileResult.Identity -> if (profile.id != record.grant.userId) accountRefused()
@@ -292,6 +321,7 @@ internal class AbemaAccountAccessOwner(
                 }
                 check()
                 val email = transport.emailRegistration(record.grant.userId, record.grant.bearer)
+                mark("EMAIL_DONE")
                 check()
                 when (email) {
                     AbemaAccountEmailResult.REGISTERED -> Unit

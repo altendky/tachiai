@@ -80,12 +80,14 @@ internal class BoundedNativeDashPlayer(
     private val requests = BoundedMediaRequests(budget, allowedUri, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onConnectionReleased = { request -> cleanup.released(request) },
         onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); observedFailure(stage, error) },
         transportObserver = transportObserver)
         .also { owned -> cleanup.own(10) { owned.close() } }
     private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onConnectionReleased = { request -> cleanup.released(request) },
         onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); observedFailure(stage, error) },
         transportObserver = transportObserver)
         .also { owned -> cleanup.own(20) { owned.close() } }
@@ -159,7 +161,10 @@ internal class BoundedNativeDashPlayer(
             .setDrmSessionManagerProvider { prewarm ?: manager }
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
             .setMediaSourceFactory(sourceFactory)
-            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
+            // Equal minimum and maximum keep loading continuously. With a 5 s
+            // minimum, a live feed held behind its window start stopped loading
+            // until 5 s remained, then asked for a segment already removed (1002).
+            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 30_000, 1_000, 2_000).build())
             .build().also { owned ->
                 cleanup.own(-10, ownerThread = true) {
                     observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, observedFailure) {
@@ -245,8 +250,11 @@ internal class BoundedNativeDashPlayer(
         if (!timingActive() || player.currentTimeline.isEmpty) return null
         val window = player.currentTimeline.getWindow(player.currentMediaItemIndex, Timeline.Window())
         fun known(value: Long): Long? = value.takeIf { it != C.TIME_UNSET && it >= 0 }
+        // Both positions are relative to a sliding live window; retained
+        // buffered footage can have a negative current and buffered endpoint.
         return NativeTimingSnapshot(player.currentPosition.takeIf { it != C.TIME_UNSET }, known(player.duration),
-            known(player.bufferedPosition), player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
+            player.bufferedPosition.takeIf { it != C.TIME_UNSET && it != C.TIME_END_OF_SOURCE },
+            player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
             known(window.defaultPositionMs), player.isCurrentMediaItemLive, player.isCurrentMediaItemDynamic,
             player.isCurrentMediaItemSeekable && player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             player.isCommandAvailable(Player.COMMAND_SEEK_TO_DEFAULT_POSITION), player.isPlayingAd,

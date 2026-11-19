@@ -13,7 +13,9 @@ two labelled panes. Each feed independently becomes video or a safe error
 message; a successful feed can play while the other prepares or fails. Sources
 returns to the picker with the choices retained. Its cached ABEMA path no longer
 requires the full provider page or its consent overlay; the old web-page startup
-remains a comparison.
+remains a comparison. The fixed entries have since been removed: the picker
+lists only saved [configured items](configured-catalog.md), and only the
+developer-only page comparison keeps fixed ABEMA samples.
 
 The agreed UX is portrait stacking without forced equal heights, landscape
 primary plus movable floating secondary with tap-to-swap, joint Play/Pause,

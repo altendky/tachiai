@@ -24,7 +24,7 @@ class PhonePickerPresentationTest {
     @Test fun phoneKeepsCheckboxAssignmentsAndDuplicateFeedSelection() {
         val provider = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
         val source = legacyConfiguredSources(provider, defaultSourceSetups(), emptyMap()).single {
-            it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_LIVE)
+            it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_REPLAY)
         }
         var watched: ConfiguredFeedAssignments? = null
         compose.setContent { TachiaiPrototypeTheme(television = false) {

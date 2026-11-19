@@ -51,7 +51,8 @@ internal fun readConnectionImport(input: InputStream): ByteArray {
     }
 }
 
-internal fun parseConnectionProfile(bytes: ByteArray): ConnectionProfile = routeProtocols.parse(bytes)
+internal fun parseConnectionProfile(bytes: ByteArray): ConnectionProfile =
+    routeProtocols.parse(bytes).also { it.protocol.admitImport(it) }
 
 internal fun decodeConnectionText(bytes: ByteArray): String {
     if (bytes.size > CONNECTION_IMPORT_LIMIT) failConnectionImport(ConnectionImportFailure.Category.SIZE)

@@ -650,12 +650,15 @@ reachability or content availability.
 
 - Maximum input: 8 KiB, strict UTF-8 text, optionally with a leading BOM and CRLF.
 - WireGuard: exactly one Interface and Peer; private/public keys, interface
-  addresses, peer AllowedIPs and endpoint required. Optional DNS IPs, MTU,
-  keepalive and preshared key are supported. Numeric IPv4/IPv6 CIDRs and bracketed
-  IPv6 endpoints are validated without hostname resolution. Comments are removed
-  before canonical encrypted storage. Keys must be canonical Base64, 32 bytes and
-  nonzero. DNS search domains, IPv6 zones/mapped addresses, repeated fields,
-  additional peers and other options are outside this first subset.
+  addresses, peer AllowedIPs, DNS IPs and endpoint required. Each DNS IP must be
+  inside AllowedIPs and match an interface address family, and IPv6 interfaces
+  need MTU 1280 or more, because the native tunnel never falls back to host DNS.
+  Optional MTU, keepalive and preshared key are supported. Numeric IPv4/IPv6
+  CIDRs and bracketed IPv6 endpoints are validated without hostname resolution.
+  Comments are removed before canonical encrypted storage. Keys must be canonical
+  Base64, 32 bytes and nonzero. DNS search domains, IPv6 zones/mapped addresses,
+  repeated fields, additional peers and other options are outside this first
+  subset.
 - Shell hooks, Table, SaveConfig, FwMark and ListenPort are rejected rather than
   executed or silently omitted. This imports supported data, not `wg-quick`
   commands. [WireGuard format](https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8),

@@ -4,6 +4,8 @@ import java.io.InputStream
 import java.io.ByteArrayOutputStream
 import java.net.CookieHandler
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 
 // A separate public-code transport, not a widening of the media/access policy.
@@ -23,6 +25,7 @@ internal class AbemaPublicBundleHttp(
     private var active: HttpsURLConnection? = null
     private var activeInput: InputStream? = null
     private var disconnect = Disconnect.CONFIRMED
+    private var disconnectDone: CountDownLatch? = null
     private var cleanupFailed = false
     private var fetching = false
     val cleanupConfirmed get() = synchronized(lock) {
@@ -130,13 +133,29 @@ internal class AbemaPublicBundleHttp(
         }
     }
 
+    // Cancellation attempt only: seal and disconnect, but a body or disconnect
+    // still held by the fetch thread is not a failure. That owner's finally and
+    // close() remain the confirmation; only an actual failed release throws.
+    fun cancel() {
+        val connection = synchronized(lock) { closed = true; active }
+        try { disconnect(connection) } catch (error: AbemaBundleException) {
+            if (synchronized(lock) { cleanupFailed }) throw error
+        }
+        if (synchronized(lock) { cleanupFailed }) throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
+    }
+
     private fun disconnect(connection: HttpsURLConnection?) {
         if (connection == null) return
+        // A concurrent claimant's disconnect is this caller's result too: wait
+        // briefly for it instead of reporting a release that has not failed.
+        val pending = synchronized(lock) { disconnectDone.takeIf { active === connection && disconnect == Disconnect.IN_PROGRESS } }
+        if (pending != null) awaitUninterruptibly(pending, 2_000)
+        val done = CountDownLatch(1)
         synchronized(lock) {
             if (active !== connection) return
             when (disconnect) {
                 Disconnect.CONFIRMED -> return
-                Disconnect.AVAILABLE -> disconnect = Disconnect.IN_PROGRESS
+                Disconnect.AVAILABLE -> { disconnect = Disconnect.IN_PROGRESS; disconnectDone = done }
                 Disconnect.IN_PROGRESS, Disconnect.FAILED -> throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
             }
         }
@@ -151,6 +170,19 @@ internal class AbemaPublicBundleHttp(
             synchronized(lock) { disconnect = Disconnect.FAILED; cleanupFailed = true }
             runCatching { onFailure(error) }
             throw AbemaBundleException(AbemaBundleFailure.NETWORK_FAILED)
-        }
+        } finally { done.countDown() }
+    }
+
+    private fun awaitUninterruptibly(latch: CountDownLatch, timeoutMs: Long) {
+        val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        var interrupted = false
+        try {
+            while (true) {
+                val remaining = until - System.nanoTime()
+                if (remaining <= 0) return
+                try { if (latch.await(remaining, TimeUnit.NANOSECONDS)) return }
+                catch (_: InterruptedException) { interrupted = true }
+            }
+        } finally { if (interrupted) Thread.currentThread().interrupt() }
     }
 }

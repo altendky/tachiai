@@ -34,6 +34,8 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     private var sequence = 1L
     private var operation: Operation? = null
     @Volatile private var credential: AbemaAccountGrant? = null
+    // A later expiry the service announced for this lease after a same-account renewal.
+    @Volatile private var renewedExpiry = 0L
     private val wallClock = AbemaAccountWallClock(System::currentTimeMillis)
     @Volatile private var cleanupConfirmed = false
     private var connection: Connection? = null // Main-owned.
@@ -50,7 +52,7 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
     fun current(): Boolean {
         val wall = wallClock.sample()
         val value = credential
-        val okay = acquired.get() && live() && wall != null && (value == null || wall < value.expiresAtMs)
+        val okay = acquired.get() && live() && wall != null && (value == null || wall < maxOf(value.expiresAtMs, renewedExpiry))
         if (!okay && acquired.get()) { revoked.set(true); close() }
         return okay
     }
@@ -64,6 +66,12 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             when (message.what) {
                 AbemaAccountAccessIpc.READY -> if (seq == 1L && fields.keys == AbemaAccountAccessIpc.base(request, seq).keys && live()) ready.countDown()
                 AbemaAccountAccessIpc.REVOKED -> if (fields.keys == AbemaAccountAccessIpc.base(request, seq).keys) { revoked.set(true); close() }
+                AbemaAccountAccessIpc.RENEWED -> {
+                    if (fields.keys != AbemaAccountAccessIpc.base(request, seq).keys + "expiry") return
+                    val expiry = fields["expiry"] as? Long ?: return
+                    // It may arrive before acquire() publishes the credential.
+                    if (!closed.get() && expiry > renewedExpiry && expiry <= 9_007_199_254_740_991L) renewedExpiry = expiry
+                }
                 AbemaAccountAccessIpc.CLOSED -> {
                     if (fields.keys != AbemaAccountAccessIpc.base(request, seq).keys + "confirmed" || fields["confirmed"] !is Boolean) return
                     val confirmed = fields["confirmed"] == true
@@ -131,8 +139,10 @@ internal class AndroidAbemaAccountAccessClient(context: Context, instanceId: Str
             } catch (_: Throwable) { finishConnection(true) }
         }
         if (!await(ready, AbemaAccountAccessIpc.IPC_MS, true)) { close(); return failure(AbemaAccountFailure.TIME_LIMIT_REACHED) }
+        android.util.Log.d("TachiaiAbemaAccount", "client=BOUND")
         val fields = transact(AbemaAccountAccessIpc.ACQUIRE, AbemaAccountAccessIpc.RESULT, 30000)
             ?: return failure(AbemaAccountFailure.CANCELLED)
+        android.util.Log.d("TachiaiAbemaAccount", "client=RESULT")
         val seq = fields["sequence"] as? Long ?: return failure(AbemaAccountFailure.REFUSED)
         val value = AbemaAccountAccessIpc.result(fields, request, seq, System.currentTimeMillis())
             ?: run { close(); return failure(AbemaAccountFailure.REFUSED) }

@@ -128,5 +128,13 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         // A foreground successor can retry the same projection immediately.
         if (!entry.claimed) entries.remove(entry)
     }
+    // A claimed renewal cancelled by its owner before its deadline, with
+    // confirmed cleanup, did not fail. Forget its terminal result so the same
+    // projection may start again; an expired deadline keeps its cooldown.
+    @Synchronized fun retireCancelled(ticket: String) {
+        val entry = entries.singleOrNull { it.ticket == ticket } ?: return
+        val finished = entry.finished ?: return
+        if (entry.released && !entry.cleanupRefused && !refusedClock && finished < entry.deadline) entries.remove(entry)
+    }
     override fun toString() = "AbemaRenewalReadinessCoordinator(redacted)"
 }

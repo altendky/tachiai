@@ -306,7 +306,6 @@ class ManageStreamsActivity : ComponentActivity() {
                     check(sharedOwnerProvider == null || sharedOwnerProvider ==
                         ProviderId(owner.service.name.lowercase(java.util.Locale.ROOT)))
                     val setups = sourceSetupStore(this@ManageStreamsActivity).read()
-                    val qualities = streamQualityStore(this@ManageStreamsActivity).read()
                     val catalog = if (prepared is ProviderStartupResult.Ready) prepared.value
                         else when (owner.service) {
                         PrototypeService.ABEMA -> androidAbemaChannelCatalog(this@ManageStreamsActivity, owner.id, setups,
@@ -315,13 +314,12 @@ class ManageStreamsActivity : ComponentActivity() {
                             canUse = { resumed && revision == current && prepared !is ProviderStartupResult.Failed }, expectedOwnerProof = ownerProof)
                         PrototypeService.YOUTUBE -> YouTubeCatalog(owner.id) { resumed && revision == current }
                         }
-                    Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner)) to
-                        legacyConfiguredSources(owner, setups, qualities)
+                    Triple(owner, catalog, configuredSourceStore(this@ManageStreamsActivity, owner))
                 }
-                if (isDestroyed || revision != current) { withContext(Dispatchers.IO) { loaded.first.second.close() }; return@launch }
-                val (parts, legacy) = loaded
+                if (isDestroyed || revision != current) { withContext(Dispatchers.IO) { loaded.second.close() }; return@launch }
+                val parts = loaded
                 catalogRoutes = parts.first.setup.routes
-                controller = StreamManagementController(parts.first, parts.second, parts.third, { legacy }, scope,
+                controller = StreamManagementController(parts.first, parts.second, parts.third, { emptyList() }, scope,
                     diagnostics = diagnostics,
                     notice = when (parts.first.service) {
                     PrototypeService.ABEMA -> "Browse channels and Schedule, search ABEMA, or paste a public link. Open a series or season to choose an episode. Add saves the item to Tachiai, including offline or future content. Playback depends on current provider access. My List and History require a connected ABEMA account."

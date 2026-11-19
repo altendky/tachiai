@@ -77,6 +77,32 @@ class NativeRelativeNudgeTest {
         assertEquals(NativeMixedSide.B,
             nativeRelativeNudgePlan(live.copy(positionMs = 70_000), replay, -5_000).side)
     }
+    @Test fun `a live feed held before its window start is moved forward into the window`() {
+        // Observed on ABEMA: retained footage 1 s before a 48 s window start
+        // while Twitch is mid-window. Moving B back would leave A to expire.
+        val a = live.copy(positionMs = -1_000, durationMs = 48_000)
+        val b = live.copy(positionMs = 12_000, durationMs = 30_000, windowStartMs = 9_000_000)
+        assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.A, 7_000),
+            nativeRelativeNudgePlan(a, b, 7_000))
+        // A backward step never chooses the expired feed; B advances instead.
+        assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.B, 1_000),
+            nativeRelativeNudgePlan(a, b, -1_000))
+        // A forward step that still lands before the window is not a full step.
+        assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.B, -500),
+            nativeRelativeNudgePlan(live.copy(positionMs = -1_000, durationMs = 48_000), b, 500))
+    }
+    @Test fun `a step protects the tighter live margin of the feed that does not move`() {
+        val a = live.copy(positionMs = 3_000, durationMs = 48_000)
+        val b = live.copy(positionMs = 20_000, durationMs = 30_000, windowStartMs = 9_000_000)
+        // Moving B back would leave A 3 s from its window start; A moves forward.
+        assertEquals(NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.A, 1_000),
+            nativeRelativeNudgePlan(a, b, 1_000))
+        // Comfortable margins keep the moved feed's own-room preference.
+        assertEquals(NativeMixedSide.A,
+            nativeRelativeNudgePlan(a.copy(positionMs = 15_000), b.copy(positionMs = 16_000), 1_000).side)
+        assertEquals(NativeMixedSide.B,
+            nativeRelativeNudgePlan(a.copy(positionMs = 40_000), b.copy(positionMs = 16_000), 1_000).side)
+    }
     @Test fun `ads missing peers and nonready peers refuse globally`() {
         for ((a, b) in listOf(null to replay, replay to null, replay.copy(state = 2) to replay, replay to live.copy(state = 4)))
             assertEquals(NativeRelativeNudgeOutcome.UNAVAILABLE, nativeRelativeNudgePlan(a, b, 5_000).outcome)

@@ -1,5 +1,6 @@
 package net.fstab.tachiai.platform.network
 
+import java.net.InetAddress
 import java.util.Base64
 import routebridge.Routebridge
 
@@ -19,6 +20,38 @@ internal object WireGuardRouteProtocol : RouteProtocol {
     override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend = NativeRouteBackend(
         Routebridge.newWireGuard(profile.configuration, security.username, security.password, security.realm, security.allowedHosts),
     )
+
+    // Match the native backend, which never invents host DNS: every DNS server
+    // must be routed through the peer in a family the interface has, and IPv6
+    // interfaces need MTU 1280+. Otherwise every later route start would fail.
+    override fun admitImport(profile: ConnectionProfile) {
+        val fields = wireGuardFields(profile)
+        val addresses = fields["[Interface].Address"].orEmpty().split(',').map { it.substringBefore('/') }
+        val allowed = fields["[Peer].AllowedIPs"].orEmpty().split(',')
+        val dns = fields["[Interface].DNS"]?.split(',').orEmpty()
+        val mtu = fields["[Interface].MTU"]?.toIntOrNull() ?: 1280
+        val routable = dns.isNotEmpty() && dns.all { server ->
+            !numeric(server).isAnyLocalAddress && allowed.any { cidrContains(it, server) } &&
+                addresses.any { (':' in it) == (':' in server) }
+        }
+        if (!routable || addresses.any { numeric(it).isAnyLocalAddress } || (addresses.any { ':' in it } && mtu < 1280))
+            throw ConnectionImportFailure(ConnectionImportFailure.Category.VALUE,
+                "WireGuard needs DNS servers routed through the peer for its interface addresses. Nothing was saved.")
+    }
+
+    // Values already passed literalIp/cidr, so no hostname lookup occurs.
+    private fun numeric(address: String): InetAddress = InetAddress.getByName(address)
+
+    private fun cidrContains(prefix: String, address: String): Boolean {
+        val network = numeric(prefix.substringBefore('/')).address
+        val candidate = numeric(address).address
+        if (network.size != candidate.size) return false
+        val bits = prefix.substringAfter('/').toInt()
+        return (0 until bits).all { bit ->
+            val mask = 0x80 ushr (bit % 8)
+            (network[bit / 8].toInt() and mask) == (candidate[bit / 8].toInt() and mask)
+        }
+    }
 
     private fun invalidPeers(): Nothing = throw ConnectionImportFailure(
         ConnectionImportFailure.Category.PEERS, "This first importer supports exactly one WireGuard peer.",

@@ -1202,4 +1202,24 @@ class TwitchCatalogSessionTest {
             assertEquals(1, fixture.requests.refreshes.get())
         }
     }
+
+    @Test fun nonAuthorizationValidateStatusesAreTemporaryAndPreserveTheSavedGrant() {
+        for (status in listOf(429, 403, 404, 302, 503)) {
+            val fixture = Fixture(); fixture.connect()
+            val saved = fixture.memory.bytes!!.copyOf(); val writes = fixture.memory.writes
+            fixture.requests.validate = { DeviceAuthResponse(status, emptyMap()) }
+            fixture.session().use { session ->
+                for (result in listOf(session.validate(force = true), session.validateReadOnly())) {
+                    assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, result.summary.state)
+                    assertEquals(TwitchCatalogAuthFailure.NETWORK, result.summary.failure)
+                    assertNull(result.lease); assertFalse(result.requiresAuthorization)
+                }
+                assertEquals(0, fixture.requests.refreshes.get())
+                assertEquals(writes, fixture.memory.writes); assertArrayEquals(saved, fixture.memory.bytes)
+                assertEquals(TwitchCatalogGrantState.READY, fixture.store.read()!!.state)
+                fixture.requests.validate = { validation() }
+                assertEquals(TwitchCatalogSessionState.CONNECTED, session.validate(force = true).summary.state)
+            }
+        }
+    }
 }

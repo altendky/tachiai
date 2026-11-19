@@ -739,7 +739,10 @@ internal class TwitchCatalogSession(
                     requiresAuthorization = true)
                 return@synchronized refreshed(grant, local, began, onValidation, onRefresh)
             }
-            if (response.status >= 500) return@synchronized result(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
+            // Only 200 (and 400/401 provider answers) describe the grant. Rate
+            // limits, edge refusals, redirects and 5xx never retire a saved pair.
+            if (response.status != 200 && response.status != 400)
+                return@synchronized result(TwitchCatalogSessionState.TEMPORARY_FAILURE, TwitchCatalogAuthFailure.NETWORK)
             val validation = parseTwitchCatalogValidation(response, grant.userId, grant.localRetentionUntilMs != null)
             val providerDeadline = validation.expiresInMs?.let { Math.addExact(started, it) }
             val validatedGrant = if (grant.localRetentionUntilMs != null && providerDeadline != null) {

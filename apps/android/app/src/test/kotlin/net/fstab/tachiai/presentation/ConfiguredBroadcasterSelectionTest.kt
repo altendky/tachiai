@@ -30,7 +30,6 @@ class ConfiguredBroadcasterSelectionTest {
                 assertEquals(PrototypePlaybackKind.LIVE, it.kind)
                 assertEquals("TWITCH_CONFIGURED_BROADCASTER", it.diagnosticName)
                 assertFalse(it.diagnosticName.contains(source.entry.resource.identity))
-                assertNull(it.historicalSource)
                 assertEquals(twitch, it.resolve(instances))
             }
         }
@@ -59,9 +58,8 @@ class ConfiguredBroadcasterSelectionTest {
         val abema = instances.single { it.service == PrototypeService.ABEMA }
         val historical = legacyConfiguredSources(abema, defaultSourceSetups(), emptyMap()).first()
         val mixed = resolve(historical, source) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(PrototypeSource.ABEMA_LIVE, checkNotNull(mixed.selection.a).historicalSource)
+        assertEquals("ABEMA_CONFIGURED_CHANNEL", checkNotNull(mixed.selection.a).diagnosticName)
         assertEquals(source.entry.resource, checkNotNull(mixed.selection.b).resource)
-        assertNull(checkNotNull(mixed.selection.b).historicalSource)
         val duplicate = resolve() as ConfiguredPrototypeSelectionResult.Ready
         assertEquals(listOf(source.choice, source.choice), duplicate.selection.feeds.map { it.choice })
     }
@@ -97,11 +95,9 @@ class ConfiguredBroadcasterSelectionTest {
             resolve(source.copy(entry = source.entry.copy(resource = source.entry.resource.copy(providerId = ProviderId("abema"))))))
     }
 
-    @Test fun descriptorRejectsFalseSampleMarkersAndReplayOrOtherServiceClaims() {
-        fun descriptor(kind: PrototypePlaybackKind = PrototypePlaybackKind.LIVE, service: PrototypeService = PrototypeService.TWITCH,
-            historical: PrototypeSource? = null) = ConfiguredPlaybackFeed(source.choice, source.entry.resource, service, kind, historical)
-        assertThrows(IllegalArgumentException::class.java) { descriptor(historical = PrototypeSource.TWITCH_LIVE) }
-        assertThrows(IllegalArgumentException::class.java) { descriptor(historical = PrototypeSource.TWITCH_REPLAY) }
+    @Test fun descriptorRejectsReplayOrOtherServiceClaims() {
+        fun descriptor(kind: PrototypePlaybackKind = PrototypePlaybackKind.LIVE, service: PrototypeService = PrototypeService.TWITCH) =
+            ConfiguredPlaybackFeed(source.choice, source.entry.resource, service, kind)
         assertThrows(IllegalArgumentException::class.java) { descriptor(kind = PrototypePlaybackKind.REPLAY) }
         assertThrows(IllegalArgumentException::class.java) { descriptor(service = PrototypeService.ABEMA) }
         val exact = descriptor()

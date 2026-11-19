@@ -286,4 +286,68 @@ class AbemaPublicBundleHttpTest {
         } finally { release.countDown(); worker.join(5000) }
     }
 
+    @Test fun cancellationAttemptDuringHeldBodyIsNotAFailureAndTheFetchCloseStillConfirms() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val disconnects = AtomicInteger()
+        val connection = Connection(identity().uri.toURL(), bytes, closeStream = {
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        }, disconnectAction = { disconnects.incrementAndGet() })
+        val http = AbemaPublicBundleHttp(identity = identity(), open = { connection })
+        val result = AtomicReference<Throwable?>()
+        val worker = Thread { try { http.fetch() } catch (error: Throwable) { result.set(error) } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            http.cancel()
+            http.cancel()
+            assertOwned(http, connection); assertEquals(1, disconnects.get())
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive)
+            assertEquals(AbemaBundleFailure.CANCELLED, (result.get() as AbemaBundleException).category)
+            http.close(); assertTrue(http.cleanupConfirmed); assertEquals(1, disconnects.get())
+        } finally { release.countDown(); worker.join(5000) }
+    }
+
+    @Test fun cancellationAttemptStillReportsAnActualDisconnectFailure() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val error = AssertionError("fixture")
+        val connection = Connection(identity().uri.toURL(), bytes, closeStream = {
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        }, disconnectAction = { throw error })
+        val seen = mutableListOf<Throwable>()
+        val http = AbemaPublicBundleHttp(identity = identity(), open = { connection }, onFailure = { synchronized(seen) { seen.add(it) } })
+        val worker = Thread { runCatching { http.fetch() } }
+        try {
+            worker.start(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.cancel() }
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.cancel() }
+            release.countDown(); worker.join(5000); assertFalse(worker.isAlive)
+            failure(AbemaBundleFailure.NETWORK_FAILED) { http.close() }
+            assertFalse(http.cleanupConfirmed); assertSame(error, synchronized(seen) { seen.first() })
+        } finally { release.countDown(); worker.join(5000) }
+    }
+    @Test fun ownerCloseDuringAnotherClaimantsDisconnectWaitsInsteadOfFailing() {
+        // Cancellation's disconnect unblocks the read; the fetch finally and the
+        // owner close then race the still-running disconnect on another thread.
+        val reading = CountDownLatch(1); val disconnecting = CountDownLatch(1); val release = CountDownLatch(1)
+        val disconnects = AtomicInteger()
+        val connection = Connection(identity().uri.toURL(), bytes, beforeRead = {
+            reading.countDown(); check(disconnecting.await(5, TimeUnit.SECONDS)); throw IOException("socket closed")
+        }, disconnectAction = {
+            disconnects.incrementAndGet(); disconnecting.countDown(); check(release.await(5, TimeUnit.SECONDS))
+        })
+        val http = AbemaPublicBundleHttp(identity = identity(), open = { connection })
+        val fetchResult = AtomicReference<Throwable?>(); val closeResult = AtomicReference<Throwable?>()
+        val owner = Thread {
+            try { http.fetch() } catch (error: Throwable) { fetchResult.set(error) }
+            try { http.close() } catch (error: Throwable) { closeResult.set(error) }
+        }
+        val canceller = Thread { runCatching { http.cancel() } }
+        try {
+            owner.start(); assertTrue(reading.await(2, TimeUnit.SECONDS))
+            canceller.start(); assertTrue(disconnecting.await(2, TimeUnit.SECONDS))
+            Thread.sleep(100)
+            release.countDown()
+            owner.join(5000); canceller.join(5000); assertFalse(owner.isAlive); assertFalse(canceller.isAlive)
+            assertEquals(AbemaBundleFailure.CANCELLED, (fetchResult.get() as AbemaBundleException).category)
+            assertNull(closeResult.get())
+            assertTrue(http.cleanupConfirmed); assertEquals(1, disconnects.get())
+        } finally { release.countDown(); owner.join(5000); canceller.join(5000) }
+    }
 }

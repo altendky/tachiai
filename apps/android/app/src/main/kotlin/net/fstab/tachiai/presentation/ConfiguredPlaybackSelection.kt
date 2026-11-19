@@ -16,28 +16,22 @@ internal data class ConfiguredPlaybackFeed(
     val resource: CatalogResource,
     val service: PrototypeService,
     val kind: PrototypePlaybackKind,
-    val historicalSource: PrototypeSource? = null,
 ) {
     init {
         require(resource.providerId.value == service.name.lowercase(Locale.ROOT))
-        if (historicalSource != null) {
-            require(historicalSource.service == service && historicalSource.kind == kind &&
-                prototypeCatalogResource(historicalSource) == resource)
-        } else {
-            require(service == PrototypeService.ABEMA &&
-                (kind == PrototypePlaybackKind.REPLAY &&
-                    (supportedConfiguredAbemaEpisode(resource) || supportedConfiguredAbemaSlot(resource)) ||
-                    kind == PrototypePlaybackKind.LIVE && supportedConfiguredAbemaChannel(resource)) ||
-                service == PrototypeService.TWITCH &&
-                    (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredTwitchVideo(resource) ||
-                        kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)) ||
-                service == PrototypeService.YOUTUBE && kind == PrototypePlaybackKind.REPLAY &&
-                    net.fstab.tachiai.provider.youtube.supportedYouTubeResource(resource))
-        }
+        require(service == PrototypeService.ABEMA &&
+            (kind == PrototypePlaybackKind.REPLAY &&
+                (supportedConfiguredAbemaEpisode(resource) || supportedConfiguredAbemaSlot(resource)) ||
+                kind == PrototypePlaybackKind.LIVE && supportedConfiguredAbemaChannel(resource)) ||
+            service == PrototypeService.TWITCH &&
+                (kind == PrototypePlaybackKind.REPLAY && supportedConfiguredTwitchVideo(resource) ||
+                    kind == PrototypePlaybackKind.LIVE && supportedConfiguredTwitchBroadcaster(resource)) ||
+            service == PrototypeService.YOUTUBE && kind == PrototypePlaybackKind.REPLAY &&
+                net.fstab.tachiai.provider.youtube.supportedYouTubeResource(resource))
     }
 
     val instanceId: String get() = choice.instanceId
-    val diagnosticName: String get() = historicalSource?.name ?: when {
+    val diagnosticName: String get() = when {
         service == PrototypeService.YOUTUBE -> "YOUTUBE_CONFIGURED_VIDEO"
         service == PrototypeService.ABEMA && resource.kind == "slot" -> "ABEMA_CONFIGURED_SLOT"
         service == PrototypeService.ABEMA -> if (kind == PrototypePlaybackKind.LIVE) "ABEMA_CONFIGURED_CHANNEL" else "ABEMA_CONFIGURED_EPISODE"

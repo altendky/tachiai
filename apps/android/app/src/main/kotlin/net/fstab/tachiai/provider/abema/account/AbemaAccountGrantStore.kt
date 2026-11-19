@@ -28,7 +28,10 @@ internal class AbemaAccountSnapshot(val record: AbemaStoredAccount?, val revisio
 internal class AbemaAccountGrantStore(private val instanceId: String, private val storage: AbemaAccountStorage) {
     // The state monitor protects only scalars. It must never cover storage or
     // owner checks: Forget revocation is available while a disk write is held.
-    private class Shared { val disk = Any(); var revision = 0L; var forgetGeneration = 0L; var blocked = false; var poisoned = false }
+    private class Shared {
+        val disk = Any(); var revision = 0L; var forgetGeneration = 0L; var blocked = false; var poisoned = false
+        var replacement: AbemaAccountSnapshot? = null
+    }
     companion object { private val owners = ConcurrentHashMap<String, Shared>() }
     private val shared = owners.computeIfAbsent(instanceId) { Shared() }
     private class Rollback(val revision: Long, val forgetGeneration: Long, val mayUnblock: Boolean)
@@ -40,6 +43,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     }
     fun usable(revision: Long) = synchronized(shared) { !shared.blocked && !shared.poisoned && shared.revision == revision }
     private fun invalidate(): Pair<Long, Long> = synchronized(shared) {
+        shared.replacement = null
         shared.blocked = true; shared.forgetGeneration++; ++shared.revision to shared.forgetGeneration
     }
     fun invalidateForget(): Long = invalidate().first
@@ -57,7 +61,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     private fun readDisk(): AbemaStoredAccount? {
         try {
             if (storage.forgetPending()) {
-                synchronized(shared) { if (!shared.blocked) { shared.blocked = true; shared.revision++ } }
+                synchronized(shared) { shared.replacement = null; if (!shared.blocked) { shared.blocked = true; shared.revision++ } }
                 return null
             }
         } catch (error: Throwable) { storageFailed(error); }
@@ -102,7 +106,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
             }
             val snapshot = synchronized(shared) {
                 if (!allowed || shared.blocked || shared.poisoned || shared.revision != expectedRevision) null
-                else AbemaAccountSnapshot(record, ++shared.revision, old, shared)
+                else AbemaAccountSnapshot(record, ++shared.revision, old, shared).also { shared.replacement = it }
             }
             if (snapshot != null) return snapshot
             // Lifecycle/Forget loss during publication restores the prior
@@ -112,6 +116,19 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
             finishRollback(revoked, old, restored)?.let(onRestored)
             throw AbemaAccountException(if (restored.confirmed && !restored.fatal) AbemaAccountFailure.REFUSED else AbemaAccountFailure.STORAGE_FAILED)
         } finally { bytes.fill(0) }
+    }
+    // The store's current record when it directly replaced exactly [previous]
+    // with a later grant for the same account. Any other revision change
+    // (Forget, rollback, storage failure, a second replacement) has no successor.
+    fun successor(previous: AbemaAccountSnapshot): AbemaAccountSnapshot? = synchronized(shared) {
+        val next = shared.replacement ?: return null
+        val prior = previous.record ?: return null
+        val record = next.record ?: return null
+        if (shared.blocked || shared.poisoned || shared.revision != next.revision || previous.revision == Long.MAX_VALUE ||
+            next.revision != previous.revision + 1 || !sameRecord(next.previous, prior) ||
+            record.grant.userId != prior.grant.userId || record.grant.expiresAtMs <= prior.grant.expiresAtMs ||
+            prior.generation == Long.MAX_VALUE || record.generation != prior.generation + 1) return null
+        AbemaAccountSnapshot(record, next.revision)
     }
     // A replacement does not alter the prior record until all validation and
     // owner gates have passed. Uncertain writes invalidate this process's leases.
@@ -139,6 +156,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
     private fun revokeRollback(expectedRevision: Long? = null, fatal: Boolean = false): Rollback? = synchronized(shared) {
         if (expectedRevision != null && (shared.blocked || shared.poisoned || shared.revision != expectedRevision)) return null
         val mayUnblock = !shared.blocked && !shared.poisoned
+        shared.replacement = null
         shared.blocked = true; if (fatal) shared.poisoned = true
         Rollback(++shared.revision, shared.forgetGeneration, mayUnblock)
     }
@@ -191,7 +209,7 @@ internal class AbemaAccountGrantStore(private val instanceId: String, private va
         }
     }
     private fun storageFailed(error: Throwable): Nothing {
-        synchronized(shared) { shared.revision++; if (error !is Exception) shared.poisoned = true }
+        synchronized(shared) { shared.replacement = null; shared.revision++; if (error !is Exception) shared.poisoned = true }
         throw AbemaAccountException(AbemaAccountFailure.STORAGE_FAILED)
     }
     private fun encode(record: AbemaStoredAccount?): ByteArray {

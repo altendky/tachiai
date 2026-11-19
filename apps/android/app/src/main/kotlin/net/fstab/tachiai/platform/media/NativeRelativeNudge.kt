@@ -19,26 +19,47 @@ internal fun nativeRelativeNudgePlan(a: NativeTimingSnapshot?, b: NativeTimingSn
     fun fullStepHeadroom(sample: NativeTimingSnapshot, movement: Long): Long? {
         val position = sample.positionMs ?: return null
         val duration = sample.durationMs ?: return null
-        if (position < 0 || position > duration) return null
         val live = sample.live || sample.dynamic
+        // A live feed playing retained footage before its sliding window start
+        // may still move forward into the window; nothing else leaves it.
+        val rescue = live && position < 0 && movement > 0
+        if (position > duration || position < 0 && !rescue) return null
         val initialClock = if (live) sample.contentTimeMs else position
         if (initialClock == null || initialClock < 0) return null
         val target = try { Math.addExact(position, movement) } catch (_: ArithmeticException) { return null }
         val targetClock = try { Math.addExact(initialClock, movement) } catch (_: ArithmeticException) { return null }
-        if (targetClock < 0) return null
+        if (targetClock < 0 || rescue && target !in 0..duration) return null
         val plan = nativeRelativeSeekPlan(sample, movement)
         if (plan.outcome != NativeSeekOutcome.REQUESTED || plan.targetMs != target) return null
         return if (live) minOf(target, duration - target) else Long.MAX_VALUE
     }
-    // Both movements deliver the same relative step with one SDK seek. Prefer
-    // more room for a live window to move while held; replay has no sliding
-    // edge. This is a preference, never a minimum margin or admission threshold.
+    // Current margin of the feed that stays put: negative before a live window.
+    fun currentMargin(sample: NativeTimingSnapshot): Long? {
+        if (!(sample.live || sample.dynamic)) return Long.MAX_VALUE
+        val position = sample.positionMs ?: return null
+        val duration = sample.durationMs ?: return null
+        return minOf(position, duration - position)
+    }
+    // Both movements deliver the same relative step with one SDK seek. First
+    // keep the pair's tightest live margin away from a sliding window edge,
+    // including the feed that does not move, so a step rescues an endangered
+    // feed rather than moving its safe peer. Margins beyond a comfortable bound
+    // are equivalent and fall back to the moved feed's own room (replay has no
+    // sliding edge). This is a preference, never a minimum margin or threshold.
     val roomA = fullStepHeadroom(a, deltaMs)
     val roomB = fullStepHeadroom(b, opposite)
+    fun pairScore(moved: Long, untouched: Long?): Long =
+        minOf(moved, untouched ?: Long.MIN_VALUE, COMFORTABLE_LIVE_MARGIN_MS)
+    val chooseA = roomA != null && (roomB == null || run {
+        val scoreA = pairScore(roomA, currentMargin(b))
+        val scoreB = pairScore(roomB, currentMargin(a))
+        scoreA > scoreB || scoreA == scoreB && roomA >= roomB
+    })
     return when {
-        roomA != null && (roomB == null || roomA >= roomB) ->
-            NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.A, deltaMs)
+        chooseA -> NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.A, deltaMs)
         roomB != null -> NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.SELECTED, NativeMixedSide.B, opposite)
         else -> NativeRelativeNudgePlan(NativeRelativeNudgeOutcome.NO_FULL_STEP)
     }
 }
+
+private const val COMFORTABLE_LIVE_MARGIN_MS = 10_000L

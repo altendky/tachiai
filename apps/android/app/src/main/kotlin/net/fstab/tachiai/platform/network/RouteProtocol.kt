@@ -30,6 +30,9 @@ internal interface RouteProtocol {
     fun parse(text: String): ConnectionProfile
     fun configurationIdentity(profile: ConnectionProfile): String
     fun conflictIdentity(profile: ConnectionProfile): String? = null
+    // New imports only. Stored profiles are re-read with parse alone, so an
+    // older record stays readable and removable after admission tightens.
+    fun admitImport(profile: ConnectionProfile) {}
     fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend
 }
 

@@ -34,24 +34,39 @@ class ConfiguredSourceStoreTest {
     private fun entry(identity: String = "newchannel", intent: CatalogIntent = CatalogIntent.CHANNEL) =
         CatalogEntry(CatalogResource(provider, "channel", identity, intent), "New channel", CatalogAvailability.OFFLINE)
     private fun store(memory: Memory, owner: ProviderInstance = instance) = ConfiguredSourceStore(memory, owner.id, provider)
-    private fun legacy(owner: ProviderInstance = instance) = legacyConfiguredSources(owner, defaultSourceSetups(), emptyMap())
+    private fun legacy(owner: ProviderInstance = instance) =
+        legacyConfiguredSources(owner, defaultSourceSetups(), emptyMap()).filterNot(::legacyTwitchLiveSource)
 
-    @Test fun legacyProjectionAndFirstWritePreserveOriginalNamesQualityAndRecordBytes() {
+    @Test fun absentListIsEmptyWithoutSeedingBuiltInsOrTouchingLegacySlots() {
         val sourceMemory = Memory(); val sourceStore = SourceSetupStore(sourceMemory)
-        sourceStore.save(PrototypeSource.TWITCH_LIVE, SourceSetup("My channel"))
+        sourceStore.save(PrototypeSource.TWITCH_REPLAY, SourceSetup("My replay"))
         val qualityMemory = Memory(); val qualityStore = StreamQualityStore(qualityMemory)
-        qualityStore.save(PrototypeSource.TWITCH_LIVE, NativeQualityKind.AUDIO, audio)
+        qualityStore.save(PrototypeSource.TWITCH_REPLAY, NativeQualityKind.AUDIO, audio)
         val originalSources = sourceMemory.bytes!!.copyOf(); val originalQuality = qualityMemory.bytes!!.copyOf()
-        fun projection() = legacyConfiguredSources(instance, sourceStore.read(), qualityStore.read())
         val memory = Memory(); val configured = store(memory)
-        val initial = configured.read(::projection)
-        assertEquals(0, memory.writes)
-        val old = initial.single { it.id == configuredLegacyId(instance.id, PrototypeSource.TWITCH_LIVE) }
-        assertEquals("My channel", old.entry.title); assertEquals(audio, old.quality.audio)
-        val added = configured.add(entry(), ::projection)
-        assertEquals(initial, added.dropLast(1)); assertEquals(1, memory.writes)
+        assertTrue(configured.read().isEmpty()); assertNull(memory.bytes); assertEquals(0, memory.writes)
+        val added = configured.add(entry(), { emptyList() })
+        assertEquals(listOf(entry()), added.map { it.entry }); assertEquals(1, memory.writes)
         assertEquals(added, store(memory).read { error("Committed list must not read legacy slots") })
         assertArrayEquals(originalSources, sourceMemory.bytes); assertArrayEquals(originalQuality, qualityMemory.bytes)
+    }
+
+    @Test fun savedBuiltInTwitchLiveEntriesAreDroppedOnceWhileOtherSavedItemsStay() {
+        val memory = Memory(); val configured = store(memory)
+        val saved = legacyConfiguredSources(instance, defaultSourceSetups(), emptyMap())
+        val all = configured.add(entry(), { saved })
+        assertEquals(saved.size + 1, all.size); assertEquals(1, memory.writes)
+        val expected = all.filterNot { it.entry.resource.kind == "channel" && it.id != all.last().id }
+        assertEquals(listOf(prototypeCatalogResource(PrototypeSource.TWITCH_REPLAY), entry().resource), expected.map { it.entry.resource })
+        assertEquals(expected, store(memory).read()); assertEquals(2, memory.writes)
+        assertEquals(expected, store(memory).read { error("Rewritten list must not read legacy slots") })
+        assertEquals(2, memory.writes)
+        // Saved built-in ABEMA items are ordinary configured items and stay untouched.
+        val abema = defaultProviderInstances().single { it.service == PrototypeService.ABEMA }
+        val abemaMemory = Memory(); val abemaStore = ConfiguredSourceStore(abemaMemory, abema.id, ProviderId("abema"))
+        val abemaSaved = legacyConfiguredSources(abema, defaultSourceSetups(), emptyMap())
+        abemaStore.saveQuality(abemaSaved.first().id, NativeQualityKind.AUDIO, audio) { abemaSaved }
+        assertEquals(abemaSaved.map { it.id }, abemaStore.read().map { it.id }); assertEquals(1, abemaMemory.writes)
     }
 
     @Test fun deduplicationOrderingRefreshAndEmptyListsSurviveRestart() {

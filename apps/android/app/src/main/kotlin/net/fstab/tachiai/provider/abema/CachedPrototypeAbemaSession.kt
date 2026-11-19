@@ -642,7 +642,9 @@ internal class CachedPrototypeAbemaSession(
                     AbemaAccountFailure.CLEANUP_FAILED -> PrototypeFailureReason.CLEANUP_FAILED
                     else -> PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE
                 }
-                handler.post { if (!closed.get() && revision.get() == run) fail(PrototypeFeedFailure(reason)) }
+                val transient = error.category == AbemaAccountFailure.TEMPORARY
+                handler.post { if (!closed.get() && revision.get() == run)
+                    fail(PrototypeFeedFailure(reason, transientPreparation = transient)) }
             } catch (error: AbemaBundleException) {
                 if (preparationCurrent(run) && error.category != AbemaBundleFailure.CANCELLED)
                     diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)

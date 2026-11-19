@@ -176,6 +176,24 @@ class FeedAutoRecoveryStateTest {
             transientAccountReadiness = true))
     }
 
+    @Test fun `a transient preparation failure continues an active incident but never starts one`() {
+        val member = Any()
+        val transient = PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED, transientPreparation = true)
+        val state = FeedAutoRecoveryState(); firstAttempt(state, member)
+        // Observed on the SHIELD: the retry's account check failed temporarily
+        // with no media transport evidence, and recovery stopped for good.
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, state.failed(null, transient, null, true, true, true, 1_500))
+        assertEquals(2, checkNotNull(state.pending).attempt)
+        val plain = FeedAutoRecoveryState(); firstAttempt(plain, member)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, plain.failed(null,
+            PrototypeFeedFailure(PrototypeFailureReason.NETWORK_FAILED), null, true, true, true, 1_500))
+        val fresh = FeedAutoRecoveryState(); fresh.observe(member, sample(0), 0)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, fresh.failed(member, transient, null, true, true, true, 1))
+        val denied = FeedAutoRecoveryState(); firstAttempt(denied, member)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, denied.failed(null, transient.copy(httpStatus = 403),
+            null, true, true, true, 1_500))
+    }
+
     private fun sample(now: Long, clock: Long = 20_000 + now, frames: Long? = now / 10 + 1) =
         NativePlaybackDiagnosticSnapshot(now, 0, false, true, true, 3, 0, null,
             clock, true, frames, 0, 1, 0, null, null, null)

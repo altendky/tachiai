@@ -40,7 +40,6 @@ import net.fstab.tachiai.feature.connections.ConnectionProfilesActivity
 import net.fstab.tachiai.feature.connections.ObsoleteSourceSetupException
 import net.fstab.tachiai.feature.connections.ProvidersActivity
 import net.fstab.tachiai.feature.connections.sourceSetupStore
-import net.fstab.tachiai.feature.connections.streamQualityStore
 import net.fstab.tachiai.feature.connections.pairOffsetStore
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePendingSeekDiagnostic
@@ -91,10 +90,7 @@ import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.presentation.ViewerQualityState
 import net.fstab.tachiai.feature.connections.providerInstanceStore
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
-import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.SourceRouteChoice
-import net.fstab.tachiai.presentation.PrototypeSource
-import net.fstab.tachiai.presentation.defaultSourceSetups
 import net.fstab.tachiai.presentation.defaultProviderInstances
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.presentation.ConfiguredSource
@@ -102,7 +98,6 @@ import net.fstab.tachiai.presentation.ConfiguredFeedChoice
 import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
-import net.fstab.tachiai.presentation.legacyConfiguredSources
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
@@ -148,6 +143,7 @@ import net.fstab.tachiai.provider.abema.prepareAndroidAbemaViewerStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
+import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -197,10 +193,12 @@ open class PrototypeActivity : ComponentActivity() {
         ) }
     }
     protected open val useCachedAbema: Boolean = true
-    // Only the debug comparison subclass supplies a page-backed session.
-    internal open fun historicalAbemaSession(replay: Boolean, active: () -> Boolean,
+    // Only the debug page comparison supplies fixed ABEMA samples and their
+    // page-backed sessions; product builds list and play configured items alone.
+    internal open fun comparisonAbemaSources(instance: ProviderInstance): List<ConfiguredSource>? = null
+    internal open fun comparisonAbemaSession(resource: CatalogResource, replay: Boolean, active: () -> Boolean,
         events: (PrototypeFeedEvent) -> Unit, diagnostics: FailureReporter): PrototypeFeedSession =
-        error("Historical playback is unavailable in this build")
+        error("Page-backed comparison playback is unavailable in this build")
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val resumed = AtomicBoolean()
@@ -222,7 +220,6 @@ open class PrototypeActivity : ComponentActivity() {
     private var pickerRestoreGeneration by mutableStateOf(0L)
     private var pickerSelectionRevision = 0L
     private var pickerSelectionMessage by mutableStateOf<String?>(null)
-    private var sourceSetups by mutableStateOf(defaultSourceSetups())
     private var providerInstances by mutableStateOf(defaultProviderInstances())
     private var configuredSources by mutableStateOf(emptyList<ConfiguredSource>())
     private var activeConfiguredSources = emptyList<ConfiguredSource?>()
@@ -231,8 +228,6 @@ open class PrototypeActivity : ComponentActivity() {
     private var setupMessage by mutableStateOf<String?>(null)
     private var obsoleteSetup by mutableStateOf(false)
     private var setupRevision = 0L
-    private var activeSetups: Map<PrototypeSource, SourceSetup> = defaultSourceSetups()
-    private var legacyQualityDefaults = emptyMap<PrototypeSource, NativeQualityPreferences>()
     private var qualityDefaults = emptyMap<ConfiguredFeedChoice, NativeQualityPreferences>()
     private var qualitySession: ViewerQualityState<ConfiguredFeedChoice>? = null
     private var savingQuality = false
@@ -333,6 +328,7 @@ open class PrototypeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        appliedConfiguration = Configuration(resources.configuration)
         pickerAssignments = restoreConfiguredFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         var preferCurrentSelection = savedInstanceState != null
@@ -454,8 +450,11 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
+    private var systemBarsVideo = false
+    private var appliedConfiguration: Configuration? = null
     @Suppress("DEPRECATION") // Pre-enforced-edge-to-edge Android still uses explicit bar colours.
     private fun styleSystemBars(video: Boolean) {
+        systemBarsVideo = video
         val light = !video && resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK != Configuration.UI_MODE_NIGHT_YES
         val color = if (video) android.graphics.Color.BLACK else getColor(R.color.prototype_background)
         window.statusBarColor = color
@@ -488,8 +487,8 @@ open class PrototypeActivity : ComponentActivity() {
     private fun watchScoped(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?) {
         if (checkingAccount || budget != null || !resumed.get() || isFinishing || isDestroyed) return
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
+        // The page comparison's ABEMA list holds only its fixed channel/episode samples.
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema,
             allowConfiguredAbemaSlots = useCachedAbema)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
@@ -613,7 +612,6 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaEpisodes = useCachedAbema, allowConfiguredAbemaChannels = useCachedAbema,
             allowConfiguredAbemaSlots = useCachedAbema)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
@@ -622,7 +620,6 @@ open class PrototypeActivity : ComponentActivity() {
         val selected = resolved.selection
         selection = selected
         activeConfiguredSources = resolved.sourceSlots
-        activeSetups = sourceSetups.toMap()
         activeInstances = providerInstances.toList()
         dispose(retainStartups = true)
         if (cleanupFailed) {
@@ -846,12 +843,12 @@ open class PrototypeActivity : ComponentActivity() {
                             helper::destroy) { !helper.cleanupFailed } },
                         onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
                         episodeResource = source.resource.takeIf { replay && it.kind == "episode" },
-                        channelResource = source.resource.takeIf { !replay && source.historicalSource == null },
-                        slotResource = source.resource.takeIf { it.kind == "slot" && source.historicalSource == null },
-                        continuousSlotPlayback = source.resource.kind == "slot" && source.historicalSource == null,
-                        ownership = if (!replay && source.historicalSource != null) null else abemaOwnership,
+                        channelResource = source.resource.takeIf { !replay },
+                        slotResource = source.resource.takeIf { it.kind == "slot" },
+                        continuousSlotPlayback = source.resource.kind == "slot",
+                        ownership = abemaOwnership,
                         routeOwnership = abemaOwnership)
-                        else historicalAbemaSession(replay, feedActive, events, feedDiagnostics(index))
+                        else comparisonAbemaSession(source.resource, replay, feedActive, events, feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId
                         val route = checkNotNull(routes[instanceId])
@@ -875,7 +872,6 @@ open class PrototypeActivity : ComponentActivity() {
                         } else PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
                             openConnection = route::open, preparationFactory = preparation,
                             diagnostics = feedDiagnostics(index, attempt),
-                            initialPositionMs = if (source.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L,
                             onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
                     }
                 }
@@ -1575,13 +1571,12 @@ open class PrototypeActivity : ComponentActivity() {
         if (savingQuality || playback?.busy == true) return
         val source = activeConfiguredSources.getOrNull(side.ordinal) ?: return
         val instance = checkNotNull(activeInstances.singleOrNull { it.id == source.instanceId })
-        val legacy = legacyConfiguredSources(instance, activeSetups, legacyQualityDefaults)
         val request = if (reset) NativeQualityRequest.auto else state.read(side, kind).effective
         val run = epoch.get()
         val reporter = diagnostics
         savingQuality = true; qualityMessage = "Saving stream quality…"; viewer?.refresh()
         worker.execute {
-            val result = runCatching { configuredSourceStore(this, instance).saveQuality(source.id, kind, request) { legacy } }
+            val result = runCatching { configuredSourceStore(this, instance).saveQuality(source.id, kind, request) }
                 .onFailure { reporter.report(FailureStage.QUALITY_SETTINGS_SAVE, it) }
             handler.post {
                 if (epoch.get() != run || qualitySession !== state || isDestroyed) return@post
@@ -1706,7 +1701,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (selection?.slots?.getOrNull(index)?.service == PrototypeService.TWITCH) PrototypeFailureReason.LOGIN_EXPIRED
         else PrototypeFailureReason.PREPARATION_FAILED)
 
-    private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
+    private fun failFeed(index: Int, failure: PrototypeFeedFailure, transientAccountReadiness: Boolean = false) {
         if (selection?.slots?.getOrNull(index) == null) return
         if (failures[index] != null) return
         val member = sessions.getOrNull(index)?.member ?: playback?.member(NativeMixedSide.entries[index])
@@ -1724,7 +1719,7 @@ open class PrototypeActivity : ComponentActivity() {
             restoreOffset = automaticPairRestoreWanted == true,
             nowMs = now,
             authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null,
-            httpFailure = snapshot?.httpFailure)
+            httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness)
         // A normal stop is expected; a limit needs retained failure evidence.
         if (failure.reason != PrototypeFailureReason.STOPPED)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
@@ -1874,7 +1869,8 @@ open class PrototypeActivity : ComponentActivity() {
                             }
                             feedDiagnostics(index).reportCategory(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, category)
                             failures[index] = null
-                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE),
+                                transientAccountReadiness = result == AbemaAccountReadinessResult.TEMPORARY_FAILURE)
                         }
                         viewer?.refresh()
                     }
@@ -1998,6 +1994,12 @@ open class PrototypeActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        val changes = appliedConfiguration?.diff(newConfig) ?: 0
+        appliedConfiguration = Configuration(newConfig)
+        // These changes are handled only to keep an active run playing. Without
+        // one, recreate as before so View colours and sizes are resolved again.
+        if (budget == null && changes and (ActivityInfo.CONFIG_UI_MODE or ActivityInfo.CONFIG_DENSITY or ActivityInfo.CONFIG_FONT_SCALE) != 0) { recreate(); return }
+        styleSystemBars(systemBarsVideo)
         viewer?.requestLayout()
     }
     override fun onResume() {
@@ -2020,13 +2022,14 @@ open class PrototypeActivity : ComponentActivity() {
                 selectionPersistence.submit<ConfiguredFeedAssignments?> { viewerSelectionStore(applicationContext).read() }.get()
             } else null
             val result = runCatching {
-                val streams = sourceSetupStore(this).read()
+                // Still validates the legacy stream-settings record for its reset flow.
+                sourceSetupStore(this).read()
                 val instances = providerInstanceStore(this).read { legacyProviderSettings(this) }
-                val qualities = streamQualityStore(this).read()
                 val sources = instances.flatMap { instance ->
-                    configuredSourceStore(this, instance).read { legacyConfiguredSources(instance, streams, qualities) }
+                    (if (instance.service == PrototypeService.ABEMA) comparisonAbemaSources(instance) else null)
+                        ?: configuredSourceStore(this, instance).read()
                 }
-                PickerSetup(streams, instances, qualities, sources)
+                PickerSetup(instances, sources)
             }
             handler.post {
                 if (isDestroyed || isFinishing || !resumed.get() || setupRevision != current || budget != null) return@post
@@ -2043,9 +2046,17 @@ open class PrototypeActivity : ComponentActivity() {
                     persistRestoredSelection = false
                 }
                 result.fold(onSuccess = {
-                    sourceSetups = it.streams; providerInstances = it.instances; legacyQualityDefaults = it.qualities
+                    providerInstances = it.instances
                     configuredSources = it.sources; qualityDefaults = it.sources.associate { source -> source.choice to source.quality }
                     setupReady = true
+                    // An unresolved restored choice becomes an empty slot so Watch never stays
+                    // blocked. The debug comparison lists other ABEMA items, so it never persists this.
+                    val resolved = pickerAssignments.resolvedIn(it.sources)
+                    if (resolved != pickerAssignments) {
+                        if (useCachedAbema && remembered?.isFailure != true) rememberPickerAssignments(resolved)
+                        else pickerAssignments = resolved
+                        pickerRestoreGeneration++
+                    }
                     pendingAccountSelection?.let { assignments ->
                         val captured = pendingAccountPlan
                         pendingAccountSelection = null
@@ -2122,6 +2133,5 @@ open class PrototypeActivity : ComponentActivity() {
         startupTwitchValidation = emptyMap()
     }
 
-    private data class PickerSetup(val streams: Map<PrototypeSource, SourceSetup>, val instances: List<ProviderInstance>,
-        val qualities: Map<PrototypeSource, NativeQualityPreferences>, val sources: List<ConfiguredSource>)
+    private data class PickerSetup(val instances: List<ProviderInstance>, val sources: List<ConfiguredSource>)
 }

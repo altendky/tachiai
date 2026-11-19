@@ -14,12 +14,14 @@ class ViewerSelectionRestoreTest {
     @get:Rule val compose = createComposeRule()
     private val providers = defaultProviderInstances()
     private val configured = providers.flatMap { legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }
+        .filterNot(::legacyTwitchLiveSource)
     private fun source(kind: PrototypeSource) = configured.single { it.entry.resource == prototypeCatalogResource(kind) }
     private fun assignment(kind: PrototypeSource, slot: String) =
         compose.onNodeWithContentDescription("Assign ${source(kind).entry.title} to feed $slot")
 
     @Test fun asynchronousGenerationRestoresDuplicateChoicesWithoutClosingPickerNavigation() {
-        val initial = mutableStateOf(restoreConfiguredFeedAssignments(false, null, null))
+        val initial = mutableStateOf(ConfiguredFeedAssignments(source(PrototypeSource.ABEMA_LIVE).choice,
+            source(PrototypeSource.TWITCH_REPLAY).choice))
         val generation = mutableStateOf(0L)
         var watched: ConfiguredFeedAssignments? = null
         var developerOpens = 0
@@ -29,9 +31,9 @@ class ViewerSelectionRestoreTest {
                 onDeveloperTools = { developerOpens++ }, onWatch = { watched = it })
         } }
         assignment(PrototypeSource.ABEMA_LIVE, "A").performScrollTo().assertIsOn()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOn()
-        val restored = ConfiguredFeedAssignments(source(PrototypeSource.TWITCH_LIVE).choice,
-            source(PrototypeSource.TWITCH_LIVE).choice)
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOn()
+        val restored = ConfiguredFeedAssignments(source(PrototypeSource.TWITCH_REPLAY).choice,
+            source(PrototypeSource.TWITCH_REPLAY).choice)
         compose.runOnIdle { initial.value = restored }
         // A normal setup recomposition must not reset the user's local state.
         assignment(PrototypeSource.ABEMA_LIVE, "A").performScrollTo().assertIsOn()
@@ -39,8 +41,8 @@ class ViewerSelectionRestoreTest {
         compose.onNodeWithText("Developer tools").assertExists()
         compose.runOnIdle { generation.value++ }
         compose.onNodeWithText("Developer tools").assertExists().performClick()
-        assignment(PrototypeSource.TWITCH_LIVE, "A").performScrollTo().assertIsOn()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOn()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().assertIsOn()
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOn()
         assignment(PrototypeSource.ABEMA_LIVE, "A").performScrollTo().assertIsOff()
         compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(restored, watched); assertEquals(1, developerOpens) }
@@ -56,25 +58,25 @@ class ViewerSelectionRestoreTest {
                 onWatch = { watched = it })
         } }
         compose.runOnIdle {
-            initial.value = ConfiguredFeedAssignments(source(PrototypeSource.TWITCH_LIVE).choice, null)
+            initial.value = ConfiguredFeedAssignments(source(PrototypeSource.TWITCH_REPLAY).choice, null)
             generation.value++
         }
-        assignment(PrototypeSource.TWITCH_LIVE, "A").performScrollTo().assertIsOn()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOff()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().assertIsOn()
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOff()
         assignment(PrototypeSource.ABEMA_LIVE, "A").performScrollTo().assertIsOff()
         compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(initial.value, watched) }
         compose.runOnIdle {
-            initial.value = ConfiguredFeedAssignments(null, source(PrototypeSource.TWITCH_LIVE).choice)
+            initial.value = ConfiguredFeedAssignments(null, source(PrototypeSource.TWITCH_REPLAY).choice)
             generation.value++
         }
-        assignment(PrototypeSource.TWITCH_LIVE, "A").performScrollTo().assertIsOff()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOn()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().assertIsOff()
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOn()
         compose.onNodeWithText("Watch").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(initial.value, watched); watched = null }
         compose.runOnIdle { initial.value = ConfiguredFeedAssignments(null, null); generation.value++ }
-        assignment(PrototypeSource.TWITCH_LIVE, "A").performScrollTo().assertIsOff()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOff()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().assertIsOff()
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOff()
         compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.runOnIdle { assertNull(watched) }
     }
@@ -90,13 +92,13 @@ class ViewerSelectionRestoreTest {
         } }
         compose.runOnIdle {
             initial.value = ConfiguredFeedAssignments(source(PrototypeSource.ABEMA_REPLAY).choice,
-                source(PrototypeSource.TWITCH_LIVE).choice)
+                source(PrototypeSource.TWITCH_REPLAY).choice)
             generation.value++
         }
         assignment(PrototypeSource.ABEMA_REPLAY, "A").assertDoesNotExist()
         assignment(PrototypeSource.ABEMA_LIVE, "A").performScrollTo().assertIsOff()
-        assignment(PrototypeSource.TWITCH_LIVE, "A").performScrollTo().assertIsOff()
-        assignment(PrototypeSource.TWITCH_LIVE, "B").performScrollTo().assertIsOn()
+        assignment(PrototypeSource.TWITCH_REPLAY, "A").performScrollTo().assertIsOff()
+        assignment(PrototypeSource.TWITCH_REPLAY, "B").performScrollTo().assertIsOn()
         compose.onNodeWithText("Watch").assertIsNotEnabled()
         compose.onNodeWithText("A selected item was removed. Choose another configured stream.").assertExists()
     }

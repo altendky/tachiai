@@ -43,7 +43,6 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.presentation.PrototypeSlot
-import net.fstab.tachiai.presentation.defaultSourceSetups
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.presentation.defaultProviderInstances
 import net.fstab.tachiai.presentation.defaultProviderInstanceId
@@ -54,8 +53,6 @@ import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
 import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionFailure
 import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
 import net.fstab.tachiai.presentation.decodeConfiguredFeedChoice
-import net.fstab.tachiai.presentation.restoreConfiguredFeedAssignments
-import net.fstab.tachiai.presentation.legacyConfiguredSources
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.providerDisplayNames
@@ -65,9 +62,8 @@ import net.fstab.tachiai.provider.catalog.CatalogIntent
 @Composable
 internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)? = null,
     providerInstances: List<ProviderInstance> = defaultProviderInstances(),
-    configuredSources: List<ConfiguredSource> = providerInstances.flatMap {
-        legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }, setupReady: Boolean = true,
-    initialAssignments: ConfiguredFeedAssignments = restoreConfiguredFeedAssignments(false, null, null),
+    configuredSources: List<ConfiguredSource> = emptyList(), setupReady: Boolean = true,
+    initialAssignments: ConfiguredFeedAssignments = ConfiguredFeedAssignments(null, null),
     onAssignmentsChanged: (ConfiguredFeedAssignments) -> Unit = {},
     onProviders: (() -> Unit)? = null,
     onDeveloperTools: (() -> Unit)? = null,

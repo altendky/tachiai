@@ -495,6 +495,7 @@ internal class CachedPrototypeAbemaSession(
             }
             try {
                 check(preparationCurrent(run) && workerOwned() && CookieHandler.getDefault() == null)
+                record("startup=WORKER_BEGIN")
                 var accountArgument = "undefined"
                 ownership?.let { selectedOwner ->
                     val resource = checkNotNull(episodeResource ?: channelResource ?: slotResource)
@@ -514,6 +515,7 @@ internal class CachedPrototypeAbemaSession(
                         accountClient.set(client); accountCleanupPending.set(true)
                     }
                     val access = client.acquire()
+                    record("startup=ACCOUNT_ACQUIRED status=${access.status.name}")
                     when (access.status) {
                         AbemaAccountAccessIpc.Status.ACCOUNT -> {
                             val grant = checkNotNull(access.grant)
@@ -577,6 +579,7 @@ internal class CachedPrototypeAbemaSession(
                                 }
                             }
                             accountArgument = argument.toString()
+                            record("startup=ACCOUNT_ARGUMENT_READY")
                         }
                         AbemaAccountAccessIpc.Status.GUEST -> {
                             if (initialManifest != null || requireSavedAccount)
@@ -590,10 +593,12 @@ internal class CachedPrototypeAbemaSession(
                     if (!preparationCurrent(run) || !workerOwned() || SystemClock.elapsedRealtime() >= readinessDeadline)
                         throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                 }
+                record("startup=BUNDLES_BEGIN")
                 val prepared = cached(AbemaPublicBundleIdentity())
                 val support = cached(AbemaPublicBundleIdentity.bootstrapSupport())
                 val legacy = cached(AbemaPublicBundleIdentity.legacySource())
                 val utilities = cached(AbemaPublicBundleIdentity.sourceUtilities())
+                record("startup=BUNDLES_READY")
                 val arguments = mapOf("__NONCE__" to nonce, "__NATIVE_REPLAY__" to replay.toString(),
                     "__EPISODE_ARGUMENT__" to (episodeResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
                     "__CHANNEL_ARGUMENT__" to (channelResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
@@ -1125,7 +1130,11 @@ internal class CachedPrototypeAbemaSession(
                 try {
                     for ((stage, close) in listOf<Pair<FailureStage, () -> Unit>>(
                         FailureStage.BUNDLE_TRANSPORT_CLOSE to {
-                            val owned = bundleTransport.get(); owned?.close(); bundleTransport.compareAndSet(owned, null)
+                            // A body still held by the tracked fetch is not a failure;
+                            // that worker's finally closes and confirms its receipt.
+                            bundleTransport.get()?.let { owned ->
+                                owned.cancel(); if (owned.cleanupConfirmed) bundleTransport.compareAndSet(owned, null)
+                            }
                         },
                         FailureStage.SOURCE_REQUESTS_CLOSE to {
                             val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)

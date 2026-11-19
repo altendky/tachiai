@@ -203,9 +203,7 @@ class TwitchMediaReadCostDeviceTest {
             check(pool.candidates.isNotEmpty() && pool.candidates.all {
                 it.available && it.choice.mode == SourceRouteMode.SYSTEM && it.profile == null
             })
-            val setups = sourceSetupStore(context).read()
-            val qualities = streamQualityStore(context).read()
-            val sources = configuredSourceStore(context, owner).read { legacyConfiguredSources(owner, setups, qualities) }
+            val sources = configuredSourceStore(context, owner).read()
             val source = sources.first { supportedConfiguredTwitchVideo(it.entry.resource) }.also { selected = it }
             val resolved = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(source.choice, source.choice),
                 sources, instances) as? ConfiguredPrototypeSelectionResult.Ready ?: error("Unsupported configured replay")
@@ -372,8 +370,7 @@ class TwitchMediaReadCostDeviceTest {
                     legacyProviderSettings(context)
                 }.singleOrNull { it.id == original.id && it == original } }
                 identityPreserved = savedInstance?.let { saved ->
-                    val setups = sourceSetupStore(context).read(); val qualities = streamQualityStore(context).read()
-                    configuredSourceStore(context, saved).read { legacyConfiguredSources(saved, setups, qualities) }
+                    configuredSourceStore(context, saved).read()
                         .singleOrNull { it.choice == selected?.choice } == selected
                 } == true
             } catch (_: Throwable) { preserved = false; identityPreserved = false }

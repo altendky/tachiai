@@ -84,11 +84,10 @@ retroactively approved by being documented.
 The agreed preliminary interaction model is:
 
 - Select one or two sources, including two copies of the same source, then explicitly
-  open the viewer. The current catalogue has fixed live/replay entries for
-  ABEMA and Twitch, with Izgonnabemei, Chillhop Radio and Virtual Japan as Twitch
-  live choices. Each pane shows preparation or a safe error while available
-  feeds play. Sources returns to the picker; richer channel selection remains
-  future work.
+  open the viewer. Sources are each provider instance's saved configured items;
+  there are no built-in entries or first-run default pair. Each pane shows
+  preparation or a safe error while available feeds play. Sources returns to the
+  picker; richer channel selection remains future work.
 - One selected feed fills the video stage, with no unused or floating second
   pane. Portrait with two selections stacks the feeds without forcing equal heights. Landscape uses a
   full-screen primary and movable floating secondary; tapping the secondary

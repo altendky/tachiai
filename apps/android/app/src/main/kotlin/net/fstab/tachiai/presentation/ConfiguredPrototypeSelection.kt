@@ -54,10 +54,8 @@ internal fun resolveConfiguredPrototypeSelection(
             source.entry.availability == CatalogAvailability.OFFLINE && !broadcaster)
             return failure(ConfiguredPrototypeSelectionFailure.UNAVAILABLE)
         if (instance.setup.route == null) return failure(ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED)
-        val historical = legacyPrototypeSource(source)
-        val supported = if (historical != null) {
-            ConfiguredPlaybackFeed(source.choice, source.entry.resource, historical.service, historical.kind, historical)
-        } else if (supportedConfiguredAbemaEpisode(source.entry.resource)) {
+        // Saved built-in resources play through the same configured paths as any item.
+        val supported = if (supportedConfiguredAbemaEpisode(source.entry.resource)) {
             if (!allowConfiguredAbemaEpisodes) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY)
         } else if (supportedConfiguredAbemaChannel(source.entry.resource)) {

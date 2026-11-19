@@ -4,6 +4,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+// Hourly validation starts this long before the freshness deadline, bounded by
+// half the span. Temporary failures retry at this spacing while still before it.
+internal const val TWITCH_CATALOG_MAINTENANCE_LEAD_MS = 5 * 60_000L
+internal const val TWITCH_CATALOG_MAINTENANCE_RETRY_MS = 60_000L
+
 // Identity excludes mutable expiry: official validation can tighten the same
 // pair without rotating it. Neither identity nor receipts enter UI or storage.
 internal class TwitchCatalogMaintenanceOrigin(private val grant: TwitchCatalogStoredGrant) {
@@ -57,7 +62,9 @@ internal class TwitchCatalogMaintenanceCoordinator(
     private val retainedTimers = mutableListOf<AutoCloseable>()
     private class TimerProof(val grant: TwitchCatalogStoredGrant, val validated: Long, val deadline: Long) {
         val origin = TwitchCatalogMaintenanceOrigin(grant)
-        val due = deadline - minOf(60_000L, maxOf(1L, (deadline - validated) / 2))
+        // Lead the deadline far enough that a temporary failure still has
+        // spaced retries before an attached viewer's freshness expires.
+        val due = deadline - minOf(TWITCH_CATALOG_MAINTENANCE_LEAD_MS, maxOf(1L, (deadline - validated) / 2))
         var attempted = false
         var retryAt = due
     }
@@ -469,7 +476,8 @@ internal class TwitchCatalogMaintenanceCoordinator(
                 if (result.summary.state == TwitchCatalogSessionState.TEMPORARY_FAILURE && !poisoned) {
                     val now = monotonicMs()
                     ticket.proof.attempted = false
-                    ticket.proof.retryAt = if (now <= Long.MAX_VALUE - 60_000) now + 60_000 else Long.MAX_VALUE
+                    ticket.proof.retryAt = if (now <= Long.MAX_VALUE - TWITCH_CATALOG_MAINTENANCE_RETRY_MS)
+                        now + TWITCH_CATALOG_MAINTENANCE_RETRY_MS else Long.MAX_VALUE
                 } else ticket.proof.attempted = true
             }
         }

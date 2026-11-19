@@ -109,9 +109,9 @@ internal object AndroidAbemaRenewalReadiness {
         validate = ::workCurrent, dispatch = { action -> main.post(action) },
         elapsed = SystemClock::elapsedRealtime,
         schedulePending = { deadline, action -> main.postDelayed(action, maxOf(0L, deadline - SystemClock.elapsedRealtime())) },
+        // A same-account renewal keeps surviving leases: owners adopt the store's
+        // direct successor, whose profile/email the operation already verified.
         authoritative = { work, outcome ->
-            if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
-                AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
         })
@@ -133,9 +133,13 @@ internal object AndroidAbemaRenewalReadiness {
 
     // The owner must store the returned lease before explicitly activating it.
     // Observers never receive a ticket, operation, transport or cancellation right.
+    // leadMs > 0 (the renewal job) admits renewal that close to natural expiry.
+    // Foreground readiness keeps treating an unexpired grant as READY, even
+    // while an early renewal runs: leases on it follow the renewal's result.
     fun reserve(context: Context, target: AbemaReadinessTarget, deadline: Long,
         network: Network? = null, admitted: () -> Boolean = { true },
         notify: (AbemaRenewalOperationOutcome) -> Unit = {},
+        leadMs: Long = 0L,
     ): AbemaRenewalReservation {
         val instance = target.instanceId
         fun permitted() = runCatching(admitted).getOrDefault(false)
@@ -147,8 +151,26 @@ internal object AndroidAbemaRenewalReadiness {
         return try {
             ownedAdmission.retireExpiredPending()
             if (!permitted()) return AbemaRenewalReservation.Deferred
+            fun unexpired(binding: AbemaAccountConnectionBinding, owner: AbemaCatalogRouteOwner,
+                snapshot: AbemaAccountSnapshot, wall: Long): Boolean = runCatching {
+                val record = snapshot.record
+                owner.instance.id == instance && owner.proof() == target.ownerProof && binding.sameOwner(owner) &&
+                    binding.store.usable(snapshot.revision) && record != null &&
+                    wall >= record.acceptedWallMs && wall < record.grant.expiresAtMs &&
+                    decodedAbemaGrant(record.grant.bearer, record.grant.userId, record.acceptedWallMs).expiresAtMs ==
+                        record.grant.expiresAtMs
+            }.getOrDefault(false)
+            fun observedReservation(status: AbemaRenewalReadinessCoordinator.Status, usable: () -> Boolean): AbemaRenewalReservation =
+                if (leadMs == 0L && status == AbemaRenewalReadinessCoordinator.Status.WAIT && usable())
+                    AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
+                else AbemaRenewalReservation.Observed(status)
             coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }?.let {
-                return AbemaRenewalReservation.Observed(it.status)
+                return observedReservation(it.status) {
+                    runCatching {
+                        val probe = androidAbemaAccountConnectionBinding(context, instance, target.ownerProof)
+                        unexpired(probe, probe.owner(), probe.store.readSnapshot(), System.currentTimeMillis())
+                    }.getOrDefault(false)
+                }
             }
             val capturedNetwork = network?.let { AbemaRenewalNetwork(it, deadline) }
             val binding = androidAbemaAccountConnectionBinding(context, instance, target.ownerProof,
@@ -163,7 +185,8 @@ internal object AndroidAbemaRenewalReadiness {
                 claimed = { coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }
                     ?.also { observed = true } },
                 recordCurrent = { binding.store.usable(snapshot.revision) }, refused = { failed() })?.let {
-                return if (observed) AbemaRenewalReservation.Observed(it.status) else AbemaRenewalReservation.NoWork(it.status)
+                return if (observed) observedReservation(it.status) { unexpired(binding, owner, snapshot, wall) }
+                    else AbemaRenewalReservation.NoWork(it.status)
             }
             if (!permitted()) return AbemaRenewalReservation.Deferred
             val record = snapshot.record
@@ -174,7 +197,7 @@ internal object AndroidAbemaRenewalReadiness {
             if (wall < record.acceptedWallMs || decodedAbemaGrant(record.grant.bearer, record.grant.userId,
                     record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs)
                 return AbemaRenewalReservation.NoWork(failed().status)
-            if (wall < record.grant.expiresAtMs) {
+            if (wall < record.grant.expiresAtMs - leadMs.coerceIn(0L, ABEMA_RENEWAL_LEAD_MS)) {
                 invalidateTarget()
                 return AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
             }

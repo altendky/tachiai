@@ -244,11 +244,7 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
             stable()
             val binding = configuredProviderInstanceBindingName(instance.id)
             return ConfiguredSourceStore(readOnly(AndroidPrivateSecretStore.configuredProviderInstance(context, instance.id), binding),
-                instance.id, ProviderId("twitch"), optionalLock("$binding.lock")).read {
-                val setups = SourceSetupStore(slot(PrivateAuthorizationSlot.SOURCE_SETUP), optionalLock("source-setup.lock")).read()
-                val qualities = StreamQualityStore(slot(PrivateAuthorizationSlot.STREAM_QUALITY), optionalLock("stream-quality.lock")).read()
-                legacyConfiguredSources(instance, setups, qualities)
-            }
+                instance.id, ProviderId("twitch"), optionalLock("$binding.lock")).read()
         }
 
         var before: Map<String, ByteArray>? = null
@@ -523,7 +519,6 @@ class ConfiguredTwitchPlaybackAcceptanceDeviceTest {
                 }
                 session = if (mode == Mode.REPLAY) PrototypeTwitchSession(checkNotNull(activity.get()), true,
                     feed.resource.identity, ::localCurrent, events, openConnection = ::open, authorization = noLegacy, diagnostics = reporter,
-                    initialPositionMs = if (feed.historicalSource == PrototypeSource.TWITCH_REPLAY) 70 * 60 * 1000L else 0L,
                     preparationFactory = { observedPreparation }, onCleanupChanged = { cleanupFailed.set(true) })
                 else configuredTwitchBroadcasterSession(checkNotNull(activity.get()), feed.resource, ::localCurrent, events,
                     liveIdentityResolverFactory = {

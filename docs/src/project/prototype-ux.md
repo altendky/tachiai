@@ -116,6 +116,13 @@ experiment root; release omits that entry. Explicit developer diagnostic launche
 retain their own entry behavior. Recovery still enters the separate main process
 before terminating an unsafe viewer process.
 
+The picker has no built-in streams and no first-run default pair. Without saved
+choices both slots start empty, and an instance with no saved list shows the
+existing empty-list message. Saved items with former built-in resources remain
+ordinary [configured items](configured-catalog.md#persistence-and-migration).
+Only the developer-only full-page comparison lists its fixed ABEMA News live and
+sumo replay samples, because its page-backed sessions play only those.
+
 Providers shows compact instance rows with a leading drag handle and trailing
 three-dot menu. Tap a row to configure it. Dropping a drag saves the order; the
 handle's menu also supports moving earlier or later. Delete asks for confirmation
@@ -225,6 +232,7 @@ and authentication popups do not request keep-awake for the whole window.
 
 The application checks saved ABEMA accounts on foreground startup and
 before configured discovery or playback. When the native grant has expired,
+or when the renewal job runs 15, 10 or 5 minutes before its natural expiry,
 one bounded application-owned operation reuses the remembered email browser
 session through that instance's selected connection. The browser runs in an
 unattached Service and launches no Activity. A trusted passive account request
@@ -236,7 +244,11 @@ Replacement requires the original account, a useful later decoded expiry,
 fresh native profile and registered-email verification, confirmed browser and
 route cleanup, and an atomic protected-store update. Concurrent consumers share
 the attempt. Changed accounts/routes, Forget, cancellation and stale callbacks
-cannot adopt its result. Readiness observers receive WAIT while the operation
+cannot adopt its result. A direct same-account replacement with a later
+expiry keeps existing account leases, including a playing ABEMA feed, which
+then follows the new expiry. Other account changes still end them. While an
+early renewal runs, a still-valid grant stays READY, so starting playback does
+not wait for it. Otherwise readiness observers receive WAIT while the operation
 owns a tentative replacement, and a failed attempt suppresses immediate resume
 loops. A natively verified different registered account can ask the user to
 choose the saved account. Missing candidates, timeouts, network/region/TLS
@@ -669,7 +681,9 @@ Repeated failures leave the manual recovery action available.
 ABEMA retries first check the existing account-readiness service, including
 verified non-interactive renewal through the remembered browser session.
 An account expiry signal may request that check once per incident; refusal or
-a need for interaction stops recovery. The shared **Check connection** action
+a need for interaction stops recovery. A temporary readiness failure or check
+deadline during an active automatic incident continues its bounded backoff
+instead; it never starts an incident. The shared **Check connection** action
 offers the same bounded check manually. Account settings wait for readiness
 before loading their status, avoiding a stale reconnect warning after renewal,
 and distinguish **Checking account connection…** from reading stream settings.
@@ -1137,8 +1151,8 @@ empty and duplicate choices. Cold-start hydration restores the picker; Watch
 still starts playback. Saved Activity state and explicit recovery checkpoints
 take priority, including empty slots. A user edit supersedes a delayed read.
 Only assignment state resets when hydration arrives, preserving picker navigation.
-Removed source/provider-instance references remain unresolved with no substituted
-source. Selection reads and writes share a process-level serial lane so Activity
+Removed source/provider-instance references become persisted empty slots with no
+substituted source, so they never leave Watch blocked. Selection reads and writes share a process-level serial lane so Activity
 recreation cannot let an older accepted write replace a newer choice. Storage
 failures are visible and invalid records are not silently replaced.
 Build and device verification for this follow-up are recorded separately below.

@@ -294,8 +294,38 @@ class AbemaRenewalOwnedAdmissionTest {
         val lease = f.lease(); val operation = f.constructed.single().second
         lease.cancel()
         assertTrue(lease.outcome()!!.cleanupConfirmed); assertTrue(f.operations.isEmpty())
-        assertEquals(AbemaRenewalReadinessCoordinator.Completion.FAILURE, f.evidence())
+        // The confirmed owner cancellation was delivered and retired, not failed.
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.ABSENT, f.evidence())
         assertEquals(1, operation.cancels)
+    }
+
+    @Test fun confirmedOwnerCancellationBeforeDeadlineLetsAWaitingObserverStartAFreshRenewal() {
+        val f = Fixture(); val lease = f.lease(); val operation = f.constructed.single().second
+        lease.activate(); f.pump(); assertEquals(1, operation.starts)
+        val waiting = f.reserve() as AbemaRenewalReservation.Observed
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, waiting.status)
+        f.elapsed += 1_000; lease.cancel()
+        assertEquals(AbemaAutomaticRenewalResult.CANCELLED, lease.outcome()!!.result)
+        assertTrue(lease.outcome()!!.cleanupConfirmed)
+        // No 60 s FAILURE cooldown: the successor launches immediately.
+        val successor = f.lease()
+        assertEquals(2, f.constructed.size)
+        successor.cancel()
+    }
+
+    @Test fun operationOwnCancellationIsTemporaryAndUnconfirmedCancellationIsNotRetired() {
+        val own = Fixture(); val lease = own.lease(); val operation = own.constructed.single().second
+        lease.activate(); own.pump()
+        operation.completed(AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.CANCELLED, true))
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE, own.evidence())
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE,
+            (own.reserve() as AbemaRenewalReservation.Observed).status)
+        val held = Fixture(); val heldLease = held.lease(); val heldOperation = held.constructed.single().second
+        heldOperation.onCancel = {}
+        heldLease.activate(); held.pump(); heldLease.cancel()
+        heldOperation.completed(AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.CANCELLED, false))
+        assertEquals(AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED, held.evidence())
+        assertTrue(held.reserve() is AbemaRenewalReservation.Observed); assertEquals(1, held.constructed.size)
     }
 
     @Test fun constructorFailureCreatesNoDispatchAndPrematureReceiptCannotBecomeAuthority() {

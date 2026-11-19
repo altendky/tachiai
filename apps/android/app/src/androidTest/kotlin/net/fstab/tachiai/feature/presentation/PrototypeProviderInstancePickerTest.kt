@@ -12,14 +12,19 @@ import org.junit.Test
 class PrototypeProviderInstancePickerTest {
     @get:Rule val compose = createComposeRule()
     private val extra = ProviderInstance("12345678-1234-1234-1234-123456789abc", PrototypeService.TWITCH, "Twitch 2")
+    private fun configured(instances: List<ProviderInstance>) = instances.flatMap {
+        legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }.filterNot(::legacyTwitchLiveSource)
     @Test fun sameStreamUnderDifferentInstancesRestoresBothBindingsAndCanOpenDuplicateFeeds() {
         val restoration = StateRestorationTester(compose)
         var opened: ConfiguredFeedAssignments? = null
+        val stream = PrototypeSource.TWITCH_REPLAY
+        val twitch = defaultProviderInstanceId(PrototypeService.TWITCH)
         restoration.setContent { TachiaiPrototypeTheme {
             PrototypeSourcePicker(null, providerInstances = defaultProviderInstances() + extra,
+                configuredSources = configured(defaultProviderInstances() + extra),
+                initialAssignments = ConfiguredFeedAssignments(null, ConfiguredFeedChoice(configuredLegacyId(twitch, stream), twitch)),
                 onWatch = { opened = it })
         } }
-        val stream = PrototypeSource.TWITCH_LIVE
         compose.onNodeWithContentDescription("Assign ${stream.title} using Twitch 2 to feed A").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Assign ${stream.title} to feed B").performScrollTo().assertIsOn()
         restoration.emulateSavedInstanceStateRestore()
@@ -35,10 +40,10 @@ class PrototypeProviderInstancePickerTest {
     }
     @Test fun staleOrWrongTypeInstanceDisablesViewerUntilExplicitReassignment() {
         val instances = mutableStateOf(defaultProviderInstances() + extra)
-        val stream = PrototypeSource.TWITCH_LIVE
+        val stream = PrototypeSource.TWITCH_REPLAY
         var opened: ConfiguredFeedAssignments? = null
         compose.setContent { TachiaiPrototypeTheme {
-            PrototypeSourcePicker(null, providerInstances = instances.value,
+            PrototypeSourcePicker(null, providerInstances = instances.value, configuredSources = configured(instances.value),
                 initialAssignments = ConfiguredFeedAssignments(
                     ConfiguredFeedChoice(configuredLegacyId(extra.id, stream), extra.id),
                     ConfiguredFeedChoice(configuredLegacyId(defaultProviderInstanceId(PrototypeService.TWITCH), stream),

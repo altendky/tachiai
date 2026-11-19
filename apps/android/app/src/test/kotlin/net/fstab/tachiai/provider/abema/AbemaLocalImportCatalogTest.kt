@@ -168,7 +168,6 @@ class AbemaLocalImportCatalogTest {
         val channel = (selection(channelUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
         channel.feeds.forEach {
             assertEquals(CatalogResource(ProviderId("abema"), "channel", "sumo", CatalogIntent.CHANNEL), it.resource)
-            assertNull(it.historicalSource)
             assertEquals(PrototypePlaybackKind.LIVE, it.kind)
         }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
@@ -177,7 +176,6 @@ class AbemaLocalImportCatalogTest {
         val slot = (selection(slotUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
         slot.feeds.forEach {
             assertEquals(CatalogResource(ProviderId("abema"), "slot", "sumo/A63wR6irBEskZM", CatalogIntent.BROADCAST), it.resource)
-            assertNull(it.historicalSource)
             assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
             assertEquals("ABEMA_CONFIGURED_SLOT", it.diagnosticName)
         }
@@ -187,17 +185,17 @@ class AbemaLocalImportCatalogTest {
         val episode = (selection(episodeUrl) as ConfiguredPrototypeSelectionResult.Ready).selection
         episode.feeds.forEach {
             assertEquals(CatalogResource(ProviderId("abema"), "episode", "394-72_s10_p845", CatalogIntent.VIDEO), it.resource)
-            assertNull(it.historicalSource)
             assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
         }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
             selection(episodeUrl, allowEpisodes = false))
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
             selection("https://abema.tv/video/title/394-72"))
-        assertEquals(PrototypeSource.ABEMA_LIVE,
-            checkNotNull((selection("https://abema.tv/channels/abema-news") as ConfiguredPrototypeSelectionResult.Ready).selection.a).historicalSource)
-        assertEquals(PrototypeSource.ABEMA_REPLAY,
-            checkNotNull((selection("https://abema.tv/video/episode/394-72_s10_p8529") as ConfiguredPrototypeSelectionResult.Ready).selection.a).historicalSource)
+        // Former built-in resources are ordinary configured items with no sample marker.
+        assertEquals("ABEMA_CONFIGURED_CHANNEL",
+            checkNotNull((selection("https://abema.tv/channels/abema-news") as ConfiguredPrototypeSelectionResult.Ready).selection.a).diagnosticName)
+        assertEquals("ABEMA_CONFIGURED_EPISODE",
+            checkNotNull((selection("https://abema.tv/video/episode/394-72_s10_p8529") as ConfiguredPrototypeSelectionResult.Ready).selection.a).diagnosticName)
         catalog.close()
     }
 

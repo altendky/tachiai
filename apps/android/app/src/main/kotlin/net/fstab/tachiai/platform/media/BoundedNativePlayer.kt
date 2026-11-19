@@ -69,6 +69,7 @@ internal class BoundedNativePlayer(
         onManifestRejection = onManifestRejection, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onConnectionReleased = { request -> cleanup.released(request) },
         onFailure = { stage, error ->
             if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
             observedFailure(stage, error)
@@ -86,7 +87,10 @@ internal class BoundedNativePlayer(
         Log.setLogLevel(Log.LOG_LEVEL_OFF)
         try {
         player = quality.configure(ExoPlayer.Builder(context.applicationContext))
-            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 30_000, 1_000, 2_000).build())
+            // Equal minimum and maximum keep loading continuously. With a 5 s
+            // minimum, a live feed held behind its window start stopped loading
+            // until 5 s remained, then asked for a segment already removed (1002).
+            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(30_000, 30_000, 1_000, 2_000).build())
             .build().also { owned ->
                 cleanup.own(-10, ownerThread = true) {
                     observeNativeFailure(NativeFailureStage.BEFORE_PLAYER_RELEASE, observedFailure) {

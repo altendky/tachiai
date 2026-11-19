@@ -96,6 +96,8 @@ class ConnectionProfileStoreTest {
         val store = ConnectionProfileStore(secrets)
         val large = fixtureWireGuard().replace("AllowedIPs = 0.0.0.0/0, ::/0",
             "AllowedIPs = " + List(16) { "2001:db8:1234:5678:1234:5678:1234:5678/128" }.joinToString(", "))
+            // Import admission requires the DNS server to stay inside the peer's routes.
+            .replace("DNS = 10.2.0.1, fd00::1", "DNS = 2001:db8:1234:5678:1234:5678:1234:5678")
         val imported = parseConnectionProfile(large.toByteArray())
         repeat(6) { store.add("Long connection name $it", imported) }
         val previous = secrets.bytes!!.copyOf()

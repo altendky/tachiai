@@ -25,7 +25,6 @@ class ConfiguredYouTubeSelectionTest {
             assertEquals(source.entry.resource, feed.resource)
             assertEquals(PrototypeService.YOUTUBE, feed.service)
             assertEquals(youtube, feed.resolve(instances))
-            assertNull(feed.historicalSource)
             assertEquals("YOUTUBE_CONFIGURED_VIDEO", feed.diagnosticName)
         }
         assertEquals(CatalogAvailability.UNKNOWN, source.entry.availability)
@@ -34,7 +33,7 @@ class ConfiguredYouTubeSelectionTest {
     @Test fun youtubeAndTwitchCanBeSelectedWithoutCrossingProviderBindings() {
         val source = imported("-bcdefghi_1")
         val twitch = instances.single { it.service == PrototypeService.TWITCH }
-        val other = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).first()
+        val other = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).last()
         val ready = resolve(source, other) as ConfiguredPrototypeSelectionResult.Ready
         assertEquals(listOf(PrototypeService.YOUTUBE, PrototypeService.TWITCH), ready.selection.feeds.map { it.service })
         assertEquals(listOf(youtube.id, twitch.id), ready.selection.feeds.map { it.instanceId })

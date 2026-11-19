@@ -58,7 +58,7 @@ class TvNavigationTest {
     @Test fun remoteAssignsOneSourceToBothFeedsAndOpensOnlyOnWatch() {
         val provider = defaultProviderInstances().single { it.service == PrototypeService.TWITCH }
         val source = legacyConfiguredSources(provider, defaultSourceSetups(), emptyMap()).single {
-            it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_LIVE)
+            it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_REPLAY)
         }
         var assignments = ConfiguredFeedAssignments(null, null)
         var opened: ConfiguredFeedAssignments? = null

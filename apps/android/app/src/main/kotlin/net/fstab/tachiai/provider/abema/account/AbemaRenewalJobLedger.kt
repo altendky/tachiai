@@ -32,19 +32,24 @@ internal enum class AbemaRenewalJobDisposition {
     DEFERRED_INTERACTION, DEFERRED_STORAGE, DEFERRED_FAILURE, DEFERRED_CLEANUP, EXHAUSTED,
 }
 
+// attempts counts provider attempts at or after natural expiry; earlyAttempts
+// counts those made while the grant was still unexpired.
 internal data class AbemaRenewalJobEntry(val key: AbemaRenewalJobKey, val generation: AbemaRenewalGeneration,
-    val dueWallMs: Long, val attempts: Int, val disposition: AbemaRenewalJobDisposition) {
+    val dueWallMs: Long, val attempts: Int, val disposition: AbemaRenewalJobDisposition, val earlyAttempts: Int = 0) {
     init {
-        require(dueWallMs >= generation.expiresWallMs && attempts in 0..3)
-        require(disposition != AbemaRenewalJobDisposition.DUE || attempts == 0)
-        require(disposition != AbemaRenewalJobDisposition.RUNNING || attempts > 0)
-        require(disposition != AbemaRenewalJobDisposition.RETRY || attempts in 1..2)
+        require(dueWallMs >= generation.expiresWallMs - ABEMA_RENEWAL_LEAD_MS && attempts in 0..3 &&
+            earlyAttempts in 0..ABEMA_RENEWAL_EARLY_STEPS_MS.size)
+        require(disposition != AbemaRenewalJobDisposition.DUE || attempts == 0 && earlyAttempts == 0)
+        require(disposition != AbemaRenewalJobDisposition.RUNNING || attempts + earlyAttempts > 0)
+        require(disposition != AbemaRenewalJobDisposition.RETRY || attempts in 0..2 && attempts + earlyAttempts > 0)
     }
     val pending get() = disposition in setOf(AbemaRenewalJobDisposition.DUE, AbemaRenewalJobDisposition.RETRY)
+    // Before natural expiry, a failed attempt still leaves the grant usable.
+    val early get() = dueWallMs < generation.expiresWallMs
     override fun toString() = "AbemaRenewalJobEntry(redacted)"
 }
 
-internal data class AbemaRenewalJobAttempt(val key: AbemaRenewalJobKey, val number: Int) {
+internal data class AbemaRenewalJobAttempt(val key: AbemaRenewalJobKey, val number: Int, val early: Boolean = false) {
     init { require(number in 1..3) }
     override fun toString() = "AbemaRenewalJobAttempt(redacted)"
 }
@@ -87,13 +92,22 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
             if (prior != null) commit(current - prior)
             return null
         }
-        if (prior != null && prior.generation == generation) return prior
+        if (prior != null && prior.generation == generation) {
+            // An untouched entry from before early renewal moves to the early due time.
+            val due = abemaRenewalDueWallMs(generation)
+            if (prior.disposition != AbemaRenewalJobDisposition.DUE || prior.attempts != 0 || prior.dueWallMs <= due) return prior
+            val id = scheduleId()
+            check(current.none { it.key.schedule == id })
+            val moved = prior.copy(key = prior.key.copy(schedule = id), dueWallMs = due)
+            commit(current - prior + moved)
+            return moved
+        }
         check(current.size < MAX_PROVIDER_INSTANCES || prior != null)
         val jobId = prior?.key?.jobId ?: JOB_IDS.first { id -> current.none { it.key.jobId == id } }
         val id = scheduleId()
         check(current.none { it.key.schedule == id })
         val next = AbemaRenewalJobEntry(AbemaRenewalJobKey(instance, id, jobId), generation,
-            generation.expiresWallMs, 0, AbemaRenewalJobDisposition.DUE)
+            abemaRenewalDueWallMs(generation), 0, AbemaRenewalJobDisposition.DUE)
         commit(current.filterNot { it.key.instance == instance } + next)
         return next
     }
@@ -102,10 +116,13 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
     fun consume(key: AbemaRenewalJobKey, generation: AbemaRenewalGeneration, wallMs: Long): AbemaRenewalJobAttempt? {
         val current = snapshot()
         val entry = current.singleOrNull { it.key == key } ?: return null
-        if (!entry.pending || entry.generation != generation || wallMs < entry.dueWallMs || entry.attempts >= 3) return null
-        val next = entry.copy(attempts = entry.attempts + 1, disposition = AbemaRenewalJobDisposition.RUNNING)
+        if (!entry.pending || entry.generation != generation || wallMs < entry.dueWallMs) return null
+        val early = wallMs < generation.expiresWallMs
+        if (if (early) entry.earlyAttempts >= ABEMA_RENEWAL_EARLY_STEPS_MS.size else entry.attempts >= 3) return null
+        val next = if (early) entry.copy(earlyAttempts = entry.earlyAttempts + 1, disposition = AbemaRenewalJobDisposition.RUNNING)
+            else entry.copy(attempts = entry.attempts + 1, disposition = AbemaRenewalJobDisposition.RUNNING)
         commit(current - entry + next)
-        return AbemaRenewalJobAttempt(key, next.attempts)
+        return AbemaRenewalJobAttempt(key, if (early) next.earlyAttempts else next.attempts, early)
     }
 
     // Every actual scheduling call publishes a fresh invocation key first.
@@ -135,9 +152,23 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
             AbemaRenewalJobDisposition.RETRY))
         require(!retrySafe || disposition == AbemaRenewalJobDisposition.DEFERRED_FAILURE)
         val current = snapshot()
-        val entry = current.singleOrNull { it.key == attempt.key && it.attempts == attempt.number &&
+        val entry = current.singleOrNull { it.key == attempt.key &&
+            (if (attempt.early) it.earlyAttempts else it.attempts) == attempt.number &&
             it.disposition == AbemaRenewalJobDisposition.RUNNING } ?: return null
-        val next = if (!retrySafe) entry.copy(disposition = disposition)
+        val fallback = attempt.early && wallMs < entry.generation.expiresWallMs &&
+            disposition !in setOf(AbemaRenewalJobDisposition.COMPLETED, AbemaRenewalJobDisposition.DEFERRED_CLEANUP,
+                AbemaRenewalJobDisposition.DEFERRED_STORAGE)
+        val next = if (fallback) {
+            // An early attempt that did not renew (for example, the provider
+            // still issued the current grant) tries the next early step, then
+            // natural expiry.
+            val id = scheduleId()
+            check(current.none { it.key.schedule == id })
+            val later = if (entry.earlyAttempts >= ABEMA_RENEWAL_EARLY_STEPS_MS.size) null
+                else abemaRenewalEarlyDueTimes(entry.generation).firstOrNull { it > wallMs && it > entry.dueWallMs }
+            entry.copy(key = entry.key.copy(schedule = id), dueWallMs = later ?: entry.generation.expiresWallMs,
+                disposition = AbemaRenewalJobDisposition.RETRY)
+        } else if (!retrySafe) entry.copy(disposition = disposition)
         else if (entry.attempts >= 3) entry.copy(disposition = AbemaRenewalJobDisposition.EXHAUSTED)
         else {
             val wait = if (entry.attempts == 1) 120_000L else 600_000L
@@ -163,12 +194,12 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
     private fun encode(values: List<AbemaRenewalJobEntry>): ByteArray {
         require(values.size <= MAX_PROVIDER_INSTANCES)
         return ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(1); data.writeInt(values.size)
+            data.writeInt(2); data.writeInt(values.size)
             values.forEach { value ->
                 data.writeUTF(value.key.instance); data.writeUTF(value.key.schedule); data.writeInt(value.key.jobId)
                 data.writeLong(value.generation.generation); data.writeLong(value.generation.acceptedWallMs)
                 data.writeLong(value.generation.expiresWallMs); data.writeLong(value.dueWallMs)
-                data.writeInt(value.attempts); data.writeUTF(value.disposition.name)
+                data.writeInt(value.attempts); data.writeUTF(value.disposition.name); data.writeInt(value.earlyAttempts)
             }
         } }.toByteArray().also { check(it.size <= MAX_BYTES) }
     }
@@ -176,18 +207,27 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
     override fun toString() = "AbemaRenewalJobLedger(redacted)"
 }
 
+// Early attempt times before natural expiry, earliest first. None is before
+// half the accepted lifetime, so a short-lived grant cannot chain renewals.
+internal fun abemaRenewalEarlyDueTimes(generation: AbemaRenewalGeneration): List<Long> {
+    val half = generation.acceptedWallMs + (generation.expiresWallMs - generation.acceptedWallMs) / 2
+    return ABEMA_RENEWAL_EARLY_STEPS_MS.map { maxOf(half, generation.expiresWallMs - it) }.distinct()
+}
+internal fun abemaRenewalDueWallMs(generation: AbemaRenewalGeneration): Long = abemaRenewalEarlyDueTimes(generation).first()
+
 // Read-only validation for bounded inventory observations too. No file access,
 // recovery transition or authority is acquired by decoding public metadata.
 internal fun decodeAbemaRenewalJobMetadata(bytes: ByteArray): List<AbemaRenewalJobEntry> {
     check(bytes.size <= AbemaRenewalJobLedger.MAX_BYTES)
     return DataInputStream(ByteArrayInputStream(bytes)).use { data ->
-        check(data.readInt() == 1)
+        // Version 1 predates early attempts; it is read as having none.
+        val version = data.readInt(); check(version in 1..2)
         val count = data.readInt(); check(count in 0..MAX_PROVIDER_INSTANCES)
         val result = List(count) {
             val key = AbemaRenewalJobKey(data.readUTF(), data.readUTF(), data.readInt())
             val generation = AbemaRenewalGeneration(data.readLong(), data.readLong(), data.readLong())
             AbemaRenewalJobEntry(key, generation, data.readLong(), data.readInt(),
-                AbemaRenewalJobDisposition.valueOf(data.readUTF()))
+                AbemaRenewalJobDisposition.valueOf(data.readUTF()), if (version == 1) 0 else data.readInt())
         }
         check(data.read() == -1 && result.map { it.key.instance }.distinct().size == count &&
             result.map { it.key.schedule }.distinct().size == count && result.map { it.key.jobId }.distinct().size == count)

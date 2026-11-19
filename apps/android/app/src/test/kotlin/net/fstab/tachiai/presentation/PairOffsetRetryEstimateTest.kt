@@ -46,6 +46,30 @@ class PairOffsetRetryEstimateTest {
         assertEquals(0L, estimate.correctionMs(a, b, 1_030_000))
     }
 
+    private fun smooth(position: Long, duration: Long, offset: Long) =
+        live(duration - position, duration).copy(liveOffsetMs = offset)
+
+    @Test fun continuousLiveOffsetIgnoresWindowDurationThatOnlyStepsOnRefresh() {
+        val estimate = PairOffsetRetryEstimate()
+        estimate.remember(smooth(90_000, 120_000, 33_000), smooth(115_000, 120_000, 8_000), 1_000_000)
+        // Ten seconds of 1x playback: A's window has not refreshed (duration
+        // unchanged, position +10s) while B's refreshed. Neither moved relative
+        // to live, so nothing was lost; window-end distance would claim -18s.
+        assertEquals(0L, estimate.correctionMs(smooth(100_000, 120_000, 33_000),
+            smooth(112_000, 125_000, 8_000), 1_010_000))
+        // A restarted at its default live position after a failure.
+        assertEquals(-25_000L, estimate.correctionMs(smooth(112_000, 120_000, 8_000),
+            smooth(112_000, 125_000, 8_000), 1_010_000))
+    }
+
+    @Test fun liveClockKindMustMatchBetweenWitnessAndRetrySample() {
+        val estimate = PairOffsetRetryEstimate()
+        estimate.remember(smooth(90_000, 120_000, 33_000), live(5_000), 1_000_000)
+        assertNull(estimate.correctionMs(live(30_000), live(5_000), 1_010_000))
+        assertNull(estimate.correctionMs(smooth(90_000, 120_000, 33_000),
+            smooth(115_000, 120_000, 8_000), 1_010_000))
+    }
+
     @Test fun mixedLiveReplayUsesElapsedProgressRatherThanSubtractingClockOrigins() {
         val first = PairOffsetRetryEstimate()
         first.remember(live(30_000), replay(10_000), 1_000_000)

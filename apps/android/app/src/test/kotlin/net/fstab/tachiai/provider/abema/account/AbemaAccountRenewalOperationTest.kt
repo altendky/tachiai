@@ -253,7 +253,8 @@ class AbemaAccountRenewalOperationTest {
                 1 -> f.localRoute = false
                 2 -> f.store.invalidateForget()
                 3 -> f.beforeApproval = { _, _, _ -> false }
-                4 -> f.wall = 1_500_000 // A valid grant is not silently replaced.
+                // A grant before its renewal lead is not silently replaced.
+                4 -> f.wall = 2_000_000 - ABEMA_RENEWAL_LEAD_MS - 1
             }
             f.start(); assertEquals(0, f.requests); assertNotEquals(AbemaAutomaticRenewalResult.SUCCESS, f.onlyResult())
             assertArrayEquals(f.prior, f.storage.bytes); assertEquals(0, f.profiles)

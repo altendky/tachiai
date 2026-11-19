@@ -90,6 +90,30 @@ class ConnectionProfileTest {
         ).forEach { rejects(it, ConnectionImportFailure.Category.VALUE) }
     }
 
+    @Test fun importRefusesDnsTheNativeBackendCannotRouteButKeepsStoredProfilesReadable() {
+        val original = fixtureWireGuard()
+        listOf(
+            original.replace("DNS = 10.2.0.1, fd00::1\n", ""),
+            original.replace("AllowedIPs = 0.0.0.0/0, ::/0", "AllowedIPs = 192.0.2.0/24, ::/0"),
+            original.replace("AllowedIPs = 0.0.0.0/0, ::/0", "AllowedIPs = 0.0.0.0/0, fd00::2/128"),
+            original.replace("Address = 10.2.0.2/32, fd00::2/128", "Address = 10.2.0.2/32"),
+            original.replace("DNS = 10.2.0.1, fd00::1", "DNS = 0.0.0.0"),
+            original.replace("MTU = 1280", "MTU = 1200"),
+        ).forEach { text ->
+            val error = assertThrows(ConnectionImportFailure::class.java) { parse(text) }
+            assertEquals(ConnectionImportFailure.Category.VALUE, error.category)
+            assertFalse(error.message!!.contains("10.2.0.1"))
+            // Re-reading an already stored record uses parse without import admission.
+            assertEquals(ConnectionKind.WIREGUARD, routeProtocols.parse(text.toByteArray()).kind)
+        }
+        // A split tunnel remains importable when its DNS server is routed through the peer.
+        val split = parse(original.replace("AllowedIPs = 0.0.0.0/0, ::/0", "AllowedIPs = 10.2.0.0/24, fd00::/64"))
+        assertEquals(ConnectionKind.WIREGUARD, split.kind)
+        val ipv4Only = parse(original.replace("Address = 10.2.0.2/32, fd00::2/128", "Address = 10.2.0.2/32")
+            .replace("DNS = 10.2.0.1, fd00::1", "DNS = 10.2.0.1").replace("MTU = 1280", "MTU = 1200"))
+        assertEquals(ConnectionKind.WIREGUARD, ipv4Only.kind)
+    }
+
     @Test fun proxyCredentialsStayOutOfPreviewAndErrors() {
         val profile = parse("http://user:private-password@proxy.example.test:3128")
         assertEquals(ConnectionKind.HTTP_PROXY, profile.kind)

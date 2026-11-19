@@ -16,11 +16,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const headerLimit = 8192
 const maxConnections = 16
+
+// tunnelIdleTimeout closes an established tunnel only after neither direction
+// has made progress for this long. Tests shorten it.
+var tunnelIdleTimeout = 5 * time.Minute
 
 var hostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 var localCredentialPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
@@ -255,14 +260,64 @@ func (r *Route) serve(client net.Conn) {
 		return
 	}
 	// Bound idle/abandoned sockets independently from the presentation lifecycle.
-	client.SetDeadline(time.Now().Add(5 * time.Minute))
-	upstream.SetDeadline(time.Now().Add(5 * time.Minute))
+	// Progress in either direction extends both deadlines, so a long download
+	// with a quiet request direction stays open while a stalled tunnel closes.
+	idle := newIdleTunnel(client, upstream, tunnelIdleTimeout)
 	done := make(chan struct{})
-	go func() { io.Copy(upstream, reader); upstream.Close(); client.Close(); close(done) }()
-	io.Copy(client, upstream)
+	go func() {
+		io.Copy(progressWriter{upstream, idle}, reader)
+		upstream.Close()
+		client.Close()
+		close(done)
+	}()
+	io.Copy(progressWriter{client, idle}, upstream)
 	upstream.Close()
 	client.Close()
 	<-done
+}
+
+// idleTunnel refreshes a shared deadline on progress, at most once per
+// refresh interval, so busy tunnels do not reset timers on every write.
+type idleTunnel struct {
+	conns   [2]net.Conn
+	timeout time.Duration
+	refresh int64
+	last    atomic.Int64
+}
+
+func newIdleTunnel(client, upstream net.Conn, timeout time.Duration) *idleTunnel {
+	t := &idleTunnel{conns: [2]net.Conn{client, upstream}, timeout: timeout, refresh: int64(timeout / 16)}
+	t.extend(time.Now())
+	return t
+}
+
+func (t *idleTunnel) extend(now time.Time) {
+	t.last.Store(now.UnixNano())
+	deadline := now.Add(t.timeout)
+	for _, c := range t.conns {
+		c.SetDeadline(deadline)
+	}
+}
+
+func (t *idleTunnel) progress() {
+	now := time.Now()
+	if now.UnixNano()-t.last.Load() >= t.refresh {
+		t.extend(now)
+	}
+}
+
+// progressWriter hides ReaderFrom so every forwarded chunk is observed.
+type progressWriter struct {
+	w    io.Writer
+	idle *idleTunnel
+}
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if n > 0 {
+		p.idle.progress()
+	}
+	return n, err
 }
 
 // NewSystem opens an authenticated, destination-restricted local CONNECT bridge

@@ -35,7 +35,12 @@ device: each use leases its own loopback listener, credentials and allowed
 hosts from it, and the device retires about 30 seconds after its last lease.
 Another configuration with the same key waits for that retirement, and an
 unconfirmed device close blocks the key in that process rather than starting a
-second device. Separate processes still start their own devices
+second device. The playback process starts no WireGuard device of its own: it
+leases from the ordinary process over a same-UID Binder service that its bound
+viewer keeps alive. Owner death revokes the lease and fails that route into
+existing recovery; an unconfirmed lease close is unconfirmed route cleanup.
+Neither falls back to a local device or System. The approval and guest WebView
+processes and the renewal job still start their own devices
 ([#275](https://github.com/altendky/tachiai/issues/275)). Native Twitch validation/access/HLS and ABEMA
 bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA
 guest/source/initial-license requests remain unchanged Chromium requests, routed

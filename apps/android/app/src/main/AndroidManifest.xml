@@ -133,5 +133,8 @@
         <service
             android:name=".provider.abema.account.AbemaAccountAccessService"
             android:exported="false" />
+        <service
+            android:name=".platform.network.RouteLeaseService"
+            android:exported="false" />
     </application>
 </manifest>

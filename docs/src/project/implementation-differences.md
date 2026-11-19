@@ -49,6 +49,13 @@ scheduling mechanisms with no new account screen or notification. Runtime and
 physical-device acceptance remain separate from passing host fixtures; no web
 or Apple equivalent is established here.
 
+Android playback runs in a separate process. Its WireGuard routes lease
+loopback listeners from the ordinary process's single device per key pair over
+a same-UID Binder service, which the bound viewer keeps alive
+([source routing](source-network-routing.md#subsequent-native-transport-implementation)). This is
+an internal mechanism with no user-visible flow; a lost owner fails the route
+into existing recovery.
+
 ## Other implementations
 
 No iOS or tvOS application implementation differences are established here.

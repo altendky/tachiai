@@ -17,12 +17,21 @@ internal object WireGuardRouteProtocol : RouteProtocol {
         listOf("[Interface].PrivateKey", "[Peer].PublicKey").joinToString("\n") { checkNotNull(fields[it]) }
     }
 
-    // Every lease of this key pair in the process shares one device (#275).
-    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend {
-        preparation.checkActive()
-        return RouteEngineOwner.shared.lease(routeConfigurationKey(profile), checkNotNull(routeConflictKey(profile)), security) {
+    // Where this process's leases come from. The ordinary process owns the
+    // devices; the playback process installs a Binder lease source at startup
+    // so it never starts a second device with the same key (#275).
+    @Volatile internal var leases: (ConnectionProfile, RouteProxySecurity, RoutePreparation) -> RouteBackend =
+        { profile, security, _ -> leaseLocally(profile, security) }
+
+    // Every lease of this key pair in the process shares one device.
+    internal fun leaseLocally(profile: ConnectionProfile, security: RouteProxySecurity): RouteBackend =
+        RouteEngineOwner.shared.lease(routeConfigurationKey(profile), checkNotNull(routeConflictKey(profile)), security) {
             NativeRouteEngine(Routebridge.newWireGuardEngine(profile.configuration))
         }
+
+    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend {
+        preparation.checkActive()
+        return leases(profile, security, preparation)
     }
 
     // Match the native backend, which never invents host DNS: every DNS server

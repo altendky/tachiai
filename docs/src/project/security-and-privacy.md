@@ -26,6 +26,15 @@ display names, never copied keys/credentials. Conflicting earlier stream/feed
 route settings require explicit review; unsupported or failed routes stop before provider
 preparation instead of falling back to the system network.
 
+The playback process leases WireGuard routes from the ordinary process over a
+non-exported, same-UID Binder service
+([#275](https://github.com/altendky/tachiai/issues/275)). Route configuration
+never crosses Binder: the request names the saved profile only by its route
+configuration digest, and the owner re-reads that profile from its own store.
+Allowed hosts are derived by the owner from a closed purpose name, never sent by
+the client. Only the lease's random loopback proxy credentials cross, once, in
+a strictly validated RAM-only message.
+
 ## Android renewal scheduling metadata
 
 The [expiry-based job](source-network-routing.md#expiry-based-android-renewal-job)

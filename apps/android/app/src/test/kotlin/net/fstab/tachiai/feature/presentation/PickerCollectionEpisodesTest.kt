@@ -23,12 +23,14 @@ class PickerCollectionEpisodesTest {
         }
         override fun capabilities() = CatalogCapabilities(browse = CatalogAccess.AVAILABLE, lookup = CatalogAccess.AVAILABLE,
             refresh = CatalogAccess.AVAILABLE, playback = CatalogAccess.AVAILABLE)
-        override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> { queries += query; return reply(query) }
+        override fun browse(query: CatalogQuery): CatalogResult<CatalogPage> { queries += query; return (override ?: reply)(query) }
         override fun lookup(input: String): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         override fun close() { closes++ }
     }
+    // Applies to every catalog, including ones reopened after a failure.
+    private var override: ((CatalogQuery) -> CatalogResult<CatalogPage>)? = null
     private val queued = mutableListOf<() -> Unit>()
     private val opened = mutableListOf<Pair<ConfiguredSource, Catalog>>()
     private val episodes = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action }) { source ->
@@ -68,25 +70,28 @@ class PickerCollectionEpisodesTest {
         val sumo = collection("394-72")
         episodes.load(sumo, false); deliver()
         val catalog = opened.single().second
-        catalog.reply = { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        override = { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
         episodes.load(sumo, true); deliver()
         val failed = episodes.state(sumo)
         assertEquals("Episodes could not be loaded.", failed.failure)
         assertEquals(2, failed.entries.size); assertFalse(failed.more)
-        catalog.reply = { CatalogResult.Value(CatalogPage(listOf(entry("newer")))) }
+        // A failed catalog is closed; Retry opens a fresh one from the newest page.
+        assertEquals(1, catalog.closes)
+        override = { CatalogResult.Value(CatalogPage(listOf(entry("newer")))) }
         episodes.load(sumo, false); deliver()
         assertEquals(listOf("newer"), episodes.state(sumo).entries.map { it.resource.identity })
         assertNull(episodes.state(sumo).failure)
-        assertNull(catalog.queries.last().cursor)
+        assertEquals(2, opened.size)
+        assertNull(opened.last().second.queries.single().cursor)
     }
 
     @Test fun anEmptyCollectionAndAThrowingCatalogAreReportedHonestly() {
         val sumo = collection("394-72")
         episodes.load(sumo, false); deliver()
-        opened.single().second.reply = { error("fixture failure") }
+        override = { error("fixture failure") }
         episodes.load(sumo, false); deliver()
         assertEquals("Episodes could not be loaded.", episodes.state(sumo).failure)
-        opened.single().second.reply = { CatalogResult.Value(CatalogPage(emptyList())) }
+        override = { CatalogResult.Value(CatalogPage(emptyList())) }
         episodes.load(sumo, false); deliver()
         assertTrue(episodes.state(sumo).loaded && episodes.state(sumo).entries.isEmpty() && episodes.state(sumo).failure == null)
     }
@@ -98,5 +103,10 @@ class PickerCollectionEpisodesTest {
         deliver()
         assertFalse(episodes.state(sumo).loaded)
         assertEquals(1, opened.single().second.closes)
+    }
+
+    @Test fun routeFailuresPointToProvidersAndInterruptionsDoNot() {
+        assertTrue(collectionEpisodesFailureMessage(CatalogFailure.NOT_VERIFIED).contains("Providers"))
+        assertEquals("Episodes could not be loaded.", collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED))
     }
 }

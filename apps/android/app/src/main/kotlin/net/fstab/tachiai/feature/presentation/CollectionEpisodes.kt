@@ -24,9 +24,10 @@ internal interface CollectionEpisodes {
 internal fun collectionEpisodesFailureMessage(reason: CatalogFailure): String = when (reason) {
     CatalogFailure.NOT_FOUND -> "This collection was not found."
     CatalogFailure.RATE_LIMITED -> "The provider is limiting requests. Try again shortly."
-    CatalogFailure.UNSUPPORTED, CatalogFailure.NOT_VERIFIED, CatalogFailure.ACCESS_REQUIRED ->
+    CatalogFailure.UNSUPPORTED, CatalogFailure.NOT_VERIFIED ->
         "Episodes are not available for this collection now. Check its route in Providers."
-    CatalogFailure.TEMPORARY, CatalogFailure.INVALID_INPUT -> "Episodes could not be loaded."
+    // Includes a load interrupted by leaving the app.
+    CatalogFailure.ACCESS_REQUIRED, CatalogFailure.TEMPORARY, CatalogFailure.INVALID_INPUT -> "Episodes could not be loaded."
 }
 
 // Main-thread state; catalog calls run on the worker. Each collection keeps its
@@ -58,6 +59,9 @@ internal class PickerCollectionEpisodes(
             val result = try {
                 catalogs.getOrPut(key) { open(source) }.browse(CatalogQuery(parent = parent, cursor = cursor, newest = true))
             } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+            // A catalog captures its route when opened and can stay refused or
+            // poisoned; after any failure the next load opens a fresh one.
+            if (result is CatalogResult.Failure) catalogs.remove(key)?.let { runCatching { it.close() } }
             post {
                 if (local != generation) return@post
                 val previous = states[key] ?: CollectionEpisodesState()

@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -104,7 +105,19 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     val browsed = decodeConfiguredFeedChoice(browsing)?.resolve(configuredSources)
         ?.takeIf { episodes != null && collectionEpisodesSupported(it.entry.resource) }
     if (browsing != null && browsed == null) browsing = null
-    BackHandler(enabled = browsed != null) { browsing = null }
+    // TV: Back returns focus to the collection's Episodes button.
+    val episodesButtons = remember { mutableMapOf<String, FocusRequester>() }
+    var returnFocus by remember { mutableStateOf<String?>(null) }
+    fun closeEpisodes() { returnFocus = browsing; browsing = null }
+    BackHandler(enabled = browsed != null) { closeEpisodes() }
+    val televisionFocus = LocalTelevision.current
+    LaunchedEffect(browsed == null, returnFocus) {
+        val target = returnFocus
+        if (browsed == null && target != null && televisionFocus) {
+            returnFocus = null
+            runCatching { episodesButtons[target.let { decodeConfiguredFeedChoice(it)?.itemId }]?.requestFocus() }
+        }
+    }
     // Recovery instructions must not consume the entire assignment viewport on
     // compact screens. Keep every blocked-picker control reachable by scrolling.
     val recoveryScroll = rememberScrollState()
@@ -171,8 +184,9 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         if (obsoleteSetup) Button(onClick = onResetStreamSettings) { Text("Reset stream settings") }
         if (browsed != null && episodes != null) CollectionEpisodesPage(browsed, episodes, assignments, television,
             providerInstances.singleOrNull { it.id == browsed.instanceId }?.let { providerDisplayNames(it).inline },
-            onBack = { browsing = null }, onAssign = ::assignEpisode,
-            modifier = if (onRecovery != null) Modifier else Modifier.weight(1f))
+            onBack = ::closeEpisodes, onAssign = ::assignEpisode,
+            // The recovery layout already scrolls the whole picker.
+            scroll = onRecovery == null, modifier = if (onRecovery != null) Modifier else Modifier.weight(1f))
         else Column(if (onRecovery != null) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             providerInstances.forEach { instance ->
@@ -219,9 +233,12 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                                 else if (source.entry.availability != CatalogAvailability.UNKNOWN)
                                     Text(source.entry.availability.name.lowercase().replace('_', ' '), style = MaterialTheme.typography.bodySmall)
                             }
-                            if (episodes != null && collectionEpisodesSupported(source.entry.resource))
+                            if (episodes != null && collectionEpisodesSupported(source.entry.resource)) {
+                                val requester = remember(source.id) { FocusRequester() }
+                                episodesButtons[source.id] = requester
                                 androidx.compose.material3.TextButton(onClick = { browsing = encodeConfiguredFeedChoice(feedChoice) },
-                                    modifier = Modifier.tvFocusIndicator()) { Text("Episodes ›") }
+                                    modifier = Modifier.focusRequester(requester).tvFocusIndicator()) { Text("Episodes ›") }
+                            }
                             for (slot in PrototypeSlot.entries) {
                                 val checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice
                                 val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp).semantics {
@@ -272,14 +289,23 @@ internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFail
 private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: CollectionEpisodes,
     assignments: ConfiguredFeedAssignments, television: Boolean, providerName: String?,
     onBack: () -> Unit, onAssign: (PrototypeSlot, ConfiguredFeedChoice, ConfiguredEpisodeChoice, Boolean) -> Unit,
-    modifier: Modifier) {
+    scroll: Boolean, modifier: Modifier) {
     val state = episodes.state(source)
     val back = remember { FocusRequester() }
+    val footer = remember { FocusRequester() }
+    val lastRow = remember { FocusRequester() }
+    var footerFocused by remember { mutableStateOf(false) }
     LaunchedEffect(source.id, source.instanceId) {
         if (!state.loaded && !state.loading) episodes.load(source, more = false)
         if (television) runCatching { back.requestFocus() }
     }
-    Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // TV: the footer button stays while loading so focus is kept; if it goes
+    // away after the last page, focus moves to the last episode row.
+    val footerShown = state.loading || state.failure != null || state.more
+    LaunchedEffect(footerShown, state.entries.size) {
+        if (television && footerFocused && !footerShown) runCatching { lastRow.requestFocus() }
+    }
+    Column(if (scroll) modifier.verticalScroll(rememberScrollState()) else modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = onBack, modifier = Modifier.focusRequester(back)) { Text("‹ Back") }
             Column(Modifier.weight(1f)) {
@@ -289,15 +315,18 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        state.entries.forEach { entry ->
+        state.entries.forEachIndexed { index, entry ->
             val episode = ConfiguredEpisodeChoice(source.entry.resource, entry.resource, entry.title)
             Row(Modifier.fillMaxWidth().padding(start = 12.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(entry.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 for (slot in PrototypeSlot.entries) {
-                    val checked = assignments.choice(slot) == source.choice && assignments.episode(slot) == episode
-                    val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp).semantics {
+                    // Identity only: a provider retitle keeps the row checked.
+                    val checked = assignments.choice(slot) == source.choice && assignments.episode(slot)?.sameEpisode(episode) == true
+                    val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp)
+                        .then(if (index == state.entries.lastIndex && slot == PrototypeSlot.A) Modifier.focusRequester(lastRow) else Modifier)
+                        .semantics {
                         contentDescription = "Assign ${entry.title} to feed ${slot.name}"
                         if (television) selected = checked
                     }
@@ -313,14 +342,20 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                 }
             }
         }
-        when {
-            state.loading -> Text(if (state.entries.isEmpty()) "Loading episodes…" else "Loading more episodes…")
-            state.failure != null -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(state.failure, Modifier.weight(1f))
-                Button(onClick = { episodes.load(source, more = false) }) { Text("Retry") }
+        state.failure?.takeUnless { state.loading }?.let { Text(it) }
+        if (state.loaded && !state.loading && state.failure == null && state.entries.isEmpty()) Text("This collection has no episodes.")
+        if (footerShown) {
+            // One button whose action follows the state; clicks while loading are ignored.
+            val retry = state.failure != null || state.entries.isEmpty()
+            Button(onClick = { if (!state.loading) episodes.load(source, more = !retry) },
+                modifier = Modifier.focusRequester(footer).onFocusChanged { footerFocused = it.isFocused }) {
+                Text(when {
+                    state.loading && state.entries.isEmpty() -> "Loading episodes…"
+                    state.loading -> "Loading more episodes…"
+                    retry -> "Retry"
+                    else -> "More"
+                })
             }
-            state.loaded && state.entries.isEmpty() -> Text("This collection has no episodes.")
-            state.more -> Button(onClick = { episodes.load(source, more = true) }) { Text("More") }
         }
     }
 }

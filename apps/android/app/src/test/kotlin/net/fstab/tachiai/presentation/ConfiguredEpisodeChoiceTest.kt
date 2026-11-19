@@ -64,6 +64,10 @@ class ConfiguredEpisodeChoiceTest {
         assertEquals(both, both.assignEpisode(PrototypeSlot.A, series.choice, day11, false))
         assertEquals(ConfiguredFeedAssignments(null, series.choice, null, day11), both.assign(PrototypeSlot.A, series.choice, false))
         assertThrows(IllegalArgumentException::class.java) { ConfiguredFeedAssignments(null, null, day12, null) }
+        // Episode identity, not its title: a provider retitle still unchecks it.
+        val retitled = day12.copy(title = "幕内全取組ハイライト 12日目")
+        assertTrue(retitled.sameEpisode(day12))
+        assertEquals(ConfiguredFeedAssignments(null, null), chosen.assignEpisode(PrototypeSlot.A, series.choice, retitled, false))
     }
 
     @Test fun restoringDropsEpisodesWhoseItemNoLongerHoldsTheirCollection() {

@@ -31,6 +31,8 @@ internal data class ConfiguredEpisodeChoice(val collection: CatalogResource, val
             collection.providerId == episode.providerId)
         require(title.length in 1..160 && title == title.trim() && title.none { it.isISOControl() })
     }
+    fun sameEpisode(other: ConfiguredEpisodeChoice) = collection == other.collection && episode == other.episode
+
     // ASCII-only, for saved state and the recovery checkpoint.
     fun encode(): String = listOf("e1", collection.providerId.value, collection.kind, collection.identity, episode.kind,
         episode.identity, Base64.getUrlEncoder().withoutPadding().encodeToString(title.toByteArray(Charsets.UTF_8))).joinToString("|")
@@ -72,7 +74,7 @@ internal data class ConfiguredFeedAssignments(val a: ConfiguredFeedChoice?, val 
     fun assignEpisode(slot: PrototypeSlot, choice: ConfiguredFeedChoice, episode: ConfiguredEpisodeChoice,
         checked: Boolean): ConfiguredFeedAssignments =
         if (checked) with(slot, choice, episode)
-        else if (choice(slot) == choice && episode(slot) == episode) with(slot, null, null) else this
+        else if (choice(slot) == choice && episode(slot)?.sameEpisode(episode) == true) with(slot, null, null) else this
 
     // A removed item leaves its slot empty; it is never substituted. An episode
     // survives only while its item still holds the same collection.

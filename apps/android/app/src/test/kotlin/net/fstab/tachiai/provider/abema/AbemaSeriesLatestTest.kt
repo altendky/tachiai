@@ -26,6 +26,7 @@ class AbemaSeriesLatestTest {
         val delegate = Delegate(id)
         val requests = mutableListOf<AbemaSeriesPageRequest>()
         var closes = 0
+        var closeHook: () -> Unit = {}
         var version: (AbemaSeriesPageRequest) -> String = { "v1" }
         var allowed = true
         var transportAvailable = true
@@ -37,7 +38,7 @@ class AbemaSeriesLatestTest {
                     request.seasonId, if (request.newest) page.map { it.second } else null))
             }
             override fun cancelActiveRequest() {}
-            override fun close() { closes++ }
+            override fun close() { closes++; closeHook() }
         } }, { allowed }, wallMs = { now * 1000 })
         fun latest(collection: CatalogResource = series) = catalog.latest(collection)
     }
@@ -64,14 +65,23 @@ class AbemaSeriesLatestTest {
         assertTrue(f.requests.all { it.newest })
     }
 
-    @Test fun anEpisodeWithoutBroadcastTimeIsPublishedButCannotOutrankATimedOne() {
-        assertEquals("web-only", found(Fixture(listOf("web-only" to null, "other" to null)).latest()))
-        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(Fixture(listOf("web-only" to null, "aired" to now - 5)).latest()))
+    @Test fun aRowWithoutBroadcastTimeBeforeTheChoiceCannotBePlaced() {
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(Fixture(listOf("untimed" to null, "other" to null)).latest()))
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(Fixture(listOf("untimed" to null, "aired" to now - 5)).latest()))
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(Fixture(listOf("soon" to now + 5, "untimed" to null, "aired" to now - 5)).latest()))
+        // After the choice an untimed row has no bearing on it.
+        assertEquals("aired", found(Fixture(listOf("aired" to now - 5, "untimed" to null)).latest()))
     }
 
     @Test fun broadcastOrderThatContradictsSequenceRefusesInsteadOfGuessing() {
         val f = Fixture(listOf("seq-last" to now - 1_000, "seq-earlier-but-newer" to now - 10))
         assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(f.latest()))
+        // Contradictions anywhere on the chosen page, or across pages read, refuse too.
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED,
+            refused(Fixture(listOf("a" to now - 10, "b" to now - 20, "c" to now - 5)).latest()))
+        val crossPage = Fixture(List(20) { "soon-$it" to now + 100 - it } + listOf("restarted" to now + 500))
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(crossPage.latest()))
+        assertEquals(2, crossPage.requests.size)
         // Equal times are not a contradiction.
         assertEquals("a", found(Fixture(listOf("a" to now - 10, "b" to now - 10)).latest()))
     }
@@ -79,8 +89,9 @@ class AbemaSeriesLatestTest {
     @Test fun emptyAndUnpublishedCollectionsAreReportedDistinctly() {
         assertEquals(CatalogLatestRefusal.EMPTY, refused(Fixture(emptyList()).latest()))
         assertEquals(CatalogLatestRefusal.NONE_PUBLISHED, refused(Fixture(listOf("soon" to now + 60)).latest()))
+        // Past the page bound the newest cannot be established.
         val f = Fixture(List(ABEMA_LATEST_MAX_PAGES * 20 + 1) { "soon-$it" to now + 60 })
-        assertEquals(CatalogLatestRefusal.NONE_PUBLISHED, refused(f.latest()))
+        assertEquals(CatalogLatestRefusal.ORDER_UNVERIFIED, refused(f.latest()))
         assertEquals(ABEMA_LATEST_MAX_PAGES, f.requests.size)
     }
 
@@ -102,6 +113,11 @@ class AbemaSeriesLatestTest {
         // A row repeated across pages is not a coherent newest-first listing.
         val duplicate = Fixture(List(20) { "soon-$it" to now + 60 } + listOf("soon-3" to now - 1))
         assertEquals(CatalogFailure.INVALID_INPUT, (duplicate.latest() as CatalogResult.Failure).reason)
+        // Access lost after the first page stops before another request.
+        val lost = Fixture(List(20) { "soon-$it" to now + 60 } + listOf("aired" to now - 1))
+        lost.closeHook = { lost.allowed = false }
+        assertEquals(CatalogFailure.ACCESS_REQUIRED, (lost.latest() as CatalogResult.Failure).reason)
+        assertEquals(1, lost.requests.size)
         val closed = Fixture(listOf("aired" to now - 1)).apply { allowed = false }
         assertEquals(CatalogFailure.ACCESS_REQUIRED, (closed.latest() as CatalogResult.Failure).reason)
         assertTrue(closed.requests.isEmpty())

@@ -113,10 +113,12 @@ internal class AbemaSeriesChildrenCatalog(
     }
 
     // Pages the provider's descending `-seq` order (its own newest-first view)
-    // and returns the first row that is not upcoming: a broadcast time after
-    // now marks an upcoming episode. The chosen row must also be at least as
-    // recent as every other published row seen on its page; otherwise seq and
-    // broadcast order disagree and the newest episode is not established.
+    // and returns the first row broadcast by now; later broadcast times are
+    // upcoming and skipped. Every row read, through the end of the chosen
+    // page, must keep broadcast times non-increasing, and no row before the
+    // choice may lack a broadcast time. Otherwise seq and broadcast order
+    // disagree or a row cannot be placed, and the newest is not established.
+    // Rows after the chosen page are not read.
     override fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> {
         clear()
         if (collection.providerId != providerId || collection.kind !in setOf("series", "season") ||
@@ -133,6 +135,7 @@ internal class AbemaSeriesChildrenCatalog(
             var request = AbemaSeriesPageRequest(seriesId, seasonId = seasonId, newest = true)
             val seen = mutableSetOf<String>()
             var any = false
+            var previous: Long? = null
             repeat(ABEMA_LATEST_MAX_PAGES) {
                 val page = when (val result = fetchPage(local, factory, request)) {
                     is CatalogResult.Failure -> return@synchronized result
@@ -146,19 +149,22 @@ internal class AbemaSeriesChildrenCatalog(
                 }
                 any = any || page.entries.isNotEmpty()
                 val nowSeconds = wallMs() / 1000
-                val published = page.entries.indices.filter { broadcasts[it] == null || broadcasts[it]!! <= nowSeconds }
-                val chosen = published.firstOrNull()
-                if (chosen != null) {
-                    val time = broadcasts[chosen]
-                    val newer = published.any { other -> broadcasts[other] != null && (time == null || broadcasts[other]!! > time) }
-                    if (newer) return@synchronized CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.ORDER_UNVERIFIED))
-                    return@synchronized CatalogResult.Value(CatalogLatest.Found(CatalogPlaybackResource(page.entries[chosen].resource)))
+                val unverified = CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.ORDER_UNVERIFIED))
+                var chosen: Int? = null
+                for ((index, time) in broadcasts.withIndex()) {
+                    if (time == null) { if (chosen == null) return@synchronized unverified else continue }
+                    if (previous != null && time > previous!!) return@synchronized unverified
+                    previous = time
+                    if (chosen == null && time <= nowSeconds) chosen = index
                 }
+                if (chosen != null)
+                    return@synchronized CatalogResult.Value(CatalogLatest.Found(CatalogPlaybackResource(page.entries[chosen].resource)))
                 if (page.entries.size < ABEMA_SERIES_PAGE_LIMIT) return@synchronized CatalogResult.Value(CatalogLatest.Refused(
                     if (any) CatalogLatestRefusal.NONE_PUBLISHED else CatalogLatestRefusal.EMPTY))
                 request = AbemaSeriesPageRequest(seriesId, request.offset + ABEMA_SERIES_PAGE_LIMIT, page.version, seasonId, newest = true)
             }
-            CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.NONE_PUBLISHED))
+            // Bounded: more upcoming rows than this cannot establish the newest.
+            CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.ORDER_UNVERIFIED))
         }
     }
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }

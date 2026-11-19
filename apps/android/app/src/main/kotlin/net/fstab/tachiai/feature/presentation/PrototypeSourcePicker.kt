@@ -56,6 +56,7 @@ import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionFailure
 import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
 import net.fstab.tachiai.presentation.decodeConfiguredFeedChoice
 import net.fstab.tachiai.presentation.canWatch
+import net.fstab.tachiai.presentation.collectionLatestAvailable
 import net.fstab.tachiai.presentation.collectionPlaysLatest
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
@@ -81,7 +82,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
     var moreExpanded by rememberSaveable { mutableStateOf(false) }
     var sharingSetupOpen by rememberSaveable { mutableStateOf(false) }
     val assignments = ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
-    val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances)
+    val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
+        allowCollectionLatest = collectionLatestAvailable)
     fun assign(slot: PrototypeSlot, choice: ConfiguredFeedChoice, checked: Boolean) {
         // Consecutive A/B callbacks can precede recomposition; read current saved
         // state rather than replacing the other slot from a rendered snapshot.

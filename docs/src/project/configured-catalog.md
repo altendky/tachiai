@@ -316,11 +316,16 @@ main page is tracked separately in #550.
   ABEMA catalog adapter, before route startup and account readiness. Its fresh
   guest operation requests the provider's own newest-first series order:
   descending `seq`, as the provider's episode-list consumer requests it. Each
-  row also carries its `broadcastAt` epoch seconds. Rows broadcast after now
-  are upcoming and skipped, continuing to later pages up to five pages. A
-  chosen row must be at least as recent as every other published row on its
-  page. Otherwise the sequence and broadcast order disagree, and Watch reports
-  that the newest episode could not be determined. Empty collections,
+  row also carries its `broadcastAt` epoch seconds. The first row broadcast by
+  now is chosen; later rows are upcoming and skipped, continuing to later pages
+  up to five pages. Broadcast times must not increase across every row read
+  through the chosen page, and no row before the choice may lack one.
+  Otherwise, or past the page bound, Watch reports that the newest episode
+  could not be determined. Rows after the chosen page are not read, so a
+  provider order that restarts on a later page is not detected. A broadcast
+  that has started may not yet be playable; that feed then fails visibly.
+  Resolution needs the guest series operation, so on API 26–27 collections
+  keep the existing refusal. Empty collections,
   collections with no published episode, unsupported resolution and request
   failures each have a distinct message. None falls back to another item, a
   channel or a sample.

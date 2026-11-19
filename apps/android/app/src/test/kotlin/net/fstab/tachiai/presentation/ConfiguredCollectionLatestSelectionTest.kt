@@ -93,6 +93,12 @@ class ConfiguredCollectionLatestSelectionTest {
         val twitchCollection = saved(CatalogResource(ProviderId("twitch"), "collection", "123", CatalogIntent.COLLECTION), twitch)
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
             resolve(twitchCollection, null))
+        // Without the guest series operation (API 26-27) a collection keeps the refusal.
+        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
+            resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(series.choice, null), listOf(series), instances,
+                allowCollectionLatest = false))
+        assertFalse(collectionPlaysLatest(series.entry.resource, available = false))
+        assertTrue(collectionPlaysLatest(series.entry.resource, available = true))
     }
 
     @Test fun latestBindingsAndFeedsRequireExactCollectionAndEpisodeIdentities() {

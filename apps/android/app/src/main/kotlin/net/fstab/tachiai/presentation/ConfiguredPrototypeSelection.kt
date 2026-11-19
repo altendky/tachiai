@@ -36,8 +36,12 @@ internal data class ConfiguredLatestEpisode(val choice: ConfiguredFeedChoice, va
     init { require(supportedConfiguredAbemaCollection(collection) && supportedConfiguredAbemaEpisode(episode)) }
 }
 
+// The guest series operation that resolves a collection needs API 28.
+internal val collectionLatestAvailable: Boolean get() = android.os.Build.VERSION.SDK_INT >= 28
+
 // Whether Watch resolves this saved collection to its newest published episode.
-internal fun collectionPlaysLatest(resource: CatalogResource): Boolean = supportedConfiguredAbemaCollection(resource)
+internal fun collectionPlaysLatest(resource: CatalogResource, available: Boolean = collectionLatestAvailable): Boolean =
+    available && supportedConfiguredAbemaCollection(resource)
 
 internal val ConfiguredPrototypeSelectionResult.canWatch: Boolean
     get() = this !is ConfiguredPrototypeSelectionResult.Failure
@@ -53,6 +57,7 @@ internal fun resolveConfiguredPrototypeSelection(
     allowConfiguredAbemaSlots: Boolean = true,
     // Per A/B slot: the exact episode this Watch resolved for a collection.
     latest: List<ConfiguredLatestEpisode?> = listOf(null, null),
+    allowCollectionLatest: Boolean = true,
 ): ConfiguredPrototypeSelectionResult {
     require(latest.size == 2)
     fun failure(reason: ConfiguredPrototypeSelectionFailure) = ConfiguredPrototypeSelectionResult.Failure(reason)
@@ -70,7 +75,7 @@ internal fun resolveConfiguredPrototypeSelection(
         if (source.entry.resource.providerId.value != instance.service.name.lowercase(Locale.ROOT))
             return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
         val collection = source.entry.resource.intent == CatalogIntent.COLLECTION
-        if (collection && !supportedConfiguredAbemaCollection(source.entry.resource))
+        if (collection && !collectionPlaysLatest(source.entry.resource, allowCollectionLatest))
             return failure(ConfiguredPrototypeSelectionFailure.COLLECTION)
         val broadcaster = supportedConfiguredTwitchBroadcaster(source.entry.resource)
         if (source.entry.availability in setOf(CatalogAvailability.UPCOMING,

@@ -148,6 +148,7 @@ import net.fstab.tachiai.provider.catalog.CatalogFailure
 import net.fstab.tachiai.provider.catalog.CatalogLatest
 import net.fstab.tachiai.provider.catalog.CatalogResult
 import net.fstab.tachiai.presentation.ConfiguredLatestEpisode
+import net.fstab.tachiai.presentation.collectionLatestAvailable
 import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
@@ -512,7 +513,10 @@ open class PrototypeActivity : ComponentActivity() {
                 val key = source.instanceId to source.entry.resource
                 if (key in results) continue
                 results[key] = if (!active()) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else try {
-                    androidAbemaChannelCatalog(app, source.instanceId, emptyMap(), canUse = ::active)
+                    // As in Manage streams, wait for a retiring startup scope of this instance first.
+                    if (ProviderStartupScopeCleanup.awaitReady(source.instanceId, SystemClock.elapsedRealtime() + 45_000L, ::active) !=
+                        ProviderStartupCleanupAdmission.READY) CatalogResult.Failure(CatalogFailure.TEMPORARY)
+                    else androidAbemaChannelCatalog(app, source.instanceId, emptyMap(), canUse = ::active)
                         .use { it.latest(source.entry.resource) }
                 } catch (error: Throwable) {
                     diagnostics.report(FailureStage.CATALOG_LOAD, error)
@@ -551,7 +555,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         // The page comparison's ABEMA list holds only its fixed channel/episode samples.
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema, latest = latest)
+            allowConfiguredAbemaSlots = useCachedAbema, latest = latest, allowCollectionLatest = collectionLatestAvailable)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -681,7 +685,7 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema, latest = latest)
+            allowConfiguredAbemaSlots = useCachedAbema, latest = latest, allowCollectionLatest = collectionLatestAvailable)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }

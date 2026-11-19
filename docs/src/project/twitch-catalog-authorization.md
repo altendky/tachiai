@@ -167,19 +167,23 @@ acceptance. A stored READY record, registry reference or arbitrary enrollment
 cannot create timer authority. Only an actual admitted foreground attachment
 can perform due work.
 
-The check starts up to one minute before the proof deadline, with half the
+The check starts up to five minutes before the proof deadline, with half the
 verified span used for shorter lifetimes. Its original 30-second budget includes
 dispatcher delay, owner/storage checks, HTTP, cleanup and publication, and is
 also capped by the original proof deadline. Late or rolled-back clocks cannot
 restart either budget. Ordinary expected-origin validation is distinct from an
 unauthorized-response refresh; timer work shares the existing serialized path
-without inventing an auth rejection or consent request.
+without inventing an auth rejection or consent request. A validation status other
+than 200, 400 or 401, such as a rate limit, edge refusal, redirect, 404 or 5xx,
+is a temporary failure that preserves the saved pair and never requires reconnecting.
 
 Positive published proof reschedules the timer. Same-pair validation that cannot
 extend a finite durable deadline gets one predeadline attempt without an
-immediate repeat. Temporary failures preserve the original freshness and allow
-only a 60-second cooldown within its remaining bound; they do not extend access.
-When no retry fits, existing proof remains usable only until its original deadline;
+immediate repeat. Temporary failures preserve the original freshness and retry after each
+60-second cooldown while that retry still starts before the original deadline,
+so a single failed hourly check does not end an attached viewer's access. Retries
+do not extend access. When no retry fits, existing proof remains usable only until
+its original deadline;
 after expiry, new access needs validation through a normal consumer action.
 Failed ownership or cleanup admission blocks access earlier.
 Foreground withdrawal, Forget, route/owner

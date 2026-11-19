@@ -99,7 +99,7 @@ class TwitchCatalogMaintenanceCoordinatorTest {
             var firstSignals = 0; var secondSignals = 0
             first.observeMaintenance { firstSignals++ }; second.observeMaintenance { secondSignals++ }
             val count = f.validations.get(); assertEquals(1, f.tasks.scheduled)
-            f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000 - 1); f.tasks.fire()
+            f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - TWITCH_CATALOG_MAINTENANCE_LEAD_MS - 1); f.tasks.fire()
             assertEquals(0, f.tasks.queued); assertEquals(count, f.validations.get())
             f.advance(1); val reads = f.memory.reads
             f.memory.forbid = true
@@ -176,18 +176,54 @@ class TwitchCatalogMaintenanceCoordinatorTest {
         }
     }
 
-    @Test fun temporaryFailureDoesNotResetFreshnessOrRetryAtTheOriginalHourlyBound() {
+    @Test fun temporaryFailureKeepsFreshnessAndRetriesBeforeTheOriginalHourlyBound() {
         val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
         val session = f.session(); val old = session.validate().lease!!
-        f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - 60_000)
+        f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - TWITCH_CATALOG_MAINTENANCE_LEAD_MS)
         f.tasks.fire(); f.tasks.drain()
         assertEquals(2, f.validations.get()); assertNull(session.adoptSuccessor(old))
         val hint = session.adoptAvailableMaintenance()!!
         assertEquals(TwitchCatalogSessionState.TEMPORARY_FAILURE, hint.summary.state); assertNull(hint.lease)
-        assertTrue(session.isCurrent(old)); assertEquals(0, f.tasks.scheduled)
-        f.advance(60_000); f.tasks.fire(); f.tasks.drain()
-        assertFalse(session.isCurrent(old)); assertEquals(2, f.validations.get())
-        session.close(); assertTrue(f.coordinator.isIdle)
+        assertTrue(session.isCurrent(old)); assertEquals(1, f.tasks.scheduled)
+        // The retry is spaced, never an immediate loop.
+        f.advance(TWITCH_CATALOG_MAINTENANCE_RETRY_MS - 1); f.tasks.fire(); f.tasks.drain()
+        assertEquals(2, f.validations.get())
+        f.status = 200; f.advance(1); f.tasks.fire(); f.tasks.drain()
+        assertEquals(3, f.validations.get()); assertEquals(0, f.refreshes.get())
+        val adopted = session.adoptAvailableMaintenance()!!.lease!!
+        assertTrue(adopted.deadlineMs > old.deadlineMs); assertTrue(session.isCurrent(adopted))
+        assertEquals(1, f.tasks.scheduled)
+        session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun repeatedTemporaryFailuresRetryOnlyUntilTheOriginalDeadline() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val session = f.session(); val old = session.validate().lease!!
+        f.status = 503; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - TWITCH_CATALOG_MAINTENANCE_LEAD_MS)
+        val attempts = TWITCH_CATALOG_MAINTENANCE_LEAD_MS / TWITCH_CATALOG_MAINTENANCE_RETRY_MS
+        for (attempt in 1..attempts) {
+            f.tasks.fire(); f.tasks.drain()
+            assertEquals(1 + attempt.toInt(), f.validations.get()); assertTrue(session.isCurrent(old))
+            if (attempt < attempts) {
+                assertEquals(1, f.tasks.scheduled); f.advance(TWITCH_CATALOG_MAINTENANCE_RETRY_MS)
+            }
+        }
+        // The next spaced retry would reach the deadline, so none is armed.
+        assertEquals(0, f.tasks.scheduled)
+        f.advance(TWITCH_CATALOG_MAINTENANCE_RETRY_MS); f.tasks.fire(); f.tasks.drain()
+        assertFalse(session.isCurrent(old)); assertEquals(1 + attempts.toInt(), f.validations.get())
+        session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
+    }
+
+    @Test fun nonTemporaryMaintenanceFailureDoesNotRetry() {
+        val f = Fixture(timer = true); f.save(local = true); f.seconds = 0
+        val session = f.session(); session.validate().lease!!
+        f.user = "other-user"; f.advance(TWITCH_CATALOG_VALIDATION_INTERVAL_MS - TWITCH_CATALOG_MAINTENANCE_LEAD_MS)
+        f.tasks.fire(); f.tasks.drain()
+        assertEquals(2, f.validations.get()); assertEquals(0, f.tasks.scheduled)
+        f.advance(TWITCH_CATALOG_MAINTENANCE_RETRY_MS); f.tasks.fire(); f.tasks.drain()
+        assertEquals(2, f.validations.get()); assertEquals(0, f.refreshes.get())
+        session.close(); f.tasks.drain(); assertTrue(f.coordinator.isIdle)
     }
 
     @Test fun queuedWorkAndReceiptSignalsRespectOwnerForgetForegroundAndOriginalAdoptionBudget() {

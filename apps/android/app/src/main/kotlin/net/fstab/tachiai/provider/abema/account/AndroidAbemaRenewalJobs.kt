@@ -193,7 +193,10 @@ internal object AndroidAbemaRenewalJobs {
         fun start(service: AbemaRenewalJobService, params: JobParameters): Boolean {
             if (disabled.get() || Build.VERSION.SDK_INT < 28 || !unlocked()) return false
             val key = decode(params) ?: return false
-            val network = params.network ?: return false
+            // The job's network can be lost between constraint satisfaction and
+            // start. Keep the DUE ledger work scheduled through JobScheduler's
+            // backoff instead of ending it with nothing armed.
+            val network = params.network ?: return main.post { service.jobFinished(params, true) }
             val began = SystemClock.elapsedRealtime()
             if (began < 0 || began > Long.MAX_VALUE - 90_000) return false
             val deadline = began + 90_000

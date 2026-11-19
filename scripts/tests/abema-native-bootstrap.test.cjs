@@ -123,16 +123,16 @@ test('Chase availability uses the active free or Premium window and its current 
   }
 });
 
-test('continuing linear availability ignores old occurrence and unused rights expiry but retains account expiry', async () => {
+// The native account lease enforces account expiry and follows a same-account
+// renewal, so the selected playback window does not end at the grant's expiry.
+test('continuing linear availability ignores old occurrence, unused rights and account expiry', async () => {
   const options = continuousSlotOptions({ account: { ...slotPremiumAccount(fixtureNow + 500),
     slotChase: slotChaseAccount(fixtureNow + 500).slotChase } });
   const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');
   options.nowMs = fixtureNow + 2000;
   const bound = availability(value);
-  assert.equal(bound.expiresAtMs, savedAccount().expiresAtMs);
+  assert.equal(bound.expiresAtMs, null);
   assert.equal(bound.uri, JSON.parse(value.evaluate(`window['${name}'].slotBinding()`)).uri);
-  options.nowMs = savedAccount().expiresAtMs;
-  assert.equal(availability(value), null);
 });
 
 test('guest channels publish explicit null availability and takeover or stop cannot reuse the projection', async () => {

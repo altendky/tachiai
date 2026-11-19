@@ -206,7 +206,12 @@ internal class FeedAutoRecoveryState {
         val transientAccount = transientAccountReadiness && continuation && !protectedRefusal &&
             failure.reason == PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE &&
             failure.httpStatus == null && failure.playerCode == null
-        if (!allowRecovery || !refresh && !transientAccount && !eligible(failure, transport, live, continuation, httpFailure) ||
+        // Likewise a temporary provider failure while a retry prepares (e.g. its
+        // account check) continues the incident instead of ending recovery.
+        val transientPreparation = failure.transientPreparation && continuation && !protectedRefusal &&
+            failure.httpStatus == null && failure.playerCode == null
+        if (!allowRecovery || !refresh && !transientAccount && !transientPreparation &&
+            !eligible(failure, transport, live, continuation, httpFailure) ||
             !continuation && !played) {
             retire()
             return FeedAutoRecoveryDecision.SKIPPED

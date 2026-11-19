@@ -123,6 +123,9 @@ internal data class PrototypeFeedFailure(
     val reason: PrototypeFailureReason,
     val httpStatus: Int? = null,
     val playerCode: Int? = null,
+    // A temporary provider failure before playback (for example the account
+    // check), without media evidence. It may continue an active recovery.
+    val transientPreparation: Boolean = false,
 ) {
     init {
         require(httpStatus == null || httpStatus in 100..599)

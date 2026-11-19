@@ -55,8 +55,24 @@ class AbemaAccountOwnedCleanupTest {
                 AbemaAccountHttpTransport({ c }, gate, { 1000 }, { 1000000 })
             })
         assertEquals(AbemaAccountEmailResult.REGISTERED, owned.emailRegistration("guest", "private-bearer"))
-        assertEquals(1, c.streamCloses); assertEquals(1, c.disconnects); assertEquals(1, backend.closes)
-        assertEquals(0, poisoned); owned.close(); assertEquals(1, backend.closes)
+        // The route stays open for this transport's next request until close.
+        assertEquals(1, c.streamCloses); assertEquals(1, c.disconnects); assertEquals(0, backend.closes)
+        assertFalse(owned.cleanupConfirmed)
+        assertEquals(0, poisoned); owned.close(); assertEquals(1, backend.closes); assertTrue(owned.cleanupConfirmed)
+    }
+    @Test fun sequentialRequestsShareOneRouteUntilCloseAndAFailedRequestReleasesIt() {
+        val backend = Backend(); var backends = 0
+        val c = Connection(false, false); var poisoned = 0
+        val owned = OwnedAbemaAccountTransport(parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray()),
+            { true }, { poisoned++ }, createBackend = { _, _, _ -> backends++; backend }, makeHttpTransport = { _, gate ->
+                AbemaAccountHttpTransport({ c }, gate, { 1000 }, { 1000000 })
+            })
+        assertTrue(owned.profile("guest", "guest-bearer") is AbemaAccountProfileResult.Identity)
+        assertTrue(owned.profile("guest", "guest-bearer") is AbemaAccountProfileResult.Identity)
+        assertEquals(1, backends); assertEquals(0, backend.closes)
+        owned.close(); assertEquals(1, backend.closes); assertTrue(owned.cleanupConfirmed); assertEquals(0, poisoned)
+        assertThrows(AbemaAccountException::class.java) { owned.profile("guest", "guest-bearer") }
+        assertEquals(1, backends)
     }
     @Test fun actualOwnedCleanupNeverReachesRouteOrBackendCloseAfterAnUnconfirmedHttpClose() {
         for (stream in listOf(true, false)) {

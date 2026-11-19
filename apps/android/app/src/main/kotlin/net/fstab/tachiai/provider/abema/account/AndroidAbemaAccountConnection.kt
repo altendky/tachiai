@@ -137,29 +137,48 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
         NativeRouteBackend.createBound(selected, security, preparation, egress)
     },
 ) : AbemaAccountTransport {
-    companion object { private val retained = ConcurrentLinkedQueue<List<Any>>() }
-    private val lock = Any()
+    companion object {
+        private val retained = ConcurrentLinkedQueue<List<Any>>()
+        // Close waits this long for an in-flight request to finish its own cleanup.
+        private const val CLOSE_WAIT_MS = 10_000L
+    }
+    // One route session, with its tunnel and pooled HTTPS connection, serves
+    // this transport's sequential requests until close. A failed or cancelled
+    // request tears it down rather than leave a disturbed connection for reuse.
+    // A request bound to an explicit job Network still releases it every time.
+    private class Session(val preparation: RoutePreparation, val egress: RouteNetworkEgress?,
+        val route: RouteSession, val transport: AbemaAccountHttpTransport,
+        val backend: RouteBackend?, val backendClose: AbemaAccountCleanupReceipt<RouteBackend>?) {
+        override fun toString() = "AbemaAccountRouteSession(redacted)"
+    }
+    private val lock = Object()
     private var closed = false
     private var poisoned = false
+    private var busy = false
     private var revision = 0L
+    private var requestRevision = -1L
+    private var session: Session? = null
     private var preparing: RoutePreparation? = null
     private var active: AbemaAccountTransport? = null
     private var activeEgress: RouteNetworkEgress? = null
-    val cleanupConfirmed: Boolean get() = synchronized(lock) { !poisoned && preparing == null && active == null && activeEgress == null }
-    private fun <T> request(action: (AbemaAccountTransport) -> T): T {
+    val cleanupConfirmed: Boolean get() = synchronized(lock) {
+        !poisoned && !busy && session == null && preparing == null && active == null && activeEgress == null
+    }
+    private fun requestCurrent() = synchronized(lock) { !closed && revision == requestRevision } && gate()
+    private fun open(): Session {
         val preparation = RoutePreparation()
-        val run = synchronized(lock) {
+        synchronized(lock) {
             if (closed || preparing != null) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
-            preparing = preparation; revision
+            preparing = preparation
         }
         var egress: RouteNetworkEgress? = null
-        fun ownerCurrent() = synchronized(lock) { !closed && revision == run } && gate()
-        fun current() = ownerCurrent() && egress?.isActive() != false
+        fun current() = requestCurrent() && egress?.isActive() != false
         var route: RouteSession? = null
         var backend: RouteBackend? = null
         var backendClose: AbemaAccountCleanupReceipt<RouteBackend>? = null
         var transport: AbemaAccountHttpTransport? = null
         var fatalConstruction = false
+        var opened: Session? = null
         try {
             if (!current()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
             egress = networkEgressFactory?.invoke()
@@ -191,34 +210,77 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
                 if (!current() || !allowedAccountUrl(url)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                 owned.open(url)
             }, ::current)
-            synchronized(lock) { active = transport }
-            val result = action(transport)
-            if (!current()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
-            return result
+            opened = Session(preparation, egress, owned, transport, backend, backendClose)
+            synchronized(lock) { session = opened; preparing = null }
+            return opened
         } catch (error: Error) {
             fatalConstruction = route == null && backend != null
             throw error
         } finally {
-            // Retire bound DNS admission before HTTP cleanup waits for its
-            // caller. Actual resolver completion remains a separate receipt.
-            try { egress?.cancel() } catch (_: Throwable) { preparation.recordCleanupFailure() }
-            // A constructor Error can bypass the shared factory's Exception
-            // rollback. Its returned backend still has an owned, single receipt.
-            val partialClosed = if (route == null) backendClose?.await() != false else true
-            val confirmed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route) &&
-                runCatching { egress?.isCleanupConfirmed() != false }.getOrDefault(false)
-            synchronized(lock) {
-                if (!confirmed) { closed = true; poisoned = true }
-                else if (preparing === preparation) { preparing = null; active = null; activeEgress = null }
+            if (opened == null) {
+                // A constructor Error can bypass the shared factory's Exception
+                // rollback. Its returned backend still has an owned, single receipt.
+                try { egress?.cancel() } catch (_: Throwable) { preparation.recordCleanupFailure() }
+                val partialClosed = if (route == null) backendClose?.await() != false else true
+                val confirmed = partialClosed && !fatalConstruction && closeAbemaAccountOwnedResources(preparation, transport, route) &&
+                    runCatching { egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+                synchronized(lock) {
+                    if (!confirmed) { closed = true; poisoned = true }
+                    else if (preparing === preparation) { preparing = null; activeEgress = null }
+                }
+                if (!confirmed) {
+                    retained.add(listOfNotNull(preparation, backend, backendClose, route, transport, egress))
+                    cleanupFailed()
+                    throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+                }
             }
-            if (!confirmed) {
-                retained.add(listOfNotNull(preparation, backend, backendClose, route, transport, egress))
-                cleanupFailed()
-                throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+        }
+    }
+    // Releases the shared session. Unconfirmed cleanup poisons and retains it.
+    private fun teardown() {
+        val owned = synchronized(lock) { session.also { session = null } } ?: return
+        // Retire bound DNS admission before HTTP cleanup waits for its caller.
+        // Actual resolver completion remains a separate receipt.
+        try { owned.egress?.cancel() } catch (_: Throwable) { owned.preparation.recordCleanupFailure() }
+        val confirmed = closeAbemaAccountOwnedResources(owned.preparation, owned.transport, owned.route) &&
+            runCatching { owned.egress?.isCleanupConfirmed() != false }.getOrDefault(false)
+        synchronized(lock) {
+            if (!confirmed) { closed = true; poisoned = true } else activeEgress = null
+        }
+        if (!confirmed) {
+            retained.add(listOfNotNull(owned.preparation, owned.backend, owned.backendClose, owned.route, owned.transport, owned.egress))
+            cleanupFailed()
+            throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+        }
+    }
+    private fun <T> request(action: (AbemaAccountTransport) -> T): T {
+        synchronized(lock) {
+            if (closed || poisoned || busy) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            busy = true; requestRevision = revision
+        }
+        var reusable = false
+        var succeeded = false
+        try {
+            val owned = synchronized(lock) { session } ?: open()
+            synchronized(lock) { active = owned.transport }
+            if (!requestCurrent()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            val result = action(owned.transport)
+            if (!requestCurrent()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            succeeded = true
+            reusable = networkEgressFactory == null
+            return result
+        } finally {
+            try {
+                synchronized(lock) { active = null }
+                if (!reusable || synchronized(lock) { closed }) teardown()
+            } finally {
+                synchronized(lock) { busy = false; lock.notifyAll() }
             }
-            // The external operation gate owns result/adoption lifetime; the
-            // request's egress was intentionally cancelled during cleanup.
-            if (!ownerCurrent()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            // The external operation gate owns result/adoption lifetime.
+            // A cleanup failure keeps its own category; otherwise a lost gate is cancellation.
+            if (!succeeded && !synchronized(lock) { poisoned } && !requestCurrent())
+                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            if (succeeded && !requestCurrent()) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
         }
     }
     override fun profile(id: String, bearer: String) = request { it.profile(id, bearer) }
@@ -226,12 +288,28 @@ internal class OwnedAbemaAccountTransport(private val profile: ConnectionProfile
     override fun emailRegistration(id: String, bearer: String) = request { it.emailRegistration(id, bearer) }
     override fun token(challenge: AbemaAccountChallenge) = request { it.token(challenge) }
     override fun cancelActiveRequest() {
-        val owned = synchronized(lock) { revision++; Triple(preparing, active, activeEgress) }
+        // During a request the session's preparation is cancellable too, as before reuse.
+        val owned = synchronized(lock) { revision++; Triple(preparing ?: session?.preparation?.takeIf { busy }, active, activeEgress) }
         try { owned.third?.cancel() } catch (_: Throwable) { owned.first?.recordCleanupFailure() }
         owned.first?.cancel(); owned.second?.cancelActiveRequest()
     }
     override fun close() {
         synchronized(lock) { closed = true }; cancelActiveRequest()
+        // An in-flight request finishes its own teardown; then release an idle session.
+        val idle = synchronized(lock) {
+            val until = System.nanoTime() + CLOSE_WAIT_MS * 1_000_000
+            while (busy) {
+                val left = (until - System.nanoTime()) / 1_000_000
+                if (left <= 0) break
+                lock.wait(left)
+            }
+            !busy
+        }
+        if (!idle) {
+            synchronized(lock) { poisoned = true }; cleanupFailed()
+            throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
+        }
+        teardown()
         if (synchronized(lock) { poisoned }) throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
     }
     override fun toString() = "OwnedAbemaAccountTransport(redacted)"

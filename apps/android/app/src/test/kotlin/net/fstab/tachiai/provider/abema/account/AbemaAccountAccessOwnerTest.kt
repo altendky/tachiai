@@ -59,8 +59,7 @@ class AbemaAccountAccessOwnerTest {
         val first = f.owner.attach(); val second = f.owner.attach()
         val a = (first.acquire() as AbemaAccountAccessResult.Account).lease
         val b = (second.acquire() as AbemaAccountAccessResult.Account).lease
-        // The profile and email checks each own a transport.
-        assertEquals(1, f.profiles.get()); assertEquals(1, f.emails.get()); assertEquals(2, f.closes.get())
+        assertEquals(1, f.profiles.get()); assertEquals(1, f.emails.get()); assertEquals(1, f.closes.get())
         assertTrue(f.owner.cleanupConfirmed); assertTrue(a.current()); assertTrue(b.checkWorker())
         f.storage.readHook = { error("MAIN MUST NOT READ STORAGE") }
         val ownerChecks = f.ownerChecks
@@ -237,15 +236,14 @@ class AbemaAccountAccessOwnerTest {
         f.storage.bytes = other.storage.bytes!!.copyOf()
         assertFalse(lease.checkWorker()); assertFalse(lease.current()); attachment.close()
     }
-    @Test fun originalBudgetAndStoreRevocationDuringProfilePreventPublication() {
+    @Test fun originalBudgetAndStoreRevocationDuringProfilePreventEmailAndPublication() {
         for (loss in 0..2) {
             val f = Fixture()
             f.profileAction = { when (loss) { 0 -> f.elapsed = 30000; 1 -> f.elapsed = -1; 2 -> f.store.invalidateForget() } }
             val attachment = f.owner.attach()
             assertTrue(attachment.acquire() is AbemaAccountAccessResult.Failed)
             f.awaitCleanup()
-            // The concurrent email check may already have started; its gate refuses it afterwards.
-            assertEquals(1, f.profiles.get()); assertTrue(f.emails.get() <= 1); assertEquals(2, f.closes.get())
+            assertEquals(1, f.profiles.get()); assertEquals(0, f.emails.get()); assertEquals(1, f.closes.get())
             attachment.close()
         }
     }
@@ -365,7 +363,7 @@ class AbemaAccountAccessOwnerTest {
         val attachment = f.owner.attach()
         assertEquals(AbemaAccountFailure.TIME_LIMIT_REACHED,
             (attachment.acquire(0, 30000) as AbemaAccountAccessResult.Failed).category)
-        f.awaitCleanup(); assertTrue(f.emails.get() <= 1); attachment.close()
+        f.awaitCleanup(); assertEquals(0, f.emails.get()); attachment.close()
     }
     @Test fun lastDetachCancelsBlockedValidationAndCannotJoinAnUnrelatedGeneration() {
         val f = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -378,8 +376,7 @@ class AbemaAccountAccessOwnerTest {
             release.countDown()
             assertTrue(result.get(3, TimeUnit.SECONDS) is AbemaAccountAccessResult.Failed)
             f.awaitCleanup()
-            // Detach cancels both check transports.
-            assertEquals(2, f.cancels.get()); assertTrue(f.emails.get() <= 1); assertTrue(f.owner.cleanupConfirmed)
+            assertEquals(1, f.cancels.get()); assertEquals(0, f.emails.get()); assertTrue(f.owner.cleanupConfirmed)
         } finally { release.countDown(); attachment.close(); executor.shutdownNow() }
     }
     @Test fun invalidatedFlightCannotBeJoinedByAnotherActiveConsumerOrPublishLateResult() {
@@ -393,7 +390,7 @@ class AbemaAccountAccessOwnerTest {
             release.countDown()
             assertTrue(result.get(3, TimeUnit.SECONDS) is AbemaAccountAccessResult.Failed)
             f.awaitCleanup()
-            assertEquals(1, f.profiles.get()); assertTrue(f.emails.get() <= 1); assertTrue(f.owner.cleanupConfirmed)
+            assertEquals(1, f.profiles.get()); assertEquals(0, f.emails.get()); assertTrue(f.owner.cleanupConfirmed)
         } finally { release.countDown(); first.close(); second.close(); executor.shutdownNow() }
     }
     @Test fun finalPublicationSamplesOriginalDeadlineInsideMonitorAndCannotCacheLateProof() {

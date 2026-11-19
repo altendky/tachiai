@@ -163,9 +163,7 @@ class AbemaCollectionAccountBindingTest {
         assertEquals(CatalogAccess.AVAILABLE, f.binding.access())
         assertEquals(listOf("intended-account" to f.grant.bearer), f.profileCalls)
         assertEquals(1, f.emailCalls.get()); assertEquals(0, f.bootstrapCount.get())
-        // The profile and email checks run at once on their own transports.
-        assertEquals(setOf("profile", "email"), f.order.take(2).toSet())
-        assertEquals(listOf("profile-close", "profile-close", "list", "list-close"), f.order.drop(2))
+        assertEquals(listOf("profile", "email", "profile-close", "list", "list-close"), f.order)
         val lease = f.binding.lease()!!
         assertTrue(lease.current())
         val transport = lease.createTransport { true }
@@ -229,7 +227,7 @@ class AbemaCollectionAccountBindingTest {
             assertTrue(entered.await(3, TimeUnit.SECONDS)); f.binding.close()
             release.countDown(); assertEquals(CatalogAccess.NOT_VERIFIED, access.get(3, TimeUnit.SECONDS))
             assertNull(f.binding.lease()); assertTrue(f.collectionCalls.isEmpty()); assertEquals(0, f.bootstrapCount.get())
-            assertEquals(2, f.profileCloses.get()) // Both check transports.
+            assertEquals(1, f.profileCloses.get())
         } finally { release.countDown(); f.binding.close(); executor.shutdownNow() }
     }
     @Test fun sharedAccountCleanupUncertaintyPoisonsCollectionAndCannotPublishAvailability() {

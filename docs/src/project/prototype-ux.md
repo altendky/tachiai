@@ -669,7 +669,9 @@ Repeated failures leave the manual recovery action available.
 ABEMA retries first check the existing account-readiness service, including
 verified non-interactive renewal through the remembered browser session.
 An account expiry signal may request that check once per incident; refusal or
-a need for interaction stops recovery. The shared **Check connection** action
+a need for interaction stops recovery. A temporary readiness failure or check
+deadline during an active automatic incident continues its bounded backoff
+instead; it never starts an incident. The shared **Check connection** action
 offers the same bounded check manually. Account settings wait for readiness
 before loading their status, avoiding a stale reconnect warning after renewal,
 and distinguish **Checking account connection…** from reading stream settings.

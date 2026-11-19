@@ -146,6 +146,36 @@ class FeedAutoRecoveryStateTest {
             true, true, true, 0, authorizationRefreshSupported = true))
     }
 
+    @Test fun `transient account readiness inside an active incident continues bounded backoff while refusal stops`() {
+        val account = PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE); val member = Any()
+        val state = FeedAutoRecoveryState(); firstAttempt(state, member)
+        // The retry's readiness check has no member or transport evidence.
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, state.failed(null, account, null, true, true, true, 1_500,
+            transientAccountReadiness = true))
+        assertEquals(2, checkNotNull(state.pending).attempt)
+        assertNull(state.takeDue(4_499)); assertNotNull(state.takeDue(4_500))
+        assertEquals(FeedAutoRecoveryDecision.SCHEDULED, state.failed(null, account, null, true, true, true, 5_000,
+            transientAccountReadiness = true))
+        assertNotNull(state.takeDue(15_000))
+        assertEquals(FeedAutoRecoveryDecision.EXHAUSTED, state.failed(null, account, null, true, true, true, 15_500,
+            transientAccountReadiness = true))
+        val refused = FeedAutoRecoveryState(); firstAttempt(refused, member)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, refused.failed(null, account, null, true, true, true, 1_500))
+        assertNull(refused.pending); assertFalse(refused.automaticAttemptActive)
+        val fresh = FeedAutoRecoveryState(); fresh.observe(member, sample(0), 0)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, fresh.failed(member, account, null, true, true, true, 1,
+            transientAccountReadiness = true))
+        for (status in listOf(401, 403)) {
+            val denied = FeedAutoRecoveryState(); firstAttempt(denied, member)
+            assertEquals(FeedAutoRecoveryDecision.SKIPPED, denied.failed(null, account.copy(httpStatus = status),
+                null, true, true, true, 1_500, transientAccountReadiness = true))
+        }
+        val other = FeedAutoRecoveryState(); firstAttempt(other, member)
+        assertEquals(FeedAutoRecoveryDecision.SKIPPED, other.failed(null,
+            PrototypeFeedFailure(PrototypeFailureReason.LICENSE_FAILED), null, true, true, true, 1_500,
+            transientAccountReadiness = true))
+    }
+
     private fun sample(now: Long, clock: Long = 20_000 + now, frames: Long? = now / 10 + 1) =
         NativePlaybackDiagnosticSnapshot(now, 0, false, true, true, 3, 0, null,
             clock, true, frames, 0, 1, 0, null, null, null)

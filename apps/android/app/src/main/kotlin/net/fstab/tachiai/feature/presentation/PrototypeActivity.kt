@@ -1710,7 +1710,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (selection?.slots?.getOrNull(index)?.service == PrototypeService.TWITCH) PrototypeFailureReason.LOGIN_EXPIRED
         else PrototypeFailureReason.PREPARATION_FAILED)
 
-    private fun failFeed(index: Int, failure: PrototypeFeedFailure) {
+    private fun failFeed(index: Int, failure: PrototypeFeedFailure, transientAccountReadiness: Boolean = false) {
         if (selection?.slots?.getOrNull(index) == null) return
         if (failures[index] != null) return
         val member = sessions.getOrNull(index)?.member ?: playback?.member(NativeMixedSide.entries[index])
@@ -1728,7 +1728,7 @@ open class PrototypeActivity : ComponentActivity() {
             restoreOffset = automaticPairRestoreWanted == true,
             nowMs = now,
             authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null,
-            httpFailure = snapshot?.httpFailure)
+            httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness)
         // A normal stop is expected; a limit needs retained failure evidence.
         if (failure.reason != PrototypeFailureReason.STOPPED)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
@@ -1878,7 +1878,8 @@ open class PrototypeActivity : ComponentActivity() {
                             }
                             feedDiagnostics(index).reportCategory(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, category)
                             failures[index] = null
-                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE))
+                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE),
+                                transientAccountReadiness = result == AbemaAccountReadinessResult.TEMPORARY_FAILURE)
                         }
                         viewer?.refresh()
                     }

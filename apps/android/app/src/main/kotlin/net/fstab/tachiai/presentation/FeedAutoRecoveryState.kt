@@ -176,7 +176,8 @@ internal class FeedAutoRecoveryState {
     fun failed(member: Any?, failure: PrototypeFeedFailure, transport: NativePlaybackTransportFailure?,
         live: Boolean, allowRecovery: Boolean, restoreOffset: Boolean, nowMs: Long,
         authorizationRefreshSupported: Boolean = false,
-        httpFailure: NativePlaybackHttpFailure? = null): FeedAutoRecoveryDecision {
+        httpFailure: NativePlaybackHttpFailure? = null,
+        transientAccountReadiness: Boolean = false): FeedAutoRecoveryDecision {
         if (!time(nowMs)) return FeedAutoRecoveryDecision.SKIPPED
         // A player failure and an HTTP/provider failure are separate evidence;
         // mixed or misattributed numeric codes cannot grant retry authority.
@@ -199,7 +200,14 @@ internal class FeedAutoRecoveryState {
         val refresh = authorizationRefreshSupported && !authorizationRefreshUsed && !protectedRefusal && failure.reason in setOf(
             PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE, PrototypeFailureReason.LOGIN_EXPIRED,
             PrototypeFailureReason.LOGIN_UNAVAILABLE)
-        if (!allowRecovery || !refresh && !eligible(failure, transport, live, continuation, httpFailure) || !continuation && !played) {
+        // A transient account readiness result (temporary failure or IPC
+        // deadline) inside an already active incident continues its bounded
+        // backoff. It never starts an incident or overrides a refusal.
+        val transientAccount = transientAccountReadiness && continuation && !protectedRefusal &&
+            failure.reason == PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE &&
+            failure.httpStatus == null && failure.playerCode == null
+        if (!allowRecovery || !refresh && !transientAccount && !eligible(failure, transport, live, continuation, httpFailure) ||
+            !continuation && !played) {
             retire()
             return FeedAutoRecoveryDecision.SKIPPED
         }

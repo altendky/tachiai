@@ -33,6 +33,15 @@ private class SeriesProjectionReader(private val text: String) {
         }
         error("Series projection refused")
     }
+    private fun broadcastAt(): Long? {
+        space()
+        if (text.startsWith("null", at)) { at += 4; return null }
+        val start = at
+        while (at < text.length && text[at] in '0'..'9') at++
+        val digits = text.substring(start, at)
+        check(digits.length in 1..11 && (digits.length == 1 || digits[0] != '0'))
+        return digits.toLong().also { check(it in 1 until ABEMA_BROADCAST_AT_LIMIT_SECONDS) }
+    }
     private fun objectFields(allowed: Set<String>, value: (String) -> Unit) {
         need('{'); val seen = mutableSetOf<String>()
         if (!take('}')) {
@@ -44,6 +53,7 @@ private class SeriesProjectionReader(private val text: String) {
     fun read(request: AbemaSeriesPageRequest): AbemaSeriesPage {
         var parent: String? = null; var version: String? = null; var season: String? = null
         val entries = mutableListOf<CatalogEntry>()
+        val broadcasts = mutableListOf<Long?>()
         objectFields(setOf("seriesId", "version", "programs") + if (request.seasonId == null) emptySet() else setOf("seasonId")) { key -> when (key) {
             "seriesId" -> parent = string()
             "version" -> version = string()
@@ -53,8 +63,13 @@ private class SeriesProjectionReader(private val text: String) {
                 if (!take(']')) {
                     do {
                         check(entries.size < 20)
-                        var id: String? = null; var title: String? = null
-                        objectFields(setOf("id", "title")) { field -> if (field == "id") id = string() else title = string() }
+                        var id: String? = null; var title: String? = null; var broadcast: Long? = null
+                        objectFields(setOf("id", "title") + if (request.newest) setOf("broadcastAt") else emptySet()) { field -> when (field) {
+                            "id" -> id = string()
+                            "title" -> title = string()
+                            else -> broadcast = broadcastAt()
+                        } }
+                        broadcasts += broadcast
                         check(validAbemaSeriesId(checkNotNull(id)) && safeAbemaSeriesText(checkNotNull(title), 160))
                         entries += CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id!!, CatalogIntent.VIDEO), title!!)
                     } while (take(','))
@@ -64,6 +79,7 @@ private class SeriesProjectionReader(private val text: String) {
         } }
         space(); check(at == text.length && parent == request.seriesId && season == request.seasonId)
         check(request.version == null || version == request.version)
-        return AbemaSeriesPage(request.seriesId, entries, checkNotNull(version), season)
+        return AbemaSeriesPage(request.seriesId, entries, checkNotNull(version), season,
+            if (request.newest) broadcasts else null)
     }
 }

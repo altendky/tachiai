@@ -596,6 +596,30 @@ test('series page refuses mismatched duplicate malformed oversized rows and unsu
   const drift = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest('series-A', 20, 'old'), series: { programs: [], version: 'new' } });
   drift.start(); await settle(); assert.equal(drift.state().failure, 'SERIES_RESPONSE');
 });
+test('newest-first series pages use descending seq and project only broadcast seconds', async () => {
+  const resourceId = { ...seriesRequest(), order: '-seq' };
+  const rows = [
+    { id: 'episode-C', series: { id: 'series-A' }, episode: { title: 'Day 3' }, broadcastAt: 1800000000, label: { newest: true } },
+    { id: 'episode-B', series: { id: 'series-A' }, episode: { title: 'Day 2' }, broadcastAt: 0 },
+    { id: 'episode-A', series: { id: 'series-A' }, episode: { title: 'Day 1' } },
+  ];
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: rows, version: 'v1' } });
+  f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'EXACT_SERIES_PAGE', failure: 'NONE' });
+  assert.equal(f.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=-seq&limit=20&offset=0');
+  assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)), { seriesId: 'series-A', version: 'v1', programs: [
+    { id: 'episode-C', title: 'Day 3', broadcastAt: 1800000000 }, { id: 'episode-B', title: 'Day 2', broadcastAt: null },
+    { id: 'episode-A', title: 'Day 1', broadcastAt: null }] });
+  for (const broadcastAt of ['1800000000', -1, 1.5, 100000000000, 1800000000000, true, {}]) {
+    const bad = fixture({ operation: 'FETCH_SERIES', resourceId,
+      series: { programs: [{ ...rows[0], broadcastAt }], version: 'v1' } });
+    bad.start(); await settle(); assert.deepEqual(bad.state(), { state: 'REFUSED', failure: 'SERIES_RESPONSE' });
+  }
+  for (const order of ['seq', 'random', null]) {
+    const refused = fixture({ operation: 'FETCH_SERIES', resourceId: { ...seriesRequest(), order } });
+    refused.start(); await settle(); assert.equal(refused.requests.length, 0);
+  }
+});
 test('series raw JSON rejects escaped duplicates trailing data invalid UTF8 and body bounds', async () => {
   for (const extra of [
     { seriesText: '{"programs":[],"version":"a","\\u0076ersion":"b"}' },

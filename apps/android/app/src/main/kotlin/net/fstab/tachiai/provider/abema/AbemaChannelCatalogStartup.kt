@@ -58,6 +58,7 @@ internal class PreparedAbemaChannelCatalog(private val delegate: ProviderCatalog
     override fun lookup(input: String): CatalogResult<CatalogEntry> { first.set(null); return delegate.lookup(input) }
     override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> { first.set(null); return delegate.refresh(resource) }
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { first.set(null); return delegate.resolve(resource) }
+    override fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> { first.set(null); return delegate.latest(collection) }
     // Production catalog close only revokes admission and signals its workers.
     override fun cancel() { runCatching { close() } }
     override fun close() {

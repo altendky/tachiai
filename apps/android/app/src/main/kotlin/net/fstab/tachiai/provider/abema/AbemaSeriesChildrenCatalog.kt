@@ -4,12 +4,16 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.provider.catalog.*
 
-// Only explicit series children; public/account discovery remains with its
-// delegate. No collection is resolved into an implicit playable episode.
+internal const val ABEMA_LATEST_MAX_PAGES = 5
+
+// Series children; public/account discovery remains with its delegate. Browsing
+// never turns a collection into a playable episode. Only the explicit latest()
+// default (#549) chooses one, from the provider's own newest-first order.
 internal class AbemaSeriesChildrenCatalog(
     private val delegate: ProviderCatalog,
     private val transportFactory: ((canRequest: () -> Boolean) -> AbemaSeriesTransport)?,
     private val canPublish: () -> Boolean = { true },
+    private val wallMs: () -> Long = System::currentTimeMillis,
 ) : ProviderCatalog by delegate {
     init { require(delegate.providerId.value == "abema" && net.fstab.tachiai.presentation.validProviderInstanceId(delegate.instanceId)) }
     private class Cursor(val parent: CatalogResource, val request: AbemaSeriesPageRequest,
@@ -59,23 +63,7 @@ internal class AbemaSeriesChildrenCatalog(
             if (query.cursor != null && (saved == null || saved.parent != parent || saved.revision != local))
                 return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             val request = saved?.request ?: AbemaSeriesPageRequest(seriesId, seasonId = seasonId)
-            var transport: AbemaSeriesTransport? = null
-            var cleanup = true
-            val result = try {
-                transport = factory { current(local) }
-                active.set(transport)
-                if (!current(local)) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else transport.fetch(request)
-            } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
-            finally {
-                try { transport?.close() } catch (_: Throwable) {
-                    cleanup = false; poisoned = true; closed = true; clear()
-                    retained.add(this); transport?.let(retained::add)
-                }
-                if (cleanup) active.compareAndSet(transport, null)
-            }
-            if (!cleanup) return@synchronized CatalogResult.Failure(CatalogFailure.TEMPORARY)
-            if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
-            val page = when (result) {
+            val page = when (val result = fetchPage(local, factory, request)) {
                 is CatalogResult.Failure -> return@synchronized result
                 is CatalogResult.Value -> result.value
             }
@@ -99,6 +87,78 @@ internal class AbemaSeriesChildrenCatalog(
             if (!admitted) return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
             CatalogResult.Value(CatalogPage(page.entries, next))
+        }
+    }
+    // Caller holds the operation lock. One owned transport per page; unconfirmed
+    // cleanup poisons this catalog exactly as browsing does.
+    private fun fetchPage(local: Long, factory: (() -> Boolean) -> AbemaSeriesTransport,
+        request: AbemaSeriesPageRequest): CatalogResult<AbemaSeriesPage> {
+        var transport: AbemaSeriesTransport? = null
+        var cleanup = true
+        val result = try {
+            transport = factory { current(local) }
+            active.set(transport)
+            if (!current(local)) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else transport.fetch(request)
+        } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        finally {
+            try { transport?.close() } catch (_: Throwable) {
+                cleanup = false; poisoned = true; closed = true; clear()
+                retained.add(this); transport?.let(retained::add)
+            }
+            if (cleanup) active.compareAndSet(transport, null)
+        }
+        if (!cleanup) return CatalogResult.Failure(CatalogFailure.TEMPORARY)
+        if (!current(local)) { clear(); return CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
+        return result
+    }
+
+    // Pages the provider's descending `-seq` order (its own newest-first view)
+    // and returns the first row that is not upcoming: a broadcast time after
+    // now marks an upcoming episode. The chosen row must also be at least as
+    // recent as every other published row seen on its page; otherwise seq and
+    // broadcast order disagree and the newest episode is not established.
+    override fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> {
+        clear()
+        if (collection.providerId != providerId || collection.kind !in setOf("series", "season") ||
+            collection.intent != CatalogIntent.COLLECTION) return delegate.latest(collection)
+        val season = if (collection.kind == "season") abemaSeasonParent(collection) else null
+        if (collection.kind == "series" && !validAbemaSeriesId(collection.identity) || collection.kind == "season" && season == null)
+            return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+        val seriesId = season?.first ?: collection.identity
+        val seasonId = season?.second
+        return synchronized(operation) {
+            val local = synchronized(lock) { revision }
+            if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
+            val factory = transportFactory ?: return@synchronized CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
+            var request = AbemaSeriesPageRequest(seriesId, seasonId = seasonId, newest = true)
+            val seen = mutableSetOf<String>()
+            var any = false
+            repeat(ABEMA_LATEST_MAX_PAGES) {
+                val page = when (val result = fetchPage(local, factory, request)) {
+                    is CatalogResult.Failure -> return@synchronized result
+                    is CatalogResult.Value -> result.value
+                }
+                val broadcasts = page.broadcastAtSeconds
+                if (broadcasts == null || page.seriesId != seriesId || page.seasonId != seasonId ||
+                    request.version != null && page.version != request.version ||
+                    page.entries.any { !seen.add(it.resource.identity) }) {
+                    clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+                }
+                any = any || page.entries.isNotEmpty()
+                val nowSeconds = wallMs() / 1000
+                val published = page.entries.indices.filter { broadcasts[it] == null || broadcasts[it]!! <= nowSeconds }
+                val chosen = published.firstOrNull()
+                if (chosen != null) {
+                    val time = broadcasts[chosen]
+                    val newer = published.any { other -> broadcasts[other] != null && (time == null || broadcasts[other]!! > time) }
+                    if (newer) return@synchronized CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.ORDER_UNVERIFIED))
+                    return@synchronized CatalogResult.Value(CatalogLatest.Found(CatalogPlaybackResource(page.entries[chosen].resource)))
+                }
+                if (page.entries.size < ABEMA_SERIES_PAGE_LIMIT) return@synchronized CatalogResult.Value(CatalogLatest.Refused(
+                    if (any) CatalogLatestRefusal.NONE_PUBLISHED else CatalogLatestRefusal.EMPTY))
+                request = AbemaSeriesPageRequest(seriesId, request.offset + ABEMA_SERIES_PAGE_LIMIT, page.version, seasonId, newest = true)
+            }
+            CatalogResult.Value(CatalogLatest.Refused(CatalogLatestRefusal.NONE_PUBLISHED))
         }
     }
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }

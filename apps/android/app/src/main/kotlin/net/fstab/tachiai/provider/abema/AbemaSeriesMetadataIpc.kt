@@ -15,8 +15,10 @@ internal object AbemaSeriesMetadataIpc {
     }
     fun decodeStart(fields: Map<String, Any?>, now: Long): Start? = runCatching {
         val filtered = "season" in fields
+        val newest = "order" in fields
         if (fields.keys != setOf("nonce", "instance", "parent", "offset", "version", "proof", "deadline") +
-            (if (filtered) setOf("season") else emptySet())) return null
+            (if (filtered) setOf("season") else emptySet()) + (if (newest) setOf("order") else emptySet())) return null
+        if (newest && fields["order"] != "-seq") return null
         val nonce = fields["nonce"] as? String ?: return null
         val instance = fields["instance"] as? String ?: return null
         val parent = fields["parent"] as? String ?: return null
@@ -28,7 +30,7 @@ internal object AbemaSeriesMetadataIpc {
         val deadline = fields["deadline"] as? Long ?: return null
         if (!AbemaEpisodeMetadataIpc.validNonce(nonce) || !validProviderInstanceId(instance) ||
             !proof.matches(Regex("[a-f0-9]{64}")) || now < 0 || deadline <= now || deadline - now > OPERATION_MS) return null
-        Start(nonce, instance, AbemaSeriesPageRequest(parent, offset, version, season), proof, deadline)
+        Start(nonce, instance, AbemaSeriesPageRequest(parent, offset, version, season, newest), proof, deadline)
     }.getOrNull()
     fun decodeResult(fields: Map<String, Any?>, request: AbemaSeriesPageRequest): Result? {
         val nonce = fields["nonce"] as? String ?: return null
@@ -41,7 +43,7 @@ internal object AbemaSeriesMetadataIpc {
     }
     @Suppress("DEPRECATION")
     fun fields(bundle: Bundle): Map<String, Any?>? = runCatching {
-        if (bundle.size() > 8) return null
+        if (bundle.size() > 9) return null
         bundle.keySet().associateWith { bundle.get(it) }.takeIf { values ->
             values.values.all { it == null || it is String && it.length <= 32768 || it is Int || it is Long }
         }
@@ -50,6 +52,7 @@ internal object AbemaSeriesMetadataIpc {
         putString("nonce", value.nonce); putString("instance", value.instanceId); putString("parent", value.page.seriesId)
         putInt("offset", value.page.offset); putString("version", value.page.version)
         value.page.seasonId?.let { putString("season", it) }
+        if (value.page.newest) putString("order", "-seq")
         putString("proof", value.ownerProof); putLong("deadline", value.deadline)
     }
     fun nonce(value: String) = AbemaEpisodeMetadataIpc.nonce(value)
@@ -57,7 +60,11 @@ internal object AbemaSeriesMetadataIpc {
         putString("nonce", value.nonce); putString("outcome", value.outcome)
         value.page?.let { page -> check(page.seriesId == parent)
             val projection = JSONObject().put("seriesId", page.seriesId).put("version", page.version)
-                .put("programs", JSONArray().apply { page.entries.forEach { put(JSONObject().put("id", it.resource.identity).put("title", it.title)) } })
+                .put("programs", JSONArray().apply { page.entries.forEachIndexed { index, entry ->
+                    put(JSONObject().put("id", entry.resource.identity).put("title", entry.title).apply {
+                        page.broadcastAtSeconds?.let { put("broadcastAt", it[index] ?: JSONObject.NULL) }
+                    })
+                } })
             page.seasonId?.let { projection.put("seasonId", it) }
             putString("page", projection.toString())
         }

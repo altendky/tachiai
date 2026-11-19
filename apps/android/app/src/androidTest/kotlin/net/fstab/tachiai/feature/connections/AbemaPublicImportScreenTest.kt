@@ -158,14 +158,14 @@ class AbemaPublicImportScreenTest {
         } finally { harness.close() }
     }
 
-    @Test fun importedSeriesRemainsACollectionWithoutChoosingAnEpisodeOrEnablingPlayback() {
+    @Test fun importedSeriesRemainsACollectionThatWatchResolvesToItsNewestEpisode() {
         val harness = Harness()
         try {
             compose.setContent { harness.Render() }
             ready(harness)
             lookup("https://abema.tv/video/title/394-72")
             ready(harness)
-            text("Show / series · choose an item before playback · Availability unknown").assertExists()
+            text("Show / series · Watch plays the newest episode · Availability unknown").assertExists()
             text("Add").performClick()
             ready(harness)
             compose.onAllNodesWithText("Browse items").assertCountEquals(0)
@@ -177,10 +177,16 @@ class AbemaPublicImportScreenTest {
                 harness.showPicker(configured)
             }
             compose.onNodeWithText("ABEMA series · 394-72").assertExists()
-            compose.onNodeWithText("Collection · choose a stream in Manage streams").assertExists()
-            compose.onNodeWithText("Watch").assertIsNotEnabled()
-            compose.onNodeWithText("A collection is selected. Choose a playable item in Providers.").assertExists()
-            compose.runOnIdle { assertNull(harness.watchRequest) }
+            compose.onNodeWithText("Collection · plays the newest episode").assertExists()
+            compose.onNodeWithText("A collection is selected. Choose a playable item in Providers.").assertDoesNotExist()
+            // The picker requests the saved collection itself; the viewer
+            // resolves its newest episode afresh, which this test never opens.
+            compose.onNodeWithText("Watch").assertIsEnabled().performClick()
+            compose.runOnIdle {
+                val series = harness.reopen().single()
+                assertEquals(ConfiguredFeedAssignments(series.choice, series.choice), harness.watchRequest)
+                assertEquals(CatalogIntent.COLLECTION, series.entry.resource.intent)
+            }
         } finally { harness.close() }
     }
 

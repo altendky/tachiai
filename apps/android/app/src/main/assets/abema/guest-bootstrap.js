@@ -397,7 +397,9 @@
     value === value.trim() && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
   function validSeriesRequest(value) {
     return value && typeof value === 'object' && !Array.isArray(value) &&
-      ['offset,seriesId,version', 'offset,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
+      ['offset,seriesId,version', 'offset,seasonId,seriesId,version', 'offset,order,seriesId,version',
+        'offset,order,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
+      (!Object.hasOwn(value, 'order') || value.order === '-seq') &&
       typeof value.seriesId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seriesId) &&
       (!Object.hasOwn(value, 'seasonId') || typeof value.seasonId === 'string' &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seasonId) && value.seriesId.length + value.seasonId.length + 1 <= 256) &&
@@ -733,7 +735,9 @@
         } else if (operation === 'FETCH_SERIES') {
           state = 'SERIES';
           const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');
-          url.searchParams.set('order', 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
+          // Newest-first is the provider consumer's descending order.
+          const newest = seriesRequest.order === '-seq';
+          url.searchParams.set('order', newest ? '-seq' : 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
           if (seriesRequest.version !== null) url.searchParams.set('seriesVersion', seriesRequest.version);
           if (seriesRequest.seasonId !== undefined) url.searchParams.set('seasonId', seriesRequest.seasonId);
           series = await boundedReply(url.href, { method: 'GET', mode: 'cors',
@@ -754,7 +758,13 @@
                   item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
                   /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();
                 ids.add(item.id);
-                return Object.freeze({ id: item.id, title: item.episode.title.trim() });
+                if (!newest) return Object.freeze({ id: item.id, title: item.episode.title.trim() });
+                // Provider consumers render broadcastAt as epoch seconds; 0/absent means none.
+                const broadcast = item.broadcastAt;
+                if (broadcast !== undefined && broadcast !== null && broadcast !== 0 &&
+                  (!Number.isSafeInteger(broadcast) || broadcast < 1 || broadcast >= 100000000000)) throw new Error();
+                return Object.freeze({ id: item.id, title: item.episode.title.trim(),
+                  broadcastAt: broadcast === undefined || broadcast === null || broadcast === 0 ? null : broadcast });
               });
               return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs,
                 ...(seriesRequest.seasonId !== undefined ? { seasonId: seriesRequest.seasonId } : {}) });

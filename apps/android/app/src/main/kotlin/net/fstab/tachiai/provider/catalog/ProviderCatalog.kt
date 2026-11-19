@@ -122,6 +122,15 @@ internal data class CatalogPlaybackResource(val resource: CatalogResource) {
     init { require(resource.intent != CatalogIntent.COLLECTION) }
 }
 
+// Interim collection default (#549): the newest published child of a
+// collection, chosen by the provider's own ordering. Refusals stay distinct so
+// callers can say why nothing was chosen; nothing falls back to another item.
+internal enum class CatalogLatestRefusal { EMPTY, NONE_PUBLISHED, ORDER_UNVERIFIED }
+internal sealed interface CatalogLatest {
+    data class Found(val playback: CatalogPlaybackResource) : CatalogLatest
+    data class Refused(val reason: CatalogLatestRefusal) : CatalogLatest
+}
+
 // Bound to one instance by construction. Implementations own its selected-route
 // transport and account lifecycle. Calls run on a worker, not the UI thread.
 internal interface ProviderCatalog : AutoCloseable {
@@ -132,6 +141,7 @@ internal interface ProviderCatalog : AutoCloseable {
     fun lookup(input: String): CatalogResult<CatalogEntry>
     fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry>
     fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource>
+    fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
     override fun close() {}
 }
 

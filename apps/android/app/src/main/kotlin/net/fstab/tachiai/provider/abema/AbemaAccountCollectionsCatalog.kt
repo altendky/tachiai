@@ -201,6 +201,7 @@ internal class AbemaAccountCollectionsCatalog(
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }
     override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> { clear(); return delegate.refresh(resource) }
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { clear(); return delegate.resolve(resource) }
+    override fun latest(collection: CatalogResource): CatalogResult<CatalogLatest> { clear(); return delegate.latest(collection) }
     override fun close() {
         if (closed) return
         closed = true; revision.incrementAndGet(); clear()

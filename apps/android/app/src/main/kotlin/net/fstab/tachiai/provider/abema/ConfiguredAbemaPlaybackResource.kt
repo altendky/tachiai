@@ -26,3 +26,10 @@ internal fun supportedConfiguredAbemaSlot(resource: CatalogResource): Boolean =
 internal fun validAbemaSlotIdentity(identity: String): Boolean = identity.length in 3..129 && identity.split('/').let { parts ->
     parts.size == 2 && validAbemaChannelIdentity(parts[0]) && validAbemaChannelIdentity(parts[1])
 }
+
+// A saved series or exact season. Watch may resolve it afresh to its newest
+// published episode (#549); the collection identity itself never plays.
+internal fun supportedConfiguredAbemaCollection(resource: CatalogResource): Boolean =
+    resource.providerId.value == "abema" && resource.intent == CatalogIntent.COLLECTION &&
+        (resource.kind == "series" && validAbemaSeriesId(resource.identity) ||
+            resource.kind == "season" && abemaSeasonParent(resource) != null)

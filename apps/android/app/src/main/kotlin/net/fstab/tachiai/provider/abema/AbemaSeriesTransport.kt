@@ -21,21 +21,30 @@ internal fun safeAbemaSeriesText(value: String, maximum: Int): Boolean {
     }
     return true
 }
-internal class AbemaSeriesPageRequest(val seriesId: String, val offset: Int = 0, val version: String? = null, val seasonId: String? = null) {
+// Newest-first requests use the provider consumer's own descending `-seq`
+// order and additionally project each row's broadcast time (epoch seconds).
+internal class AbemaSeriesPageRequest(val seriesId: String, val offset: Int = 0, val version: String? = null, val seasonId: String? = null,
+    val newest: Boolean = false) {
     init {
         require(validAbemaSeriesId(seriesId))
         require(seasonId == null || validAbemaSeriesId(seasonId) && seriesId.length + seasonId.length + 1 <= 256)
         require(offset in 0..ABEMA_SERIES_MAX_OFFSET && offset % ABEMA_SERIES_PAGE_LIMIT == 0)
         require(if (offset == 0) version == null else version != null && safeAbemaSeriesText(version, 256))
     }
-    fun url(): String = "https://api.p-c3-e.abema-tv.com/v1/video/series/$seriesId/programs?order=seq&limit=20&offset=$offset" +
+    fun url(): String = "https://api.p-c3-e.abema-tv.com/v1/video/series/$seriesId/programs?order=${if (newest) "-seq" else "seq"}&limit=20&offset=$offset" +
         (version?.let { "&seriesVersion=" + URLEncoder.encode(it, "UTF-8") } ?: "") +
         (seasonId?.let { "&seasonId=$it" } ?: "")
     override fun toString() = "AbemaSeriesPageRequest(redacted)"
 }
-internal class AbemaSeriesPage(val seriesId: String, entries: List<CatalogEntry>, val version: String, val seasonId: String? = null) {
+internal const val ABEMA_BROADCAST_AT_LIMIT_SECONDS = 100_000_000_000L
+internal class AbemaSeriesPage(val seriesId: String, entries: List<CatalogEntry>, val version: String, val seasonId: String? = null,
+    broadcastAtSeconds: List<Long?>? = null) {
     val entries: List<CatalogEntry> = Collections.unmodifiableList(entries.toList())
+    // Present only for newest-first pages; null rows had no provider broadcast time.
+    val broadcastAtSeconds: List<Long?>? = broadcastAtSeconds?.let { Collections.unmodifiableList(it.toList()) }
     init {
+        require(broadcastAtSeconds == null || broadcastAtSeconds.size == entries.size &&
+            broadcastAtSeconds.all { it == null || it in 1 until ABEMA_BROADCAST_AT_LIMIT_SECONDS })
         require(validAbemaSeriesId(seriesId) && entries.size <= ABEMA_SERIES_PAGE_LIMIT && safeAbemaSeriesText(version, 256))
         require(seasonId == null || validAbemaSeriesId(seasonId) && seriesId.length + seasonId.length + 1 <= 256)
         require(entries.all { it.resource.providerId == ProviderId("abema") && it.resource.kind == "episode" &&

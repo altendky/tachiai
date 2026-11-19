@@ -189,8 +189,9 @@ class AbemaLocalImportCatalogTest {
         }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
             selection(episodeUrl, allowEpisodes = false))
-        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
-            selection("https://abema.tv/video/title/394-72"))
+        // A saved series is never sample playback; Watch must resolve its newest episode first (#549).
+        assertEquals(listOf(0, 1), (selection("https://abema.tv/video/title/394-72")
+            as ConfiguredPrototypeSelectionResult.NeedsLatest).slots)
         // Former built-in resources are ordinary configured items with no sample marker.
         assertEquals("ABEMA_CONFIGURED_CHANNEL",
             checkNotNull((selection("https://abema.tv/channels/abema-news") as ConfiguredPrototypeSelectionResult.Ready).selection.a).diagnosticName)

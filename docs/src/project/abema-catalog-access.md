@@ -116,7 +116,9 @@ these examples.
 The catalog must include on-demand shows, series and episodes that were never
 live, in addition to live broadcasts and catch-up videos. A saved series remains
 a collection: browsing its children and selecting an episode is different from
-silently choosing a latest episode. Known published future slots can be retained
+silently choosing a latest episode. The only exception is the explicit interim
+[newest-episode default](configured-catalog.md#interim-newest-episode-for-saved-abema-collections)
+that Watch applies to a saved series or season. Known published future slots can be retained
 before first broadcast. For an unpublished occurrence, retain only a known
 channel or supported collection identity with explicit behavior; do not invent
 an ID or substitute another day, division, program or fixed sample.
@@ -971,8 +973,12 @@ Android fixtures, including the two-series/versioned-page projection and private
 IPC guards, subsequently passed in 2.43 seconds. Provider-free JS/JVM coverage
 preceded the actual requests; the Android fixtures ran afterwards. Temporary
 guest-process instrumentation targeting was restored to the ordinary manifest.
-Series browsing does not imply global video search, timetable/slot resolution
-or an automatically playable permanent sumo collection.
+Series browsing does not imply global video search or timetable/slot resolution.
+The separate interim
+[newest-episode default](configured-catalog.md#interim-newest-episode-for-saved-abema-collections)
+reuses this operation with the consumer's descending `-seq` order and an
+additional `broadcastAt` projection. Browsing itself still uses ascending
+`seq` and leaves availability UNKNOWN.
 
 ### Exact configured broadcast metadata
 

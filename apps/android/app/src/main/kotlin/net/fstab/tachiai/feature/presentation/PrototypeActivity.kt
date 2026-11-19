@@ -144,6 +144,11 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
+import net.fstab.tachiai.provider.catalog.CatalogFailure
+import net.fstab.tachiai.provider.catalog.CatalogLatest
+import net.fstab.tachiai.provider.catalog.CatalogResult
+import net.fstab.tachiai.presentation.ConfiguredLatestEpisode
+import net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -164,6 +169,7 @@ import net.fstab.tachiai.platform.diagnostics.FailureSlot
 @SuppressLint("SetTextI18n") // Preliminary English UX; localization is deferred.
 open class PrototypeActivity : ComponentActivity() {
     companion object {
+        private val NO_LATEST: List<ConfiguredLatestEpisode?> = listOf(null, null)
         private var profileConfigured = false
         // ProxyController is process-wide; recreation must not discard its in-flight generation.
         private val webRoute = AbemaWebViewRoute()
@@ -214,6 +220,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var startupTwitchValidation = emptyMap<String, TwitchCatalogReadOnlyValidation>()
     private var pendingAccountSelection: ConfiguredFeedAssignments? = null
     private var pendingAccountPlan: ProviderInstanceRoutePlan? = null
+    private var pendingAccountLatest: List<ConfiguredLatestEpisode?> = NO_LATEST
     private var pickerAssignments = restoreConfiguredFeedAssignments(false, null, null)
     private var pickerSelectionRestore = ViewerSelectionRestore(false)
     private var persistRestoredSelection = false
@@ -484,14 +491,72 @@ open class PrototypeActivity : ComponentActivity() {
         watchScoped(assignments, null)
     }
 
-    private fun watchScoped(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?) {
+    // A new Watch resolves each selected collection afresh to its newest
+    // published episode; that exact episode is then bound for the session,
+    // including retries, account handoff and recovery (#549).
+    private fun resolveLatestEpisodes(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?,
+        needed: ConfiguredPrototypeSelectionResult.NeedsLatest) {
+        val check = ++accountCheckRevision
+        retireStartupScopes()
+        checkingAccount = true
+        showPicker("Finding the newest episode…")
+        val app = applicationContext
+        val wanted = needed.slots.map { index -> index to checkNotNull(needed.collections[index]) }
+        worker.execute {
+            fun active() = check == accountCheckRevision && resumed.get() && !isFinishing && !isDestroyed
+            val started = SystemClock.elapsedRealtime()
+            // Duplicate assignments of one collection share this Watch's single
+            // resolution; each slot still opens its own playback session.
+            val results = mutableMapOf<Pair<String, CatalogResource>, CatalogResult<CatalogLatest>>()
+            for ((_, source) in wanted) {
+                val key = source.instanceId to source.entry.resource
+                if (key in results) continue
+                results[key] = if (!active()) CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) else try {
+                    androidAbemaChannelCatalog(app, source.instanceId, emptyMap(), canUse = ::active)
+                        .use { it.latest(source.entry.resource) }
+                } catch (error: Throwable) {
+                    diagnostics.report(FailureStage.CATALOG_LOAD, error)
+                    CatalogResult.Failure(CatalogFailure.TEMPORARY)
+                }
+            }
+            Log.i("TachiaiCollectionLatest", "outcome=" + results.values.joinToString(",") { result -> when (result) {
+                is CatalogResult.Failure -> result.reason.name
+                is CatalogResult.Value -> when (val value = result.value) {
+                    is CatalogLatest.Found -> "FOUND"
+                    is CatalogLatest.Refused -> value.reason.name
+                }
+            } } + " elapsedMs=${SystemClock.elapsedRealtime() - started}")
+            handler.post {
+                if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@post
+                checkingAccount = false
+                val episodes = arrayOfNulls<ConfiguredLatestEpisode>(2)
+                for ((index, source) in wanted) {
+                    when (val result = results.getValue(source.instanceId to source.entry.resource)) {
+                        is CatalogResult.Failure -> { showPicker(collectionLatestFailureMessage(result.reason)); return@post }
+                        is CatalogResult.Value -> when (val value = result.value) {
+                            is CatalogLatest.Refused -> { showPicker(collectionLatestRefusalMessage(value.reason)); return@post }
+                            is CatalogLatest.Found -> episodes[index] =
+                                ConfiguredLatestEpisode(source.choice, source.entry.resource, value.playback.resource)
+                        }
+                    }
+                }
+                watchScoped(assignments, capturedPlan, episodes.toList())
+            }
+        }
+    }
+
+    private fun watchScoped(assignments: ConfiguredFeedAssignments, capturedPlan: ProviderInstanceRoutePlan?,
+        latest: List<ConfiguredLatestEpisode?> = NO_LATEST) {
         if (checkingAccount || budget != null || !resumed.get() || isFinishing || isDestroyed) return
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         // The page comparison's ABEMA list holds only its fixed channel/episode samples.
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema)
+            allowConfiguredAbemaSlots = useCachedAbema, latest = latest)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
+        }
+        if (resolved is ConfiguredPrototypeSelectionResult.NeedsLatest) {
+            resolveLatestEpisodes(assignments, capturedPlan, resolved); return
         }
         val selected = (resolved as ConfiguredPrototypeSelectionResult.Ready).selection
         val check = ++accountCheckRevision
@@ -563,7 +628,7 @@ open class PrototypeActivity : ComponentActivity() {
                 // failed ABEMA startup must not discard a healthy Twitch feed.
                 if (targets.isEmpty()) {
                     checkingAccount = false
-                    watchReady(assignments, plan)
+                    watchReady(assignments, plan, latest)
                     return@post
                 }
                 accountReadiness.ensure(targets) { result ->
@@ -571,17 +636,19 @@ open class PrototypeActivity : ComponentActivity() {
                     checkingAccount = false
                     when (result) {
                         AbemaAccountReadinessResult.READY -> {
-                            pendingAccountSelection = null; pendingAccountPlan = null
-                            watchReady(assignments, plan)
+                            pendingAccountSelection = null; pendingAccountPlan = null; pendingAccountLatest = NO_LATEST
+                            watchReady(assignments, plan, latest)
                         }
                         AbemaAccountReadinessResult.HANDOFF -> {
                             pendingAccountSelection = assignments
                             pendingAccountPlan = plan
+                            pendingAccountLatest = latest
                             showPicker("Renewing the remembered ABEMA account…")
                         }
                         else -> {
                             pendingAccountSelection = null
                             pendingAccountPlan = null
+                            pendingAccountLatest = NO_LATEST
                             retireStartupScopes()
                             showPicker(abemaAccountReadinessMessage(result))
                         }
@@ -591,12 +658,14 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    private fun watchReady(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan) {
-        try { openPreparedViewer(assignments, routePlan) }
+    private fun watchReady(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan,
+        latest: List<ConfiguredLatestEpisode?>) {
+        try { openPreparedViewer(assignments, routePlan, latest) }
         finally { if (budget == null) retireStartupScopes() }
     }
 
-    private fun openPreparedViewer(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan) {
+    private fun openPreparedViewer(assignments: ConfiguredFeedAssignments, routePlan: ProviderInstanceRoutePlan,
+        latest: List<ConfiguredLatestEpisode?>) {
         pickerAssignments = assignments
         updateRecoveryState()
         if (recoveryState.incident != null) {
@@ -612,11 +681,14 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema)
+            allowConfiguredAbemaSlots = useCachedAbema, latest = latest)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
-        resolved as ConfiguredPrototypeSelectionResult.Ready
+        // A collection changed after resolution; a new Watch resolves again.
+        if (resolved !is ConfiguredPrototypeSelectionResult.Ready) {
+            showPicker("The selected streams changed. Choose Watch to start again."); return
+        }
         val selected = resolved.selection
         selection = selected
         activeConfiguredSources = resolved.sourceSlots
@@ -2059,9 +2131,11 @@ open class PrototypeActivity : ComponentActivity() {
                     }
                     pendingAccountSelection?.let { assignments ->
                         val captured = pendingAccountPlan
+                        val latest = pendingAccountLatest
                         pendingAccountSelection = null
                         pendingAccountPlan = null
-                        if (captured != null) watchScoped(assignments, captured)
+                        pendingAccountLatest = NO_LATEST
+                        if (captured != null) watchScoped(assignments, captured, latest)
                         else showPicker("The saved connection check ended. Choose Watch to start again.")
                     }
                 }, onFailure = {
@@ -2109,6 +2183,7 @@ open class PrototypeActivity : ComponentActivity() {
         accountReadiness.close()
         pendingAccountSelection = null
         pendingAccountPlan = null
+        pendingAccountLatest = NO_LATEST
         recoveryState.removeObserver(recoveryObserver)
         dismissRecoveryDialog()
         resumed.set(false); dispose()

@@ -16,8 +16,14 @@ internal data class ConfiguredPlaybackFeed(
     val resource: CatalogResource,
     val service: PrototypeService,
     val kind: PrototypePlaybackKind,
+    // The saved collection this exact episode was resolved from for this
+    // session (#549). Retries keep the episode; a new Watch resolves again.
+    val collection: CatalogResource? = null,
 ) {
     init {
+        require(collection == null || service == PrototypeService.ABEMA && kind == PrototypePlaybackKind.REPLAY &&
+            supportedConfiguredAbemaEpisode(resource) &&
+            net.fstab.tachiai.provider.abema.supportedConfiguredAbemaCollection(collection))
         require(resource.providerId.value == service.name.lowercase(Locale.ROOT))
         require(service == PrototypeService.ABEMA &&
             (kind == PrototypePlaybackKind.REPLAY &&

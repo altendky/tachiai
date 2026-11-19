@@ -50,9 +50,13 @@ import net.fstab.tachiai.presentation.ConfiguredFeedChoice
 import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.ConfiguredSource
 import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
+import net.fstab.tachiai.provider.catalog.CatalogFailure
+import net.fstab.tachiai.provider.catalog.CatalogLatestRefusal
 import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionFailure
 import net.fstab.tachiai.presentation.encodeConfiguredFeedChoice
 import net.fstab.tachiai.presentation.decodeConfiguredFeedChoice
+import net.fstab.tachiai.presentation.canWatch
+import net.fstab.tachiai.presentation.collectionPlaysLatest
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.providerDisplayNames
@@ -138,7 +142,7 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Providers") } }
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 Button(onClick = { onWatch(ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))) },
-                    enabled = resolved is ConfiguredPrototypeSelectionResult.Ready && setupReady && playbackAvailable,
+                    enabled = resolved.canWatch && setupReady && playbackAvailable,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Watch") }
             }
         }
@@ -186,7 +190,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                             Column(Modifier.weight(1f)) {
                                 Text(configuredSourceDisplayTitle(source), style = MaterialTheme.typography.titleMedium)
                                 if (source.entry.resource.intent == CatalogIntent.COLLECTION)
-                                    Text("Collection · choose a stream in Manage streams", style = MaterialTheme.typography.bodySmall)
+                                    Text(if (collectionPlaysLatest(source.entry.resource)) "Collection · plays the newest episode"
+                                        else "Collection · choose a stream in Manage streams", style = MaterialTheme.typography.bodySmall)
                                 else if (source.entry.availability != CatalogAvailability.UNKNOWN)
                                     Text(source.entry.availability.name.lowercase().replace('_', ' '), style = MaterialTheme.typography.bodySmall)
                             }
@@ -219,6 +224,21 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) Text(configuredSelectionMessage(resolved.reason))
         if (!setupReady) Text("Provider setup must be read successfully before playback.")
     }
+}
+
+internal fun collectionLatestRefusalMessage(reason: CatalogLatestRefusal): String = when (reason) {
+    CatalogLatestRefusal.EMPTY -> "The selected collection has no episodes."
+    CatalogLatestRefusal.NONE_PUBLISHED -> "The selected collection has no published episode yet."
+    CatalogLatestRefusal.ORDER_UNVERIFIED -> "The newest episode of the selected collection could not be determined."
+}
+
+internal fun collectionLatestFailureMessage(reason: CatalogFailure): String = when (reason) {
+    CatalogFailure.NOT_FOUND -> "The selected collection was not found."
+    CatalogFailure.RATE_LIMITED -> "The provider is limiting requests. Try again shortly."
+    CatalogFailure.UNSUPPORTED, CatalogFailure.NOT_VERIFIED ->
+        "Finding the newest episode is not available for the selected collection."
+    CatalogFailure.ACCESS_REQUIRED, CatalogFailure.TEMPORARY, CatalogFailure.INVALID_INPUT ->
+        "The newest episode could not be loaded. Try again."
 }
 
 internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFailure): String = when (reason) {

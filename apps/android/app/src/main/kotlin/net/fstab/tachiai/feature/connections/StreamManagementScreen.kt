@@ -114,7 +114,8 @@ private fun entryDetails(entry: CatalogEntry, actionLabel: String? = null): Stri
         CatalogIntent.CHANNEL -> "Ongoing channel"
         CatalogIntent.BROADCAST -> "Specific broadcast"
         CatalogIntent.VIDEO -> "On-demand video"
-        CatalogIntent.COLLECTION -> "Show / series · choose an item before playback"
+        CatalogIntent.COLLECTION -> if (net.fstab.tachiai.presentation.collectionPlaysLatest(entry.resource))
+            "Show / series · Watch plays the newest episode" else "Show / series · choose an item before playback"
     }
     val availability = when (entry.availability) {
         CatalogAvailability.UNKNOWN -> "Availability unknown"

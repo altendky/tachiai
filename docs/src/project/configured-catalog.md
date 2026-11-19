@@ -15,7 +15,10 @@ adding the same resource and intent selects the existing item instead of creatin
 a duplicate. Different intents remain distinct.
 
 An ongoing channel is not a particular broadcast. A series or annual sumo title
-is a collection, not a promise to play an arbitrary latest episode. On-demand
+is a collection, not a particular episode. Watch may resolve a supported
+collection afresh to its newest published episode
+([interim default](#interim-newest-episode-for-saved-abema-collections)); the
+saved item remains the collection. On-demand
 items can include content that was never live. Unknown, upcoming, offline,
 expired and unavailable resources remain configured until explicitly removed.
 Refreshing status must preserve their identities and bindings.
@@ -293,9 +296,48 @@ in memory rather than saved Activity state.
 Imported items survive restart and unavailable My List access, using the existing
 local ordering, deduplication and encrypted storage. Exact current sample
 resources retain their existing playback support. Other resources remain saved
-but fail as unsupported before route/session preparation; collections need
-explicit child discovery that is not yet connected. This does not implement
-native All/search, account lists or dynamic ABEMA playback.
+but fail as unsupported before route/session preparation. Saved ABEMA series and
+seasons use the interim newest-episode default below.
+
+### Interim newest episode for saved ABEMA collections
+
+On 2026-11-19 the user requested, in
+[issue #549](https://github.com/altendky/tachiai/issues/549), that a saved
+episode collection assigned to A or B play its most recent published episode
+when Watch is chosen. This interim default supersedes the earlier rule that a
+collection never selects an episode for this scope; choosing an episode on the
+main page is tracked separately in #550.
+
+- **Scope.** Saved ABEMA `series` and exact `season` collections enable Watch.
+  Other collections keep the existing refusal. The picker and Manage streams
+  label supported collections as playing the newest episode. Ordinary
+  availability, ownership, route and provider checks still run first.
+- **Resolution.** Each new Watch resolves afresh through the owning instance's
+  ABEMA catalog adapter, before route startup and account readiness. Its fresh
+  guest operation requests the provider's own newest-first series order:
+  descending `seq`, as the provider's episode-list consumer requests it. Each
+  row also carries its `broadcastAt` epoch seconds. Rows broadcast after now
+  are upcoming and skipped, continuing to later pages up to five pages. A
+  chosen row must be at least as recent as every other published row on its
+  page. Otherwise the sequence and broadcast order disagree, and Watch reports
+  that the newest episode could not be determined. Empty collections,
+  collections with no published episode, unsupported resolution and request
+  failures each have a distinct message. None falls back to another item, a
+  channel or a sample.
+- **Binding.** The resolved exact episode is bound to its slot, configured
+  item and collection for that viewer session. It plays through the unchanged
+  configured episode path with fresh eligibility checks. Retries, recovery and
+  account handoff keep that episode, and a newer episode never switches an
+  active session. A refused or unavailable episode fails that feed visibly.
+  Duplicate assignments of one collection share one resolution per Watch but
+  keep independent feed sessions. The saved collection's identity, order,
+  quality, ownership and route are unchanged.
+
+The resolution step adds one fresh guest series request, or more when upcoming
+rows fill the first page, before playback startup. Provider-free JVM and JS
+fixtures cover ordering across pages, upcoming, empty and contradictory
+listings, version drift, ownership changes and slot binding. Real ABEMA
+acceptance is recorded separately from those fixtures.
 
 ### Android public-link sharing
 

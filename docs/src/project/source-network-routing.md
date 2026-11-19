@@ -309,10 +309,15 @@ and no provider operation or saved device/profile mutation was performed.
 ### Expiry-based Android renewal job
 
 On Android API 28 and newer, ordinary-process startup reconciles saved ABEMA
-instances with a persisted, network-constrained JobScheduler job. It uses the
-saved grant's natural expiry as its earliest due time. Execution rechecks unlocked
+instances with a persisted, network-constrained JobScheduler job. Its earliest
+due time is 15 minutes before the saved grant's natural expiry, but not before
+half its accepted lifetime, so a playing feed can carry over to the replacement. An untouched
+entry scheduled at natural expiry by an earlier version moves to that time. An
+early attempt that does not renew, for example because the provider still
+issues the current grant, retries once at natural expiry; uncertain cleanup
+and storage failures do not. Execution rechecks unlocked
 protected storage, instance/route ownership, the decoded expiry and current grant
-generation. An unexpired, missing or invalid record causes no provider attempt.
+generation. A record outside that lead, missing or invalid causes no provider attempt.
 The supplied JobParameters Network is captured once for the original at-most
 90-second operation; it does not fall back to the ambient network. System,
 WireGuard, HTTP CONNECT and SOCKS5 routes use the existing bound transports.

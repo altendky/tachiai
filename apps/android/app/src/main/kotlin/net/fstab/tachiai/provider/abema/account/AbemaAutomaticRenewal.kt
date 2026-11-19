@@ -4,14 +4,19 @@ internal enum class AbemaAutomaticRenewalResult {
     SUCCESS, INTERACTION_REQUIRED, CANCELLED, TEMPORARY_FAILURE, STORAGE_FAILURE,
 }
 
-// An expired, previously accepted exact record is input to browser reacquisition,
-// not usable account authority. No token lifetime or renewal protocol is invented.
+// The renewal job starts this long before natural expiry, so the replacement
+// is in place before the grant stops authorizing playback.
+internal const val ABEMA_RENEWAL_LEAD_MS = 15 * 60_000L
+
+// A previously accepted exact record within the lead of its natural expiry, or
+// past it, is input to browser reacquisition. No token lifetime or renewal
+// protocol is invented; the candidate must still decode to a later expiry.
 internal fun abemaRenewalSnapshotMatches(expected: AbemaAccountSnapshot, current: AbemaAccountSnapshot,
     nowMs: Long): Boolean {
     val old = expected.record ?: return false
     val saved = current.record ?: return false
     return expected.revision >= 0 && current.revision == expected.revision && old.generation in 1 until Long.MAX_VALUE &&
-        old.acceptedWallMs >= 0 && nowMs >= old.acceptedWallMs && nowMs >= old.grant.expiresAtMs &&
+        old.acceptedWallMs >= 0 && nowMs >= old.acceptedWallMs && nowMs >= old.grant.expiresAtMs - ABEMA_RENEWAL_LEAD_MS &&
         old.grant.userId == saved.grant.userId && old.grant.bearer == saved.grant.bearer &&
         old.grant.expiresAtMs == saved.grant.expiresAtMs && old.acceptedWallMs == saved.acceptedWallMs &&
         old.generation == saved.generation && runCatching {

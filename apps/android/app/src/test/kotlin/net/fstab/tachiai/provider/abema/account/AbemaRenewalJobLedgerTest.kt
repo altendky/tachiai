@@ -42,10 +42,10 @@ class AbemaRenewalJobLedgerTest {
         val f = Fixture(); val entry = f.seed(); val writes = f.storage.writes
         assertSame(entry, f.ledger.reconcile(INSTANCE, generation))
         assertEquals(writes, f.storage.writes)
-        assertNull(f.ledger.consume(entry.key, generation, 9_999))
+        assertNull(f.ledger.consume(entry.key, generation, entry.dueWallMs - 1))
         assertNull(f.ledger.consume(entry.key, generation.copy(generation = 2), 10_000))
         assertEquals(writes, f.storage.writes)
-        val attempt = checkNotNull(f.ledger.consume(entry.key, generation, 10_000))
+        val attempt = checkNotNull(f.ledger.consume(entry.key, generation, entry.dueWallMs))
         assertEquals(1, attempt.number)
         assertEquals(AbemaRenewalJobDisposition.RUNNING, f.ledger.snapshot().single().disposition)
         assertNull(f.ledger.consume(entry.key, generation, 10_000))
@@ -86,13 +86,15 @@ class AbemaRenewalJobLedgerTest {
     @Test fun confirmedTransientRetriesAreDelayedAndExhaustAfterThreeProviderAttempts() {
         val f = Fixture(); var entry = f.seed()
         for (number in 1..3) {
-            val attempt = checkNotNull(f.ledger.consume(entry.key, generation, entry.dueWallMs))
+            // Attempts at or after natural expiry; earlier ones fall back to it instead.
+            val at = maxOf(entry.dueWallMs, generation.expiresWallMs)
+            val attempt = checkNotNull(f.ledger.consume(entry.key, generation, at))
             assertEquals(number, attempt.number)
-            f.ledger.settle(attempt, AbemaRenewalJobDisposition.DEFERRED_FAILURE, entry.dueWallMs, retrySafe = true)
+            f.ledger.settle(attempt, AbemaRenewalJobDisposition.DEFERRED_FAILURE, at, retrySafe = true)
             val next = f.ledger.snapshot().single()
             if (number < 3) {
                 assertEquals(AbemaRenewalJobDisposition.RETRY, next.disposition)
-                assertEquals(entry.dueWallMs + if (number == 1) 120_000 else 600_000, next.dueWallMs)
+                assertEquals(at + if (number == 1) 120_000 else 600_000, next.dueWallMs)
                 assertNull(f.ledger.consume(next.key, generation, next.dueWallMs - 1))
             } else {
                 assertEquals(AbemaRenewalJobDisposition.EXHAUSTED, next.disposition)
@@ -114,6 +116,59 @@ class AbemaRenewalJobLedgerTest {
             f.ledger.settle(attempt, AbemaRenewalJobDisposition.COMPLETED, 10_000)
             assertEquals(disposition, f.ledger().reconcile(INSTANCE, generation)!!.disposition)
         }
+    }
+
+    @Test fun renewalIsDueTheLeadBeforeNaturalExpiryButNeverBeforeHalfItsLifetime() {
+        val long = AbemaRenewalGeneration(1, 1_000, 4 * 3_600_000L)
+        assertEquals(long.expiresWallMs - ABEMA_RENEWAL_LEAD_MS, abemaRenewalDueWallMs(long))
+        assertEquals(5_500, abemaRenewalDueWallMs(generation))
+        val f = Fixture()
+        val entry = checkNotNull(f.ledger.reconcile(INSTANCE, long))
+        assertEquals(long.expiresWallMs - ABEMA_RENEWAL_LEAD_MS, entry.dueWallMs)
+        assertNull(f.ledger.consume(entry.key, long, entry.dueWallMs - 1))
+        assertNotNull(f.ledger.consume(entry.key, long, entry.dueWallMs))
+    }
+
+    @Test fun anEarlyAttemptThatDoesNotRenewRetriesOnceAtNaturalExpiry() {
+        for (disposition in listOf(AbemaRenewalJobDisposition.DEFERRED_FAILURE,
+            AbemaRenewalJobDisposition.DEFERRED_INTERACTION, AbemaRenewalJobDisposition.DEFERRED_STOP)) {
+            val f = Fixture(); val entry = f.seed()
+            val attempt = checkNotNull(f.ledger.consume(entry.key, generation, entry.dueWallMs))
+            val fallback = checkNotNull(f.ledger.settle(attempt, disposition, entry.dueWallMs))
+            assertEquals(AbemaRenewalJobDisposition.RETRY, fallback.disposition)
+            assertEquals(generation.expiresWallMs, fallback.dueWallMs)
+            assertNotEquals(entry.key.schedule, fallback.key.schedule)
+            assertNull(f.ledger.consume(fallback.key, generation, generation.expiresWallMs - 1))
+            val late = checkNotNull(f.ledger.consume(fallback.key, generation, generation.expiresWallMs))
+            assertEquals(2, late.number)
+            // At natural expiry the ordinary disposition applies again.
+            assertEquals(disposition, f.ledger.settle(late, disposition, generation.expiresWallMs)!!.disposition)
+        }
+        for (disposition in listOf(AbemaRenewalJobDisposition.COMPLETED, AbemaRenewalJobDisposition.DEFERRED_CLEANUP,
+            AbemaRenewalJobDisposition.DEFERRED_STORAGE)) {
+            val f = Fixture(); val entry = f.seed()
+            val attempt = checkNotNull(f.ledger.consume(entry.key, generation, entry.dueWallMs))
+            assertEquals(disposition, f.ledger.settle(attempt, disposition, entry.dueWallMs)!!.disposition)
+        }
+    }
+
+    @Test fun anUntouchedEntryDueAtNaturalExpiryMovesToTheEarlyDueTime() {
+        val long = AbemaRenewalGeneration(1, 1_000, 4 * 3_600_000L)
+        val f = Fixture()
+        f.storage.bytes = java.io.ByteArrayOutputStream().also { out -> java.io.DataOutputStream(out).use {
+            it.writeInt(1); it.writeInt(1)
+            it.writeUTF(INSTANCE); it.writeUTF(SECOND); it.writeInt(AbemaRenewalJobLedger.JOB_IDS.first)
+            it.writeLong(1); it.writeLong(long.acceptedWallMs); it.writeLong(long.expiresWallMs)
+            it.writeLong(long.expiresWallMs); it.writeInt(0); it.writeUTF(AbemaRenewalJobDisposition.DUE.name)
+        } }.toByteArray()
+        val ledger = f.ledger()
+        val legacy = ledger.snapshot().single()
+        assertEquals(long.expiresWallMs, legacy.dueWallMs)
+        val moved = checkNotNull(ledger.reconcile(INSTANCE, long))
+        assertEquals(abemaRenewalDueWallMs(long), moved.dueWallMs)
+        assertNotEquals(legacy.key.schedule, moved.key.schedule)
+        assertEquals(moved, ledger.reconcile(INSTANCE, long))
+        assertEquals(listOf(moved), f.ledger().snapshot())
     }
 
     @Test fun stoppedBeforeDispatchCanDeferWithoutBurningAProviderAttempt() {

@@ -206,7 +206,8 @@ internal object AndroidAbemaRenewalJobs {
                 { !disabled.get() && !owner.stopped.get() }, ::inspect,
                 { preflight, selected, limit, admitted, notify ->
                     running.attach(key, owner, preflight)
-                    AndroidAbemaRenewalReadiness.reserve(context, preflight.target, limit, selected, admitted, notify)
+                    AndroidAbemaRenewalReadiness.reserve(context, preflight.target, limit, selected, admitted, notify,
+                        leadMs = ABEMA_RENEWAL_LEAD_MS)
                 }, ::reconcileLater, { finish(owner) })
             if (!running.register(key, owner)) return false
             if (!main.postDelayed({ if (running.callback(key) === owner) owner.run.stop() },

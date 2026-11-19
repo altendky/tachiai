@@ -438,7 +438,9 @@
       selectedSource: () => usable() && state === 'READY' ? selected : null,
       playbackAvailability: () => {
         if (!usable() || state !== 'READY') return null;
-        const expiries = [sourceExpiry, accountExpiry, slotPremiumExpiry, slotChaseExpiry]
+        // The native account lease enforces account expiry and follows a
+        // same-account renewal, so the selected window excludes it.
+        const expiries = [sourceExpiry, slotPremiumExpiry, slotChaseExpiry]
           .filter(value => value !== undefined);
         return stringify({ uri: selected, expiresAtMs: expiries.length ? Math.min(...expiries) : null });
       },

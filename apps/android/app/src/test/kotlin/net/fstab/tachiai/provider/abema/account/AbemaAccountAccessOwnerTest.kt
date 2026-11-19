@@ -121,6 +121,73 @@ class AbemaAccountAccessOwnerTest {
             attachment.close()
         }
     }
+    @Test fun sameAccountRenewalCarriesExistingLeasesPastThePreviousExpiry() {
+        val f = Fixture(); val attachment = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        assertEquals(2_000_000L, lease.expiresAtMs())
+        f.wall = 1_500_000
+        val renewed = decodedAbemaGrant(fixtureAccountToken("intended-account", "3000"), "intended-account", f.wall)
+        f.store.replace(renewed, f.wall, f.store.revision()) { true }
+        assertTrue(lease.current()); assertTrue(lease.checkWorker())
+        assertEquals(3_000_000L, lease.expiresAtMs())
+        f.wall = 2_500_000
+        assertTrue(lease.current()); assertTrue(lease.checkWorker())
+        // A new consumer reuses the renewed proof and receives the renewed grant.
+        val second = f.owner.attach()
+        val next = (second.acquire() as AbemaAccountAccessResult.Account).lease
+        assertEquals(renewed.bearer, next.grant!!.bearer); assertEquals(1, f.profiles.get())
+        f.wall = 3_000_000
+        assertFalse(lease.current()); assertFalse(next.current())
+        second.close(); attachment.close()
+    }
+    @Test fun aNewConsumerAfterAnUnobservedRenewalReceivesTheRenewedGrant() {
+        val f = Fixture(); val first = f.owner.attach()
+        assertTrue(first.acquire() is AbemaAccountAccessResult.Account)
+        f.wall = 1_500_000
+        val renewed = decodedAbemaGrant(fixtureAccountToken("intended-account", "3000"), "intended-account", f.wall)
+        f.store.replace(renewed, f.wall, f.store.revision()) { true }
+        val second = f.owner.attach()
+        val lease = (second.acquire() as AbemaAccountAccessResult.Account).lease
+        assertEquals(renewed.bearer, lease.grant!!.bearer); assertEquals(3_000_000L, lease.expiresAtMs())
+        second.close(); first.close()
+    }
+    @Test fun aDurableCheckWaitingOnARenewalPublicationKeepsTheLease() {
+        val f = Fixture(); val attachment = f.owner.attach()
+        val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+        f.wall = 1_500_000
+        val renewed = decodedAbemaGrant(fixtureAccountToken("intended-account", "3000"), "intended-account", f.wall)
+        val writing = CountDownLatch(1); val release = CountDownLatch(1); val checking = CountDownLatch(1)
+        f.storage.writeHook = { writing.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val published = executor.submit { f.store.replace(renewed, f.wall, f.store.revision()) { true } }
+            assertTrue(writing.await(3, TimeUnit.SECONDS))
+            f.ownerHook = { checking.countDown() }
+            val checked = executor.submit<Boolean> { lease.checkWorker() }
+            assertTrue(checking.await(3, TimeUnit.SECONDS))
+            Thread.sleep(100) // Let the check reach the store read that waits for the write.
+            release.countDown(); published.get(3, TimeUnit.SECONDS)
+            assertTrue(checked.get(3, TimeUnit.SECONDS))
+            assertTrue(lease.current()); assertEquals(3_000_000L, lease.expiresAtMs())
+        } finally { release.countDown(); executor.shutdownNow() }
+        attachment.close()
+    }
+    @Test fun onlyADirectLaterSameAccountReplacementIsASuccessor() {
+        for (change in 0..3) {
+            val f = Fixture(); val attachment = f.owner.attach()
+            val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease
+            fun replace(user: String, expiry: String) = f.store.replaceSnapshot(
+                decodedAbemaGrant(fixtureAccountToken(user, expiry), user, f.wall), f.wall, f.store.revision()) { true }
+            when (change) {
+                0 -> replace("intended-account", "2000") // Not later.
+                1 -> { replace("intended-account", "3000"); replace("intended-account", "4000") } // Unobserved step.
+                2 -> f.store.rollbackPublished(replace("intended-account", "3000"))
+                3 -> { replace("intended-account", "3000"); f.store.invalidateForget() }
+            }
+            assertFalse(lease.current()); assertFalse(lease.checkWorker())
+            attachment.close()
+        }
+    }
     @Test fun concurrentIncreasingWallSamplesCannotRevokeAValidSharedLease() {
         val f = Fixture(); val attachment = f.owner.attach()
         val lease = (attachment.acquire() as AbemaAccountAccessResult.Account).lease

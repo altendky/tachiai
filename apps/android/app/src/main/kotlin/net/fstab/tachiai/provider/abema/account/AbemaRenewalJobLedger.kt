@@ -35,12 +35,14 @@ internal enum class AbemaRenewalJobDisposition {
 internal data class AbemaRenewalJobEntry(val key: AbemaRenewalJobKey, val generation: AbemaRenewalGeneration,
     val dueWallMs: Long, val attempts: Int, val disposition: AbemaRenewalJobDisposition) {
     init {
-        require(dueWallMs >= generation.expiresWallMs && attempts in 0..3)
+        require(dueWallMs >= generation.expiresWallMs - ABEMA_RENEWAL_LEAD_MS && attempts in 0..3)
         require(disposition != AbemaRenewalJobDisposition.DUE || attempts == 0)
         require(disposition != AbemaRenewalJobDisposition.RUNNING || attempts > 0)
         require(disposition != AbemaRenewalJobDisposition.RETRY || attempts in 1..2)
     }
     val pending get() = disposition in setOf(AbemaRenewalJobDisposition.DUE, AbemaRenewalJobDisposition.RETRY)
+    // Before natural expiry, a failed attempt still leaves the grant usable.
+    val early get() = dueWallMs < generation.expiresWallMs
     override fun toString() = "AbemaRenewalJobEntry(redacted)"
 }
 
@@ -87,13 +89,22 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
             if (prior != null) commit(current - prior)
             return null
         }
-        if (prior != null && prior.generation == generation) return prior
+        if (prior != null && prior.generation == generation) {
+            // An untouched entry from before early renewal moves to the early due time.
+            val due = abemaRenewalDueWallMs(generation)
+            if (prior.disposition != AbemaRenewalJobDisposition.DUE || prior.attempts != 0 || prior.dueWallMs <= due) return prior
+            val id = scheduleId()
+            check(current.none { it.key.schedule == id })
+            val moved = prior.copy(key = prior.key.copy(schedule = id), dueWallMs = due)
+            commit(current - prior + moved)
+            return moved
+        }
         check(current.size < MAX_PROVIDER_INSTANCES || prior != null)
         val jobId = prior?.key?.jobId ?: JOB_IDS.first { id -> current.none { it.key.jobId == id } }
         val id = scheduleId()
         check(current.none { it.key.schedule == id })
         val next = AbemaRenewalJobEntry(AbemaRenewalJobKey(instance, id, jobId), generation,
-            generation.expiresWallMs, 0, AbemaRenewalJobDisposition.DUE)
+            abemaRenewalDueWallMs(generation), 0, AbemaRenewalJobDisposition.DUE)
         commit(current.filterNot { it.key.instance == instance } + next)
         return next
     }
@@ -137,7 +148,17 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
         val current = snapshot()
         val entry = current.singleOrNull { it.key == attempt.key && it.attempts == attempt.number &&
             it.disposition == AbemaRenewalJobDisposition.RUNNING } ?: return null
-        val next = if (!retrySafe) entry.copy(disposition = disposition)
+        val fallback = entry.early && wallMs < entry.generation.expiresWallMs && entry.attempts <= 2 &&
+            disposition !in setOf(AbemaRenewalJobDisposition.COMPLETED, AbemaRenewalJobDisposition.DEFERRED_CLEANUP,
+                AbemaRenewalJobDisposition.DEFERRED_STORAGE)
+        val next = if (fallback) {
+            // An early attempt that did not renew (for example, the provider
+            // still issued the current grant) retries once at natural expiry.
+            val id = scheduleId()
+            check(current.none { it.key.schedule == id })
+            entry.copy(key = entry.key.copy(schedule = id), dueWallMs = entry.generation.expiresWallMs,
+                disposition = AbemaRenewalJobDisposition.RETRY)
+        } else if (!retrySafe) entry.copy(disposition = disposition)
         else if (entry.attempts >= 3) entry.copy(disposition = AbemaRenewalJobDisposition.EXHAUSTED)
         else {
             val wait = if (entry.attempts == 1) 120_000L else 600_000L
@@ -175,6 +196,12 @@ internal class AbemaRenewalJobLedger(private val storage: AbemaRenewalJobStorage
 
     override fun toString() = "AbemaRenewalJobLedger(redacted)"
 }
+
+// The earliest renewal due time: the lead before natural expiry, but never
+// before half the accepted lifetime, so a short-lived grant cannot chain renewals.
+internal fun abemaRenewalDueWallMs(generation: AbemaRenewalGeneration): Long =
+    maxOf(generation.acceptedWallMs + (generation.expiresWallMs - generation.acceptedWallMs) / 2,
+        generation.expiresWallMs - ABEMA_RENEWAL_LEAD_MS)
 
 // Read-only validation for bounded inventory observations too. No file access,
 // recovery transition or authority is acquired by decoding public metadata.

@@ -225,6 +225,7 @@ and authentication popups do not request keep-awake for the whole window.
 
 The application checks saved ABEMA accounts on foreground startup and
 before configured discovery or playback. When the native grant has expired,
+or when the renewal job runs 15 minutes before its natural expiry,
 one bounded application-owned operation reuses the remembered email browser
 session through that instance's selected connection. The browser runs in an
 unattached Service and launches no Activity. A trusted passive account request
@@ -236,7 +237,10 @@ Replacement requires the original account, a useful later decoded expiry,
 fresh native profile and registered-email verification, confirmed browser and
 route cleanup, and an atomic protected-store update. Concurrent consumers share
 the attempt. Changed accounts/routes, Forget, cancellation and stale callbacks
-cannot adopt its result. Readiness observers receive WAIT while the operation
+cannot adopt its result. A direct same-account replacement with a later
+expiry keeps existing account leases, including a playing ABEMA feed, which
+then follows the new expiry. Other account changes still end them. Readiness
+observers receive WAIT while the operation
 owns a tentative replacement, and a failed attempt suppresses immediate resume
 loops. A natively verified different registered account can ask the user to
 choose the saved account. Missing candidates, timeouts, network/region/TLS

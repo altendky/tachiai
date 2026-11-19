@@ -109,9 +109,9 @@ internal object AndroidAbemaRenewalReadiness {
         validate = ::workCurrent, dispatch = { action -> main.post(action) },
         elapsed = SystemClock::elapsedRealtime,
         schedulePending = { deadline, action -> main.postDelayed(action, maxOf(0L, deadline - SystemClock.elapsedRealtime())) },
+        // A same-account renewal keeps surviving leases: owners adopt the store's
+        // direct successor, whose profile/email the operation already verified.
         authoritative = { work, outcome ->
-            if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS)
-                AndroidAbemaAccountAccessOwners.invalidate(work.owner.instance.id, work.owner.proof())
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
         })
@@ -133,9 +133,12 @@ internal object AndroidAbemaRenewalReadiness {
 
     // The owner must store the returned lease before explicitly activating it.
     // Observers never receive a ticket, operation, transport or cancellation right.
+    // leadMs > 0 (the renewal job) admits renewal that close to natural expiry;
+    // foreground readiness keeps treating an unexpired grant as READY.
     fun reserve(context: Context, target: AbemaReadinessTarget, deadline: Long,
         network: Network? = null, admitted: () -> Boolean = { true },
         notify: (AbemaRenewalOperationOutcome) -> Unit = {},
+        leadMs: Long = 0L,
     ): AbemaRenewalReservation {
         val instance = target.instanceId
         fun permitted() = runCatching(admitted).getOrDefault(false)
@@ -174,7 +177,7 @@ internal object AndroidAbemaRenewalReadiness {
             if (wall < record.acceptedWallMs || decodedAbemaGrant(record.grant.bearer, record.grant.userId,
                     record.acceptedWallMs).expiresAtMs != record.grant.expiresAtMs)
                 return AbemaRenewalReservation.NoWork(failed().status)
-            if (wall < record.grant.expiresAtMs) {
+            if (wall < record.grant.expiresAtMs - leadMs.coerceIn(0L, ABEMA_RENEWAL_LEAD_MS)) {
                 invalidateTarget()
                 return AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
             }

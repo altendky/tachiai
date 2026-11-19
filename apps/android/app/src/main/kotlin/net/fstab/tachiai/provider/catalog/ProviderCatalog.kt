@@ -95,10 +95,12 @@ internal data class CatalogCapabilities(
 
 // Cursors are transient and adapter-owned. Never serialize them as item IDs or
 // diagnostics; adapters must bind them to query/account/session revision.
+// newest asks for a parent's children in the provider's own newest-first order.
 internal data class CatalogQuery(val collectionId: String? = null, val search: String? = null,
-    val cursor: String? = null, val parent: CatalogResource? = null) {
+    val cursor: String? = null, val parent: CatalogResource? = null, val newest: Boolean = false) {
     init {
         require(collectionId == null || parent == null)
+        require(!newest || parent != null)
         require(collectionId == null || collectionId.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
         require(search == null || search.length in 1..160 && search.none { it.isISOControl() })
         require(cursor == null || cursor.length in 1..2048 && cursor.none { it.isISOControl() })

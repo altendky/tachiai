@@ -11,6 +11,7 @@ import net.fstab.tachiai.platform.storage.AndroidPrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateAuthorizationSlot
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
+import net.fstab.tachiai.presentation.ConfiguredEpisodeChoice
 import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.ConfiguredFeedChoice
 
@@ -22,13 +23,15 @@ internal fun viewerSelectionStore(context: Context) = ViewerSelectionStore(
     File(context.applicationContext.noBackupFilesDir, "viewer-selection.lock"),
 )
 
-// Worker-only. This independent encrypted record contains only local choice IDs,
+// Worker-only. This independent encrypted record contains local choice IDs and,
+// for a collection item, the chosen episode's public identity and title (#550),
 // preserving empty/partial assignments and duplicate feeds exactly as selected.
 internal class ViewerSelectionStore(private val store: PrivateSecretStore, private val lockFile: File? = null) {
     private companion object {
         val lock = Any()
         const val MAGIC = 0x5456534c // TVSL
-        const val VERSION = 1
+        const val VERSION = 2
+        const val LEGACY_VERSION = 1
     }
 
     private fun <T> locked(action: () -> T): T = try {
@@ -48,14 +51,21 @@ internal class ViewerSelectionStore(private val store: PrivateSecretStore, priva
         try {
             check(bytes.size in 10..PRIVATE_SECRET_LIMIT)
             return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-                check(input.readInt() == MAGIC && input.readInt() == VERSION)
+                check(input.readInt() == MAGIC)
+                val version = input.readInt()
+                check(version == VERSION || version == LEGACY_VERSION)
                 fun id(): String = String(ByteArray(36).also(input::readFully), Charsets.US_ASCII)
-                fun choice(): ConfiguredFeedChoice? = when (input.readUnsignedByte()) {
-                    0 -> null
-                    1 -> ConfiguredFeedChoice(id(), id())
+                fun slot(): Pair<ConfiguredFeedChoice?, ConfiguredEpisodeChoice?> = when (input.readUnsignedByte()) {
+                    0 -> null to null
+                    1 -> ConfiguredFeedChoice(id(), id()) to if (version == LEGACY_VERSION) null else when (input.readUnsignedByte()) {
+                        0 -> null
+                        1 -> checkNotNull(ConfiguredEpisodeChoice.decode(input.readUTF()))
+                        else -> error("Invalid episode flag")
+                    }
                     else -> error("Invalid choice flag")
                 }
-                ConfiguredFeedAssignments(choice(), choice()).also { check(input.read() == -1) }
+                val (a, aEpisode) = slot(); val (b, bEpisode) = slot()
+                ConfiguredFeedAssignments(a, b, aEpisode, bEpisode).also { check(input.read() == -1) }
             }
         } catch (_: Exception) { throw ViewerSelectionStoreException(ViewerSelectionStoreFailure.INVALID_RECORD) }
     }
@@ -66,12 +76,18 @@ internal class ViewerSelectionStore(private val store: PrivateSecretStore, priva
         // A corrupt or unreadable record must be surfaced, never silently reset.
         readUnlocked()
         val bytes = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
-            data.writeInt(MAGIC); data.writeInt(VERSION)
-            for (choice in listOf(assignments.a, assignments.b)) {
+            // Without an episode the version 1 record is written unchanged.
+            val episodes = assignments.aEpisode != null || assignments.bEpisode != null
+            data.writeInt(MAGIC); data.writeInt(if (episodes) VERSION else LEGACY_VERSION)
+            for ((choice, episode) in listOf(assignments.a to assignments.aEpisode, assignments.b to assignments.bEpisode)) {
                 data.writeByte(if (choice == null) 0 else 1)
                 if (choice != null) {
                     data.write(choice.itemId.toByteArray(Charsets.US_ASCII))
                     data.write(choice.instanceId.toByteArray(Charsets.US_ASCII))
+                    if (episodes) {
+                        data.writeByte(if (episode == null) 0 else 1)
+                        if (episode != null) data.writeUTF(episode.encode())
+                    }
                 }
             }
         } }.toByteArray()

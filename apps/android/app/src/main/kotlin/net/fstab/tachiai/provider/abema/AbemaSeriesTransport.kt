@@ -21,14 +21,16 @@ internal fun safeAbemaSeriesText(value: String, maximum: Int): Boolean {
     }
     return true
 }
-internal class AbemaSeriesPageRequest(val seriesId: String, val offset: Int = 0, val version: String? = null, val seasonId: String? = null) {
+// Newest-first requests use the provider consumer's own descending `-seq` order.
+internal class AbemaSeriesPageRequest(val seriesId: String, val offset: Int = 0, val version: String? = null, val seasonId: String? = null,
+    val newest: Boolean = false) {
     init {
         require(validAbemaSeriesId(seriesId))
         require(seasonId == null || validAbemaSeriesId(seasonId) && seriesId.length + seasonId.length + 1 <= 256)
         require(offset in 0..ABEMA_SERIES_MAX_OFFSET && offset % ABEMA_SERIES_PAGE_LIMIT == 0)
         require(if (offset == 0) version == null else version != null && safeAbemaSeriesText(version, 256))
     }
-    fun url(): String = "https://api.p-c3-e.abema-tv.com/v1/video/series/$seriesId/programs?order=seq&limit=20&offset=$offset" +
+    fun url(): String = "https://api.p-c3-e.abema-tv.com/v1/video/series/$seriesId/programs?order=${if (newest) "-seq" else "seq"}&limit=20&offset=$offset" +
         (version?.let { "&seriesVersion=" + URLEncoder.encode(it, "UTF-8") } ?: "") +
         (seasonId?.let { "&seasonId=$it" } ?: "")
     override fun toString() = "AbemaSeriesPageRequest(redacted)"

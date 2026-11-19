@@ -189,7 +189,8 @@ class AbemaLocalImportCatalogTest {
         }
         assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED),
             selection(episodeUrl, allowEpisodes = false))
-        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.COLLECTION),
+        // A saved series never plays itself; an exact episode must be chosen for it (#550).
+        assertEquals(ConfiguredPrototypeSelectionResult.Failure(ConfiguredPrototypeSelectionFailure.EPISODE_REQUIRED),
             selection("https://abema.tv/video/title/394-72"))
         // Former built-in resources are ordinary configured items with no sample marker.
         assertEquals("ABEMA_CONFIGURED_CHANNEL",

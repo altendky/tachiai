@@ -1171,6 +1171,58 @@ landscape retained B's replay selection and disabled Open viewer. The original
 portrait rotation was restored. No provider page, login or playback was needed
 for these checks, and no new decoding/audio evidence is claimed.
 
+### Collection episodes on the picker — November 19, 2026
+
+[Issue #550](https://github.com/altendky/tachiai/issues/550) adds episode choice
+for saved collections on the main picker. The user agreed the design on
+2026-11-19 instead of an automatic newest-episode default (#549, not landed).
+The provider's newest row for the sumo series was a preview talk, not the day's
+coverage, so Tachiai does not choose an episode itself.
+
+- **Episodes page.** A saved collection whose episodes can be browsed (today an
+  ABEMA series or exact season, on API 28 and later) shows **Episodes ›** in its
+  row. The row's subtitle reads "Collection · choose an episode", or names each
+  feed's chosen episode ("A: …").
+  - The page opens within the picker, the same on phone/tablet and TV. It lists
+    episodes newest first in the provider's own order, with their provider
+    titles.
+  - **More** loads older pages, and **‹ Back** or system Back returns.
+  - Loading, empty and failure states are shown, with Retry starting again
+    from the newest page. Pages already loaded stay for the session.
+  - Episode loads use their own worker, so they never delay Watch.
+- **Choosing.** Episode rows have the same A/B controls as configured items.
+  Choosing assigns that exact episode under the collection item; nothing is
+  added to the configured list. The same collection can feed A and B with
+  different episodes.
+  - Unchecking the episode, or the collection row, empties that slot.
+  - Choosing a different item for the slot drops its episode.
+- **Watch.** With a collection assigned but no episode chosen, Watch stays
+  disabled and the picker asks for an episode. There is no automatic default.
+  Watch plays the chosen exact episode through the configured-episode path,
+  with fresh eligibility checks. Retries and recovery keep it, and the viewer
+  labels the feed with the episode title.
+- **Remembering.** Chosen episodes persist with the A/B choices in saved
+  Activity state, the encrypted last-selection record and the recovery
+  checkpoint. Each stores the collection and episode public identities and the
+  episode title.
+  - Records without an episode keep their previous formats byte for byte.
+  - An episode is dropped when its item no longer holds that collection.
+- **Scope.** Collections without episode browsing keep the existing refusal.
+  Each page is one fresh guest series request, about 20–30 s; faster loading is
+  a separate follow-up.
+
+On the SHIELD (Android 11, signed-in ABEMA, Windscribe Tokyo route), the
+Episodes page for ABEMA大相撲2026 listed, newest first:
+
+- a stable-master preview talk;
+- the new LIVE opening;
+- 幕内全取組ハイライト for days 12, 11, 10 and so on.
+
+Choosing day 12 for A, going Back and pressing Watch reached the episode's first
+video frame. Provider-free JVM and JS fixtures cover the episode choice model,
+selection, persistence formats, newest-first catalog continuations, IPC order
+and the picker loader.
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

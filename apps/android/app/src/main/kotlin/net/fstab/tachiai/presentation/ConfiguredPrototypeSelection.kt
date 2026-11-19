@@ -2,18 +2,27 @@ package net.fstab.tachiai.presentation
 
 import java.util.Collections
 import java.util.Locale
+import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaCollection
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaEpisode
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaChannel
 import net.fstab.tachiai.provider.abema.supportedConfiguredAbemaSlot
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
+import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchVideo
 
 internal enum class ConfiguredPrototypeSelectionFailure {
     MISSING_CHOICE, STALE_ITEM, STALE_INSTANCE, PROVIDER_MISMATCH, ROUTE_REQUIRED,
-    UNAVAILABLE, COLLECTION, UNSUPPORTED,
+    UNAVAILABLE, COLLECTION, EPISODE_REQUIRED, UNSUPPORTED,
 }
+
+// Episode choice needs the guest series operation, which requires API 28.
+internal val collectionEpisodesAvailable: Boolean get() = android.os.Build.VERSION.SDK_INT >= 28
+
+// Whether a saved collection offers episode choice on the main picker (#550).
+internal fun collectionEpisodesSupported(resource: CatalogResource, available: Boolean = collectionEpisodesAvailable): Boolean =
+    available && supportedConfiguredAbemaCollection(resource)
 
 internal sealed interface ConfiguredPrototypeSelectionResult {
     data class Ready(val selection: ConfiguredPlaybackSelection, val sources: List<ConfiguredSource>) : ConfiguredPrototypeSelectionResult {
@@ -33,6 +42,7 @@ internal fun resolveConfiguredPrototypeSelection(
     allowConfiguredAbemaEpisodes: Boolean = true,
     allowConfiguredAbemaChannels: Boolean = true,
     allowConfiguredAbemaSlots: Boolean = true,
+    allowCollectionEpisodes: Boolean = true,
 ): ConfiguredPrototypeSelectionResult {
     fun failure(reason: ConfiguredPrototypeSelectionFailure) = ConfiguredPrototypeSelectionResult.Failure(reason)
     val choices = listOf(assignments.a, assignments.b)
@@ -46,7 +56,8 @@ internal fun resolveConfiguredPrototypeSelection(
             ?: return failure(ConfiguredPrototypeSelectionFailure.STALE_INSTANCE)
         if (source.entry.resource.providerId.value != instance.service.name.lowercase(Locale.ROOT))
             return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
-        if (source.entry.resource.intent == CatalogIntent.COLLECTION)
+        val collection = source.entry.resource.intent == CatalogIntent.COLLECTION
+        if (collection && !collectionEpisodesSupported(source.entry.resource, allowCollectionEpisodes))
             return failure(ConfiguredPrototypeSelectionFailure.COLLECTION)
         val broadcaster = supportedConfiguredTwitchBroadcaster(source.entry.resource)
         if (source.entry.availability in setOf(CatalogAvailability.UPCOMING,
@@ -55,7 +66,15 @@ internal fun resolveConfiguredPrototypeSelection(
             return failure(ConfiguredPrototypeSelectionFailure.UNAVAILABLE)
         if (instance.setup.route == null) return failure(ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED)
         // Saved built-in resources play through the same configured paths as any item.
-        val supported = if (supportedConfiguredAbemaEpisode(source.entry.resource)) {
+        val supported = if (collection) {
+            if (!allowConfiguredAbemaEpisodes) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
+            if (instance.service != PrototypeService.ABEMA) return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
+            val episode = (if (index == 0) assignments.aEpisode else assignments.bEpisode)
+                ?.takeIf { it.collection == source.entry.resource && supportedConfiguredAbemaEpisode(it.episode) }
+                ?: return failure(ConfiguredPrototypeSelectionFailure.EPISODE_REQUIRED)
+            ConfiguredPlaybackFeed(source.choice, episode.episode, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY,
+                source.entry.resource, episode.title)
+        } else if (supportedConfiguredAbemaEpisode(source.entry.resource)) {
             if (!allowConfiguredAbemaEpisodes) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             ConfiguredPlaybackFeed(source.choice, source.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY)
         } else if (supportedConfiguredAbemaChannel(source.entry.resource)) {

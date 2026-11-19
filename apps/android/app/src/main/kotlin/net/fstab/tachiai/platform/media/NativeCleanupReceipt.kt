@@ -3,6 +3,7 @@ package net.fstab.tachiai.platform.media
 import java.io.IOException
 import java.io.InputStream
 import java.io.FilterInputStream
+import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 
@@ -14,8 +15,13 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     private val lock = Any()
     private var failureObserved = false
     private var allocations = 0
-    private data class Action(val order: Int, val ownerThread: Boolean, val run: () -> Unit)
+    private class Action(val order: Int, val ownerThread: Boolean, val run: () -> Unit)
     private val actions = mutableListOf<Action>()
+    // Allocated resources whose owner may still release them normally. Once a
+    // normal release is confirmed while admission is open, its reservation is
+    // dropped so long live playback does not retain every past request.
+    private val reservations = IdentityHashMap<Any, Action>()
+    internal val retainedActionCount get() = synchronized(lock) { actions.size }
     private var asynchronous = false
     val pending get() = synchronized(lock) { asynchronous }
     val confirmed get() = synchronized(lock) { state == State.CONFIRMED }
@@ -57,33 +63,55 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
     fun <T> allocate(order: Int, factory: () -> T, release: (T) -> Unit): T {
         val completed = CountDownLatch(1)
         var releaseResource: (() -> Unit)? = null
+        val action = Action(order, ownerThread = false) {
+            completed.await()
+            releaseResource?.invoke()
+        }
         synchronized(lock) {
             if (state != State.OPEN) throw IOException("Native allocation admission ended")
             allocations++
             // Reserve ownership before the factory starts. Request cancellation
             // runs first on the worker and can unblock an input factory; its
             // eventual resource must close before the player is released.
-            actions.add(Action(order, ownerThread = false) {
-                completed.await()
-                releaseResource?.invoke()
-            })
+            actions.add(action)
         }
+        var resource: T? = null
+        var produced = false
         try {
-            val resource = factory()
-            releaseResource = { release(resource) }
+            val owned: T = factory()
+            resource = owned
+            produced = true
+            releaseResource = { release(owned) }
             // An admitted factory may finish after sealing, but its caller may
             // no longer use the resource. The reservation still owns its close.
-            if (synchronized(lock) { state != State.OPEN }) throw IOException("Native allocation admission ended")
-            return resource
+            synchronized(lock) {
+                if (state != State.OPEN) throw IOException("Native allocation admission ended")
+                if (owned != null) reservations[owned] = action
+            }
+            return owned
         } finally {
-            synchronized(lock) { allocations-- }
+            synchronized(lock) {
+                allocations--
+                // Nothing was produced (or nothing to release): an open receipt
+                // has no resource to retain for this reservation.
+                if (state == State.OPEN && (!produced || resource == null)) actions.remove(action)
+            }
             completed.countDown()
         }
     }
+    // The owner confirmed a normal release of an allocated resource. Only an
+    // open receipt forgets it; sealing or closing keeps the final close owner.
+    fun released(resource: Any) {
+        synchronized(lock) {
+            if (state != State.OPEN) return
+            val action = reservations.remove(resource) ?: return
+            actions.remove(action)
+        }
+    }
     fun input(factory: () -> InputStream): InputStream =
-        allocate(25, { OwnedInput(factory(), ::failed) }) { it.close() }
+        allocate(25, { OwnedInput(factory(), ::failed, ::released) }) { it.close() }
     fun optionalInput(factory: () -> InputStream?): InputStream? =
-        allocate(25, { factory()?.let { OwnedInput(it, ::failed) } }) { it?.close() }
+        allocate(25, { factory()?.let { OwnedInput(it, ::failed, ::released) } }) { it?.close() }
 
     override fun close() {
         val captured = synchronized(lock) {
@@ -102,6 +130,7 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
                 if (state != State.CLOSING || failureObserved) throw IOException("Native cleanup remains unconfirmed")
                 state = State.CONFIRMED
                 actions.clear()
+                reservations.clear()
             }
         } catch (error: Throwable) {
             synchronized(lock) { state = State.FAILED }
@@ -139,6 +168,7 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
                 } else {
                     state = State.CONFIRMED
                     actions.clear()
+                    reservations.clear()
                     null
                 }.also { asynchronous = false }
             }
@@ -170,7 +200,8 @@ internal class NativeCleanupReceipt(private val onUnconfirmed: () -> Unit = {}) 
 
 // A successfully closed stream is not closed twice; a failed close remains
 // strongly owned and cannot become a successful repeated no-op.
-private class OwnedInput(input: InputStream, private val failed: () -> Unit) : FilterInputStream(input) {
+private class OwnedInput(input: InputStream, private val failed: () -> Unit,
+    private val released: (Any) -> Unit) : FilterInputStream(input) {
     private var attempted = false
     private var confirmed = false
     @Synchronized override fun close() {
@@ -181,5 +212,6 @@ private class OwnedInput(input: InputStream, private val failed: () -> Unit) : F
         attempted = true
         try { super.close(); confirmed = true }
         catch (error: Throwable) { failed(); throw error }
+        released(this)
     }
 }

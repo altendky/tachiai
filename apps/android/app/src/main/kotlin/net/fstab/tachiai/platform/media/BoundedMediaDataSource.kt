@@ -43,6 +43,8 @@ internal class BoundedMediaRequests(
     private val onConnectionOwned: (HttpsURLConnection) -> Unit = {},
     private val openInput: (HttpsURLConnection) -> InputStream = { it.inputStream },
     private val openErrorInput: (HttpsURLConnection) -> InputStream? = { it.errorStream },
+    // Called only after this source confirmed a normal disconnect.
+    private val onConnectionReleased: (HttpsURLConnection) -> Unit = {},
     private val readCosts: NativeMediaReadCosts? = null,
     private val coalesceMediaReads: Boolean = false,
     transportObserver: NativeMediaTransportObserver? = null,
@@ -364,7 +366,10 @@ internal class BoundedMediaRequests(
                 } },
                 {
                 if (streamClosed) input = null
-                if (disconnected) { connection = null; if (request != null) active.remove(request) }
+                if (disconnected) {
+                    connection = null
+                    if (request != null) { active.remove(request); onConnectionReleased(request) }
+                }
                 source = null
                 mediaBodyAccepted = false
                 if (transferOpen) {

@@ -69,6 +69,7 @@ internal class BoundedNativePlayer(
         onManifestRejection = onManifestRejection, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
+        onConnectionReleased = { request -> cleanup.released(request) },
         onFailure = { stage, error ->
             if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
             observedFailure(stage, error)

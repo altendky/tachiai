@@ -302,4 +302,60 @@ class NativeCleanupReceiptTest {
         }
     }
 
+
+    @Test fun normallyReleasedAllocationsDoNotAccumulateAcrossLongPlayback() {
+        val receipt = NativeCleanupReceipt()
+        receipt.own(10) {}
+        val baseline = receipt.retainedActionCount
+        var disconnects = 0
+        repeat(10_000) {
+            val connection = receipt.allocate(20, { Any() }) { disconnects++ }
+            val input = receipt.input { java.io.ByteArrayInputStream(byteArrayOf(1)) }
+            input.close()
+            // The owner disconnected normally and reports it.
+            receipt.released(connection)
+        }
+        assertEquals(baseline, receipt.retainedActionCount)
+        receipt.close()
+        assertTrue(receipt.confirmed)
+        assertEquals("Normally released resources are not released again", 0, disconnects)
+    }
+
+    @Test fun failedOrEmptyAllocationLeavesNoReservationWhileOpen() {
+        val receipt = NativeCleanupReceipt()
+        val baseline = receipt.retainedActionCount
+        assertThrows(IOException::class.java) { receipt.allocate(20, { throw IOException("fixture") }) { fail() } }
+        assertNull(receipt.optionalInput { null })
+        assertEquals(baseline, receipt.retainedActionCount)
+        receipt.close(); assertTrue(receipt.confirmed)
+    }
+
+    @Test fun unreleasedAndFailedReleaseResourcesRemainOwnedUntilFinalClose() {
+        var unconfirmed = 0
+        val receipt = NativeCleanupReceipt { unconfirmed++ }
+        var kept = 0; var released = 0
+        receipt.allocate(20, { "kept" }) { kept++ }
+        val done = receipt.allocate(20, { "done" }) { released++ }
+        receipt.released(done)
+        // A failed stream close is never forgotten.
+        val failing = receipt.input { object : java.io.ByteArrayInputStream(byteArrayOf(1)) {
+            override fun close() { throw IOException("fixture") }
+        } }
+        assertThrows(IOException::class.java) { failing.close() }
+        assertEquals(2, receipt.retainedActionCount)
+        assertThrows(IOException::class.java) { receipt.close() }
+        assertEquals(1, kept); assertEquals(0, released); assertTrue(unconfirmed > 0)
+        assertFalse(receipt.confirmed)
+    }
+
+    @Test fun releaseAfterSealingKeepsTheFinalCloseOwner() {
+        val receipt = NativeCleanupReceipt()
+        var releases = 0
+        val resource = receipt.allocate(20, { Any() }) { releases++ }
+        receipt.seal()
+        receipt.released(resource)
+        receipt.close()
+        assertTrue(receipt.confirmed)
+        assertEquals(1, releases)
+    }
 }

@@ -792,13 +792,16 @@ internal class CachedPrototypeAbemaSession(
     }
 
     private fun readSource(uri: URI, requests: BoundedMediaRequests): AbemaNativeDashSource {
+        // Closed structural categories only, never identifiers or manifest text.
+        val initialization: (AbemaInitializationDiagnostic) -> Unit = { record("initialization=${it.closedSummary()}") }
         if (slotLinearAdmission.linearSelected) return resolveAbemaChannelNativeSource(uri, requests, slotChannelId,
-            modernChannelContext = modernChannelPreparation, allowModernPlayback = modernChannelPreparation)
+            modernChannelContext = modernChannelPreparation, allowModernPlayback = modernChannelPreparation,
+            onInitializationDiagnostic = initialization)
         if (slotResource != null) return resolveAbemaSlotNativeSource(uri, requests, slotChannelId, slotId,
             onSlotSourceDiagnostic)
         if (replay) return resolveAbemaReplayNativeSource(uri, requests, AbemaReplayCdnScope.APPROVED_PROTOTYPE, episodeId)
         if (channelResource != null) return resolveAbemaChannelNativeSource(uri, requests, channelId, initialManifest,
-            modernChannelContext = observeModernChannelContext)
+            modernChannelContext = observeModernChannelContext, onInitializationDiagnostic = initialization)
         check(AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId))
         val source = requests.create(C.DATA_TYPE_MANIFEST)
         return try {

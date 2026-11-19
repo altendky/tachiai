@@ -14,7 +14,8 @@ import net.fstab.tachiai.platform.media.BoundedMediaRequests
 @UnstableApi
 internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaRequests, channelId: String,
     onInitialManifest: AbemaInitialManifestObservation? = null, modernChannelContext: Boolean = false,
-    allowModernPlayback: Boolean = false): AbemaChannelNativeSource {
+    allowModernPlayback: Boolean = false,
+    onInitializationDiagnostic: (AbemaInitializationDiagnostic) -> Unit = {}): AbemaChannelNativeSource {
     if (allowModernPlayback && !modernChannelContext ||
         modernChannelContext && onInitialManifest == null && !allowModernPlayback ||
         !AbemaNativeBootstrapPolicy.allowsNewsSource(uri, approvedPrototype = true, channelId = channelId,
@@ -37,7 +38,8 @@ internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaReq
         finally { raw.fill(0) }
         // Observation cannot admit a source or interfere with the original close attempt.
         try { onInitialManifest?.capture(channelId, text) } catch (_: Throwable) { }
-        val initialization = parseAbemaRequestInitialization(text) ?: throw IOException("Channel initialization refused")
+        val initialization = parseAbemaRequestInitialization(text, onInitializationDiagnostic)
+            ?: throw IOException("Channel initialization refused")
         return AbemaChannelNativeSource(channelId, uri, initialization.kids)
     } catch (_: Exception) { throw IOException("Channel source unavailable") }
     finally { source.close() }

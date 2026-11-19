@@ -333,6 +333,7 @@ open class PrototypeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        appliedConfiguration = Configuration(resources.configuration)
         pickerAssignments = restoreConfiguredFeedAssignments(savedInstanceState != null,
             savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
         var preferCurrentSelection = savedInstanceState != null
@@ -454,8 +455,11 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
+    private var systemBarsVideo = false
+    private var appliedConfiguration: Configuration? = null
     @Suppress("DEPRECATION") // Pre-enforced-edge-to-edge Android still uses explicit bar colours.
     private fun styleSystemBars(video: Boolean) {
+        systemBarsVideo = video
         val light = !video && resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK != Configuration.UI_MODE_NIGHT_YES
         val color = if (video) android.graphics.Color.BLACK else getColor(R.color.prototype_background)
         window.statusBarColor = color
@@ -1998,6 +2002,12 @@ open class PrototypeActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        val changes = appliedConfiguration?.diff(newConfig) ?: 0
+        appliedConfiguration = Configuration(newConfig)
+        // These changes are handled only to keep an active run playing. Without
+        // one, recreate as before so View colours and sizes are resolved again.
+        if (budget == null && changes and (ActivityInfo.CONFIG_UI_MODE or ActivityInfo.CONFIG_DENSITY or ActivityInfo.CONFIG_FONT_SCALE) != 0) { recreate(); return }
+        styleSystemBars(systemBarsVideo)
         viewer?.requestLayout()
     }
     override fun onResume() {

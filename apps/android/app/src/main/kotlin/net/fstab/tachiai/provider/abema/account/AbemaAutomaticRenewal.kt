@@ -7,6 +7,9 @@ internal enum class AbemaAutomaticRenewalResult {
 // The renewal job starts this long before natural expiry, so the replacement
 // is in place before the grant stops authorizing playback.
 internal const val ABEMA_RENEWAL_LEAD_MS = 15 * 60_000L
+// Early attempts before natural expiry, earliest first; natural expiry is the
+// last scheduled attempt.
+internal val ABEMA_RENEWAL_EARLY_STEPS_MS = listOf(ABEMA_RENEWAL_LEAD_MS, 10 * 60_000L, 5 * 60_000L)
 
 // A previously accepted exact record within the lead of its natural expiry, or
 // past it, is input to browser reacquisition. No token lifetime or renewal

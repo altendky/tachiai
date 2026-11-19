@@ -314,8 +314,9 @@ due time is 15 minutes before the saved grant's natural expiry, but not before
 half its accepted lifetime, so a playing feed can carry over to the replacement. An untouched
 entry scheduled at natural expiry by an earlier version moves to that time. An
 early attempt that does not renew, for example because the provider still
-issues the current grant, retries once at natural expiry; uncertain cleanup
-and storage failures do not. Execution rechecks unlocked
+issues the current grant, tries again 10 and 5 minutes before expiry, then once
+at natural expiry; uncertain cleanup and storage failures do not. Early
+attempts are counted separately from the bounded retries after expiry. Execution rechecks unlocked
 protected storage, instance/route ownership, the decoded expiry and current grant
 generation. A record outside that lead, missing or invalid causes no provider attempt.
 The supplied JobParameters Network is captured once for the original at-most

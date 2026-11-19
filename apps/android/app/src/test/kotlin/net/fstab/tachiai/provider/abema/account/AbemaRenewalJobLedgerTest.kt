@@ -129,6 +129,39 @@ class AbemaRenewalJobLedgerTest {
         assertNotNull(f.ledger.consume(entry.key, long, entry.dueWallMs))
     }
 
+    @Test fun earlyAttemptsRunFifteenTenAndFiveMinutesBeforeExpiryThenAtExpiry() {
+        val long = AbemaRenewalGeneration(1, 1_000, 4 * 3_600_000L)
+        val expiry = long.expiresWallMs
+        assertEquals(listOf(expiry - 900_000, expiry - 600_000, expiry - 300_000), abemaRenewalEarlyDueTimes(long))
+        val f = Fixture()
+        var entry = checkNotNull(f.ledger.reconcile(INSTANCE, long))
+        for ((number, due) in abemaRenewalEarlyDueTimes(long).withIndex()) {
+            assertEquals(due, entry.dueWallMs)
+            assertNull(f.ledger.consume(entry.key, long, due - 1))
+            val attempt = checkNotNull(f.ledger.consume(entry.key, long, due))
+            assertTrue(attempt.early); assertEquals(number + 1, attempt.number)
+            entry = checkNotNull(f.ledger.settle(attempt, AbemaRenewalJobDisposition.DEFERRED_FAILURE, due + 90_000))
+            assertEquals(AbemaRenewalJobDisposition.RETRY, entry.disposition)
+            assertEquals(0, entry.attempts); assertEquals(number + 1, entry.earlyAttempts)
+        }
+        assertEquals(expiry, entry.dueWallMs)
+        val last = checkNotNull(f.ledger.consume(entry.key, long, expiry))
+        assertFalse(last.early); assertEquals(1, last.number)
+        // After natural expiry the ordinary transient retries still apply.
+        val retry = checkNotNull(f.ledger.settle(last, AbemaRenewalJobDisposition.DEFERRED_FAILURE, expiry, retrySafe = true))
+        assertEquals(expiry + 120_000, retry.dueWallMs); assertEquals(1, retry.attempts)
+        assertEquals(retry, f.ledger().snapshot().single())
+    }
+
+    @Test fun aLateEarlyAttemptSkipsStepsAlreadyPassed() {
+        val long = AbemaRenewalGeneration(1, 1_000, 4 * 3_600_000L)
+        val f = Fixture(); val entry = checkNotNull(f.ledger.reconcile(INSTANCE, long))
+        val late = long.expiresWallMs - 400_000 // Delivered after the ten-minute step.
+        val attempt = checkNotNull(f.ledger.consume(entry.key, long, late))
+        val next = checkNotNull(f.ledger.settle(attempt, AbemaRenewalJobDisposition.DEFERRED_STOP, late + 1_000))
+        assertEquals(long.expiresWallMs - 300_000, next.dueWallMs)
+    }
+
     @Test fun anEarlyAttemptThatDoesNotRenewRetriesOnceAtNaturalExpiry() {
         for (disposition in listOf(AbemaRenewalJobDisposition.DEFERRED_FAILURE,
             AbemaRenewalJobDisposition.DEFERRED_INTERACTION, AbemaRenewalJobDisposition.DEFERRED_STOP)) {
@@ -140,7 +173,7 @@ class AbemaRenewalJobLedgerTest {
             assertNotEquals(entry.key.schedule, fallback.key.schedule)
             assertNull(f.ledger.consume(fallback.key, generation, generation.expiresWallMs - 1))
             val late = checkNotNull(f.ledger.consume(fallback.key, generation, generation.expiresWallMs))
-            assertEquals(2, late.number)
+            assertEquals(1, late.number); assertFalse(late.early)
             // At natural expiry the ordinary disposition applies again.
             assertEquals(disposition, f.ledger.settle(late, disposition, generation.expiresWallMs)!!.disposition)
         }
@@ -226,7 +259,7 @@ class AbemaRenewalJobLedgerTest {
     @Test fun malformedOrUnreadableMetadataNeverResetsToAnEmptyLedger() {
         val f = Fixture(); f.seed(); val valid = checkNotNull(f.storage.bytes).clone()
         val samples = listOf(valid.copyOf(0), valid.copyOf(valid.size - 1), valid + 0,
-            ByteArray(AbemaRenewalJobLedger.MAX_BYTES + 1), valid.clone().apply { this[3] = 2 })
+            ByteArray(AbemaRenewalJobLedger.MAX_BYTES + 1), valid.clone().apply { this[3] = 3 })
         for (bytes in samples) {
             f.storage.bytes = bytes
             val ledger = AbemaRenewalJobLedger(f.storage)

@@ -23,8 +23,7 @@ class ProviderInstanceRoutePlanTest {
         val twitch = defaults.single { it.service == PrototypeService.TWITCH }.copy(setup = ProviderSetup(choice(routeId), fallbackRoutes = listOf(choice(duplicateRouteId))))
         val instances = listOf(abema, twitch)
         val first = ConfiguredPlaybackFeed(ConfiguredFeedChoice(routeId, abema.id),
-            prototypeCatalogResource(PrototypeSource.ABEMA_LIVE), PrototypeService.ABEMA,
-            PrototypePlaybackKind.LIVE, PrototypeSource.ABEMA_LIVE)
+            prototypeCatalogResource(PrototypeSource.ABEMA_LIVE), PrototypeService.ABEMA, PrototypePlaybackKind.LIVE)
         val selection = ConfiguredPlaybackSelection(first, video(twitch.id))
         val profiles = mapOf(routeId to profile("http://primary.example.test:8080"),
             duplicateRouteId to profile("http://winner.example.test:8080"))
@@ -126,9 +125,7 @@ class ProviderInstanceRoutePlanTest {
                 configured("channel", "abema-news", CatalogIntent.CHANNEL, PrototypePlaybackKind.LIVE),
                 configured("episode", "394-72_s10_p8529", CatalogIntent.VIDEO, PrototypePlaybackKind.REPLAY),
                 configured("slot", "abema-news/9MnvhBgJPfQmuu", CatalogIntent.BROADCAST, PrototypePlaybackKind.REPLAY),
-            ) + listOf(PrototypeSource.ABEMA_LIVE, PrototypeSource.ABEMA_REPLAY).map { source ->
-                ConfiguredPlaybackFeed(id, prototypeCatalogResource(source), PrototypeService.ABEMA, source.kind, source)
-            }
+            )
         }
         val firstPrimary = profile("http://first-primary.example.test:8080")
         val firstWinner = profile("http://winning-exit.example.test:8080")
@@ -241,7 +238,7 @@ class ProviderInstanceRoutePlanTest {
         val abema = defaults.first().copy(setup = ProviderSetup(choice(routeId)))
         val historical = ConfiguredPlaybackFeed(
             ConfiguredFeedChoice(routeId, abema.id), prototypeCatalogResource(PrototypeSource.ABEMA_LIVE),
-            PrototypeService.ABEMA, PrototypePlaybackKind.LIVE, PrototypeSource.ABEMA_LIVE,
+            PrototypeService.ABEMA, PrototypePlaybackKind.LIVE,
         )
         val mixed = planProviderInstanceRoutes(ConfiguredPlaybackSelection(historical, video(defaults.single { it.service == PrototypeService.TWITCH }.id)),
             listOf(abema, defaults.single { it.service == PrototypeService.TWITCH })) { error("Deleted ABEMA route") }

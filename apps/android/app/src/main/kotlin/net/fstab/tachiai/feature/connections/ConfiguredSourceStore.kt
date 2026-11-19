@@ -22,8 +22,9 @@ internal fun configuredSourceStore(context: Context, instance: ProviderInstance)
     File(context.noBackupFilesDir, "${configuredProviderInstanceBindingName(instance.id)}.lock"),
 )
 
-// Missing records expose a read-only legacy projection. An explicit mutation
-// commits only this instance's catalog; routes, grants and legacy slots are untouched.
+// A missing record is an empty list; built-ins are never seeded. The fallback
+// parameter remains only for older fixtures until plumbing cleanup. An explicit
+// mutation commits only this instance's catalog; routes, grants and legacy slots are untouched.
 internal class ConfiguredSourceStore(
     private val store: PrivateSecretStore,
     private val instanceId: String,
@@ -42,12 +43,12 @@ internal class ConfiguredSourceStore(
         }
     }
 
-    fun read(legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = locked { readUnlocked(legacy) }
+    fun read(legacy: () -> List<ConfiguredSource> = { emptyList() }): List<ConfiguredSource> = locked { readUnlocked(legacy) }
 
     private fun readUnlocked(legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> {
         val bytes = store.read() ?: return validate(legacy().toList()).also { encode(it) }
         check(bytes.size <= PRIVATE_SECRET_LIMIT)
-        return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+        val saved = DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             check(input.readInt() == 1)
             check(input.readUTF() == instanceId && input.readUTF() == providerId.value)
             val count = input.readInt(); check(count in 0..MAX_CONFIGURED_SOURCES)
@@ -72,6 +73,10 @@ internal class ConfiguredSourceStore(
             check(input.read() == -1)
             validate(entries)
         }
+        // Callers hold the lock, so dropping unplayable built-in Twitch live entries commits once.
+        val kept = saved.filterNot(::legacyTwitchLiveSource)
+        if (kept.size != saved.size) store.write(encode(kept))
+        return kept
     }
 
     private fun validate(entries: List<ConfiguredSource>): List<ConfiguredSource> {
@@ -111,7 +116,7 @@ internal class ConfiguredSourceStore(
     }
 
     fun saveQuality(id: String, kind: NativeQualityKind, request: NativeQualityRequest,
-        legacy: () -> List<ConfiguredSource>): List<ConfiguredSource> = mutate(legacy) { entries ->
+        legacy: () -> List<ConfiguredSource> = { emptyList() }): List<ConfiguredSource> = mutate(legacy) { entries ->
         check(entries.any { it.id == id })
         entries.map { if (it.id == id) it.copy(quality = it.quality.with(kind, request)) else it }
     }

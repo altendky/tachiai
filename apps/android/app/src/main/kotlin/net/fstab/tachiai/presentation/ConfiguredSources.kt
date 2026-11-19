@@ -28,6 +28,10 @@ internal data class ConfiguredFeedAssignments(val a: ConfiguredFeedChoice?, val 
         val next = if (checked) choice else previous?.takeUnless { it == choice }
         return if (slot == PrototypeSlot.A) copy(a = next) else copy(b = next)
     }
+
+    // A removed item leaves its slot empty; it is never substituted.
+    fun resolvedIn(sources: List<ConfiguredSource>) =
+        ConfiguredFeedAssignments(a?.takeIf { it.resolve(sources) != null }, b?.takeIf { it.resolve(sources) != null })
 }
 
 internal fun configuredLegacyId(instanceId: String, source: PrototypeSource): String {
@@ -42,9 +46,8 @@ internal fun prototypeCatalogResource(source: PrototypeSource): CatalogResource 
         checkNotNull(source.resourceId), if (source.kind == PrototypePlaybackKind.LIVE) CatalogIntent.CHANNEL else CatalogIntent.VIDEO)
 }
 
-// Read-only migration: provider routes/grants, source metadata, quality records
-// and recovery files retain their original identities and bytes. New items own
-// copied defaults, so subsequent edits cannot cross account/instance boundaries.
+// Former built-in projection, kept only for fixtures until plumbing cleanup.
+// Product reads never seed it: an instance without a saved list has no items.
 internal fun legacyConfiguredSources(instance: ProviderInstance, setups: Map<PrototypeSource, SourceSetup>,
     qualities: Map<PrototypeSource, NativeQualityPreferences>): List<ConfiguredSource> =
     PrototypeSource.entries.filter { it.service == instance.service }.map { source ->
@@ -53,11 +56,17 @@ internal fun legacyConfiguredSources(instance: ProviderInstance, setups: Map<Pro
             qualities[source] ?: NativeQualityPreferences())
     }
 
+// Saved built-in Twitch live entries name a login, not the catalog broadcaster
+// identity configured playback requires, so they cannot play and are dropped.
+internal fun legacyTwitchLiveSource(source: ConfiguredSource): Boolean = PrototypeSource.entries.any {
+    it.service == PrototypeService.TWITCH && it.kind == PrototypePlaybackKind.LIVE &&
+        source.id == configuredLegacyId(source.instanceId, it) && source.entry.resource == prototypeCatalogResource(it)
+}
+
 internal fun configuredChoice(choice: PrototypeFeedChoice) =
     ConfiguredFeedChoice(configuredLegacyId(choice.instanceId, choice.source), choice.instanceId)
 
-// Exact resource bridge until provider-specific dynamic resolution lands. Local
-// IDs may change on remove/re-add; public identity prevents relabeled playback.
+// Display only: saved built-in items keep their short historical titles.
 internal fun legacyPrototypeSource(source: ConfiguredSource): PrototypeSource? = PrototypeSource.entries.singleOrNull {
     source.entry.resource == prototypeCatalogResource(it)
 }
@@ -79,6 +88,7 @@ internal fun decodeConfiguredFeedChoice(encoded: String?): ConfiguredFeedChoice?
     }.getOrNull()
 }
 
+// There is no first-run default pair: without saved state both slots are empty.
 internal fun restoreConfiguredFeedAssignments(savedStatePresent: Boolean, a: String?, b: String?): ConfiguredFeedAssignments =
     if (savedStatePresent) ConfiguredFeedAssignments(decodeConfiguredFeedChoice(a), decodeConfiguredFeedChoice(b))
-    else PrototypeSelection().feeds.let { ConfiguredFeedAssignments(configuredChoice(it[0]), configuredChoice(it[1])) }
+    else ConfiguredFeedAssignments(null, null)

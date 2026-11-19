@@ -116,6 +116,13 @@ experiment root; release omits that entry. Explicit developer diagnostic launche
 retain their own entry behavior. Recovery still enters the separate main process
 before terminating an unsafe viewer process.
 
+The picker has no built-in streams and no first-run default pair. Without saved
+choices both slots start empty, and an instance with no saved list shows the
+existing empty-list message. Saved items with former built-in resources remain
+ordinary [configured items](configured-catalog.md#persistence-and-migration).
+Only the developer-only full-page comparison lists its fixed ABEMA News live and
+sumo replay samples, because its page-backed sessions play only those.
+
 Providers shows compact instance rows with a leading drag handle and trailing
 three-dot menu. Tap a row to configure it. Dropping a drag saves the order; the
 handle's menu also supports moving earlier or later. Delete asks for confirmation
@@ -1144,8 +1151,8 @@ empty and duplicate choices. Cold-start hydration restores the picker; Watch
 still starts playback. Saved Activity state and explicit recovery checkpoints
 take priority, including empty slots. A user edit supersedes a delayed read.
 Only assignment state resets when hydration arrives, preserving picker navigation.
-Removed source/provider-instance references remain unresolved with no substituted
-source. Selection reads and writes share a process-level serial lane so Activity
+Removed source/provider-instance references become persisted empty slots with no
+substituted source, so they never leave Watch blocked. Selection reads and writes share a process-level serial lane so Activity
 recreation cannot let an older accepted write replace a newer choice. Storage
 failures are visible and invalid records are not silently replaced.
 Build and device verification for this follow-up are recorded separately below.

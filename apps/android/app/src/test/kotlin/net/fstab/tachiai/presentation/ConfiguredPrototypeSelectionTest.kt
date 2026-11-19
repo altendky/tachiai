@@ -12,7 +12,8 @@ class ConfiguredPrototypeSelectionTest {
     private val instances = defaultProviderInstances()
     private val twitch = instances.single { it.service == PrototypeService.TWITCH }
     private val second = ProviderInstance("12345678-1234-1234-1234-123456789abc", PrototypeService.TWITCH, "Twitch 2")
-    private val source = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).first()
+    // A saved former built-in replay; it now resolves as an ordinary configured video.
+    private val source = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).last()
     private fun resolve(first: ConfiguredSource = source, secondSource: ConfiguredSource = first,
         providers: List<ProviderInstance> = instances) = resolveConfiguredPrototypeSelection(
         ConfiguredFeedAssignments(first.choice, secondSource.choice), listOf(first, secondSource).distinct(), providers)
@@ -22,7 +23,7 @@ class ConfiguredPrototypeSelectionTest {
     @Test fun duplicateChoicesAndNewLocalIdForSameResourceKeepExactPlaybackIdentity() {
         val readded = source.copy(id = UUID.randomUUID().toString(), entry = source.entry.copy(title = "My saved channel"))
         val result = resolve(readded) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(listOf(PrototypeSource.TWITCH_LIVE, PrototypeSource.TWITCH_LIVE), result.selection.feeds.map { it.historicalSource })
+        assertEquals(listOf("TWITCH_CONFIGURED_VIDEO", "TWITCH_CONFIGURED_VIDEO"), result.selection.feeds.map { it.diagnosticName })
         assertEquals(listOf(readded.choice, readded.choice), result.selection.feeds.map { it.choice })
         assertEquals(listOf(readded, readded), result.sources)
         assertEquals(readded.choice, result.sources[0].choice)
@@ -81,21 +82,21 @@ class ConfiguredPrototypeSelectionTest {
     @Test fun collectionsAndUnknownExactResourcesNeverBecomeSamplePlayback() {
         val collection = source.copy(entry = source.entry.copy(resource = source.entry.resource.copy(intent = CatalogIntent.COLLECTION)))
         failed(ConfiguredPrototypeSelectionFailure.COLLECTION, resolve(collection))
-        listOf(source.entry.resource.copy(identity = "anotherchannel"), source.entry.resource.copy(kind = "video"),
+        listOf(source.entry.resource.copy(identity = "anotherchannel"), source.entry.resource.copy(kind = "channel"),
             source.entry.resource.copy(intent = CatalogIntent.BROADCAST)).forEach { resource ->
             failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolve(source.copy(entry = source.entry.copy(resource = resource))))
         }
     }
 
     @Test fun readySnapshotIsOrderedDetachedAndImmutable() {
-        val replay = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).last()
+        val replay = video("73190284")
         val mutableSources = mutableListOf(source, replay)
         val mutableInstances = instances.toMutableList()
         val result = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(replay.choice, source.choice),
             mutableSources, mutableInstances) as ConfiguredPrototypeSelectionResult.Ready
         mutableSources.clear(); mutableInstances.clear()
         assertEquals(listOf(replay, source), result.sources)
-        assertEquals(listOf(PrototypeSource.TWITCH_REPLAY, PrototypeSource.TWITCH_LIVE), result.selection.feeds.map { it.historicalSource })
+        assertEquals(listOf(replay.entry.resource, source.entry.resource), result.selection.feeds.map { it.resource })
         assertThrows(UnsupportedOperationException::class.java) { (result.sources as MutableList<ConfiguredSource>).clear() }
         assertThrows(UnsupportedOperationException::class.java) { (result.selection.feeds as MutableList<ConfiguredPlaybackFeed>).clear() }
     }
@@ -112,7 +113,6 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
         assertEquals(listOf(twitch, second), result.selection.feeds.map { it.resolve(instances + second) })
         result.selection.feeds.forEach {
-            assertNull(it.historicalSource)
             assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
             assertEquals("TWITCH_CONFIGURED_VIDEO", it.diagnosticName)
         }
@@ -121,15 +121,16 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, first.entry.resource), duplicate.selection.feeds.map { it.resource })
     }
 
-    @Test fun mixedAbemaSampleAndExactVideoKeepProviderSpecificBridges() {
+    @Test fun savedAbemaNewsResolvesAsAnOrdinaryConfiguredChannelBesideAnExactVideo() {
         val abema = instances.single { it.service == PrototypeService.ABEMA }
         val sample = legacyConfiguredSources(abema, defaultSourceSetups(), emptyMap()).first()
+        assertEquals(prototypeCatalogResource(PrototypeSource.ABEMA_LIVE), sample.entry.resource)
         val exact = video("987654321")
         val result = resolve(sample, exact) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(PrototypeSource.ABEMA_LIVE, checkNotNull(result.selection.a).historicalSource)
         assertEquals(sample.entry.resource, checkNotNull(result.selection.a).resource)
+        assertEquals(PrototypePlaybackKind.LIVE, checkNotNull(result.selection.a).kind)
+        assertEquals("ABEMA_CONFIGURED_CHANNEL", checkNotNull(result.selection.a).diagnosticName)
         assertEquals(exact.entry.resource, checkNotNull(result.selection.b).resource)
-        assertNull(checkNotNull(result.selection.b).historicalSource)
         assertEquals(listOf(abema, twitch), result.selection.feeds.map { it.resolve(instances) })
     }
 
@@ -138,7 +139,6 @@ class ConfiguredPrototypeSelectionTest {
             val exact = video(id)
             val result = resolve(exact) as ConfiguredPrototypeSelectionResult.Ready
             assertEquals(id, checkNotNull(result.selection.a).resource.identity)
-            assertNull(checkNotNull(result.selection.a).historicalSource)
         }
         listOf("0", "01", "0".repeat(20), "1".repeat(21), "savedchannel").forEach { id ->
             failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolve(video(id)))
@@ -164,11 +164,10 @@ class ConfiguredPrototypeSelectionTest {
             resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(wrongOwner, exact.choice), listOf(exact), instances + second))
     }
 
-    @Test fun descriptorConstructorRejectsFalseHistoricalMarkersAndServiceKindClaims() {
+    @Test fun descriptorConstructorRejectsFalseServiceKindClaims() {
         val exact = video("8675309")
-        fun feed(service: PrototypeService = PrototypeService.TWITCH, kind: PrototypePlaybackKind = PrototypePlaybackKind.REPLAY,
-            historical: PrototypeSource? = null) = ConfiguredPlaybackFeed(exact.choice, exact.entry.resource, service, kind, historical)
-        assertThrows(IllegalArgumentException::class.java) { feed(historical = PrototypeSource.TWITCH_REPLAY) }
+        fun feed(service: PrototypeService = PrototypeService.TWITCH, kind: PrototypePlaybackKind = PrototypePlaybackKind.REPLAY) =
+            ConfiguredPlaybackFeed(exact.choice, exact.entry.resource, service, kind)
         assertThrows(IllegalArgumentException::class.java) { feed(service = PrototypeService.ABEMA) }
         assertThrows(IllegalArgumentException::class.java) { feed(kind = PrototypePlaybackKind.LIVE) }
         val descriptor = feed()
@@ -182,7 +181,7 @@ class ConfiguredPrototypeSelectionTest {
         assertFalse(descriptor.diagnosticName.contains(exact.entry.resource.identity))
     }
 
-    @Test fun exactVideoAvailabilityRequiresNoCatalogAccountAndPreservesHistoricalReplayMarker() {
+    @Test fun exactVideoAvailabilityRequiresNoCatalogAccountAndSavedBuiltInReplayIsAnOrdinaryVideo() {
         val exact = video("1029384756")
         listOf(CatalogAvailability.UNKNOWN, CatalogAvailability.LIVE, CatalogAvailability.AVAILABLE).forEach { status ->
             val result = resolve(exact.copy(entry = exact.entry.copy(availability = status))) as ConfiguredPrototypeSelectionResult.Ready
@@ -192,10 +191,9 @@ class ConfiguredPrototypeSelectionTest {
             CatalogAvailability.UNAVAILABLE).forEach { status ->
             failed(ConfiguredPrototypeSelectionFailure.UNAVAILABLE, resolve(exact.copy(entry = exact.entry.copy(availability = status))))
         }
-        val historical = legacyConfiguredSources(twitch, defaultSourceSetups(), emptyMap()).last()
-        val result = resolve(historical, exact) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(PrototypeSource.TWITCH_REPLAY, checkNotNull(result.selection.a).historicalSource)
-        assertNull(checkNotNull(result.selection.b).historicalSource)
+        val result = resolve(source, exact) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(prototypeCatalogResource(PrototypeSource.TWITCH_REPLAY), checkNotNull(result.selection.a).resource)
+        assertEquals(listOf("TWITCH_CONFIGURED_VIDEO", "TWITCH_CONFIGURED_VIDEO"), result.selection.feeds.map { it.diagnosticName })
     }
 
     @Test fun recoveryChoicesAndQualityChangesCannotSwitchFrozenExactResources() {
@@ -242,7 +240,6 @@ class ConfiguredPrototypeSelectionTest {
             assertEquals(PrototypeService.ABEMA, feed.service)
             assertEquals(PrototypePlaybackKind.REPLAY, feed.kind)
             assertEquals("ABEMA_CONFIGURED_SLOT", feed.diagnosticName)
-            assertNull(feed.historicalSource)
             assertFalse(feed.diagnosticName.contains(feed.resource.identity))
         }
         val episode = episode("fixture-slot-A")
@@ -256,10 +253,6 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(PrototypePlaybackKind.LIVE, checkNotNull(channelPair.selection.b).kind)
         assertThrows(IllegalArgumentException::class.java) {
             ConfiguredPlaybackFeed(first.choice, first.entry.resource, PrototypeService.ABEMA, PrototypePlaybackKind.LIVE)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            ConfiguredPlaybackFeed(first.choice, first.entry.resource, PrototypeService.ABEMA,
-                PrototypePlaybackKind.REPLAY, PrototypeSource.ABEMA_REPLAY)
         }
     }
 
@@ -339,11 +332,11 @@ class ConfiguredPrototypeSelectionTest {
         }
         failed(ConfiguredPrototypeSelectionFailure.COLLECTION,
             resolve(exact.copy(entry = exact.entry.copy(resource = exact.entry.resource.copy(intent = CatalogIntent.COLLECTION)))))
-        val historical = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap())
-        for (sample in historical) {
+        val saved = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap())
+        for (sample in saved) {
             val result = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(sample.choice, sample.choice), listOf(sample),
                 instances, allowConfiguredAbemaSlots = false) as ConfiguredPrototypeSelectionResult.Ready
-            assertNotNull(checkNotNull(result.selection.a).historicalSource)
+            assertFalse(checkNotNull(result.selection.a).diagnosticName.endsWith("_SLOT"))
             assertEquals(sample.entry.resource, checkNotNull(result.selection.a).resource)
         }
         assertEquals("fixture-channel/fixture-slot", exact.entry.resource.identity)
@@ -357,7 +350,7 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
         assertEquals(listOf(abema, otherOwner), result.selection.feeds.map { it.resolve(instances + otherOwner) })
         result.selection.feeds.forEach {
-            assertNull(it.historicalSource); assertEquals(PrototypePlaybackKind.LIVE, it.kind)
+            assertEquals(PrototypePlaybackKind.LIVE, it.kind)
             assertEquals("ABEMA_CONFIGURED_CHANNEL", it.diagnosticName)
         }
         val choices = restoreConfiguredFeedAssignments(true, encodeConfiguredFeedChoice(first.choice), encodeConfiguredFeedChoice(other.choice))
@@ -373,7 +366,7 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, first.entry.resource), duplicate.feeds.map { it.resource })
     }
 
-    @Test fun channelSyntaxUnavailableStateAndHistoricalComparisonNeverAcquireNewsFallback() {
+    @Test fun channelSyntaxUnavailableStateAndComparisonFlagNeverAcquireNewsFallback() {
         val exact = abemaChannel("fixture-one")
         for (entry in listOf(exact.entry.copy(resource = exact.entry.resource.copy(identity = "x".repeat(65))),
             exact.entry.copy(resource = exact.entry.resource.copy(identity = "other/channel")),
@@ -386,8 +379,9 @@ class ConfiguredPrototypeSelectionTest {
             ConfiguredFeedAssignments(exact.choice, exact.choice), listOf(exact), instances, allowConfiguredAbemaChannels = false))
         val news = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap())
             .single { it.entry.resource == prototypeCatalogResource(PrototypeSource.ABEMA_LIVE) }
-        assertEquals(PrototypeSource.ABEMA_LIVE, checkNotNull((resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(news.choice, news.choice),
-            listOf(news), instances, allowConfiguredAbemaChannels = false) as ConfiguredPrototypeSelectionResult.Ready).selection.a).historicalSource)
+        // Saved News is an ordinary configured channel, so the flag refuses it too.
+        failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
+            ConfiguredFeedAssignments(news.choice, news.choice), listOf(news), instances, allowConfiguredAbemaChannels = false))
     }
 
     @Test fun exactAbemaEpisodesPreserveTwoIdsDuplicateSlotsAndIndependentInstanceOwnership() {
@@ -399,7 +393,7 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
         assertEquals(listOf(abema, otherOwner), result.selection.feeds.map { it.resolve(instances + otherOwner) })
         result.selection.feeds.forEach {
-            assertNull(it.historicalSource); assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
+            assertEquals(PrototypePlaybackKind.REPLAY, it.kind)
             assertEquals("ABEMA_CONFIGURED_EPISODE", it.diagnosticName)
         }
         val duplicate = resolve(first) as ConfiguredPrototypeSelectionResult.Ready
@@ -417,14 +411,16 @@ class ConfiguredPrototypeSelectionTest {
         assertEquals(listOf(first.entry.resource, other.entry.resource), result.selection.feeds.map { it.resource })
     }
 
-    @Test fun historicalComparisonRefusesNewEpisodeWithoutChangingExplicitHistoricalSamples() {
+    @Test fun comparisonFlagRefusesEveryConfiguredEpisodeIncludingSavedBuiltIns() {
         val exact = episode("394-72_s10_p8510")
         failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
             ConfiguredFeedAssignments(exact.choice, exact.choice), listOf(exact), instances, allowConfiguredAbemaEpisodes = false))
-        val historical = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap()).last()
-        val restored = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(historical.choice, historical.choice),
-            listOf(historical), instances, allowConfiguredAbemaEpisodes = false) as ConfiguredPrototypeSelectionResult.Ready
-        assertEquals(PrototypeSource.ABEMA_REPLAY, checkNotNull(restored.selection.a).historicalSource)
+        val saved = legacyConfiguredSources(instances.single { it.service == PrototypeService.ABEMA }, defaultSourceSetups(), emptyMap()).last()
+        failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
+            ConfiguredFeedAssignments(saved.choice, saved.choice), listOf(saved), instances, allowConfiguredAbemaEpisodes = false))
+        val restored = resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(saved.choice, saved.choice),
+            listOf(saved), instances) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals("ABEMA_CONFIGURED_EPISODE", checkNotNull(restored.selection.a).diagnosticName)
     }
 
     @Test fun malformedAbemaEpisodeAndWrongResourceNeverReachHistoricalFallback() {
@@ -440,9 +436,11 @@ class ConfiguredPrototypeSelectionTest {
             resolveConfiguredPrototypeSelection(ConfiguredFeedAssignments(exact.choice, exact.choice), emptyList(), instances))
     }
 
-    @Test fun everySupportedHistoricalAndConfiguredSourceCanOwnEitherSingleSlotWithoutDuplication() {
+    @Test fun everySupportedSavedAndConfiguredSourceCanOwnEitherSingleSlotWithoutDuplication() {
         val youtube = instances.single { it.service == PrototypeService.YOUTUBE }
+        // Saved built-in Twitch live entries are dropped by the store; every other one plays.
         val historical = instances.flatMap { legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }
+            .filterNot(::legacyTwitchLiveSource)
         val broadcaster = ConfiguredSource(UUID.randomUUID().toString(), twitch.id,
             CatalogEntry(CatalogResource(ProviderId("twitch"), "broadcaster", "789", CatalogIntent.CHANNEL),
                 "Offline broadcaster", CatalogAvailability.OFFLINE))
@@ -491,6 +489,16 @@ class ConfiguredPrototypeSelectionTest {
             failed(ConfiguredPrototypeSelectionFailure.ROUTE_REQUIRED,
                 resolveConfiguredPrototypeSelection(choices(validPartner), listOf(source, validPartner), instances + missingRoute))
         }
+    }
+
+    @Test fun unresolvedRestoredChoiceBecomesAnEmptySlotSoWatchIsNotBlocked() {
+        val removed = video("55555555")
+        val restored = restoreConfiguredFeedAssignments(true, encodeConfiguredFeedChoice(removed.choice), encodeConfiguredFeedChoice(source.choice))
+        failed(ConfiguredPrototypeSelectionFailure.STALE_ITEM, resolveConfiguredPrototypeSelection(restored, listOf(source), instances))
+        val emptied = restored.resolvedIn(listOf(source))
+        assertEquals(ConfiguredFeedAssignments(null, source.choice), emptied)
+        val ready = resolveConfiguredPrototypeSelection(emptied, listOf(source), instances) as ConfiguredPrototypeSelectionResult.Ready
+        assertEquals(listOf(null, source), ready.sourceSlots)
     }
 
     @Test fun fixedSlotsSourcesAndCompactAggregatesAreImmutableAndEmptySelectionIsImpossible() {

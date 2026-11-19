@@ -89,9 +89,34 @@ class ConfiguredSourcesTest {
             assertNull(encoded, reversed.b)
         }
         assertEquals(ConfiguredFeedAssignments(null, null), restoreConfiguredFeedAssignments(true, null, null))
-        val defaults = restoreConfiguredFeedAssignments(false, null, null)
-        assertEquals(configuredChoice(PrototypeSelection().feeds[0]), defaults.a)
-        assertEquals(configuredChoice(PrototypeSelection().feeds[1]), defaults.b)
+        // No saved state has no first-run default pair.
+        assertEquals(ConfiguredFeedAssignments(null, null), restoreConfiguredFeedAssignments(false, null, null))
+    }
+
+    @Test fun unresolvedRestoredChoicesBecomeEmptySlotsWithoutSubstitution() {
+        val items = sources().filterNot(::legacyTwitchLiveSource)
+        val kept = items.single().choice
+        val removed = ConfiguredFeedChoice(arbitraryItem, kept.instanceId)
+        assertEquals(ConfiguredFeedAssignments(null, kept),
+            restoreConfiguredFeedAssignments(true, encodeConfiguredFeedChoice(removed), encodeConfiguredFeedChoice(kept)).resolvedIn(items))
+        // The legacy enum encoding still decodes, but a never-saved built-in is just unresolved.
+        val instance = defaultProviderInstances().first { it.service == PrototypeService.TWITCH }
+        val legacy = decodeConfiguredFeedChoice(encodePrototypeFeedChoice(PrototypeFeedChoice(source, instance.id)))
+        assertEquals(configuredLegacyId(instance.id, source), legacy!!.itemId)
+        assertEquals(ConfiguredFeedAssignments(null, null), ConfiguredFeedAssignments(legacy, legacy).resolvedIn(items))
+        assertEquals(ConfiguredFeedAssignments(null, null), ConfiguredFeedAssignments(kept, kept).resolvedIn(emptyList()))
+        assertEquals(ConfiguredFeedAssignments(kept, kept), ConfiguredFeedAssignments(kept, kept).resolvedIn(items))
+    }
+
+    @Test fun onlyExactSavedBuiltInTwitchLiveEntriesAreUnplayableLegacy() {
+        val items = sources()
+        assertEquals(PrototypeSource.entries.filter { it.service == PrototypeService.TWITCH && it.kind == PrototypePlaybackKind.LIVE }
+            .map { configuredLegacyId(items.first().instanceId, it) }, items.filter(::legacyTwitchLiveSource).map { it.id })
+        val live = items.first(::legacyTwitchLiveSource)
+        assertFalse(legacyTwitchLiveSource(live.copy(id = arbitraryItem)))
+        assertFalse(legacyTwitchLiveSource(live.copy(entry = live.entry.copy(resource = live.entry.resource.copy(identity = "other")))))
+        assertFalse(defaultProviderInstances().filter { it.service != PrototypeService.TWITCH }.flatMap { sources(it) }
+            .any(::legacyTwitchLiveSource))
     }
 
     @Test fun staleAndWrongInstanceBindingsCannotResolveToAnotherAccountOrAmbiguousItem() {

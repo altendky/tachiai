@@ -105,7 +105,7 @@ class PrototypeRoutePreparationActivityTest {
                 .inRoot(androidx.test.espresso.matcher.RootMatchers.isDialog())
                 .perform(androidx.test.espresso.action.ViewActions.click())
             installAvailableCatalogue(scenario)
-            val stream = PrototypeSource.TWITCH_LIVE
+            val stream = PrototypeSource.TWITCH_REPLAY
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed A")
                 .performScrollTo().assertIsOff().performClick()
             compose.onNodeWithContentDescription("Assign ${stream.title} to feed B")
@@ -168,7 +168,13 @@ class PrototypeRoutePreparationActivityTest {
     @Suppress("UNCHECKED_CAST")
     private fun installAvailableCatalogue(scenario: ActivityScenario<CachedPrototypeActivity>) {
         scenario.onActivity { activity ->
-            (field("sourceSetups\$delegate").get(activity) as MutableState<Map<PrototypeSource, SourceSetup>>).value = defaultSourceSetups()
+            // Built-ins are no longer seeded and there is no default pair: install a saved list and selection.
+            val sources = defaultProviderInstances().flatMap { legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }
+                .filterNot(::legacyTwitchLiveSource)
+            fun choice(source: PrototypeSource) = sources.single { it.entry.resource == prototypeCatalogResource(source) }.choice
+            (field("configuredSources\$delegate").get(activity) as MutableState<List<ConfiguredSource>>).value = sources
+            field("pickerAssignments").set(activity, ConfiguredFeedAssignments(choice(PrototypeSource.ABEMA_LIVE), choice(PrototypeSource.TWITCH_REPLAY)))
+            (field("pickerRestoreGeneration\$delegate").get(activity) as MutableState<Long>).value++
             (field("providerInstances\$delegate").get(activity) as MutableState<List<ProviderInstance>>).value = defaultProviderInstances()
             (field("setupMessage\$delegate").get(activity) as MutableState<String?>).value = null
             (field("setupReady\$delegate").get(activity) as MutableState<Boolean>).value = true

@@ -414,7 +414,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
             val feed = checkNotNull(selected.selection.a)
             check(feed.resource == resource && checkNotNull(selected.selection.b).choice == feed.choice)
             val replay = feed.kind == PrototypePlaybackKind.REPLAY
-            if (mode in setOf(ObservationMode.CONFIGURED_SLOT, ObservationMode.CONTINUOUS_SLOT)) check(replay && feed.historicalSource == null &&
+            if (mode in setOf(ObservationMode.CONFIGURED_SLOT, ObservationMode.CONTINUOUS_SLOT)) check(replay &&
                 checkNotNull(selected.selection.b).resource == resource && AbemaSlotRequest.from(feed.resource)?.resource == resource)
             scenario = ActivityScenario.launch(AbemaEpisodeObservationActivity::class.java)
             val surface = AtomicReference<AbemaEpisodeObservationActivity>()
@@ -482,7 +482,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                     onHelperCreated = { helper -> owned.helper(checkNotNull(run), helper, helper::destroy) { !helper.cleanupFailed } },
                     onCleanupChanged = { main.post { owned.feedCleanupChanged(checkNotNull(run)) } },
                     episodeResource = feed.resource.takeIf { replay && it.kind == "episode" },
-                    channelResource = feed.resource.takeIf { !replay && feed.historicalSource == null && it.kind == "channel" },
+                    channelResource = feed.resource.takeIf { !replay && it.kind == "channel" },
                     slotResource = feed.resource.takeIf { it.kind == "slot" && it.intent == CatalogIntent.BROADCAST },
                     onSlotSourceDiagnostic = if (observeSlotInitialization) ({ value ->
                         slotInitializationCount.updateAndGet { (it + 1).coerceAtMost(2) }
@@ -500,7 +500,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                         if (session?.player != null || session?.member != null) nativeObserved.set(true)
                         prepared.countDown()
                     }) else null,
-                    ownership = if (!replay && feed.historicalSource != null) null else androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
+                    ownership = androidAbemaEpisodePlaybackOwnership(context, captured.instance, captured.profile,
                         { active.get() && surface.get().observationActive.get() && owned.current(checkNotNull(run)) &&
                             manifestClockCurrent() }, diagnostics))
                 val created = checkNotNull(session)

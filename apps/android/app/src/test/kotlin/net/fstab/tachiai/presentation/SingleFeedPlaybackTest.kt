@@ -45,7 +45,7 @@ class SingleFeedPlaybackTest {
                 if (instance.service == PrototypeService.TWITCH) selectedRoute else otherRoute, "Fixture route")))
         }
         val configured = instances.flatMap { legacyConfiguredSources(it, defaultSourceSetups(), emptyMap()) }
-        val selected = configured.single { it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_LIVE) }
+        val selected = configured.single { it.entry.resource == prototypeCatalogResource(PrototypeSource.TWITCH_REPLAY) }
         val assignments = if (side == NativeMixedSide.A) ConfiguredFeedAssignments(selected.choice, null)
             else ConfiguredFeedAssignments(null, selected.choice)
         val ready = resolveConfiguredPrototypeSelection(assignments, configured, instances) as ConfiguredPrototypeSelectionResult.Ready

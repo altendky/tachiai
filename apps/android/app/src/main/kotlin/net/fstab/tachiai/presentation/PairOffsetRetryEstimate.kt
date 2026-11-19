@@ -3,11 +3,14 @@ package net.fstab.tachiai.presentation
 import net.fstab.tachiai.platform.media.NativeTimingSnapshot
 
 // Session-only fallback when provider timeline continuity cannot be verified.
-// Live clocks use distance behind their own window end and a monotonic sample
-// time; unrelated provider timestamps are never subtracted. The last playing
-// relationship already includes the applied offset, including a split seek.
+// Live clocks use distance behind live and a monotonic sample time; unrelated
+// provider timestamps are never subtracted. The last playing relationship
+// already includes the applied offset, including a split seek. Prefer the
+// player's continuous live offset: a live window's duration only changes when
+// its playlist/manifest refreshes, so distance behind the window end saws by
+// up to one refresh interval. Both samples of one feed must use the same kind.
 internal class PairOffsetRetryEstimate {
-    private data class Point(val clockMs: Long, val sliding: Boolean)
+    private data class Point(val clockMs: Long, val sliding: Boolean, val liveOffset: Boolean)
     private data class Reference(val a: Point, val b: Point, val sampledMs: Long)
     private var reference: Reference? = null
 
@@ -20,11 +23,14 @@ internal class PairOffsetRetryEstimate {
             !value.playing || !value.playWhenReady || value.speed != 1f) return null
         val position = value.positionMs?.takeIf { it >= 0 } ?: return null
         val sliding = value.live || value.dynamic
-        val clock = if (sliding) {
+        val liveOffset = if (value.live) value.liveOffsetMs else null
+        val clock = if (liveOffset != null) {
+            runCatching { Math.subtractExact(nowMs, liveOffset) }.getOrNull() ?: return null
+        } else if (sliding) {
             val duration = value.durationMs?.takeIf { it > 0 && position <= it } ?: return null
             runCatching { Math.subtractExact(nowMs, Math.subtractExact(duration, position)) }.getOrNull() ?: return null
         } else position
-        return Point(clock, sliding)
+        return Point(clock, sliding, liveOffset != null)
     }
 
     fun remember(a: NativeTimingSnapshot?, b: NativeTimingSnapshot?, nowMs: Long) {
@@ -38,7 +44,8 @@ internal class PairOffsetRetryEstimate {
         if (nowMs < saved.sampledMs) return null
         val pa = point(a, nowMs) ?: return null
         val pb = point(b, nowMs) ?: return null
-        if (pa.sliding != saved.a.sliding || pb.sliding != saved.b.sliding) return null
+        if (pa.sliding != saved.a.sliding || pb.sliding != saved.b.sliding ||
+            pa.liveOffset != saved.a.liveOffset || pb.liveOffset != saved.b.liveOffset) return null
         return runCatching {
             Math.subtractExact(Math.subtractExact(pb.clockMs, saved.b.clockMs),
                 Math.subtractExact(pa.clockMs, saved.a.clockMs))

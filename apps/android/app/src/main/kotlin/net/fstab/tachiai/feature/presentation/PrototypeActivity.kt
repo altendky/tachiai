@@ -201,6 +201,14 @@ open class PrototypeActivity : ComponentActivity() {
         error("Page-backed comparison playback is unavailable in this build")
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    // Episode pages take tens of seconds; they never queue behind or block Watch.
+    private val episodeWorker = Executors.newSingleThreadExecutor()
+    private val pickerEpisodes by lazy {
+        PickerCollectionEpisodes(episodeWorker, { action -> handler.post(action) }) { source ->
+            net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog(this, source.instanceId, emptyMap(),
+                canUse = { resumed.get() && !isFinishing && !isDestroyed })
+        }
+    }
     private val resumed = AtomicBoolean()
     private val epoch = AtomicLong()
     private var routePreparation: RoutePreparation? = null
@@ -330,7 +338,8 @@ open class PrototypeActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         appliedConfiguration = Configuration(resources.configuration)
         pickerAssignments = restoreConfiguredFeedAssignments(savedInstanceState != null,
-            savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"))
+            savedInstanceState?.getString("prototype.feed.a"), savedInstanceState?.getString("prototype.feed.b"),
+            savedInstanceState?.getString("prototype.episode.a"), savedInstanceState?.getString("prototype.episode.b"))
         var preferCurrentSelection = savedInstanceState != null
         var persistCurrentSelection = savedInstanceState != null &&
             (savedInstanceState.getString("prototype.feed.a") == null || pickerAssignments.a != null) &&
@@ -371,6 +380,8 @@ open class PrototypeActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("prototype.feed.a", encodeConfiguredFeedChoice(pickerAssignments.a))
         outState.putString("prototype.feed.b", encodeConfiguredFeedChoice(pickerAssignments.b))
+        outState.putString("prototype.episode.a", pickerAssignments.aEpisode?.encode())
+        outState.putString("prototype.episode.b", pickerAssignments.bEpisode?.encode())
         super.onSaveInstanceState(outState)
     }
 
@@ -390,7 +401,7 @@ open class PrototypeActivity : ComponentActivity() {
             onConnections = { startActivity(Intent(this, ConnectionProfilesActivity::class.java)) },
             setupReady = setupReady, providerInstances = providerInstances, configuredSources = configuredSources,
             initialAssignments = pickerAssignments, onAssignmentsChanged = ::rememberPickerAssignments,
-            assignmentRestoreGeneration = pickerRestoreGeneration,
+            assignmentRestoreGeneration = pickerRestoreGeneration, episodes = pickerEpisodes,
             onProviders = { startActivity(Intent(this, ProvidersActivity::class.java)) },
             onScreenSharing = { target -> openScreenSharingTarget(target,
                 { packageManager.getLaunchIntentForPackage(GOOGLE_HOME_PACKAGE) }, ::startActivity) },
@@ -489,7 +500,8 @@ open class PrototypeActivity : ComponentActivity() {
         if (!setupReady) { showPicker("Provider setup is unavailable; playback was not started."); return }
         // The page comparison's ABEMA list holds only its fixed channel/episode samples.
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema)
+            allowConfiguredAbemaSlots = useCachedAbema,
+            allowCollectionEpisodes = net.fstab.tachiai.presentation.collectionEpisodesAvailable)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -612,7 +624,8 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         val resolved = resolveConfiguredPrototypeSelection(assignments, configuredSources, providerInstances,
-            allowConfiguredAbemaSlots = useCachedAbema)
+            allowConfiguredAbemaSlots = useCachedAbema,
+            allowCollectionEpisodes = net.fstab.tachiai.presentation.collectionEpisodesAvailable)
         if (resolved is ConfiguredPrototypeSelectionResult.Failure) {
             showPicker(configuredSelectionMessage(resolved.reason)); return
         }
@@ -2114,6 +2127,7 @@ open class PrototypeActivity : ComponentActivity() {
         resumed.set(false); dispose()
         // Let queued route preparation reach its cancellation/result cleanup;
         // dropping the task would strand process-wide routesPending forever.
+        pickerEpisodes.close(); episodeWorker.shutdown()
         worker.shutdown()
         super.onDestroy()
     }
@@ -2121,7 +2135,8 @@ open class PrototypeActivity : ComponentActivity() {
     private fun sourceLabel(index: Int): String {
         val feed = selection?.slots?.getOrNull(index) ?: return "${NativeMixedSide.entries[index].name} · No source selected"
         val instance = checkNotNull(feed.resolve(activeInstances))
-        val title = configuredSourceDisplayTitle(checkNotNull(activeConfiguredSources[index]))
+        val title = selection?.slots?.getOrNull(index)?.episodeTitle
+            ?: configuredSourceDisplayTitle(checkNotNull(activeConfiguredSources[index]))
         return "${if (index == 0) "A" else "B"} · ${net.fstab.tachiai.presentation.providerDisplayNames(instance).inline} · $title"
     }
 

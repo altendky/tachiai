@@ -596,6 +596,19 @@ test('series page refuses mismatched duplicate malformed oversized rows and unsu
   const drift = fixture({ operation: 'FETCH_SERIES', resourceId: seriesRequest('series-A', 20, 'old'), series: { programs: [], version: 'new' } });
   drift.start(); await settle(); assert.equal(drift.state().failure, 'SERIES_RESPONSE');
 });
+test('newest-first series pages request descending seq and keep the normal projection', async () => {
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId: { ...seriesRequest(), order: '-seq' } });
+  f.start(); await settle();
+  assert.deepEqual(f.state(), { state: 'EXACT_SERIES_PAGE', failure: 'NONE' });
+  assert.equal(f.requests[1].url, 'https://api.p-c3-e.abema-tv.com/v1/video/series/series-A/programs?order=-seq&limit=20&offset=0');
+  assert.deepEqual(JSON.parse(f.call(`window['${apiName}'].metadata()`)), {
+    seriesId: 'series-A', version: 'version-1', programs: [{ id: 'fixture-episode', title: 'Future episode' }],
+  });
+  for (const order of ['seq', 'random', null]) {
+    const refused = fixture({ operation: 'FETCH_SERIES', resourceId: { ...seriesRequest(), order } });
+    refused.start(); await settle(); assert.equal(refused.requests.length, 0);
+  }
+});
 test('series raw JSON rejects escaped duplicates trailing data invalid UTF8 and body bounds', async () => {
   for (const extra of [
     { seriesText: '{"programs":[],"version":"a","\\u0076ersion":"b"}' },

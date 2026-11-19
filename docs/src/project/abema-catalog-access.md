@@ -972,7 +972,9 @@ IPC guards, subsequently passed in 2.43 seconds. Provider-free JS/JVM coverage
 preceded the actual requests; the Android fixtures ran afterwards. Temporary
 guest-process instrumentation targeting was restored to the ordinary manifest.
 Series browsing does not imply global video search, timetable/slot resolution
-or an automatically playable permanent sumo collection.
+or an automatically playable permanent sumo collection. The main picker's
+[collection episodes](prototype-ux.md#collection-episodes-on-the-picker--november-19-2026)
+page uses the same operation with the consumer's descending `-seq` order.
 
 ### Exact configured broadcast metadata
 

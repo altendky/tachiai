@@ -211,7 +211,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val resourceArgument = if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
                 ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                 ", " + checkNotNull(request.seriesRequest).let { JSONObject().put("seriesId", it.seriesId).put("offset", it.offset)
-                    .put("version", it.version ?: JSONObject.NULL).apply { it.seasonId?.let { season -> put("seasonId", season) } }.toString() }
+                    .put("version", it.version ?: JSONObject.NULL).apply { it.seasonId?.let { season -> put("seasonId", season) }
+                        if (it.newest) put("order", "-seq") }.toString() }
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
                     ", " + checkNotNull(request.slotRequest).let { JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)

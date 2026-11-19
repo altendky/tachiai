@@ -397,7 +397,9 @@
     value === value.trim() && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
   function validSeriesRequest(value) {
     return value && typeof value === 'object' && !Array.isArray(value) &&
-      ['offset,seriesId,version', 'offset,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
+      ['offset,seriesId,version', 'offset,seasonId,seriesId,version', 'offset,order,seriesId,version',
+        'offset,order,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
+      (!Object.hasOwn(value, 'order') || value.order === '-seq') &&
       typeof value.seriesId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seriesId) &&
       (!Object.hasOwn(value, 'seasonId') || typeof value.seasonId === 'string' &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seasonId) && value.seriesId.length + value.seasonId.length + 1 <= 256) &&
@@ -733,7 +735,8 @@
         } else if (operation === 'FETCH_SERIES') {
           state = 'SERIES';
           const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');
-          url.searchParams.set('order', 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
+          // Newest-first is the provider consumer's descending order.
+          url.searchParams.set('order', seriesRequest.order === '-seq' ? '-seq' : 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
           if (seriesRequest.version !== null) url.searchParams.set('seriesVersion', seriesRequest.version);
           if (seriesRequest.seasonId !== undefined) url.searchParams.set('seasonId', seriesRequest.seasonId);
           series = await boundedReply(url.href, { method: 'GET', mode: 'cors',

@@ -247,8 +247,11 @@ internal class BoundedNativeDashPlayer(
         if (!timingActive() || player.currentTimeline.isEmpty) return null
         val window = player.currentTimeline.getWindow(player.currentMediaItemIndex, Timeline.Window())
         fun known(value: Long): Long? = value.takeIf { it != C.TIME_UNSET && it >= 0 }
+        // Both positions are relative to a sliding live window; retained
+        // buffered footage can have a negative current and buffered endpoint.
         return NativeTimingSnapshot(player.currentPosition.takeIf { it != C.TIME_UNSET }, known(player.duration),
-            known(player.bufferedPosition), player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
+            player.bufferedPosition.takeIf { it != C.TIME_UNSET && it != C.TIME_END_OF_SOURCE },
+            player.currentLiveOffset.takeIf { it != C.TIME_UNSET }, known(window.windowStartTimeMs),
             known(window.defaultPositionMs), player.isCurrentMediaItemLive, player.isCurrentMediaItemDynamic,
             player.isCurrentMediaItemSeekable && player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             player.isCommandAvailable(Player.COMMAND_SEEK_TO_DEFAULT_POSITION), player.isPlayingAd,

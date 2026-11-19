@@ -2,6 +2,8 @@ package net.fstab.tachiai.provider.abema.account
 
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -56,6 +58,10 @@ internal class AbemaAccountAccessOwner(
         // strand a healthy peer's validation in a dying service job.
         private val workers = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue<Runnable>(32), { task -> Thread(task, "abema-account-access").apply { isDaemon = true } })
+        // The email check runs beside the profile check on its own transport. A
+        // separate pool keeps a validation from waiting on its own queued request.
+        private val checks = Executors.newCachedThreadPool { task ->
+            Thread(task, "abema-account-check").apply { isDaemon = true } }
     }
     private val lock = Any()
     private var generation = 0L
@@ -72,8 +78,8 @@ internal class AbemaAccountAccessOwner(
         val lineage: Any = Any())
     private class Flight(val generation: Long, val began: Long, val deadline: Long) {
         val finished = CountDownLatch(1)
-        var transport: AbemaAccountTransport? = null
-        var cancel: AbemaAccountCleanupReceipt<AbemaAccountTransport>? = null
+        val transports = mutableListOf<AbemaAccountTransport>()
+        val cancels = mutableMapOf<AbemaAccountTransport, AbemaAccountCleanupReceipt<AbemaAccountTransport>>()
         @Volatile var result: Proof? = null
         @Volatile var failure = AbemaAccountFailure.CANCELLED
     }
@@ -119,10 +125,10 @@ internal class AbemaAccountAccessOwner(
                 attachments--
                 if (attachments == 0) revokeLocked() else {
                     if (!closed && !poisoned && cleanup.all { it.confirmed } && (flight == null || flight?.generation == generation)) released.set(true)
-                    null
+                    emptyList()
                 }
             }
-            cancelled?.start()
+            cancelled.forEach { it.start() }
             notifyRetiredIdle()
         }
         override fun toString() = "AbemaAccountAccessAttachment(redacted)"
@@ -133,21 +139,23 @@ internal class AbemaAccountAccessOwner(
         attachments++
         Attachment()
     }
-    private fun revokeLocked(): AbemaAccountCleanupReceipt<AbemaAccountTransport>? {
+    // Receipts newly created here must be started by the caller outside the lock.
+    private fun revokeLocked(): List<AbemaAccountCleanupReceipt<AbemaAccountTransport>> {
         generation++; proof = null
-        val pending = flight ?: return null
-        val transport = pending.transport ?: return null
-        return pending.cancel ?: AbemaAccountCleanupReceipt(transport, { it.cancelActiveRequest() }).also {
-            pending.cancel = it; cleanup.add(it)
-        }
+        val pending = flight ?: return emptyList()
+        return pending.transports.filter { it !in pending.cancels }.map { cancelLocked(pending, it) }
     }
+    private fun cancelLocked(pending: Flight, transport: AbemaAccountTransport) =
+        AbemaAccountCleanupReceipt(transport, { it.cancelActiveRequest() }).also {
+            pending.cancels[transport] = it; cleanup.add(it)
+        }
     fun invalidate() {
         val cancelled = synchronized(lock) { revokeLocked() }
-        cancelled?.start()
+        cancelled.forEach { it.start() }
     }
     override fun close() {
         val cancelled = synchronized(lock) { closed = true; revokeLocked() }
-        cancelled?.start()
+        cancelled.forEach { it.start() }
         notifyRetiredIdle()
     }
     private fun cheap(value: Proof, attachment: Attachment? = null): Boolean = currentProof(value, attachment) != null
@@ -192,9 +200,9 @@ internal class AbemaAccountAccessOwner(
         val okay = checked != null
         if (!okay && attachment.active()) {
             val cancelled = synchronized(lock) {
-                if (generation == value.generation && proof?.lineage === value.lineage) revokeLocked() else null
+                if (generation == value.generation && proof?.lineage === value.lineage) revokeLocked() else emptyList()
             }
-            cancelled?.start()
+            cancelled.forEach { it.start() }
         }
         return checked
     }
@@ -301,27 +309,37 @@ internal class AbemaAccountAccessOwner(
             check()
             val record = snapshot.record
             if (record != null) {
-                val transport = transportFactory { try { check(); true } catch (_: Throwable) { false } }
-                val cancel = synchronized(lock) {
-                    work.transport = transport
-                    if (!flightCurrent(work)) AbemaAccountCleanupReceipt(transport, { it.cancelActiveRequest() }).also {
-                        work.cancel = it; cleanup.add(it)
-                    } else null
+                // Each check owns a transport so both provider requests run at once.
+                fun owned(): AbemaAccountTransport {
+                    val transport = transportFactory { try { check(); true } catch (_: Throwable) { false } }
+                    val cancel = synchronized(lock) {
+                        work.transports.add(transport)
+                        if (!flightCurrent(work)) cancelLocked(work, transport) else null
+                    }
+                    cancel?.start()
+                    return transport
                 }
-                cancel?.start()
+                val profileTransport = owned()
+                val emailTransport = owned()
                 check()
-                mark("PROFILE_BEGIN")
-                val profile = transport.profile(record.grant.userId, record.grant.bearer)
+                mark("CHECKS_BEGIN")
+                val emailCheck: Future<AbemaAccountEmailResult> = checks.submit<AbemaAccountEmailResult> {
+                    emailTransport.emailRegistration(record.grant.userId, record.grant.bearer).also { mark("EMAIL_DONE") }
+                }
+                val profile = profileTransport.profile(record.grant.userId, record.grant.bearer)
                 mark("PROFILE_DONE")
                 check()
+                // Results keep their former precedence: the profile verdict decides first.
                 when (profile) {
                     is AbemaAccountProfileResult.Identity -> if (profile.id != record.grant.userId) accountRefused()
                     AbemaAccountProfileResult.Rejected -> accountRefused()
                     AbemaAccountProfileResult.Inconclusive -> throw AbemaAccountException(AbemaAccountFailure.TEMPORARY)
                 }
                 check()
-                val email = transport.emailRegistration(record.grant.userId, record.grant.bearer)
-                mark("EMAIL_DONE")
+                val email = try {
+                    emailCheck.get(maxOf(0L, work.deadline - elapsedMs()), TimeUnit.MILLISECONDS)
+                } catch (error: java.util.concurrent.ExecutionException) { throw error.cause ?: error }
+                catch (_: java.util.concurrent.TimeoutException) { throw AbemaAccountException(AbemaAccountFailure.TIME_LIMIT_REACHED) }
                 check()
                 when (email) {
                     AbemaAccountEmailResult.REGISTERED -> Unit
@@ -334,21 +352,24 @@ internal class AbemaAccountAccessOwner(
         } catch (error: AbemaAccountException) { work.failure = error.category }
         catch (_: Throwable) { work.failure = AbemaAccountFailure.TEMPORARY }
         finally {
-            val transport = synchronized(lock) { work.transport }
-            if (transport != null) {
-                val close = AbemaAccountCleanupReceipt(transport, { it.close() })
-                synchronized(lock) { cleanup.add(close) }
-                close.start()
-                val cancellation = synchronized(lock) { work.cancel }
-                val cancelled = cancellation?.await() != false
-                val cleaned = close.await() && cancelled && runCatching { transportCleanupConfirmed(transport) }.getOrDefault(false)
+            val transports = synchronized(lock) { work.transports.toList() }
+            if (transports.isNotEmpty()) {
+                // Closing also ends an email check still in flight after a profile failure.
+                val closes = transports.map { transport -> AbemaAccountCleanupReceipt(transport, { it.close() }) }
+                synchronized(lock) { cleanup.addAll(closes) }
+                closes.forEach { it.start() }
+                val cleaned = transports.zip(closes).map { (transport, close) ->
+                    val cancellation = synchronized(lock) { work.cancels[transport] }
+                    val cancelled = cancellation?.await() != false
+                    close.await() && cancelled && runCatching { transportCleanupConfirmed(transport) }.getOrDefault(false)
+                }.all { it }
                 if (!cleaned) {
-                    retained.add(work); retained.add(close)
+                    retained.add(work); retained.addAll(closes)
                     synchronized(lock) { poisoned = true; generation++; proof = null }
                     work.failure = AbemaAccountFailure.CLEANUP_FAILED; accepted = null
                 } else synchronized(lock) {
                     cleanup.removeAll { it.confirmed }
-                    work.transport = null; work.cancel = null
+                    work.transports.clear(); work.cancels.clear()
                 }
             }
             if (accepted != null) {

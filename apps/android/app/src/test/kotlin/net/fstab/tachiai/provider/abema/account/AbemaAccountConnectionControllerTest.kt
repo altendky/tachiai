@@ -479,7 +479,9 @@ class AbemaAccountConnectionControllerTest {
             try {
                 f.controller.load(); f.pump()
                 assertNotEquals(AbemaAccountStatus.CONNECTED, f.controller.state.value.status)
-                assertEquals(1, f.profileIds.size); assertEquals(if (failure in listOf("email", "cleanup")) 1 else 0, f.emailChecks)
+                // The email check runs beside the profile check, so it may have started either way.
+                assertEquals(1, f.profileIds.size)
+                if (failure in listOf("email", "cleanup")) assertEquals(1, f.emailChecks) else assertTrue(f.emailChecks <= 1)
                 if (failure == "forget") assertNull(f.store.read()) else assertArrayEquals(bytes, f.storage.bytes)
                 assertEquals(0, f.tokens); assertEquals(0, f.preparations)
             } finally { f.controller.close() }

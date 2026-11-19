@@ -38,7 +38,7 @@ class AbemaAccountCandidateValidationTest {
             assertSame(firstOwner, owner(firstProof))
             val firstLease = (first.acquire() as AbemaAccountAccessResult.Account).lease
             val peerLease = (peer.acquire() as AbemaAccountAccessResult.Account).lease
-            assertEquals(1, profiles.get()); assertEquals(1, emails.get()); assertEquals(1, closes.get())
+            assertEquals(1, profiles.get()); assertEquals(1, emails.get()); assertEquals(2, closes.get())
             // The grant and accepted first-candidate proof remain alive. A
             // different candidate must still make its own profile request.
             allowed = false
@@ -46,7 +46,8 @@ class AbemaAccountCandidateValidationTest {
             val rejected = secondOwner.attach()
             try {
                 assertEquals(AbemaAccountFailure.REFUSED, (rejected.acquire() as AbemaAccountAccessResult.Failed).category)
-                assertEquals(2, profiles.get()); assertEquals(1, emails.get()); assertEquals(2, closes.get())
+                // The refused candidate's concurrent email check may have started too.
+                assertEquals(2, profiles.get()); assertTrue(emails.get() <= 2); assertEquals(4, closes.get())
                 assertTrue(firstLease.checkWorker()); assertTrue(peerLease.checkWorker())
                 assertTrue((peer.acquire() as AbemaAccountAccessResult.Account).lease.checkWorker())
                 assertEquals(2, profiles.get()); assertArrayEquals(saved, storage.bytes)

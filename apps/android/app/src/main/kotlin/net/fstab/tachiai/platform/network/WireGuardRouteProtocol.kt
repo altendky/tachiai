@@ -17,9 +17,13 @@ internal object WireGuardRouteProtocol : RouteProtocol {
         listOf("[Interface].PrivateKey", "[Peer].PublicKey").joinToString("\n") { checkNotNull(fields[it]) }
     }
 
-    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend = NativeRouteBackend(
-        Routebridge.newWireGuard(profile.configuration, security.username, security.password, security.realm, security.allowedHosts),
-    )
+    // Every lease of this key pair in the process shares one device (#275).
+    override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend {
+        preparation.checkActive()
+        return RouteEngineOwner.shared.lease(routeConfigurationKey(profile), checkNotNull(routeConflictKey(profile)), security) {
+            NativeRouteEngine(Routebridge.newWireGuardEngine(profile.configuration))
+        }
+    }
 
     // Match the native backend, which never invents host DNS: every DNS server
     // must be routed through the peer in a family the interface has, and IPv6

@@ -29,7 +29,14 @@ provider algorithm change, credential capture or System-network fallback is adde
 
 Provider route choices are frozen per presentation. Identical canonical profiles
 share one tunnel/bridge, including duplicate imports, to avoid competing
-WireGuard endpoints for one peer. Native Twitch validation/access/HLS and ABEMA
+WireGuard endpoints for one peer. Within each Android process, every WireGuard
+route of one key pair (playback, account checks, catalogs) also shares one
+device: each use leases its own loopback listener, credentials and allowed
+hosts from it, and the device retires about 30 seconds after its last lease.
+Another configuration with the same key waits for that retirement, and an
+unconfirmed device close blocks the key in that process rather than starting a
+second device. Separate processes still start their own devices
+([#275](https://github.com/altendky/tachiai/issues/275)). Native Twitch validation/access/HLS and ABEMA
 bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA
 guest/source/initial-license requests remain unchanged Chromium requests, routed
 by an awaited process proxy override in its dedicated host. The two ABEMA

@@ -7,7 +7,7 @@ require (
 	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
-	gvisor.dev/gvisor v0.0.0-20261119023744-1d669b5e8c4b
+	gvisor.dev/gvisor v0.0.0-20261119050212-35e333ceb086
 )
 
 require (

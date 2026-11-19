@@ -1125,7 +1125,11 @@ internal class CachedPrototypeAbemaSession(
                 try {
                     for ((stage, close) in listOf<Pair<FailureStage, () -> Unit>>(
                         FailureStage.BUNDLE_TRANSPORT_CLOSE to {
-                            val owned = bundleTransport.get(); owned?.close(); bundleTransport.compareAndSet(owned, null)
+                            // A body still held by the tracked fetch is not a failure;
+                            // that worker's finally closes and confirms its receipt.
+                            bundleTransport.get()?.let { owned ->
+                                owned.cancel(); if (owned.cleanupConfirmed) bundleTransport.compareAndSet(owned, null)
+                            }
                         },
                         FailureStage.SOURCE_REQUESTS_CLOSE to {
                             val owned = sourceRequests.get(); owned?.close(); sourceRequests.compareAndSet(owned, null)

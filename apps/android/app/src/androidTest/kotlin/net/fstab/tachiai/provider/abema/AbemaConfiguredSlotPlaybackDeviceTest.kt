@@ -54,7 +54,7 @@ class AbemaConfiguredSlotPlaybackDeviceTest {
                   5304(m){m.exports={rM:{toJSON:v=>v},V8:{fromJSON:v=>({userId:v.user_id,accessToken:v.access_token})}}},
                   50052(m){m.exports={bq:{DEVICE_TYPE_WEB:'WEB'}}},24968(m){m.exports={T:{LOGIN_GUEST:'/api/auth/login/guest'}}},
                   60506(m){m.exports={N:{browser:{name:'Chrome',version:'1'},os:{name:'Android',version:'1'}}}},
-                  87328(m){m.exports={xl:()=>false}},91966(m){m.exports={sD:()=>({stringVariation:(n,f)=>f})}},
+                  87328(m){m.exports={xl:()=>false}},17453(m){m.exports={sD:()=>({stringVariation:(n,f)=>f})}},
                   68610(m){m.exports={Y1:{Streaming:'FIXTURE_STREAMING'}}},
                   21470(m){m.exports={tw:config=>{window.fixtureSelections++;if(config.enforcePlainStream!==false||
                     config.sourceParam.contentId!=='fixture-slot'||config.sourceParam.cffId!==0)throw new Error();

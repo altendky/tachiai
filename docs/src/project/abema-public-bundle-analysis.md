@@ -21,16 +21,31 @@ Japan. No provider code was executed. Compile timings constructed
 
 ## Pinned assets and how they are used
 
-`AbemaPublicBundleCache.kt` pins five assets. All five URLs still served
-byte-identical content (matching SHA-256 and size) on 2026-11-19.
+Since 2026-11-20, `AbemaPublicBundleCache.kt` pins build `v26.1119.1` (see
+[Pin refresh](#pin-refresh--2026-11-20)). The analysis on this page was made on
+the previous pins, build `v26.1001.1`. Module counts and timings below describe
+that build unless a row says otherwise.
 
-| Pin | Chunk id | Modules | Bytes | Loaded by |
+| Pin (current) | Chunk id | Bytes | SHA-256 | Loaded by |
+| --- | --- | --- | --- | --- |
+| `7e1d1d3889f47778.9627.js` (APPLICATION) | 9627 | 1,801,875 | `1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73` | native + guest runtimes |
+| `8a1c293b222b2390.framework.js` | 26 | 326,334 | `eefb65e83c3fb1f82af5ce599f154c6e422bd7d3dab2aaa19c3ac9b5425e8412` | native + guest runtimes |
+| `836465d169ab61b6.8204.bundle.js` | 8204 | 18,618 | `aabc84d2af5da5ccd259fee7d28df295eb5e40f43d66e2b235db9d40b6747b41` | native + guest runtimes |
+| `4a27c7be953150a2.9328.js` | 9328 | 186,525 | `24ec3275b74ebc9bca669255a121bb182944a6b5466ae21ba312752cf7d04da8` | native + guest runtimes |
+| `7459be98c1074c5c.youboralib.js` (CSAI_SUPPORT) | 5504 | 160,733 | unchanged | pinned; not loaded by either Android runtime |
+
+The analysed `v26.1001.1` pins were:
+
+| Pin (previous) | Chunk id | Modules | Bytes | Loaded by |
 | --- | --- | --- | --- | --- |
 | `3850f3e68c3aa3c0.5206.js` (APPLICATION) | 5206 | 785 | 1,801,458 | native + guest runtimes |
 | `a3d61a8507a3f772.framework.js` | 26 | 101 | 326,667 | native + guest runtimes |
 | `1deb672fea92d35e.8204.bundle.js` | 8204 | 17 | 18,786 | native + guest runtimes |
 | `7977ee0696dadeb7.9328.js` | 9328 | 64 | 187,143 | native + guest runtimes |
 | `7459be98c1074c5c.youboralib.js` (CSAI_SUPPORT) | 5504 | 86 | 160,733 | pinned; not loaded by either Android runtime |
+
+All five previous URLs still served byte-identical content on 2026-11-19 and
+2026-11-20.
 
 Each chunk has the form
 `(globalThis.__LOADABLE_LOADED_CHUNKS__ ||= []).push([[chunkId], {moduleId: factory, …}])`.
@@ -63,7 +78,7 @@ Every native or guest preparation therefore:
 | 29441 | `Z` | localStorage key names (`abm_token`, …) | native (modern channel) |
 | 60506 | `N` | Parsed user-agent singleton (browser/OS name, version) | native |
 | 87328 | `xl` | Desktop-versus-mobile layout flag (default DESKTOP) | native |
-| 91966 | `sD` | Feature-flag client; uninitialized `stringVariation` returns the fallback | native |
+| 17453 (was 91966) | `sD` | Feature-flag client; uninitialized `stringVariation` returns the fallback | native |
 | 91060 | `OW` | Program (episode) metadata DTO | native replay |
 | 17046 | `PlaybackResourceGateway` | Unauthenticated `GET {playbackResources}/v1/playbackResources/{arin or channelId}`. It retries twice on unexpected statuses, with 1 s and 2 s backoff, then filters, chains and sorts streams | native replay |
 | 18278 | `WebStreamFilter` | Stream/manifest admission by DRM, technology, capability and ad mode | native replay |
@@ -227,6 +242,32 @@ compared) of the 309-module native closure against the live build found:
 A pin refresh would therefore need four new URL/hash/size identities plus one
 module-ID change in `native-bootstrap.js`. That holds for this rebuild only;
 module IDs are not a stable contract.
+
+### Pin refresh — 2026-11-20
+
+The live build had moved again by 2026-11-20 (`v26.1119.1`, `APP_SHA`
+`9947bd5f`). The application chunk was now `7e1d1d3889f47778.9627.js` and the
+runtime mapped 8204 to `836465d169ab61b6.8204.bundle.js`. Framework and 9328 were
+unchanged from 2026-11-19. Tachiai now pins those four chunks. The previous
+pins still resolved, so this is a planned move, not a repair.
+
+The closure was re-checked statically against this build in the same way
+(Acorn parse, no provider code executed). The roots and exports were taken from
+`native-bootstrap.js` and `guest-bootstrap.js`.
+
+- Every module ID and export the bootstraps use exists in the new chunks.
+  The only exception is again `91966`, now `17453` with the same `sD` export.
+- The license-helper closure (14405 plus crypto-js 27594, 37 modules) is
+  identical to the previous pins after identifier renaming.
+- The only new unresolved reference, `34269`, is the renumbered `20054`. Both
+  are required by module 23980 and defined outside the four chunks, so nothing
+  new is unresolved.
+- The bootstrap's mirrored application version moved from `v26.1001.1` to
+  `v26.1119.1`, matching the pinned build's own media-token and client-info
+  value.
+
+The web diagnostics in `apps/web/scripts` keep their own `v26.1001.1` pins.
+Those pins move only after a verified diagnostic run.
 
 ## Speed-up opportunities
 

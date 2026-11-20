@@ -123,7 +123,7 @@ class AbemaModernChannelContextDeviceTest {
                 if (++fixture.token !== 1 || request.headers.get('Authorization') !== 'Bearer SYNTHETIC_BEARER' ||
                   request.credentials !== 'omit' || [...url.searchParams.keys()].sort().join(',') !== 'appVersion,osLang,osName,osTimezone,osVersion' ||
                   url.searchParams.get('osName') !== 'pc' || url.searchParams.get('osVersion') !== '1.0.0' ||
-                  url.searchParams.get('appVersion') !== 'v26.1001.1' || url.searchParams.get('osLang') !== navigator.language ||
+                  url.searchParams.get('appVersion') !== 'v26.1119.1' || url.searchParams.get('osLang') !== navigator.language ||
                   url.searchParams.get('osTimezone') !== Intl.DateTimeFormat().resolvedOptions().timeZone ||
                   url.search !== '?' + url.searchParams.toString()) return reject();
                 return new Response('{"token":"SYNTHETIC_MEDIA"}',{status:200});

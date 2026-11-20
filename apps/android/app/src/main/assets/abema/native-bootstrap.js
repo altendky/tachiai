@@ -525,7 +525,7 @@
         phase = 'MEDIA_TOKEN';
         const tokenURL = new URL('https://api.p-c3-e.abema-tv.com/v1/media/token');
         for (const [key, value] of Object.entries({ osName: 'pc', osVersion: '1.0.0', osLang: navigator.language,
-          osTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone, appVersion: 'v26.1001.1' })) tokenURL.searchParams.set(key, value);
+          osTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone, appVersion: 'v26.1119.1' })) tokenURL.searchParams.set(key, value);
         const token = await json(tokenURL, { credentials: 'omit', headers: { Authorization: 'Bearer ' + user.accessToken } }, 65536);
         if (typeof token.token !== 'string' || !token.token || token.token.length > 8192) throw new Error();
         user.mediaToken = token.token;
@@ -541,7 +541,7 @@
   async function prepareSource(load, identity, replay, deviceId, configured, episodeId, configuredChannel, channelId, slotRequest, channelDiagnostic, modernChannelContext) {
     const browser = load(60506).N;
     const clientInfo = {
-      app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1001.1', environment: 'production' },
+      app: { type: load(87328).xl() ? 'web' : 'webmobile', version: 'v26.1119.1', environment: 'production' },
       appEngine: { name: browser.browser.name, version: browser.browser.version },
       os: { name: browser.os.name, version: browser.os.version },
       device: { id: deviceId, mode: 'normal' },
@@ -549,7 +549,7 @@
     };
     // Invoke the provider's uninitialized/default feature adapter unchanged.
     // Current remote flag evaluation is not established by this prototype.
-    const flags = { getValue: (name, fallback) => load(91966).sD().stringVariation(name, fallback) };
+    const flags = { getValue: (name, fallback) => load(17453).sD().stringVariation(name, fallback) };
     if (slotRequest) {
       await prepareSlotSource(load, identity, browser, slotRequest);
       return;

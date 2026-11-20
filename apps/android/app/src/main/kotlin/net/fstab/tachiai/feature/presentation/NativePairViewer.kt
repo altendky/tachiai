@@ -349,6 +349,10 @@ internal class NativePairViewer(
             }
         }
     }
+    private fun focusedPaneRecovery(): Boolean {
+        val focused = findFocus() as? Button ?: return false
+        return controlKeys[focused]?.startsWith("recovery:") == true && focused.isEnabled && focused.isShown
+    }
     private fun remoteKey(code: Int) = code in setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER,
         KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)
@@ -380,6 +384,9 @@ internal class NativePairViewer(
                 return true
             }
             if (event.action == KeyEvent.ACTION_DOWN && dock.isGone) {
+                // A feed pane's Retry/Go live is already shown while the dock
+                // is hidden; Select on it acts, as one tap does (#559).
+                if (activation && focusedPaneRecovery()) return super.dispatchKeyEvent(event)
                 revealPress = press
                 showControls(); restoreRemoteFocus(key = overlayFocus)
                 return true

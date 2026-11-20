@@ -24,6 +24,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.NativeSeekPlan
@@ -50,7 +51,7 @@ class NativePairViewerRemoteTest {
         override fun close() {}
     }
 
-    private class Fixture(private val activity: ComponentActivity, playing: Boolean) {
+    private class Fixture(private val activity: ComponentActivity, playing: Boolean, failedA: Boolean = false) {
         val a = Member(playing)
         val b = Member(playing)
         val pair = NativeMixedPair(a, b, { true }, {})
@@ -64,8 +65,12 @@ class NativePairViewerRemoteTest {
         var pauses = 0
         var orientations = 0
         var exits = 0
+        val recoveries = mutableListOf<NativeMixedSide>()
         val viewer = NativePairViewer(context, playerA, playerB, "A", "B", { pair },
-            { plays++; pair.play() }, { pauses++; pair.pause() }, {}, {}, {}, {}, { orientations++ })
+            { plays++; pair.play() }, { pauses++; pair.pause() }, {}, {}, {}, {}, { orientations++ },
+            feedMessage = { side -> "Feed A is not airing.".takeIf { failedA && side == NativeMixedSide.A } },
+            feedRecovery = { side -> ViewerFeedRecovery("Retry", recoveries.isEmpty()).takeIf { failedA && side == NativeMixedSide.A } },
+            onRecoverFeed = { recoveries += it })
         val stage get() = viewer.getChildAt(0) as ViewGroup
         val dock get() = viewer.getChildAt(1) as ViewGroup
         val scroller get() = dock.getChildAt(0)
@@ -110,6 +115,35 @@ class NativePairViewerRemoteTest {
         }
         key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         scenario.onActivity { assertEquals(1, fixture.plays); assertEquals(0, fixture.pauses) }
+    }
+
+    // #559: the pane's Retry stays visible while the dock is hidden, so Select on it acts once.
+    @Test fun selectOnAFocusedPaneRetryActsWhileControlsAreHidden() = withFixture(failedA = true) { scenario, fixture ->
+        focus(scenario, fixture, "Hide")
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
+        scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility) }
+        focus(scenario, fixture, "Retry")
+        // A directional key still only reveals the controls.
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_UP)
+        scenario.onActivity {
+            assertEquals(View.VISIBLE, fixture.dock.visibility); assertTrue(fixture.recoveries.isEmpty())
+        }
+        focus(scenario, fixture, "Hide")
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
+        focus(scenario, fixture, "Retry")
+        scenario.onActivity {
+            assertEquals(View.GONE, fixture.dock.visibility)
+            // One held press with a repeat activates exactly once.
+            val down = SystemClock.uptimeMillis()
+            fixture.viewer.dispatchKeyEvent(KeyEvent(down, down, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 0))
+            fixture.viewer.dispatchKeyEvent(KeyEvent(down, down + 10, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 1))
+            fixture.viewer.dispatchKeyEvent(KeyEvent(down, down + 20, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER, 0))
+        }
+        idle()
+        scenario.onActivity {
+            assertEquals(listOf(NativeMixedSide.A), fixture.recoveries)
+            assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
+        }
     }
 
     @Test fun focusedPlayingControlRemainsVisiblePastTheAutoHideDeadline() = withFixture(true) { scenario, fixture ->
@@ -264,10 +298,11 @@ class NativePairViewerRemoteTest {
         }
     }
 
-    private fun withFixture(playing: Boolean = false, test: (ActivityScenario<ComponentActivity>, Fixture) -> Unit) {
+    private fun withFixture(playing: Boolean = false, failedA: Boolean = false,
+        test: (ActivityScenario<ComponentActivity>, Fixture) -> Unit) {
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
             lateinit var fixture: Fixture
-            scenario.onActivity { fixture = Fixture(it, playing); fixture.layout() }
+            scenario.onActivity { fixture = Fixture(it, playing, failedA); fixture.viewer.refresh(); fixture.layout() }
             idle()
             try { test(scenario, fixture) } finally { scenario.onActivity { fixture.close() } }
         }

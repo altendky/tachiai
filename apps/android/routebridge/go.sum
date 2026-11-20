@@ -122,3 +122,5 @@ gvisor.dev/gvisor v0.0.0-20261119050212-35e333ceb086 h1:PQLGrELEozYq7Y5koTNulFEU
 gvisor.dev/gvisor v0.0.0-20261119050212-35e333ceb086/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=
 gvisor.dev/gvisor v0.0.0-20261119205603-b021f68f4caa h1:0Ust3ALHKNhDype46hToQ79zebmiiUOohJh63uN4Pog=
 gvisor.dev/gvisor v0.0.0-20261119205603-b021f68f4caa/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=
+gvisor.dev/gvisor v0.0.0-20261120014517-ab10cdc55600 h1:ne9tmegku4784tMXdhnWvTJtx65VK0Ci5BeWoTU/QcI=
+gvisor.dev/gvisor v0.0.0-20261120014517-ab10cdc55600/go.mod h1:AGCFHJ8yer01MsPbOE1JJtEOoLx79kr4ranU2wAm67k=

@@ -726,7 +726,8 @@ from the fallback seconds correction; disabling reverses only the confirmed
 movement from this session's baseline. A detected change or missing evidence
 keeps the seconds correction as a fallback estimate, reported separately in
 Timing. There is no partial clamp, periodic retry or additional live-default
-seek. Disabled preferences do not restore; a zero correction does not seek.
+seek, apart from the moved-feed recovery below. Disabled preferences do not
+restore; a zero correction does not seek.
 
 Timeline evidence is deliberately conservative: native DASH compares the
 presentation epoch and period start; HLS requires program date/time and
@@ -761,6 +762,39 @@ are not timeline-continuity proof, and changed live latency/window ends can
 make them inaccurate. A retry still leaves the reversible scalar baseline
 unknown, so it does not claim that the complete old correction can be toggled
 off through an exact inverse.
+
+On 2026-11-19 the user asked the viewer to recover when the feeds end up far
+from the intended offset. On the SHIELD, ABEMA's player had repositioned itself
+16 s toward live at the end of a commercial pod, with no user action and no
+timing settlement, and the alignment was lost. Once an enabled offset has
+settled and both feeds play, the viewer freezes their relationship from the
+first steady sample: each live feed's continuous distance behind live, or a
+replay's position, on a monotonic clock. Any change of pair, user playback
+intent or timing settlement discards that reference: every seek, Mark, nudge,
+Pause, Play or toggle. After a feed retry or Back to live the applied baseline
+is unknown, so recovery stays off until the pair is reopened.
+
+The viewer restores the frozen relationship only when all of these hold:
+
+- both feeds have advanced in step with real time over the last second, so a
+  stalled or frozen position, as during ABEMA's commercials, never triggers it;
+- the relationship has moved by at least 3 s, or 10 s when a feed only offers
+  its window-end distance, which saws by a refresh interval;
+- the move has lasted 2 s.
+
+The restore goes through the ordinary relative alignment, with its readiness,
+advertisement, seek-window and settlement checks. It is logged as
+`timing=OFFSET_RECOVERY`, and Timing reports "Alignment restored after a feed
+moved on its own". It never changes or saves the preference. Attempts are at
+least 15 s apart and at most three per ten minutes, so a correction the window
+cannot hold does not loop; that count lasts for the viewer session, including
+after a new alignment. Any one-sided move of at least 3 s qualifies, including
+a feed that rebuffered while the other kept playing. A restore whose movement
+cannot be confirmed leaves the offset unconfirmed, as any failed offset change
+does, and playback may need Play. A feed whose provider shifts its content,
+rather than its player, cannot be detected this way. The thin headroom of a short
+provider window remains; an app-owned rewind buffer is tracked in
+[#568](https://github.com/altendky/tachiai/issues/568).
 
 Each device stores its own encrypted, bounded pair preferences. Identity uses
 the exact public source and provider-instance identities, excluding titles,

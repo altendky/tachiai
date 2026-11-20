@@ -5,7 +5,7 @@ import net.fstab.tachiai.platform.media.NativeTimelineConsistency
 import net.fstab.tachiai.platform.media.NativeTimelineEvidence
 import net.fstab.tachiai.platform.media.compareNativeTimelineEvidence
 
-internal enum class PairOffsetCommandOrigin { STARTUP, MANUAL, TOGGLE }
+internal enum class PairOffsetCommandOrigin { STARTUP, MANUAL, TOGGLE, RECOVERY }
 internal data class PairOffsetCommand internal constructor(val id: Long, val origin: PairOffsetCommandOrigin,
     val pairToken: Any, val deltaMs: Long, val targetEnabled: Boolean, val targetOffsetMs: Long?,
     val beforeSettlementRevision: Long, val correspondence: PairOffsetCorrespondence? = null,
@@ -168,6 +168,16 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
             timelineRestore = verified, fallbackOffsetMs = desired.offsetMs)
     }
 
+    // Restores the applied relationship after a feed moved on its own. Only an
+    // already settled, enabled offset with nothing pending can be recovered;
+    // the saved preference and its correspondence never change.
+    fun planRecovery(token: Any, beforeRevision: Long, deltaMs: Long): PairOffsetCommand? {
+        if (pairToken !== token || !enabledApplied || command != null || pendingSave != null || deltaMs == 0L) return null
+        val established = observedCorrespondence?.takeIf { correspondenceEstablished }
+        return plan(token, PairOffsetCommandOrigin.RECOVERY, deltaMs, true, applied, beforeRevision, established,
+            fallbackOffsetMs = applied ?: preference?.offsetMs)
+    }
+
     fun planManual(token: Any, deltaMs: Long, beforeRevision: Long,
         markedCorrespondence: PairOffsetCorrespondence? = null): PairOffsetCommand? {
         if (pairToken !== token) return null
@@ -261,6 +271,13 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
     }
 
     private fun complete(value: PairOffsetCommand) {
+        if (value.origin == PairOffsetCommandOrigin.RECOVERY) {
+            // The same relationship as before the feed moved; nothing new to save.
+            applied = value.targetOffsetMs
+            command = null; accepted = false
+            message = "Alignment restored after a feed moved on its own; it remains an estimate."
+            return
+        }
         applied = value.targetOffsetMs
         command = null; accepted = false
         enabledApplied = value.targetEnabled && (value.targetOffsetMs != null && value.targetOffsetMs != 0L ||

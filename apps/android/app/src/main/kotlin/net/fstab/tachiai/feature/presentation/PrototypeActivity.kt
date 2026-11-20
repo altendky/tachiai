@@ -52,6 +52,7 @@ import net.fstab.tachiai.presentation.PairOffsetIdentity
 import net.fstab.tachiai.presentation.PairOffsetPreference
 import net.fstab.tachiai.presentation.PairOffsetSession
 import net.fstab.tachiai.presentation.PairOffsetRetryEstimate
+import net.fstab.tachiai.presentation.PairOffsetDeviationGuard
 import net.fstab.tachiai.presentation.PairOffsetDriftObserver
 import net.fstab.tachiai.presentation.PairOffsetCommand
 import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
@@ -250,6 +251,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var pairOffsetSkipStartup = false
     private var pairOffsetBaselineLost = false
     private var pairOffsetRetryEstimate = PairOffsetRetryEstimate()
+    private var pairOffsetDeviation = PairOffsetDeviationGuard()
     private val pairOffsetDrift = PairOffsetDriftObserver()
     private var pairOffsetSaveId: Long? = null
     private data class TimingEvidenceRequest(val pair: NativeMixedPair, val kind: TimingFailureKind,
@@ -1203,6 +1205,7 @@ open class PrototypeActivity : ComponentActivity() {
         pairOffsetLoading = true; pairOffsetReadFailed = false; pairOffsetSaveId = null
         pairOffsetSkipStartup = false; pairOffsetBaselineLost = false
         pairOffsetRetryEstimate = PairOffsetRetryEstimate()
+        pairOffsetDeviation = PairOffsetDeviationGuard()
         worker.execute {
             val result = runCatching {
                 pairOffsetStore(this).read()[identity.key]?.let { preference ->
@@ -1290,6 +1293,18 @@ open class PrototypeActivity : ComponentActivity() {
         val now = SystemClock.elapsedRealtime()
         if (!pair.busy && !state.state.busy && state.state.enabledApplied)
             pairOffsetRetryEstimate.remember(values[0], values[1], now)
+        // A settled offset whose feeds later moved on their own is restored.
+        val running = allowStartup && desiredPlaying && resumed.get() && budget?.active == true && !pair.busy &&
+            !state.state.busy && state.state.enabledApplied && !pairOffsetBaselineLost && !explicitPlaybackHeld() &&
+            prepared.all { it } && failures.none { it != null }
+        pairOffsetDeviation.observe(pair, playbackIntentRevision, settlement?.revision ?: 0L, running,
+            values[0], values[1], now)?.let { delta ->
+            state.planRecovery(pair, settlement?.revision ?: 0L, delta)?.let {
+                pairOffsetDeviation.attempted(now)
+                Log.d("TachiaiPrototype", "timing=OFFSET_RECOVERY deltaMs=${it.deltaMs}")
+                dispatchPairOffset(it); return
+            }
+        }
         if (!allowStartup || !desiredPlaying || !resumed.get() || budget?.active != true ||
             pair.busy || state.state.busy || !prepared.all { it } || failures.any { it != null }) return
         if (values.any { it == null || it.state != Player.STATE_READY || it.playingAd }) return
@@ -1939,6 +1954,7 @@ open class PrototypeActivity : ComponentActivity() {
         qualitySession?.clearOverrides(); qualitySession = null; savingQuality = false; qualityMessage = null
         pairOffsetSession = null; pairOffsetIdentity = null; pairOffsetOwner = null
         pairOffsetRetryEstimate = PairOffsetRetryEstimate()
+        pairOffsetDeviation = PairOffsetDeviationGuard()
         pairOffsetDrift.clear()
         timingEvidenceRequest = null
         pairOffsetLoading = false; pairOffsetReadFailed = false; pairOffsetSaveId = null

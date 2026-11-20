@@ -31,6 +31,28 @@ class PairOffsetSessionTest {
         assertEquals(-26_400L, session.state.appliedOffsetMs)
     }
 
+    @Test fun recoveryRestoresAnAppliedOffsetWithoutChangingOrSavingThePreference() {
+        val token = Any(); val original = PairOffsetPreference(-47_173, true)
+        val session = PairOffsetSession(original); session.bind(token)
+        // Nothing to recover before the offset is applied, or for a zero movement.
+        assertNull(session.planRecovery(token, 0, -16_000))
+        settle(session, session.planStartup(token, 0)!!)
+        assertTrue(session.state.enabledApplied)
+        assertNull(session.planRecovery(token, 1, 0)); assertNull(session.planRecovery(Any(), 1, -16_000))
+        val recovery = session.planRecovery(token, 1, -16_000)!!
+        assertEquals(PairOffsetCommandOrigin.RECOVERY, recovery.origin)
+        assertEquals(-16_000L, recovery.deltaMs); assertEquals(-47_173L, recovery.targetOffsetMs)
+        // One adjustment at a time.
+        assertNull(session.planRecovery(token, 1, -16_000))
+        settle(session, recovery)
+        assertEquals(-47_173L, session.state.appliedOffsetMs); assertTrue(session.state.enabledApplied)
+        assertEquals(original, session.state.preference); assertNull(session.pendingSave)
+        assertTrue(session.state.message!!.startsWith("Alignment restored"))
+        // A disabled offset is never recovered.
+        settle(session, session.planToggle(token, false, 2)!!)
+        assertNull(session.planRecovery(token, 3, -16_000))
+    }
+
     @Test fun missingDisabledZeroAndExplicitTransportNeverAutomaticallyApply() {
         for (preference in listOf(null, PairOffsetPreference(5_000, false), PairOffsetPreference(0, true))) {
             val token = Any(); val session = PairOffsetSession(preference); session.bind(token)

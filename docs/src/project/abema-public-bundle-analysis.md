@@ -269,6 +269,37 @@ The closure was re-checked statically against this build in the same way
 The web diagnostics in `apps/web/scripts` keep their own `v26.1001.1` pins.
 Those pins move only after a verified diagnostic run.
 
+#### Emulator observation — 2026-11-20
+
+The setup was:
+
+- `tachiai-dev`, an Android 16 x86_64 emulator with WebView 133.0.6943.137;
+- the ABEMA route through a WireGuard Tokyo exit;
+- the saved ABEMA account (account mode) for playback.
+
+Emulator results do not establish physical-device DRM or decode behaviour.
+
+| Case | Result |
+| --- | --- |
+| Live News channel, first start after install | `cache=DOWNLOADED_VERIFIED support=DOWNLOADED_VERIFIED legacy=DOWNLOADED_VERIFIED utilities=DOWNLOADED_VERIFIED`, `helper=READY` (272 modules, last 78307), keys loaded, video frames advancing |
+| Series catalog operation (大相撲 collection episodes) | Guest catalog runtime listed episodes |
+| Schedule and channel-program catalog operations | Listed broadcast slots |
+| Replay (11月場所 13日目 highlight) | `cache=CACHE_HIT …` on every later start, `helper=READY`, keys loaded, video frame |
+| Broadcast slot | Not established |
+| Modern channel context | Not run |
+
+On the broadcast slots:
+
+- Four News and anime slots were refused by the provider's own slot flags, at
+  `SLOT_FREE` (two) or `SLOT_WINDOW` (two). No bundle module runs before those
+  checks.
+- One of them was also refused at `SLOT_WINDOW` by the build with the previous
+  pins, so the refusals are not a regression.
+
+Within one viewer process, transient route failures also occurred (media
+token `FETCH_REJECTED_BEFORE_HTTP`, account acquire failure). They cleared
+after the app restarted, and they are independent of the bundles.
+
 ## Speed-up opportunities
 
 These are ranked by expected impact. All are proposals, none implemented.

@@ -26,6 +26,10 @@ internal enum class PrototypeFailureReason(val message: String) {
     CHANNEL_NOT_AIRING("This channel isn't showing a program Tachiai can play right now.\n" +
         "It may be between broadcasts. Try again when the program starts."),
     PLAYER_FAILED("The video player could not continue."),
+    // A feed whose player reached the end of its media (#553). Not failures:
+    // they are not journaled as such and never start automatic recovery.
+    REPLAY_ENDED("This replay has ended."),
+    BROADCAST_ENDED("This broadcast has ended."),
     PLAYBACK_LIMIT("A playback time or media size limit was reached."),
     LIVE_POSITION_FAILED("The current live position could not be prepared."),
     LIVE_WINDOW_EXPIRED("The live position is outside or missing from the current window."),

@@ -786,7 +786,12 @@ internal class CachedPrototypeAbemaSession(
                     nativePreparationEvidence.fail(error, true)
                     diagnostics.report(FailureStage.CACHED_ABEMA_SOURCE_PREPARE, error)
                 }
-                handler.post { if (!closed.get() && revision.get() == run) fail() }
+                // Same refusal; only an unprotected channel start is worded specifically.
+                val notAiring = error is AbemaChannelNotAiringException && !cleanupFailed
+                handler.post {
+                    if (!closed.get() && revision.get() == run)
+                        fail(if (notAiring) PrototypeFeedFailure(PrototypeFailureReason.CHANNEL_NOT_AIRING) else null)
+                }
             }
         }
     }

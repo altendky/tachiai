@@ -1223,6 +1223,43 @@ video frame. Provider-free JVM and JS fixtures cover the episode choice model,
 selection, persistence formats, newest-first catalog continuations, IPC order
 and the picker loader.
 
+### ABEMA channel between broadcasts — November 19, 2026
+
+[#557](https://github.com/altendky/tachiai/issues/557) replaces the generic
+"The provider could not prepare this feed." when an ABEMA live channel is not
+airing a program Tachiai can play. On the SHIELD, 大相撲チャンネル served a
+well-formed ten-period manifest with no protection declarations before the
+day's broadcast. Live startup still refuses such a start, because its single
+license exchange binds to the first manifest's key IDs. Only the wording changes.
+
+- **Specific refusal.** A channel manifest with periods and no protection
+  element, key ID or DRM marker anywhere fails with: "This channel isn't showing
+  a program Tachiai can play right now. It may be between broadcasts. Try again
+  when the program starts." Each sentence is on its own line, so it stays
+  readable beside a floating feed. Every other refusal keeps its previous reason.
+- **Last checked.** The pane adds "Last checked at 10:10:36 AM." in the device's
+  time zone and locale. An off-air Retry otherwise ends in an identical pane,
+  which looks as if nothing happened; the seconds make even a quick repeat visibly new.
+- **Retry.** The pane offers **Retry**. This failure never starts automatic
+  recovery. As with other retryable failures, the feed's selected route stays
+  held while the pane waits, so Retry needs no new route. A saved specific
+  broadcast that plays through its channel can show the same refusal.
+
+On the SHIELD the refusal appeared repeatedly before the day's broadcast. Once
+the channel switched to its protected broadcast manifest, Retry reached
+licensed playback and video frames. The behavior and wording are the same on
+phone/tablet and TV.
+
+A next-program line from the channel timetable was implemented and then
+withdrawn. During viewing, its guest-process lookup timed out every time on
+the SHIELD and may disturb the held playback route.
+[#560](https://github.com/altendky/tachiai/issues/560) tracks it behind
+[#275](https://github.com/altendky/tachiai/issues/275). On TV, a remote press on
+Retry while the control bar is hidden only reveals the controls
+([#559](https://github.com/altendky/tachiai/issues/559)). Starting automatically
+when the program begins, and the ended indicator
+([#553](https://github.com/altendky/tachiai/issues/553)), are separate.
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

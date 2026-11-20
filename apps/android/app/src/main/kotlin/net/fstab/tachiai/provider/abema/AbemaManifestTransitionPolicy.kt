@@ -69,6 +69,24 @@ internal class AbemaManifestTransitionPolicy(expectedKids: List<UUID>) {
     private fun refuse(value: AbemaManifestTransitionVerdict): Boolean { verdict = value; return false }
 }
 
+// True only when the same non-expanding audit finds no protection element,
+// default/key ID, CENC-namespace or DRM-init marker anywhere. Like the policy
+// above, this classifies declarations, not samples; it admits nothing (#557).
+internal fun abemaManifestDeclaresNoProtection(body: String): Boolean {
+    val audit = ProtectionAudit()
+    return try {
+        val reader = SAXParserFactory.newInstance().apply { isNamespaceAware = true }.newSAXParser().xmlReader
+        for (feature in listOf("http://xml.org/sax/features/external-general-entities",
+            "http://xml.org/sax/features/external-parameter-entities",
+            "http://apache.org/xml/features/nonvalidating/load-external-dtd")) {
+            try { reader.setFeature(feature, false) } catch (_: SAXException) { }
+        }
+        reader.contentHandler = audit; reader.errorHandler = audit; reader.entityResolver = audit
+        reader.parse(InputSource(StringReader(body)))
+        !audit.hasProtectionMarker
+    } catch (_: Exception) { false }
+}
+
 // Shapes are baseline-known, not universally recognized DRM systems. No opaque
 // payload, license URL or identifier is read. Scope and namespace remain bound.
 private data class ProtectionShape(val namespace: String, val scope: String, val scheme: String, val value: String?)

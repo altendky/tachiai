@@ -133,6 +133,15 @@
   retrieval are unverified. A series needs explicit child selection until a
   recurring resolver is established.
 
+- Where does the 10–13 s cached-bootstrap startup actually go, and how long do
+  the pinned public chunks remain retrievable? The 2026-11-19
+  [bundle analysis](abema-public-bundle-analysis.md) found that the live site
+  has rebuilt past every pin except youboralib (old URLs still resolve) and
+  that the region page alone had 1–2.3 s TTFB from a non-Japan desktop.
+  Unverified: per-phase device timing, whether a selected replay advertises a
+  Widevine stream that Android MediaDrm can license without provider
+  JavaScript, and whether the unchanged helper closure runs in a non-WebView
+  isolate.
 - Can the cached no-page bootstrap cover replay and durable operation as well
   as News? Two independently initialized native News copies rendered and advanced
   for the five-minute foreground budget without an original web video. A cached

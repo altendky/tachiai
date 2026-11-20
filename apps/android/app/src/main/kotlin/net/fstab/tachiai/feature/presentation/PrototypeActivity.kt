@@ -145,6 +145,7 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.presentation.endedFeedFailure
+import net.fstab.tachiai.presentation.channelNotAiringMessage
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -265,6 +266,8 @@ open class PrototypeActivity : ComponentActivity() {
     private val earlyTransportFailures = AtomicReferenceArray<EarlyTransportFailure?>(2)
     private var sessions = listOf<PrototypeFeedSession?>(null, null)
     private val failures = arrayOfNulls<PrototypeFeedFailure>(2)
+    // When each CHANNEL_NOT_AIRING failure was observed, so a repeated Retry shows it checked again (#557).
+    private val notAiringChecks = arrayOfNulls<Pair<PrototypeFeedFailure, Long>>(2)
     private val prepared = BooleanArray(2)
     private val initialCatchUp = BooleanArray(2)
     private val catchUpDeadline = LongArray(2)
@@ -1078,10 +1081,12 @@ open class PrototypeActivity : ComponentActivity() {
                         "Retrying automatically (attempt ${automaticRecovery[index].attemptCount} of 3)…"
                     else "Retrying this feed…"
                 } else failures[index]?.let { failure ->
+                    val message = notAiringChecks[index]?.takeIf { it.first === failure }
+                        ?.let { channelNotAiringMessage(failure, it.second) } ?: failure.viewerMessage
                     when {
-                        automaticRecovery[index].pending != null -> "${failure.viewerMessage}\nRetrying automatically shortly…"
-                        automaticRecovery[index].exhausted -> "${failure.viewerMessage}\nAutomatic recovery stopped after repeated failures. Retry when ready."
-                        else -> failure.viewerMessage
+                        automaticRecovery[index].pending != null -> "$message\nRetrying automatically shortly…"
+                        automaticRecovery[index].exhausted -> "$message\nAutomatic recovery stopped after repeated failures. Retry when ready."
+                        else -> message
                     }
                 }
                     ?: if (!prepared[index]) "Preparing this feed…" else null
@@ -1751,6 +1756,7 @@ open class PrototypeActivity : ComponentActivity() {
         failures[index] = failure
         // Play again starts an ended replay from its beginning, not its last position.
         if (failure.reason == PrototypeFailureReason.REPLAY_ENDED) feedRetries[index].forgetReplay()
+        if (failure.reason == PrototypeFailureReason.CHANNEL_NOT_AIRING) notAiringChecks[index] = failure to System.currentTimeMillis()
         retryPlaybackIntent.cancel(index); retryPlaybackJoins[index] = null
         retryPlaybackStart = null
         timingEvidenceRequest?.let { writeTimingEvidence(it); timingEvidenceRequest = null }

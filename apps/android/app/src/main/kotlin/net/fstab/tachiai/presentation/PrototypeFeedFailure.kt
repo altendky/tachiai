@@ -22,6 +22,9 @@ internal enum class PrototypeFailureReason(val message: String) {
     LICENSE_FAILED("The video license could not be prepared."),
     PREPARATION_TIMEOUT("The feed did not finish preparing in time."),
     PREPARATION_FAILED("The provider could not prepare this feed."),
+    // One sentence per line keeps it readable beside a floating feed.
+    CHANNEL_NOT_AIRING("This channel isn't showing a program Tachiai can play right now.\n" +
+        "It may be between broadcasts. Try again when the program starts."),
     PLAYER_FAILED("The video player could not continue."),
     // A feed whose player reached the end of its media (#553). Not failures:
     // they are not journaled as such and never start automatic recovery.

@@ -585,6 +585,34 @@ lead fixture similarly exposes only an allowlisted runtime category and two
 projection flags after its preservation and cleanup checks. None of these
 observations grants playback authority or changes production deadlines.
 
+### DASH period and break diagnostics — November 19, 2026
+
+ABEMA can swap unencrypted periods into a protected live manifest, for example
+before a broadcast or briefly during one. To show whether such a break moves a
+feed's content clock or the pair alignment, cached ABEMA playback logs two
+closed lines under `TachiaiCachedAbema`. Neither changes playback, admission or
+the protection policy.
+
+- `manifestShape periods=… drmPeriods=… dynamic=… transition=…`, logged
+  whenever an accepted manifest refresh changes shape. `drmPeriods` counts
+  periods whose parsed tracks carry DRM initialization data, a declaration
+  rather than proof of sample encryption. `transition` is the live
+  protection-transition verdict, such as `SAME_PROTECTION` or `NO_DECLARATIONS`,
+  or `NONE` for replays.
+- `periodChange reason=… from=… to=… of=… jumpMs=… ad=… drm=…`, logged for every
+  player position discontinuity other than a seek. A seamless period boundary
+  has `reason=AUTO_TRANSITION` and a `jumpMs` near zero. `ad` is true only for
+  advertisements Media3 itself recognizes, so provider-stitched breaks may still
+  read `false`. `drm` reports the new period's declarations, or `UNKNOWN` once
+  it has left the manifest.
+
+Both lines contain only counts, indexes, closed categories and one millisecond
+delta: no URL, identifier, title, key or manifest text. Read them beside the
+roughly five-second `TachiaiPairOffset` drift samples, which show whether the
+active alignment held across the break. The default 256 KiB log buffer is
+overwritten within seconds during playback, so enlarge it first, for example
+`adb logcat -G 128M`.
+
 ## Collecting one device's evidence
 
 Verify the requested device before collecting. For the persistent emulator,

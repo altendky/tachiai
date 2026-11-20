@@ -51,6 +51,8 @@ import net.fstab.tachiai.platform.media.BoundedNativeDashPlayer
 import net.fstab.tachiai.platform.media.DeclaredDashMediaPolicy
 import net.fstab.tachiai.platform.media.DashManifestPolicyEvent
 import net.fstab.tachiai.platform.media.NativeDashEvent
+import net.fstab.tachiai.platform.media.NativeDashManifestShape
+import net.fstab.tachiai.platform.media.nativeDashManifestShape
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePlaybackBudget
 import net.fstab.tachiai.platform.media.NativeMediaEvent
@@ -842,15 +844,20 @@ internal class CachedPrototypeAbemaSession(
             else AbemaNativeBootstrapPolicy.allowsNewsCdn(uri, approvedPrototype = true, channelId = channelId)
         }
         val transitions = if (effectiveReplay) null else AbemaManifestTransitionPolicy(source.kids)
+        // Closed shape of each accepted refresh, logged on change (serial loader thread).
+        var lastShape: NativeDashManifestShape? = null
         val parser = BoundedDashManifestParser(source.uri, policy,
             preflight = { body -> transitions?.accepts(body) ?: (parseAbemaRequestInitialization(body)?.kids?.toSet() == source.kids.toSet()) },
             canRun = { current(run) }, onEvent = { event, _ ->
                 if (event == DashManifestPolicyEvent.REFUSED) remember(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA))
             },
-            validateModel = { parsed -> transitions?.requiresDeclarationFreeModel != true ||
+            validateModel = { parsed -> (transitions?.requiresDeclarationFreeModel != true ||
                 (0 until parsed.periodCount).all { period -> parsed.getPeriod(period).adaptationSets.all { adaptation ->
                     adaptation.representations.all { it.format.drmInitData == null }
-                } } })
+                } }).also { valid ->
+                    if (valid && current(run)) nativeDashManifestShape(parsed, transitions?.verdict?.name).takeIf { it != lastShape }
+                        ?.let { shape -> lastShape = shape; record(shape.closedSummary()) }
+                } })
         try {
             val created = BoundedNativeDashPlayer(view.context, checkNotNull(budget), source.kids,
                 allowedUri = policy::allows, manifestUri = source.uri, manifestParser = parser,
@@ -891,6 +898,7 @@ internal class CachedPrototypeAbemaSession(
                         C.COMMON_PSSH_UUID, MimeTypes.VIDEO_MP4, commonPssh(source.kids)))).build(),
                 openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
                 transportObserver = diagnostics.nativeTransportObserver(),
+                onPeriodChange = { change -> handler.post { if (current(run)) record(change.closedSummary()) } },
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,
                 onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })

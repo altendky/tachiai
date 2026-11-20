@@ -31,7 +31,10 @@ controls are described below; integrated TV acceptance is a separate work item.
 ### TV viewer controls
 
 On TV, D-pad/Select reveals hidden controls and consumes that first press before
-activating anything. Focus starts on Play/Pause, has a contrasting outline, and
+activating anything. The exception is a failed feed's own Retry/Go live, which
+stays visible on the feed while the controls are hidden: Select on it, when
+focused, activates it at once, as one tap does on phone
+([#559](https://github.com/altendky/tachiai/issues/559)). Focus starts on Play/Pause, has a contrasting outline, and
 keeps the control tray visible. Audio, Timing and More retain their opening
 controls for focus restoration. Back closes a menu, then a panel, then the button
 bar; another Back with all controls hidden leaves playback. Held mix adjustment

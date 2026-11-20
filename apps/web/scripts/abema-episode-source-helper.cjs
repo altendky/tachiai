@@ -101,7 +101,7 @@ async function proveEpisode(input, directory = '/proof') {
       }
       const content = { source: { type: 'program', programId: program.id, arin: program.playback.arin } };
       const identity = input.context;
-      const info = { app: { type: 'web', version: 'v26.1001.1', environment: 'production' },
+      const info = { app: { type: 'web', version: 'v26.1119.1', environment: 'production' },
         appEngine: { name: browser.browser.name, version: browser.browser.version }, os: { name: browser.os.name, version: browser.os.version },
         device: { id: identity.deviceId, mode: 'normal' }, user: { id: identity.userId, mediaToken: identity.mediaToken } };
       __stage('SELECTION');

@@ -135,7 +135,7 @@ class BootstrapTests(unittest.TestCase):
             request = module.request_spec("BROWSER_MEDIA_TOKEN", {"bearer": PRIVATE, "context": context})
             query = module.urllib.parse.parse_qs(module.urllib.parse.urlsplit(request.full_url).query, strict_parsing=True)
             self.assertEqual(query, {"osName": ["pc"], "osVersion": ["1.0.0"], "osLang": [language],
-                                     "osTimezone": [timezone], "appVersion": ["v26.1001.1"]})
+                                     "osTimezone": [timezone], "appVersion": ["v26.1119.1"]})
             self.assertEqual(request.get_header("Authorization"), "Bearer " + PRIVATE)
             self.assertNotIn(PRIVATE, request.full_url)
             self.assertIsNone(request.get_header("Cookie"))

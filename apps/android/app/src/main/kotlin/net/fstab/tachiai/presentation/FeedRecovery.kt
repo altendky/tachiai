@@ -1,6 +1,8 @@
 package net.fstab.tachiai.presentation
 
-internal enum class FeedRecoveryAction(val label: String) { GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection") }
+internal enum class FeedRecoveryAction(val label: String) {
+    GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection"), PLAY_AGAIN("Play again"),
+}
 
 // A user-requested fresh attempt still passes normal account, route and media
 // admission. An account check may reuse an existing verified renewal path;
@@ -9,6 +11,9 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
     if (httpStatus in setOf(401, 403)) return null
     return when (reason) {
         PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE -> FeedRecoveryAction.CHECK_CONNECTION
+        // Reopening the stream; an ended replay starts again from its beginning.
+        PrototypeFailureReason.REPLAY_ENDED -> FeedRecoveryAction.PLAY_AGAIN
+        PrototypeFailureReason.BROADCAST_ENDED -> FeedRecoveryAction.RETRY
         PrototypeFailureReason.LIVE_WINDOW_EXPIRED -> FeedRecoveryAction.GO_LIVE
         PrototypeFailureReason.PLAYER_FAILED -> when (playerCode) {
             1002 -> FeedRecoveryAction.GO_LIVE
@@ -51,4 +56,5 @@ internal class FeedRetryState {
     }
     fun ready() { retrying = false }
     fun rememberReplay(positionMs: Long) { if (positionMs >= 0) replayPositionMs = positionMs }
+    fun forgetReplay() { replayPositionMs = null }
 }

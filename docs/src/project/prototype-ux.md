@@ -1223,6 +1223,35 @@ video frame. Provider-free JVM and JS fixtures cover the episode choice model,
 selection, persistence formats, newest-first catalog continuations, IPC order
 and the picker loader.
 
+### Ended feeds — November 19, 2026
+
+[#553](https://github.com/altendky/tachiai/issues/553): a feed that reaches the
+end of its media no longer sits on its last frame looking frozen. On the SHIELD,
+an ABEMA replay ended after 9 min 51 s and a Twitch broadcaster's rerun ended
+mid-session, both while the other feed kept playing.
+
+- **Signal.** A prepared feed has ended when its own player reports its ended
+  state outside an advertisement. The same player fact serves every provider:
+  - ABEMA episode and slot replays: the last segment of a static DASH manifest.
+  - ABEMA live slots: a dynamic manifest the provider closed.
+  - Twitch videos and broadcasters: an HLS playlist the provider ended.
+  - YouTube videos.
+
+  Elapsed time, buffering and paused states never count as an end. A stream
+  that disappears or errors instead keeps its existing failure, for example
+  "The stream could not be found. A live channel may be offline."
+- **Per feed.** The ended feed shows its own pane, "This replay has ended." or
+  "This broadcast has ended.", chosen by the feed's configured replay or live
+  kind. The other feed keeps playing, and the ended member leaves the pair as a
+  failed one does. An end never starts automatic recovery and is not journaled
+  as a failure.
+- **Leaving.** A replay offers **Play again**, which reopens it from its
+  beginning instead of its last remembered position. A broadcast offers
+  **Retry**, which reopens the source, for example when the broadcaster is live
+  again. Sources leaves the viewer as usual. There are no new seek or jump controls.
+
+The presentation is the same on phone/tablet and TV.
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

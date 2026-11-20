@@ -144,6 +144,7 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
+import net.fstab.tachiai.presentation.endedFeedFailure
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -958,7 +959,11 @@ open class PrototypeActivity : ComponentActivity() {
                             it.state == Player.STATE_READY && !it.live && !it.dynamic && !it.playingAd
                         }?.positionMs?.let(feedRetries[index]::rememberReplay)
                     }
-                    if (host?.member != null && !host.canContinue()) failFeed(index, authorizationFailure(index, host))
+                    // A prepared feed whose player reached the end of its media (#553).
+                    val ended = if (!prepared[index] || failures[index] != null) null
+                        else endedFeedFailure(host?.member?.timingSnapshot(), selection?.slots?.getOrNull(index)?.kind)
+                    if (ended != null) failFeed(index, ended)
+                    else if (host?.member != null && !host.canContinue()) failFeed(index, authorizationFailure(index, host))
                     else if (host != null && failures[index] == null && !prepared[index]) prepareViewerSlot(index, host)
                 } catch (error: Exception) {
                     feedDiagnostics(index).report(FailureStage.FEED_POLL, error)
@@ -1733,8 +1738,9 @@ open class PrototypeActivity : ComponentActivity() {
             nowMs = now,
             authorizationRefreshSupported = selection?.slots?.getOrNull(index)?.service == PrototypeService.ABEMA && member != null,
             httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness)
-        // A normal stop is expected; a limit needs retained failure evidence.
-        if (failure.reason != PrototypeFailureReason.STOPPED)
+        // A normal stop or a feed's end is expected; a limit needs retained failure evidence.
+        val ended = failure.reason in setOf(PrototypeFailureReason.REPLAY_ENDED, PrototypeFailureReason.BROADCAST_ENDED)
+        if (failure.reason != PrototypeFailureReason.STOPPED && !ended)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
         recordPlaybackHealth(index, PlaybackHealthReason.FEED_FAILURE)
         when (autoDecision) {
@@ -1743,6 +1749,8 @@ open class PrototypeActivity : ComponentActivity() {
             FeedAutoRecoveryDecision.SKIPPED -> Unit
         }
         failures[index] = failure
+        // Play again starts an ended replay from its beginning, not its last position.
+        if (failure.reason == PrototypeFailureReason.REPLAY_ENDED) feedRetries[index].forgetReplay()
         retryPlaybackIntent.cancel(index); retryPlaybackJoins[index] = null
         retryPlaybackStart = null
         timingEvidenceRequest?.let { writeTimingEvidence(it); timingEvidenceRequest = null }

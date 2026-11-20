@@ -194,6 +194,17 @@ class FeedAutoRecoveryStateTest {
             null, true, true, true, 1_500))
     }
 
+    @Test fun `an ended feed never schedules automatic recovery from a played state`() {
+        // Same played live state in which an offline live source would be retried (#553).
+        for ((reason, expected) in listOf(PrototypeFailureReason.MEDIA_NOT_FOUND to FeedAutoRecoveryDecision.SCHEDULED,
+            PrototypeFailureReason.BROADCAST_ENDED to FeedAutoRecoveryDecision.SKIPPED,
+            PrototypeFailureReason.REPLAY_ENDED to FeedAutoRecoveryDecision.SKIPPED)) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals(reason.name, expected, fail(state, member, 1, PrototypeFeedFailure(reason), evidence = null))
+        }
+    }
+
     private fun sample(now: Long, clock: Long = 20_000 + now, frames: Long? = now / 10 + 1) =
         NativePlaybackDiagnosticSnapshot(now, 0, false, true, true, 3, 0, null,
             clock, true, frames, 0, 1, 0, null, null, null)

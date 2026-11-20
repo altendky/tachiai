@@ -266,8 +266,12 @@ The closure was re-checked statically against this build in the same way
   `v26.1119.1`, matching the pinned build's own media-token and client-info
   value.
 
-The web diagnostics in `apps/web/scripts` keep their own `v26.1001.1` pins.
-Those pins move only after a verified diagnostic run.
+The web diagnostics in `apps/web/scripts` moved in step. Their safety test
+requires the diagnostic pins to be the reviewed Android assets. The same static
+check covered the guest, source, episode-source and region helpers: every
+module ID and export they use exists in the new chunks. Their mirrored
+application version moved to `v26.1119.1` too. No web diagnostic was run
+against the provider.
 
 #### Emulator observation — 2026-11-20
 

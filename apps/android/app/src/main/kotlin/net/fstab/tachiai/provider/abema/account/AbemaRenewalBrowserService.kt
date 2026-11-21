@@ -98,6 +98,8 @@ class AbemaRenewalBrowserService : Service() {
         if (!delivered) diagnostics.refuse(AbemaRenewalDiagnostic.Phase.BROWSER_START, AbemaRenewalDiagnostic.Reason.REFUSED)
         diagnostics.cleanup(result.cleanupConfirmed)
         val diagnostic = diagnostics.freeze()
+        // Closed constants only, logged before the reply can be lost with the parent.
+        android.util.Log.i("TachiaiAbemaRenewal", "BROWSER_RESULT result=${result.name} ${diagnostic.logFields()}")
         val captured = request
         try {
             if (captured != null) reply?.send(Message.obtain().apply {

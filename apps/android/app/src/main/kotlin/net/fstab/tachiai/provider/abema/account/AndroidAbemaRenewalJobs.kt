@@ -208,7 +208,7 @@ internal object AndroidAbemaRenewalJobs {
                     running.attach(key, owner, preflight)
                     AndroidAbemaRenewalReadiness.reserve(context, preflight.target, limit, selected, admitted, notify,
                         leadMs = ABEMA_RENEWAL_LEAD_MS)
-                }, ::reconcileLater, { finish(owner) })
+                }, ::reconcileLater, { finish(owner) }, { android.util.Log.i("TachiaiAbemaRenewal", it) })
             if (!running.register(key, owner)) return false
             if (!main.postDelayed({ if (running.callback(key) === owner) owner.run.stop() },
                     maxOf(0L, deadline - SystemClock.elapsedRealtime())) || !owner.run.start()) {

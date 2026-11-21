@@ -112,6 +112,10 @@ internal object AndroidAbemaRenewalReadiness {
         // A same-account renewal keeps surviving leases: owners adopt the store's
         // direct successor, whose profile/email the operation already verified.
         authoritative = { work, outcome ->
+            // Every renewal trigger (job or foreground readiness) ends here. Closed constants only.
+            android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_RESULT result=${outcome.result.name} " +
+                "cleanupConfirmed=${outcome.cleanupConfirmed} ${outcome.diagnostic.logFields()}")
+            outcome.producerDiagnostic?.let { android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_PRODUCER ${it.logFields()}") }
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
         })

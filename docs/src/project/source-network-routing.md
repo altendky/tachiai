@@ -352,6 +352,14 @@ wakeups recheck protected owner/generation and leave unrelated providers alone.
 Accepted replacements and Forget update scheduling after their existing account
 boundaries; tentative storage writes are not scheduling hooks.
 
+An early attempt is the exception to Stop withdrawing scheduled work. The job's
+90-second limit and the operation's deadline are the same instant, and the job's
+timer fires first. Before 2026-11-20 its Stop deferred the RUNNING early attempt
+before the cancelled operation reported, so the early-step fallback above never
+ran and nothing was scheduled before natural expiry. Stop now leaves an early
+attempt for its outcome to settle: it moves to the next early step or natural
+expiry. A natural-expiry attempt is still withdrawn by Stop.
+
 Scheduling failure preserves desired metadata for later reconciliation without
 consuming a provider attempt. Running jobs are not replaced merely to update
 metadata. API 34 adds the Network-change callback; older supported versions rely
@@ -379,6 +387,40 @@ The transient guard's exact cause remains unknown. No second fixture was run.
 This smoke does not exercise provider renewal, a remembered session, actual
 Network Parcelable delivery or process-death recovery. Cold closed-app renewal
 and physical naturally expired acceptance remain open.
+
+#### Renewal diagnostics in logcat — 2026-11-20
+
+A stalled renewal used to leave no trace (#582). On the SHIELD, two attempts
+logged `PAGE_STARTED` and then nothing: one renderer was lost under memory
+pressure, and in the other the main frame never committed. Each attempt now ends
+with closed-category logcat lines and nothing else (no URL, identity, nonce,
+grant or exception text):
+
+| Tag | Line | Process |
+| --- | --- | --- |
+| `TachiaiAbemaApproval` | `RENDERER_GONE crashed=<Boolean>` | approval browser |
+| `TachiaiAbemaApproval` | `PAGE_COMMIT_TIMEOUT` | approval browser |
+| `TachiaiAbemaApproval` | `APPROVAL_END automatic=… success=…` plus the frozen diagnostic fields | approval browser |
+| `TachiaiAbemaRenewal` | `BROWSER_RESULT result=…` plus the diagnostic fields | approval browser |
+| `TachiaiAbemaRenewal` | `OPERATION_RESULT result=… cleanupConfirmed=…` plus the diagnostic fields, and `OPERATION_PRODUCER …` when the browser supplied one | default |
+| `TachiaiAbemaRenewal` | `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
+
+The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,
+`transport`, `transportPhase`, `transportCancelled`, `startup` and `cleanup`.
+Logcat is not persistent, so the scheduling file and failure journal still hold
+no renewal diagnostic.
+
+An automatic renewal page that starts but does not commit within 30 seconds (or
+the remaining operation deadline, if shorter) now fails as `phase=PAGE
+reason=DEADLINE`, instead of waiting silently for the whole operation deadline.
+Interactive approval is unchanged. Neither this nor renderer loss is a retryable
+availability failure, so retry policy is unchanged apart from the early-attempt
+Stop fix above.
+
+Why the 16:12 main frame never committed is not established. The route proxy
+had accepted the request, and the renderer stayed alive until the system killed
+the process five minutes later, after the attempt had ended. A later attempt on
+the same route and device succeeded within three seconds.
 
 ### Private Network parcel fixture
 

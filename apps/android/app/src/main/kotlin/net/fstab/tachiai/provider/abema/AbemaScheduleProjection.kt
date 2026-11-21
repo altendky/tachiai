@@ -31,13 +31,21 @@ private class ScheduleProjectionReader(private val text: String, private val exp
         }
         error("Schedule projection refused")
     }
-    private fun fields(allowed: Set<String>, read: (String) -> Unit) {
+    private fun fields(allowed: Set<String>, optional: Set<String> = emptySet(), read: (String) -> Unit) {
         need('{'); val seen = mutableSetOf<String>()
         if (!take('}')) {
-            do { val key = string(); check(key in allowed && seen.add(key)); need(':'); read(key) } while (take(','))
+            do { val key = string(); check((key in allowed || key in optional) && seen.add(key)); need(':'); read(key) } while (take(','))
             need('}')
         }
-        check(seen == allowed)
+        check(seen - optional == allowed)
+    }
+    private fun seconds(): Long {
+        space()
+        val start = at
+        while (at < text.length && text[at] in '0'..'9') at++
+        val digits = text.substring(start, at)
+        check(digits.length in 1..6 && digits[0] != '0')
+        return digits.toLong().also { check(it in 1..MAX_CATALOG_DURATION_SECONDS) }
     }
     fun read(): AbemaScheduleSnapshot {
         val entries = mutableListOf<CatalogEntry>(); var truncated = false
@@ -54,12 +62,14 @@ private class ScheduleProjectionReader(private val text: String, private val exp
                     do {
                         check(entries.size < ABEMA_SCHEDULE_PREFIX_LIMIT)
                         var id: String? = null; var channel: String? = null; var title: String? = null
-                        fields(setOf("id", "channelId", "title")) { field -> when (field) {
+                        var duration: Long? = null
+                        fields(setOf("id", "channelId", "title"), setOf("durationSeconds")) { field -> when (field) {
                             "id" -> id = string(); "channelId" -> channel = string(); "title" -> title = string()
+                            else -> duration = seconds()
                         } }
                         val request = AbemaSlotRequest(checkNotNull(channel), checkNotNull(id))
                         check(safeAbemaSeriesText(checkNotNull(title), 160))
-                        entries += CatalogEntry(request.resource, title!!)
+                        entries += CatalogEntry(request.resource, title!!, durationSeconds = duration)
                     } while (take(','))
                     need(']')
                 }

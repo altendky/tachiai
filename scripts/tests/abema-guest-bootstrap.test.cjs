@@ -487,6 +487,33 @@ test('season-filtered children prove both exact parents and preserve unfiltered 
   const empty = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs: [], version: 'v1' } });
   empty.start(); await settle(); assert.equal(JSON.parse(empty.call(`window['${apiName}'].metadata()`)).seasonId, 'season-A');
 });
+test('series programs project a bounded display duration and leave anything else unknown (#608)', async () => {
+  const resourceId = { seriesId: 'series-A', offset: 0, version: null };
+  const program = (id, info) => ({ id, series: { id: 'series-A' }, episode: { title: 'Day ' + id }, ...(info === undefined ? {} : { info }) });
+  const programs = [program('a', { duration: 584 }), program('b', { duration: 604800 }), program('c'),
+    program('d', { duration: 0 }), program('e', { duration: -5 }), program('f', { duration: 1.5 }), program('g', { duration: '584' }),
+    program('h', { duration: 604801 }), program('i', null), program('j', 'PRIVATE_INFO')];
+  const f = fixture({ operation: 'FETCH_SERIES', resourceId, series: { programs, version: 'v1' } });
+  f.start(); await settle(); assert.equal(f.state().state, 'EXACT_SERIES_PAGE');
+  const page = JSON.parse(f.call(`window['${apiName}'].metadata()`));
+  assert.deepEqual(page.programs.map(p => p.durationSeconds), [584, 604800, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(Object.keys(page.programs[0]).sort(), ['durationSeconds', 'id', 'title']);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE_|info/);
+});
+
+test('schedule slots project their scheduled length only from valid start and end seconds (#608)', async () => {
+  const schedule = scheduleReply();
+  const base = schedule.slots[0];
+  const slot = (id, startAt, endAt) => ({ ...base, id, startAt, endAt });
+  schedule.slots = [slot('slot-0', 1000, 2800), slot('slot-1', 1000, 1000), slot('slot-2', 2800, 1000),
+    slot('slot-3', 'PRIVATE_UNVERIFIED', 2800), slot('slot-4', 0, 604801), slot('slot-5', 1.5, 1801)];
+  const value = fixture({ operation: 'FETCH_SCHEDULE', schedule }); value.start(); await settle();
+  assert.equal(value.state().state, 'SCHEDULE_SNAPSHOT');
+  const projection = JSON.parse(value.call(`window['${apiName}'].metadata()`));
+  assert.deepEqual(projection.slots.map(s => s.durationSeconds), [1800, undefined, undefined, undefined, undefined, undefined]);
+  assert.doesNotMatch(JSON.stringify(projection), /PRIVATE_|startAt|endAt/);
+});
+
 const slotRequest = (channelId = 'channel-A', slotId = 'slot-A') => ({ channelId, slotId });
 test('slot operation binds two exact channel and slot identities and discards timing sources and private metadata', async () => {
   for (const resourceId of [slotRequest(), slotRequest('channel-B', 'slot-B_2')]) {

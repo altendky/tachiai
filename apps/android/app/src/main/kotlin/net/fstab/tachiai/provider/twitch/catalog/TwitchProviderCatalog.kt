@@ -294,7 +294,8 @@ internal class TwitchProviderCatalog(
     private fun broadcasterEntry(value: TwitchCatalogBroadcaster, availability: CatalogAvailability) =
         CatalogEntry(CatalogResource(providerId, "broadcaster", value.id, CatalogIntent.CHANNEL), value.name, availability)
     private fun videoEntry(value: TwitchCatalogVideo) =
-        CatalogEntry(CatalogResource(providerId, "video", value.id, CatalogIntent.VIDEO), value.title, CatalogAvailability.AVAILABLE)
+        CatalogEntry(CatalogResource(providerId, "video", value.id, CatalogIntent.VIDEO), value.title, CatalogAvailability.AVAILABLE,
+            durationSeconds = value.durationSeconds)
     private fun exactUser(context: Context, input: TwitchCatalogPublicInput): TwitchCatalogBroadcaster? {
         val request = when (input) {
             is TwitchCatalogPublicInput.BroadcasterId -> TwitchHelixRequest.usersById(listOf(input.id))

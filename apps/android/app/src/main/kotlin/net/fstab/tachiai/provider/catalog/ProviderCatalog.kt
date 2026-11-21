@@ -28,11 +28,32 @@ internal data class CatalogEntry(
     val title: String,
     val availability: CatalogAvailability = CatalogAvailability.UNKNOWN,
     val scheduledStartEpochMs: Long? = null,
+    // Display length only (#608), from provider metadata already fetched;
+    // never used for playback, alignment or seeking. Unknown stays null.
+    val durationSeconds: Long? = null,
 ) {
     init {
         require(title == title.trim() && title.length in 1..160 &&
             title.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
         require(scheduledStartEpochMs == null || scheduledStartEpochMs >= 0)
+        require(durationSeconds == null || durationSeconds in 1..MAX_CATALOG_DURATION_SECONDS)
+    }
+}
+
+// A week bounds every listed item; longer values are not display metadata.
+internal const val MAX_CATALOG_DURATION_SECONDS = 7L * 24 * 60 * 60
+
+// `1h 58m`, `45m`, or `40s` under a minute; minutes round to the nearest.
+internal fun formatCatalogDuration(seconds: Long): String {
+    require(seconds in 1..MAX_CATALOG_DURATION_SECONDS)
+    if (seconds < 60) return "${seconds}s"
+    val minutes = (seconds + 30) / 60
+    val hours = minutes / 60
+    val rest = minutes % 60
+    return when {
+        hours == 0L -> "${rest}m"
+        rest == 0L -> "${hours}h"
+        else -> "${hours}h ${rest}m"
     }
 }
 

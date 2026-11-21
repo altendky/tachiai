@@ -522,7 +522,10 @@
       // annotation does not make an otherwise valid broadcast unconfigurable.
       if (channelId === undefined || item.channelId === channelId) {
         matching++;
-        if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim() }));
+        // Scheduled length in seconds (#608). Anything else stays unknown.
+        const span = Number.isSafeInteger(item.startAt) && Number.isSafeInteger(item.endAt) ? item.endAt - item.startAt : 0;
+        if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim(),
+          ...(span > 0 && span <= 604800 ? { durationSeconds: span } : {}) }));
       }
     }
     if (channelId !== undefined) return Object.freeze({ slots, truncated: matching > slots.length, channelId });
@@ -757,7 +760,10 @@
                   item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
                   /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();
                 ids.add(item.id);
-                return Object.freeze({ id: item.id, title: item.episode.title.trim() });
+                // Display length in seconds (#608). Anything else stays unknown.
+                const duration = item.info?.duration;
+                return Object.freeze({ id: item.id, title: item.episode.title.trim(),
+                  ...(Number.isSafeInteger(duration) && duration > 0 && duration <= 604800 ? { durationSeconds: duration } : {}) });
               });
               return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs,
                 ...(seriesRequest.seasonId !== undefined ? { seasonId: seriesRequest.seasonId } : {}) });

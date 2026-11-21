@@ -179,6 +179,26 @@ test('ongoing selected broadcast opens modern continuous channel without Chase m
   assert.equal(value.persistentStorageTouches(), 0);
 });
 
+test('a future slot reports only its start, for waiting, and still refuses playback', async () => {
+  const start = fixtureNow / 1000 + 600;
+  for (const continuous of [true, false]) {
+    const options = continuousSlotOptions({ continuousSlotPlayback: continuous });
+    options.slot.startAt = start; options.slot.endAt = start + 3600;
+    const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+    const metadata = value.metadata();
+    assert.equal(metadata.phase, 'SLOT_NOT_STARTED'); assert.equal(metadata.startAt, start);
+    assert.equal(metadata.failure, 'UNKNOWN'); assert.equal(metadata.http, 200);
+    assert.deepEqual(Object.keys(metadata).sort(), ['failure', 'http', 'lastModule', 'modules', 'phase', 'startAt']);
+    assert.equal(value.requests.some(({ uri }) => ['/v1/channels', '/v1/media/deviceTypeId'].includes(uri.pathname)), false);
+    assert.equal(value.begin(challenge), 'REFUSED');
+  }
+  // A malformed (fractional) start is refused before the waiting check and carries no start.
+  const options = continuousSlotOptions(); options.slot.startAt = fixtureNow / 1000 + 0.5;
+  const value = fixture(options); value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
+  assert.notEqual(value.metadata().phase, 'SLOT_NOT_STARTED');
+  assert.equal('startAt' in value.metadata(), false);
+});
+
 test('genuine guest continuous slot keeps legacy channel preparation without modern device or account fallback', async () => {
   const value = fixture(continuousSlotOptions({ account: undefined, forbidGuest: false }));
   value.startSlot('sumo/fixture-slot'); await waitFor(value, 'READY');

@@ -15,6 +15,9 @@
   let lastModule = 0;
   let http = 0;
   let failure = 'NONE';
+  // A future slot's start, in epoch seconds (#587). A bounded number only; it
+  // survives stop() so the native side can wait for the broadcast.
+  let slotStartAt;
   let selected;
   let selectedEpisode;
   let selectedChannel;
@@ -434,7 +437,9 @@
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
       status: () => { usable(); return state; },
-      metadata: () => stringify({ phase, modules: count, lastModule, http, failure }),
+      metadata: () => stringify(phase === 'SLOT_NOT_STARTED' && slotStartAt !== undefined ?
+        { phase, modules: count, lastModule, http, failure, startAt: slotStartAt } :
+        { phase, modules: count, lastModule, http, failure }),
       selectedSource: () => usable() && state === 'READY' ? selected : null,
       playbackAvailability: () => {
         if (!usable() || state !== 'READY') return null;
@@ -842,7 +847,7 @@
     if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt) throw new Error();
     const now = Date.now();
     const chase = slot.startAt * 1000 <= now && now < slot.endAt * 1000;
-    if (slot.startAt * 1000 > now) throw new Error();
+    if (slot.startAt * 1000 > now) { phase = 'SLOT_NOT_STARTED'; slotStartAt = slot.startAt; throw new Error(); }
     if (chase && continuousSlotPlayback) {
       phase = 'SLOT_RESTRICTIONS';
       if ((slot.flags !== undefined && (!record(slot.flags) ||

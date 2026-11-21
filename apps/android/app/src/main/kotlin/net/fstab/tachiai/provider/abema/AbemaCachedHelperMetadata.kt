@@ -18,7 +18,10 @@ internal fun AbemaCachedHelperFailure.diagnosticCategory(): FailureCategory = wh
 }
 
 internal data class AbemaCachedHelperMetadata(val phase: String, val modules: Int, val lastModule: Int,
-    val http: Int, val failure: AbemaCachedHelperFailure) {
+    val http: Int, val failure: AbemaCachedHelperFailure,
+    // A future slot's start (#587), only with phase SLOT_NOT_STARTED. Kept out
+    // of the closed summary: it is schedule data, not a diagnostic category.
+    val startAtEpochSeconds: Long? = null) {
     fun closedSummary() = "phase=$phase modules=$modules lastModule=$lastModule http=$http failure=${failure.name}"
 }
 
@@ -27,12 +30,13 @@ private val helperPhases = setOf("MODULES", "GUEST", "ACCOUNT", "MEDIA_TOKEN", "
     "REPLAY_PRECEDENCE", "REPLAY_DEVICE", "REPLAY_TRIAL", "REPLAY_PARTNER", "REPLAY_EXTERNAL_CONTENT",
     "REPLAY_EXTERNAL_PROVIDER", "REPLAY_AUTHORITIES", "SOURCE_SESSION_REQUIRED", "SOURCE_MODE_UNSUPPORTED",
     "SLOT_REGION", "SLOT_REGION_PAGE", "SLOT_REGION_CDN", "SLOT_FREE", "SLOT_RESTRICTIONS", "SLOT_WINDOW",
+    "SLOT_NOT_STARTED",
     "CHANNEL_REQUEST", "CHANNEL_RESPONSE", "CHANNEL_ENVELOPE_REFUSED", "CHANNEL_SELECTION_REFUSED",
     "CHANNEL_UNAVAILABLE", "CHANNEL_DRM_REFUSED", "CHANNEL_PLAYLIST_REFUSED", "CHANNEL_ALTERNATE_REFUSED",
     "CHANNEL_REGION", "CHANNEL_REGION_PAGE", "CHANNEL_REGION_CDN", "CHANNEL_DEVICE", "CHANNEL_CONTEXT_REFUSED",
     "SOURCE", "CONFIG", "LICENSE", "READY", "FAILED")
 private const val DECIMAL = "(0|[1-9][0-9]{0,6})"
-private val helperMetadataShape = Regex("""\{"phase":"([A-Z_]{1,40})","modules":$DECIMAL,"lastModule":$DECIMAL,"http":$DECIMAL(?:,"failure":"([A-Z_]{1,40})")?\}""")
+private val helperMetadataShape = Regex("""\{"phase":"([A-Z_]{1,40})","modules":$DECIMAL,"lastModule":$DECIMAL,"http":$DECIMAL(?:,"failure":"([A-Z_]{1,40})")?(?:,"startAt":([1-9][0-9]{0,10}))?\}""")
 
 // Exactly the canonical Stringify projection, including the old four-field
 // version. No duplicate/extra fields, coercion, escapes or provider values.
@@ -53,7 +57,11 @@ internal fun parseAbemaCachedHelperMetadata(text: String?): AbemaCachedHelperMet
         else -> http == 0 || http == 200
     }
     if (name.isNotEmpty() && !coherentStatus) return null
-    return AbemaCachedHelperMetadata(phase, modules, lastModule, http, failure)
+    // The bootstrap's own bound: whole epoch seconds, 0 < s < 1e11, and only
+    // ever beside its own phase.
+    val startAt = values[6].takeIf { it.isNotEmpty() }?.let { it.toLongOrNull()?.takeIf { s -> s in 1 until 100_000_000_000L } ?: return null }
+    if ((phase == "SLOT_NOT_STARTED") != (startAt != null)) return null
+    return AbemaCachedHelperMetadata(phase, modules, lastModule, http, failure, startAt)
 }
 
 // evaluateJavascript returns one JSON string. Its projection is ASCII and has

@@ -21,7 +21,34 @@ import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.provider.abema.account.AbemaApprovalBrowserPolicy
 
-private enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATCHING, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION, ABEMA_ACCOUNT_BOOTSTRAP, ABEMA_ACCOUNT_SESSION, ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT, ABEMA_APPROVAL_BROWSER }
+// This CONNECT layer only admits the union of already-reviewed native
+// and helper HTTPS hosts. Provider adapters still enforce exact URI,
+// source identity, request method and media-origin policies above it.
+private const val PLAYBACK_HOSTS = "abema.tv,api.p-c3-e.abema-tv.com,api.abema.io," +
+    "streaming-api-cf.p-c2-x.abema-tv.com,license.p-c3-e.abema-tv.com,*-abematv.akamaized.net," +
+    "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net"
+
+// A route owner in another process derives allowed hosts from this closed
+// purpose itself; a lease client never supplies a host list.
+internal enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATCHING, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION, ABEMA_ACCOUNT_BOOTSTRAP, ABEMA_ACCOUNT_SESSION, ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT, ABEMA_APPROVAL_BROWSER;
+    val allowedHosts: String get() = when (this) {
+        TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
+        TWITCH_CONTINUE_WATCHING -> "gql.twitch.tv"
+        ABEMA_CATALOG -> "api.abema.io"
+        ABEMA_GUEST -> "abema.tv"
+        ABEMA_GUEST_PROFILE -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_EPISODE_METADATA -> "api.p-c3-e.abema-tv.com"
+        ABEMA_GUEST_EPISODE -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_GUEST_DEVICE_AUTHORIZATION -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_ACCOUNT_COLLECTION -> "api.p-c3-e.abema-tv.com"
+        ABEMA_ACCOUNT_BOOTSTRAP -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_ACCOUNT_SESSION -> "abema.tv,api.p-c3-e.abema-tv.com"
+        ABEMA_APPROVAL_BROWSER -> AbemaApprovalBrowserPolicy.HOSTS
+        PLAYBACK -> PLAYBACK_HOSTS
+    }
+}
 
 // Shares one actual backend close between construction rollback and its ready
 // owner. It executes inline so nested account receipts need no extra worker.
@@ -180,12 +207,6 @@ internal class RouteSession private constructor(
 
     companion object {
         private val retainedNetworkOwners = java.util.concurrent.ConcurrentLinkedQueue<List<Any>>()
-        // This CONNECT layer only admits the union of already-reviewed native
-        // and helper HTTPS hosts. Provider adapters still enforce exact URI,
-        // source identity, request method and media-origin policies above it.
-        private const val ALLOWED_HOSTS = "abema.tv,api.p-c3-e.abema-tv.com,api.abema.io," +
-            "streaming-api-cf.p-c2-x.abema-tv.com,license.p-c3-e.abema-tv.com,*-abematv.akamaized.net," +
-            "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net"
 
         fun create(profile: ConnectionProfile?,
             preparation: RoutePreparation = RoutePreparation(),
@@ -431,24 +452,7 @@ internal class RouteSession private constructor(
             val username = nonce(); val password = nonce(); val realm = nonce()
             var backend: RouteBackend? = null
             return try {
-                val security = RouteProxySecurity(username, password, realm,
-                    when (purpose) {
-                        RoutePurpose.TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
-                        RoutePurpose.TWITCH_CONTINUE_WATCHING -> "gql.twitch.tv"
-                        RoutePurpose.ABEMA_CATALOG -> "api.abema.io"
-                        RoutePurpose.ABEMA_GUEST -> "abema.tv"
-                        RoutePurpose.ABEMA_GUEST_PROFILE -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_EPISODE_METADATA -> "api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_GUEST_EPISODE -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_ACCOUNT_COLLECTION -> "api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_ACCOUNT_SESSION -> "abema.tv,api.p-c3-e.abema-tv.com"
-                        RoutePurpose.ABEMA_APPROVAL_BROWSER -> AbemaApprovalBrowserPolicy.HOSTS
-                        RoutePurpose.PLAYBACK -> ALLOWED_HOSTS
-                    })
+                val security = RouteProxySecurity(username, password, realm, purpose.allowedHosts, purpose)
                 backend = if (profile == null) checkNotNull(createSystemBackend)(security) else createBackend(profile, security)
                 backend = ownBackend(checkNotNull(backend))
                 preparation.checkActive()

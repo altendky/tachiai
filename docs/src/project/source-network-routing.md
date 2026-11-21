@@ -29,7 +29,42 @@ provider algorithm change, credential capture or System-network fallback is adde
 
 Provider route choices are frozen per presentation. Identical canonical profiles
 share one tunnel/bridge, including duplicate imports, to avoid competing
-WireGuard endpoints for one peer. Native Twitch validation/access/HLS and ABEMA
+WireGuard endpoints for one peer. Within each Android process, every WireGuard
+route of one key pair (playback, account checks, catalogs) also shares one
+device: each use leases its own loopback listener, credentials and allowed
+hosts from it, and the device retires about 30 seconds after its last lease.
+Another configuration with the same key waits for that retirement, and an
+unconfirmed device close blocks the key in that process rather than starting a
+second device. The playback process starts no WireGuard device of its own: it
+leases from the ordinary process over a same-UID Binder service that its bound
+viewer keeps alive. Owner death revokes the lease and fails that route into
+existing recovery; an unconfirmed lease close is unconfirmed route cleanup.
+Neither falls back to a local device or System. The approval and guest WebView
+processes and the renewal job still start their own devices
+([#275](https://github.com/altendky/tachiai/issues/275)). Each process logs
+closed engine events under `TachiaiRouteEngine`: process role,
+`ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED` with
+the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. No configuration, key or host
+is logged.
+
+On 2026-11-21 on the NVIDIA SHIELD (Android 11, Windscribe Tokyo WireGuard,
+saved ABEMA account):
+
+- A live News start and a News + sumo-replay pair each used one engine, in the
+  ordinary process only. The account checks and both feeds leased it (up to
+  two concurrent leases); the playback process started no engine.
+- Both feeds of the pair reached video frames and played for a further minute
+  without a feed failure or another engine.
+- Opening the collection Episodes page started a separate engine in
+  `abema_guest_bootstrap` while the ordinary process's idle engine had not yet
+  retired. This is the remaining guest-WebView gap above; nothing was playing
+  at the time.
+- Live News reached its first frame in 22.1 s from feed start (23.0 s on
+  `main` earlier the same day). With a warm engine, the account step still
+  spent 3.6 s on the profile check and 2.0 s on the email check, so those
+  provider round trips, not tunnel setup, dominate it.
+
+Native Twitch validation/access/HLS and ABEMA
 bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA
 guest/source/initial-license requests remain unchanged Chromium requests, routed
 by an awaited process proxy override in its dedicated host. The two ABEMA

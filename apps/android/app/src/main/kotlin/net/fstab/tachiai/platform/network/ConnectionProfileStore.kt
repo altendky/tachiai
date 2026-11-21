@@ -72,6 +72,12 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
     // Worker-only secret snapshot; never sent through intents, UI state or diagnostics.
     fun selected(id: String): ConnectionProfile = locked { checkNotNull(read().find { it.id == id }).profile }
 
+    // Route-owner lookup: a lease client names a profile only by its route
+    // configuration digest, so configuration never crosses process boundaries.
+    fun configured(configurationKey: String): ConnectionProfile? = locked {
+        read().map { it.profile }.firstOrNull { routeConfigurationKey(it) == configurationKey }
+    }
+
     // One protected read captures all requested profiles. An absent ID is a
     // missing candidate; an unreadable/corrupt record fails the whole snapshot.
     fun snapshot(ids: Set<String>): Map<String, ConnectionProfile> {

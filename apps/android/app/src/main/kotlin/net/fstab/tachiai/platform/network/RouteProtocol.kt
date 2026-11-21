@@ -18,7 +18,9 @@ internal interface RouteBackend : AutoCloseable {
     val proxyPort: Int
 }
 
-internal class RouteProxySecurity(val username: String, val password: String, val realm: String, val allowedHosts: String) {
+// Purpose is absent only for direct fixtures; a Binder lease requires it.
+internal class RouteProxySecurity(val username: String, val password: String, val realm: String, val allowedHosts: String,
+    val purpose: RoutePurpose? = null) {
     override fun toString() = "RouteProxySecurity(secrets hidden)"
 }
 

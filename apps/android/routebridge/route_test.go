@@ -254,14 +254,17 @@ func TestWireGuardConfigFailsClosed(t *testing.T) {
 	}
 }
 
-func TestActualWireGuardTunnelAndDns(t *testing.T) {
+// wireGuardFixture runs an in-process WireGuard peer with DNS and an echo
+// origin at 10.2.0.1:443, returning a client config for it.
+func wireGuardFixture(t *testing.T) string {
+	t.Helper()
 	client, server := syntheticKeys(t)
 	tun, network, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.2.0.1")}, nil, 1280)
 	if err != nil {
 		t.Fatal("Fixture netstack creation failed")
 	}
 	engine := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
-	defer engine.Close()
+	t.Cleanup(func() { engine.Close() })
 	ipc := "private_key=" + hex.EncodeToString(server.Bytes()) + "\nlisten_port=0\npublic_key=" + hex.EncodeToString(client.PublicKey().Bytes()) + "\nallowed_ip=10.2.0.2/32\n"
 	if engine.IpcSet(ipc) != nil || engine.Up() != nil {
 		t.Fatal("Fixture engine creation failed")
@@ -283,7 +286,7 @@ func TestActualWireGuardTunnelAndDns(t *testing.T) {
 	if err != nil {
 		t.Fatal("Fixture DNS failed")
 	}
-	defer udp.Close()
+	t.Cleanup(func() { udp.Close() })
 	go func() {
 		data := make([]byte, 2048)
 		for {
@@ -317,16 +320,22 @@ func TestActualWireGuardTunnelAndDns(t *testing.T) {
 	if err != nil {
 		t.Fatal("Fixture origin failed")
 	}
-	defer tcp.Close()
+	t.Cleanup(func() { tcp.Close() })
 	go func() {
-		c, e := tcp.Accept()
-		if e != nil {
-			return
+		for {
+			c, e := tcp.Accept()
+			if e != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }()
 		}
-		defer c.Close()
-		io.Copy(c, c)
 	}()
-	r, err := NewWireGuard(fixtureConfig(client, server, "127.0.0.1:"+port), localUser, localPassword, localRealm, "example.test")
+	return fixtureConfig(client, server, "127.0.0.1:"+port)
+}
+
+func TestActualWireGuardTunnelAndDns(t *testing.T) {
+	config := wireGuardFixture(t)
+	r, err := NewWireGuard(config, localUser, localPassword, localRealm, "example.test")
 	if err != nil {
 		t.Fatal("WireGuard route creation failed")
 	}

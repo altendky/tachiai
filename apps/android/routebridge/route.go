@@ -63,6 +63,8 @@ type Route struct {
 
 	// Bound transports verify callback cleanup after their dial workers join.
 	afterCleanup func() error
+	// release detaches an engine lease before this route closes its sockets.
+	release func()
 }
 
 func validHost(host string) bool {
@@ -145,6 +147,9 @@ func (r *Route) GetPort() int { return r.Port() }
 // Close cancels pending dials and active connections, then releases the engine.
 func (r *Route) Close() error {
 	r.once.Do(func() {
+		if r.release != nil {
+			r.release()
+		}
 		r.cancel()
 		r.listener.Close()
 		r.mu.Lock()

@@ -26,6 +26,8 @@ internal class NativeRouteEngine(private val engine: Engine) : RouteEngine {
 // this process instead of allowing a second engine.
 internal class RouteEngineOwner(
     private val idleMs: Long = 30_000,
+    // Closed events and counts only; never a configuration, key or host.
+    private val log: (String) -> Unit = {},
     private val schedule: (Long, () -> Unit) -> Unit = { delay, action ->
         retirements.schedule(action, delay, TimeUnit.MILLISECONDS)
     },
@@ -34,7 +36,13 @@ internal class RouteEngineOwner(
         private val retirements = ScheduledThreadPoolExecutor(1) { task ->
             Thread(task, "route-engine-retire").apply { isDaemon = true }
         }
-        val shared = RouteEngineOwner()
+        // Process role only (for example "main" or "prototype_cached_player").
+        private val role by lazy {
+            runCatching { if (android.os.Build.VERSION.SDK_INT >= 28)
+                android.app.Application.getProcessName().substringAfter(':', "main") else "unknown" }.getOrDefault("unknown")
+                .takeIf { it.matches(Regex("[A-Za-z0-9_]{1,40}")) } ?: "unknown"
+        }
+        val shared = RouteEngineOwner(log = { event -> android.util.Log.i("TachiaiRouteEngine", "process=$role $event") })
     }
     private class Entry(val configuration: String, val engine: RouteEngine) {
         var leases = 0
@@ -57,8 +65,12 @@ internal class RouteEngineOwner(
             retire(conflict, existing)
             null
         } else existing
-        val active = reusable ?: Entry(configuration, create()).also { created -> synchronized(lock) { entries[conflict] = created } }
-        synchronized(lock) { active.leases++; active.generation++ }
+        val active = reusable ?: Entry(configuration, create()).also { created ->
+            synchronized(lock) { entries[conflict] = created }
+            log("ENGINE_STARTED engines=${engineCount()}")
+        }
+        val openLeases = synchronized(lock) { active.leases++; active.generation++; active.leases }
+        log("LEASE_OPENED leases=$openLeases")
         val backend = try { active.engine.lease(security) } catch (error: Throwable) { release(conflict, active); throw error }
         // Close once; repeated calls report the first outcome.
         val closed = lazy { runCatching { backend.close() }.also { release(conflict, active) } }
@@ -90,6 +102,7 @@ internal class RouteEngineOwner(
     private fun retire(conflict: String, entry: Entry) {
         val closed = runCatching { entry.engine.close() }.isSuccess
         synchronized(lock) { if (closed) entries.remove(conflict) else entry.poisoned = true }
+        log(if (closed) "ENGINE_RETIRED engines=${engineCount()}" else "ENGINE_CLEANUP_UNCONFIRMED")
         if (!closed) throw IOException("Route cleanup unconfirmed")
     }
 

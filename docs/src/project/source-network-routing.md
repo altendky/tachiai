@@ -41,7 +41,30 @@ viewer keeps alive. Owner death revokes the lease and fails that route into
 existing recovery; an unconfirmed lease close is unconfirmed route cleanup.
 Neither falls back to a local device or System. The approval and guest WebView
 processes and the renewal job still start their own devices
-([#275](https://github.com/altendky/tachiai/issues/275)). Native Twitch validation/access/HLS and ABEMA
+([#275](https://github.com/altendky/tachiai/issues/275)). Each process logs
+closed engine events under `TachiaiRouteEngine`: process role,
+`ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED` with
+the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. No configuration, key or host
+is logged.
+
+On 2026-11-21 on the NVIDIA SHIELD (Android 11, Windscribe Tokyo WireGuard,
+saved ABEMA account):
+
+- A live News start and a News + sumo-replay pair each used one engine, in the
+  ordinary process only. The account checks and both feeds leased it (up to
+  two concurrent leases); the playback process started no engine.
+- Both feeds of the pair reached video frames and played for a further minute
+  without a feed failure or another engine.
+- Opening the collection Episodes page started a separate engine in
+  `abema_guest_bootstrap` while the ordinary process's idle engine had not yet
+  retired. This is the remaining guest-WebView gap above; nothing was playing
+  at the time.
+- Live News reached its first frame in 22.1 s from feed start (23.0 s on
+  `main` earlier the same day). With a warm engine, the account step still
+  spent 3.6 s on the profile check and 2.0 s on the email check, so those
+  provider round trips, not tunnel setup, dominate it.
+
+Native Twitch validation/access/HLS and ABEMA
 bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA
 guest/source/initial-license requests remain unchanged Chromium requests, routed
 by an awaited process proxy override in its dedicated host. The two ABEMA

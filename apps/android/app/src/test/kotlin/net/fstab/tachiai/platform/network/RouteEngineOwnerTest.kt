@@ -33,6 +33,18 @@ class RouteEngineOwnerTest {
         val security = RouteProxySecurity("synthetic_user_0001", "synthetic_password_01", "synthetic_realm_0001", "example.test")
     }
 
+    @Test fun lifecycleLogNamesClosedEventsAndCountsOnly() {
+        val timers = mutableListOf<() -> Unit>()
+        val events = mutableListOf<String>()
+        val owner = RouteEngineOwner(idleMs = 30_000, log = { events.add(it) }) { _, action -> timers.add(action) }
+        val a = owner.lease("config-a", "key-a", security) { FakeEngine() }
+        val b = owner.lease("config-a", "key-a", security) { FakeEngine() }
+        a.close(); b.close(); timers.toList().forEach { it() }
+        assertEquals(listOf("ENGINE_STARTED engines=1", "LEASE_OPENED leases=1", "LEASE_OPENED leases=2",
+            "ENGINE_RETIRED engines=0"), events)
+        assertTrue(events.none { it.contains("config") || it.contains("key") || it.contains("synthetic") })
+    }
+
     @Test fun leasesOfOneConfigurationShareOneEngineUntilIdleRetirement() {
         val f = Fixture()
         val a = f.lease(); val b = f.lease()

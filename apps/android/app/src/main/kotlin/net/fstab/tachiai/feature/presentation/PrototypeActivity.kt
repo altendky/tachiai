@@ -886,7 +886,11 @@ open class PrototypeActivity : ComponentActivity() {
                         slotResource = source.resource.takeIf { it.kind == "slot" },
                         continuousSlotPlayback = source.resource.kind == "slot",
                         ownership = abemaOwnership,
-                        routeOwnership = abemaOwnership)
+                        routeOwnership = abemaOwnership,
+                        // #598 stage 1: opt-in development switch, a marker file
+                        // created with `run-as`. Ordinary builds keep the WebView helper.
+                        useIsolateHelper = BuildConfig.DEBUG &&
+                            java.io.File(noBackupFilesDir, "abema-isolate-helper").exists())
                         else comparisonAbemaSession(source.resource, replay, feedActive, events, feedDiagnostics(index))
                     PrototypeService.TWITCH -> {
                         val instanceId = source.instanceId

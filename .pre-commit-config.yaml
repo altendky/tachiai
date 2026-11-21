@@ -130,6 +130,13 @@ repos:
         files: 'abema/native-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-native-bootstrap\.test\.cjs$'
         pass_filenames: false
 
+      - id: abema-isolate-helper-tests
+        name: ABEMA isolate helper host script tests
+        entry: node --test scripts/tests/abema-isolate-helper.test.cjs
+        language: system
+        files: 'abema/isolate-[^/]*\.js$|scripts/tests/abema-isolate-helper\.test\.cjs$'
+        pass_filenames: false
+
       - id: abema-cached-helper-tests
         name: ABEMA downloaded helper fixture tests
         entry: node scripts/tests/abema-cached-helper.test.cjs

@@ -39,6 +39,8 @@
   let operation;
   let response;
   let modernContext = false;
+  // #598: an isolate outside this page runs the helper on the opaque response.
+  let isolateHelper = false;
   let ramClear;
   let deviceRequests = 0;
   let deviceStatus;
@@ -379,6 +381,16 @@
           headers: { 'Content-Type': 'application/json' }, body: new TextEncoder().encode(raw) }, 65536);
         alive();
         const serialized = stringify(fresh);
+        if (isolateHelper) {
+          // Opaque pass-through only: the native owner hands these bytes and
+          // this identity to the isolate helper for the same fresh CDM.
+          const opaque = new TextEncoder().encode(serialized);
+          try { response = new TextEncoder().encode(stringify({ input: base64(opaque), userId: user.userId })); }
+          finally { opaque.fill(0); }
+          if (response.byteLength > 98304) throw new Error();
+          state = 'RESPONSE';
+          return;
+        }
         const input = new TextEncoder().encode(serialized);
         let processed;
         try { processed = operation(input.buffer, user.userId); }
@@ -409,7 +421,7 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext, requestedContinuousSlotPlayback) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext, requestedContinuousSlotPlayback, requestedIsolateHelper) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
@@ -417,6 +429,7 @@
     const continuous = requestedContinuousSlotPlayback === true;
     if (continuous && (!configuredSlot || !replay || requestedChannelDiagnostic === true || requestedModernChannelContext === true)) return;
     if (requestedChannelDiagnostic !== undefined && typeof requestedChannelDiagnostic !== 'boolean') return;
+    if (requestedIsolateHelper !== undefined && typeof requestedIsolateHelper !== 'boolean') return;
     const channelDiagnostic = requestedChannelDiagnostic === true;
     if (channelDiagnostic && (!configuredChannel || replay || requestedAccount == null)) return;
     if (requestedModernChannelContext !== undefined && typeof requestedModernChannelContext !== 'boolean') return;
@@ -433,6 +446,7 @@
     if (!/^[a-f0-9]{32}$/.test(nonce) || typeof replay !== 'boolean' || stopped || initialized) { stop(true); return; }
     initialized = true;
     continuousSlotPlayback = continuous;
+    isolateHelper = requestedIsolateHelper === true;
     modernContext = requestedModernChannelContext === true;
     const name = '__tachiaiNative_' + nonce;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({

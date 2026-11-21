@@ -25,6 +25,9 @@
   let expectedGateway;
   let license;
   let user;
+  // Resolves the saved-account result for a host started beside the
+  // account check (#603). Taken once; cleared by stop.
+  let offerAccount;
   let accountExpiry;
   let accountWall;
   let slotPremiumExpiry;
@@ -55,7 +58,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
-    response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = undefined;
+    response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = offerAccount = undefined;
     accountExpiry = accountWall = slotPremiumExpiry = slotPremiumCandidate = slotChaseCandidate = slotChaseExpiry = undefined;
     sourceExpiry = sourceWall = undefined;
     selectedChase = selectedLinear = false;
@@ -409,7 +412,7 @@
     })();
     return 'WORKING';
   };
-  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext, requestedContinuousSlotPlayback) => {
+  window.__tachiaiStartNativeBootstrap = (nonce, replay, requestedEpisode, requestedChannel, requestedSlot, requestedAccount, requestedChannelDiagnostic, requestedModernChannelContext, requestedContinuousSlotPlayback, requestedAccountDeferred) => {
     const configured = requestedEpisode !== undefined;
     const configuredChannel = requestedChannel !== undefined;
     const configuredSlot = requestedSlot !== undefined;
@@ -417,6 +420,12 @@
     const continuous = requestedContinuousSlotPlayback === true;
     if (continuous && (!configuredSlot || !replay || requestedChannelDiagnostic === true || requestedModernChannelContext === true)) return;
     if (requestedChannelDiagnostic !== undefined && typeof requestedChannelDiagnostic !== 'boolean') return;
+    if (requestedAccountDeferred !== undefined && typeof requestedAccountDeferred !== 'boolean') return;
+    // A deferred host receives its saved-account result, or GUEST, once via
+    // account(). Diagnostic channel modes still require it at start.
+    const deferred = requestedAccountDeferred === true;
+    if (deferred && (requestedAccount !== undefined || requestedChannelDiagnostic === true ||
+      requestedModernChannelContext === true)) return;
     const channelDiagnostic = requestedChannelDiagnostic === true;
     if (channelDiagnostic && (!configuredChannel || replay || requestedAccount == null)) return;
     if (requestedModernChannelContext !== undefined && typeof requestedModernChannelContext !== 'boolean') return;
@@ -435,6 +444,7 @@
     continuousSlotPlayback = continuous;
     modernContext = requestedModernChannelContext === true;
     const name = '__tachiaiNative_' + nonce;
+    const accountOffer = deferred ? new Promise(resolve => { offerAccount = resolve; }) : undefined;
     Object.defineProperty(window, name, { configurable: true, value: Object.freeze({
       status: () => { usable(); return state; },
       metadata: () => stringify(phase === 'SLOT_NOT_STARTED' && slotStartAt !== undefined ?
@@ -454,6 +464,19 @@
       slotBinding: () => usable() && state === 'READY' && configuredSlot ?
         stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected,
           ...(selectedChase ? { chase: true } : selectedLinear ? { linear: true } : {}) }) : null,
+      account: encoded => {
+        if (!usable() || !offerAccount) return 'REFUSED';
+        const offer = offerAccount;
+        offerAccount = undefined;
+        if (encoded === 'GUEST') { offer(null); return 'ACCEPTED'; }
+        try {
+          if (typeof encoded !== 'string' || encoded.length > 16384 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error();
+          const value = parse(atob(encoded));
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+          offer(value);
+          return 'ACCEPTED';
+        } catch { remember('RESPONSE_VALIDATION_REFUSED'); stop(true); return 'REFUSED'; }
+      },
       begin,
       take: () => { if (!usable() || state !== 'RESPONSE' || !response) return null;
         const encoded = base64(response); stop(); return encoded; },
@@ -468,6 +491,13 @@
         operation = (helper.__esModule ? helper.default : helper)(utilities.__esModule ? utilities.default : utilities);
         if (typeof operation !== 'function') throw new Error();
         let deviceId;
+        if (deferred) {
+          state = 'WAITING_ACCOUNT'; phase = 'ACCOUNT';
+          const offered = await accountOffer;
+          alive();
+          state = 'WAITING_SESSION';
+          requestedAccount = offered === null ? undefined : offered;
+        }
         if (requestedAccount !== undefined) {
           phase = 'ACCOUNT';
           if (!requestedAccount || typeof requestedAccount !== 'object' || Array.isArray(requestedAccount)) refuseResponse();

@@ -330,6 +330,88 @@ test('configured playback uses one validated account identity through token sour
   assert.ok(value.take()); assert.equal(value.status(), 'STOPPED');
 });
 
+const encodedAccount = account => Buffer.from(JSON.stringify(account)).toString('base64');
+
+test('deferred host loads modules, waits without requests and plays with the later account (#603)', async () => {
+  const value = fixture({ accountDeferred: true, forbidGuest: true });
+  value.start(true, '89-70_s111_p4016'); await waitFor(value, 'WAITING_ACCOUNT');
+  assert.equal(value.requests.length, 0); assert.equal(value.metadata().phase, 'ACCOUNT');
+  assert.equal(value.begin(challenge), 'REFUSED');
+  assert.equal(value.account(encodedAccount(savedAccount())), 'ACCEPTED');
+  await waitFor(value, 'READY');
+  assert.equal(value.requests.some(({ uri }) => uri.pathname === '/api/auth/login/guest'), false);
+  const token = value.requests.find(({ uri }) => uri.pathname === '/v1/media/token');
+  assert.equal(token.request.headers.Authorization, 'Bearer ACCOUNT_BEARER');
+  assert.equal(value.evaluate('observed.clients[0].device.id'), 'ACCOUNT_DEVICE');
+  assert.equal(value.account(encodedAccount(savedAccount())), 'REFUSED'); assert.equal(value.status(), 'READY');
+  assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE'); assert.ok(value.take());
+});
+
+test('a deferred account offered before the host waits is kept for it', async () => {
+  const value = fixture({ accountDeferred: true, forbidGuest: true });
+  value.start(true, '89-70_s111_p4016');
+  assert.equal(value.account(encodedAccount(savedAccount())), 'ACCEPTED');
+  await waitFor(value, 'READY');
+  assert.equal(value.requests.some(({ uri }) => uri.pathname === '/api/auth/login/guest'), false);
+});
+
+test('a deferred GUEST result uses the guest login once', async () => {
+  const value = fixture({ accountDeferred: true });
+  value.start(true, '89-70_s111_p4016'); await waitFor(value, 'WAITING_ACCOUNT');
+  assert.equal(value.account('GUEST'), 'ACCEPTED'); await waitFor(value, 'READY');
+  assert.equal(value.requests[0].uri.pathname, '/api/auth/login/guest');
+  assert.equal(value.account('GUEST'), 'REFUSED');
+});
+
+test('a deferred slot host receives its Premium slot account and continuous linear account', async () => {
+  const slot = { ...freeSlot(), timeshiftEndAt: fixtureNow / 1000 + 3, timeshiftFreeEndAt: fixtureNow / 1000 - 1 };
+  slot.flags.timeshiftFree = false;
+  const ended = fixture({ configuredSlot: true, slot, accountDeferred: true });
+  ended.startSlot('sumo/fixture-slot'); await waitFor(ended, 'WAITING_ACCOUNT');
+  assert.equal(ended.requests.length, 0);
+  assert.equal(ended.account(encodedAccount(slotPremiumAccount(fixtureNow + 2000))), 'ACCEPTED');
+  await waitFor(ended, 'READY');
+  const binding = JSON.parse(ended.evaluate(`window['${name}'].slotBinding()`));
+  assert.deepEqual(availability(ended), { uri: binding.uri, expiresAtMs: fixtureNow + 2000 });
+  const linear = fixture(continuousSlotOptions({ account: undefined, accountDeferred: true }));
+  linear.startSlot('sumo/fixture-slot'); await waitFor(linear, 'WAITING_ACCOUNT');
+  assert.equal(linear.account(encodedAccount(savedAccount())), 'ACCEPTED'); await waitFor(linear, 'READY');
+  assert.equal(linear.requests.some(({ uri }) => uri.pathname === '/api/auth/login/guest'), false);
+});
+
+test('a malformed deferred account fails without requests or guest fallback', async () => {
+  for (const encoded of ['!!!', '', 'R1VFU1Q', encodedAccount([]), encodedAccount(null), 'A'.repeat(16388)]) {
+    const value = fixture({ accountDeferred: true });
+    value.start(true, '89-70_s111_p4016'); await waitFor(value, 'WAITING_ACCOUNT');
+    assert.equal(value.account(encoded), 'REFUSED'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  }
+  for (const account of [{ ...savedAccount(), extra: true }, { ...savedAccount(), expiresAtMs: fixtureNow }]) {
+    const value = fixture({ accountDeferred: true });
+    value.start(true, '89-70_s111_p4016'); await waitFor(value, 'WAITING_ACCOUNT');
+    assert.equal(value.account(encodedAccount(account)), 'ACCEPTED'); await waitFor(value, 'FAILED');
+    assert.equal(value.requests.length, 0); assert.equal(value.metadata().failure, 'RESPONSE_VALIDATION_REFUSED');
+  }
+});
+
+test('a stopped deferred host refuses a late account', async () => {
+  const value = fixture({ accountDeferred: true });
+  value.start(true, '89-70_s111_p4016'); await waitFor(value, 'WAITING_ACCOUNT');
+  value.stop(); assert.equal(value.status(), 'STOPPED');
+  assert.equal(value.account(encodedAccount(savedAccount())), 'REFUSED');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(value.requests.length, 0); assert.equal(value.status(), 'STOPPED');
+});
+
+test('deferral is strict and excludes an initial account or diagnostic channel modes', async () => {
+  for (const options of [{ accountDeferred: true, account: savedAccount() }, { accountDeferred: 'true' },
+    { accountDeferred: true, channelDiagnostic: true }, { accountDeferred: true, modernChannelContext: true }]) {
+    const value = fixture(options); value.start(true, '89-70_s111_p4016');
+    assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+  const plain = fixture({ accountDeferred: false }); plain.start(true, '89-70_s111_p4016'); await waitFor(plain, 'READY');
+});
+
 test('malformed or expired explicit account never falls back to guest', async () => {
   for (const account of [null, false, [], {}, { ...savedAccount(), extra: true },
     { ...savedAccount(), bearer: '' }, { ...savedAccount(), userId: 'bad user' },
@@ -623,14 +705,15 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate, persistentStorageTouches: () => persistentStorageTouches,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),
     begin: encoded => evaluate(`window['${name}'].begin(${JSON.stringify(encoded)})`),
     take: () => evaluate(`window['${name}'].take()`),
+    account: encoded => evaluate(`window['${name}'].account(${JSON.stringify(encoded)})`),
   };
 }
 

@@ -158,6 +158,15 @@ internal class CachedPrototypeAbemaSession(
     private val worker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
         finishTransportCleanup(); onCleanupChanged()
     }
+    // Prepares bundles and starts the host while the worker acquires the saved
+    // account (#603). The account result then reaches that host once.
+    private val hostWorker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
+        finishTransportCleanup(); onCleanupChanged()
+    }
+    private val deferredAccount = AbemaDeferredAccount()
+    // A deferred host waits for its account without a provider-wait status.
+    @Volatile private var awaitingAccount = false
+    private var hostReadyRecorded = false
     private val transportFinalizing = AtomicBoolean()
     private val transportFinalized = AtomicBoolean()
     private val transportCancellationPending = AtomicBoolean()
@@ -180,7 +189,7 @@ internal class CachedPrototypeAbemaSession(
         private set
     private val accountLock = Any()
     private val privateInitialization = AtomicReference<ByteArray?>()
-    val cleanupPending get() = worker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
+    val cleanupPending get() = worker.pending || hostWorker.pending || accountCleanupPending.get() || slotProfileCleanupPending.get() ||
         transportCancellationPending.get() || nativeCleanup?.pending == true ||
         (closed.get() && (!transportFinalized.get() || !helperFinalized.get()))
     private val transportCleanup = net.fstab.tachiai.platform.media.NativeCleanupReceipt { cleanupFailed = true; onCleanupChanged() }
@@ -476,25 +485,117 @@ internal class CachedPrototypeAbemaSession(
             }
         } },
             maxOf(0L, readinessDeadline - SystemClock.elapsedRealtime()))
-        worker.execute {
-            fun cached(identity: AbemaPublicBundleIdentity): AbemaBundlePrepared {
-                val http = AbemaPublicBundleHttp(
-                    canRun = { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline },
-                    identity = identity,
-                    open = { url -> transportCleanup.allocate(10, { openConnection(url) }) { it.disconnect() } },
-                    onFailure = { transportCleanup.failed(); cleanupFailed = true; diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
-                    openInput = { request -> transportCleanup.input { request.inputStream } },
-                )
-                bundleTransport.set(http)
-                return try {
-                    AbemaPublicBundleCache(File(view.context.cacheDir, "abema-helper-bundle"),
-                        { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline }, identity)
-                        .prepare(http::fetch)
-                } finally {
-                    try { http.close(); bundleTransport.compareAndSet(http, null) }
-                    catch (error: Throwable) { cleanupFailed = true; throw error }
+        // A saved-account host starts beside the account check (#603). The
+        // diagnostic channel modes still require the account at start.
+        val deferHost = ownership != null && !observeChannelPreparation && !observeModernChannelContext
+        deferredAccount.begin(run)
+        awaitingAccount = deferHost
+        fun cached(identity: AbemaPublicBundleIdentity): AbemaBundlePrepared {
+            val http = AbemaPublicBundleHttp(
+                canRun = { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline },
+                identity = identity,
+                open = { url -> transportCleanup.allocate(10, { openConnection(url) }) { it.disconnect() } },
+                onFailure = { transportCleanup.failed(); cleanupFailed = true; diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) },
+                openInput = { request -> transportCleanup.input { request.inputStream } },
+            )
+            bundleTransport.set(http)
+            return try {
+                AbemaPublicBundleCache(File(view.context.cacheDir, "abema-helper-bundle"),
+                    { preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline }, identity)
+                    .prepare(http::fetch)
+            } finally {
+                try { http.close(); bundleTransport.compareAndSet(http, null) }
+                catch (error: Throwable) { cleanupFailed = true; throw error }
+            }
+        }
+        // Before its account arrives a deferred host holds no account data, so
+        // it rechecks only the run; the account worker owns the account checks.
+        fun hostCurrent() = preparationCurrent(run) && (deferHost || workerOwned())
+        fun startHost(accountArgument: String) {
+            record("startup=BUNDLES_BEGIN")
+            val prepared = cached(AbemaPublicBundleIdentity())
+            val support = cached(AbemaPublicBundleIdentity.bootstrapSupport())
+            val legacy = cached(AbemaPublicBundleIdentity.legacySource())
+            val utilities = cached(AbemaPublicBundleIdentity.sourceUtilities())
+            record("startup=BUNDLES_READY")
+            val arguments = mapOf("__NONCE__" to nonce, "__NATIVE_REPLAY__" to replay.toString(),
+                "__EPISODE_ARGUMENT__" to (episodeResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
+                "__CHANNEL_ARGUMENT__" to (channelResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
+                "__SLOT_ARGUMENT__" to (slotResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
+                "__ACCOUNT_ARGUMENT__" to accountArgument,
+                "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString(),
+                "__MODERN_CHANNEL_CONTEXT__" to observeModernChannelContext.toString(),
+                "__CONTINUOUS_SLOT_PLAYBACK__" to continuousSlotPlayback.toString(),
+                "__ACCOUNT_DEFERRED__" to deferHost.toString())
+            val template = view.context.assets.open("abema/native-bootstrap-initialize.js")
+                .bufferedReader().use { it.readText() }
+            val initialization = Regex("__[A-Z_]+__").replace(template) { checkNotNull(arguments[it.value]) }
+                .toByteArray(Charsets.UTF_8)
+            privateInitialization.set(initialization)
+            if (!hostCurrent()) {
+                privateInitialization.getAndSet(null)?.fill(0)
+                throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+            }
+            val resources = mapOf(
+                "/_tachiai/native/index.html" to view.context.assets.open("abema/native-bootstrap.html").use { it.readBytes() },
+                "/_tachiai/native/control.js" to view.context.assets.open("abema/native-bootstrap.js").use { it.readBytes() },
+                "/_tachiai/native/bundle.js" to prepared.bytes,
+                "/_tachiai/native/support.js" to support.bytes,
+                "/_tachiai/native/legacy.js" to legacy.bytes,
+                "/_tachiai/native/utilities.js" to utilities.bytes,
+                "/_tachiai/native/initialize.js" to initialization,
+            )
+            handler.post {
+                if (preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline) {
+                    record("cache=${prepared.origin.name} support=${support.origin.name} legacy=${legacy.origin.name} utilities=${utilities.origin.name}")
+                    ownedResources = resources
+                    view.loadUrl(AbemaNativeBootstrapPolicy.PAGE)
+                    waitForHelper(run, readinessDeadline)
                 }
             }
+        }
+        fun failAccount(error: AbemaAccountException) {
+            if (!closed.get() && revision.get() == run)
+                diagnostics.report(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, error)
+            val reason = when (error.category) {
+                AbemaAccountFailure.TEMPORARY -> PrototypeFailureReason.NETWORK_FAILED
+                AbemaAccountFailure.TIME_LIMIT_REACHED -> PrototypeFailureReason.PREPARATION_TIMEOUT
+                AbemaAccountFailure.CLEANUP_FAILED -> PrototypeFailureReason.CLEANUP_FAILED
+                else -> PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE
+            }
+            val transient = error.category == AbemaAccountFailure.TEMPORARY
+            handler.post { if (!closed.get() && revision.get() == run)
+                fail(PrototypeFeedFailure(reason, transientPreparation = transient)) }
+        }
+        fun failHost(error: Throwable) {
+            if (error is AbemaBundleException) {
+                if (preparationCurrent(run) && error.category != AbemaBundleFailure.CANCELLED)
+                    diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)
+                val reason = when (error.category) {
+                    AbemaBundleFailure.NETWORK_FAILED -> PrototypeFailureReason.NETWORK_FAILED
+                    AbemaBundleFailure.HTTP_REFUSED -> PrototypeFailureReason.HTTP_REJECTED
+                    AbemaBundleFailure.TIME_LIMIT_REACHED -> PrototypeFailureReason.PREPARATION_TIMEOUT
+                    AbemaBundleFailure.POLICY_REFUSED, AbemaBundleFailure.COOKIE_HANDLER_REFUSED -> PrototypeFailureReason.MEDIA_BLOCKED
+                    AbemaBundleFailure.PIN_REFUSED, AbemaBundleFailure.SIZE_REFUSED, AbemaBundleFailure.ASSET_TYPE_REFUSED -> PrototypeFailureReason.UNSUPPORTED_MEDIA
+                    else -> PrototypeFailureReason.PREPARATION_FAILED
+                }
+                handler.post { if (!closed.get() && revision.get() == run) fail(PrototypeFeedFailure(reason)) }
+                return
+            }
+            // Cleanup Errors must remain a safe retained failure, never
+            // escape this owned worker to Android's uncaught handler.
+            if (preparationCurrent(run)) diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)
+            handler.post { if (!closed.get() && revision.get() == run) fail() }
+        }
+        if (deferHost) hostWorker.execute {
+            try {
+                check(preparationCurrent(run) && CookieHandler.getDefault() == null)
+                record("startup=HOST_BEGIN")
+                startHost("undefined")
+            } catch (error: AbemaAccountException) { failAccount(error) }
+            catch (error: Throwable) { failHost(error) }
+        }
+        worker.execute {
             try {
                 check(preparationCurrent(run) && workerOwned() && CookieHandler.getDefault() == null)
                 record("startup=WORKER_BEGIN")
@@ -595,76 +696,26 @@ internal class CachedPrototypeAbemaSession(
                     if (!preparationCurrent(run) || !workerOwned() || SystemClock.elapsedRealtime() >= readinessDeadline)
                         throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
                 }
-                record("startup=BUNDLES_BEGIN")
-                val prepared = cached(AbemaPublicBundleIdentity())
-                val support = cached(AbemaPublicBundleIdentity.bootstrapSupport())
-                val legacy = cached(AbemaPublicBundleIdentity.legacySource())
-                val utilities = cached(AbemaPublicBundleIdentity.sourceUtilities())
-                record("startup=BUNDLES_READY")
-                val arguments = mapOf("__NONCE__" to nonce, "__NATIVE_REPLAY__" to replay.toString(),
-                    "__EPISODE_ARGUMENT__" to (episodeResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
-                    "__CHANNEL_ARGUMENT__" to (channelResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
-                    "__SLOT_ARGUMENT__" to (slotResource?.let { JSONObject.quote(it.identity) } ?: "undefined"),
-                    "__ACCOUNT_ARGUMENT__" to accountArgument,
-                    "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString(),
-                    "__MODERN_CHANNEL_CONTEXT__" to observeModernChannelContext.toString(),
-                    "__CONTINUOUS_SLOT_PLAYBACK__" to continuousSlotPlayback.toString())
-                val template = view.context.assets.open("abema/native-bootstrap-initialize.js")
-                    .bufferedReader().use { it.readText() }
-                val initialization = Regex("__[A-Z_]+__").replace(template) { checkNotNull(arguments[it.value]) }
-                    .toByteArray(Charsets.UTF_8)
-                privateInitialization.set(initialization)
-                if (!preparationCurrent(run) || !workerOwned()) {
-                    privateInitialization.getAndSet(null)?.fill(0)
-                    throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
-                }
-                val resources = mapOf(
-                    "/_tachiai/native/index.html" to view.context.assets.open("abema/native-bootstrap.html").use { it.readBytes() },
-                    "/_tachiai/native/control.js" to view.context.assets.open("abema/native-bootstrap.js").use { it.readBytes() },
-                    "/_tachiai/native/bundle.js" to prepared.bytes,
-                    "/_tachiai/native/support.js" to support.bytes,
-                    "/_tachiai/native/legacy.js" to legacy.bytes,
-                    "/_tachiai/native/utilities.js" to utilities.bytes,
-                    "/_tachiai/native/initialize.js" to initialization,
-                )
-                handler.post {
-                    if (preparationCurrent(run) && SystemClock.elapsedRealtime() < readinessDeadline) {
-                        record("cache=${prepared.origin.name} support=${support.origin.name} legacy=${legacy.origin.name} utilities=${utilities.origin.name}")
-                        ownedResources = resources
-                        view.loadUrl(AbemaNativeBootstrapPolicy.PAGE)
-                        waitForHelper(run, readinessDeadline)
-                    }
-                }
-            } catch (error: AbemaAccountException) {
-                if (!closed.get() && revision.get() == run)
-                    diagnostics.report(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, error)
-                val reason = when (error.category) {
-                    AbemaAccountFailure.TEMPORARY -> PrototypeFailureReason.NETWORK_FAILED
-                    AbemaAccountFailure.TIME_LIMIT_REACHED -> PrototypeFailureReason.PREPARATION_TIMEOUT
-                    AbemaAccountFailure.CLEANUP_FAILED -> PrototypeFailureReason.CLEANUP_FAILED
-                    else -> PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE
-                }
-                val transient = error.category == AbemaAccountFailure.TEMPORARY
-                handler.post { if (!closed.get() && revision.get() == run)
-                    fail(PrototypeFeedFailure(reason, transientPreparation = transient)) }
-            } catch (error: AbemaBundleException) {
-                if (preparationCurrent(run) && error.category != AbemaBundleFailure.CANCELLED)
-                    diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)
-                val reason = when (error.category) {
-                    AbemaBundleFailure.NETWORK_FAILED -> PrototypeFailureReason.NETWORK_FAILED
-                    AbemaBundleFailure.HTTP_REFUSED -> PrototypeFailureReason.HTTP_REJECTED
-                    AbemaBundleFailure.TIME_LIMIT_REACHED -> PrototypeFailureReason.PREPARATION_TIMEOUT
-                    AbemaBundleFailure.POLICY_REFUSED, AbemaBundleFailure.COOKIE_HANDLER_REFUSED -> PrototypeFailureReason.MEDIA_BLOCKED
-                    AbemaBundleFailure.PIN_REFUSED, AbemaBundleFailure.SIZE_REFUSED, AbemaBundleFailure.ASSET_TYPE_REFUSED -> PrototypeFailureReason.UNSUPPORTED_MEDIA
-                    else -> PrototypeFailureReason.PREPARATION_FAILED
-                }
-                handler.post { if (!closed.get() && revision.get() == run) fail(PrototypeFeedFailure(reason)) }
-            } catch (error: Throwable) {
-                // Cleanup Errors must remain a safe retained failure, never
-                // escape this owned worker to Android's uncaught handler.
-                if (preparationCurrent(run)) diagnostics.report(FailureStage.CACHED_ABEMA_BUNDLE_PREPARE, error)
-                handler.post { if (!closed.get() && revision.get() == run) fail() }
-            }
+                if (deferHost) {
+                    val payload = if (accountArgument == "undefined") AbemaDeferredAccount.GUEST
+                        else AbemaDeferredAccount.encode(accountArgument)
+                    if (!deferredAccount.offer(run, payload)) throw AbemaAccountException(AbemaAccountFailure.CANCELLED)
+                    record("startup=ACCOUNT_OFFERED")
+                    handler.post { deliverAccount(run) }
+                } else startHost(accountArgument)
+            } catch (error: AbemaAccountException) { failAccount(error) }
+            catch (error: Throwable) { failHost(error) }
+        }
+    }
+
+    // Hands this run's saved-account result to its host once both are ready (#603).
+    private fun deliverAccount(run: Long) {
+        if (!current(run) || !allows(view.url)) return
+        val payload = deferredAccount.take(run) ?: return
+        view.evaluateJavascript("window['$name']?.account('$payload') || 'REFUSED'") { raw ->
+            if (closed.get() || revision.get() != run) return@evaluateJavascript
+            if (quoted(raw, 20) == "ACCEPTED") { awaitingAccount = false; record("startup=ACCOUNT_DELIVERED") }
+            else { record("account=REFUSED"); fail() }
         }
     }
 
@@ -681,7 +732,7 @@ internal class CachedPrototypeAbemaSession(
         }
         view.evaluateJavascript("window['$name']?.status() || 'UNAVAILABLE'") { raw ->
             if (!current(run) || SystemClock.elapsedRealtime() >= readinessDeadline || !allows(view.url)) return@evaluateJavascript
-            val state = quoted(raw, 100)?.takeIf { it in setOf("WAITING_SESSION", "WAITING_SOURCE", "READY",
+            val state = quoted(raw, 100)?.takeIf { it in setOf("WAITING_SESSION", "WAITING_ACCOUNT", "WAITING_SOURCE", "READY",
                 "WORKING", "RESPONSE", "FAILED", "STOPPED", "UNAVAILABLE") } ?: "FAILED"
             if (lastHelperState != state) { lastHelperState = state; record("helper=$state") }
             pollMetadata(run, readinessDeadline) { metadata ->
@@ -691,8 +742,15 @@ internal class CachedPrototypeAbemaSession(
                 when (state) {
                     "READY" -> if (!helperEvidence.permitsPreparation(state, metadata)) fail()
                         else if (!preparingNative) { preparingNative = true; prepareNative(run) }
+                    "WAITING_ACCOUNT" -> {
+                        if (deferredAccount.hostReady(run) && !hostReadyRecorded) {
+                            hostReadyRecorded = true; record("startup=HOST_READY")
+                        }
+                        deliverAccount(run)
+                        handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 100)
+                    }
                     "WAITING_SESSION", "WAITING_SOURCE", "UNAVAILABLE" -> {
-                        emit(PrototypeFeedEvent.WAITING_PROVIDER)
+                        if (!awaitingAccount) emit(PrototypeFeedEvent.WAITING_PROVIDER)
                         handler.postDelayed({ waitForHelper(run, readinessDeadline) }, 100)
                     }
                     else -> fail(helperFailure ?: PrototypeFeedFailure(PrototypeFailureReason.PREPARATION_FAILED))
@@ -1180,7 +1238,7 @@ internal class CachedPrototypeAbemaSession(
     private fun finishTransportCleanup() {
         // A queued worker can settle synchronously during shutdownNow. Do not
         // finalize while main is still sealing/cancelling the other owners.
-        if (!closed.get() || !cleanupSetupComplete.get() || worker.pending || accountCleanupPending.get() ||
+        if (!closed.get() || !cleanupSetupComplete.get() || worker.pending || hostWorker.pending || accountCleanupPending.get() ||
             slotProfileCleanupPending.get() || transportCancellationPending.get() || nativeCleanup?.pending == true ||
             !transportFinalizing.compareAndSet(false, true)) return
         if (slotProfile.get()?.cleanupConfirmed == false) cleanupFailed = true
@@ -1222,6 +1280,7 @@ internal class CachedPrototypeAbemaSession(
         if (!closed.compareAndSet(false, true)) return
         helperPreparationEvidence.seal()
         nativePreparationEvidence.seal(sourcePending.get()?.isDone == false, pending.get()?.isDone == false)
+        deferredAccount.cancel()
         synchronized(accountLock) {
             accountClient.get()?.close()
             slotPremiumReceipt.set(null); slotPremiumScope.set(null)
@@ -1269,6 +1328,7 @@ internal class CachedPrototypeAbemaSession(
             },
             FailureStage.RESOURCES_CLEAR to { ownedResources = emptyMap(); privateInitialization.getAndSet(null)?.fill(0) },
             FailureStage.WORKER_SHUTDOWN to { worker.shutdownNow() },
+            FailureStage.WORKER_SHUTDOWN to { hostWorker.shutdownNow() },
         )) {
             if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }

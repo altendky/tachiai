@@ -373,25 +373,33 @@ architecture would be:
 This removes the WebView renderer and the 2.33 MB parse. It does **not** address
 the network chain, which existing evidence says dominates.
 
-### Widevine as a helper-free path — blocked for this client (2026-11-21)
+### Widevine as a helper-free path (2026-11-21)
 
-The provider's own selection logic can offer Widevine:
+The provider's own code supports Widevine in two places:
 
-- `WebStreamFilter` → `getDrms` admits `widevine` for channel sources and
-  `widevine` + `custom` for program/slot sources.
-- `WebManifestComparator` ranks Widevine/FairPlay ahead of custom.
-- `createConfiguration` builds `{license}/widevine` with `t`, `ct`, `cid` and,
-  for mobile app types, `dt=web_android`.
+- **On-demand.** `WebStreamFilter` → `getDrms` admits `widevine`;
+  `WebManifestComparator` ranks it first; `createConfiguration` builds
+  `{license}/widevine`.
+- **Live channels.** The legacy channel selector (`21470.tw`) asks
+  `detectDrmKeySystem` (module 1955). That function probes
+  `requestMediaKeySystemAccess` for Widevine, PlayReady and Clear Key, in that
+  order of preference. For a DRM-protected channel on the DASH path, it
+  requests the playlist with `enc=wv` (`pr` for PlayReady). The license table
+  (`78307.rC`) maps the key systems to `/widevine`, `/playready` and
+  `/abematv-dash`. On a Widevine-capable browser, the provider's own web player
+  therefore uses Widevine for protected live channels. Tachiai's WebView does
+  not expose Widevine to that probe, so the same selector falls back to Clear
+  Key.
 
-[#573](https://github.com/altendky/tachiai/issues/573) checked whether ABEMA
-actually offers Tachiai a Widevine stream. It does not, so the Widevine license
-experiment was not run.
+[#573](https://github.com/altendky/tachiai/issues/573) checked what the
+provider actually offers.
 
-**Replay offers.** An investigation-only build recorded, before any filtering,
-a closed category for every stream the unchanged `PlaybackResourceGateway`
-returned. The record held streaming technology, DRM name, raw-key flag and
-whether the provider's own `WebStreamFilter` admits the stream. URLs, tokens
-and identifiers were not recorded.
+**On-demand offers.** An investigation-only build recorded, before any
+filtering, a closed category for every stream the unchanged
+`PlaybackResourceGateway` returned: technology, DRM name, raw-key flag and the
+provider filter's verdict. No URL, token or identifier was recorded. Five free
+items (an ABEMA original drama, a Korean drama, an anime, and two sumo replays)
+all returned the same list:
 
 | Stream | DRM | Provider filter |
 | --- | --- | --- |
@@ -399,33 +407,84 @@ and identifiers were not recorded.
 | HLS | custom | refuses |
 | HLS, raw key | custom | refuses |
 
-- Setup: NVIDIA SHIELD Android TV, Android 11, WebView 157.0.8103.50,
-  Windscribe Tokyo WireGuard route, saved ABEMA account (account media token).
-- Content: 幕内全取組ハイライト 11月場所 14日目, observed twice; both runs
-  played to `VIDEO_FRAME`.
-- No stream with any other DRM (Widevine, PlayReady, FairPlay) was offered.
-  The provider ranks Widevine first, so for this web client the server simply
-  does not list it.
+- The sumo replay was observed on the NVIDIA SHIELD (Android 11, WebView
+  157.0.8103.50); the others on `tachiai-dev`. All used the Windscribe Tokyo
+  route and the saved ABEMA account. Each played to a video frame.
+- **No on-demand item offered Widevine, PlayReady or FairPlay.** The stream
+  list is an unauthenticated GET per ARIN with no client or device parameters,
+  so it does not vary by client.
 - This explains the earlier Pixel WebView traces: Widevine capability probes
-  were accepted, but the only offered protected stream uses the custom key
-  system, which EME runs on Clear Key.
+  were accepted, but only custom-DRM streams were on offer.
+- Paid items could not be surveyed. A premium anime episode and a film
+  stopped at the bootstrap's free/terms gates (`REPLAY_FREE`,
+  `REPLAY_TERMS`), which come before the stream list.
 
-**Channels and slots.** `playbackResources` refuses channel IDs (HTTP 400,
-"Specified ARIN is not supported"). Linear channels and continuous slots
-therefore use the legacy selector, whose license is the provider's Clear Key
-configuration. There is no DRM choice to make there.
+**Live channels.**
 
-**Not tried, by design.**
+- `playbackResources` refuses every channel ID tried ("Specified ARIN is not
+  supported"), so channels have no stream list. They use the legacy selector
+  above.
+- Only 4 of the 62 public channels are DRM-protected: `disney`,
+  `anime-special-3`, `anime-special-4` and `drama-3`. All are Japan-only.
+  Tachiai refuses DRM channels today (`CHANNEL_DRM_REFUSED`) and plays only
+  `enc=clear` channels.
+- An experiment build changed only what the provider's selector would change
+  with Widevine detected: it admitted those four channels, requested
+  `enc=wv`, licensed `/widevine` with an opaque pass-through, and used a
+  Widevine `MediaDrm` on the SHIELD. **All four stopped at
+  `CHANNEL_UNAVAILABLE`**: the channel list says they are not open for viewing
+  for this account at about 02:30 JST.
+- The free `abema-anime` channel was also refused as not open at that hour,
+  so this may be time of day rather than entitlement. It was not bypassed:
+  that would play content the provider has not opened to the account.
+- No Widevine license exchange happened, so acceptance, decoding, security
+  level, HDCP limits and renewal remain unmeasured. The experiment build was
+  discarded.
 
-- A Widevine license request for a stream the provider did not offer: that
-  would step outside the provider's own selection.
-- Requesting resources with a different client or device type, such as the
-  native ABEMA Android app's, to obtain a Widevine offer: that would present
-  Tachiai as another client and needs its own policy decision.
+**Recommendation: park, with a defined retest.** On-demand content offers no
+Widevine to this client. Protected live channels are the only Widevine path,
+and they could not be opened. Retest the four DRM channels during a JST
+daytime or event window, or with an account that can open them. If one opens,
+run the same bounded experiment. Requesting another client's resources
+remains out of scope.
 
-**Recommendation: blocked.** The blocker is that the provider offers no
-Widevine stream to the web client context Tachiai uses. Revisit only if a
-provider-sanctioned client context that offers Widevine becomes available.
+### Startup comparison on the SHIELD (2026-11-21)
+
+These are the existing `TachiaiCachedAbema` markers, Tokyo route, saved
+account.
+
+| Phase | Live News (WebView today) | Replay (WebView today) |
+| --- | --- | --- |
+| Account check and route setup | 7.1 s | 6.7 s |
+| Bundles (cache hit) | 0.1 s | 0.1 s |
+| WebView start → helper `WAITING_SESSION` | 3.5 s | 2.8 s |
+| Media token → `WAITING_SOURCE` | 3.1 s | 2.8 s |
+| Content/source → `READY` | 2.0 s | 3.4 s |
+| Manifest + buffering → license request | 2.5 s | 3.4 s |
+| License exchange | 4.0 s | 3.1 s |
+| First video frame | 0.5 s | 0.35 s |
+| **Total** | **23.0 s** | **22.8 s** |
+
+How the three hosting options compare for live News:
+
+| Option | Status | Start to first frame |
+| --- | --- | --- |
+| Existing WebView host | Measured | 23.0 s |
+| Helper outside the WebView (isolate) | Projected, not run end to end | ≈ 21–22.5 s |
+| Widevine for DRM channels | Not measurable; no DRM channel was open | Expected ≈ the same as today |
+
+- **Isolate projection.** The 3.5 s WebView step becomes about 1.2 s with a
+  cold sandbox or about 0.35 s with a warm one (measured below). The other
+  phases are network round trips and stay the same if Kotlin or the isolate
+  performs them.
+- **Widevine expectation.** It still needs the guest/account, token and
+  channel steps. Its license exchange is still a network round trip, and
+  only the helper processing (milliseconds) disappears.
+- **Other observations.**
+  - The single largest phase on both paths is the account check and route
+    setup, about 7 s before any provider work begins. That is a bigger target
+    than the WebView.
+  - The live license exchange took 4.0 s, against 3.1 s for the replay.
 
 ### Isolate host feasibility (2026-11-21)
 
@@ -477,26 +536,6 @@ messaging.
 isolate on both devices, faster from cold and with about a fifth of the
 memory. The remaining blocker is design work: owned Kotlin networking for the
 non-helper steps, plus a real exchange to confirm the helper output.
-
-### Startup phases on the SHIELD (2026-11-21)
-
-These are the existing `TachiaiCachedAbema` markers for one replay start (the
-14日目 highlight above), with the saved account and the Tokyo route:
-
-| Phase | Time |
-| --- | --- |
-| Worker begin → account acquired | 6.7 s |
-| Bundles (cache hit) | 0.1 s |
-| WebView start → helper `WAITING_SESSION` | ≈2.8 s |
-| Media token → `WAITING_SOURCE` | ≈2.8 s |
-| Content + source selection → `READY` | ≈3.4 s |
-| Manifest + buffering → first license request | ≈3.4 s |
-| License exchange | 3.1 s |
-| First video frame | 0.35 s |
-| **Total** | **≈22.8 s** |
-
-The WebView accounts for about 2–3 s of about 23 s. An isolate host would save
-part of that; the account check, route and provider requests dominate.
 
 ### Native port inventory (2026-11-21)
 

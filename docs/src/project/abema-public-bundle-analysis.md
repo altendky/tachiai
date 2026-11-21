@@ -537,6 +537,67 @@ isolate on both devices, faster from cold and with about a fifth of the
 memory. The remaining blocker is design work: owned Kotlin networking for the
 non-helper steps, plus a real exchange to confirm the helper output.
 
+### Isolate helper exchange (#598 stage 1, 2026-11-21)
+
+The first real opaque exchange through the isolate now works, as an opt-in
+for development builds:
+
+```sh
+adb shell run-as net.fstab.tachiai touch no_backup/abema-isolate-helper
+```
+
+Removing the file restores the WebView helper. Ordinary builds ignore it.
+
+- **What moves.** The page still performs every request. With the switch on,
+  `begin()` posts the challenge as before. It then returns the opaque license
+  response and the helper's identity argument instead of running the helper.
+  Kotlin hands both to an `androidx.javascriptengine` isolate, which holds the
+  same pinned application chunk and runs the unchanged helper once. The same
+  owned Clear Key normalization then runs in the isolate, and the JWK goes to
+  the same fresh CDM.
+- **Isolate boundary.** The owned scripts are `abema/isolate-setup.js`,
+  `isolate-loader.js` and `isolate-exchange.js`.
+  - Setup removes the sandbox's `android` host object, and refuses to continue
+    if it cannot.
+  - Provider code gets plain data in and returns plain data. It gets no fetch,
+    callbacks, timers or host objects.
+  - The exchange uses no web APIs (no `atob` or `TextDecoder`). A helper that
+    needed a missing global would report `HELPER_REFERENCE_ERROR`; none was
+    needed.
+- **Closed markers** (`TachiaiCachedAbema`): `isolate=CONNECTED`, `READY`,
+  `EXCHANGED` and `FAILED` with a stage and category.
+
+Results:
+
+| | tachiai-dev emulator | SHIELD |
+| --- | --- | --- |
+| Live News | plays, keys load, video advances | plays, keys load, video advances |
+| Sumo highlight episode (replay) | plays and advances | plays and advances |
+| Sandbox connect | 67 ms | 210–326 ms |
+| Isolate ready (connect + chunk + helper init) | 323–382 ms | 0.82–0.92 s |
+| Helper exchange in the isolate | 10–14 ms | 31–57 ms |
+| Sandbox process PSS during playback | — | ≈77–95 MB |
+
+- **Start time is unchanged at this stage.** In the same session, with the
+  same build and only the switch changed, first frame was within network
+  variance:
+  - WebView helper: 19.3 s and 28.2 s;
+  - isolate helper: 20.2 s, 29.0 s and 30.1 s.
+
+  The route was slow that evening, with media token, source and license
+  round trips of 3–5 s each.
+- **The isolate's own cost is the helper exchange,** 31–57 ms on the SHIELD.
+  The license step (request to keys) took 3.0–5.0 s with the WebView helper
+  and 3.4–5.5 s with the isolate.
+- **Memory is not reduced yet.** The WebView page and renderer still run for
+  the requests, so the sandbox process adds about 80–95 MB. The saving
+  depends on stage 2 removing the WebView.
+- Slot playback through the isolate has not been run on a device.
+
+Next (stage 2): Kotlin performs the remaining requests, and the isolate
+supplies only the pure provider computations, so playback no longer needs
+the WebView.
+
 ### Native port inventory (2026-11-21)
 
 The table under "Native implementation assessment" above still holds. Porting

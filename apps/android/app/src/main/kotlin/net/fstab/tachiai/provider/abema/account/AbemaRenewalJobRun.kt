@@ -26,6 +26,8 @@ internal class AbemaRenewalJobRun<N : Any>(
         (AbemaRenewalOperationOutcome) -> Unit) -> AbemaRenewalReservation,
     private val refresh: () -> Unit,
     private val finished: () -> Unit,
+    // Closed constants only: disposition and invocation-end names.
+    private val log: (String) -> Unit = {},
 ) {
     private val active = AtomicBoolean(true)
     private val ended = AtomicBoolean()
@@ -45,13 +47,20 @@ internal class AbemaRenewalJobRun<N : Any>(
 
     // Synchronous operation cancellation serializes against its adoption lock.
     // Durable deferral follows on the worker; RUNNING already protects a crash.
+    // An early attempt is the exception: the grant is still valid, and the
+    // ledger's own settlement moves a stopped early attempt to the next early
+    // step or natural expiry. Deferring it here would race that settlement
+    // (the job deadline and the operation deadline are the same instant) and
+    // leave nothing scheduled before the grant expires.
     fun stop() {
         if (callbackDelivered.get()) return // Retired invocations have no successor control.
         stopRequested.set(true)
         active.set(false)
         lease.get()?.let { runCatching(it::cancel) }
         try { worker.execute {
-            runCatching { ledger.defer(followup ?: key, AbemaRenewalJobDisposition.DEFERRED_STOP) }
+            val early = attempt?.early == true
+            log("JOB_STOPPED early=$early")
+            if (!early) runCatching { ledger.defer(followup ?: key, AbemaRenewalJobDisposition.DEFERRED_STOP) }
             finish()
         } } catch (_: Throwable) { finish() }
     }
@@ -132,7 +141,10 @@ internal class AbemaRenewalJobRun<N : Any>(
                         outcome.cleanupConfirmed && outcome.result == AbemaAutomaticRenewalResult.TEMPORARY_FAILURE &&
                         evidence.transport?.let { failure -> ProviderTransportEvidence(failure,
                             checkNotNull(evidence.transportPhase), evidence.transportCancelled).retryableAvailability } == true
-                    followup = ledger.settle(token, disposition, wall(), retrySafe)?.takeIf { it.pending }?.key
+                    val settled = ledger.settle(token, disposition, wall(), retrySafe)
+                    followup = settled?.takeIf { it.pending }?.key
+                    log("JOB_SETTLED outcome=${outcome.result.name} early=${token.early} " +
+                        "disposition=${settled?.disposition?.name ?: "NONE"}")
                 }
             } finally {
                 if (outcome.cleanupConfirmed) lease.set(null)

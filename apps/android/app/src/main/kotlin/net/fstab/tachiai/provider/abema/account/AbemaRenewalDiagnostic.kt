@@ -45,6 +45,11 @@ internal data class AbemaRenewalDiagnostic(
         "diagnosticTransportCancelled" to transportCancelled, "diagnosticStartup" to (startup?.name ?: "NONE"),
         "diagnosticCleanup" to cleanup.name)
 
+    // One logcat line of the same closed fields: enum names and a Boolean only.
+    fun logFields(): String = fields().entries.joinToString(" ") { (key, value) ->
+        key.removePrefix("diagnostic").replaceFirstChar(Char::lowercaseChar) + "=" + value
+    }
+
     companion object {
         val keys = AbemaRenewalDiagnostic().fields().keys
         private inline fun <reified T : Enum<T>> value(fields: Map<String, Any?>, key: String): T =

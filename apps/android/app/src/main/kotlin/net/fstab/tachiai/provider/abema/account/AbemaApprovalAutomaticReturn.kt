@@ -6,6 +6,15 @@ internal fun abemaAutomaticReturnFatalResource(mainFrame: Boolean, url: String, 
     trusted: Boolean, capturedUserId: String?): Boolean = mainFrame || trusted && capturedUserId != null &&
     method == "GET" && abemaEmailRegistrationId(url) == capturedUserId
 
+internal const val ABEMA_AUTOMATIC_COMMIT_LIMIT_MS = 30_000L
+
+// An automatic (unattended) renewal page that starts but never commits is a
+// bounded PAGE failure, not a silent wait for the whole operation deadline.
+// Interactive approval keeps waiting for the user. Null means no separate limit.
+internal fun abemaAutomaticCommitDelayMs(automatic: Boolean, nowElapsedMs: Long, deadlineElapsedMs: Long): Long? =
+    if (!automatic || nowElapsedMs >= deadlineElapsedMs) null
+    else minOf(ABEMA_AUTOMATIC_COMMIT_LIMIT_MS, deadlineElapsedMs - nowElapsedMs)
+
 // Pure one-shot admission. No grant, provider identity or browser state is kept.
 // Captured values must be rechecked on main before closing the actual browser.
 internal class AbemaApprovalAutomaticReturn {

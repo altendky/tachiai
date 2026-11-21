@@ -347,7 +347,8 @@ Opening a currently airing configured broadcast selects its continuous live
 channel after fresh matching broadcast metadata and time checks. The viewer
 starts at the live edge and keeps the channel playing when that broadcast ends;
 the saved broadcast, provider instance, route and preferences remain intact.
-Future broadcasts refuse playback, while ended selections use exact catch-up
+Future broadcasts refuse playback (the viewer then waits for the start; see
+[waiting for live shows](#waiting-for-live-shows--november-20-2026)), while ended selections use exact catch-up
 with their separate Free/Premium eligibility checks. Chase remains a separate
 capability; linear live playback does not consume Chase authority.
 
@@ -1356,6 +1357,60 @@ mid-session, both while the other feed kept playing.
   again. Sources leaves the viewer as usual. There are no new seek or jump controls.
 
 The presentation is the same on phone/tablet and TV.
+
+### Waiting for live shows — November 20, 2026
+
+[#587](https://github.com/altendky/tachiai/issues/587) lets a feed wait for its
+show instead of failing, for example when Watch is pressed before sumo starts.
+The user approved the design on 2026-11-20 for all implementations. It is one
+presentation on phone, tablet and TV.
+
+- **What waits.** A feed waits only on a provider signal:
+  - a Twitch channel that is offline;
+  - an ABEMA live channel between broadcasts (the #557 refusal);
+  - an ABEMA broadcast slot before its start (the bootstrap now reports this
+    as its own phase, with the slot's start in epoch seconds);
+  - a live channel whose show ended (a Twitch or ABEMA channel reaching
+    "This broadcast has ended." now waits for the next show).
+
+  A slot or replay that ended keeps its ended state. Route, account, DRM and
+  other refusals keep their current messages.
+- **The pane.**
+  - With a known start: "Not live yet. Starts at 9:30 PM (in 29 min)." The
+    countdown shows hours and minutes, seconds under a minute, and the weekday
+    for another local day. After a passed start: "Not live yet. Should have
+    started at 9:30 PM."
+  - Without one: "Waiting for this channel to go live."
+  - A second line reads "Last checked 9:01 PM".
+  - The button is **Check now**: it checks at once and restarts the timing.
+- **Start times.**
+  - ABEMA slots: the slot's own start.
+  - Twitch: one status request when waiting begins, which also tells an
+    offline channel from a missing one and carries any published schedule
+    start (#122). Later checks in the same period skip it.
+  - ABEMA channels: none yet (#560, blocked on #275).
+- **Checks.**
+  - Every minute; every 15 s within 2 minutes of a known start.
+  - A slot isn't checked before its start, then every 15 s.
+  - Each check adds up to 10% jitter. Rate limits double the interval.
+  - Each check is an ordinary feed retry: the other feed is untouched, and a
+    waiting feed spends no automatic recovery attempts.
+  - ABEMA checks try the start directly. Only an account failure while waiting
+    sends the next check through account readiness, once; a second account
+    failure shows the usual account message.
+  - Passing failures (network, provider 5xx, catalog unavailable) back off
+    from 30 s; five in a row show the usual failure with Retry.
+- **Going live.** The feed starts by itself, independently of the other feed,
+  and plays even after a user pause. The existing pair-offset logic aligns the
+  pair once both play.
+- **Screen and lifecycle.** The viewer keeps the screen on while it is open,
+  so the TV doesn't go to its screensaver while every feed waits. Leaving the
+  app stops monitoring, as it stops playback.
+- **Logs.** Waiting checks are not journaled as feed failures.
+
+Provider-free JVM and JS tests cover the waiting policy, cadence, countdown
+wording, slot-start plumbing and the Twitch offline mapping. Device
+observation is recorded separately.
 
 ## Historical source configuration follow-up
 

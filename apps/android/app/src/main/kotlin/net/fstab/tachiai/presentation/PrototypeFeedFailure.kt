@@ -25,6 +25,9 @@ internal enum class PrototypeFailureReason(val message: String) {
     // One sentence per line keeps it readable beside a floating feed.
     CHANNEL_NOT_AIRING("This channel isn't showing a program Tachiai can play right now.\n" +
         "It may be between broadcasts. Try again when the program starts."),
+    // The provider says this show hasn't started (#587). The viewer shows a
+    // waiting state with an optional scheduled start, not this text.
+    NOT_LIVE_YET("This show hasn't started yet."),
     PLAYER_FAILED("The video player could not continue."),
     // A feed whose player reached the end of its media (#553). Not failures:
     // they are not journaled as such and never start automatic recovery.
@@ -133,10 +136,15 @@ internal data class PrototypeFeedFailure(
     // A temporary provider failure before playback (for example the account
     // check), without media evidence. It may continue an active recovery.
     val transientPreparation: Boolean = false,
+    // A provider's scheduled start for a show that isn't live yet (#587). A
+    // bounded number only; never a title, identity or provider payload.
+    val scheduledStartEpochMs: Long? = null,
 ) {
     init {
         require(httpStatus == null || httpStatus in 100..599)
         require(playerCode == null || playerCode in 1000..9999)
+        require(scheduledStartEpochMs == null ||
+            reason == PrototypeFailureReason.NOT_LIVE_YET && scheduledStartEpochMs in 1..MAX_SCHEDULED_START_EPOCH_MS)
     }
 
     val message: String get() = buildString {
@@ -145,3 +153,6 @@ internal data class PrototypeFeedFailure(
         playerCode?.let { append(" Player error ").append(it).append('.') }
     }
 }
+
+// Year 5138; matches the bootstrap's own seconds bound (< 1e11 s).
+internal const val MAX_SCHEDULED_START_EPOCH_MS = 99_999_999_999_000L

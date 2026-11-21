@@ -94,6 +94,11 @@ internal fun ownedTwitchLiveIdentityResolver(instanceId: String, expectedProfile
             return catalog.confirm(identity).also { retryGate?.observe(instanceId, it) }
         }
         override fun canPublish(identity: TwitchLiveIdentity): Boolean = local() && catalog.canPublish(identity)
+        override fun status(resource: CatalogResource): CatalogResult<CatalogEntry> {
+            if (!local()) return CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
+            retryGate?.retryAt(instanceId)?.let { return CatalogResult.Failure(CatalogFailure.RATE_LIMITED, it) }
+            return catalog.refresh(resource).also { retryGate?.observe(instanceId, it) }
+        }
         // Completed exchanges already released routes/HTTP on their workers.
         // Close only invalidates memory and signals/schedules cancellation;
         // neither binding nor core close rereads protected storage or joins IO.

@@ -149,6 +149,10 @@ import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.catalog.CatalogFailure
 import net.fstab.tachiai.presentation.endedFeedFailure
 import net.fstab.tachiai.presentation.channelNotAiringMessage
+import net.fstab.tachiai.presentation.FeedWaitingState
+import net.fstab.tachiai.presentation.FeedRecoveryAction
+import net.fstab.tachiai.presentation.feedWaitingMessage
+import net.fstab.tachiai.provider.catalog.CatalogIntent
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
 import net.fstab.tachiai.provider.twitch.configuredTwitchBroadcasterSession
 import net.fstab.tachiai.provider.twitch.supportedConfiguredTwitchBroadcaster
@@ -282,6 +286,11 @@ open class PrototypeActivity : ComponentActivity() {
     private val catchUpDeadline = LongArray(2)
     private var feedRetries = List(2) { FeedRetryState() }
     private var automaticRecovery = List(2) { FeedAutoRecoveryState() }
+    // A feed whose show isn't live yet, or whose live show ended, waits and
+    // rechecks (#587). Its checks are ordinary feed retries.
+    private var waiting = List(2) { FeedWaitingState() }
+    // Whether the current attempt already asked for a published schedule.
+    private val waitingLookup = BooleanArray(2)
     private var automaticPairRestoreWanted: Boolean? = null
     private val retryAccountReady = BooleanArray(2)
     private data class RetryAccountCheck(val index: Int, val retry: FeedRetryState,
@@ -667,6 +676,7 @@ open class PrototypeActivity : ComponentActivity() {
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
         automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
+        waiting = List(2) { FeedWaitingState() }; waitingLookup.fill(false)
         retryIntentPolicy = ViewerRetryIntentPolicy()
         automaticPairRestoreWanted = null
         retryAccountCheck = null
@@ -838,6 +848,9 @@ open class PrototypeActivity : ComponentActivity() {
             val attemptState = feedRetries[index]
             val attempt = attemptState.newAttempt()
             earlyTransportFailures.set(index, null)
+            // A fresh waiting period's first check may ask for a schedule once.
+            val startLookup = !waiting[index].active || waiting[index].startLookupNeeded
+            waitingLookup[index] = startLookup || source.service != PrototypeService.TWITCH
             fun currentAttempt() = active() && feedRetries[index] === attemptState && attemptState.current(attempt)
             try {
                 val replay = source.kind == PrototypePlaybackKind.REPLAY
@@ -894,7 +907,8 @@ open class PrototypeActivity : ComponentActivity() {
                                         expectedOwnerProof = ownerProof)
                                 }, openConnection = route::open,
                                 diagnostics = feedDiagnostics(index, attempt), preparationFactory = preparation,
-                                onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } })
+                                onCleanupChanged = { cleanupHandler.post { ownedRun?.let(cachedCleanup::feedCleanupChanged) } },
+                                waitingStartLookup = startLookup)
                         } else PrototypeTwitchSession(this, replay, source.resource.identity, feedActive, events,
                             openConnection = route::open, preparationFactory = preparation,
                             diagnostics = feedDiagnostics(index, attempt),
@@ -955,6 +969,8 @@ open class PrototypeActivity : ComponentActivity() {
         override fun run() {
             val currentBudget = budget ?: return
             if (!currentBudget.active) {
+                // Nothing checks after the budget ends; stop showing waiting.
+                waiting.forEach { it.cancel() }
                 selectedSlotIndices().forEach { failFeed(it, PrototypeFeedFailure(PrototypeFailureReason.PLAYBACK_LIMIT)) }
                 releaseRoutes()
                 focus?.release()
@@ -962,6 +978,7 @@ open class PrototypeActivity : ComponentActivity() {
                 return
             }
             processAutomaticRecovery()
+            processWaitingChecks()
             processFeedRetries(currentBudget)
             if (budget !== currentBudget) return
             sessions.forEachIndexed { index, host ->
@@ -1068,6 +1085,8 @@ open class PrototypeActivity : ComponentActivity() {
             useController = false; keepScreenOn = true
         }
         surfaces = listOf(surface(), surface())
+        // The viewer stays awake while open, also while every feed waits (#587).
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val pane = NativePairViewer(this, surfaces[0], surfaces[1], sourceLabel(0), sourceLabel(1),
             { playback?.pair }, ::playPair, ::pausePair,
             onRelative = { delta -> requestRelativeAdjustment(delta) },
@@ -1085,6 +1104,10 @@ open class PrototypeActivity : ComponentActivity() {
             feedMessage = { side ->
                 val index = side.ordinal
                 if (retryAccountCheck?.index == index) "Checking account connection…"
+                // A waiting feed keeps its waiting text through its own checks.
+                else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
+                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, System.currentTimeMillis())
+                }
                 else if (feedRetries[index].retrying) {
                     if (automaticRecovery[index].automaticAttemptActive)
                         "Retrying automatically (attempt ${automaticRecovery[index].attemptCount} of 3)…"
@@ -1101,10 +1124,16 @@ open class PrototypeActivity : ComponentActivity() {
                     ?: if (!prepared[index]) "Preparing this feed…" else null
             }, feedRecovery = { side ->
                 val index = side.ordinal
-                failures[index]?.recoveryAction()?.takeIf { canRetryFeed(index) }?.let {
+                if (waiting[index].active && canRetryFeed(index))
+                    ViewerFeedRecovery(FeedRecoveryAction.CHECK_NOW.label, !feedRetries[index].retrying)
+                else failures[index]?.recoveryAction()?.takeIf { canRetryFeed(index) }?.let {
                     ViewerFeedRecovery(it.label, !feedRetries[index].retrying)
                 } ?: if (feedRetries[index].retrying) ViewerFeedRecovery("Retrying…", false) else null
-            }, onRecoverFeed = { side -> requestFeedRetry(side.ordinal) },
+            }, onRecoverFeed = { side ->
+                val index = side.ordinal
+                if (waiting[index].active) { waiting[index].checkNow(SystemClock.elapsedRealtime()); viewer?.refresh() }
+                else requestFeedRetry(index)
+            },
             onSources = { stopToPicker("Playback stopped.") },
             qualityState = { side, kind -> qualitySession?.read(side, kind)?.copy(saving = savingQuality, message = qualityMessage) },
             onQualityOverride = { side, kind, request ->
@@ -1577,6 +1606,12 @@ open class PrototypeActivity : ComponentActivity() {
                 snapshot.durationMs <= 0 || snapshot.positionMs !in 0..snapshot.durationMs)) return
         prepared[index] = true
         retry.ready()
+        if (waiting[index].active) {
+            waiting[index].started()
+            // Approved for #587: a show that goes live plays, even after a user pause.
+            if (!desiredPlaying && playbackIntentReason == PlaybackHealthIntent.USER_PAUSE)
+                setPlaybackIntent(true, PlaybackHealthIntent.RETRY_REJOIN)
+        }
         invalidatePlay()
         playback?.setMember(NativeMixedSide.entries[index], member)
         applyQuality(NativeMixedSide.entries[index])
@@ -1757,7 +1792,10 @@ open class PrototypeActivity : ComponentActivity() {
         // The second failure must not turn the first receipt's active offset off.
         if (automaticPairRestoreWanted == null)
             automaticPairRestoreWanted = offset?.preference?.enabled == true && offset.enabledApplied
-        val autoDecision = automaticRecovery[index].failed(member, failure,
+        val waitingNow = updateWaiting(index, failure, now, transientAccountReadiness)
+        // Waiting is not a recovery incident: its checks spend no automatic retries.
+        if (waitingNow) automaticRecovery[index].cancel()
+        val autoDecision = if (waitingNow) FeedAutoRecoveryDecision.SKIPPED else automaticRecovery[index].failed(member, failure,
             latestFeedTransport(index, snapshot, now),
             live = snapshot?.liveClock ?: (selection?.slots?.getOrNull(index)?.kind == PrototypePlaybackKind.LIVE),
             allowRecovery = canRetryFeed(index) && resumed.get() && !disposing && !explicitPlaybackHeld(),
@@ -1767,7 +1805,8 @@ open class PrototypeActivity : ComponentActivity() {
             httpFailure = snapshot?.httpFailure, transientAccountReadiness = transientAccountReadiness)
         // A normal stop or a feed's end is expected; a limit needs retained failure evidence.
         val ended = failure.reason in setOf(PrototypeFailureReason.REPLAY_ENDED, PrototypeFailureReason.BROADCAST_ENDED)
-        if (failure.reason != PrototypeFailureReason.STOPPED && !ended)
+        // Waiting checks repeat for as long as a show is off air; they aren't failures.
+        if (failure.reason != PrototypeFailureReason.STOPPED && !ended && !waitingNow)
             feedDiagnostics(index).report(FailureStage.FEED_FAILURE, reason = failure.reason)
         recordPlaybackHealth(index, PlaybackHealthReason.FEED_FAILURE)
         when (autoDecision) {
@@ -1803,20 +1842,42 @@ open class PrototypeActivity : ComponentActivity() {
             }
         }
         if (NativeMixedSide.entries.all { playback?.member(it) == null }) focus?.release()
-        if (selectedSlotIndices().all { failures[it] != null } && failures.none { it?.recoveryAction() != null }) releaseRoutes()
+        // A waiting feed still needs its routes for its next check.
+        if (selectedSlotIndices().all { failures[it] != null } && failures.none { it?.recoveryAction() != null } &&
+            selectedSlotIndices().none { waiting[it].active }) releaseRoutes()
         updateProgress()
         viewer?.refresh()
         updateRecoveryState()
         if (cleanupFailed && !disposing) stopToPicker("Playback stopped because cleanup could not be confirmed.")
     }
 
+    // Whether this failure keeps (or puts) the feed in waiting (#587). The
+    // policy is FeedWaitingState.failed; leaving the viewer stops waiting.
+    private fun updateWaiting(index: Int, failure: PrototypeFeedFailure, now: Long, transientAccount: Boolean): Boolean {
+        val state = waiting[index]
+        if (disposing || !resumed.get() || !canRetryFeed(index)) { state.cancel(); return false }
+        val channel = selection?.slots?.getOrNull(index)?.resource?.intent == CatalogIntent.CHANNEL
+        return state.failed(failure, channel, waitingLookup[index], now, System.currentTimeMillis(), transientAccount)
+    }
+
+    private fun processWaitingChecks() {
+        val now = SystemClock.elapsedRealtime()
+        waiting.forEachIndexed { index, state ->
+            if (!state.active || !resumed.get() || failures[index] == null || feedRetries[index].retrying) return@forEachIndexed
+            val check = state.takeDue(now) ?: return@forEachIndexed
+            if (!requestFeedRetry(index, waitingCheck = true)) state.deferred(check, now)
+        }
+    }
+
     private fun canRetryFeed(index: Int): Boolean = useCachedAbema && !cleanupFailed &&
         budget?.active == true && cachedRun?.let(cachedCleanup::current) == true &&
         selection?.slots?.getOrNull(index)?.instanceId?.let(routes::containsKey) == true
 
-    private fun requestFeedRetry(index: Int, automatic: FeedAutoRecoveryRequest? = null): Boolean {
+    private fun requestFeedRetry(index: Int, automatic: FeedAutoRecoveryRequest? = null, waitingCheck: Boolean = false): Boolean {
         if (automatic != null && !automaticRecovery[index].current(automatic)) return false
-        if (!canRetryFeed(index) || failures[index]?.recoveryAction() == null || !feedRetries[index].request()) return false
+        // A waiting check may follow a passing failure that has no user action of its own.
+        if (!canRetryFeed(index) || !waitingCheck && failures[index]?.recoveryAction() == null ||
+            !feedRetries[index].request()) return false
         val sibling = playback?.member(NativeMixedSide.entries[1 - index])
         val siblingRequested = runCatching { sibling?.timingSnapshot()?.playWhenReady == true }.getOrDefault(false)
         val intent = retryIntentPolicy.plan(
@@ -1892,6 +1953,9 @@ open class PrototypeActivity : ComponentActivity() {
             val selected = selection ?: return@forEachIndexed
             val setup = root?.getChildAt(0) as? LinearLayout ?: return@forEachIndexed
             val source = selected.slots[index] ?: return@forEachIndexed
+            // A waiting check tries the start directly; only an account failure
+            // during waiting sends the next check through readiness (#587).
+            if (waiting[index].active && !waiting[index].accountRecheck) retryAccountReady[index] = true
             if (source.service == PrototypeService.ABEMA && !retryAccountReady[index]) {
                 if (retryAccountCheck == null) {
                     val check = RetryAccountCheck(index, retry, epoch.get(), currentBudget)
@@ -1947,6 +2011,9 @@ open class PrototypeActivity : ComponentActivity() {
 
     private fun dispose(retainStartups: Boolean = false) {
         cancelRetryPlaybackIntent()
+        // Leaving the viewer (including the background) stops monitoring.
+        waiting.forEach { it.cancel() }
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (pairMediaSession != null) mediaController = null
         pairMediaSession?.close(); pairMediaSession = null
         if (!retainStartups) retireStartupScopes()
@@ -1987,6 +2054,8 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun releaseRoutes() {
+        // Without routes no waiting check can run (#587).
+        waiting.forEach { it.cancel() }
         cachedRun?.let { owned ->
             cachedCleanup.end(owned)
             if (cachedCleanup.failed) cleanupFailed = true

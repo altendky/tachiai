@@ -20,6 +20,25 @@ class AbemaCachedHelperMetadataTest {
         }
     }
 
+    @Test fun aFutureSlotCarriesOnlyItsBoundedStartBesideItsOwnPhase() {
+        val text = metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":1800000600}"
+        val value = checkNotNull(parseAbemaCachedHelperMetadata(text))
+        assertEquals(1_800_000_600L, value.startAtEpochSeconds)
+        assertEquals(value, parseAbemaCachedHelperMetadataCallback(callback(text)))
+        // Schedule data stays out of the closed diagnostic summary.
+        assertFalse(value.closedSummary().contains("1800000600"))
+        assertFalse(AbemaCachedHelperEvidence().apply { observe(value) }.permitsPreparation("READY", value))
+        for (refused in listOf(
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED"), // phase without a start
+            metadata("UNKNOWN", 200, "SLOT_WINDOW").dropLast(1) + ",\"startAt\":1800000600}", // start without the phase
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":0}",
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":100000000000}",
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":1800000600.5}",
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":\"1800000600\"}",
+            metadata("UNKNOWN", 200, "SLOT_NOT_STARTED").dropLast(1) + ",\"startAt\":1800000600,\"startAt\":1}"))
+            assertNull(refused, parseAbemaCachedHelperMetadata(refused))
+    }
+
     private fun metadata(failure: String? = "NONE", http: Int = 200, phase: String = "READY") =
         "{\"phase\":\"$phase\",\"modules\":50,\"lastModule\":24968,\"http\":$http" +
             (failure?.let { ",\"failure\":\"$it\"" } ?: "") + "}"

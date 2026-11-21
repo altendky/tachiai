@@ -713,7 +713,8 @@ internal class CachedPrototypeAbemaSession(
             }
             helperPreparationEvidence.observe(value)
             val first = helperEvidence.observe(value)
-            if (first) diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE,
+            // A slot before its start is waited for (#587), not journaled as a failure.
+            if (first && value.phase != "SLOT_NOT_STARTED") diagnostics.reportCategory(FailureStage.CACHED_ABEMA_SOURCE_PREPARE,
                 value.failure.diagnosticCategory())
             val phase = value.phase
             val http = value.http
@@ -727,6 +728,9 @@ internal class CachedPrototypeAbemaSession(
                     else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
                 http >= 400 -> PrototypeFeedFailure(if (http == 404) PrototypeFailureReason.MEDIA_NOT_FOUND
                     else PrototypeFailureReason.HTTP_REJECTED, httpStatus = http)
+                // A future slot (#587): the viewer waits for its start.
+                phase == "SLOT_NOT_STARTED" -> PrototypeFeedFailure(PrototypeFailureReason.NOT_LIVE_YET,
+                    scheduledStartEpochMs = value.startAtEpochSeconds?.let { it * 1000 })
                 phase == "SOURCE_SESSION_REQUIRED" || phase == "SOURCE_MODE_UNSUPPORTED" ||
                     phase.startsWith("REPLAY_") || phase.startsWith("SLOT_") ->
                     PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA)

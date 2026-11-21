@@ -29,6 +29,7 @@ import net.fstab.tachiai.platform.media.closePlayer
 import net.fstab.tachiai.presentation.PrototypeFeedFailure
 import net.fstab.tachiai.presentation.PrototypeFeedFailureLatch
 import net.fstab.tachiai.presentation.PrototypeFailureReason
+import net.fstab.tachiai.presentation.MAX_SCHEDULED_START_EPOCH_MS
 import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.provider.catalog.*
 import net.fstab.tachiai.provider.twitch.catalog.*
@@ -43,10 +44,11 @@ internal fun configuredTwitchBroadcasterSession(context: Context, resource: Cata
     authorization: TwitchSavedAuthorization = AndroidTwitchAuthorization.get(context, TwitchAuthorizationProfile.PROVIDER_SMART_TV_LOCAL),
     diagnostics: FailureReporter = FailureReporter.NONE,
     preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
-    onCleanupChanged: () -> Unit = {}): PrototypeTwitchSession =
+    onCleanupChanged: () -> Unit = {},
+    waitingStartLookup: Boolean = false): PrototypeTwitchSession =
     PrototypeTwitchSession(context, false, resource.identity, active, onEvent, openConnection,
         authorization, diagnostics, broadcasterResource = resource, liveIdentityResolverFactory = liveIdentityResolverFactory,
-        preparationFactory = preparationFactory, onCleanupChanged = onCleanupChanged)
+        preparationFactory = preparationFactory, onCleanupChanged = onCleanupChanged, waitingStartLookup = waitingStartLookup)
 
 @UnstableApi
 internal class PrototypeTwitchSession(
@@ -64,6 +66,9 @@ internal class PrototypeTwitchSession(
     preparationFactory: (() -> TwitchPlaybackPreparation)? = null,
     private val onCleanupChanged: () -> Unit = {},
     private val readCosts: NativeMediaReadCosts? = null,
+    // The first check of a waiting period (#587) asks once whether an offline
+    // channel exists and has a published scheduled start.
+    private val waitingStartLookup: Boolean = false,
 ) : PrototypeFeedSession {
     companion object {
         private val cancellationExecutor = Executors.newFixedThreadPool(2) { task ->
@@ -127,7 +132,12 @@ internal class PrototypeTwitchSession(
                     if (closed.get() || !active() || !budget.active) { releaseIdentityResolver(); return@execute }
                 }
                 val nativeResource = if (resolver != null) {
-                    val resolved = catalogValue(resolver.begin(checkNotNull(broadcasterResource)))
+                    val begun = resolver.begin(checkNotNull(broadcasterResource))
+                    if (begun is CatalogResult.Failure && begun.reason == CatalogFailure.NOT_FOUND) {
+                        remember(notLiveFailure(resolver))
+                        throw IllegalStateException("Broadcaster not live")
+                    }
+                    val resolved = catalogValue(begun)
                     identity = resolved
                     check(resolved.resource == broadcasterResource && validTwitchPlaybackResource(TwitchAccessCase.LIVE, resolved.login))
                     resolved.login
@@ -204,7 +214,9 @@ internal class PrototypeTwitchSession(
                     }
                 }
             } catch (error: Exception) {
-                if (!closed.get() && active() && budget.active) diagnostics.report(FailureStage.TWITCH_PREPARE, error)
+                // A channel that isn't live yet is checked about once a minute (#587); not a failure.
+                if (!closed.get() && active() && budget.active && failure?.reason != PrototypeFailureReason.NOT_LIVE_YET)
+                    diagnostics.report(FailureStage.TWITCH_PREPARE, error)
                 handler.post {
                     if (!closed.get() && active() && budget.active) fail()
                     else if (!closed.get()) schedulePreparationCleanup()
@@ -217,6 +229,9 @@ internal class PrototypeTwitchSession(
             }
         }
     }
+
+    private fun notLiveFailure(resolver: TwitchLiveIdentityResolver): PrototypeFeedFailure =
+        twitchNotLiveFailure(waitingStartLookup) { resolver.status(checkNotNull(broadcasterResource)) }
 
     private fun <T> catalogValue(result: CatalogResult<T>): T = when (result) {
         is CatalogResult.Value -> result.value
@@ -292,5 +307,19 @@ internal class PrototypeTwitchSession(
             if (!diagnostics.cleanupAll(stage, cleanup)) cleanupFailed = true
         }
         if (nativeClosed) host = null
+    }
+}
+
+// begin() reports both an offline channel and a missing broadcaster as
+// NOT_FOUND (#587). A waiting period's first check tells them apart with one
+// status request, which also carries any published scheduled start. Later
+// checks in the same period trust that the channel exists.
+internal fun twitchNotLiveFailure(lookup: Boolean, status: () -> CatalogResult<CatalogEntry>): PrototypeFeedFailure {
+    if (!lookup) return PrototypeFeedFailure(PrototypeFailureReason.NOT_LIVE_YET)
+    val value = (status() as? CatalogResult.Value)?.value ?: return PrototypeFeedFailure(PrototypeFailureReason.NOT_LIVE_YET)
+    return when (value.availability) {
+        CatalogAvailability.UNAVAILABLE, CatalogAvailability.EXPIRED -> PrototypeFeedFailure(PrototypeFailureReason.MEDIA_NOT_FOUND)
+        else -> PrototypeFeedFailure(PrototypeFailureReason.NOT_LIVE_YET,
+            scheduledStartEpochMs = value.scheduledStartEpochMs?.takeIf { it in 1..MAX_SCHEDULED_START_EPOCH_MS })
     }
 }

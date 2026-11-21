@@ -2,6 +2,8 @@ package net.fstab.tachiai.presentation
 
 internal enum class FeedRecoveryAction(val label: String) {
     GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection"), PLAY_AGAIN("Play again"),
+    // A waiting feed checks whether its show is live now (#587).
+    CHECK_NOW("Check now"),
 }
 
 // A user-requested fresh attempt still passes normal account, route and media
@@ -14,6 +16,7 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
         // Reopening the stream; an ended replay starts again from its beginning.
         PrototypeFailureReason.REPLAY_ENDED -> FeedRecoveryAction.PLAY_AGAIN
         PrototypeFailureReason.BROADCAST_ENDED -> FeedRecoveryAction.RETRY
+        PrototypeFailureReason.NOT_LIVE_YET -> FeedRecoveryAction.CHECK_NOW
         PrototypeFailureReason.LIVE_WINDOW_EXPIRED -> FeedRecoveryAction.GO_LIVE
         PrototypeFailureReason.PLAYER_FAILED -> when (playerCode) {
             1002 -> FeedRecoveryAction.GO_LIVE

@@ -25,7 +25,7 @@
     "test": "playwright test"
   },
   "dependencies": {
-    "shaka-player": "5.3.5"
+    "shaka-player": "5.3.6"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",

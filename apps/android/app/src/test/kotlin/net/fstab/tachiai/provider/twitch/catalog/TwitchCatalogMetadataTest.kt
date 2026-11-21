@@ -30,6 +30,17 @@ class TwitchCatalogMetadataTest {
         assertEquals(true, stream.broadcaster.live)
     }
 
+    @Test fun helixVideoDurationIsDisplayMetadataThatStaysUnknownWhenUnexpected() {
+        assertEquals(3723L, parseTwitchVideos(response(video() + ("duration" to "1h2m3s"))).items.single().durationSeconds)
+        assertEquals(201L, twitchVideoDurationSeconds("3m21s"))
+        assertEquals(45L, twitchVideoDurationSeconds("45s"))
+        assertEquals(7200L, twitchVideoDurationSeconds("2h"))
+        assertNull(parseTwitchVideos(response(video())).items.single().durationSeconds)
+        for (value in listOf(null, "", "0s", "1h75m", "90s1h", "1:02:03", "PT1H", "1000h", 3723, "1h 2m", "9".repeat(13) + "s"))
+            assertNull(value.toString(), twitchVideoDurationSeconds(value))
+        assertEquals("456", parseTwitchVideos(response(video() + ("duration" to "nonsense"))).items.single().id)
+    }
+
     @Test fun PublishedVideoIdentityDoesNotBecomeItsBroadcasterOrAnotherReplay() {
         val videos = parseTwitchVideos(response(video(), video("457"))).items
         assertEquals(listOf("456", "457"), videos.map { it.id })

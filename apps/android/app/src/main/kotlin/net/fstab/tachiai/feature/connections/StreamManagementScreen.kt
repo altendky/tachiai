@@ -126,7 +126,8 @@ private fun entryDetails(entry: CatalogEntry, actionLabel: String? = null): Stri
         CatalogAvailability.UNAVAILABLE -> "Unavailable"
     }
     return "$intent · $availability" + (entry.scheduledStartEpochMs?.let {
-        " · Scheduled ${DateFormat.getDateTimeInstance().format(Date(it))}" } ?: "")
+        " · Scheduled ${DateFormat.getDateTimeInstance().format(Date(it))}" } ?: "") +
+        (entry.durationSeconds?.let { " · ${formatCatalogDuration(it)}" } ?: "")
 }
 
 @Composable

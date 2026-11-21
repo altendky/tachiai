@@ -412,6 +412,25 @@ test('deferral is strict and excludes an initial account or diagnostic channel m
   const plain = fixture({ accountDeferred: false }); plain.start(true, '89-70_s111_p4016'); await waitFor(plain, 'READY');
 });
 
+test('isolate mode passes the opaque license response and identity out without running the page helper (#598)', async () => {
+  for (const account of [savedAccount(), undefined]) {
+    const value = fixture({ account, isolateHelper: true, ...(account ? { forbidGuest: true } : {}) });
+    value.start(true, '89-70_s111_p4016'); await waitFor(value, 'READY');
+    assert.equal(value.begin(challenge), 'WORKING'); await waitFor(value, 'RESPONSE');
+    assert.equal(value.evaluate('observed.operation.length'), 0);
+    const payload = JSON.parse(Buffer.from(value.take(), 'base64').toString());
+    assert.deepEqual(Object.keys(payload).sort(), ['input', 'userId']);
+    assert.equal(payload.userId, account ? 'ACCOUNT_USER' : 'TEST_USER');
+    const license = value.requests.find(({ uri }) => uri.pathname === '/abematv-dash');
+    assert.ok(license); assert.ok(JSON.parse(Buffer.from(payload.input, 'base64').toString()));
+    assert.equal(value.status(), 'STOPPED'); assert.equal(value.take(), null);
+  }
+  for (const isolateHelper of ['true', 1, null]) {
+    const value = fixture({ isolateHelper }); value.start(true, '89-70_s111_p4016');
+    assert.equal(value.status(), undefined); assert.equal(value.requests.length, 0);
+  }
+});
+
 test('malformed or expired explicit account never falls back to guest', async () => {
   for (const account of [null, false, [], {}, { ...savedAccount(), extra: true },
     { ...savedAccount(), bearer: '' }, { ...savedAccount(), userId: 'bad user' },
@@ -705,9 +724,9 @@ function fixture(options = {}) {
   return {
     requests, events, release, context, evaluate, persistentStorageTouches: () => persistentStorageTouches,
     expireTimers: () => { for (const callback of [...timers.values()]) callback(); },
-    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
-    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
-    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
+    start: (replay = false, id) => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', ${replay}, ${id === undefined ? 'undefined' : JSON.stringify(id)}, undefined, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.isolateHelper === undefined ? 'undefined' : JSON.stringify(options.isolateHelper)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
+    startChannel: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', false, undefined, ${JSON.stringify(id)}, undefined, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.isolateHelper === undefined ? 'undefined' : JSON.stringify(options.isolateHelper)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
+    startSlot: id => evaluate(`window.__tachiaiStartNativeBootstrap('${nonce}', true, undefined, undefined, ${JSON.stringify(id)}, ${Object.hasOwn(options, 'account') ? JSON.stringify(options.account) : 'undefined'}, ${options.channelDiagnostic === undefined ? 'undefined' : JSON.stringify(options.channelDiagnostic)}, ${options.modernChannelContext === undefined ? 'undefined' : JSON.stringify(options.modernChannelContext)}, ${options.continuousSlotPlayback === undefined ? 'undefined' : JSON.stringify(options.continuousSlotPlayback)}, ${options.isolateHelper === undefined ? 'undefined' : JSON.stringify(options.isolateHelper)}, ${options.accountDeferred === undefined ? 'undefined' : JSON.stringify(options.accountDeferred)})`),
     status: () => evaluate(`window['${name}']?.status()`),
     metadata: () => JSON.parse(evaluate(`window['${name}'].metadata()`)),
     stop: () => evaluate(`window['${name}'].stop()`),

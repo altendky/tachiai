@@ -58,11 +58,14 @@ internal object AbemaSeriesMetadataIpc {
     fun nonce(value: String) = AbemaEpisodeMetadataIpc.nonce(value)
     fun result(value: Result, parent: String) = Bundle().apply {
         putString("nonce", value.nonce); putString("outcome", value.outcome)
-        value.page?.let { page -> check(page.seriesId == parent)
-            val projection = JSONObject().put("seriesId", page.seriesId).put("version", page.version)
-                .put("programs", JSONArray().apply { page.entries.forEach { put(JSONObject().put("id", it.resource.identity).put("title", it.title)) } })
-            page.seasonId?.let { projection.put("seasonId", it) }
-            putString("page", projection.toString())
-        }
+        value.page?.let { page -> check(page.seriesId == parent); putString("page", projection(page)) }
+    }
+    // The bounded projection decodeAbemaSeriesProjection reads on the other side.
+    fun projection(page: AbemaSeriesPage): String {
+        val projection = JSONObject().put("seriesId", page.seriesId).put("version", page.version)
+            .put("programs", JSONArray().apply { page.entries.forEach { put(JSONObject().put("id", it.resource.identity).put("title", it.title)
+                .apply { it.durationSeconds?.let { seconds -> put("durationSeconds", seconds) } }) } })
+        page.seasonId?.let { projection.put("seasonId", it) }
+        return projection.toString()
     }
 }

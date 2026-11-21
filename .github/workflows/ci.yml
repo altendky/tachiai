@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5
         with:
           install_args: --locked --dry-run
           cache: false
@@ -35,7 +35,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -47,15 +47,15 @@ jobs:
 
       - run: mise run pre-commit
 
-  android:
-    name: Android / Test, lint and APK
+  routebridge:
+    name: Android / Route library
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5
         with:
           cache: true
 
@@ -72,12 +72,39 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.2 build-tools;37.0.0 ndk;30.0.16248370
 
-      - name: Build shared Rust core and Android bindings
-        # Mise selects the pinned toolchain but does not provision manifest targets.
-        # Install them explicitly before cross-compiling the reusable library.
+      - name: Locate Go caches
+        id: go-cache
         run: |
-          rustup target add aarch64-linux-android x86_64-linux-android
-          bash scripts/build-android-core.sh
+          printf 'build=%s\n' "$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          printf 'modules=%s\n' "$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+
+      # Only main writes these caches. The native build scripts fingerprint
+      # their inputs, NDK and outputs, and rebuild anything that does not match.
+      - name: Restore native transport builds
+        id: native-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            apps/android/routebridge/build/openvpn-native
+            !apps/android/routebridge/build/openvpn-native/sources
+            !apps/android/routebridge/build/openvpn-native/tmp
+            !apps/android/routebridge/build/openvpn-native/*/openssl
+            !apps/android/routebridge/build/openvpn-native/*/fmt
+            !apps/android/routebridge/build/openvpn-native/*/lz4
+            apps/android/routebridge/build/openconnect-native
+            !apps/android/routebridge/build/openconnect-native/downloads/android-*
+          key: routebridge-native-${{ runner.os }}-ndk30.0.16248370-${{ hashFiles('scripts/build-android-openvpn.sh', 'scripts/build-android-openconnect.sh', 'apps/android/openconnect-fixture/**', 'apps/android/routebridge/native/**') }}
+          restore-keys: routebridge-native-${{ runner.os }}-ndk30.0.16248370-
+
+      - name: Restore Go build caches
+        id: go-cache-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: routebridge-go-${{ runner.os }}-${{ hashFiles('mise.toml', 'mise.lock', 'apps/android/routebridge/go.sum', 'scripts/build-android-routebridge.sh') }}
+          restore-keys: routebridge-go-${{ runner.os }}-
 
       - name: Build and test route transports
         run: |
@@ -85,8 +112,105 @@ jobs:
           sudo apt-get install --yes cmake ninja-build perl autoconf automake gettext libtool pkg-config
           bash scripts/build-android-routebridge.sh
 
+      - name: Upload route library for this run's Android jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: routebridge-${{ github.sha }}
+          path: |
+            apps/android/routebridge/build/routebridge.aar
+            apps/android/routebridge/build/routebridge-native-source.tar.xz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Save native transport builds
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            apps/android/routebridge/build/openvpn-native
+            !apps/android/routebridge/build/openvpn-native/sources
+            !apps/android/routebridge/build/openvpn-native/tmp
+            !apps/android/routebridge/build/openvpn-native/*/openssl
+            !apps/android/routebridge/build/openvpn-native/*/fmt
+            !apps/android/routebridge/build/openvpn-native/*/lz4
+            apps/android/routebridge/build/openconnect-native
+            !apps/android/routebridge/build/openconnect-native/downloads/android-*
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+
+      - name: Save Go build caches
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: ${{ steps.go-cache-restore.outputs.cache-primary-key }}
+
+  android-unit:
+    name: Android / Unit tests
+    needs: routebridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-android
+        with:
+          save-rust-cache: "true"
+
+      # The shared suite runs once, on debug. Inspect reuses debug's code and
+      # tests, and release has no tests of its own.
       - working-directory: apps/android
-        run: ./gradlew --no-daemon test lint :app:compileDebugAndroidTestKotlin :app:verifyReleaseIsolation :app:assembleRelease :core:assembleRelease :core:generatePomFileForReleasePublication :core:sourceReleaseJar
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+  android-checks:
+    name: Android / Lint and variant tests
+    needs: routebridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-android
+
+      - name: Lint, compile device tests and run diagnostic-only unit tests
+        working-directory: apps/android
+        run: |
+          # Run only the classes under src/testDiagnostic on the diagnostic
+          # variant; the shared suite already runs on debug.
+          task_filters=()
+          while IFS= read -r -d '' task_file; do
+            task_relative="${task_file#app/src/testDiagnostic/kotlin/}"
+            task_class="${task_relative%.kt}"
+            task_name="${task_class##*/}"
+            if ! grep -qE "^(internal |abstract |open )*class ${task_name}\b" "$task_file"; then
+              printf '::error file=apps/android/%s::Expected class %s\n' "$task_file" "$task_name"
+              exit 1
+            fi
+            task_filters+=(--tests "${task_class//\//.}")
+          done < <(find app/src/testDiagnostic/kotlin -name '*.kt' -print0 | sort -z)
+          task_diagnostic=()
+          if ((${#task_filters[@]})); then
+            task_diagnostic=(:app:testDiagnosticUnitTest "${task_filters[@]}")
+          fi
+          ./gradlew --no-daemon lint :app:compileDebugAndroidTestKotlin "${task_diagnostic[@]}"
+
+  android-release:
+    name: Android / Release build
+    needs: routebridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-android
+
+      - working-directory: apps/android
+        run: ./gradlew --no-daemon :app:verifyReleaseIsolation :app:assembleRelease :core:assembleRelease :core:generatePomFileForReleasePublication :core:sourceReleaseJar
 
       - name: Upload reusable Android core library and source materials
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -119,8 +243,19 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+  android-debug:
+    name: Android / Debug APK
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: routebridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-android
+
       - name: Restore Android debug signing key
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
@@ -132,7 +267,6 @@ jobs:
           chmod 600 "$HOME/.android/debug.keystore"
 
       - name: Build and verify debug APK
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         working-directory: apps/android
         run: |
           ./gradlew --no-daemon :app:assembleDebug
@@ -146,11 +280,10 @@ jobs:
           sha256sum app/build/outputs/apk/debug/app-debug.apk
 
       - name: Remove Android debug signing key
-        if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: always()
         run: rm -f "$HOME/.android/debug.keystore"
 
       - name: Upload debug APK and native source companion
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tachiai-debug-${{ github.sha }}
@@ -169,14 +302,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: core
+
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5
         with:
           cache: true
-
-      - name: Install Rust check tools and Wasm target
-        run: |
-          rustup component add rustfmt clippy
-          rustup target add wasm32-unknown-unknown
 
       - name: Check Rust and generated browser bindings
         run: mise run core
@@ -200,21 +332,34 @@ jobs:
           retention-days: 30
 
   web:
-    name: Web / Playback harness
+    name: Web / ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: harness
+            name: Playback harness
+          - part: abema
+            name: ABEMA fixtures
+          - part: providers
+            name: Provider and Twitch fixtures
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: web
+          cache-save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.part == 'harness' }}
+
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5
         with:
           cache: true
 
-      - name: Install Wasm target and fixture packaging prerequisites
+      - name: Install fixture packaging prerequisites
         run: |
-          rustup component add rustfmt clippy
-          rustup target add wasm32-unknown-unknown
           sudo apt-get update
           sudo apt-get install --yes ffmpeg xvfb build-essential curl xz-utils unzip
 
@@ -249,9 +394,36 @@ jobs:
           test "$(google-chrome --product-version)" = 156.0.8078.47
           test "$(/opt/google/chrome/chrome --product-version)" = 156.0.8078.47
 
-      - run: mise run web
+      # The ffmpeg script rejects a prefix whose marker does not match its
+      # recipe, so restore only an exact recipe match. Only main writes it.
+      - name: Restore owned FFmpeg fixture packager
+        id: ffmpeg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/web/build/tools/ffmpeg-8.1
+          key: web-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-web-fixture-ffmpeg.sh') }}
+
+      # The Core job checks the Rust workspace; build only the browser harness here.
+      - name: Build the browser harness
+        working-directory: apps/web
+        run: |
+          npm run prepare:assets
+          npm run build
+
+      - name: Save owned FFmpeg fixture packager
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.part == 'harness' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/web/build/tools/ffmpeg-8.1
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
+
+      - name: Test the playback harness
+        if: matrix.part == 'harness'
+        working-directory: apps/web
+        run: npm test
 
       - name: Test local browser manifest CORS and owned snapshot cleanup
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
@@ -260,6 +432,7 @@ jobs:
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-manifest.test.mjs scripts/tests/web-abema-browser-episode-manifest.test.mjs
 
       - name: Test local route ownership and proxy-only browser authentication
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
@@ -267,6 +440,7 @@ jobs:
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-route-browser.test.mjs
 
       - name: Test one-exchange browser EME with owned fixtures only
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
@@ -274,6 +448,7 @@ jobs:
           xvfb-run --auto-servernum node --test scripts/tests/web-abema-browser-episode-eme.test.mjs
 
       - name: Test bounded ABEMA playback with controlled local media only
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
@@ -282,6 +457,7 @@ jobs:
           npm run test:abema:local --prefix apps/web
 
       - name: Test one-exchange protected decoding with owned encrypted fixtures only
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: |
@@ -291,9 +467,11 @@ jobs:
           npm run test:abema:protected --prefix apps/web
 
       - name: Test the common viewer with owned encrypted DASH and clear HLS
+        if: matrix.part == 'providers'
         run: npm run test:owned-mixed --prefix apps/web
 
       - name: Test provider viewer ownership with synthetic authorization and owned media
+        if: matrix.part == 'providers'
         run: |
           npm run test:provider:frame --prefix apps/web
           npm run test:provider:runtime --prefix apps/web
@@ -303,22 +481,27 @@ jobs:
           node --test scripts/tests/web-provider-pair-browser.test.mjs
 
       - name: Test mixed routing and scoped header continuation with owned endpoints
+        if: matrix.part == 'abema'
         env:
           TACHIAI_LOCAL_CHROME_TEST: "1"
         run: node --test scripts/tests/web-mixed-route-browser.test.mjs scripts/tests/web-mixed-browser-headers.test.mjs scripts/tests/web-mixed-browser-lifecycle.test.mjs
 
       - name: Test Twitch media diagnostic boundaries with local fixtures
+        if: matrix.part == 'providers'
         run: npm run test:twitch:media --prefix apps/web
 
       - name: Test paired Twitch ownership with synthetic authorization and owned media
+        if: matrix.part == 'providers'
         run: npm run test:twitch:pair --prefix apps/web
 
   all:
     name: all
     if: ${{ !cancelled() }}
-    needs: [mise, repository, android, core, web]
+    needs: [mise, repository, routebridge, android-unit, android-checks, android-release, android-debug, core, web]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # release/v1
         with:
+          # The debug APK is built only for pushes and manual runs.
+          allowed-skips: ${{ github.event_name == 'pull_request' && 'android-debug' || '' }}
           jobs: ${{ toJSON(needs) }}

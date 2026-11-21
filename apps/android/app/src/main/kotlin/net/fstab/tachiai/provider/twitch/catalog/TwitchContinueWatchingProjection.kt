@@ -78,9 +78,10 @@ internal fun parseTwitchContinueWatching(body: String, expectedUserId: String, n
             if (!validTwitchCatalogId(ownerId) || !validCatalogLogin(login)) invalid()
             val title = node.opt("title") as? String ?: invalid()
             if (title.length !in 1..160) invalid()
-            val entry = CatalogEntry(CatalogResource(ProviderId("twitch"), "video", id, CatalogIntent.VIDEO), title.trim())
             val position = seconds(history.opt("position"))
             val duration = seconds(node.opt("lengthSeconds"))
+            val entry = CatalogEntry(CatalogResource(ProviderId("twitch"), "video", id, CatalogIntent.VIDEO), title.trim(),
+                durationSeconds = Math.round(duration).takeIf { it in 1..MAX_CATALOG_DURATION_SECONDS })
             val updated = date(history.opt("updatedAt"))
             if (position > 0 && duration > 0 && updated >= cutoff && position / duration * 100 <= 95.0) entries.add(entry)
         }

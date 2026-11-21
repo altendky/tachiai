@@ -51,15 +51,18 @@ internal object AbemaScheduleMetadataIpc {
         value.request.channelId?.let { putString("channel", it) }
     }
     fun nonce(value: String) = AbemaEpisodeMetadataIpc.nonce(value)
+    // The bounded projection decodeAbemaScheduleProjection reads on the other side.
+    fun projection(snapshot: AbemaScheduleSnapshot): String = JSONObject().put("truncated", snapshot.truncated).put("slots", JSONArray().apply {
+        snapshot.entries.forEach { entry ->
+            val request = checkNotNull(AbemaSlotRequest.from(entry.resource))
+            put(JSONObject().put("id", request.slotId).put("channelId", request.channelId).put("title", entry.title)
+                .apply { entry.durationSeconds?.let { put("durationSeconds", it) } })
+        }
+    }).apply { snapshot.request.channelId?.let { put("channelId", it) } }.toString()
     fun result(value: Result) = Bundle().apply {
         putString("nonce", value.nonce); putString("outcome", value.outcome)
         value.snapshot?.let { snapshot ->
-            val projection = JSONObject().put("truncated", snapshot.truncated).put("slots", JSONArray().apply {
-                snapshot.entries.forEach { entry ->
-                    val request = checkNotNull(AbemaSlotRequest.from(entry.resource))
-                    put(JSONObject().put("id", request.slotId).put("channelId", request.channelId).put("title", entry.title))
-                }
-            }).apply { snapshot.request.channelId?.let { put("channelId", it) } }.toString()
+            val projection = projection(snapshot)
             check(projection.toByteArray(Charsets.UTF_8).size <= ABEMA_SCHEDULE_PROJECTION_BYTES)
             putString("snapshot", projection)
         }

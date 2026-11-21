@@ -65,6 +65,7 @@ import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.providerDisplayNames
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
+import net.fstab.tachiai.provider.catalog.formatCatalogDuration
 
 @Composable
 internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)? = null,
@@ -320,7 +321,10 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
             Row(Modifier.fillMaxWidth().padding(start = 12.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(entry.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.weight(1f)) {
+                    Text(entry.title, style = MaterialTheme.typography.titleMedium)
+                    entry.durationSeconds?.let { Text(formatCatalogDuration(it), style = MaterialTheme.typography.bodySmall) }
+                }
                 for (slot in PrototypeSlot.entries) {
                     // Identity only: a provider retitle keeps the row checked.
                     val checked = assignments.choice(slot) == source.choice && assignments.episode(slot)?.sameEpisode(episode) == true

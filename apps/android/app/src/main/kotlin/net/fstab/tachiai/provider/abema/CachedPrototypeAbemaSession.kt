@@ -113,6 +113,9 @@ internal class CachedPrototypeAbemaSession(
     // belongs to the viewer's immutable provider route scope.
     private val routeOwnership: AbemaEpisodePlaybackOwnership? = null,
     private val cleanupExecutor: Executor = transportCleanupWorkers,
+    // #598 stage 1: run the unchanged helper in a JavaScriptSandbox isolate
+    // instead of this WebView. Development builds only, until parity.
+    useIsolateHelper: Boolean = false,
 ) : PrototypeFeedSession {
     companion object {
         private val accountCleanup = Executors.newFixedThreadPool(2) { task ->
@@ -154,6 +157,7 @@ internal class CachedPrototypeAbemaSession(
     private val slotChannelId get() = checkNotNull(slotResource).identity.substringBefore('/')
     private val slotId get() = checkNotNull(slotResource).identity.substringAfter('/')
     private val application = context.applicationContext
+    private val isolateHelper = if (useIsolateHelper) AbemaIsolateHelperHost(application, ::record) else null
     private val handler = Handler(Looper.getMainLooper())
     private val worker: CachedCleanupWorker = CachedCleanupWorker(Executors.newSingleThreadExecutor()) {
         finishTransportCleanup(); onCleanupChanged()
@@ -514,6 +518,7 @@ internal class CachedPrototypeAbemaSession(
         fun startHost(accountArgument: String) {
             record("startup=BUNDLES_BEGIN")
             val prepared = cached(AbemaPublicBundleIdentity())
+            isolateHelper?.start(prepared.bytes, readinessDeadline)
             val support = cached(AbemaPublicBundleIdentity.bootstrapSupport())
             val legacy = cached(AbemaPublicBundleIdentity.legacySource())
             val utilities = cached(AbemaPublicBundleIdentity.sourceUtilities())
@@ -526,7 +531,8 @@ internal class CachedPrototypeAbemaSession(
                 "__CHANNEL_DIAGNOSTIC__" to observeChannelPreparation.toString(),
                 "__MODERN_CHANNEL_CONTEXT__" to observeModernChannelContext.toString(),
                 "__CONTINUOUS_SLOT_PLAYBACK__" to continuousSlotPlayback.toString(),
-                "__ACCOUNT_DEFERRED__" to deferHost.toString())
+                "__ACCOUNT_DEFERRED__" to deferHost.toString(),
+                "__ISOLATE_HELPER__" to (isolateHelper != null).toString())
             val template = view.context.assets.open("abema/native-bootstrap-initialize.js")
                 .bufferedReader().use { it.readText() }
             val initialization = Regex("__[A-Z_]+__").replace(template) { checkNotNull(arguments[it.value]) }
@@ -1065,10 +1071,30 @@ internal class CachedPrototypeAbemaSession(
         }
         return try {
             awaitOpaqueResponse(completion, exchangeDeadline - SystemClock.elapsedRealtime())?.let { bytes ->
-                if (workerOwned() && current(run)) bytes else { bytes.fill(0); null }
+                if (!workerOwned() || !current(run)) { bytes.fill(0); null }
+                else if (isolateHelper == null) bytes
+                else try { isolateExchange(isolateHelper, bytes, challenge, run, exchangeDeadline) } finally { bytes.fill(0) }
             }
         }
         finally { pending.compareAndSet(completion, null) }
+    }
+
+    // The page returned {input, userId}: the opaque license response and the
+    // helper's identity argument. The isolate helper turns them into the same
+    // Clear Key JWK the page produced before, for the same fresh CDM.
+    private fun isolateExchange(host: AbemaIsolateHelperHost, payload: ByteArray, challenge: ByteArray,
+            run: Long, exchangeDeadline: Long): ByteArray? {
+        val fields = runCatching { JSONObject(String(payload, Charsets.UTF_8)) }.getOrNull() ?: return null
+        val kids = runCatching { JSONObject(String(challenge, Charsets.UTF_8)).getJSONArray("kids")
+            .let { array -> List(array.length()) { array.getString(it) } } }.getOrNull() ?: return null
+        val encoded = fields.optString("input"); val userId = fields.optString("userId")
+        if (fields.length() != 2 || encoded.isEmpty() || userId.isEmpty() || !encoded.matches(Regex("[A-Za-z0-9+/]+={0,2}"))) return null
+        val input = runCatching { Base64.decode(encoded, Base64.NO_WRAP) }.getOrNull() ?: return null
+        return try {
+            if (!workerOwned() || !current(run)) null
+            else runCatching { host.exchange(input, userId, kids, exchangeDeadline) }.getOrNull()
+                ?.takeIf { workerOwned() && current(run) || run { it.fill(0); false } }
+        } finally { input.fill(0) }
     }
 
     private fun pollResponse(completion: CompletableFuture<ByteArray?>, run: Long, exchangeDeadline: Long) {
@@ -1079,11 +1105,12 @@ internal class CachedPrototypeAbemaSession(
             else when (quoted(raw, 100)) {
                 "WORKING" -> handler.postDelayed({ pollResponse(completion, run, exchangeDeadline) }, 100)
                 "RESPONSE" -> view.evaluateJavascript("window['$name']?.take()") { opaque ->
-                    val encoded = quoted(opaque, 90_000)
+                    val encoded = quoted(opaque, if (isolateHelper == null) 90_000 else 140_000)
                     val response = try {
                         if (encoded == null || !encoded.matches(Regex("[A-Za-z0-9+/]+={0,2}"))) null
                         else Base64.decode(encoded, Base64.NO_WRAP).let { bytes ->
-                            if (bytes.size in 1..65536 && Base64.encodeToString(bytes, Base64.NO_WRAP) == encoded) bytes
+                            if (bytes.size in 1..(if (isolateHelper == null) 65536 else 98304) &&
+                                Base64.encodeToString(bytes, Base64.NO_WRAP) == encoded) bytes
                             else { bytes.fill(0); null }
                         }
                     } catch (_: Exception) { null }
@@ -1321,6 +1348,7 @@ internal class CachedPrototypeAbemaSession(
         cancelTransports()
         for ((stage, cleanup) in listOf<Pair<FailureStage, () -> Unit>>(
             FailureStage.HELPER_STOP to { if (allows(view.url)) view.evaluateJavascript("window['$name']?.stop()", null) },
+            FailureStage.HELPER_STOP to { isolateHelper?.close() },
             FailureStage.NATIVE_HOST_CLOSE to {
                 val host = nativeHost
                 if (host != null) host.close()

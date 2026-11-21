@@ -238,6 +238,8 @@ dependencies {
     testImplementation(libs.json)
     testImplementation(libs.okhttp.tls)
     androidTestImplementation(libs.androidx.test.junit)
+    // #573 isolate-host feasibility probe only; not in any app variant.
+    androidTestImplementation(libs.javascriptengine)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
 }

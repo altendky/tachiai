@@ -373,9 +373,9 @@ architecture would be:
 This removes the WebView renderer and the 2.33 MB parse. It does **not** address
 the network chain, which existing evidence says dominates.
 
-### Widevine as a helper-free path (open)
+### Widevine as a helper-free path — blocked for this client (2026-11-21)
 
-The provider's own selection logic offers Widevine broadly:
+The provider's own selection logic can offer Widevine:
 
 - `WebStreamFilter` → `getDrms` admits `widevine` for channel sources and
   `widevine` + `custom` for program/slot sources.
@@ -383,27 +383,137 @@ The provider's own selection logic offers Widevine broadly:
 - `createConfiguration` builds `{license}/widevine` with `t`, `ct`, `cid` and,
   for mobile app types, `dt=web_android`.
 
-Media3 supports standard Widevine through Android `MediaDrm`. If a selected
-resource advertises a Widevine stream and the license server accepts an
-Android CDM request with the web media token, playback would need **no provider
-JavaScript for licensing at all**. It would also stay within the opaque-CDM
-boundary.
+[#573](https://github.com/altendky/tachiai/issues/573) checked whether ABEMA
+actually offers Tachiai a Widevine stream. It does not, so the Widevine license
+experiment was not run.
 
-This is unverified:
+**Replay offers.** An investigation-only build recorded, before any filtering,
+a closed category for every stream the unchanged `PlaybackResourceGateway`
+returned. The record held streaming technology, DRM name, raw-key flag and
+whether the provider's own `WebStreamFilter` admits the stream. URLs, tokens
+and identifiers were not recorded.
 
-- The current native filter deliberately admits only custom DASH.
-- No VOD playback-resource stream list has been inspected. That needs a bearer
-  token to read program metadata for the ARIN.
-- Non-DRM legacy channels (`enc=clear`) would still use the custom path.
-- Earlier WebView traces of ABEMA's own player registered both key systems
-  with Widevine preferred, yet News and the free sumo replay ended on a Clear
-  Key CDM (see [open questions](open-questions.md) and
-  [native-access experiments](native-access-experiments.md#related-target-and-media-follow-up)).
-  Which conditions select each path is unresolved, so ranking alone does not
-  predict Widevine availability for a given source.
+| Stream | DRM | Provider filter |
+| --- | --- | --- |
+| DASH | custom | admits (Tachiai plays this) |
+| HLS | custom | refuses |
+| HLS, raw key | custom | refuses |
 
-It needs a bounded device experiment recorded under the usual playback-evidence
-rules.
+- Setup: NVIDIA SHIELD Android TV, Android 11, WebView 157.0.8103.50,
+  Windscribe Tokyo WireGuard route, saved ABEMA account (account media token).
+- Content: 幕内全取組ハイライト 11月場所 14日目, observed twice; both runs
+  played to `VIDEO_FRAME`.
+- No stream with any other DRM (Widevine, PlayReady, FairPlay) was offered.
+  The provider ranks Widevine first, so for this web client the server simply
+  does not list it.
+- This explains the earlier Pixel WebView traces: Widevine capability probes
+  were accepted, but the only offered protected stream uses the custom key
+  system, which EME runs on Clear Key.
+
+**Channels and slots.** `playbackResources` refuses channel IDs (HTTP 400,
+"Specified ARIN is not supported"). Linear channels and continuous slots
+therefore use the legacy selector, whose license is the provider's Clear Key
+configuration. There is no DRM choice to make there.
+
+**Not tried, by design.**
+
+- A Widevine license request for a stream the provider did not offer: that
+  would step outside the provider's own selection.
+- Requesting resources with a different client or device type, such as the
+  native ABEMA Android app's, to obtain a Widevine offer: that would present
+  Tachiai as another client and needs its own policy decision.
+
+**Recommendation: blocked.** The blocker is that the provider offers no
+Widevine stream to the web client context Tachiai uses. Revisit only if a
+provider-sanctioned client context that offers Widevine becomes available.
+
+### Isolate host feasibility (2026-11-21)
+
+The opt-in `AbemaHelperIsolateDeviceTest`
+(`-e tachiaiAbemaHelperIsolate true`, optional `-e tachiaiAbemaIsolateHoldMs`)
+hosts the unchanged, SHA-pinned application chunk in an
+`androidx.javascriptengine` isolate and initializes only the helper closure,
+exactly as `AbemaCachedHelperActivity` does in a WebView.
+
+- It needs no identity, account, route, challenge or license response.
+- The helper is called once, with synthetic bytes only, to see which error
+  class it raises.
+- Only closed categories and timings are logged, under `TachiaiAbemaIsolate`.
+
+| | tachiai-dev emulator | SHIELD |
+| --- | --- | --- |
+| Device | Android 16, x86_64 | Android 11, arm64, WebView 157.0.8103.50 |
+| `JavaScriptSandbox.isSupported()` | yes | yes |
+| Features | all seven checked¹ | all seven checked¹ |
+| Sandbox connect (cold) | 34 ms | 837 ms |
+| Isolate create | 2 ms | 5 ms |
+| Chunk transfer + evaluate | 131 + 32 ms | 210 + 104 ms |
+| Helper init | 9 ms | 32 ms |
+| Closure | 37 modules, callable | 37 modules, callable |
+| Synthetic call | plain `Error` | plain `Error` |
+| Sandbox process PSS | ≈36 MB | ≈68 MB |
+
+¹ Isolate termination, promise return, provide/consume ArrayBuffer, WASM
+compilation, max heap size, evaluate without transaction limit, console
+messaging.
+
+- The synthetic call raised a plain `Error`, not a `ReferenceError` or
+  `TypeError`. That suggests the helper refused the fake input rather than
+  missing a browser global, but only a real exchange can prove it.
+- **WebView comparison, same SHIELD, same chunk and closure.**
+  `AbemaCachedHelperActivity` took about 1.34 s from bundle ready to
+  `INTERFACE_READY`. Its processes used about 366 MB PSS: 268 MB in the helper
+  process and 98 MB in the renderer.
+- **Isolate comparison.** The isolate took about 1.18 s cold, of which 0.84 s
+  is starting the sandbox process, or about 0.35 s once the sandbox runs. It
+  used about 68 MB.
+- **Not done: one real opaque exchange in the isolate.** Kotlin would perform
+  the guest, token, gateway and license requests, then hand the license
+  response to the isolate helper in the same session. That needs a new owned
+  request pipeline and a review of the opaque-exchange boundary for this host.
+  It is the next experiment if this path is pursued.
+
+**Recommendation: pursue, as a scoped follow-up.** The helper initializes in an
+isolate on both devices, faster from cold and with about a fifth of the
+memory. The remaining blocker is design work: owned Kotlin networking for the
+non-helper steps, plus a real exchange to confirm the helper output.
+
+### Startup phases on the SHIELD (2026-11-21)
+
+These are the existing `TachiaiCachedAbema` markers for one replay start (the
+14日目 highlight above), with the saved account and the Tokyo route:
+
+| Phase | Time |
+| --- | --- |
+| Worker begin → account acquired | 6.7 s |
+| Bundles (cache hit) | 0.1 s |
+| WebView start → helper `WAITING_SESSION` | ≈2.8 s |
+| Media token → `WAITING_SOURCE` | ≈2.8 s |
+| Content + source selection → `READY` | ≈3.4 s |
+| Manifest + buffering → first license request | ≈3.4 s |
+| License exchange | 3.1 s |
+| First video frame | 0.35 s |
+| **Total** | **≈22.8 s** |
+
+The WebView accounts for about 2–3 s of about 23 s. An isolate host would save
+part of that; the account check, route and provider requests dominate.
+
+### Native port inventory (2026-11-21)
+
+The table under "Native implementation assessment" above still holds. Porting
+the endpoint constants, URL/query builders, stream filter/comparator and
+playback-resource DTOs is technically straightforward. The costs:
+
+- **Maintenance.** Each pin refresh would become protocol tracking: module IDs
+  move every build, and DTO or field changes would need review, instead of
+  re-pinning unchanged code.
+- **Design.** It reverses the current "unchanged provider code" design and
+  needs an explicit decision.
+- **Guest app-key derivation (2833)** stays out of scope without explicit
+  approval.
+
+**Recommendation: park.** It adds maintenance without removing the JavaScript
+engine, which the unchanged helper still needs.
 
 ## Reproduction
 

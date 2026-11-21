@@ -138,10 +138,15 @@
   [bundle analysis](abema-public-bundle-analysis.md) found that the live site
   has rebuilt past every pin except youboralib (old URLs still resolve) and
   that the region page alone had 1–2.3 s TTFB from a non-Japan desktop.
-  Unverified: per-phase device timing, whether a selected replay advertises a
-  Widevine stream that Android MediaDrm can license without provider
-  JavaScript, and whether the unchanged helper closure runs in a non-WebView
-  isolate.
+  On 2026-11-21 [#573](abema-public-bundle-analysis.md#widevine-as-a-helper-free-path--blocked-for-this-client-2026-11-21)
+  answered three parts on the SHIELD:
+  - Replay startup phases took about 22.8 s to the first frame, with the
+    WebView about 2–3 s of that.
+  - The replay offered no Widevine stream: DASH/HLS with the custom DRM only.
+  - The unchanged helper closure initializes in an `androidx.javascriptengine`
+    isolate.
+
+  Still open: one real license exchange through an isolate-hosted helper.
 - Can the cached no-page bootstrap cover replay and durable operation as well
   as News? Two independently initialized native News copies rendered and advanced
   for the five-minute foreground budget without an original web video. A cached
@@ -211,8 +216,11 @@
   then accepted the initial
   Widevine and Clear Key capability requests, followed by a later accepted
   Clear Key request. Initial Widevine capability rejection is therefore not
-  the explanation for those runs; content-specific negotiation/resource
-  selection remains unresolved. See the
+  the explanation for those runs. Resource selection explains it: on
+  2026-11-21 the replay's playback resources listed only custom-DRM streams for
+  this web client, and channels have no playback-resource offer at all (HTTP
+  400). See the
+  [#573 results](abema-public-bundle-analysis.md#widevine-as-a-helper-free-path--blocked-for-this-client-2026-11-21). See the
   [startup results](native-access-experiments.md#startup-capability-results--2026-10-06).
   No public
   native Clear Key acquisition contract was found in the reviewed official

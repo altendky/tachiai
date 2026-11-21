@@ -208,9 +208,33 @@ func parseWireGuard(config string) (wgConfig, error) {
 // root, OS routes or packet interception. Outer endpoint DNS/UDP uses the
 // system connection; destination DNS and TCP use only the selected peer.
 func NewWireGuard(config, username, password, realm, allowedHosts string) (*Route, error) {
+	dial, cleanup, err := wireGuardTransport(config)
+	if err != nil {
+		return nil, err
+	}
+	route, err := newRoute(username, password, realm, allowedHosts, dial, cleanup)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	return route, nil
+}
+
+// NewWireGuardEngine starts one device for a saved identity and lends it to
+// leases. Leases of one identity must share it: two devices with the same key
+// displace each other's session at the peer.
+func NewWireGuardEngine(config string) (*Engine, error) {
+	dial, cleanup, err := wireGuardTransport(config)
+	if err != nil {
+		return nil, err
+	}
+	return newEngine(dial, func() error { cleanup(); return nil }), nil
+}
+
+func wireGuardTransport(config string) (dialFunc, func(), error) {
 	parsed, err := parseWireGuard(config)
 	if err != nil {
-		return nil, errConfig
+		return nil, nil, errConfig
 	}
 	// Upstream UAPI accepts numeric endpoint addresses, not hostnames. Only the
 	// outer tunnel endpoint is resolved on the system path, under a deadline.
@@ -220,14 +244,14 @@ func NewWireGuard(config, username, password, realm, allowedHosts string) (*Rout
 		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		cancel()
 		if err != nil || len(addresses) == 0 {
-			return nil, errConnect
+			return nil, nil, errConnect
 		}
 		endpoint := net.JoinHostPort(addresses[0].Unmap().String(), port)
 		parsed.ipc = strings.Replace(parsed.ipc, "endpoint="+parsed.endpoint+"\n", "endpoint="+endpoint+"\n", 1)
 	}
 	tun, network, err := netstack.CreateNetTUN(parsed.addresses, parsed.dns, parsed.mtu)
 	if err != nil {
-		return nil, errConnect
+		return nil, nil, errConnect
 	}
 	logger := device.NewLogger(device.LogLevelSilent, "")
 	logger.Verbosef = func(string, ...any) {}
@@ -235,14 +259,9 @@ func NewWireGuard(config, username, password, realm, allowedHosts string) (*Rout
 	engine := device.NewDevice(tun, conn.NewDefaultBind(), logger)
 	if engine.IpcSet(parsed.ipc) != nil || engine.Up() != nil {
 		engine.Close()
-		return nil, errConnect
+		return nil, nil, errConnect
 	}
-	route, err := newRoute(username, password, realm, allowedHosts, func(ctx context.Context, target string) (net.Conn, error) {
+	return func(ctx context.Context, target string) (net.Conn, error) {
 		return network.DialContext(ctx, "tcp", target)
-	}, engine.Close)
-	if err != nil {
-		engine.Close()
-		return nil, err
-	}
-	return route, nil
+	}, engine.Close, nil
 }

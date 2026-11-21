@@ -1,5 +1,7 @@
 package net.fstab.tachiai.provider.twitch.catalog
 
+import net.fstab.tachiai.provider.catalog.MAX_CATALOG_DURATION_SECONDS
+
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import org.json.JSONArray
@@ -16,8 +18,12 @@ internal class TwitchCatalogLiveStream(val broadcastId: String, val broadcaster:
     init { require(validTwitchCatalogId(broadcastId) && broadcaster.live == true) }
     override fun toString() = "TwitchCatalogLiveStream(redacted)"
 }
-internal class TwitchCatalogVideo(val id: String, val broadcasterId: String, val title: String) {
-    init { require(validTwitchCatalogId(id) && validTwitchCatalogId(broadcasterId) && validTwitchCatalogText(title)) }
+internal class TwitchCatalogVideo(val id: String, val broadcasterId: String, val title: String,
+    val durationSeconds: Long? = null) {
+    init {
+        require(validTwitchCatalogId(id) && validTwitchCatalogId(broadcasterId) && validTwitchCatalogText(title))
+        require(durationSeconds == null || durationSeconds in 1..MAX_CATALOG_DURATION_SECONDS)
+    }
     override fun toString() = "TwitchCatalogVideo(redacted)"
 }
 internal class TwitchHelixPage<T>(items: List<T>, val nextCursor: String? = null) {
@@ -65,7 +71,20 @@ internal fun parseTwitchStreams(response: TwitchHelixResponse) = metadataPage(re
 }
 internal fun parseTwitchVideos(response: TwitchHelixResponse) = metadataPage(response) {
     if (it["type"] !in setOf("archive", "highlight", "upload")) invalidMetadata()
-    TwitchCatalogVideo(it.id("id"), it.id("user_id"), it.text("title"))
+    TwitchCatalogVideo(it.id("id"), it.id("user_id"), it.text("title"), twitchVideoDurationSeconds(it["duration"]))
+}
+
+// Helix reports a video's length as text such as `1h2m3s` or `45s` (#608).
+// Display metadata only: an absent or unexpected value stays unknown.
+private val twitchVideoDuration = Regex("(?:([0-9]{1,3})h)?(?:([0-9]{1,2})m)?(?:([0-9]{1,2})s)?")
+internal fun twitchVideoDurationSeconds(value: Any?): Long? {
+    val text = value as? String ?: return null
+    if (text.isEmpty() || text.length > 12) return null
+    val match = twitchVideoDuration.matchEntire(text) ?: return null
+    val (hours, minutes, seconds) = match.destructured
+    if (minutes.isNotEmpty() && minutes.toInt() > 59 || seconds.isNotEmpty() && seconds.toInt() > 59) return null
+    val total = (hours.toLongOrNull() ?: 0) * 3600 + (minutes.toLongOrNull() ?: 0) * 60 + (seconds.toLongOrNull() ?: 0)
+    return total.takeIf { it in 1..MAX_CATALOG_DURATION_SECONDS }
 }
 
 private val scheduleTimestamp = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})")

@@ -191,7 +191,9 @@ and preserve already-added feedback. Configured streams use compact rows with dr
 icons. Dragging previews a new order and saves it once on drop; tapping a handle
 also offers move actions for keyboard and accessibility use. Browsable titles
 and subtitles form one target; the existing subtitle names the action, such as
-“Browse programs › · Availability unknown”. Provider adapters distinguish
+“Browse programs › · Availability unknown”. A result with a known length
+(an ABEMA scheduled broadcast or a Twitch video) ends its subtitle with it, in
+the same format as episode rows (#608). Provider adapters distinguish
 channel programs, series episodes and broadcaster videos. Exact videos and
 broadcasts do not advertise child browsing. Refresh and removal remain separate
 targets. Removal requires confirmation. Refresh retrieves
@@ -1223,7 +1225,8 @@ coverage, so Tachiai does not choose an episode itself.
   feed's chosen episode ("A: …").
   - The page opens within the picker, the same on phone/tablet and TV. It lists
     episodes newest first in the provider's own order, with their provider
-    titles.
+    titles. An episode with a known length shows it below the title, such as
+    `1h 58m`, `45m`, or `40s` under a minute (#608).
   - **More** loads older pages, and **‹ Back** or system Back returns.
   - Loading, empty and failure states are shown, with Retry starting again
     from the newest page. Pages already loaded stay for the session.

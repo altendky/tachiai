@@ -29,6 +29,12 @@ class TwitchContinueWatchingProjectionTest {
         assertFalse(result.toString().contains("9000"))
         assertFalse(result.toString().contains("position"))
     }
+    @Test fun lengthSecondsBecomesTheEntryDisplayDuration() {
+        val result = parseTwitchContinueWatching(body(listOf(edge("1", position = "10", duration = "3723"),
+            edge("2", position = "1", duration = "1.6")).joinToString(",")), "9000", now)
+        assertEquals(listOf(3723L, 2L), result.entries.map { it.durationSeconds })
+    }
+
     @Test fun emptyIsValidOnlyWithExactIntendedAccountAndCompleteCollectionShape() {
         assertTrue(parseTwitchContinueWatching(body(), "9000", now).entries.isEmpty())
         failure(body(user = "9001"), TwitchContinueWatchingFailure.USER_MISMATCH)

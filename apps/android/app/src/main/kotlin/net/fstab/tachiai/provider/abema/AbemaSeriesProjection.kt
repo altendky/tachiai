@@ -33,13 +33,21 @@ private class SeriesProjectionReader(private val text: String) {
         }
         error("Series projection refused")
     }
-    private fun objectFields(allowed: Set<String>, value: (String) -> Unit) {
+    private fun objectFields(allowed: Set<String>, optional: Set<String> = emptySet(), value: (String) -> Unit) {
         need('{'); val seen = mutableSetOf<String>()
         if (!take('}')) {
-            do { val key = string(); check(key in allowed && seen.add(key)); need(':'); value(key) } while (take(','))
+            do { val key = string(); check((key in allowed || key in optional) && seen.add(key)); need(':'); value(key) } while (take(','))
             need('}')
         }
-        check(seen == allowed)
+        check(seen - optional == allowed)
+    }
+    private fun seconds(): Long {
+        space()
+        val start = at
+        while (at < text.length && text[at] in '0'..'9') at++
+        val digits = text.substring(start, at)
+        check(digits.length in 1..6 && digits[0] != '0')
+        return digits.toLong().also { check(it in 1..MAX_CATALOG_DURATION_SECONDS) }
     }
     fun read(request: AbemaSeriesPageRequest): AbemaSeriesPage {
         var parent: String? = null; var version: String? = null; var season: String? = null
@@ -53,10 +61,13 @@ private class SeriesProjectionReader(private val text: String) {
                 if (!take(']')) {
                     do {
                         check(entries.size < 20)
-                        var id: String? = null; var title: String? = null
-                        objectFields(setOf("id", "title")) { field -> if (field == "id") id = string() else title = string() }
+                        var id: String? = null; var title: String? = null; var duration: Long? = null
+                        objectFields(setOf("id", "title"), setOf("durationSeconds")) { field -> when (field) {
+                            "id" -> id = string(); "title" -> title = string(); else -> duration = seconds()
+                        } }
                         check(validAbemaSeriesId(checkNotNull(id)) && safeAbemaSeriesText(checkNotNull(title), 160))
-                        entries += CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id!!, CatalogIntent.VIDEO), title!!)
+                        entries += CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id!!, CatalogIntent.VIDEO), title!!,
+                            durationSeconds = duration)
                     } while (take(','))
                     need(']')
                 }

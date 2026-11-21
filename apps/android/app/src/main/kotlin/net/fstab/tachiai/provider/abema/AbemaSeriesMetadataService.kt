@@ -60,6 +60,8 @@ class AbemaSeriesMetadataService : Service() {
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 seriesRequest = request.page, canRemainActive = lease::current)
         }) { result ->
+            // Closed coordinator category only, as for search below.
+            if (result.category != "EXACT_SERIES_PAGE") android.util.Log.i("TachiaiAbemaSeriesRuntime", result.category)
             val outcome = when (result.category) {
                 "EXACT_SERIES_PAGE" -> if (result.seriesPage != null) "OK" else "TEMPORARY"
                 "GUEST_SERIES_HTTP_404", "GUEST_SERIES_HTTP_410" -> "NOT_FOUND"
@@ -75,6 +77,7 @@ class AbemaSeriesMetadataService : Service() {
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 scheduleRequest = request.request, canRemainActive = lease::current)
         }) { result ->
+            if (result.category != "SCHEDULE_SNAPSHOT") android.util.Log.i("TachiaiAbemaScheduleRuntime", result.category)
             val outcome = when (result.category) {
                 "SCHEDULE_SNAPSHOT" -> if (result.scheduleSnapshot != null) "OK" else "TEMPORARY"
                 "GUEST_SCHEDULE_HTTP_404", "GUEST_SCHEDULE_HTTP_410" -> "NOT_FOUND"

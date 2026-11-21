@@ -95,6 +95,7 @@ import net.fstab.tachiai.presentation.SourceRouteChoice
 import net.fstab.tachiai.presentation.defaultProviderInstances
 import net.fstab.tachiai.presentation.ProviderInstance
 import net.fstab.tachiai.presentation.ConfiguredSource
+import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.presentation.ConfiguredFeedChoice
 import net.fstab.tachiai.presentation.ConfiguredFeedAssignments
 import net.fstab.tachiai.presentation.ConfiguredPrototypeSelectionResult
@@ -145,6 +146,7 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
+import net.fstab.tachiai.provider.catalog.CatalogFailure
 import net.fstab.tachiai.presentation.endedFeedFailure
 import net.fstab.tachiai.presentation.channelNotAiringMessage
 import net.fstab.tachiai.provider.twitch.PrototypeTwitchSession
@@ -206,8 +208,13 @@ open class PrototypeActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     // Episode pages take tens of seconds; they never queue behind or block Watch.
     private val episodeWorker = Executors.newSingleThreadExecutor()
+    // Separate from Watch's readiness: ensure() retires any check pending on the
+    // same instance, and an episode page must not cancel Watch's account check.
+    private val episodeAccountReadiness by lazy { AbemaAccountReadiness(this) }
+    private var episodeAccountPending: ((String?) -> Unit)? = null // Main-owned.
+    private var episodeAccountRevision = 0L // Main-owned.
     private val pickerEpisodes by lazy {
-        PickerCollectionEpisodes(episodeWorker, { action -> handler.post(action) }) { source ->
+        PickerCollectionEpisodes(episodeWorker, { action -> handler.post(action) }, ::episodeAccountReady) { source ->
             net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog(this, source.instanceId, emptyMap(),
                 canUse = { resumed.get() && !isFinishing && !isDestroyed })
         }
@@ -2045,9 +2052,40 @@ open class PrototypeActivity : ComponentActivity() {
         styleSystemBars(systemBarsVideo)
         viewer?.requestLayout()
     }
+    // Checks the saved ABEMA account before a collection's first episode page,
+    // as Watch and Manage streams do before discovery. An expired grant starts
+    // or joins renewal here instead of failing inside the catalog (#581).
+    private fun episodeAccountReady(source: ConfiguredSource, done: (String?) -> Unit) {
+        if (source.entry.resource.providerId != ProviderId("abema")) { done(null); return }
+        episodeAccountPending?.let { episodeAccountPending = null; it(collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED)) }
+        val revision = ++episodeAccountRevision
+        episodeAccountPending = done
+        fun answer(message: String?) {
+            if (revision != episodeAccountRevision || episodeAccountPending !== done) return
+            episodeAccountPending = null; done(message)
+        }
+        net.fstab.tachiai.provider.abema.account.AbemaAccountWorkers.worker.execute {
+            val target = runCatching {
+                fun instances() = providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) }
+                val owner = net.fstab.tachiai.provider.abema.captureAbemaCatalogRouteOwner(source.instanceId, ::instances,
+                    { ids -> connectionProfileStore(applicationContext).snapshot(ids) })
+                net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(source.instanceId, owner.proof())
+            }.getOrNull()
+            handler.post {
+                if (revision != episodeAccountRevision) return@post
+                // An unreadable owner is left to the catalog, which reports it as before.
+                if (target == null || !resumed.get() || isFinishing || isDestroyed) { answer(null); return@post }
+                episodeAccountReadiness.ensure(listOf(target)) { result ->
+                    answer(if (result == AbemaAccountReadinessResult.READY) null else abemaAccountReadinessMessage(result))
+                }
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume(); resumed.set(true)
         accountReadiness.onResume()
+        episodeAccountReadiness.onResume()
         recoveryState.addObserver(recoveryObserver)
         handler.post { updateRecoveryState() }
         resumeMessage?.let { resumeMessage = null; showPicker(it) }
@@ -2140,6 +2178,10 @@ open class PrototypeActivity : ComponentActivity() {
         setPlaybackIntent(false, PlaybackHealthIntent.BACKGROUND)
         accountReadiness.onPause()
         accountCheckRevision++; checkingAccount = false
+        // A paused readiness check never answers; end the episode page's wait
+        // the same way an interrupted catalog load ends.
+        episodeAccountReadiness.onPause(); episodeAccountRevision++
+        episodeAccountPending?.let { episodeAccountPending = null; it(collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED)) }
         recoveryState.removeObserver(recoveryObserver)
         dismissRecoveryDialog()
         setupRevision++
@@ -2150,6 +2192,7 @@ open class PrototypeActivity : ComponentActivity() {
     }
     override fun onDestroy() {
         accountReadiness.close()
+        episodeAccountReadiness.close(); episodeAccountPending = null
         pendingAccountSelection = null
         pendingAccountPlan = null
         recoveryState.removeObserver(recoveryObserver)

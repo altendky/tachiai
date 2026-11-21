@@ -151,4 +151,16 @@ class AndroidTwitchLiveIdentityResolverTest {
         fixture.resolver().use { assertEquals("renamed_channel", identity(it.begin(resource)).login) }
         assertEquals(3, fixture.requests)
     }
+
+    @Test fun waitingStatusSharesTheRateGateAndMakesNoRequestWhileBlocked() {
+        val fixture = Fixture(); fixture.status = 429
+        fixture.resolver().use { assertEquals(CatalogFailure.RATE_LIMITED, (it.begin(resource) as CatalogResult.Failure).reason) }
+        val requests = fixture.requests
+        fixture.status = 200
+        fixture.resolver().use {
+            val blocked = it.status(resource) as CatalogResult.Failure
+            assertEquals(CatalogFailure.RATE_LIMITED, blocked.reason); assertEquals(2_000L, blocked.retryAtEpochMs)
+        }
+        assertEquals(requests, fixture.requests)
+    }
 }

@@ -15,7 +15,10 @@ adding the same resource and intent selects the existing item instead of creatin
 a duplicate. Different intents remain distinct.
 
 An ongoing channel is not a particular broadcast. A series or annual sumo title
-is a collection, not a promise to play an arbitrary latest episode. On-demand
+is a collection, not a promise to play an arbitrary latest episode. On the main
+picker the user may choose one of its exact episodes per feed
+([collection episodes](prototype-ux.md#collection-episodes-on-the-picker--november-19-2026));
+the saved item remains the collection. On-demand
 items can include content that was never live. Unknown, upcoming, offline,
 expired and unavailable resources remain configured until explicitly removed.
 Refreshing status must preserve their identities and bindings.
@@ -293,8 +296,8 @@ in memory rather than saved Activity state.
 Imported items survive restart and unavailable My List access, using the existing
 local ordering, deduplication and encrypted storage. Exact current sample
 resources retain their existing playback support. Other resources remain saved
-but fail as unsupported before route/session preparation; collections need
-explicit child discovery that is not yet connected. This does not implement
+but fail as unsupported before route/session preparation. Saved ABEMA series and
+seasons offer per-feed episode choice on the main picker. This does not implement
 native All/search, account lists or dynamic ABEMA playback.
 
 ### Android public-link sharing

@@ -24,21 +24,23 @@ class AbemaPublicBundleCacheTest {
 
     @Test fun `only reviewed public URI is admitted`() {
         assertTrue(allowedAbemaPublicBundleUri(identity().uri))
-        listOf("http://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js",
-            "https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js?token=fixture",
-            "https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js#fragment",
-            "https://user@abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js",
-            "https://abema.tv:443/assets/compat/3850f3e68c3aa3c0.5206.js",
-            "https://other.abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js",
-            "https://abema.tv/assets/compat/new.5206.js").forEach {
+        listOf("http://abema.tv/assets/compat/7e1d1d3889f47778.9627.js",
+            "https://abema.tv/assets/compat/7e1d1d3889f47778.9627.js?token=fixture",
+            "https://abema.tv/assets/compat/7e1d1d3889f47778.9627.js#fragment",
+            "https://user@abema.tv/assets/compat/7e1d1d3889f47778.9627.js",
+            "https://abema.tv:443/assets/compat/7e1d1d3889f47778.9627.js",
+            "https://other.abema.tv/assets/compat/7e1d1d3889f47778.9627.js",
+            "https://abema.tv/assets/compat/new.9627.js",
+            // A superseded pin is not admitted once replaced.
+            "https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js").forEach {
             assertFalse(allowedAbemaPublicBundleUri(java.net.URI(it)))
         }
     }
 
     @Test fun `production pin and strict fixture policy remain explicit`() {
         val production = AbemaPublicBundleIdentity()
-        assertEquals("d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81", production.sha256)
-        assertEquals(1_801_458, production.expectedBytes)
+        assertEquals("1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73", production.sha256)
+        assertEquals(1_801_875, production.expectedBytes)
         assertEquals(2 * 1024 * 1024, production.maximumBytes)
         failure(AbemaBundleFailure.POLICY_REFUSED) { AbemaPublicBundleIdentity("../fixture", 1) }
         failure(AbemaBundleFailure.POLICY_REFUSED) { AbemaPublicBundleIdentity(identity().sha256, 0) }
@@ -47,9 +49,9 @@ class AbemaPublicBundleCacheTest {
 
     @Test fun `legacy selector is a separate reviewed identity not a discovered update`() {
         val legacy = AbemaPublicBundleIdentity.legacySource()
-        assertEquals("https://abema.tv/assets/compat/1deb672fea92d35e.8204.bundle.js", legacy.uri.toString())
-        assertEquals("8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d", legacy.sha256)
-        assertEquals(18_786, legacy.expectedBytes)
+        assertEquals("https://abema.tv/assets/compat/836465d169ab61b6.8204.bundle.js", legacy.uri.toString())
+        assertEquals("aabc84d2af5da5ccd259fee7d28df295eb5e40f43d66e2b235db9d40b6747b41", legacy.sha256)
+        assertEquals(18_618, legacy.expectedBytes)
         assertTrue(allowedAbemaPublicBundleUri(legacy.uri))
         assertNotEquals(AbemaPublicBundleIdentity.bootstrapSupport().fileName, legacy.fileName)
         assertFalse(allowedAbemaPublicBundleUri(java.net.URI(legacy.uri.toString() + "?version=other")))
@@ -57,9 +59,9 @@ class AbemaPublicBundleCacheTest {
 
     @Test fun `source utility dependency has its own fixed hash and cache file`() {
         val utilities = AbemaPublicBundleIdentity.sourceUtilities()
-        assertEquals("https://abema.tv/assets/compat/7977ee0696dadeb7.9328.js", utilities.uri.toString())
-        assertEquals("0187e58193b73f6e261f8ca799c7d75d76b4138813e17b1d57c4d8a6919bc466", utilities.sha256)
-        assertEquals(187_143, utilities.expectedBytes)
+        assertEquals("https://abema.tv/assets/compat/4a27c7be953150a2.9328.js", utilities.uri.toString())
+        assertEquals("24ec3275b74ebc9bca669255a121bb182944a6b5466ae21ba312752cf7d04da8", utilities.sha256)
+        assertEquals(186_525, utilities.expectedBytes)
         assertTrue(allowedAbemaPublicBundleUri(utilities.uri))
         assertNotEquals(AbemaPublicBundleIdentity.legacySource().fileName, utilities.fileName)
         assertFalse(allowedAbemaPublicBundleUri(java.net.URI(utilities.uri.toString() + "#fragment")))
@@ -67,9 +69,9 @@ class AbemaPublicBundleCacheTest {
 
     @Test fun `bootstrap support is a separate reviewed identity not a discovered update`() {
         val support = AbemaPublicBundleIdentity.bootstrapSupport()
-        assertEquals("https://abema.tv/assets/compat/a3d61a8507a3f772.framework.js", support.uri.toString())
-        assertEquals("4dc7e3f6d08af278d1b7077d79c3bf5a381e5ff6934189a7d8b0f1219e8190cf", support.sha256)
-        assertEquals(326_667, support.expectedBytes)
+        assertEquals("https://abema.tv/assets/compat/8a1c293b222b2390.framework.js", support.uri.toString())
+        assertEquals("eefb65e83c3fb1f82af5ce599f154c6e422bd7d3dab2aaa19c3ac9b5425e8412", support.sha256)
+        assertEquals(326_334, support.expectedBytes)
         assertTrue(allowedAbemaPublicBundleUri(support.uri))
         assertNotEquals(AbemaPublicBundleIdentity().fileName, support.fileName)
         listOf("?version=new", "#fragment", "/extra").forEach {

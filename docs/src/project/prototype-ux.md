@@ -31,7 +31,10 @@ controls are described below; integrated TV acceptance is a separate work item.
 ### TV viewer controls
 
 On TV, D-pad/Select reveals hidden controls and consumes that first press before
-activating anything. Focus starts on Play/Pause, has a contrasting outline, and
+activating anything. The exception is a failed feed's own Retry/Go live, which
+stays visible on the feed while the controls are hidden: Select on it, when
+focused, activates it at once, as one tap does on phone
+([#559](https://github.com/altendky/tachiai/issues/559)). Focus starts on Play/Pause, has a contrasting outline, and
 keeps the control tray visible. Audio, Timing and More retain their opening
 controls for focus restoration. Back closes a menu, then a panel, then the button
 bar; another Back with all controls hidden leaves playback. Held mix adjustment
@@ -344,7 +347,8 @@ Opening a currently airing configured broadcast selects its continuous live
 channel after fresh matching broadcast metadata and time checks. The viewer
 starts at the live edge and keeps the channel playing when that broadcast ends;
 the saved broadcast, provider instance, route and preferences remain intact.
-Future broadcasts refuse playback, while ended selections use exact catch-up
+Future broadcasts refuse playback (the viewer then waits for the start; see
+[waiting for live shows](#waiting-for-live-shows--november-20-2026)), while ended selections use exact catch-up
 with their separate Free/Premium eligibility checks. Chase remains a separate
 capability; linear live playback does not consume Chase authority.
 
@@ -723,7 +727,8 @@ from the fallback seconds correction; disabling reverses only the confirmed
 movement from this session's baseline. A detected change or missing evidence
 keeps the seconds correction as a fallback estimate, reported separately in
 Timing. There is no partial clamp, periodic retry or additional live-default
-seek. Disabled preferences do not restore; a zero correction does not seek.
+seek, apart from the moved-feed recovery below. Disabled preferences do not
+restore; a zero correction does not seek.
 
 Timeline evidence is deliberately conservative: native DASH compares the
 presentation epoch and period start; HLS requires program date/time and
@@ -758,6 +763,39 @@ are not timeline-continuity proof, and changed live latency/window ends can
 make them inaccurate. A retry still leaves the reversible scalar baseline
 unknown, so it does not claim that the complete old correction can be toggled
 off through an exact inverse.
+
+On 2026-11-19 the user asked the viewer to recover when the feeds end up far
+from the intended offset. On the SHIELD, ABEMA's player had repositioned itself
+16 s toward live at the end of a commercial pod, with no user action and no
+timing settlement, and the alignment was lost. Once an enabled offset has
+settled and both feeds play, the viewer freezes their relationship from the
+first steady sample: each live feed's continuous distance behind live, or a
+replay's position, on a monotonic clock. Any change of pair, user playback
+intent or timing settlement discards that reference: every seek, Mark, nudge,
+Pause, Play or toggle. After a feed retry or Back to live the applied baseline
+is unknown, so recovery stays off until the pair is reopened.
+
+The viewer restores the frozen relationship only when all of these hold:
+
+- both feeds have advanced in step with real time over the last second, so a
+  stalled or frozen position, as during ABEMA's commercials, never triggers it;
+- the relationship has moved by at least 3 s, or 10 s when a feed only offers
+  its window-end distance, which saws by a refresh interval;
+- the move has lasted 2 s.
+
+The restore goes through the ordinary relative alignment, with its readiness,
+advertisement, seek-window and settlement checks. It is logged as
+`timing=OFFSET_RECOVERY`, and Timing reports "Alignment restored after a feed
+moved on its own". It never changes or saves the preference. Attempts are at
+least 15 s apart and at most three per ten minutes, so a correction the window
+cannot hold does not loop; that count lasts for the viewer session, including
+after a new alignment. Any one-sided move of at least 3 s qualifies, including
+a feed that rebuffered while the other kept playing. A restore whose movement
+cannot be confirmed leaves the offset unconfirmed, as any failed offset change
+does, and playback may need Play. A feed whose provider shifts its content,
+rather than its player, cannot be detected this way. The thin headroom of a short
+provider window remains; an app-owned rewind buffer is tracked in
+[#568](https://github.com/altendky/tachiai/issues/568).
 
 Each device stores its own encrypted, bounded pair preferences. Identity uses
 the exact public source and provider-instance identities, excluding titles,
@@ -1170,6 +1208,209 @@ inspection confirmed labelled checkboxes; rotating an incomplete draft to
 landscape retained B's replay selection and disabled Open viewer. The original
 portrait rotation was restored. No provider page, login or playback was needed
 for these checks, and no new decoding/audio evidence is claimed.
+
+### Collection episodes on the picker — November 19, 2026
+
+[Issue #550](https://github.com/altendky/tachiai/issues/550) adds episode choice
+for saved collections on the main picker. The user agreed the design on
+2026-11-19 instead of an automatic newest-episode default (#549, not landed).
+The provider's newest row for the sumo series was a preview talk, not the day's
+coverage, so Tachiai does not choose an episode itself.
+
+- **Episodes page.** A saved collection whose episodes can be browsed (today an
+  ABEMA series or exact season, on API 28 and later) shows **Episodes ›** in its
+  row. The row's subtitle reads "Collection · choose an episode", or names each
+  feed's chosen episode ("A: …").
+  - The page opens within the picker, the same on phone/tablet and TV. It lists
+    episodes newest first in the provider's own order, with their provider
+    titles.
+  - **More** loads older pages, and **‹ Back** or system Back returns.
+  - Loading, empty and failure states are shown, with Retry starting again
+    from the newest page. Pages already loaded stay for the session.
+  - Episode loads use their own worker, so they never delay Watch.
+- **Choosing.** Episode rows have the same A/B controls as configured items.
+  Choosing assigns that exact episode under the collection item; nothing is
+  added to the configured list. The same collection can feed A and B with
+  different episodes.
+  - Unchecking the episode, or the collection row, empties that slot.
+  - Choosing a different item for the slot drops its episode.
+- **Watch.** With a collection assigned but no episode chosen, Watch stays
+  disabled and the picker asks for an episode. There is no automatic default.
+  Watch plays the chosen exact episode through the configured-episode path,
+  with fresh eligibility checks. Retries and recovery keep it, and the viewer
+  labels the feed with the episode title.
+- **Remembering.** Chosen episodes persist with the A/B choices in saved
+  Activity state, the encrypted last-selection record and the recovery
+  checkpoint. Each stores the collection and episode public identities and the
+  episode title.
+  - Records without an episode keep their previous formats byte for byte.
+  - An episode is dropped when its item no longer holds that collection.
+- **Scope.** Collections without episode browsing keep the existing refusal.
+  Each page is one fresh guest series request, about 20–30 s; faster loading is
+  a separate follow-up.
+
+On the SHIELD (Android 11, signed-in ABEMA, Windscribe Tokyo route), the
+Episodes page for ABEMA大相撲2026 listed, newest first:
+
+- a stable-master preview talk;
+- the new LIVE opening;
+- 幕内全取組ハイライト for days 12, 11, 10 and so on.
+
+Choosing day 12 for A, going Back and pressing Watch reached the episode's first
+video frame. Provider-free JVM and JS fixtures cover the episode choice model,
+selection, persistence formats, newest-first catalog continuations, IPC order
+and the picker loader.
+
+#### Account check before episodes — November 20, 2026
+
+[#581](https://github.com/altendky/tachiai/issues/581): on the SHIELD the
+Episodes page showed only "Episodes could not be loaded." after the saved ABEMA
+grant expired. The failure journal recorded `ABEMA_ACCOUNT_EXPIRED`; logcat
+recorded nothing. Discovery's account acquisition fails at once on an expired
+grant and never starts renewal. Watch, feed Retry and Manage streams check the
+account first (readiness), but the Episodes page did not.
+
+- The first page and every Retry now run the same readiness check first. An
+  expired grant starts or joins renewal while the page shows "Loading
+  episodes…".
+- A refusal shows the existing readiness message instead of the generic text,
+  for example "ABEMA account could not be renewed. Open ABEMA account in
+  Providers to check the connection." The wording and flow are the ones Watch
+  already uses on every implementation; nothing platform-specific is added.
+- **More** continues an already-admitted listing without another check.
+- The page has its own readiness instance, so it never cancels Watch's check.
+  Leaving the app ends a pending check like an interrupted load.
+- Logcat now names the closed category of a failed lookup:
+  - `TachiaiAbemaSeriesRuntime`, `TachiaiAbemaScheduleRuntime` and
+    `TachiaiAbemaEpisodeRuntime` log the coordinator category, as
+    `TachiaiAbemaSearchRuntime` already did.
+  - `TachiaiAbemaGuestRuntime` logs `ACCOUNT_<failure>` (for example
+    `ACCOUNT_EXPIRED`) when account acquisition refuses a lookup.
+  - Lines hold closed constants only: no URL, identity, title or token.
+
+The catalog IPC still reports an account refusal as a temporary failure. The
+readiness check makes that a narrow race, and Retry runs the check again. A
+dedicated IPC outcome was not added.
+
+### ABEMA channel between broadcasts — November 19, 2026
+
+[#557](https://github.com/altendky/tachiai/issues/557) replaces the generic
+"The provider could not prepare this feed." when an ABEMA live channel is not
+airing a program Tachiai can play. On the SHIELD, 大相撲チャンネル served a
+well-formed ten-period manifest with no protection declarations before the
+day's broadcast. Live startup still refuses such a start, because its single
+license exchange binds to the first manifest's key IDs. Only the wording changes.
+
+- **Specific refusal.** A channel manifest with periods and no protection
+  element, key ID or DRM marker anywhere fails with: "This channel isn't showing
+  a program Tachiai can play right now. It may be between broadcasts. Try again
+  when the program starts." Each sentence is on its own line, so it stays
+  readable beside a floating feed. Every other refusal keeps its previous reason.
+- **Last checked.** The pane adds "Last checked at 10:10:36 AM." in the device's
+  time zone and locale. An off-air Retry otherwise ends in an identical pane,
+  which looks as if nothing happened; the seconds make even a quick repeat visibly new.
+- **Retry.** The pane offers **Retry**. This failure never starts automatic
+  recovery. As with other retryable failures, the feed's selected route stays
+  held while the pane waits, so Retry needs no new route. A saved specific
+  broadcast that plays through its channel can show the same refusal.
+
+On the SHIELD the refusal appeared repeatedly before the day's broadcast. Once
+the channel switched to its protected broadcast manifest, Retry reached
+licensed playback and video frames. The behavior and wording are the same on
+phone/tablet and TV.
+
+A next-program line from the channel timetable was implemented and then
+withdrawn. During viewing, its guest-process lookup timed out every time on
+the SHIELD and may disturb the held playback route.
+[#560](https://github.com/altendky/tachiai/issues/560) tracks it behind
+[#275](https://github.com/altendky/tachiai/issues/275). On TV, a remote press on
+Retry while the control bar is hidden only reveals the controls
+([#559](https://github.com/altendky/tachiai/issues/559)). Starting automatically
+when the program begins, and the ended indicator
+([#553](https://github.com/altendky/tachiai/issues/553)), are separate.
+
+### Ended feeds — November 19, 2026
+
+[#553](https://github.com/altendky/tachiai/issues/553): a feed that reaches the
+end of its media no longer sits on its last frame looking frozen. On the SHIELD,
+an ABEMA replay ended after 9 min 51 s and a Twitch broadcaster's rerun ended
+mid-session, both while the other feed kept playing.
+
+- **Signal.** A prepared feed has ended when its own player reports its ended
+  state outside an advertisement. The same player fact serves every provider:
+  - ABEMA episode and slot replays: the last segment of a static DASH manifest.
+  - ABEMA live slots: a dynamic manifest the provider closed.
+  - Twitch videos and broadcasters: an HLS playlist the provider ended.
+  - YouTube videos.
+
+  Elapsed time, buffering and paused states never count as an end. A stream
+  that disappears or errors instead keeps its existing failure, for example
+  "The stream could not be found. A live channel may be offline."
+- **Per feed.** The ended feed shows its own pane, "This replay has ended." or
+  "This broadcast has ended.", chosen by the feed's configured replay or live
+  kind. The other feed keeps playing, and the ended member leaves the pair as a
+  failed one does. An end never starts automatic recovery and is not journaled
+  as a failure.
+- **Leaving.** A replay offers **Play again**, which reopens it from its
+  beginning instead of its last remembered position. A broadcast offers
+  **Retry**, which reopens the source, for example when the broadcaster is live
+  again. Sources leaves the viewer as usual. There are no new seek or jump controls.
+
+The presentation is the same on phone/tablet and TV.
+
+### Waiting for live shows — November 20, 2026
+
+[#587](https://github.com/altendky/tachiai/issues/587) lets a feed wait for its
+show instead of failing, for example when Watch is pressed before sumo starts.
+The user approved the design on 2026-11-20 for all implementations. It is one
+presentation on phone, tablet and TV.
+
+- **What waits.** A feed waits only on a provider signal:
+  - a Twitch channel that is offline;
+  - an ABEMA live channel between broadcasts (the #557 refusal);
+  - an ABEMA broadcast slot before its start (the bootstrap now reports this
+    as its own phase, with the slot's start in epoch seconds);
+  - a live channel whose show ended (a Twitch or ABEMA channel reaching
+    "This broadcast has ended." now waits for the next show).
+
+  A slot or replay that ended keeps its ended state. Route, account, DRM and
+  other refusals keep their current messages.
+- **The pane.**
+  - With a known start: "Not live yet. Starts at 9:30 PM (in 29 min)." The
+    countdown shows hours and minutes, seconds under a minute, and the weekday
+    for another local day. After a passed start: "Not live yet. Should have
+    started at 9:30 PM."
+  - Without one: "Waiting for this channel to go live."
+  - A second line reads "Last checked 9:01 PM".
+  - The button is **Check now**: it checks at once and restarts the timing.
+- **Start times.**
+  - ABEMA slots: the slot's own start.
+  - Twitch: one status request when waiting begins, which also tells an
+    offline channel from a missing one and carries any published schedule
+    start (#122). Later checks in the same period skip it.
+  - ABEMA channels: none yet (#560, blocked on #275).
+- **Checks.**
+  - Every minute; every 15 s within 2 minutes of a known start.
+  - A slot isn't checked before its start, then every 15 s.
+  - Each check adds up to 10% jitter. Rate limits double the interval.
+  - Each check is an ordinary feed retry: the other feed is untouched, and a
+    waiting feed spends no automatic recovery attempts.
+  - ABEMA checks try the start directly. Only an account failure while waiting
+    sends the next check through account readiness, once; a second account
+    failure shows the usual account message.
+  - Passing failures (network, provider 5xx, catalog unavailable) back off
+    from 30 s; five in a row show the usual failure with Retry.
+- **Going live.** The feed starts by itself, independently of the other feed,
+  and plays even after a user pause. The existing pair-offset logic aligns the
+  pair once both play.
+- **Screen and lifecycle.** The viewer keeps the screen on while it is open,
+  so the TV doesn't go to its screensaver while every feed waits. Leaving the
+  app stops monitoring, as it stops playback.
+- **Logs.** Waiting checks are not journaled as feed failures.
+
+Provider-free JVM and JS tests cover the waiting policy, cadence, countdown
+wording, slot-start plumbing and the Twitch offline mapping. Device
+observation is recorded separately.
 
 ## Historical source configuration follow-up
 

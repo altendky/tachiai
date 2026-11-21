@@ -13,10 +13,10 @@ import { validateRouteDescriptor, routeBrowserOptions, installRouteAuth } from '
 const require = createRequire(import.meta.url);
 const { strictJson } = require('./abema-episode-source-helper.cjs');
 export const runtimePins = Object.freeze([
-  Object.freeze({ name: 'application.js', size: 1801458, sha256: 'd342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81' }),
-  Object.freeze({ name: 'support.js', size: 326667, sha256: '4dc7e3f6d08af278d1b7077d79c3bf5a381e5ff6934189a7d8b0f1219e8190cf' }),
-  Object.freeze({ name: 'legacy.js', size: 18786, sha256: '8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d' }),
-  Object.freeze({ name: 'utilities.js', size: 187143, sha256: '0187e58193b73f6e261f8ca799c7d75d76b4138813e17b1d57c4d8a6919bc466' }),
+  Object.freeze({ name: 'application.js', size: 1801875, sha256: '1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73' }),
+  Object.freeze({ name: 'support.js', size: 326334, sha256: 'eefb65e83c3fb1f82af5ce599f154c6e422bd7d3dab2aaa19c3ac9b5425e8412' }),
+  Object.freeze({ name: 'legacy.js', size: 18618, sha256: 'aabc84d2af5da5ccd259fee7d28df295eb5e40f43d66e2b235db9d40b6747b41' }),
+  Object.freeze({ name: 'utilities.js', size: 186525, sha256: '24ec3275b74ebc9bca669255a121bb182944a6b5466ae21ba312752cf7d04da8' }),
   Object.freeze({ name: 'dash.js', size: 617926, sha256: '988f8bc1a196ae74faf5c9650ddce0d1104c4816a663e9ab534c6b2a1c87cab8' }),
 ]);
 const refused = () => new Error('EPISODE_EME_REFUSED');

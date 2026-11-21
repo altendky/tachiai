@@ -43,10 +43,10 @@ if route_transport is None:
 IMAGE = "mcr.microsoft.com/playwright@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948"
 OWNER_LABEL = "net.fstab.tachiai.abema-bootstrap-owner"
 ASSETS = (
-    ("application.js", "3850f3e68c3aa3c0.5206.js", 1801458, "d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81"),
-    ("support.js", "a3d61a8507a3f772.framework.js", 326667, "4dc7e3f6d08af278d1b7077d79c3bf5a381e5ff6934189a7d8b0f1219e8190cf"),
-    ("legacy.js", "1deb672fea92d35e.8204.bundle.js", 18786, "8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d"),
-    ("utilities.js", "7977ee0696dadeb7.9328.js", 187143, "0187e58193b73f6e261f8ca799c7d75d76b4138813e17b1d57c4d8a6919bc466"),
+    ("application.js", "7e1d1d3889f47778.9627.js", 1801875, "1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73"),
+    ("support.js", "8a1c293b222b2390.framework.js", 326334, "eefb65e83c3fb1f82af5ce599f154c6e422bd7d3dab2aaa19c3ac9b5425e8412"),
+    ("legacy.js", "836465d169ab61b6.8204.bundle.js", 18618, "aabc84d2af5da5ccd259fee7d28df295eb5e40f43d66e2b235db9d40b6747b41"),
+    ("utilities.js", "4a27c7be953150a2.9328.js", 186525, "24ec3275b74ebc9bca669255a121bb182944a6b5466ae21ba312752cf7d04da8"),
 )
 # Separate opt-in browser EME probe only. Existing bootstrap/source operations
 # still download exactly ASSETS and never load this provider browser library.
@@ -209,7 +209,7 @@ def request_spec(operation, fields):
             # Standalone bootstrap keeps its explicit fixed diagnostic context.
             # Source attempts require values measured by their owned setup browser.
             context = validate_media_token_context(fields["context"]) if operation == "BROWSER_MEDIA_TOKEN" else {"osLang": "en-US", "osTimezone": "UTC"}
-            query = urllib.parse.urlencode({"osName": "pc", "osVersion": "1.0.0", **context, "appVersion": "v26.1001.1"})
+            query = urllib.parse.urlencode({"osName": "pc", "osVersion": "1.0.0", **context, "appVersion": "v26.1119.1"})
             url = "https://api.p-c3-e.abema-tv.com/v1/media/token?" + query
     elif operation == "CHANNELS" and fields == {}:
         url = "https://api.abema.io/v1/channels"

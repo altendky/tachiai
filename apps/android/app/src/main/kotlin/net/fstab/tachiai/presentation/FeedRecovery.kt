@@ -1,6 +1,10 @@
 package net.fstab.tachiai.presentation
 
-internal enum class FeedRecoveryAction(val label: String) { GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection") }
+internal enum class FeedRecoveryAction(val label: String) {
+    GO_LIVE("Go live"), RETRY("Retry"), CHECK_CONNECTION("Check connection"), PLAY_AGAIN("Play again"),
+    // A waiting feed checks whether its show is live now (#587).
+    CHECK_NOW("Check now"),
+}
 
 // A user-requested fresh attempt still passes normal account, route and media
 // admission. An account check may reuse an existing verified renewal path;
@@ -9,6 +13,10 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
     if (httpStatus in setOf(401, 403)) return null
     return when (reason) {
         PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE -> FeedRecoveryAction.CHECK_CONNECTION
+        // Reopening the stream; an ended replay starts again from its beginning.
+        PrototypeFailureReason.REPLAY_ENDED -> FeedRecoveryAction.PLAY_AGAIN
+        PrototypeFailureReason.BROADCAST_ENDED -> FeedRecoveryAction.RETRY
+        PrototypeFailureReason.NOT_LIVE_YET -> FeedRecoveryAction.CHECK_NOW
         PrototypeFailureReason.LIVE_WINDOW_EXPIRED -> FeedRecoveryAction.GO_LIVE
         PrototypeFailureReason.PLAYER_FAILED -> when (playerCode) {
             1002 -> FeedRecoveryAction.GO_LIVE
@@ -17,7 +25,7 @@ internal fun PrototypeFeedFailure.recoveryAction(): FeedRecoveryAction? {
         }
         PrototypeFailureReason.NETWORK_FAILED, PrototypeFailureReason.NETWORK_SECURITY_FAILED, PrototypeFailureReason.PREPARATION_TIMEOUT,
         PrototypeFailureReason.LIVE_POSITION_FAILED, PrototypeFailureReason.MEDIA_NOT_FOUND,
-        PrototypeFailureReason.CATALOG_RATE_LIMITED -> FeedRecoveryAction.RETRY
+        PrototypeFailureReason.CATALOG_RATE_LIMITED, PrototypeFailureReason.CHANNEL_NOT_AIRING -> FeedRecoveryAction.RETRY
         PrototypeFailureReason.HTTP_REJECTED -> FeedRecoveryAction.RETRY.takeIf {
             httpStatus == 408 || httpStatus == 429 || httpStatus?.let { it in 500..599 } == true
         }
@@ -51,4 +59,5 @@ internal class FeedRetryState {
     }
     fun ready() { retrying = false }
     fun rememberReplay(positionMs: Long) { if (positionMs >= 0) replayPositionMs = positionMs }
+    fun forgetReplay() { replayPositionMs = null }
 }

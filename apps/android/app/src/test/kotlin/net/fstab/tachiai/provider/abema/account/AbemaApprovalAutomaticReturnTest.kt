@@ -8,6 +8,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class AbemaApprovalAutomaticReturnTest {
+    @Test fun onlyAnAutomaticRenewalBoundsTheFirstCommitWithinItsDeadline() {
+        assertNull(abemaAutomaticCommitDelayMs(false, 1_000, 91_000))
+        assertEquals(ABEMA_AUTOMATIC_COMMIT_LIMIT_MS, abemaAutomaticCommitDelayMs(true, 1_000, 91_000))
+        assertEquals(5_000L, abemaAutomaticCommitDelayMs(true, 86_000, 91_000))
+        assertNull(abemaAutomaticCommitDelayMs(true, 91_000, 91_000))
+    }
+
     @Test fun irrelevantSubresourceErrorsDoNotAbortAndOnlyCapturedEmailFailureIsCritical() {
         val endpoint = "https://api.p-c3-e.abema-tv.com/v1/users/synthetic/email"
         assertTrue(abemaAutomaticReturnFatalResource(true, "https://abema.tv/account", "GET", false, null))

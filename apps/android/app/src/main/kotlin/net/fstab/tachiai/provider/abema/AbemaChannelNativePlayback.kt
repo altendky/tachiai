@@ -9,6 +9,15 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import net.fstab.tachiai.platform.media.BoundedMediaRequests
 
+// The channel's current manifest is well formed but declares no protection at
+// all, as between broadcasts (#557). Startup still refuses it: the single
+// license exchange binds to the first manifest's IDs. Only the message differs.
+internal class AbemaChannelNotAiringException : IOException("Channel is not airing protected programming")
+
+internal fun abemaChannelManifestNotAiring(diagnostic: AbemaInitializationDiagnostic?, text: String): Boolean =
+    diagnostic != null && diagnostic.reason == AbemaInitializationReason.NO_DEFAULT_ID && diagnostic.periods > 0 &&
+        diagnostic.protections == 0 && diagnostic.defaultIdDeclarations == 0 && abemaManifestDeclaresNoProtection(text)
+
 // Exact selected manifest only. Never synthesize a channel URL or issue another
 // metadata request here; the fresh owning JS runtime chose this signed URI.
 @UnstableApi
@@ -38,9 +47,12 @@ internal fun resolveAbemaChannelNativeSource(uri: URI, requests: BoundedMediaReq
         finally { raw.fill(0) }
         // Observation cannot admit a source or interfere with the original close attempt.
         try { onInitialManifest?.capture(channelId, text) } catch (_: Throwable) { }
-        val initialization = parseAbemaRequestInitialization(text, onInitializationDiagnostic)
-            ?: throw IOException("Channel initialization refused")
+        var diagnostic: AbemaInitializationDiagnostic? = null
+        val initialization = parseAbemaRequestInitialization(text) { diagnostic = it; onInitializationDiagnostic(it) }
+            ?: throw if (abemaChannelManifestNotAiring(diagnostic, text)) AbemaChannelNotAiringException()
+                else IOException("Channel initialization refused")
         return AbemaChannelNativeSource(channelId, uri, initialization.kids)
-    } catch (_: Exception) { throw IOException("Channel source unavailable") }
+    } catch (error: AbemaChannelNotAiringException) { throw error }
+    catch (_: Exception) { throw IOException("Channel source unavailable") }
     finally { source.close() }
 }

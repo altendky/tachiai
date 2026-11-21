@@ -12,6 +12,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FeedAutoRecoveryStateTest {
+    @Test fun `an off-air channel refusal offers Retry but never schedules automatic recovery`() {
+        // Same played live state in which an offline live source would be retried (#557).
+        for ((reason, expected) in listOf(PrototypeFailureReason.MEDIA_NOT_FOUND to FeedAutoRecoveryDecision.SCHEDULED,
+            PrototypeFailureReason.CHANNEL_NOT_AIRING to FeedAutoRecoveryDecision.SKIPPED)) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals(reason.name, expected, fail(state, member, 1, PrototypeFeedFailure(reason), evidence = null))
+        }
+        assertEquals(FeedRecoveryAction.RETRY, PrototypeFeedFailure(PrototypeFailureReason.CHANNEL_NOT_AIRING).recoveryAction())
+    }
+
     @Test fun `terminal unspecified IO with fresh typed network evidence retains network recovery`() {
         val state = FeedAutoRecoveryState(); val member = Any()
         state.observe(member, sample(0), 0)
@@ -192,6 +203,17 @@ class FeedAutoRecoveryStateTest {
         val denied = FeedAutoRecoveryState(); firstAttempt(denied, member)
         assertEquals(FeedAutoRecoveryDecision.SKIPPED, denied.failed(null, transient.copy(httpStatus = 403),
             null, true, true, true, 1_500))
+    }
+
+    @Test fun `an ended feed never schedules automatic recovery from a played state`() {
+        // Same played live state in which an offline live source would be retried (#553).
+        for ((reason, expected) in listOf(PrototypeFailureReason.MEDIA_NOT_FOUND to FeedAutoRecoveryDecision.SCHEDULED,
+            PrototypeFailureReason.BROADCAST_ENDED to FeedAutoRecoveryDecision.SKIPPED,
+            PrototypeFailureReason.REPLAY_ENDED to FeedAutoRecoveryDecision.SKIPPED)) {
+            val state = FeedAutoRecoveryState(); val member = Any()
+            state.observe(member, sample(0), 0)
+            assertEquals(reason.name, expected, fail(state, member, 1, PrototypeFeedFailure(reason), evidence = null))
+        }
     }
 
     private fun sample(now: Long, clock: Long = 20_000 + now, frames: Long? = now / 10 + 1) =

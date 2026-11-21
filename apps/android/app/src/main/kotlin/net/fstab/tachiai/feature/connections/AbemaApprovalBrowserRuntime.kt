@@ -162,6 +162,8 @@ internal class AbemaApprovalBrowserRuntime(
     private var claimed = false
     private var checkPending = false
     private var loaded = false
+    private var commitWatched = false
+    private var committed = false
     @Volatile private var trustedEmailPage = false
     @Volatile private var emailCandidate: AbemaAccountGrant? = null
     private var automaticCandidate: AbemaAccountGrant? = null
@@ -358,6 +360,7 @@ internal class AbemaApprovalBrowserRuntime(
     private fun client() = object : WebViewClient() {
         override fun onPageStarted(browser: WebView, url: String?, favicon: android.graphics.Bitmap?) {
             Log.i(LOG_TAG, "PAGE_STARTED"); observed(AbemaApprovalObservation.PAGE_STARTED)
+            watchCommit()
             trustedEmailPage = request.emailNonce != null && url?.let {
                 runCatching { java.net.URI(it).host == "abema.tv" && AbemaApprovalBrowserPolicy.allowedNavigation(it) }.getOrDefault(false)
             } == true
@@ -365,6 +368,7 @@ internal class AbemaApprovalBrowserRuntime(
         }
         override fun onPageCommitVisible(browser: WebView, url: String?) {
             Log.i(LOG_TAG, "PAGE_COMMITTED"); observed(AbemaApprovalObservation.PAGE_COMMITTED)
+            committed = true
             if (!current() || url == null || !AbemaApprovalBrowserPolicy.allowedNavigation(url)) refuse(Phase.PAGE, Reason.NAVIGATION_REFUSED)
         }
         override fun onPageFinished(browser: WebView, url: String?) { Log.i(LOG_TAG, "PAGE_FINISHED") }
@@ -408,6 +412,8 @@ internal class AbemaApprovalBrowserRuntime(
             }
         }
         override fun onRenderProcessGone(browser: WebView, detail: RenderProcessGoneDetail): Boolean {
+            // A false crash flag means the system killed the renderer, usually for memory.
+            Log.i(LOG_TAG, "RENDERER_GONE crashed=${detail.didCrash()}")
             observed(AbemaApprovalObservation.RENDERER_GONE)
             refuse(Phase.PAGE, Reason.RENDERER_GONE); return true
         }
@@ -505,6 +511,19 @@ internal class AbemaApprovalBrowserRuntime(
             it.length in 1..253 && it.matches(Regex("[A-Za-z0-9.-]+"))
         } ?: "OTHER"
         Log.i("TachiaiInspect", "$event host=$host main=${resource.isForMainFrame} code=$code")
+    }
+    // Armed once, at the first page start of an automatic renewal. close()
+    // removes the pending callback with every other main-thread callback.
+    private fun watchCommit() {
+        if (commitWatched || committed || ending) return
+        val delay = abemaAutomaticCommitDelayMs(request.automaticReturn, SystemClock.elapsedRealtime(),
+            request.deadlineElapsedMs) ?: return
+        commitWatched = true
+        main.postDelayed({
+            if (ending || committed) return@postDelayed
+            Log.i(LOG_TAG, "PAGE_COMMIT_TIMEOUT")
+            refuse(Phase.PAGE, Reason.DEADLINE)
+        }, delay)
     }
     private fun blocked() = WebResourceResponse("text/plain", "UTF-8", 403, "Unavailable", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     private fun resumeBrowser() {
@@ -606,7 +625,9 @@ internal class AbemaApprovalBrowserRuntime(
         if (finishedAfterCleanup) return
         if (!successful) diagnostics.refuse(Phase.CANDIDATE, Reason.CANDIDATE_MISSING)
         if (diagnostics.snapshot().cleanup == AbemaRenewalDiagnostic.Cleanup.UNOBSERVED) diagnostics.cleanup(true)
-        diagnostics.freeze()
+        val diagnostic = diagnostics.freeze()
+        // Closed constants only; no URL, identity, nonce or grant reaches this line.
+        Log.i(LOG_TAG, "APPROVAL_END automatic=${request.automaticReturn} success=$successful ${diagnostic.logFields()}")
         automaticReturn.cancel(); automaticCandidate = null; emailCandidate = null
         trustedEmailPage = false; finishedAfterCleanup = true
         completed(successful)

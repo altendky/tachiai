@@ -22,10 +22,10 @@ internal enum class AbemaBundleOrigin { CACHE_HIT, DOWNLOADED_VERIFIED, REPLACED
 internal class AbemaBundlePrepared(val bytes: ByteArray, val origin: AbemaBundleOrigin)
 
 internal enum class AbemaPublicBundleAsset(val uri: URI) {
-    APPLICATION(URI("https://abema.tv/assets/compat/3850f3e68c3aa3c0.5206.js")),
-    BOOTSTRAP_SUPPORT(URI("https://abema.tv/assets/compat/a3d61a8507a3f772.framework.js")),
-    LEGACY_SOURCE(URI("https://abema.tv/assets/compat/1deb672fea92d35e.8204.bundle.js")),
-    SOURCE_UTILITIES(URI("https://abema.tv/assets/compat/7977ee0696dadeb7.9328.js")),
+    APPLICATION(URI("https://abema.tv/assets/compat/7e1d1d3889f47778.9627.js")),
+    BOOTSTRAP_SUPPORT(URI("https://abema.tv/assets/compat/8a1c293b222b2390.framework.js")),
+    LEGACY_SOURCE(URI("https://abema.tv/assets/compat/836465d169ab61b6.8204.bundle.js")),
+    SOURCE_UTILITIES(URI("https://abema.tv/assets/compat/4a27c7be953150a2.9328.js")),
     CSAI_SUPPORT(URI("https://abema.tv/assets/compat/7459be98c1074c5c.youboralib.js")),
 }
 
@@ -34,23 +34,23 @@ internal fun allowedAbemaPublicBundleUri(uri: URI): Boolean = AbemaPublicBundleA
 // Alternate hash/size are injectable for synthetic tests, never discovered from
 // provider HTML. New provider revisions require review before execution.
 internal class AbemaPublicBundleIdentity(
-    val sha256: String = "d342d230d1f24a90a576597b673990a412a94bb5465cfa9b7567a9dc04e85b81",
-    val expectedBytes: Int = 1_801_458,
+    val sha256: String = "1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73",
+    val expectedBytes: Int = 1_801_875,
     asset: AbemaPublicBundleAsset = AbemaPublicBundleAsset.APPLICATION,
 ) {
     val uri: URI = asset.uri
     companion object {
         fun bootstrapSupport() = AbemaPublicBundleIdentity(
-            "4dc7e3f6d08af278d1b7077d79c3bf5a381e5ff6934189a7d8b0f1219e8190cf",
-            326_667, AbemaPublicBundleAsset.BOOTSTRAP_SUPPORT,
+            "eefb65e83c3fb1f82af5ce599f154c6e422bd7d3dab2aaa19c3ac9b5425e8412",
+            326_334, AbemaPublicBundleAsset.BOOTSTRAP_SUPPORT,
         )
         fun legacySource() = AbemaPublicBundleIdentity(
-            "8e973ee101b83fb13d6a20d5be53b9c9d7642a522547c7069acf4bac00e28a5d",
-            18_786, AbemaPublicBundleAsset.LEGACY_SOURCE,
+            "aabc84d2af5da5ccd259fee7d28df295eb5e40f43d66e2b235db9d40b6747b41",
+            18_618, AbemaPublicBundleAsset.LEGACY_SOURCE,
         )
         fun sourceUtilities() = AbemaPublicBundleIdentity(
-            "0187e58193b73f6e261f8ca799c7d75d76b4138813e17b1d57c4d8a6919bc466",
-            187_143, AbemaPublicBundleAsset.SOURCE_UTILITIES,
+            "24ec3275b74ebc9bca669255a121bb182944a6b5466ae21ba312752cf7d04da8",
+            186_525, AbemaPublicBundleAsset.SOURCE_UTILITIES,
         )
         fun csaiSupport() = AbemaPublicBundleIdentity(
             "c7c1b2c250b5f526ebefc7085a54b50e338d636421729d5a2ead3d5315640fea",

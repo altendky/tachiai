@@ -66,6 +66,7 @@ internal class BoundedNativeDashPlayer(
     onCleanupUnconfirmed: () -> Unit = {},
     private val onCleanupChanged: () -> Unit = {},
     transportObserver: NativeMediaTransportObserver? = null,
+    private val onPeriodChange: (NativeDashPeriodChange) -> Unit = {},
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
@@ -193,6 +194,20 @@ internal class BoundedNativeDashPlayer(
                 }
                 override fun onRenderedFirstFrame() {
                     if (!released) onEvent(NativeDashEvent.VIDEO_FRAME, 0)
+                }
+                // Diagnostics only: period boundaries and other non-seek moves.
+                override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo, reason: Int) {
+                    if (released || reason == Player.DISCONTINUITY_REASON_SEEK) return
+                    try {
+                        val manifest = player.currentManifest as? DashManifest
+                        val jump = if (oldPosition.mediaItemIndex == newPosition.mediaItemIndex)
+                            newPosition.positionMs - oldPosition.positionMs else null
+                        onPeriodChange(NativeDashPeriodChange(nativeDiscontinuityReason(reason), oldPosition.periodIndex,
+                            newPosition.periodIndex, player.currentTimeline.periodCount, jump,
+                            newPosition.adGroupIndex != C.INDEX_UNSET || player.isPlayingAd,
+                            manifest?.let { nativeDashPeriodHasDrm(it, newPosition.periodIndex) }))
+                    } catch (_: RuntimeException) { }
                 }
                 override fun onPlayerError(error: PlaybackException) {
                     diagnostics.recordPlayerError(error.errorCode)

@@ -120,7 +120,7 @@ class AbemaConfiguredEpisodePlaybackDeviceTest {
                   5304(m){m.exports={rM:{toJSON:v=>v},V8:{fromJSON:v=>({userId:v.user_id,accessToken:v.access_token})}}},
                   50052(m){m.exports={bq:{DEVICE_TYPE_WEB:'WEB'}}},24968(m){m.exports={T:{LOGIN_GUEST:'/api/auth/login/guest'}}},
                   60506(m){m.exports={N:{browser:{name:'Chrome',version:'1'},os:{name:'Android',version:'1'}}}},
-                  87328(m){m.exports={xl:()=>false}},91966(m){m.exports={sD:()=>({stringVariation:(n,v)=>v})}},
+                  87328(m){m.exports={xl:()=>false}},17453(m){m.exports={sD:()=>({stringVariation:(n,v)=>v})}},
                   91060(m){m.exports={OW:{fromJSON:v=>v}}},
                   18278(m){m.exports={WebStreamFilter:class{isAvailableStream(){return true}isAvailableManifest(){return true}}}},
                   29067(m){m.exports={WebManifestComparator:class{}}},

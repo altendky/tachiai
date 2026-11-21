@@ -73,6 +73,9 @@ class AbemaEpisodeMetadataService : Service() {
             active = null
             runCatching { reply.binder.unlinkToDeath(death, 0) }
             val entry = result.entry
+            // Closed coordinator category only; never the entry, title or identity.
+            if (result.category !in setOf("EXACT_EPISODE_METADATA", "EXACT_SLOT_METADATA"))
+                android.util.Log.i("TachiaiAbemaEpisodeRuntime", result.category)
             val outcome = when (result.category) {
                 "EXACT_EPISODE_METADATA" -> if (request.episode != null && entry != null) "OK" else "TEMPORARY"
                 "EXACT_SLOT_METADATA" -> if (request.slot != null && entry?.resource == request.slot.slot.resource) "OK" else "TEMPORARY"

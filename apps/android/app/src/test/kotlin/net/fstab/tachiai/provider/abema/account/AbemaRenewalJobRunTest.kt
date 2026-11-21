@@ -45,6 +45,7 @@ class AbemaRenewalJobRunTest {
         var outcome: AbemaRenewalOperationOutcome? = null
         var notify: ((AbemaRenewalOperationOutcome) -> Unit)? = null
         var posting: ((() -> Unit) -> Boolean) = { main.add(it); true }
+        val logs = mutableListOf<String>()
         val lease = AbemaRenewalOwnerLease({
             assertEquals(AbemaRenewalJobDisposition.RUNNING, ledger.snapshot().single().disposition)
             starts++; true
@@ -55,7 +56,7 @@ class AbemaRenewalJobRunTest {
                 assertSame(network, selected); assertEquals(91_000L, deadline)
                 reservations++; notify = completed; reserveHook()
                 reservation ?: AbemaRenewalReservation.Owned(lease)
-            }, { refreshes++ }, { finishes++ })
+            }, { refreshes++ }, { finishes++ }, { logs.add(it) })
         fun complete(value: AbemaRenewalOperationOutcome) { outcome = value; checkNotNull(notify)(value) }
         fun pump() {
             repeat(100) {
@@ -148,6 +149,39 @@ class AbemaRenewalJobRunTest {
         val next = checkNotNull(f.ledger.reconcile(f.entry.key.instance, AbemaRenewalGeneration(2, 11_000, 20_000)))
         f.run.stop(); f.pump()
         assertEquals(next, f.ledger.snapshot().single())
+    }
+
+    @Test fun aDeadlineStopOfAnEarlyAttemptStillFallsBackToNaturalExpiry() {
+        // The job deadline and the operation deadline share one instant; the
+        // job's stop runs first, then the cancelled operation's outcome arrives.
+        val f = Fixture(); f.wall = 9_000
+        f.run.start(); f.pump()
+        assertEquals(1, f.ledger.snapshot().single().earlyAttempts)
+        f.run.stop(); f.pump()
+        assertEquals(1, f.cancels); assertEquals(1, f.finishes)
+        assertEquals(AbemaRenewalJobDisposition.RUNNING, f.disposition())
+        f.complete(AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.CANCELLED, true)); f.pump()
+        val next = f.ledger.snapshot().single()
+        assertEquals(AbemaRenewalJobDisposition.RETRY, next.disposition)
+        assertEquals(f.generation.expiresWallMs, next.dueWallMs)
+        assertEquals(1, f.finishes); assertEquals(1, f.refreshes)
+        assertEquals(listOf("JOB_STOPPED early=true", "JOB_SETTLED outcome=CANCELLED early=true disposition=RETRY"), f.logs)
+    }
+
+    @Test fun stopAfterAnEarlyFallbackWasComputedKeepsTheNaturalExpiryAttempt() {
+        val f = Fixture(); f.wall = 9_000
+        f.run.start(); f.pump()
+        f.complete(AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, true))
+        assertTrue(f.worker.one()) // Fallback persisted; platform completion still queued.
+        f.run.stop(); f.pump()
+        assertEquals(AbemaRenewalJobDisposition.RETRY, f.disposition())
+        assertEquals(f.generation.expiresWallMs, f.ledger.snapshot().single().dueWallMs)
+    }
+
+    @Test fun aNaturalExpiryStopStillWithdrawsWithoutRetry() {
+        val f = Fixture(); f.run.start(); f.pump(); f.run.stop(); f.pump()
+        assertEquals(AbemaRenewalJobDisposition.DEFERRED_STOP, f.disposition())
+        assertEquals(listOf("JOB_STOPPED early=false"), f.logs)
     }
 
     @Test fun committedSuccessBeforeStopRemainsAcceptedWithoutInventingAnExtraAttempt() {

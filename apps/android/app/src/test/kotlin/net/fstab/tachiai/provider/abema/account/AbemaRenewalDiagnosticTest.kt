@@ -7,6 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AbemaRenewalDiagnosticTest {
+    @Test fun logLineCarriesOnlyTheClosedFieldsAsKeyEqualsConstant() {
+        val value = AbemaRenewalDiagnostic(AbemaRenewalDiagnostic.Phase.PAGE, AbemaRenewalDiagnostic.Reason.DEADLINE,
+            AbemaRenewalDiagnostic.Progress.PAGE_STARTED, transport = ProviderTransportFailure.DNS,
+            transportPhase = ProviderTransportPhase.DNS, cleanup = AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
+        val line = value.logFields()
+        assertEquals("phase=PAGE reason=DEADLINE progress=PAGE_STARTED region=NONE account=NONE transport=DNS " +
+            "transportPhase=DNS transportCancelled=false startup=NONE cleanup=CONFIRMED", line)
+        // Every token is a known key and an upper-case constant or Boolean; nothing free-form.
+        val keys = AbemaRenewalDiagnostic.keys.map { it.removePrefix("diagnostic").replaceFirstChar(Char::lowercaseChar) }.toSet()
+        for (token in line.split(" ")) {
+            val (key, constant) = token.split("=")
+            assertTrue(key in keys)
+            assertTrue(constant.matches(Regex("[A-Z_0-9]+|true|false")))
+        }
+        assertEquals(keys.size, line.split(" ").size)
+    }
+
     @Test fun closeStartRetiresLateCallbackCausesAndProgressButStillAdmitsStickyCleanupEvidence() {
         val owner = AbemaRenewalDiagnostics()
         owner.progress(AbemaRenewalDiagnostic.Progress.PAGE_COMMITTED)

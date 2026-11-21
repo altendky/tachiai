@@ -105,6 +105,40 @@ class PickerCollectionEpisodesTest {
         assertEquals(1, opened.single().second.closes)
     }
 
+    @Test fun theAccountIsCheckedBeforeTheFirstPageAndItsRefusalIsShownWithoutBrowsing() {
+        val checks = mutableListOf<(String?) -> Unit>()
+        val gated = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
+            { _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
+        val sumo = collection("394-72")
+        gated.load(sumo, false)
+        assertTrue(gated.state(sumo).loading); assertTrue(opened.isEmpty())
+        // A second press while the check is pending is ignored.
+        gated.load(sumo, false); assertEquals(1, checks.size)
+        val refusal = "ABEMA account could not be renewed. Open ABEMA account in Providers to check the connection."
+        checks.removeAt(0)(refusal)
+        assertEquals(refusal, gated.state(sumo).failure)
+        assertFalse(gated.state(sumo).loading); assertTrue(opened.isEmpty())
+        // Retry checks again; once the account is ready the page loads.
+        gated.load(sumo, false)
+        checks.removeAt(0)(null); deliver()
+        assertEquals(listOf("new", "mid"), gated.state(sumo).entries.map { it.resource.identity })
+        assertNull(gated.state(sumo).failure)
+        // A later page continues the admitted listing without another check.
+        gated.load(sumo, true); deliver()
+        assertTrue(checks.isEmpty())
+        assertEquals(listOf("new", "mid", "old"), gated.state(sumo).entries.map { it.resource.identity })
+    }
+
+    @Test fun aLateAccountAnswerAfterCloseIsIgnored() {
+        val checks = mutableListOf<(String?) -> Unit>()
+        val gated = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
+            { _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
+        val sumo = collection("394-72")
+        gated.load(sumo, false); gated.close()
+        checks.single()(null); deliver()
+        assertTrue(opened.isEmpty()); assertFalse(gated.state(sumo).loaded)
+    }
+
     @Test fun routeFailuresPointToProvidersAndInterruptionsDoNot() {
         assertTrue(collectionEpisodesFailureMessage(CatalogFailure.NOT_VERIFIED).contains("Providers"))
         assertEquals("Episodes could not be loaded.", collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED))

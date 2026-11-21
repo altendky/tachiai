@@ -205,7 +205,7 @@ listOf("Implementation", "RuntimeOnly", "CompileOnly").forEach { suffix ->
 }
 
 dependencies {
-    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.5")
+    implementation("com.github.teamnewpipe:NewPipeExtractor:0.27.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation(project(":core"))
     implementation(libs.activity.compose)

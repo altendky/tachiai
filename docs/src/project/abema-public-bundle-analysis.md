@@ -373,37 +373,186 @@ architecture would be:
 This removes the WebView renderer and the 2.33 MB parse. It does **not** address
 the network chain, which existing evidence says dominates.
 
-### Widevine as a helper-free path (open)
+### Widevine as a helper-free path (2026-11-21)
 
-The provider's own selection logic offers Widevine broadly:
+The provider's own code supports Widevine in two places:
 
-- `WebStreamFilter` → `getDrms` admits `widevine` for channel sources and
-  `widevine` + `custom` for program/slot sources.
-- `WebManifestComparator` ranks Widevine/FairPlay ahead of custom.
-- `createConfiguration` builds `{license}/widevine` with `t`, `ct`, `cid` and,
-  for mobile app types, `dt=web_android`.
+- **On-demand.** `WebStreamFilter` → `getDrms` admits `widevine`;
+  `WebManifestComparator` ranks it first; `createConfiguration` builds
+  `{license}/widevine`.
+- **Live channels.** The legacy channel selector (`21470.tw`) asks
+  `detectDrmKeySystem` (module 1955). That function probes
+  `requestMediaKeySystemAccess` for Widevine, PlayReady and Clear Key, in that
+  order of preference. For a DRM-protected channel on the DASH path, it
+  requests the playlist with `enc=wv` (`pr` for PlayReady). The license table
+  (`78307.rC`) maps the key systems to `/widevine`, `/playready` and
+  `/abematv-dash`. On a Widevine-capable browser, the provider's own web player
+  therefore uses Widevine for protected live channels. Tachiai's WebView does
+  not expose Widevine to that probe, so the same selector falls back to Clear
+  Key.
 
-Media3 supports standard Widevine through Android `MediaDrm`. If a selected
-resource advertises a Widevine stream and the license server accepts an
-Android CDM request with the web media token, playback would need **no provider
-JavaScript for licensing at all**. It would also stay within the opaque-CDM
-boundary.
+[#573](https://github.com/altendky/tachiai/issues/573) checked what the
+provider actually offers.
 
-This is unverified:
+**On-demand offers.** An investigation-only build recorded, before any
+filtering, a closed category for every stream the unchanged
+`PlaybackResourceGateway` returned: technology, DRM name, raw-key flag and the
+provider filter's verdict. No URL, token or identifier was recorded. Five free
+items (an ABEMA original drama, a Korean drama, an anime, and two sumo replays)
+all returned the same list:
 
-- The current native filter deliberately admits only custom DASH.
-- No VOD playback-resource stream list has been inspected. That needs a bearer
-  token to read program metadata for the ARIN.
-- Non-DRM legacy channels (`enc=clear`) would still use the custom path.
-- Earlier WebView traces of ABEMA's own player registered both key systems
-  with Widevine preferred, yet News and the free sumo replay ended on a Clear
-  Key CDM (see [open questions](open-questions.md) and
-  [native-access experiments](native-access-experiments.md#related-target-and-media-follow-up)).
-  Which conditions select each path is unresolved, so ranking alone does not
-  predict Widevine availability for a given source.
+| Stream | DRM | Provider filter |
+| --- | --- | --- |
+| DASH | custom | admits (Tachiai plays this) |
+| HLS | custom | refuses |
+| HLS, raw key | custom | refuses |
 
-It needs a bounded device experiment recorded under the usual playback-evidence
-rules.
+- The sumo replay was observed on the NVIDIA SHIELD (Android 11, WebView
+  157.0.8103.50); the others on `tachiai-dev`. All used the Windscribe Tokyo
+  route and the saved ABEMA account. Each played to a video frame.
+- **No on-demand item offered Widevine, PlayReady or FairPlay.** The stream
+  list is an unauthenticated GET per ARIN with no client or device parameters,
+  so it does not vary by client.
+- This explains the earlier Pixel WebView traces: Widevine capability probes
+  were accepted, but only custom-DRM streams were on offer.
+- Paid items could not be surveyed. A premium anime episode and a film
+  stopped at the bootstrap's free/terms gates (`REPLAY_FREE`,
+  `REPLAY_TERMS`), which come before the stream list.
+
+**Live channels.**
+
+- `playbackResources` refuses every channel ID tried ("Specified ARIN is not
+  supported"), so channels have no stream list. They use the legacy selector
+  above.
+- Only 4 of the 62 public channels are DRM-protected: `disney`,
+  `anime-special-3`, `anime-special-4` and `drama-3`. All are Japan-only.
+  Tachiai refuses DRM channels today (`CHANNEL_DRM_REFUSED`) and plays only
+  `enc=clear` channels.
+- An experiment build changed only what the provider's selector would change
+  with Widevine detected: it admitted those four channels, requested
+  `enc=wv`, licensed `/widevine` with an opaque pass-through, and used a
+  Widevine `MediaDrm` on the SHIELD. **All four stopped at
+  `CHANNEL_UNAVAILABLE`**: the channel list says they are not open for viewing
+  for this account at about 02:30 JST.
+- The free `abema-anime` channel was also refused as not open at that hour,
+  so this may be time of day rather than entitlement. It was not bypassed:
+  that would play content the provider has not opened to the account.
+- No Widevine license exchange happened, so acceptance, decoding, security
+  level, HDCP limits and renewal remain unmeasured. The experiment build was
+  discarded.
+
+**Recommendation: park, with a defined retest.** On-demand content offers no
+Widevine to this client. Protected live channels are the only Widevine path,
+and they could not be opened. Retest the four DRM channels during a JST
+daytime or event window, or with an account that can open them. If one opens,
+run the same bounded experiment. Requesting another client's resources
+remains out of scope.
+
+### Startup comparison on the SHIELD (2026-11-21)
+
+These are the existing `TachiaiCachedAbema` markers, Tokyo route, saved
+account.
+
+| Phase | Live News (WebView today) | Replay (WebView today) |
+| --- | --- | --- |
+| Account check and route setup | 7.1 s | 6.7 s |
+| Bundles (cache hit) | 0.1 s | 0.1 s |
+| WebView start → helper `WAITING_SESSION` | 3.5 s | 2.8 s |
+| Media token → `WAITING_SOURCE` | 3.1 s | 2.8 s |
+| Content/source → `READY` | 2.0 s | 3.4 s |
+| Manifest + buffering → license request | 2.5 s | 3.4 s |
+| License exchange | 4.0 s | 3.1 s |
+| First video frame | 0.5 s | 0.35 s |
+| **Total** | **23.0 s** | **22.8 s** |
+
+How the three hosting options compare for live News:
+
+| Option | Status | Start to first frame |
+| --- | --- | --- |
+| Existing WebView host | Measured | 23.0 s |
+| Helper outside the WebView (isolate) | Projected, not run end to end | ≈ 21–22.5 s |
+| Widevine for DRM channels | Not measurable; no DRM channel was open | Expected ≈ the same as today |
+
+- **Isolate projection.** The 3.5 s WebView step becomes about 1.2 s with a
+  cold sandbox or about 0.35 s with a warm one (measured below). The other
+  phases are network round trips and stay the same if Kotlin or the isolate
+  performs them.
+- **Widevine expectation.** It still needs the guest/account, token and
+  channel steps. Its license exchange is still a network round trip, and
+  only the helper processing (milliseconds) disappears.
+- **Other observations.**
+  - The single largest phase on both paths is the account check and route
+    setup, about 7 s before any provider work begins. That is a bigger target
+    than the WebView.
+  - The live license exchange took 4.0 s, against 3.1 s for the replay.
+
+### Isolate host feasibility (2026-11-21)
+
+The opt-in `AbemaHelperIsolateDeviceTest`
+(`-e tachiaiAbemaHelperIsolate true`, optional `-e tachiaiAbemaIsolateHoldMs`)
+hosts the unchanged, SHA-pinned application chunk in an
+`androidx.javascriptengine` isolate and initializes only the helper closure,
+exactly as `AbemaCachedHelperActivity` does in a WebView.
+
+- It needs no identity, account, route, challenge or license response.
+- The helper is called once, with synthetic bytes only, to see which error
+  class it raises.
+- Only closed categories and timings are logged, under `TachiaiAbemaIsolate`.
+
+| | tachiai-dev emulator | SHIELD |
+| --- | --- | --- |
+| Device | Android 16, x86_64 | Android 11, arm64, WebView 157.0.8103.50 |
+| `JavaScriptSandbox.isSupported()` | yes | yes |
+| Features | all seven checked¹ | all seven checked¹ |
+| Sandbox connect (cold) | 34 ms | 837 ms |
+| Isolate create | 2 ms | 5 ms |
+| Chunk transfer + evaluate | 131 + 32 ms | 210 + 104 ms |
+| Helper init | 9 ms | 32 ms |
+| Closure | 37 modules, callable | 37 modules, callable |
+| Synthetic call | plain `Error` | plain `Error` |
+| Sandbox process PSS | ≈36 MB | ≈68 MB |
+
+¹ Isolate termination, promise return, provide/consume ArrayBuffer, WASM
+compilation, max heap size, evaluate without transaction limit, console
+messaging.
+
+- The synthetic call raised a plain `Error`, not a `ReferenceError` or
+  `TypeError`. That suggests the helper refused the fake input rather than
+  missing a browser global, but only a real exchange can prove it.
+- **WebView comparison, same SHIELD, same chunk and closure.**
+  `AbemaCachedHelperActivity` took about 1.34 s from bundle ready to
+  `INTERFACE_READY`. Its processes used about 366 MB PSS: 268 MB in the helper
+  process and 98 MB in the renderer.
+- **Isolate comparison.** The isolate took about 1.18 s cold, of which 0.84 s
+  is starting the sandbox process, or about 0.35 s once the sandbox runs. It
+  used about 68 MB.
+- **Not done: one real opaque exchange in the isolate.** Kotlin would perform
+  the guest, token, gateway and license requests, then hand the license
+  response to the isolate helper in the same session. That needs a new owned
+  request pipeline and a review of the opaque-exchange boundary for this host.
+  It is the next experiment if this path is pursued.
+
+**Recommendation: pursue, as a scoped follow-up.** The helper initializes in an
+isolate on both devices, faster from cold and with about a fifth of the
+memory. The remaining blocker is design work: owned Kotlin networking for the
+non-helper steps, plus a real exchange to confirm the helper output.
+
+### Native port inventory (2026-11-21)
+
+The table under "Native implementation assessment" above still holds. Porting
+the endpoint constants, URL/query builders, stream filter/comparator and
+playback-resource DTOs is technically straightforward. The costs:
+
+- **Maintenance.** Each pin refresh would become protocol tracking: module IDs
+  move every build, and DTO or field changes would need review, instead of
+  re-pinning unchanged code.
+- **Design.** It reverses the current "unchanged provider code" design and
+  needs an explicit decision.
+- **Guest app-key derivation (2833)** stays out of scope without explicit
+  approval.
+
+**Recommendation: park.** It adds maintenance without removing the JavaScript
+engine, which the unchanged helper still needs.
 
 ## Reproduction
 

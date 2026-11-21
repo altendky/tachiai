@@ -234,7 +234,12 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
     override fun install(preparation: AbemaGuestRuntimePreparation, callback: (Boolean) -> Unit) =
         webRoute.install(checkNotNull((preparation as Preparation).route.get()), callback, diagnostics)
     override fun clear(callback: () -> Unit) = webRoute.clear(diagnostics, callback)
-    override fun report(error: Throwable) = diagnostics.report(FailureStage.CATALOG_LOAD, error)
+    override fun report(error: Throwable) {
+        // The coordinator's PREPARATION_REFUSED hides why; an account refusal is a
+        // closed category (EXPIRED, REFUSED, …) and safe to name in logcat.
+        if (error is AbemaAccountException) android.util.Log.i("TachiaiAbemaGuestRuntime", "ACCOUNT_${error.category.name}")
+        diagnostics.report(FailureStage.CATALOG_LOAD, error)
+    }
     override fun newView(request: AbemaGuestRuntimeRequest, preparation: AbemaGuestRuntimePreparation,
         files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaGuestRuntimeView) -> Boolean,
         failed: (AbemaGuestRuntimeView, String) -> Unit): AbemaGuestRuntimeView =

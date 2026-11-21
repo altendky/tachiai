@@ -1260,6 +1260,37 @@ video frame. Provider-free JVM and JS fixtures cover the episode choice model,
 selection, persistence formats, newest-first catalog continuations, IPC order
 and the picker loader.
 
+#### Account check before episodes — November 20, 2026
+
+[#581](https://github.com/altendky/tachiai/issues/581): on the SHIELD the
+Episodes page showed only "Episodes could not be loaded." after the saved ABEMA
+grant expired. The failure journal recorded `ABEMA_ACCOUNT_EXPIRED`; logcat
+recorded nothing. Discovery's account acquisition fails at once on an expired
+grant and never starts renewal. Watch, feed Retry and Manage streams check the
+account first (readiness), but the Episodes page did not.
+
+- The first page and every Retry now run the same readiness check first. An
+  expired grant starts or joins renewal while the page shows "Loading
+  episodes…".
+- A refusal shows the existing readiness message instead of the generic text,
+  for example "ABEMA account could not be renewed. Open ABEMA account in
+  Providers to check the connection." The wording and flow are the ones Watch
+  already uses on every implementation; nothing platform-specific is added.
+- **More** continues an already-admitted listing without another check.
+- The page has its own readiness instance, so it never cancels Watch's check.
+  Leaving the app ends a pending check like an interrupted load.
+- Logcat now names the closed category of a failed lookup:
+  - `TachiaiAbemaSeriesRuntime`, `TachiaiAbemaScheduleRuntime` and
+    `TachiaiAbemaEpisodeRuntime` log the coordinator category, as
+    `TachiaiAbemaSearchRuntime` already did.
+  - `TachiaiAbemaGuestRuntime` logs `ACCOUNT_<failure>` (for example
+    `ACCOUNT_EXPIRED`) when account acquisition refuses a lookup.
+  - Lines hold closed constants only: no URL, identity, title or token.
+
+The catalog IPC still reports an account refusal as a temporary failure. The
+readiness check makes that a narrow race, and Retry runs the check again. A
+dedicated IPC outcome was not added.
+
 ### ABEMA channel between broadcasts — November 19, 2026
 
 [#557](https://github.com/altendky/tachiai/issues/557) replaces the generic

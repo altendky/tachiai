@@ -35,6 +35,10 @@ internal fun collectionEpisodesFailureMessage(reason: CatalogFailure): String = 
 internal class PickerCollectionEpisodes(
     private val worker: Executor,
     private val post: (() -> Unit) -> Unit,
+    // Called on main before a first page or Retry, as Watch and Manage streams
+    // check the saved account before discovery. It must answer exactly once:
+    // null to continue, or the message to show instead of loading.
+    private val accountReady: (ConfiguredSource, (String?) -> Unit) -> Unit = { _, done -> done(null) },
     private val open: (ConfiguredSource) -> ProviderCatalog,
 ) : CollectionEpisodes {
     private val states = mutableStateMapOf<String, CollectionEpisodesState>()
@@ -54,6 +58,17 @@ internal class PickerCollectionEpisodes(
         if (!more) cursors.remove(key)
         states[key] = current.copy(loading = true, failure = null)
         val local = generation
+        // Later pages continue an already admitted listing.
+        if (more) browse(source, key, cursor, more, local)
+        else accountReady(source) { refused ->
+            if (local != generation) return@accountReady
+            if (refused == null) { browse(source, key, null, false, local); return@accountReady }
+            val previous = states[key] ?: CollectionEpisodesState()
+            states[key] = previous.copy(loading = false, loaded = true, more = false, failure = refused)
+        }
+    }
+
+    private fun browse(source: ConfiguredSource, key: String, cursor: String?, more: Boolean, local: Long) {
         val parent = source.entry.resource
         worker.execute {
             val result = try {

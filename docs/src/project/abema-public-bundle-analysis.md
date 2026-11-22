@@ -327,7 +327,9 @@ decision first.
      token. They can run concurrently, saving one or two round trips.
    - Kotlin can read and hash the four cached chunks concurrently with the
      account-acquire IPC instead of afterwards, and can start creating the
-     WebView/renderer before the bytes are ready.
+     WebView/renderer before the bytes are ready. Implemented for
+     saved-account playback by #603; see
+     [Startup overlap](#startup-overlap-603-2026-11-21).
 3. **Shorten the READY hand-off.** The fixed 100 ms `status()` polling adds
    0–100 ms per transition. A tighter poll keeps the existing no-bridge
    boundary; a JavaScript interface or message port would not.
@@ -485,6 +487,37 @@ How the three hosting options compare for live News:
     setup, about 7 s before any provider work begins. That is a bigger target
     than the WebView.
   - The live license exchange took 4.0 s, against 3.1 s for the replay.
+
+### Startup overlap (#603, 2026-11-21)
+
+For saved-account playback, Kotlin now prepares the bundles and loads the
+bootstrap page while the account check runs. The bootstrap loads its
+modules, reports `WAITING_ACCOUNT` and waits. The account result, or
+`GUEST`, reaches that run's host once through `account()` on its existing
+owned object. Diagnostic channel modes still pass the account at start. New
+markers: `startup=HOST_BEGIN`, `startup=HOST_READY`,
+`startup=ACCOUNT_OFFERED` and `startup=ACCOUNT_DELIVERED`.
+
+Measured on the SHIELD in one session, alternating builds, each a cold app
+start, timed from the feed's `PREPARING` event:
+
+| Start | Build | Account acquired | Account → helper `READY` | First frame |
+| --- | --- | --- | --- | --- |
+| Live News | `main` (5 runs) | 5.8–6.3 s | 6.1–9.2 s (typically ≈ 6.5 s) | 16.7–22.0 s, median ≈ 18.1 s |
+| Live News | overlap (4 runs) | 6.4–7.1 s | 4.9–5.0 s | 17.2–18.2 s, median ≈ 17.5 s |
+| Sumo highlight episode | `main` (3 runs) | 5.7–6.1 s | 7.0–8.3 s | 18.7–20.5 s, median ≈ 20.0 s |
+| Sumo highlight episode | overlap (4 runs) | 6.3–6.5 s | 6.1–6.3 s | 18.7–19.5 s, median ≈ 19.2 s |
+
+- The host is ready 0.8–1.8 s after the feed starts (3.4 s once), well
+  before the account. About 1.2–1.5 s of host start no longer follows the
+  account.
+- The account step itself became about 0.5 s slower while the host started
+  beside it. The likely cause is contention on the SHIELD (the WebView
+  renderer starts at the same time); this is not measured directly.
+- The net first-frame saving is therefore about 0.5–1 s, less than the
+  3–4 s projected in #603.
+- The earlier comparison above (23.0 s and 22.8 s) is from a different time
+  of day; `main` measured 16.7–22.0 s in this session.
 
 ### Isolate host feasibility (2026-11-21)
 

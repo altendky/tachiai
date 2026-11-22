@@ -39,9 +39,12 @@ second device. The playback process starts no WireGuard device of its own: it
 leases from the ordinary process over a same-UID Binder service that its bound
 viewer keeps alive. Owner death revokes the lease and fails that route into
 existing recovery; an unconfirmed lease close is unconfirmed route cleanup.
-Neither falls back to a local device or System. The approval and guest WebView
-processes and the renewal job still start their own devices
-([#275](https://github.com/altendky/tachiai/issues/275)). Each process logs
+Neither falls back to a local device or System. The ABEMA guest and approval
+WebView processes lease the same way (#275 stage 4); their WebView proxy
+override points at the lease's loopback listener. The approval browser waits
+up to the lease IPC deadline plus one second for its route close to be
+confirmed. Only the renewal job's Network-bound devices still start separately
+([#275](https://github.com/altendky/tachiai/issues/275) stage 5). Each process logs
 closed engine events under `TachiaiRouteEngine`: process role,
 `ENGINE_STARTED`/`ENGINE_RETIRED` with the engine count, `LEASE_OPENED` with
 the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. No configuration, key or host
@@ -57,12 +60,30 @@ saved ABEMA account):
   without a feed failure or another engine.
 - Opening the collection Episodes page started a separate engine in
   `abema_guest_bootstrap` while the ordinary process's idle engine had not yet
-  retired. This is the remaining guest-WebView gap above; nothing was playing
-  at the time.
+  retired. Nothing was playing at the time. Stage 4 closes this gap; see
+  below.
 - Live News reached its first frame in 22.1 s from feed start (23.0 s on
   `main` earlier the same day). With a warm engine, the account step still
   spent 3.6 s on the profile check and 2.0 s on the email check, so those
   provider round trips, not tunnel setup, dominate it.
+
+On 2026-11-22 on the `tachiai-dev` emulator (Windscribe Tokyo WireGuard, saved
+ABEMA account), #275 stage 4:
+
+- Before, on `main`: opening ABEMA大相撲2026 Episodes started an engine in the
+  ordinary process for the account check and, seconds later, a second engine
+  for the same key in `abema_guest_bootstrap`. The guest's series request then
+  ran to its 45 s deadline and was cancelled.
+- With stage 4: the guest opened a lease on the ordinary process's engine
+  instead; no engine started in `abema_guest_bootstrap`. Its content-list
+  requests went through the lease and the tabs loaded.
+- Live News and a sumo replay each played through a lease on one ordinary
+  process engine.
+- The guest's preparation still took about 34 s, about 27 s of it after the
+  route lease, before the page loaded. That time is spent before any provider
+  request and is unrelated to route sharing; it leaves little room under the
+  45 s operation deadline.
+- The approval browser path was not exercised on a device.
 
 Native Twitch validation/access/HLS and ABEMA
 bundle cache misses/MPD/media use explicit connection factories. Cached ABEMA

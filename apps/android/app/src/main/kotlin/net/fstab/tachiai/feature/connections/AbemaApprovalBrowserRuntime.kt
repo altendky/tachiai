@@ -304,7 +304,7 @@ internal class AbemaApprovalBrowserRuntime(
                     "windscribeNamed=${owner.instance.setup.route?.connectionName?.contains("windscribe", ignoreCase = true) == true}")
                 val egress = networkEgressFactory?.let { handle.network.create(it) }
                 val ownBackend: (RouteBackend) -> RouteBackend = { backend ->
-                    val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close)
+                    val receipt = AbemaAccountCleanupReceipt(backend, RouteBackend::close, APPROVAL_ROUTE_CLEANUP_MS)
                     handle.backend = receipt
                     object : RouteBackend {
                         override val proxyPort get() = backend.proxyPort
@@ -315,7 +315,7 @@ internal class AbemaApprovalBrowserRuntime(
                     handle.preparation, ownBackend = ownBackend)
                 else RouteSession.createBoundAbemaApprovalBrowser(owner.profile, egress,
                     handle.preparation, ownBackend = ownBackend)
-                handle.routeClose = AbemaAccountCleanupReceipt(checkNotNull(handle.route), RouteSession::close)
+                handle.routeClose = AbemaAccountCleanupReceipt(checkNotNull(handle.route), RouteSession::close, APPROVAL_ROUTE_CLEANUP_MS)
                 handle.regionCheck = AbemaApprovalRegionCheck(checkNotNull(handle.route), ::currentOnWorker,
                     SystemClock::elapsedRealtime, request.deadlineElapsedMs)
                 valid = !ending && request.current(SystemClock.elapsedRealtime()) && sameOwner()
@@ -587,7 +587,7 @@ internal class AbemaApprovalBrowserRuntime(
         }
         if (!destroyed) { unconfirmed(); return }
         val clearDeadline = Runnable { if (!finishedAfterCleanup) unconfirmed() }
-        main.postDelayed(clearDeadline, 5000)
+        main.postDelayed(clearDeadline, APPROVAL_CLEAR_DEADLINE_MS)
         proxy.clear {
             cleanup.execute {
                 val resetConfirmed = runCatching { reset?.awaitCleanup() != false }.getOrDefault(false)
@@ -650,3 +650,8 @@ internal class AbemaApprovalBrowserRuntime(
         runCatching { observation(value) }
     }
 }
+
+// A leased route's close waits for the ordinary-process owner's confirmation,
+// up to one lease IPC deadline (#275 stage 4); a local device closes at once.
+internal const val APPROVAL_ROUTE_CLEANUP_MS = RouteLeaseIpc.IPC_MS + 1000
+internal const val APPROVAL_CLEAR_DEADLINE_MS = APPROVAL_ROUTE_CLEANUP_MS + 2000

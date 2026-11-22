@@ -191,13 +191,13 @@ unverified; broader #100/#101 coverage and account acceptance remain separate.
 
 `AbemaSeasonCandidateDeviceTest` requires its explicit
 `tachiaiReadOnlyAbemaSeasonCandidate=true` gate, verified tachiai-dev and exact
-guest-process test instrumentation before saved state/UI access. It performs one
-existing unfiltered Series request, adds only test-owned projection fields, then
-strictly removes them before the production decoder. It publishes bounded shape
-counts and one public pair only after accepted page/row, current owner, unchanged
-record and confirmed cleanup checks. Its original explicit-parent and separately
-absent-parent candidates have distinct evidence labels. Uncertain cleanup retains
-actual probe resources. The independent
+guest-process test instrumentation before saved state/UI access. Since #622 it
+performs one first Series content-list page through the unchanged production
+projection, which names its season itself; the former test-owned per-program
+parent fields targeted the retired programs endpoint and were removed. It
+publishes the series/season pair and closed group, episode and broadcast counts
+only after accepted page/row, current owner, unchanged record and confirmed
+cleanup checks. Uncertain cleanup retains actual probe resources. The independent
 `tachiaiReadOnlyAbemaSeasonCandidateHarness=true` gate exercises only Activity
 launch/adoption/finish; normal test instrumentation must be restored after either
 probe. Neither gate authorizes a guessed Season, account request, Add or playback.

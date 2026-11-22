@@ -12,7 +12,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusGroup
 import net.fstab.tachiai.feature.presentation.LocalTelevision
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.rememberScrollState
@@ -27,10 +26,10 @@ import androidx.compose.material3.*
 import net.fstab.tachiai.feature.presentation.RemoteTextButton as TextButton
 import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
 import net.fstab.tachiai.feature.presentation.RemoteTab as Tab
+import net.fstab.tachiai.feature.presentation.RemoteTabRow
 import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
 import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import net.fstab.tachiai.feature.presentation.tvFocusIndicator
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -64,6 +63,7 @@ import net.fstab.tachiai.presentation.*
 import net.fstab.tachiai.provider.catalog.*
 
 private const val DISCOVERY_CONTROLS_KEY = "discovery-controls"
+private const val DISCOVERY_CONTEXT_KEY = "discovery-context"
 
 private class DiscoveryListPosition {
     val list = LazyListState()
@@ -71,7 +71,9 @@ private class DiscoveryListPosition {
     var transition by mutableStateOf<DiscoveryTabTransition?>(null)
 }
 
-private class DiscoveryTabTransition(val tab: String, val epoch: Long, val offset: Int,
+// anchor is the list item holding the chosen tab row: Find streams tabs or a
+// browsed parent's child groups (#622), whose tab IDs are "group:{id}".
+private class DiscoveryTabTransition(val tab: String, val epoch: Long, val anchor: String, val offset: Int,
     initialLayout: LazyListLayoutInfo) {
     val tailKey = "discovery-tail:$epoch"
     val viewport = initialLayout.viewportSize
@@ -150,7 +152,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     onRefresh: (String) -> Unit = {}, onDiscoveryBack: () -> Unit = {},
     header: (@Composable () -> Unit)? = null, onReorder: ((List<String>) -> Job?)? = null,
     onOpenLink: () -> Unit = {}, onResolveLink: (String) -> Unit = {},
-    onDismissLink: () -> Unit = {}, onAddLink: () -> Unit = {}, onEditLink: () -> Unit = {}) {
+    onDismissLink: () -> Unit = {}, onAddLink: () -> Unit = {}, onEditLink: () -> Unit = {},
+    onChildGroup: (String) -> Unit = {}) {
     var search by remember(state.instance.id, state.privacyRevision) { mutableStateOf("") }
     // An unvalidated URL may contain credentials. Keep this draft in memory;
     // never serialize it into an Activity Bundle before adapter normalization.
@@ -189,7 +192,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     val listState = position.list
     var tabEpoch by remember(state.instance.id, state.privacyRevision) { mutableLongStateOf(0) }
     var pendingTab by remember(state.instance.id, state.privacyRevision) { mutableStateOf<DiscoveryTabTransition?>(null) }
-    val requestedTab = pendingTab?.takeIf { it.tab == state.selectedTabId && state.query.parent == null }
+    val shownTab = if (state.query.parent == null) state.selectedTabId else state.childGroup?.let { "group:$it" }
+    val requestedTab = pendingTab?.takeIf { it.tab == shownTab }
     val transition = requestedTab ?: position.transition
     val ids = state.configured.orEmpty().map { it.id }
     val leadingKeys = listOf(if (header != null) "provider-settings" else "management-heading", "configured-heading") +
@@ -200,7 +204,8 @@ internal fun StreamManagementScreen(state: StreamManagementState,
         if (requestedTab != null) {
             position.transition = requestedTab
             requestedTab.beforeRequest = listState.layoutInfo
-            listState.requestScrollToItem(discoveryControlsIndex, -requestedTab.offset)
+            listState.requestScrollToItem(discoveryControlsIndex +
+                if (requestedTab.anchor == DISCOVERY_CONTEXT_KEY) 1 else 0, -requestedTab.offset)
             pendingTab = null
         } else if (!position.initialized && (hadContext || state.query.parent != null)) {
             listState.requestScrollToItem(discoveryControlsIndex)
@@ -214,12 +219,20 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             transition.measured(layout, loading, backward)
         }
     }
-    val selectTab: (String) -> Unit = { id ->
+    // Tabs keep their row in place while the destination loads.
+    fun anchorTab(tab: String, anchor: String) {
         val layout = listState.layoutInfo
-        pendingTab = layout.visibleItemsInfo.firstOrNull { it.key == DISCOVERY_CONTROLS_KEY }?.let {
-            DiscoveryTabTransition(id, ++tabEpoch, it.offset, layout)
+        pendingTab = layout.visibleItemsInfo.firstOrNull { it.key == anchor }?.let {
+            DiscoveryTabTransition(tab, ++tabEpoch, anchor, it.offset, layout)
         }
+    }
+    val selectTab: (String) -> Unit = { id ->
+        anchorTab(id, DISCOVERY_CONTROLS_KEY)
         if (id == DISCOVERY_ALL_TAB) onAll() else onCollection(id)
+    }
+    val selectChildGroup: (String) -> Unit = { id ->
+        anchorTab("group:$id", DISCOVERY_CONTEXT_KEY)
+        onChildGroup(id)
     }
     val latestIds by rememberUpdatedState(ids)
     val canDrag by rememberUpdatedState(mutable && onReorder != null && ids.size > 1)
@@ -401,16 +414,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             val tabs = listOf(Triple(DISCOVERY_ALL_TAB, visibleCapabilities?.browseTitle ?: "All", visibleCapabilities?.browse)) +
                 visibleCapabilities?.collections.orEmpty().map { Triple(it.id, it.title, it.access) }
             val selected = tabs.indexOfFirst { it.first == state.selectedTabId }
-            @Suppress("DEPRECATION")
-            ScrollableTabRow(selectedTabIndex = selected.coerceAtLeast(0),
-                modifier = if (LocalTelevision.current) Modifier.focusGroup() else Modifier, edgePadding = 0.dp,
-                divider = {}, indicator = { positions ->
-                    // Subcomposition can briefly retain the previous measured
-                    // positions while newly loaded capabilities add tabs.
-                    positions.getOrNull(selected)?.let { position ->
-                        TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(position))
-                    }
-                }) {
+            RemoteTabRow(selected) {
                 tabs.forEach { (id, title, access) ->
                     Tab(selected = id == state.selectedTabId, enabled = !state.saving && !state.storageFailed &&
                         state.configured != null && capabilities != null && state.link == null,
@@ -477,13 +481,24 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     } })
             }
         } }
-        item(key = "discovery-context") { Column {
+        item(key = DISCOVERY_CONTEXT_KEY) { Column {
             val heading = state.childHeading ?: state.query.parent?.let {
                 "${capabilities?.childrenFor(it, providerId)?.headingPrefix ?: "Items under"} ${it.identity}"
             } ?: state.query.search?.let { "Search results" }
             if (state.navigationBackLabel != null) SettingsPageHeader(heading ?: "Find streams",
                 onBack = onDiscoveryBack, backDescription = state.navigationBackLabel)
             else heading?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
+            // A parent's provider groups (#622) use the Find streams tab style.
+            if (state.query.parent != null && state.childGroups.isNotEmpty()) {
+                val selected = state.childGroups.indexOfFirst { it.id == state.childGroup }
+                RemoteTabRow(selected, Modifier.testTag("Child groups")) {
+                    state.childGroups.forEach { group ->
+                        Tab(selected = group.id == state.childGroup, enabled = !state.saving && !state.storageFailed &&
+                            state.configured != null && state.link == null,
+                            onClick = { selectChildGroup(group.id) }, text = { Text(group.title, maxLines = 1) })
+                    }
+                }
+            }
             if (!state.loading && state.failure == null && state.configured != null && state.entries.isEmpty()) Text("No catalog items found.")
         } }
         items(state.entries, key = { "catalog:${it.resource.providerId.value}:${it.resource.kind}:${it.resource.identity}:${it.resource.intent}" }) { entry ->

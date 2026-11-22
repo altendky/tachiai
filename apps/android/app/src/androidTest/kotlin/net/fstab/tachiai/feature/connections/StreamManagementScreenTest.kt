@@ -69,6 +69,8 @@ class StreamManagementScreenTest {
         val all = listOf(offline, upcoming, parent)
         var calls = mutableListOf<String>()
         var collectionState: ((String, StreamManagementState) -> StreamManagementState)? = null
+        // #622: a browsed parent's provider groups, by group ID.
+        var groupEntries: Map<String, List<CatalogEntry>> = emptyMap()
         private var previous: StreamManagementState? = null
         private var nextContext = 1L
         private val tabs = mutableMapOf<String, StreamManagementState>()
@@ -137,7 +139,8 @@ class StreamManagementScreenTest {
                         calls.add("add:${entry.resource.identity}")
                         state = state.copy(configured = state.configured.orEmpty() + ConfiguredSource(UUID.randomUUID().toString(),
                             instance.id, entry), link = null)
-                    })
+                    }, onChildGroup = { id -> calls.add("group:$id")
+                        state = state.copy(childGroup = id, query = state.query.copy(group = id), entries = groupEntries.getValue(id)) })
             }
         }
     }
@@ -1072,6 +1075,52 @@ class StreamManagementScreenTest {
         all.performKeyInput { pressKey(Key.DirectionRight) }
         compose.onNodeWithText("Following").assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle { assertTrue(fixture.calls.contains("collection:following")) }
+    }
+
+    @Test fun browsedSeriesShowsProviderGroupTabsAndBroadcastRowsCanBeAdded() {
+        val fixture = Fixture(PrototypeService.ABEMA)
+        val live = CatalogChildGroup("show_eg1", "生中継・見逃し"); val highlights = CatalogChildGroup("show_eg5", "ハイライト")
+        val broadcast = CatalogEntry(CatalogResource(ProviderId("abema"), "slot", "sumo/day15", CatalogIntent.BROADCAST),
+            "大相撲LIVE 十一月場所（幕内）15日目", durationSeconds = 17100)
+        fixture.groupEntries = mapOf(live.id to listOf(broadcast, fixture.episode), highlights.id to listOf(fixture.episode))
+        lateinit var inputMode: InputModeManager
+        compose.setContent {
+            inputMode = LocalInputModeManager.current
+            fixture.Render()
+        }
+        description("Browse A show").performClick()
+        // A parent without groups keeps the plain listing.
+        text(fixture.episode.title).assertExists()
+        compose.onNodeWithTag("Child groups").assertDoesNotExist()
+        compose.runOnIdle { fixture.state = fixture.state.copy(childGroups = listOf(live, highlights), childGroup = live.id,
+            entries = fixture.groupEntries.getValue(live.id)) }
+        val first = scrollTo(hasText(live.title) and isSelectable())
+        val second = compose.onNode(hasText(highlights.title) and isSelectable())
+        first.assertIsSelected(); second.assertIsNotSelected()
+        assertTrue(first.fetchSemanticsNode().boundsInRoot.left < second.fetchSemanticsNode().boundsInRoot.left)
+        // A broadcast row is an ordinary row with its length and the Add action.
+        text("Specific broadcast · Availability unknown · ${formatCatalogDuration(17100)}").assertExists()
+        description("Add ${broadcast.title}").assertIsEnabled().performClick()
+        compose.runOnIdle { assertTrue(fixture.calls.contains("add:sumo/day15")) }
+        description("Add ${broadcast.title}").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Already added"))
+        // Remote/keyboard focus moves across the group tabs like Find streams tabs.
+        compose.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
+        first.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        first.assertIsFocused().performKeyInput { pressKey(Key.DirectionRight) }
+        second.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        second.assertIsFocused().assertIsSelected(); first.assertIsNotSelected()
+        compose.runOnIdle {
+            assertEquals("group:${highlights.id}", fixture.calls.last())
+            assertEquals(highlights.id, fixture.state.query.group)
+        }
+        compose.onNodeWithText(broadcast.title).assertDoesNotExist()
+        second.performKeyInput { pressKey(Key.DirectionLeft) }
+        first.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        first.assertIsSelected()
+        compose.runOnIdle { assertEquals("group:${live.id}", fixture.calls.last()) }
+        // Back leaves the parent and its groups.
+        description("Back to channel list").performClick()
+        compose.onNodeWithTag("Child groups").assertDoesNotExist()
     }
 
     @Test fun televisionRemoteTraversesDiscoveryTabsAndSubmitsSearchWithIme() {

@@ -11,16 +11,18 @@ class AbemaGuestBootstrapPolicyTest {
         "Access-Control-Request-Headers" to "authorization")
 
     @Test fun sharedAccountAdmissionSkipsGuestAndRetainsExactOneMetadataRequestAndPreflight() {
+        // A series continuation is a single contents request.
+        val series = AbemaSeriesPageRequest("series-A", 20, "series-A_s1", "series-A_eg1", listOf(1))
         val cases = listOf(
             AbemaGuestBootstrapOperation.FETCH_EPISODE to AbemaGuestBootstrapPolicy.episodeUrl("episode-A"),
-            AbemaGuestBootstrapOperation.FETCH_SERIES to AbemaSeriesPageRequest("series-A").url(),
+            AbemaGuestBootstrapOperation.FETCH_SERIES to series.contentsUrl("series-A_eg1", "series-A_s1", listOf(1)),
             AbemaGuestBootstrapOperation.FETCH_SLOT to AbemaSlotRequest("channel-A", "slot-A").url(),
             AbemaGuestBootstrapOperation.FETCH_SCHEDULE to AbemaGuestBootstrapPolicy.SCHEDULE,
             AbemaGuestBootstrapOperation.FETCH_SEARCH to AbemaSearchRequest("Public query").url())
         for ((operation, url) in cases) {
             val admitted = AbemaGuestRequestAdmission(operation,
                 requestedEpisodeId = if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) "episode-A" else null,
-                series = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) AbemaSeriesPageRequest("series-A") else null,
+                series = if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) series else null,
                 slot = if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) AbemaSlotRequest("channel-A", "slot-A") else null,
                 search = if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) AbemaSearchRequest("Public query") else null,
                 accountBound = true)

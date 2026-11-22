@@ -14,23 +14,23 @@ internal object AbemaSeriesMetadataIpc {
         override fun toString() = "AbemaSeriesResult(redacted)"
     }
     fun decodeStart(fields: Map<String, Any?>, now: Long): Start? = runCatching {
-        val filtered = "season" in fields
-        val newest = "order" in fields
-        if (fields.keys != setOf("nonce", "instance", "parent", "offset", "version", "proof", "deadline") +
-            (if (filtered) setOf("season") else emptySet()) + (if (newest) setOf("order") else emptySet())) return null
-        if (newest && fields["order"] != "-seq") return null
+        val optional = setOf("season", "group", "types", "order")
+        if (!fields.keys.containsAll(setOf("nonce", "instance", "parent", "offset", "proof", "deadline")) ||
+            fields.keys.size != 6 + fields.keys.count { it in optional }) return null
+        if ("order" in fields && fields["order"] != "desc") return null
         val nonce = fields["nonce"] as? String ?: return null
         val instance = fields["instance"] as? String ?: return null
         val parent = fields["parent"] as? String ?: return null
-        val season = if (filtered) fields["season"] as? String ?: return null else null
+        val season = if ("season" in fields) fields["season"] as? String ?: return null else null
+        val group = if ("group" in fields) fields["group"] as? String ?: return null else null
+        val types = if ("types" in fields) (fields["types"] as? String ?: return null).takeIf {
+            it.matches(Regex("[1-9][0-9]?(,[1-9][0-9]?){0,3}")) }?.split(',')?.map { it.toInt() } ?: return null else null
         val offset = fields["offset"] as? Int ?: return null
-        val version = fields["version"] as? String
-        if (fields["version"] != null && version == null) return null
         val proof = fields["proof"] as? String ?: return null
         val deadline = fields["deadline"] as? Long ?: return null
         if (!AbemaEpisodeMetadataIpc.validNonce(nonce) || !validProviderInstanceId(instance) ||
             !proof.matches(Regex("[a-f0-9]{64}")) || now < 0 || deadline <= now || deadline - now > OPERATION_MS) return null
-        Start(nonce, instance, AbemaSeriesPageRequest(parent, offset, version, season, newest), proof, deadline)
+        Start(nonce, instance, AbemaSeriesPageRequest(parent, offset, season, group, types, "order" in fields), proof, deadline)
     }.getOrNull()
     fun decodeResult(fields: Map<String, Any?>, request: AbemaSeriesPageRequest): Result? {
         val nonce = fields["nonce"] as? String ?: return null
@@ -43,16 +43,18 @@ internal object AbemaSeriesMetadataIpc {
     }
     @Suppress("DEPRECATION")
     fun fields(bundle: Bundle): Map<String, Any?>? = runCatching {
-        if (bundle.size() > 9) return null
+        if (bundle.size() > 10) return null
         bundle.keySet().associateWith { bundle.get(it) }.takeIf { values ->
             values.values.all { it == null || it is String && it.length <= 32768 || it is Int || it is Long }
         }
     }.getOrNull()
     fun start(value: Start) = Bundle().apply {
         putString("nonce", value.nonce); putString("instance", value.instanceId); putString("parent", value.page.seriesId)
-        putInt("offset", value.page.offset); putString("version", value.page.version)
+        putInt("offset", value.page.offset)
         value.page.seasonId?.let { putString("season", it) }
-        if (value.page.newest) putString("order", "-seq")
+        value.page.groupId?.let { putString("group", it) }
+        value.page.viewingTypes?.let { putString("types", it.joinToString(",")) }
+        if (value.page.newest) putString("order", "desc")
         putString("proof", value.ownerProof); putLong("deadline", value.deadline)
     }
     fun nonce(value: String) = AbemaEpisodeMetadataIpc.nonce(value)
@@ -62,10 +64,18 @@ internal object AbemaSeriesMetadataIpc {
     }
     // The bounded projection decodeAbemaSeriesProjection reads on the other side.
     fun projection(page: AbemaSeriesPage): String {
-        val projection = JSONObject().put("seriesId", page.seriesId).put("version", page.version)
-            .put("programs", JSONArray().apply { page.entries.forEach { put(JSONObject().put("id", it.resource.identity).put("title", it.title)
-                .apply { it.durationSeconds?.let { seconds -> put("durationSeconds", seconds) } }) } })
+        val projection = JSONObject().put("seriesId", page.seriesId)
         page.seasonId?.let { projection.put("seasonId", it) }
-        return projection.toString()
+        page.seasonName?.let { projection.put("seasonName", it) }
+        page.groups?.let { groups -> projection.put("groups", JSONArray().apply {
+            groups.forEach { put(JSONObject().put("id", it.id).put("name", it.name)) } }) }
+        page.groupId?.let { projection.put("groupId", it) }
+        return projection.put("viewingTypes", JSONArray().apply { page.viewingTypes.forEach { put(it) } })
+            .put("items", JSONArray().apply { page.entries.forEach { entry ->
+                val slot = AbemaSlotRequest.from(entry.resource)
+                put(JSONObject().put("kind", if (slot != null) "slot" else "episode").put("id", slot?.slotId ?: entry.resource.identity)
+                    .apply { slot?.let { put("channelId", it.channelId) }; entry.durationSeconds?.let { put("durationSeconds", it) } }
+                    .put("title", entry.title))
+            } }).put("more", page.more).toString()
     }
 }

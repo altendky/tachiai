@@ -58,16 +58,16 @@ class AbemaSearchMetadataIpcTest {
             } finally { release.countDown(); worker.join(5000) }
         }
     }
-    @Test fun optionalSeasonLeavesOldIpcUnchangedAndFilteredProjectionProvesExactParent() {
-        val old = mapOf("nonce" to nonce, "instance" to "12345678-1234-1234-1234-123456789abc", "parent" to "series-A",
-            "offset" to 0, "version" to null, "proof" to "b".repeat(64), "deadline" to 46000L)
-        assertNull(AbemaSeriesMetadataIpc.decodeStart(old, 1000)!!.page.seasonId)
-        val filtered = AbemaSeriesMetadataIpc.decodeStart(old + ("season" to "season-A"), 1000)!!.page
-        assertTrue(filtered.url().endsWith("&seasonId=season-A")); assertFalse(AbemaSeriesPageRequest("series-A").url().contains("seasonId"))
-        val text = """{"seriesId":"series-A","seasonId":"season-A","version":"v1","programs":[]}"""
-        assertEquals("season-A", decodeAbemaSeriesProjection(text, filtered)!!.seasonId)
-        assertNull(decodeAbemaSeriesProjection(text, AbemaSeriesPageRequest("series-A")))
-        assertNull(decodeAbemaSeriesProjection(text, AbemaSeriesPageRequest("series-A", seasonId = "other")))
-        assertNull(AbemaSeriesMetadataIpc.decodeStart(old + ("season" to null), 1000))
+    @Test fun optionalSeasonLeavesUnfilteredIpcUnchangedAndFilteredProjectionProvesExactParent() {
+        val base = mapOf("nonce" to nonce, "instance" to "12345678-1234-1234-1234-123456789abc", "parent" to "series-A",
+            "offset" to 0, "proof" to "b".repeat(64), "deadline" to 46000L)
+        assertNull(AbemaSeriesMetadataIpc.decodeStart(base, 1000)!!.page.seasonId)
+        val filtered = AbemaSeriesMetadataIpc.decodeStart(base + ("season" to "series-A_s2"), 1000)!!.page
+        assertEquals("series-A_s2", filtered.seasonId)
+        val text = """{"seriesId":"series-A","seasonId":"series-A_s2","groups":[],"viewingTypes":[],"items":[],"more":false}"""
+        assertEquals("series-A_s2", decodeAbemaSeriesProjection(text, filtered)!!.seasonId)
+        assertNotNull(decodeAbemaSeriesProjection(text, AbemaSeriesPageRequest("series-A")))
+        assertNull(decodeAbemaSeriesProjection(text, AbemaSeriesPageRequest("series-A", seasonId = "series-A_s3")))
+        assertNull(AbemaSeriesMetadataIpc.decodeStart(base + ("season" to null), 1000))
     }
 }

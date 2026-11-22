@@ -31,7 +31,7 @@ class AbemaSearchManagementTest {
     @Test fun globalSearchSeasonChildrenBackAndExplicitAddsPreserveExactConfiguredChoicesAndQuality() = runBlocking {
         val instance = ProviderInstance(UUID.randomUUID().toString(), PrototypeService.ABEMA, "Fixture")
         val memory = Memory(); val store = ConfiguredSourceStore(memory, instance.id, ProviderId("abema"))
-        val rows = listOf(row("episode", "episode-A"), row("series", "series-A"), row("season", "series-A/season-A"),
+        val rows = listOf(row("episode", "episode-A"), row("series", "series-A"), row("season", "series-A/series-A_s1"),
             row("slot", "channel-A/slot-A"), row("live_event", "event-A"))
         var allowed = true; var omitted = false
         val searches = mutableListOf<AbemaSearchRequest>(); val children = mutableListOf<AbemaSeriesPageRequest>()
@@ -47,7 +47,7 @@ class AbemaSearchManagementTest {
         val catalog = AbemaSeriesChildrenCatalog(search, { gate -> object : AbemaSeriesTransport {
             override fun fetch(request: AbemaSeriesPageRequest): CatalogResult<AbemaSeriesPage> {
                 check(gate()); children += request
-                return CatalogResult.Value(AbemaSeriesPage(request.seriesId, listOf(row("episode", "child-A")), "v1", request.seasonId))
+                return CatalogResult.Value(abemaSeriesPage(request, listOf(row("episode", "child-A"))))
             }
             override fun cancelActiveRequest() = Unit
             override fun close() = Unit
@@ -65,7 +65,7 @@ class AbemaSearchManagementTest {
                 assertTrue(controller.back()); state = idle(controller)
                 assertEquals(rows, state.entries); assertEquals(cursor, state.nextCursor)
             }
-            assertEquals(listOf(null, "season-A"), children.map { it.seasonId }); assertTrue(children.all { it.seriesId == "series-A" })
+            assertEquals(listOf(null, "series-A_s1"), children.map { it.seasonId }); assertTrue(children.all { it.seriesId == "series-A" })
             rows.forEach { controller.add(it); idle(controller) }
             state = idle(controller); assertEquals(rows, state.configured!!.map { it.entry })
             val ids = state.configured!!.map { it.id }

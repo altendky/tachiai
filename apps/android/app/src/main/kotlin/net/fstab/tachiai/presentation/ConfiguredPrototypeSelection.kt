@@ -70,8 +70,12 @@ internal fun resolveConfiguredPrototypeSelection(
             if (!allowConfiguredAbemaEpisodes) return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             if (instance.service != PrototypeService.ABEMA) return failure(ConfiguredPrototypeSelectionFailure.PROVIDER_MISMATCH)
             val episode = (if (index == 0) assignments.aEpisode else assignments.bEpisode)
-                ?.takeIf { it.collection == source.entry.resource && supportedConfiguredAbemaEpisode(it.episode) }
+                ?.takeIf { it.collection == source.entry.resource &&
+                    (supportedConfiguredAbemaEpisode(it.episode) || supportedConfiguredAbemaSlot(it.episode)) }
                 ?: return failure(ConfiguredPrototypeSelectionFailure.EPISODE_REQUIRED)
+            // A chosen broadcast (#622) plays through the configured slot path.
+            if (supportedConfiguredAbemaSlot(episode.episode) && !allowConfiguredAbemaSlots)
+                return failure(ConfiguredPrototypeSelectionFailure.UNSUPPORTED)
             ConfiguredPlaybackFeed(source.choice, episode.episode, PrototypeService.ABEMA, PrototypePlaybackKind.REPLAY,
                 source.entry.resource, episode.title)
         } else if (supportedConfiguredAbemaEpisode(source.entry.resource)) {

@@ -12,7 +12,7 @@ import org.junit.Test
 
 // Route objects only; no connection is dispatched or provider contacted.
 class AbemaGuestSeriesRouteTest {
-    private val endpoint = URL(AbemaSeriesPageRequest("series-A").url())
+    private val endpoint = URL(AbemaSeriesPageRequest("series-A").seriesUrl())
     private fun profile() = parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())
     private class Backend(private val failClose: Boolean = false) : RouteBackend {
         override val proxyPort = 12345

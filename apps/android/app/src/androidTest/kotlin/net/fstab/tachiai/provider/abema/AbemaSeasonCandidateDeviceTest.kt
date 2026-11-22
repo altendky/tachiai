@@ -38,7 +38,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 // Test APK only. The opt-in gate precedes saved state, UI and all WebView APIs.
-// One known unfiltered Series page, exact Slot or public Schedule; no guessed identities, continuation,
+// One known Series content-list first page, exact Slot or public Schedule; no guessed identities, continuation,
 // account capability, Add, playback, provider mutation or production DTO change.
 class AbemaSeasonCandidateDeviceTest {
     @Test fun optInOneKnownSeriesPageObservesOnlyAnExplicitReturnedSeasonParent() {
@@ -188,89 +188,32 @@ class AbemaSeasonCandidateDeviceTest {
         assertNull(stripSlotProjection(JSONObject.quote(" ".repeat(4097))))
     }
 
-    @Test fun syntheticProofIsOptionalStrictAndStrippedBeforeTheUnchangedSeriesDecoder() {
-        fun shape(seriesExact: Boolean = true, seasonValid: Boolean = true, parent: String = "MATCH") = JSONObject()
-            .put("seriesExact", seriesExact).put("seasonValid", seasonValid).put("seasonParent", parent)
-        fun projection(proof: Any? = null, absent: Any? = null, diagnostic: Any = shape()) = JSONObject().put("seriesId", SERIES).put("version", "fixture-version")
-            .put("programs", JSONArray().put(JSONObject().put("id", "fixture-program").put("title", "Fixture episode")
-                .put(SHAPE_FIELD, diagnostic).apply { if (proof != null) put(PROOF_FIELD, proof); if (absent != null) put(ABSENT_PROOF_FIELD, absent) }))
-        fun proof() = JSONObject().put("seriesId", SERIES).put("seasonId", "fixture-season")
-            .put("seasonSeriesId", SERIES).put("programId", "fixture-program")
-        val valid = stripProjection(JSONObject.quote(projection(proof()).toString()))!!
-        assertEquals(PublicSeasonProof(SERIES, "fixture-season", "fixture-program"), valid.proof)
-        assertNull(valid.absentProof)
-        val text = JSONTokener(valid.raw).nextValue() as String
-        assertFalse(text.contains(PROOF_FIELD))
-        assertFalse(text.contains(SHAPE_FIELD))
-        assertFalse(text.contains(ABSENT_PROOF_FIELD))
-        assertEquals(ShapeCounts(1, 1, 1, 0, 1, 0, 0, 1, 0), valid.shapes)
-        assertNotNull(decodeAbemaSeriesProjection(text, AbemaSeriesPageRequest(SERIES)))
-        for (invalid in listOf(proof().put("seriesId", "other-series"), proof().put("seasonSeriesId", "other-series"),
-            proof().put("programId", "other-program"), proof().put("seasonId", 12), proof().put("seasonId", "bad/id"),
-            proof().put("extra", true), "fixture-season", JSONObject.NULL)) {
-            val stripped = stripProjection(JSONObject.quote(projection(invalid).toString()))!!
-            assertNull(stripped.proof)
-            assertNotNull(decodeAbemaSeriesProjection(JSONTokener(stripped.raw).nextValue() as String, AbemaSeriesPageRequest(SERIES)))
-        }
-        assertNull(stripProjection(JSONObject.quote(projection().toString()))!!.proof)
-        assertNull(stripProjection(JSONObject.quote(projection(proof()).put("seriesId", "other-series").toString())))
-        assertNull(stripProjection("{}"))
-        val single = projection(proof()).toString()
-        for (duplicate in listOf(single.replaceFirst("\"seriesId\":", "\"seriesId\":\"other-series\",\"seriesId\":"),
-            single.replaceFirst("\"seriesId\":", "\"series\\u0049d\":\"other-series\",\"seriesId\":"))) {
-            assertNull(stripProjection(JSONObject.quote(duplicate)))
-        }
-        for ((diagnostic, expected) in listOf(
-            shape(parent = "ABSENT") to ShapeCounts(1, 1, 1, 1, 0, 0, 1, 0, 0),
-            shape(parent = "INVALID") to ShapeCounts(1, 1, 1, 0, 0, 1, 0, 0, 1),
-            shape(seasonValid = false, parent = "ABSENT") to ShapeCounts(1, 1, 0, 1, 0, 0, 0, 0, 0),
-            shape(seriesExact = false, seasonValid = false, parent = "INVALID") to ShapeCounts(1, 0, 0, 0, 0, 1, 0, 0, 0))) {
-            val source = projection().apply { getJSONArray("programs").getJSONObject(0).put(SHAPE_FIELD, diagnostic) }
-            val stripped = stripProjection(JSONObject.quote(source.toString()))!!
-            assertEquals(expected, stripped.shapes)
-            assertNull(stripped.proof)
-            assertNotNull(decodeAbemaSeriesProjection(JSONTokener(stripped.raw).nextValue() as String, AbemaSeriesPageRequest(SERIES)))
-        }
-        for (invalid in listOf(shape().put("seriesExact", "true"), shape().put("seasonValid", 1),
-            shape(parent = "CONFLICTING"), shape().put("extra", true), "MATCH", JSONObject.NULL)) {
-            val source = projection().apply { getJSONArray("programs").getJSONObject(0).put(SHAPE_FIELD, invalid) }
-            assertNull(stripProjection(JSONObject.quote(source.toString())))
-        }
-        val missingShape = projection().apply { getJSONArray("programs").getJSONObject(0).remove(SHAPE_FIELD) }
-        assertNull(stripProjection(JSONObject.quote(missingShape.toString())))
-        val mixed = projection(diagnostic = shape(parent = "ABSENT")).apply {
-            getJSONArray("programs").put(JSONObject().put("id", "other-program").put("title", "Other fixture episode")
-                .put(SHAPE_FIELD, shape()))
-        }
-        val mixedResult = stripProjection(JSONObject.quote(mixed.toString()))!!
-        assertEquals(ShapeCounts(2, 2, 2, 1, 1, 0, 1, 1, 0), mixedResult.shapes)
-        assertNotNull(decodeAbemaSeriesProjection(JSONTokener(mixedResult.raw).nextValue() as String, AbemaSeriesPageRequest(SERIES)))
-        val bounded = projection().apply {
-            val rows = getJSONArray("programs")
-            for (index in 1 until 20) rows.put(JSONObject().put("id", "fixture-program-$index").put("title", "Fixture episode")
-                .put(SHAPE_FIELD, shape()))
-        }
-        assertEquals(ShapeCounts(20, 20, 20, 0, 20, 0, 0, 20, 0), stripProjection(JSONObject.quote(bounded.toString()))!!.shapes)
-        bounded.getJSONArray("programs").put(JSONObject().put("id", "over-bound").put("title", "Fixture episode").put(SHAPE_FIELD, shape()))
-        assertNull(stripProjection(JSONObject.quote(bounded.toString())))
-        assertNull(stripProjection(JSONObject.quote(single.replaceFirst("\"seasonParent\":", "\"seasonParent\":\"ABSENT\",\"seasonParent\":"))))
-        fun absentProof() = JSONObject().put("seriesId", SERIES).put("seasonId", "fixture-season").put("programId", "fixture-program")
-        val absent = stripProjection(JSONObject.quote(projection(absent = absentProof(), diagnostic = shape(parent = "ABSENT")).toString()))!!
-        assertNull(absent.proof)
-        assertEquals(PublicSeasonProof(SERIES, "fixture-season", "fixture-program"), absent.absentProof)
-        assertFalse((JSONTokener(absent.raw).nextValue() as String).contains(ABSENT_PROOF_FIELD))
-        assertNotNull(decodeAbemaSeriesProjection(JSONTokener(absent.raw).nextValue() as String, AbemaSeriesPageRequest(SERIES)))
-        for (invalid in listOf(absentProof().put("seriesId", "other-series"), absentProof().put("seasonId", "bad/id"),
-            absentProof().put("programId", "other-program"), absentProof().put("seasonId", 12), absentProof().put("extra", true),
-            absentProof().put("seasonSeriesId", JSONObject.NULL), absentProof().put("seasonSeriesId", ""),
-            absentProof().put("seasonSeriesId", "other-series"), JSONObject.NULL, "fixture-season")) {
-            assertNull(stripProjection(JSONObject.quote(projection(absent = invalid, diagnostic = shape(parent = "ABSENT")).toString())))
-        }
-        for (invalidShape in listOf(shape(parent = "MATCH"), shape(parent = "INVALID"), shape(seasonValid = false, parent = "ABSENT"),
-            shape(seriesExact = false, parent = "ABSENT"))) {
-            assertNull(stripProjection(JSONObject.quote(projection(absent = absentProof(), diagnostic = invalidShape).toString())))
-        }
-        assertNull(stripProjection(JSONObject.quote(projection(proof(), absentProof(), shape(parent = "ABSENT")).toString())))
+    // #622: the content-list projection names its season itself, so the probe
+    // reads the unchanged production page instead of injecting test fields.
+    @Test fun syntheticContentListPageNamesItsSeasonForTheUnchangedSeriesDecoder() {
+        fun projection(season: String? = "${SERIES}_s10") = JSONObject().put("seriesId", SERIES).apply {
+            if (season != null) put("seasonId", season).put("seasonName", "ABEMA大相撲2026")
+                .put("groups", JSONArray().put(JSONObject().put("id", "${SERIES}_eg1").put("name", "生中継・見逃し"))
+                    .put(JSONObject().put("id", "${SERIES}_eg5").put("name", "ハイライト")))
+                .put("groupId", "${SERIES}_eg1")
+            else put("groups", JSONArray())
+        }.put("viewingTypes", JSONArray().apply { if (season != null) put(1) })
+            .put("items", JSONArray().apply { if (season != null) {
+                put(JSONObject().put("kind", "slot").put("id", "CQ2AnExAX8s7LT").put("channelId", "sumo")
+                    .put("title", "Fixture broadcast").put("durationSeconds", 17100))
+                put(JSONObject().put("kind", "episode").put("id", "${SERIES}_s10_p8544").put("title", "Fixture episode"))
+            } }).put("more", false)
+        val page = decodeAbemaSeriesProjection(projection().toString(), AbemaSeriesPageRequest(SERIES))!!
+        assertTrue(validSeriesCandidatePage(page))
+        assertEquals(SeriesCandidate("${SERIES}_s10", 2, 1, 1), seriesCandidate(page))
+        // A series without seasons is an honest absence, not a fabricated parent.
+        val bare = decodeAbemaSeriesProjection(projection(season = null).toString(), AbemaSeriesPageRequest(SERIES))!!
+        assertTrue(validSeriesCandidatePage(bare))
+        assertEquals(SeriesCandidate(null, 0, 0, 0), seriesCandidate(bare))
+        // A season or group outside the requested series never decodes.
+        assertNull(decodeAbemaSeriesProjection(projection(season = "other-series_s10").toString(), AbemaSeriesPageRequest(SERIES)))
+        assertNull(decodeAbemaSeriesProjection(projection().put("seriesId", "other-series").toString(), AbemaSeriesPageRequest(SERIES)))
+        assertNull(decodeAbemaSeriesProjection(projection().put("groupId", "other-series_eg1").toString(), AbemaSeriesPageRequest(SERIES)))
     }
 
     private fun observe(phases: HarnessPhases, observation: Observation = Observation.SERIES_CANDIDATE) {
@@ -447,42 +390,24 @@ class AbemaSeasonCandidateDeviceTest {
             return
         }
         val page = value?.seriesPage
-        val success = value?.category == "EXACT_SERIES_PAGE" && page != null && page.seriesId == SERIES && page.seasonId == null &&
-            page.entries.size <= 20 && page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all {
-                it.resource.providerId == ProviderId("abema") && it.resource.kind == "episode" && it.resource.intent == CatalogIntent.VIDEO &&
-                    validAbemaSeriesId(it.resource.identity) && safeAbemaSeriesText(it.title, 160) &&
-                    it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null
-            }
-        val candidate = environment.candidate.getAndSet(null).takeIf {
-            cleanupConfirmed && unchanged && current && success && page.entries.any { entry -> entry.resource.identity == it?.programId }
-        }
-        val absentCandidate = environment.absentCandidate.getAndSet(null).takeIf {
-            cleanupConfirmed && unchanged && current && success && page.entries.any { entry -> entry.resource.identity == it?.programId }
-        }
-        val shapes = environment.shapes.getAndSet(null).takeIf {
-            cleanupConfirmed && unchanged && current && success && it?.rows == page.entries.size
-        }
+        val success = value?.category == "EXACT_SERIES_PAGE" && page != null && validSeriesCandidatePage(page)
+        val candidate = page?.takeIf { cleanupConfirmed && unchanged && current && success }?.let(::seriesCandidate)
         val outcome = when {
             !cleanupConfirmed -> "CLEANUP_FAILED"; !unchanged -> "STORES_CHANGED"; !current -> "OWNER_CHANGED"
             success -> "EXACT_SERIES_PAGE"; else -> "INVALID_RESPONSE"
         }
         Log.i("TachiaiAbemaSeasonCandidateProbe", "outcome=$outcome count=${page?.entries?.size ?: 0} " +
-            "candidateSeries=${candidate?.seriesId ?: "NONE"} candidateSeason=${candidate?.seasonId ?: "NONE"} " +
-            "candidateEvidence=${if (candidate != null) PublicSeasonEvidence.EXPLICIT_PARENT_FIELD.name else PublicSeasonEvidence.NONE.name} " +
-            "absentCandidateSeries=${absentCandidate?.seriesId ?: "NONE"} absentCandidateSeason=${absentCandidate?.seasonId ?: "NONE"} " +
-            "absentCandidateEvidence=${if (absentCandidate != null) PublicSeasonEvidence.SAME_PROGRAM_ABSENT_PARENT_FIELD.name else PublicSeasonEvidence.NONE.name} " +
-            "sdk=${Build.VERSION.SDK_INT} routeMode=${owner.instance.setup.route!!.mode.name}" +
-            (shapes?.let { " shapeRows=${it.rows} seriesExact=${it.seriesExact} seasonValid=${it.seasonValid} " +
-                "seasonParentAbsent=${it.parentAbsent} seasonParentMatch=${it.parentMatch} seasonParentInvalid=${it.parentInvalid} " +
-                "validSeasonParentAbsent=${it.validParentAbsent} validSeasonParentMatch=${it.validParentMatch} validSeasonParentInvalid=${it.validParentInvalid}" }
-                ?: " shape=NONE"))
+            "candidateSeries=${if (candidate?.seasonId != null) SERIES else "NONE"} candidateSeason=${candidate?.seasonId ?: "NONE"} " +
+            "candidateEvidence=${if (candidate?.seasonId != null) "CONTENTLIST_SEASON" else "NONE"} " +
+            "groups=${candidate?.groups ?: 0} episodes=${candidate?.episodes ?: 0} slots=${candidate?.slots ?: 0} " +
+            "sdk=${Build.VERSION.SDK_INT} routeMode=${owner.instance.setup.route!!.mode.name}")
         phases.at(HarnessPhase.RESULT_CHECK) {
             assertTrue("Public candidate observation exceeded bounded budgets", SystemClock.elapsedRealtime() - started in 0 until 70_000)
             assertTrue("Public candidate observation changed protected records", unchanged)
             assertTrue("Public candidate observation changed captured owner", current)
             assertTrue("Public candidate observation did not confirm cleanup", cleanupConfirmed)
             assertTrue("Public candidate observation did not return exact normalized metadata", success)
-            assertNotNull("Public candidate observation did not return closed shape counts", shapes)
+            assertNotNull("Public candidate observation did not return a closed summary", candidate)
         }
         phases.current.set(HarnessPhase.COMPLETE)
         // A valid Series page without a valid Season proof is honest absence,
@@ -596,9 +521,6 @@ class AbemaSeasonCandidateDeviceTest {
 
     private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment, private val observation: Observation,
         private val stableRecords: () -> Unit = {}) : AbemaGuestRuntimeEnvironment by base {
-        val candidate = AtomicReference<PublicSeasonProof?>()
-        val absentCandidate = AtomicReference<PublicSeasonProof?>()
-        val shapes = AtomicReference<ShapeCounts?>()
         val slotShapes = AtomicReference<SlotShapes?>()
         val scheduleShapes = AtomicReference<AbemaScheduleShapeObservation.Counts?>()
         val catchupCandidate = AtomicReference<AbemaScheduleCatchupCandidateObservation.Stripped?>()
@@ -623,7 +545,7 @@ class AbemaSeasonCandidateDeviceTest {
             preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
             check(request.operation == observation.operation && when (observation) {
                 Observation.SERIES_CANDIDATE -> request.seriesRequest?.let {
-                    it.seriesId == SERIES && it.offset == 0 && it.version == null && it.seasonId == null
+                    it.seriesId == SERIES && it.offset == 0 && it.groupId == null && it.seasonId == null
                 } == true
                 Observation.SLOT_SHAPE -> request.slotRequest?.let { it.channelId == SLOT_CHANNEL && it.slotId == SLOT_ID } == true
                 Observation.SCHEDULE_SHAPE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
@@ -631,15 +553,17 @@ class AbemaSeasonCandidateDeviceTest {
                 Observation.ONGOING_CANDIDATE -> request.seriesRequest == null && request.slotRequest == null && request.searchRequest == null && request.episodeId == null
             })
             val files = base.prepare(owner, request, preparation, canRequest)
+            // The Series page is observed through the unchanged production projection.
+            if (observation == Observation.SERIES_CANDIDATE) return files
             val source = files.getValue(CONTROL_PATH).toString(Charsets.UTF_8)
             val anchor = when (observation) {
-                Observation.SERIES_CANDIDATE -> PROJECTION; Observation.SLOT_SHAPE -> SLOT_PROJECTION
+                Observation.SERIES_CANDIDATE -> error("unreachable"); Observation.SLOT_SHAPE -> SLOT_PROJECTION
                 Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.ANCHOR
                 Observation.CATCHUP_CANDIDATE -> AbemaScheduleCatchupCandidateObservation.ANCHOR
                 Observation.ONGOING_CANDIDATE -> AbemaScheduleOngoingCandidateObservation.ANCHOR
             }
             val projection = when (observation) {
-                Observation.SERIES_CANDIDATE -> TEST_PROJECTION; Observation.SLOT_SHAPE -> TEST_SLOT_PROJECTION
+                Observation.SERIES_CANDIDATE -> error("unreachable"); Observation.SLOT_SHAPE -> TEST_SLOT_PROJECTION
                 Observation.SCHEDULE_SHAPE -> AbemaScheduleShapeObservation.projection(checkNotNull(scheduleWallMs))
                 Observation.CATCHUP_CANDIDATE -> AbemaScheduleCatchupCandidateObservation.projection(checkNotNull(scheduleWallMs))
                 Observation.ONGOING_CANDIDATE -> AbemaScheduleOngoingCandidateObservation.projection(checkNotNull(scheduleWallMs))
@@ -656,11 +580,7 @@ class AbemaSeasonCandidateDeviceTest {
             wrapped = object : AbemaGuestRuntimeView by actual {
                 override fun metadata(callback: (String?) -> Unit) = actual.metadata { raw ->
                     if (observation == Observation.SERIES_CANDIDATE) {
-                        val stripped = stripProjection(raw)
-                        candidate.set(stripped?.proof)
-                        absentCandidate.set(stripped?.absentProof)
-                        shapes.set(stripped?.shapes)
-                        callback(stripped?.raw)
+                        callback(raw)
                     } else if (observation == Observation.SLOT_SHAPE) {
                         val stripped = stripSlotProjection(raw)
                         slotShapes.set(stripped?.shapes)
@@ -686,12 +606,8 @@ class AbemaSeasonCandidateDeviceTest {
         }
     }
 
-    private data class PublicSeasonProof(val seriesId: String, val seasonId: String, val programId: String)
-    private enum class PublicSeasonEvidence { NONE, EXPLICIT_PARENT_FIELD, SAME_PROGRAM_ABSENT_PARENT_FIELD }
-    private data class ShapeCounts(val rows: Int, val seriesExact: Int, val seasonValid: Int,
-        val parentAbsent: Int, val parentMatch: Int, val parentInvalid: Int,
-        val validParentAbsent: Int, val validParentMatch: Int, val validParentInvalid: Int)
-    private class StrippedProjection(val raw: String, val proof: PublicSeasonProof?, val absentProof: PublicSeasonProof?, val shapes: ShapeCounts)
+    // Public identities and closed counts only; titles never leave the page.
+    private data class SeriesCandidate(val seasonId: String?, val groups: Int, val episodes: Int, val slots: Int)
     private enum class SlotShape {
         ABSENT, NULL, EMPTY_OBJECT, OBJECT, INVALID, EMPTY_STRING, STRING, PARENT_UNAVAILABLE,
         TRUE, FALSE, ZERO, POSITIVE_SAFE_INTEGER, OTHER_NUMBER, ALLOW_ALL, JAPAN_ONLY, OVERSEAS_ONLY,
@@ -741,11 +657,7 @@ class AbemaSeasonCandidateDeviceTest {
         private const val SLOT_CHANNEL = "abema-anime"
         private const val SLOT_ID = "9FYQvU4hBaZZy1"
         private const val CONTROL_PATH = "/_tachiai/guest/control.js"
-        private const val PROOF_FIELD = "tachiaiTestPublicSeasonParent"
-        private const val ABSENT_PROOF_FIELD = "tachiaiTestPublicSeasonAbsentParent"
-        private const val SHAPE_FIELD = "tachiaiTestPublicSeasonShape"
         private const val SLOT_SHAPE_FIELD = "tachiaiTestSlotShape"
-        private const val PROJECTION = "return Object.freeze({ id: item.id, title: item.episode.title.trim() });"
         private const val SLOT_PROJECTION = "return Object.freeze({ id: value.id, channelId: value.channelId, title: value.title });"
         private val retained = AtomicReference<Probe?>()
         private val SLOT_FIELDS = buildMap<String, Set<SlotShape>> {
@@ -802,93 +714,15 @@ class AbemaSeasonCandidateDeviceTest {
             return Object.freeze({ id: value.id, channelId: value.channelId, title: value.title,
               $SLOT_SHAPE_FIELD: Object.freeze(shapes) });
         """.trimIndent()
-        private val TEST_PROJECTION = """
-            const row = { id: item.id, title: item.episode.title.trim() };
-            const parent = item.season;
-            const seriesExact = !!(item.series && typeof item.series === 'object' && !Array.isArray(item.series) &&
-              typeof item.series.id === 'string' && item.series.id === seriesRequest.seriesId);
-            const seasonObject = !!(parent && typeof parent === 'object' && !Array.isArray(parent));
-            const seasonValid = !!(seasonObject && typeof parent.id === 'string' &&
-              /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(parent.id));
-            const seasonParent = seasonObject ? (Object.prototype.hasOwnProperty.call(parent, 'seriesId') ?
-              (seriesExact && typeof parent.seriesId === 'string' && parent.seriesId === item.series.id ? 'MATCH' : 'INVALID') : 'ABSENT') :
-              (parent === undefined || parent === null ? 'ABSENT' : 'INVALID');
-            row.$SHAPE_FIELD = { seriesExact, seasonValid, seasonParent };
-            if (item.series && typeof item.series === 'object' && !Array.isArray(item.series) &&
-                typeof item.series.id === 'string' && item.series.id === seriesRequest.seriesId &&
-                parent && typeof parent === 'object' && !Array.isArray(parent) &&
-                typeof parent.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(parent.id) &&
-                typeof parent.seriesId === 'string' && parent.seriesId === item.series.id &&
-                item.series.id.length + parent.id.length + 1 <= 256) {
-              row.$PROOF_FIELD = { seriesId: item.series.id, seasonId: parent.id,
-                seasonSeriesId: parent.seriesId, programId: item.id };
+        private fun validSeriesCandidatePage(page: AbemaSeriesPage) = page.seriesId == SERIES && page.groups != null &&
+            page.entries.size <= 20 && page.entries.map { it.resource }.distinct().size == page.entries.size && page.entries.all {
+                (it.resource.kind == "episode" && it.resource.intent == CatalogIntent.VIDEO && validAbemaSeriesId(it.resource.identity) ||
+                    AbemaSlotRequest.from(it.resource) != null) && safeAbemaSeriesText(it.title, 160) &&
+                    it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null
             }
-            if (seriesExact && seasonValid && !Object.prototype.hasOwnProperty.call(parent, 'seriesId') &&
-                item.series.id.length + parent.id.length + 1 <= 256) {
-              row.$ABSENT_PROOF_FIELD = { seriesId: item.series.id, seasonId: parent.id, programId: item.id };
-            }
-            return Object.freeze(row);
-        """.trimIndent()
-
-        private fun stripProjection(raw: String?): StrippedProjection? = runCatching {
-            val encoded = raw?.takeIf { it.length <= 65536 } ?: return null
-            checkAbemaCollectionJson(encoded)
-            val outer = JSONTokener(encoded)
-            val text = outer.nextValue() as? String ?: return null
-            if (outer.nextClean() != '\u0000' || text.toByteArray(Charsets.UTF_8).size > 65536) return null
-            checkAbemaCollectionJson(text)
-            val inner = JSONTokener(text); val value = inner.nextValue() as? JSONObject ?: return null
-            if (inner.nextClean() != '\u0000' || value.keys().asSequence().toSet() != setOf("seriesId", "version", "programs") ||
-                value.opt("seriesId") != SERIES) return null
-            val rows = value.opt("programs") as? JSONArray ?: return null
-            if (rows.length() > 20) return null
-            var candidate: PublicSeasonProof? = null
-            var absentCandidate: PublicSeasonProof? = null
-            var seriesExact = 0; var seasonValid = 0; var parentAbsent = 0; var parentMatch = 0; var parentInvalid = 0
-            var validParentAbsent = 0; var validParentMatch = 0; var validParentInvalid = 0
-            for (index in 0 until rows.length()) {
-                val row = rows.opt(index) as? JSONObject ?: return null
-                val keys = row.keys().asSequence().toSet()
-                if (keys != setOf("id", "title", SHAPE_FIELD) && keys != setOf("id", "title", SHAPE_FIELD, PROOF_FIELD) &&
-                    keys != setOf("id", "title", SHAPE_FIELD, ABSENT_PROOF_FIELD)) return null
-                val shape = row.remove(SHAPE_FIELD) as? JSONObject ?: return null
-                if (shape.keys().asSequence().toSet() != setOf("seriesExact", "seasonValid", "seasonParent")) return null
-                val exact = shape.opt("seriesExact") as? Boolean ?: return null
-                val valid = shape.opt("seasonValid") as? Boolean ?: return null
-                val parent = shape.opt("seasonParent") as? String ?: return null
-                if (exact) seriesExact++
-                if (valid) seasonValid++
-                when (parent) {
-                    "ABSENT" -> { parentAbsent++; if (valid) validParentAbsent++ }
-                    "MATCH" -> { parentMatch++; if (valid) validParentMatch++ }
-                    "INVALID" -> { parentInvalid++; if (valid) validParentInvalid++ }
-                    else -> return null
-                }
-                if (keys.contains(ABSENT_PROOF_FIELD)) {
-                    val absent = row.remove(ABSENT_PROOF_FIELD) as? JSONObject ?: return null
-                    if (!exact || !valid || parent != "ABSENT" ||
-                        absent.keys().asSequence().toSet() != setOf("seriesId", "seasonId", "programId")) return null
-                    val series = absent.opt("seriesId") as? String ?: return null
-                    val season = absent.opt("seasonId") as? String ?: return null
-                    val program = absent.opt("programId") as? String ?: return null
-                    if (series != SERIES || !validAbemaSeriesId(season) || series.length + season.length + 1 > 256 ||
-                        !validAbemaSeriesId(program) || program != row.opt("id")) return null
-                    if (absentCandidate == null) absentCandidate = PublicSeasonProof(series, season, program)
-                }
-                val extra = row.remove(PROOF_FIELD) as? JSONObject
-                if (extra != null && extra.keys().asSequence().toSet() == setOf("seriesId", "seasonId", "seasonSeriesId", "programId")) {
-                    val series = extra.opt("seriesId") as? String
-                    val season = extra.opt("seasonId") as? String
-                    val program = extra.opt("programId") as? String
-                    if (series == SERIES && extra.opt("seasonSeriesId") == SERIES && season != null && validAbemaSeriesId(season) &&
-                        series.length + season.length + 1 <= 256 && program != null && validAbemaSeriesId(program) && program == row.opt("id")) {
-                        if (candidate == null) candidate = PublicSeasonProof(series, season, program)
-                    }
-                }
-            }
-            StrippedProjection(JSONObject.quote(value.toString()), candidate, absentCandidate, ShapeCounts(rows.length(), seriesExact, seasonValid,
-                parentAbsent, parentMatch, parentInvalid, validParentAbsent, validParentMatch, validParentInvalid))
-        }.getOrNull()
+        // The season the content list itself names for this series, if any.
+        private fun seriesCandidate(page: AbemaSeriesPage) = SeriesCandidate(page.seasonId, page.groups.orEmpty().size,
+            page.entries.count { it.resource.kind == "episode" }, page.entries.count { it.resource.kind == "slot" })
 
         private fun stripSlotProjection(raw: String?): StrippedSlotProjection? = runCatching {
             val encoded = raw?.takeIf { it.length <= 4096 } ?: return null

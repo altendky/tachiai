@@ -139,6 +139,70 @@ class PickerCollectionEpisodesTest {
         assertTrue(opened.isEmpty()); assertFalse(gated.state(sumo).loaded)
     }
 
+    // #622: ABEMA's episode groups, in its order, opening on the first.
+    private val live = CatalogChildGroup("394-72_eg1", "生中継・見逃し")
+    private val highlights = CatalogChildGroup("394-72_eg5", "ハイライト")
+    private fun slot(id: String) = CatalogEntry(CatalogResource(ProviderId("abema"), "slot", "sumo/$id", CatalogIntent.BROADCAST),
+        "大相撲LIVE $id", durationSeconds = 17100)
+    private fun grouped(query: CatalogQuery): CatalogResult<CatalogPage> {
+        val group = query.group ?: if (query.cursor == "next-eg5") highlights.id else live.id
+        val entries = if (group == live.id) listOf(slot("day15"), entry("talk")) else
+            if (query.cursor == null) listOf(entry("h15")) else listOf(entry("h14"))
+        return CatalogResult.Value(CatalogPage(entries, "next-eg5".takeIf { group == highlights.id && query.cursor == null },
+            listOf(live, highlights), group))
+    }
+
+    @Test fun groupsOpenOnTheFirstAndATabSwitchListsAnotherGroupWithItsOwnPages() {
+        override = ::grouped
+        val sumo = collection("394-72")
+        episodes.load(sumo, false); deliver()
+        var state = episodes.state(sumo)
+        assertEquals(listOf(live, highlights), state.groups); assertEquals(live.id, state.group)
+        // Broadcasts and videos stay mixed in the provider's order.
+        assertEquals(listOf("sumo/day15", "talk"), state.entries.map { it.resource.identity })
+        val catalog = opened.single().second
+        assertNull(catalog.queries.single().group)
+        episodes.selectGroup(sumo, highlights.id)
+        state = episodes.state(sumo)
+        assertTrue(state.loading); assertTrue(state.entries.isEmpty()); assertEquals(highlights.id, state.group)
+        assertEquals(listOf(live, highlights), state.groups)
+        deliver()
+        assertEquals(CatalogQuery(parent = sumo.entry.resource, newest = true, group = highlights.id), catalog.queries.last())
+        assertEquals(listOf("h15"), episodes.state(sumo).entries.map { it.resource.identity })
+        assertTrue(episodes.state(sumo).more)
+        // A continuation carries no group; the adapter's cursor already names it.
+        episodes.load(sumo, more = true); deliver()
+        assertEquals(CatalogQuery(parent = sumo.entry.resource, cursor = "next-eg5", newest = true), catalog.queries.last())
+        assertEquals(listOf("h15", "h14"), episodes.state(sumo).entries.map { it.resource.identity })
+        // The listed group and unknown groups do not browse.
+        val calls = catalog.queries.size
+        episodes.selectGroup(sumo, highlights.id); episodes.selectGroup(sumo, "394-72_eg9")
+        assertEquals(calls, catalog.queries.size)
+        // Retry after a failure repeats the selected group.
+        override = { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        episodes.selectGroup(sumo, live.id); deliver()
+        assertEquals("Episodes could not be loaded.", episodes.state(sumo).failure)
+        assertEquals(live.id, episodes.state(sumo).group)
+        override = ::grouped
+        episodes.load(sumo, false); deliver()
+        assertEquals(live.id, opened.last().second.queries.single().group)
+        assertEquals(listOf("sumo/day15", "talk"), episodes.state(sumo).entries.map { it.resource.identity })
+    }
+
+    @Test fun aTabSwitchSupersedesAPendingLoadAndItsLateResultIsIgnored() {
+        override = ::grouped
+        val sumo = collection("394-72")
+        episodes.load(sumo, false); deliver()
+        episodes.selectGroup(sumo, highlights.id)
+        // Another tab while the first switch is pending wins.
+        episodes.selectGroup(sumo, live.id)
+        assertEquals(live.id, episodes.state(sumo).group)
+        deliver()
+        assertEquals(live.id, episodes.state(sumo).group)
+        assertEquals(listOf("sumo/day15", "talk"), episodes.state(sumo).entries.map { it.resource.identity })
+        assertFalse(episodes.state(sumo).loading); assertFalse(episodes.state(sumo).more)
+    }
+
     @Test fun routeFailuresPointToProvidersAndInterruptionsDoNot() {
         assertTrue(collectionEpisodesFailureMessage(CatalogFailure.NOT_VERIFIED).contains("Providers"))
         assertEquals("Episodes could not be loaded.", collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED))

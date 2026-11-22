@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -103,6 +105,22 @@ internal fun RemoteDropdownMenuItem(text: @Composable () -> Unit, onClick: () ->
 internal fun RemoteTab(selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier,
     enabled: Boolean = true, text: (@Composable () -> Unit)? = null, icon: (@Composable () -> Unit)? = null) {
     androidx.compose.material3.Tab(selected, onClick, modifier.tvFocusIndicator(), enabled = enabled, text = text, icon = icon)
+}
+
+// The Find streams tab row, shared by provider child groups (#622): one
+// horizontally scrolling row that remote focus treats as a single group.
+@Composable
+internal fun RemoteTabRow(selectedIndex: Int, modifier: Modifier = Modifier, tabs: @Composable () -> Unit) {
+    @Suppress("DEPRECATION")
+    androidx.compose.material3.ScrollableTabRow(selectedTabIndex = selectedIndex.coerceAtLeast(0),
+        modifier = modifier.then(if (LocalTelevision.current) Modifier.focusGroup() else Modifier), edgePadding = 0.dp,
+        divider = {}, indicator = { positions ->
+            // Subcomposition can briefly retain the previous measured
+            // positions while newly loaded capabilities add tabs.
+            positions.getOrNull(selectedIndex)?.let { position ->
+                TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(position))
+            }
+        }, tabs = tabs)
 }
 
 @Composable

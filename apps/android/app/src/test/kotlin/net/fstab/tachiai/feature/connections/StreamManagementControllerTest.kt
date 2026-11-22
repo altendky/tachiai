@@ -34,6 +34,10 @@ class StreamManagementControllerTest {
         val series = CatalogEntry(parent, "Saved show")
         val children = listOf(episode, entry("second-episode", CatalogIntent.VIDEO, "Second episode", CatalogAvailability.EXPIRED))
         val items = listOf(offline, episode, future, series)
+        // Provider child groups (#622); the second group lists its own children.
+        var childGroups: List<CatalogChildGroup> = emptyList()
+        val groupChildren = listOf(future, entry("third-episode", CatalogIntent.VIDEO, "Third episode", CatalogAvailability.AVAILABLE),
+            entry("fourth-episode", CatalogIntent.VIDEO, "Fourth episode", CatalogAvailability.AVAILABLE))
         var failure: CatalogFailure? = null
         var throwBrowse = false
         var throwCapabilities = false
@@ -74,7 +78,9 @@ class StreamManagementControllerTest {
             if (throwBrowse) throw IllegalStateException("sensitive-provider-response")
             failure?.let { return CatalogResult.Failure(it, if (it == CatalogFailure.RATE_LIMITED) 30_000 else null) }
             if (query.parent != null && query.parent != parent) return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
-            val matches = (if (query.parent != null) children else items).filter {
+            val group = if (query.parent != null) query.group ?: childGroups.firstOrNull()?.id else null
+            val matches = (if (query.parent == null) items else if (group != null && group != childGroups.first().id)
+                groupChildren else children).filter {
                 query.search == null || it.title.contains(query.search, true)
             }
             if (expireContinuations && query.cursor != null && query.cursor != continuation)
@@ -87,7 +93,8 @@ class StreamManagementControllerTest {
                 else -> CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
             if (expireContinuations) continuation = (result as? CatalogResult.Value)?.value?.nextCursor
-            return result
+            return if (result is CatalogResult.Value && group != null)
+                CatalogResult.Value(result.value.copy(groups = childGroups, group = group)) else result
         }
         override fun lookup(input: String): CatalogResult<CatalogEntry> {
             lookupCalls++; onLookup()
@@ -175,6 +182,47 @@ class StreamManagementControllerTest {
         assertFalse(controller.back()); assertEquals(calls, catalog.browses)
         controller.more(); assertEquals(catalog.items, idle(controller).entries)
         assertEquals(parent.query.copy(cursor = parent.nextCursor), catalog.lastQuery)
+        controller.close()
+    }
+
+    @Test fun childGroupsSwitchInPlaceKeepTheirContinuationAndBackLeavesThem() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().first())
+        val live = CatalogChildGroup("saved-show_eg1", "生中継・見逃し"); val highlights = CatalogChildGroup("saved-show_eg5", "ハイライト")
+        catalog.childGroups = listOf(live, highlights)
+        val memory = Memory()
+        store(memory, catalog.instance).add(catalog.series) { emptyList() }
+        val controller = controller(this, catalog, memory)
+        controller.load(); val root = idle(controller)
+        assertTrue(root.childGroups.isEmpty()); assertNull(root.childGroup)
+        controller.children(catalog.parent); var child = idle(controller)
+        // The first page names the provider's groups and opens on its first one.
+        assertNull(catalog.lastQuery!!.group)
+        assertEquals(listOf(live, highlights), child.childGroups); assertEquals(live.id, child.childGroup)
+        assertEquals(catalog.children, child.entries)
+        controller.childGroup(highlights.id); child = idle(controller)
+        assertEquals(CatalogQuery(parent = catalog.parent, group = highlights.id), catalog.lastQuery)
+        assertEquals(highlights.id, child.childGroup); assertEquals(listOf(live, highlights), child.childGroups)
+        assertEquals(catalog.groupChildren.take(2), child.entries)
+        // A tab switch replaces the listing in place; it adds no Back step.
+        assertEquals("Episodes from Saved show", child.childHeading)
+        assertEquals(CatalogQuery(parent = catalog.parent, group = highlights.id), child.query)
+        controller.more(); child = idle(controller)
+        assertEquals(highlights.id, catalog.lastQuery!!.group); assertNotNull(catalog.lastQuery!!.cursor)
+        assertEquals(catalog.groupChildren, child.entries); assertEquals(highlights.id, child.childGroup)
+        // The selected group, an unknown group and a root listing do not browse.
+        val calls = catalog.browses
+        controller.childGroup(highlights.id); controller.childGroup("saved-show_eg9")
+        assertEquals(calls, catalog.browses)
+        // Retry repeats the selected group.
+        catalog.failure = CatalogFailure.TEMPORARY
+        controller.childGroup(live.id); assertEquals(CatalogFailure.TEMPORARY, idle(controller).failure!!.reason)
+        assertEquals(live.id, controller.state.value.childGroup)
+        catalog.failure = null; controller.retry(); child = idle(controller)
+        assertEquals(live.id, catalog.lastQuery!!.group); assertEquals(catalog.children, child.entries)
+        assertTrue(controller.back())
+        val restored = idle(controller)
+        assertEquals(root.entries, restored.entries); assertTrue(restored.childGroups.isEmpty()); assertNull(restored.childGroup)
+        controller.childGroup(live.id); assertEquals(calls + 2, catalog.browses)
         controller.close()
     }
 

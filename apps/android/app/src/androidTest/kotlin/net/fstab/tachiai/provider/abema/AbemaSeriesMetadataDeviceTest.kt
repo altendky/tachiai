@@ -94,7 +94,7 @@ class AbemaSeriesMetadataDeviceTest {
             // no automatic retry or unversioned continuation/fallback exists.
             if (continuation) {
                 val page = checkNotNull((first as? CatalogResult.Value)?.value)
-                check(page.entries.size == ABEMA_SERIES_PAGE_LIMIT && page.nextCursor != null)
+                check(page.nextCursor != null)
                 second = catalog.browse(CatalogQuery(parent = parent, cursor = page.nextCursor))
             }
         } finally {
@@ -112,8 +112,9 @@ class AbemaSeriesMetadataDeviceTest {
         val ownerUnchanged = owner.sameOwnership(readOwner())
         fun exact(page: CatalogPage?) = page != null && page.entries.size <= ABEMA_SERIES_PAGE_LIMIT &&
             page.entries.map { it.resource.identity }.distinct().size == page.entries.size && page.entries.all { entry ->
-                entry.resource.providerId == ProviderId("abema") && entry.resource.kind == "episode" &&
-                    entry.resource.intent == CatalogIntent.VIDEO && validAbemaSeriesId(entry.resource.identity) &&
+                entry.resource.providerId == ProviderId("abema") && (entry.resource.kind == "episode" &&
+                    entry.resource.intent == CatalogIntent.VIDEO && validAbemaSeriesId(entry.resource.identity) ||
+                    AbemaSlotRequest.from(entry.resource) != null) &&
                     safeAbemaSeriesText(entry.title, 160) && entry.availability == CatalogAvailability.UNKNOWN &&
                     entry.scheduledStartEpochMs == null
             }

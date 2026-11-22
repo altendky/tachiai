@@ -811,7 +811,21 @@ Measured on the SHIELD on 2026-11-21, live News with a Twitch feed on B:
 - System shared memory rose by about 107 MB, and the Java heap was unaffected.
 - A hold past the whole buffer is still refused as `LIVE_WINDOW_EXPIRED`.
 
-Twitch feeds keep the provider's window. Sizing the buffer to the current offset
+Twitch feeds keep the provider's window. Live Twitch feeds play about 6 s behind
+the live edge, using Twitch's low-latency playlists
+([security and privacy](security-and-privacy.md#twitch-live-low-latency--2026-11-22)).
+
+Measured on the SHIELD on 2026-11-22, one live channel, about 2.5 minutes per
+setting:
+
+| Setting | Behind the live edge | Buffered ahead |
+| --- | --- | --- |
+| Before | ≈ 20.9 s | 14–18 s |
+| Low-latency playlists only | ≈ 18.4 s | 13–15 s |
+| Plus a 6 s target | ≈ 7.9 s | 3–5 s |
+| Plus prefetch hints as segments | ≈ 6.0 s | 6–8 s |
+
+No setting rebuffered after startup. Sizing the buffer to the current offset
 is discussed in [#618](https://github.com/altendky/tachiai/issues/618).
 
 Each device stores its own encrypted, bounded pair preferences. Identity uses

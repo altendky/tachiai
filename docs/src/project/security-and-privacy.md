@@ -70,6 +70,24 @@ Provider replay availability deadlines remain independently enforced after the
 initial helper exchange. This changes local session duration, not entitlement,
 DRM exchange/renewal, TLS policy or media-origin approvals.
 
+## Twitch live low latency — 2026-11-22
+
+On 2026-11-22 the user approved Twitch low latency for native live playback:
+
+- **The request flag.** Live HLS requests ask for Twitch's low-latency playlists
+  with the undocumented `fast_bread=true` usher parameter, as Twitch's web player
+  does. Replay requests are unchanged.
+- **Prefetch hints.** The Twitch adapter turns the playlist's trailing
+  `#EXT-X-TWITCH-PREFETCH` hints into ordinary segments. Those are segments still
+  being produced, so the player fetches them early. The segments come from the
+  same allowlisted media hosts and go through the same bounded transport. A
+  playlist of any other shape is left unchanged.
+- **Live target.** The player targets 6 s behind the live edge, adjusting speed
+  by at most 3 %.
+
+There is still no ad suppression, integrity identity or proxy behavior, and ads
+play as delivered.
+
 ## Live rewind buffer — 2026-11-21
 
 On 2026-11-20 the user approved an app-owned rewind buffer for live feeds, so a

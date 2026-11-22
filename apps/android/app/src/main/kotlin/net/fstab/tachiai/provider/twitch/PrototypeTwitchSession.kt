@@ -202,9 +202,12 @@ internal class PrototypeTwitchSession(
                             transportObserver = diagnostics.nativeTransportObserver(),
                             onManifestRejection = { code, body ->
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
-                            }, onEvent = mediaEvents::dispatch)
+                            }, onEvent = mediaEvents::dispatch,
+                            // Twitch live low latency (user approval, 2026-11-22).
+                            playlistRewrite = if (replay) { text -> text } else ::twitchLowLatencyPlaylist)
                         host = created
-                        created.start(source.uri, playWhenReady = false)
+                        created.start(source.uri, playWhenReady = false,
+                            liveTargetOffsetMs = if (replay) null else TWITCH_LIVE_TARGET_OFFSET_MS)
                         if (initialPositionMs > 0) created.player.seekTo(initialPositionMs)
                     } catch (error: Exception) {
                         if (!closed.get() && active()) {

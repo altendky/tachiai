@@ -276,7 +276,10 @@ internal class RemoteRouteLeaseBackend private constructor(
     override fun toString() = "RemoteRouteLeaseBackend(secrets hidden)"
 }
 
-// The single process decision: only the playback process leases WireGuard
-// devices from the ordinary process. WebView processes are not yet included.
+// The single process decision: the playback, ABEMA guest and approval-browser
+// processes lease WireGuard devices from the ordinary process (#275 stage 4), so
+// one key pair never runs two devices beside a playing feed. The renewal job's
+// Network-bound devices remain separate (stage 5).
 internal fun routeLeasesFromOwner(processName: String?, packageName: String) =
-    processName == "$packageName:prototype_cached_player"
+    processName in setOf("$packageName:prototype_cached_player", "$packageName:abema_guest_bootstrap",
+        "$packageName:abema_approval_browser")

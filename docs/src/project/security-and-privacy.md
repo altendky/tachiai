@@ -26,8 +26,8 @@ display names, never copied keys/credentials. Conflicting earlier stream/feed
 route settings require explicit review; unsupported or failed routes stop before provider
 preparation instead of falling back to the system network.
 
-The playback process leases WireGuard routes from the ordinary process over a
-non-exported, same-UID Binder service
+The playback, ABEMA guest and approval-browser processes lease WireGuard routes
+from the ordinary process over a non-exported, same-UID Binder service
 ([#275](https://github.com/altendky/tachiai/issues/275)). Route configuration
 never crosses Binder: the request names the saved profile only by its route
 configuration digest, and the owner re-reads that profile from its own store.

@@ -244,10 +244,12 @@ class RouteLeaseTest {
         assertEquals(listOf(RouteLeaseIpc.OPEN, RouteLeaseIpc.CLOSE), channel.sent)
     }
 
-    @Test fun onlyThePlaybackProcessLeasesFromTheOwner() {
-        assertTrue(routeLeasesFromOwner("net.fstab.tachiai:prototype_cached_player", "net.fstab.tachiai"))
-        for (name in listOf(null, "net.fstab.tachiai", "net.fstab.tachiai:abema_approval_browser",
-            "net.fstab.tachiai:abema_guest_bootstrap", "other:prototype_cached_player"))
+    // #275 stage 4: the WebView processes lease too; the owner's own process never does.
+    @Test fun playbackAndWebViewProcessesLeaseFromTheOwner() {
+        for (name in listOf("prototype_cached_player", "abema_guest_bootstrap", "abema_approval_browser"))
+            assertTrue(name, routeLeasesFromOwner("net.fstab.tachiai:$name", "net.fstab.tachiai"))
+        for (name in listOf(null, "net.fstab.tachiai", "net.fstab.tachiai:other", "other:prototype_cached_player",
+            "other:abema_guest_bootstrap", "net.fstab.tachiai:abema_guest_bootstrap:x"))
             assertFalse(routeLeasesFromOwner(name, "net.fstab.tachiai"))
     }
 

@@ -56,7 +56,8 @@ scheduling mechanisms with no new account screen or notification. Runtime and
 physical-device acceptance remain separate from passing host fixtures; no web
 or Apple equivalent is established here.
 
-Android playback runs in a separate process. Its WireGuard routes lease
+Android playback and the ABEMA guest and approval WebViews run in separate
+processes. Their WireGuard routes lease
 loopback listeners from the ordinary process's single device per key pair over
 a same-UID Binder service, which the bound viewer keeps alive
 ([source routing](source-network-routing.md#subsequent-native-transport-implementation)). This is

@@ -45,7 +45,8 @@ internal enum class NativeDashEvent {
 }
 
 // Debug only: native platform DRM, one opaque initial exchange, no license
-// fallback, provisioning, renewal, offline keys or protected-media copying.
+// fallback, provisioning, renewal or offline keys. A live feed's media bytes
+// may be held only in its own bounded in-memory rewind buffer (#568).
 @UnstableApi
 internal class BoundedNativeDashPlayer(
     context: Context,
@@ -67,6 +68,8 @@ internal class BoundedNativeDashPlayer(
     private val onCleanupChanged: () -> Unit = {},
     transportObserver: NativeMediaTransportObserver? = null,
     private val onPeriodChange: (NativeDashPeriodChange) -> Unit = {},
+    // #568: a live feed's in-memory rewind buffer, shared with its manifest parser.
+    private val liveCache: NativeLiveSegmentCache? = null,
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
@@ -83,8 +86,22 @@ internal class BoundedNativeDashPlayer(
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },
         onConnectionReleased = { request -> cleanup.released(request) },
         onFailure = { stage, error -> if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed(); observedFailure(stage, error) },
-        transportObserver = transportObserver)
+        transportObserver = transportObserver, cache = liveCache)
         .also { owned -> cleanup.own(10) { owned.close() } }
+        .also { owned ->
+            liveCache?.let { cache ->
+                cleanup.own(5) { cache.close() }
+                // The cache records through this player's own bounded transport.
+                cache.attach { uri ->
+                    val source = owned.create(C.DATA_TYPE_MEDIA, recorder = true)
+                    try {
+                        source.openUri(uri)
+                        val buffer = ByteArray(64 * 1024)
+                        while (source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) Unit
+                    } finally { source.close() }
+                }
+            }
+        }
     private val manifests = BoundedMediaRequests(budget, { it == manifestUri }, onMediaEvent, openConnection = { url -> cleanup.allocate(20, { openConnection(url) }) { it.disconnect() } },
         openInput = { request -> cleanup.input { request.inputStream } },
         openErrorInput = { request -> cleanup.optionalInput { request.errorStream } },

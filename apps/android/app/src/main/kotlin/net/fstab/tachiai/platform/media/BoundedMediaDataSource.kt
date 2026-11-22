@@ -48,6 +48,8 @@ internal class BoundedMediaRequests(
     private val readCosts: NativeMediaReadCosts? = null,
     private val coalesceMediaReads: Boolean = false,
     transportObserver: NativeMediaTransportObserver? = null,
+    // #568: a live feed's in-memory rewind buffer, or null.
+    private val cache: NativeLiveSegmentCache? = null,
 ) : AutoCloseable {
     private val active = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private data class ReportedEvent(val event: NativeMediaEvent, val status: Int = 0)
@@ -60,7 +62,8 @@ internal class BoundedMediaRequests(
         if (reported.add(ReportedEvent(event, status))) onEvent(event, http)
     }
     fun create(type: Int, mediaResponseLimitBytes: Long = 32 * 1024 * 1024L,
-        allowIcyMetadata: Boolean = false): Source = Source(type, mediaResponseLimitBytes, allowIcyMetadata)
+        allowIcyMetadata: Boolean = false, recorder: Boolean = false): Source =
+        Source(type, mediaResponseLimitBytes, allowIcyMetadata, recorder)
     override fun close() {
         budget.stop()
         try {
@@ -71,7 +74,7 @@ internal class BoundedMediaRequests(
     }
 
     internal inner class Source(private val type: Int, private val mediaResponseLimitBytes: Long,
-        private val allowIcyMetadata: Boolean) : BaseDataSource(true) {
+        private val allowIcyMetadata: Boolean, private val recorder: Boolean = false) : BaseDataSource(true) {
         init { require(mediaResponseLimitBytes in 1..4L * 1024 * 1024 * 1024) }
         private var connection: HttpsURLConnection? = null
         private var input: InputStream? = null
@@ -84,6 +87,13 @@ internal class BoundedMediaRequests(
         private var mediaBodyAccepted = false
         private var inputEnded = false
         private var costs: NativeMediaReadCosts.Request? = null
+        // A cached body served instead of the network, or a complete network
+        // body being copied into the cache.
+        private var cached: java.nio.ByteBuffer? = null
+        private var lease: NativeLiveSegmentCache.Lease? = null
+        private var tee: ByteArrayOutputStream? = null
+        private var teeUri: URI? = null
+        private var teeExpected = -1L
         private val diagnosticOwner = transportDiagnostics?.let { AtomicReference<Any?>() }
         private val limit get() = if (type == C.DATA_TYPE_MANIFEST) 512 * 1024L else mediaResponseLimitBytes
         private fun requestCancelled(error: Exception) = Thread.currentThread().isInterrupted ||
@@ -156,6 +166,29 @@ internal class BoundedMediaRequests(
                 }
                 if (!allowedUri(uri)) { report(NativeMediaEvent.SOURCE_NOT_ALLOWLISTED); throw IOException() }
                 require(position >= 0 && (length == C.LENGTH_UNSET.toLong() || length > 0))
+                if (type == C.DATA_TYPE_MEDIA && cache != null) {
+                    val leased = cache.lease(uri, player = !recorder)
+                    if (leased != null) {
+                        lease = leased
+                        val hit = leased.body
+                        val size = hit.remaining().toLong()
+                        require(position <= size)
+                        val end = if (length == C.LENGTH_UNSET.toLong()) size else minOf(size, Math.addExact(position, length))
+                        hit.position(Math.toIntExact(position)); hit.limit(Math.toIntExact(end))
+                        cached = hit
+                        source = uri
+                        readBytes = 0
+                        inputEnded = false
+                        remaining = end - position
+                        if (transferSpec != null) {
+                            transferOpen = true
+                            transferStarted(transferSpec)
+                        }
+                        costs?.opened()
+                        if (remaining == 0L) costs?.bodyComplete()
+                        return remaining
+                    }
+                }
                 // Never inherit a process-wide cookie store. WebView uses its own profile.
                 require(CookieHandler.getDefault() == null)
                 openFailureEvent = NativeMediaEvent.CONNECTION_OPEN_FAILED
@@ -243,6 +276,12 @@ internal class BoundedMediaRequests(
                 readBytes = 0
                 inputEnded = false
                 remaining = if (length != C.LENGTH_UNSET.toLong()) length else request.contentLengthLong
+                if (type == C.DATA_TYPE_MEDIA && cache != null && position == 0L &&
+                    length == C.LENGTH_UNSET.toLong() && status == 200 && cache.accepts(uri)) {
+                    teeExpected = request.contentLengthLong
+                    tee = ByteArrayOutputStream(if (teeExpected in 1..limit) teeExpected.toInt() else 256 * 1024)
+                    teeUri = uri
+                }
                 checkActive() // Setup is still bounded, including input acquisition.
                 if (type == C.DATA_TYPE_MEDIA) {
                     (request as? ProgressingMediaResponse)?.acceptProgressingBody()
@@ -276,8 +315,24 @@ internal class BoundedMediaRequests(
                 val coalesce = coalesceMediaReads && type == C.DATA_TYPE_MEDIA
                 if (coalesce) checkReadActivity()
                 checkActive()
+                cached?.let { body ->
+                    if (!body.hasRemaining()) {
+                        costs?.bodyComplete(); costs?.readFinished(reading, eof = true)
+                        return C.RESULT_END_OF_INPUT
+                    }
+                    val count = minOf(length, body.remaining())
+                    body.get(buffer, offset, count)
+                    readBytes += count
+                    if (remaining >= 0) remaining -= count
+                    if (transferOpen) bytesTransferred(count)
+                    report(NativeMediaEvent.MEDIA_BYTES, 200)
+                    if (remaining == 0L) costs?.bodyComplete()
+                    costs?.readFinished(reading)
+                    return count
+                }
                 if (remaining == 0L || inputEnded) {
                     if (remaining <= 0L) costs?.bodyComplete()
+                    finishTee()
                     costs?.readFinished(reading, eof = true)
                     return C.RESULT_END_OF_INPUT
                 }
@@ -288,6 +343,7 @@ internal class BoundedMediaRequests(
                 if (coalesce) checkReadActivity()
                 if (count < 0) {
                     if (remaining < 0) costs?.bodyComplete()
+                    finishTee()
                     costs?.readFinished(reading, eof = true)
                     return C.RESULT_END_OF_INPUT
                 }
@@ -297,6 +353,8 @@ internal class BoundedMediaRequests(
                     throw NativeMediaRequestException(NativeMediaRequestFailure.RESPONSE_LIMIT)
                 }
                 if (remaining >= 0) remaining -= count
+                if (count > 0) tee?.write(buffer, offset, count)
+                if (remaining == 0L) finishTee()
                 if (transferOpen && count > 0) bytesTransferred(count)
                 report(if (type == C.DATA_TYPE_MANIFEST) NativeMediaEvent.MANIFEST_BYTES else NativeMediaEvent.MEDIA_BYTES, responseHttp)
                 if (remaining == 0L || (inputEnded && remaining < 0L)) costs?.bodyComplete()
@@ -310,6 +368,14 @@ internal class BoundedMediaRequests(
                 report(if (cancelled) NativeMediaEvent.REQUEST_CANCELLED else NativeMediaEvent.REQUEST_FAILED)
                 throw IOException("Native media read failed")
             }
+        }
+
+        // Only a complete, unranged body enters the cache.
+        private fun finishTee() {
+            val body = tee ?: return
+            val uri = teeUri
+            tee = null; teeUri = null
+            if (uri != null && (teeExpected < 0 || body.size().toLong() == teeExpected)) cache?.put(uri, body.toByteArray())
         }
 
         private fun readInput(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -352,6 +418,8 @@ internal class BoundedMediaRequests(
         }
         override fun close() {
             diagnosticOwner?.set(null)
+            cached = null; tee = null; teeUri = null
+            lease?.close(); lease = null
             val request = connection
             val stream = input
             var streamClosed = stream == null

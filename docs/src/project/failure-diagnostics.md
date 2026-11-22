@@ -599,6 +599,9 @@ the protection policy.
   rather than proof of sample encryption. `transition` is the live
   protection-transition verdict, such as `SAME_PROTECTION` or `NO_DECLARATIONS`,
   or `NONE` for replays.
+- `manifestRefused stage=…`, logged when the bounded manifest policy refuses a
+  refresh. `stage` is the closed policy stage, such as `REPRESENTATIONS` or
+  `SEGMENT_RANGE`. A refused refresh is reported as `UNSUPPORTED_MEDIA`.
 - `periodChange reason=… from=… to=… of=… jumpMs=… ad=… drm=…`, logged for every
   player position discontinuity other than a seek. A seamless period boundary
   has `reason=AUTO_TRANSITION` and a `jumpMs` near zero. `ad` is true only for

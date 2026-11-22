@@ -1,5 +1,7 @@
 package net.fstab.tachiai.feature.connections
 
+import androidx.test.platform.app.InstrumentationRegistry
+import net.fstab.tachiai.feature.presentation.isTelevision
 import androidx.compose.runtime.*
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalFocusManager
@@ -92,6 +94,11 @@ class TwitchLocalVideoImportScreenTest {
         val overlay = matcher and !hasAnyAncestor(hasScrollToIndexAction())
         return if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) compose.onNode(overlay) else scrollTo(matcher)
     }
+    // #624: on TV the search field accepts text only after it is selected.
+    private fun SemanticsNodeInteraction.selectedOnTv() = apply {
+        if (isTelevision(InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration)) performClick()
+    }
+
     private fun text(value: String) = node(hasText(value))
     private fun description(value: String) = scrollTo(hasContentDescription(value))
     private fun tap(matcher: SemanticsMatcher) {
@@ -169,7 +176,7 @@ class TwitchLocalVideoImportScreenTest {
             compose.setContent { Render(fixture) }
             tap(hasContentDescription("Add Connected fixture video"))
             val saved = fixture.memory.bytes!!.copyOf()
-            text("Search streams").performTextInput("private fixture search")
+            text("Search streams").selectedOnTv().performTextInput("private fixture search")
             tap(hasText("Add link"))
             text("Provider URL or channel").performTextInput("https://fixture.invalid/?token=unvalidated")
             compose.runOnIdle {

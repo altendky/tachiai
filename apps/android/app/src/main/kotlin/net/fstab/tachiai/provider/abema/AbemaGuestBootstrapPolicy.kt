@@ -4,6 +4,12 @@ import java.net.URI
 
 internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE, FETCH_SEARCH }
 
+// One admitted request of the series contentlist chain and the IDs it names.
+internal enum class AbemaSeriesStep { SERIES, SECTIONS, CONTENTS }
+internal class AbemaSeriesUri(val step: AbemaSeriesStep, val groupId: String?, val seasonId: String?) {
+    override fun toString() = "AbemaSeriesUri(redacted)"
+}
+
 internal object AbemaGuestBootstrapPolicy {
     const val PROFILE_SUFFIX = "abema-guest-bootstrap"
     const val PAGE = "https://abema.tv/_tachiai/guest/index.html"
@@ -20,6 +26,34 @@ internal object AbemaGuestBootstrapPolicy {
         "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
     fun validEpisodeId(id: String) = id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))
+    private val SERIES_CHILD = Regex("https://api\\.p-c3-e\\.abema-tv\\.com/v1/contentlist/episodeGroups/" +
+        "([A-Za-z0-9][A-Za-z0-9_-]{0,127})/(sections|contents)\\?seasonId=([A-Za-z0-9][A-Za-z0-9_-]{0,127})&.*")
+    private val VIEWING_TYPES = Regex(".*&viewingTypes=([1-9][0-9]?(?:%2C[1-9][0-9]?){0,3})")
+
+    // Kotlin cannot know a group or its viewing types before the series and
+    // sections replies, so those URIs are templates bound to the requested
+    // series (ID prefix), to any requested season/group/types, and rebuilt
+    // exactly by the request's own builders. The JS cannot vary anything else.
+    fun seriesStep(uri: URI, request: AbemaSeriesPageRequest): AbemaSeriesUri? {
+        if (uri.scheme != "https" || uri.host != "api.p-c3-e.abema-tv.com" || uri.port != -1 || uri.rawUserInfo != null ||
+            uri.rawFragment != null || uri.rawPath != uri.path || uri.normalize() != uri) return null
+        val text = uri.toString()
+        if (request.viewingTypes == null && text == request.seriesUrl()) return AbemaSeriesUri(AbemaSeriesStep.SERIES, null, null)
+        val match = SERIES_CHILD.matchEntire(text) ?: return null
+        val (group, kind, season) = match.destructured
+        if (!boundAbemaSeriesChild(request.seriesId, group) || !boundAbemaSeriesChild(request.seriesId, season) ||
+            request.groupId != null && request.groupId != group || request.seasonId != null && request.seasonId != season) return null
+        if (kind == "sections") return if (request.viewingTypes == null && text == request.sectionsUrl(group, season))
+            AbemaSeriesUri(AbemaSeriesStep.SECTIONS, group, season) else null
+        val types = VIEWING_TYPES.matchEntire(text)?.groupValues?.get(1)?.split("%2C")?.map { it.toInt() } ?: return null
+        if (!validAbemaViewingTypes(types) || request.viewingTypes != null && request.viewingTypes != types ||
+            text != request.contentsUrl(group, season, types)) return null
+        return AbemaSeriesUri(AbemaSeriesStep.CONTENTS, group, season)
+    }
+    // CSP ignores queries; Kotlin admission above remains the exact gate.
+    private fun seriesSources(request: AbemaSeriesPageRequest) = listOfNotNull(
+        request.seriesUrl().substringBefore('?').takeIf { request.viewingTypes == null },
+        "$ABEMA_SERIES_CONTENTLIST/episodeGroups/" + (request.groupId?.let { "$it/" } ?: "")).joinToString(" ")
 
     fun episodeUrl(id: String): String {
         require(validEpisodeId(id))
@@ -44,7 +78,7 @@ internal object AbemaGuestBootstrapPolicy {
             AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/;")
             AbemaGuestBootstrapOperation.VERIFY_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $EPISODE;")
             AbemaGuestBootstrapOperation.FETCH_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${episodeUrl(checkNotNull(episodeId))};")
-            AbemaGuestBootstrapOperation.FETCH_SERIES -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(series).url()};")
+            AbemaGuestBootstrapOperation.FETCH_SERIES -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${seriesSources(checkNotNull(series))};")
             AbemaGuestBootstrapOperation.FETCH_SLOT -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(slot).url()};")
             AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $SCHEDULE;")
             AbemaGuestBootstrapOperation.FETCH_SEARCH -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(search).url()};")
@@ -77,7 +111,7 @@ internal object AbemaGuestBootstrapPolicy {
             return method in setOf("GET", "OPTIONS")
         if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT && !mainFrame && uri.toString() == slot?.url())
             return method in setOf("GET", "OPTIONS")
-        if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && !mainFrame && uri.toString() == series?.url())
+        if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && !mainFrame && series != null && seriesStep(uri, series) != null)
             return method in setOf("GET", "OPTIONS")
         val selectedEpisodeId = episodeId ?: EPISODE_ID
         if (operation in setOf(AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
@@ -125,6 +159,9 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
     private var challenge = false
     private var token = false
     private var profileUri: URI? = null
+    // Series chain position: each URI in order, at most one preflight and GET.
+    private val seriesSteps = if (series?.viewingTypes == null) AbemaSeriesStep.values().toList() else listOf(AbemaSeriesStep.CONTENTS)
+    private var seriesStep: AbemaSeriesUri? = null
 
     @Synchronized fun admit(uri: URI, mainFrame: Boolean, method: String, headers: Map<String, String> = emptyMap()): Boolean {
         if (!AbemaGuestBootstrapPolicy.allows(uri, mainFrame, method, operation, episodeId, series, slot, search)) return false
@@ -137,22 +174,44 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
         } else if (uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN) {
             if (!guest || !profile || profileUri == null || !challenge || token) return false
             token = true
-        } else if (AbemaGuestBootstrapPolicy.isProfile(uri) || AbemaGuestBootstrapPolicy.isEpisode(uri, episodeId) ||
-            uri.toString() == series?.url() || uri.toString() == slot?.url() || uri.toString() == search?.url() ||
-            operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE) {
-            if (!guest || (profileUri != null && profileUri != uri)) return false
-            if (method == "OPTIONS") {
-                fun header(name: String) = headers.entries.singleOrNull { it.key.equals(name, true) }?.value
-                if (options || profile || header("Origin") != "https://abema.tv" ||
-                    header("Access-Control-Request-Method") != "GET" ||
-                    header("Access-Control-Request-Headers")?.trim()?.lowercase() != "authorization") return false
-                options = true
-            } else {
-                if (profile) return false
-                profile = true
+        } else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && series != null &&
+            AbemaGuestBootstrapPolicy.seriesStep(uri, series) != null) {
+            val step = checkNotNull(AbemaGuestBootstrapPolicy.seriesStep(uri, series))
+            val current = seriesStep
+            val position = seriesSteps.indexOf(step.step)
+            if (!guest || position < 0) return false
+            if (current == null || position != seriesSteps.indexOf(current.step)) {
+                // Advance only after the previous URI's GET; contents must name the sections' group and season.
+                if (position != (current?.let { seriesSteps.indexOf(it.step) } ?: -1) + 1 || current != null && !profile ||
+                    current?.step == AbemaSeriesStep.SECTIONS && (step.groupId != current.groupId || step.seasonId != current.seasonId)) return false
+                // Check the request before advancing, so a refused one leaves the chain where it was.
+                if (!validPreflightOrGet(method, headers)) return false
+                seriesStep = step; profileUri = null; options = false; profile = false
             }
-            profileUri = uri
+            if (!preflightOrGet(uri, method, headers)) return false
+        } else if (AbemaGuestBootstrapPolicy.isProfile(uri) || AbemaGuestBootstrapPolicy.isEpisode(uri, episodeId) ||
+            uri.toString() == slot?.url() || uri.toString() == search?.url() ||
+            operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE) {
+            if (!guest || !preflightOrGet(uri, method, headers)) return false
         }
+        return true
+    }
+    private fun validPreflightOrGet(method: String, headers: Map<String, String>): Boolean {
+        if (method != "OPTIONS") return true
+        fun header(name: String) = headers.entries.singleOrNull { it.key.equals(name, true) }?.value
+        return header("Origin") == "https://abema.tv" && header("Access-Control-Request-Method") == "GET" &&
+            header("Access-Control-Request-Headers")?.trim()?.lowercase() == "authorization"
+    }
+    private fun preflightOrGet(uri: URI, method: String, headers: Map<String, String>): Boolean {
+        if (profileUri != null && profileUri != uri) return false
+        if (method == "OPTIONS") {
+            if (options || profile || !validPreflightOrGet(method, headers)) return false
+            options = true
+        } else {
+            if (profile) return false
+            profile = true
+        }
+        profileUri = uri
         return true
     }
 

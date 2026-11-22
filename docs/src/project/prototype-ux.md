@@ -181,6 +181,11 @@ may temporarily retain enough trailing space to prevent a jump; scrolling toward
 earlier content progressively retires that space without restoring it on reverse
 scroll. Child Back and global search retain distinct contexts. Account-derived
 results, transition space and scroll anchors remain in memory only.
+Browsing a parent whose provider groups its children, such as an ABEMA series'
+episode groups (#622), adds the same tab row below the child heading, in the
+provider's order and opening on its first group. A group tab replaces the
+listing in place without adding a Back step; Back leaves the parent and its
+tabs. Parents without groups are unchanged.
 
 Configured streams and Find streams are peer sections, without an outer Streams
 heading. The compact Add link action and section help share the Configured
@@ -1266,6 +1271,15 @@ coverage, so Tachiai does not choose an episode itself.
     titles. An episode with a known length shows it below the title, such as
     `1h 58m`, `45m`, or `40s` under a minute (#608).
   - **More** loads older pages, and **‹ Back** or system Back returns.
+  - **Groups (#622).** A collection whose provider groups its contents shows
+    those groups as tabs below the heading, in the provider's order, in the
+    same style as the Find streams tabs. The page opens on the first group,
+    which for ABEMA大相撲 is 生中継・見逃し (the full-day broadcasts). A tab
+    lists its own contents from their newest page; collections without groups
+    show no tabs.
+  - **Broadcasts.** A group can list ABEMA broadcasts (slots) mixed with
+    on-demand videos in ABEMA's order. A broadcast row shows its title and
+    length like an episode row and is chosen for A or B the same way.
   - Loading, empty and failure states are shown, with Retry starting again
     from the newest page. Pages already loaded stay for the session.
   - Episode loads use their own worker, so they never delay Watch.
@@ -1278,17 +1292,21 @@ coverage, so Tachiai does not choose an episode itself.
 - **Watch.** With a collection assigned but no episode chosen, Watch stays
   disabled and the picker asks for an episode. There is no automatic default.
   Watch plays the chosen exact episode through the configured-episode path,
-  with fresh eligibility checks. Retries and recovery keep it, and the viewer
+  or a chosen broadcast through the configured-slot path used for a slot added
+  by link, with fresh eligibility checks. Retries and recovery keep it, and the viewer
   labels the feed with the episode title.
 - **Remembering.** Chosen episodes persist with the A/B choices in saved
   Activity state, the encrypted last-selection record and the recovery
   checkpoint. Each stores the collection and episode public identities and the
   episode title.
   - Records without an episode keep their previous formats byte for byte.
+    An episode keeps its original encoding; a broadcast uses a versioned form
+    that also records the child's intent (#622).
   - An episode is dropped when its item no longer holds that collection.
 - **Scope.** Collections without episode browsing keep the existing refusal.
-  Each page is one fresh guest series request, about 20–30 s; faster loading is
-  a separate follow-up.
+  Each page is one fresh guest series operation, about 20–30 s; faster loading
+  is a separate follow-up. Since #622 a first page makes three content-list
+  requests (series, sections and contents) within that operation.
 
 On the SHIELD (Android 11, signed-in ABEMA, Windscribe Tokyo route), the
 Episodes page for ABEMA大相撲2026 listed, newest first:

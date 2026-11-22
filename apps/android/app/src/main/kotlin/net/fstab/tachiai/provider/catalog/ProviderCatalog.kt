@@ -117,18 +117,38 @@ internal data class CatalogCapabilities(
 // Cursors are transient and adapter-owned. Never serialize them as item IDs or
 // diagnostics; adapters must bind them to query/account/session revision.
 // newest asks for a parent's children in the provider's own newest-first order.
+// group selects one of the parent's provider-defined child groups (tabs) that a
+// previous page listed; null asks for the provider's default (first) group.
 internal data class CatalogQuery(val collectionId: String? = null, val search: String? = null,
-    val cursor: String? = null, val parent: CatalogResource? = null, val newest: Boolean = false) {
+    val cursor: String? = null, val parent: CatalogResource? = null, val newest: Boolean = false,
+    val group: String? = null) {
     init {
         require(collectionId == null || parent == null)
         require(!newest || parent != null)
+        require(group == null || parent != null && validCatalogChildGroupId(group))
         require(collectionId == null || collectionId.matches(Regex("[a-z][a-z0-9_-]{0,31}")))
         require(search == null || search.length in 1..160 && search.none { it.isISOControl() })
         require(cursor == null || cursor.length in 1..2048 && cursor.none { it.isISOControl() })
     }
 }
-internal data class CatalogPage(val entries: List<CatalogEntry>, val nextCursor: String? = null) {
-    init { require(entries.size <= 100); CatalogQuery(cursor = nextCursor) }
+internal fun validCatalogChildGroupId(id: String) = id.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}"))
+// A parent's child group as the provider names it, in the provider's order.
+internal data class CatalogChildGroup(val id: String, val title: String) {
+    init {
+        require(validCatalogChildGroupId(id))
+        require(title == title.trim() && title.length in 1..64 &&
+            title.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
+    }
+}
+// groups/group describe a children page's provider groups and which one it
+// lists; both stay empty/null for parents without groups.
+internal data class CatalogPage(val entries: List<CatalogEntry>, val nextCursor: String? = null,
+    val groups: List<CatalogChildGroup> = emptyList(), val group: String? = null) {
+    init {
+        require(entries.size <= 100); CatalogQuery(cursor = nextCursor)
+        require(groups.size <= 16 && groups.map { it.id }.distinct().size == groups.size)
+        require(group == null || groups.any { it.id == group })
+    }
 }
 internal enum class CatalogFailure { ACCESS_REQUIRED, UNSUPPORTED, NOT_VERIFIED, NOT_FOUND, RATE_LIMITED, TEMPORARY, INVALID_INPUT }
 internal sealed interface CatalogResult<out T> {

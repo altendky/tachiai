@@ -976,6 +976,29 @@ or an automatically playable permanent sumo collection. The main picker's
 [collection episodes](prototype-ux.md#collection-episodes-on-the-picker--november-19-2026)
 page uses the same operation with the consumer's descending `-seq` order.
 
+#### Content-list series browsing (#622)
+
+The series-program path above omits broadcast slots, such as the full-day sumo
+broadcasts. Issue [#622](https://github.com/altendky/tachiai/issues/622)
+replaces it with the content list ABEMA's own series page uses; the paragraphs
+above record the replaced path and its evidence. The
+[bundle evidence](abema-public-bundle-analysis.md#series-content-list-622-2026-11-22)
+gives the three endpoints. A first page reads the series structure, picks the
+requested season, the season holding the requested group, or the first season
+with groups, and then reads the chosen group's sections and contents. The
+default is the first group in ABEMA's order. Continuations carry season, group
+and the union of the sections' viewing types instead of a version. A page continues when
+the provider returned a full 20 items, even when skipped live events or unknown
+types leave fewer rows.
+
+Rows keep ABEMA's order: type 1 becomes the exact episode resource and type 3
+the existing slot resource (`{channelId}/{slotId}`, broadcast intent).
+Availability stays UNKNOWN; a slot's duration is its provider duration or, when
+absent, its scheduled span. Children pages expose the group list and the listed
+group through optional `CatalogPage.groups`/`group`, and `CatalogQuery.group`
+selects another group; season parents map to that season. Existing callers that
+pass no group receive the first group's contents.
+
 ### Exact configured broadcast metadata
 
 Issue [#178](https://github.com/altendky/tachiai/issues/178) delivered metadata

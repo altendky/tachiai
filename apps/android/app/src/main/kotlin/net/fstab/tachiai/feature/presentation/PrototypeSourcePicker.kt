@@ -285,7 +285,9 @@ internal fun configuredSelectionMessage(reason: ConfiguredPrototypeSelectionFail
 
 // Episodes of one saved collection, newest first, with the same A/B controls as
 // configured items. Choosing assigns that exact episode under the collection
-// item; nothing is added to the configured list (#550).
+// item; nothing is added to the configured list (#550). A collection with
+// provider episode groups shows them as tabs in the provider's order, and
+// broadcasts listed with its videos are chosen the same way (#622).
 @Composable
 private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: CollectionEpisodes,
     assignments: ConfiguredFeedAssignments, television: Boolean, providerName: String?,
@@ -316,8 +318,17 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+        if (state.groups.isNotEmpty()) {
+            val selected = state.groups.indexOfFirst { it.id == state.group }
+            RemoteTabRow(selected) {
+                state.groups.forEach { group ->
+                    RemoteTab(selected = group.id == state.group, onClick = { episodes.selectGroup(source, group.id) },
+                        text = { Text(group.title, maxLines = 1) })
+                }
+            }
+        }
         state.entries.forEachIndexed { index, entry ->
-            val episode = ConfiguredEpisodeChoice(source.entry.resource, entry.resource, entry.title)
+            val episode = ConfiguredEpisodeChoice.of(source.entry.resource, entry)
             Row(Modifier.fillMaxWidth().padding(start = 12.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -325,7 +336,8 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                     Text(entry.title, style = MaterialTheme.typography.titleMedium)
                     entry.durationSeconds?.let { Text(formatCatalogDuration(it), style = MaterialTheme.typography.bodySmall) }
                 }
-                for (slot in PrototypeSlot.entries) {
+                // A child Tachiai cannot play is listed without A/B controls.
+                if (episode != null) for (slot in PrototypeSlot.entries) {
                     // Identity only: a provider retitle keeps the row checked.
                     val checked = assignments.choice(slot) == source.choice && assignments.episode(slot)?.sameEpisode(episode) == true
                     val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp)

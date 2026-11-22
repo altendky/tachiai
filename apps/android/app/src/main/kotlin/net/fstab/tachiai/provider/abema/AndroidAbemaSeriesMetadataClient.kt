@@ -35,8 +35,7 @@ internal class AbemaSeriesClientOperation(
     }
     fun accept(value: AbemaSeriesMetadataIpc.Result): Boolean = synchronized(lock) {
         if (!current() || result != null || value.nonce != request.nonce ||
-            value.outcome == "OK" && (value.page == null || value.page.seriesId != request.page.seriesId || value.page.seasonId != request.page.seasonId ||
-                request.page.version != null && value.page.version != request.page.version)) false
+            value.outcome == "OK" && value.page?.answers(request.page) != true) false
         else { result = value; completed.countDown(); true }
     }
     fun cancel() = synchronized(lock) { cancelled = true; result = null; completed.countDown() }

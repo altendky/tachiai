@@ -236,6 +236,20 @@ host is admitted. These are implemented request boundaries, with actual eligible
 slot manifest/license/rendered playback still unverified. See
 [the catch-up adapter](abema-catalog-access.md#exact-broadcast-catch-up-adapter).
 
+### ABEMA series content list — 2026-11-22
+
+Under the general integration approval, the guest series operation replaces
+its series-program GET with three cookie-free bearer GETs on the existing
+`api.p-c3-e.abema-tv.com` host: `/v1/contentlist/series/{seriesId}`,
+`/v1/contentlist/episodeGroups/{groupId}/sections` and
+`/v1/contentlist/episodeGroups/{groupId}/contents`. These are undocumented
+endpoints used by ABEMA's own series page
+([#622](https://github.com/altendky/tachiai/issues/622)). Admission binds the
+group and season IDs to the requested series, rebuilds each query exactly and
+admits each URI once, in order. No new host, redirect, media or license
+destination is added; broadcast rows reuse the existing exact slot path. See
+[the series operation](abema-guest-bootstrap.md#exact-series-page-catalog-operation).
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |

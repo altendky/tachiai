@@ -393,18 +393,108 @@
       clearTimeout(timer); controllers.delete(controller);
     }
   }
-  const validSeriesVersion = value => typeof value === 'string' && value.length >= 1 && value.length <= 256 &&
-    value === value.trim() && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
+  // Season and episode-group IDs must carry their series ID as a prefix.
+  const seriesChild = (seriesId, value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) &&
+    value.length > seriesId.length + 1 && value.startsWith(seriesId + '_');
+  const validViewingTypes = value => Array.isArray(value) && value.length >= 1 && value.length <= 4 &&
+    new Set(value).size === value.length && value.every(type => Number.isSafeInteger(type) && type >= 1 && type <= 99);
   function validSeriesRequest(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) &&
-      ['offset,seriesId,version', 'offset,seasonId,seriesId,version', 'offset,order,seriesId,version',
-        'offset,order,seasonId,seriesId,version'].includes(Object.keys(value).sort().join(',')) &&
-      (!Object.hasOwn(value, 'order') || value.order === '-seq') &&
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const has = key => Object.hasOwn(value, key);
+    return Object.keys(value).every(key => ['seriesId', 'offset', 'seasonId', 'groupId', 'viewingTypes', 'order'].includes(key)) &&
       typeof value.seriesId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seriesId) &&
-      (!Object.hasOwn(value, 'seasonId') || typeof value.seasonId === 'string' &&
-        /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.seasonId) && value.seriesId.length + value.seasonId.length + 1 <= 256) &&
+      (!has('order') || value.order === 'desc') &&
+      (!has('seasonId') || seriesChild(value.seriesId, value.seasonId)) &&
+      (!has('groupId') || seriesChild(value.seriesId, value.groupId)) &&
+      (!has('viewingTypes') || validViewingTypes(value.viewingTypes) && has('seasonId') && has('groupId')) &&
       Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 9980 && value.offset % 20 === 0 &&
-      (value.offset === 0 ? value.version === null : validSeriesVersion(value.version));
+      (value.offset === 0 || has('viewingTypes'));
+  }
+  const record = value => value && typeof value === 'object' && !Array.isArray(value);
+  const safeText = (value, maximum) => {
+    if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > maximum || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) throw new Error();
+    return value.trim();
+  };
+  // First-party serializers omit empty repeated fields; explicit null or
+  // wrong types still refuse.
+  const repeated = (object, key, maximum) => {
+    const value = Object.hasOwn(object, key) ? object[key] : [];
+    if (!Array.isArray(value) || value.length > maximum) throw new Error();
+    return value;
+  };
+  // The series structure chooses one season (requested, holding the requested
+  // group, or the first with groups) and its groups in provider order.
+  function parseSeriesStructure(text, request) {
+    const reply = parseBoundedJsonText(text, true, { depth: 24, nodes: 50000, array: 1000 });
+    if (!record(reply) || reply.id !== request.seriesId) throw new Error();
+    const seasons = [], seasonIds = new Set();
+    for (const season of repeated(reply, 'seasons', 64)) {
+      if (!record(season) || !seriesChild(request.seriesId, season.id) || seasonIds.has(season.id)) throw new Error();
+      seasonIds.add(season.id);
+      const groupIds = new Set();
+      const groups = repeated(season, 'episodeGroups', 16).map(group => {
+        if (!record(group) || !seriesChild(request.seriesId, group.id) || groupIds.has(group.id)) throw new Error();
+        groupIds.add(group.id);
+        return Object.freeze({ id: group.id, name: safeText(group.name, 64) });
+      });
+      const name = season.name === undefined || season.name === '' ? undefined : safeText(season.name, 160);
+      seasons.push({ id: season.id, name, groups });
+    }
+    const holding = seasons.filter(season => season.groups.some(group => group.id === request.groupId));
+    const season = request.seasonId !== undefined ? seasons.find(candidate => candidate.id === request.seasonId) :
+      request.groupId !== undefined ? (holding.length === 1 ? holding[0] : undefined) :
+      seasons.find(candidate => candidate.groups.length) || seasons[0];
+    if (season === undefined) {
+      if (request.seasonId !== undefined || request.groupId !== undefined) throw new Error();
+      return Object.freeze({ groups: Object.freeze([]) });
+    }
+    const groupId = request.groupId ?? season.groups[0]?.id;
+    if (request.groupId !== undefined && !season.groups.some(group => group.id === request.groupId)) throw new Error();
+    return Object.freeze({ seasonId: season.id, ...(season.name !== undefined ? { seasonName: season.name } : {}),
+      groups: Object.freeze(season.groups), ...(groupId !== undefined ? { groupId } : {}) });
+  }
+  // Every section's viewing types, first-seen order, at most four.
+  function parseSeriesSections(text) {
+    const reply = parseBoundedJsonText(text, true);
+    if (!record(reply)) throw new Error();
+    const types = [];
+    for (const section of repeated(reply, 'sections', 16)) {
+      if (!record(section)) throw new Error();
+      for (const type of repeated(section, 'viewingTypes', 16)) {
+        if (!Number.isSafeInteger(type) || type < 1 || type > 99) throw new Error();
+        if (!types.includes(type)) types.push(type);
+      }
+    }
+    if (types.length > 4) throw new Error();
+    return Object.freeze(types);
+  }
+  // Type 1 is an on-demand episode and 3 a broadcast slot; live events and
+  // unknown kinds are skipped. A full provider page of 20 signals more.
+  function parseSeriesContents(text) {
+    const reply = parseBoundedJsonText(text, true, { depth: 24, nodes: 50000, array: 1000 });
+    if (!record(reply)) throw new Error();
+    const raw = repeated(reply, 'episodeGroupContents', 20);
+    const items = [], seen = new Set();
+    for (const item of raw) {
+      if (!record(item)) throw new Error();
+      if (item.type !== 1 && item.type !== 3) continue;
+      const slot = item.type === 3;
+      if (typeof item.id !== 'string' || !(slot ? /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/ : /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/).test(item.id) ||
+        !record(item.episode) || slot && (!record(item.slot) || typeof item.slot.channelId !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(item.slot.channelId))) throw new Error();
+      const key = slot ? 'slot:' + item.slot.channelId + '/' + item.id : 'episode:' + item.id;
+      if (seen.has(key)) throw new Error();
+      seen.add(key);
+      // Display length in seconds (#608); a slot may fall back to its span.
+      const duration = record(item.info) ? item.info.duration : undefined;
+      const span = slot && Number.isSafeInteger(item.slot.startAt) && Number.isSafeInteger(item.slot.endAt) ?
+        item.slot.endAt - item.slot.startAt : 0;
+      const seconds = Number.isSafeInteger(duration) && duration > 0 && duration <= 604800 ? duration :
+        span > 0 && span <= 604800 ? span : undefined;
+      items.push(Object.freeze({ kind: slot ? 'slot' : 'episode', id: item.id, ...(slot ? { channelId: item.slot.channelId } : {}),
+        title: safeText(item.episode.title, 160), ...(seconds !== undefined ? { durationSeconds: seconds } : {}) }));
+    }
+    return Object.freeze({ items: Object.freeze(items), more: raw.length === 20 });
   }
   function validSlotRequest(value) {
     return value && typeof value === 'object' && !Array.isArray(value) &&
@@ -559,7 +649,8 @@
     } catch { stop('RUNTIME'); return; }
     started = true;
     episodeId = operation === 'FETCH_EPISODE' ? resourceId : diagnosticEpisodeId;
-    const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId }) : undefined;
+    const seriesRequest = operation === 'FETCH_SERIES' ? Object.freeze({ ...resourceId,
+      ...(resourceId.viewingTypes ? { viewingTypes: Object.freeze([...resourceId.viewingTypes]) } : {}) }) : undefined;
     const slotRequest = operation === 'FETCH_SLOT' ? Object.freeze({ ...resourceId }) : undefined;
     const scheduleChannel = operation === 'FETCH_SCHEDULE' ? resourceId?.channelId : undefined;
     const searchRequest = operation === 'FETCH_SEARCH' ? Object.freeze({ ...resourceId }) : undefined;
@@ -737,38 +828,30 @@
           alive(); guest = undefined; failure = 'NONE'; state = 'EXACT_SLOT_METADATA';
         } else if (operation === 'FETCH_SERIES') {
           state = 'SERIES';
-          const url = new URL(apiOrigin + '/v1/video/series/' + seriesRequest.seriesId + '/programs');
-          // Newest-first is the provider consumer's descending order.
-          url.searchParams.set('order', seriesRequest.order === '-seq' ? '-seq' : 'seq'); url.searchParams.set('limit', '20'); url.searchParams.set('offset', String(seriesRequest.offset));
-          if (seriesRequest.version !== null) url.searchParams.set('seriesVersion', seriesRequest.version);
-          if (seriesRequest.seasonId !== undefined) url.searchParams.set('seasonId', seriesRequest.seasonId);
-          series = await boundedReply(url.href, { method: 'GET', mode: 'cors',
-            headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } }, text => {
-              const reply = parseBoundedJsonText(text, true);
-              if (!reply || Array.isArray(reply) || typeof reply !== 'object' || !Array.isArray(reply.programs) ||
-                reply.programs.length > 20 || !validSeriesVersion(reply.version) ||
-                seriesRequest.version !== null && reply.version !== seriesRequest.version) throw new Error();
-              const ids = new Set();
-              const programs = reply.programs.map(item => {
-                if (!item || Array.isArray(item) || typeof item !== 'object' || typeof item.id !== 'string' ||
-                  !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.id) || ids.has(item.id) ||
-                  !item.series || Array.isArray(item.series) || item.series.id !== seriesRequest.seriesId ||
-                  seriesRequest.seasonId !== undefined && (!item.season || Array.isArray(item.season) ||
-                    item.season.id !== seriesRequest.seasonId ||
-                    Object.hasOwn(item.season, 'seriesId') && item.season.seriesId !== seriesRequest.seriesId) ||
-                  !item.episode || Array.isArray(item.episode) || typeof item.episode.title !== 'string' ||
-                  item.episode.title.trim().length < 1 || item.episode.title.trim().length > 160 ||
-                  /[\p{Cc}\p{Cf}\p{Cs}]/u.test(item.episode.title)) throw new Error();
-                ids.add(item.id);
-                // Display length in seconds (#608). Anything else stays unknown.
-                const duration = item.info?.duration;
-                return Object.freeze({ id: item.id, title: item.episode.title.trim(),
-                  ...(Number.isSafeInteger(duration) && duration > 0 && duration <= 604800 ? { durationSeconds: duration } : {}) });
-              });
-              return Object.freeze({ seriesId: seriesRequest.seriesId, version: reply.version, programs,
-                ...(seriesRequest.seasonId !== undefined ? { seasonId: seriesRequest.seasonId } : {}) });
-            }, 'SERIES_', 512 * 1024);
-          alive(); guest = undefined; failure = 'NONE'; state = 'EXACT_SERIES_PAGE';
+          // Only the reviewed contentlist chain, in order: the series structure
+          // and the chosen group's sections on a first page, then its contents.
+          const options = { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + guest.accessToken } };
+          const contentlist = apiOrigin + '/v1/contentlist/';
+          let { seasonId, groupId, viewingTypes } = seriesRequest, structure;
+          if (viewingTypes === undefined) {
+            structure = await boundedReply(contentlist + 'series/' + seriesRequest.seriesId + '?includes=liveEvent%2Cslot', options,
+              text => parseSeriesStructure(text, seriesRequest), 'SERIES_', 256 * 1024);
+            alive(); ({ seasonId, groupId } = structure);
+            viewingTypes = groupId === undefined ? Object.freeze([]) : await boundedReply(contentlist + 'episodeGroups/' + groupId +
+              '/sections?seasonId=' + seasonId + '&premiumUser=false', options, parseSeriesSections, 'SERIES_', 64 * 1024);
+            alive();
+          }
+          const contents = viewingTypes.length === 0 ? { items: [], more: false } : await boundedReply(contentlist + 'episodeGroups/' +
+            groupId + '/contents?seasonId=' + seasonId + '&orderType=' + (seriesRequest.order === 'desc' ? 'desc' : 'asc') +
+            '&limit=20&offset=' + seriesRequest.offset + '&includes=liveEvent%2Cslot&viewingTypes=' + viewingTypes.join('%2C'),
+          options, parseSeriesContents, 'SERIES_', 512 * 1024);
+          alive();
+          series = Object.freeze({ seriesId: seriesRequest.seriesId, ...(seasonId !== undefined ? { seasonId } : {}),
+            ...(structure?.seasonName !== undefined ? { seasonName: structure.seasonName } : {}),
+            ...(structure !== undefined ? { groups: structure.groups } : {}), ...(groupId !== undefined ? { groupId } : {}),
+            viewingTypes, items: contents.items, more: contents.more });
+          if (new TextEncoder().encode(stringify(series)).byteLength > 32768) { series = undefined; failure = 'SERIES_RESPONSE'; throw new Error(); }
+          guest = undefined; failure = 'NONE'; state = 'EXACT_SERIES_PAGE';
         } else if (operation === 'VERIFY_EPISODE' || operation === 'FETCH_EPISODE') {
           state = 'EPISODE';
           episode = await boundedReply(apiOrigin + '/v1/video/programs/' + episodeId,

@@ -210,6 +210,27 @@ This is top-level compile only. Lazily compiled functions add more cost when
 they first run. Mobile CPUs are typically several times slower, so on-device
 values are unmeasured estimates, not observations.
 
+### Series content list (#622, 2026-11-22)
+
+ABEMA's series page lists a series through three bearer GETs on the modern API
+origin. Static analysis of the public web code gave the endpoints and fields; a
+throwaway probe build on a Pixel 6 (saved account, Tokyo route) confirmed them
+for series `394-72`. Every request returned 200 in about 1.3 s.
+
+| Request | Observed reply |
+| --- | --- |
+| `GET /v1/contentlist/series/{seriesId}?includes=liveEvent,slot` | `{id, title, seasons[{id, sequence, name, order, episodeGroups[{id, name}]}], version, …}`, about 1.6 KB; one season `394-72_s10` with five groups (`394-72_eg1` 生中継・見逃し first) |
+| `GET /v1/contentlist/episodeGroups/{groupId}/sections?seasonId=…&premiumUser=false` | `{sections:[{viewingTypes:[1]}]}` for every group |
+| `GET /v1/contentlist/episodeGroups/{groupId}/contents?seasonId=…&orderType=desc&limit=20&offset=…&includes=liveEvent,slot&viewingTypes=…` | `{episodeGroupContents:[{id, type, episode{number?, title}, info{duration}, slot?{channelId, startAt, endAt, timeshiftEndAt, timeshiftFreeEndAt}}]}`, no total |
+
+`type` is numeric: `1` is an on-demand video (ID such as `394-72_s10_p8544`)
+and `3` a broadcast slot (slot ID, `slot.channelId` `sumo`). `info.duration`
+is in seconds and times are epoch seconds. Group IDs looked like
+`{seriesId}_eg{n}` and season IDs like `{seriesId}_s{n}`. The `asc` order,
+other series' shapes and live-event items were not observed live. Tachiai's
+operation sends `includes=liveEvent%2Cslot` and comma-joined viewing types as
+`%2C`, the URLSearchParams encoding.
+
 ## Pin durability
 
 The live site has rebuilt since the pins were taken. Desktop and mobile entry

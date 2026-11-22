@@ -34,10 +34,14 @@ class AbemaSeriesManagementTest {
         val catalog = AbemaSeriesChildrenCatalog(delegate, { gate -> object : AbemaSeriesTransport {
             override fun fetch(request: AbemaSeriesPageRequest): CatalogResult<AbemaSeriesPage> {
                 check(gate()); requests += request
-                val rows = (request.offset until if (request.offset == 0) 20 else 21).map { index ->
-                    "{\"id\":\"episode-$index\",\"title\":\"Not-live episode $index\"}"
+                // The first page mixes a replayable broadcast slot with episodes.
+                val rows = (request.offset until if (request.offset == 0) 20 else 21).map { index -> if (index == 0)
+                    "{\"kind\":\"slot\",\"id\":\"slot-A\",\"channelId\":\"sumo\",\"title\":\"Broadcast\",\"durationSeconds\":17100}"
+                    else "{\"kind\":\"episode\",\"id\":\"episode-$index\",\"title\":\"Not-live episode $index\"}"
                 }.joinToString(",")
-                return CatalogResult.Value(decodeAbemaSeriesProjection("{\"seriesId\":\"series-A\",\"version\":\"v1\",\"programs\":[$rows]}", request)!!)
+                val groups = if (request.viewingTypes == null) "\"groups\":[{\"id\":\"series-A_eg1\",\"name\":\"Live\"}]," else ""
+                return CatalogResult.Value(decodeAbemaSeriesProjection("{\"seriesId\":\"series-A\",\"seasonId\":\"series-A_s1\",$groups" +
+                    "\"groupId\":\"series-A_eg1\",\"viewingTypes\":[1],\"items\":[$rows],\"more\":${rows.count { it == '{' } == 20}}", request)!!)
             }
             override fun cancelActiveRequest() = Unit
             override fun close() = Unit
@@ -56,6 +60,8 @@ class AbemaSeriesManagementTest {
             assertEquals(1, state.configured!!.size); assertArrayEquals(before, memory.bytes); assertEquals(writes, memory.writes)
             controller.more(); state = idle(controller); assertEquals(21, state.entries.size); assertNull(state.nextCursor)
             assertTrue(state.entries.all { it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null })
+            assertEquals(AbemaSlotRequest("sumo", "slot-A").resource, state.entries.first().resource)
+            assertEquals(listOf(false, true), requests.map { it.viewingTypes != null })
             val episode = state.entries.last(); controller.add(episode); state = idle(controller)
             val episodeId = state.configured!!.last().id
             controller.add(episode); state = idle(controller)

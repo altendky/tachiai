@@ -152,7 +152,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val accountContext = if (discovery) {
             val resource = when (request.operation) {
                 AbemaGuestBootstrapOperation.FETCH_EPISODE -> AbemaGuestBootstrapPolicy.episodeUrl(checkNotNull(request.episodeId))
-                AbemaGuestBootstrapOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).url()
+                AbemaGuestBootstrapOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).key()
                 AbemaGuestBootstrapOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
                 AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> AbemaGuestBootstrapPolicy.SCHEDULE + "|" + request.scheduleRequest.channelId.orEmpty()
                 AbemaGuestBootstrapOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
@@ -211,8 +211,9 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val resourceArgument = if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
                 ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
                 ", " + checkNotNull(request.seriesRequest).let { JSONObject().put("seriesId", it.seriesId).put("offset", it.offset)
-                    .put("version", it.version ?: JSONObject.NULL).apply { it.seasonId?.let { season -> put("seasonId", season) }
-                        if (it.newest) put("order", "-seq") }.toString() }
+                    .apply { it.seasonId?.let { season -> put("seasonId", season) }; it.groupId?.let { group -> put("groupId", group) }
+                        it.viewingTypes?.let { types -> put("viewingTypes", org.json.JSONArray(types)) }
+                        if (it.newest) put("order", "desc") }.toString() }
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
                     ", " + checkNotNull(request.slotRequest).let { JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
                 else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
@@ -284,7 +285,8 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                     if (!allowed) { failed(this@OwnedGuestView, "RESOURCE_REFUSED"); return refused() }
                     if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE ||
                         uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN || AbemaGuestBootstrapPolicy.isProfile(uri) ||
-                        AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) || uri.toString() == request.seriesRequest?.url() ||
+                        AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) ||
+                        request.seriesRequest?.let { AbemaGuestBootstrapPolicy.seriesStep(uri, it) } != null ||
                         uri.toString() == request.slotRequest?.url() ||
                         request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE ||
                         request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) return null

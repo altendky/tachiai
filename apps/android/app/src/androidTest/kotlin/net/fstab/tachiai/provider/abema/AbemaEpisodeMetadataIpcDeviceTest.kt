@@ -43,11 +43,11 @@ class AbemaEpisodeMetadataIpcDeviceTest {
             restored.putParcelable("raw", Bundle()); assertNull(AbemaSearchMetadataIpc.fields(restored))
             parcel.setDataSize(0); parcel.setDataPosition(0)
             val season = AbemaSeriesMetadataIpc.Start(request.nonce, request.instanceId,
-                AbemaSeriesPageRequest("series-A", seasonId = "season-A"), request.ownerProof, request.deadline)
+                AbemaSeriesPageRequest("series-A", seasonId = "series-A_s1"), request.ownerProof, request.deadline)
             parcel.writeBundle(AbemaSeriesMetadataIpc.start(season)); parcel.setDataPosition(0)
             val restoredSeason = checkNotNull(parcel.readBundle(javaClass.classLoader))
             val seasonFields = checkNotNull(AbemaSeriesMetadataIpc.fields(restoredSeason))
-            assertEquals("season-A", AbemaSeriesMetadataIpc.decodeStart(seasonFields, 1000)?.page?.seasonId)
+            assertEquals("series-A_s1", AbemaSeriesMetadataIpc.decodeStart(seasonFields, 1000)?.page?.seasonId)
             assertNull(AbemaSearchMetadataIpc.decodeStart(seasonFields, 1000))
         } finally { parcel.recycle() }
         var reads = 0

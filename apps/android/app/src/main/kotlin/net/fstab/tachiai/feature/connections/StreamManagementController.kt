@@ -44,6 +44,9 @@ internal data class StreamManagementState(
     val navigationBackLabel: String? = null,
     val selectedTabId: String? = null,
     val link: StreamLinkState? = null,
+    // A browsed parent's provider child groups (#622) and the one listed.
+    val childGroups: List<CatalogChildGroup> = emptyList(),
+    val childGroup: String? = null,
 )
 
 // Activity/controller recreation keeps accepted writes visible in this process.
@@ -100,7 +103,8 @@ internal class StreamManagementController(
     private var initialQueryChosen = false
     private data class DiscoveryFrame(val id: Long, val query: CatalogQuery, val entries: List<CatalogEntry>,
         val nextCursor: String?, val resultsTruncated: Boolean, val heading: String?, val backLabel: String?,
-        val failure: CatalogResult.Failure?, val lookup: String?)
+        val failure: CatalogResult.Failure?, val lookup: String?,
+        val childGroups: List<CatalogChildGroup>, val childGroup: String?)
     private val parents = ArrayDeque<DiscoveryFrame>()
     private val roots = linkedMapOf<String, DiscoveryFrame>()
     private val staleContinuations = mutableSetOf<Long>()
@@ -118,7 +122,8 @@ internal class StreamManagementController(
         (roots.values.map { it.id } + parents.map { it.id }).distinct().filterNot { it == currentId }
     private fun frame(snapshot: StreamManagementState) = DiscoveryFrame(snapshot.discoveryContextId,
         snapshot.query, snapshot.entries.toList(), snapshot.nextCursor, snapshot.resultsTruncated,
-        snapshot.childHeading, snapshot.navigationBackLabel, snapshot.failure, lastLookup)
+        snapshot.childHeading, snapshot.navigationBackLabel, snapshot.failure, lastLookup,
+        snapshot.childGroups, snapshot.childGroup)
     private fun retainRoot() = synchronized(stateLock) {
         val snapshot = state.value
         val tab = snapshot.selectedTabId ?: return@synchronized
@@ -136,7 +141,7 @@ internal class StreamManagementController(
         if (clearRoots) staleContinuations.clear()
         val id = discoveryContexts.incrementAndGet()
         publish { it.copy(discoveryContextId = id, retainedDiscoveryContextIds = retainedIds(id),
-            childHeading = null, navigationBackLabel = null) }
+            childHeading = null, navigationBackLabel = null, childGroups = emptyList(), childGroup = null) }
     }
     private fun current(revision: Long) = !closed && browseRevision.get() == revision
     private fun cancelBrowse() { browseRevision.incrementAndGet(); browseJob?.cancel(); browseJob = null }
@@ -251,7 +256,9 @@ internal class StreamManagementController(
                     val truncated = unique.size > MAX_DISCOVERY_RESULTS ||
                         unique.size == MAX_DISCOVERY_RESULTS && result.value.nextCursor != null
                     it.copy(entries = unique.take(MAX_DISCOVERY_RESULTS), resultsTruncated = truncated,
-                        nextCursor = if (truncated) null else result.value.nextCursor, failure = null)
+                        nextCursor = if (truncated) null else result.value.nextCursor, failure = null,
+                        childGroups = if (query.parent != null) result.value.groups else emptyList(),
+                        childGroup = if (query.parent != null) result.value.group else null)
                 }
             }
             is CatalogResult.Failure -> synchronized(stateLock) {
@@ -277,7 +284,10 @@ internal class StreamManagementController(
         publish { it.copy(query = query.copy(cursor = null), loading = true, failure = null, message = null,
             entries = if (append) it.entries else emptyList(), nextCursor = if (append) it.nextCursor else null,
             resultsTruncated = if (append) it.resultsTruncated else false,
-            selectedTabId = if (!append && !preserveContext && query.search != null) null else it.selectedTabId) }
+            selectedTabId = if (!append && !preserveContext && query.search != null) null else it.selectedTabId,
+            // A group switch keeps the parent's tabs with the requested one selected.
+            childGroups = if (append || query.parent != null && query.group != null) it.childGroups else emptyList(),
+            childGroup = if (append) it.childGroup else query.group) }
         browseJob = scope.launch {
             try { browseCurrent(revision, query, append) }
             catch (_: CancellationException) { }
@@ -305,7 +315,8 @@ internal class StreamManagementController(
             publish { it.copy(selectedTabId = id, query = cached.query, entries = cached.entries,
                 nextCursor = cached.nextCursor, resultsTruncated = cached.resultsTruncated,
                 discoveryContextId = cached.id, retainedDiscoveryContextIds = retainedIds(cached.id),
-                childHeading = null, navigationBackLabel = null, failure = cached.failure, loading = false, message = null) }
+                childHeading = null, navigationBackLabel = null, failure = cached.failure, loading = false, message = null,
+                childGroups = emptyList(), childGroup = null) }
         } else {
             resetNavigation(clearRoots = false)
             publish { it.copy(selectedTabId = id) }
@@ -342,9 +353,18 @@ internal class StreamManagementController(
             }
             val id = discoveryContexts.incrementAndGet()
             publish { it.copy(discoveryContextId = id, retainedDiscoveryContextIds = retainedIds(id),
-                childHeading = "${snapshot.capabilities?.childrenFor(resource, catalog.providerId)?.headingPrefix ?: "Items under"} $title", navigationBackLabel = label) }
+                childHeading = "${snapshot.capabilities?.childrenFor(resource, catalog.providerId)?.headingPrefix ?: "Items under"} $title", navigationBackLabel = label,
+                childGroups = emptyList(), childGroup = null) }
         }
         browse(CatalogQuery(parent = resource), preserveContext = true)
+    }
+    // Lists another of the browsed parent's provider groups (#622). Like a
+    // Find streams tab it replaces this listing without adding a Back step.
+    fun childGroup(id: String) = synchronized(stateLock) {
+        val snapshot = state.value
+        val parent = snapshot.query.parent ?: return@synchronized
+        if (id == snapshot.childGroup || snapshot.childGroups.none { it.id == id }) return@synchronized
+        browse(CatalogQuery(parent = parent, newest = snapshot.query.newest, group = id), preserveContext = true)
     }
     fun back(): Boolean = synchronized(stateLock) {
         if (closed || state.value.link != null) return@synchronized false
@@ -354,7 +374,8 @@ internal class StreamManagementController(
         lastRefreshId = null
         publish { it.copy(query = frame.query, entries = frame.entries, nextCursor = frame.nextCursor,
             resultsTruncated = frame.resultsTruncated, childHeading = frame.heading, navigationBackLabel = frame.backLabel,
-            discoveryContextId = frame.id, retainedDiscoveryContextIds = retainedIds(frame.id), failure = frame.failure, loading = false) }
+            discoveryContextId = frame.id, retainedDiscoveryContextIds = retainedIds(frame.id), failure = frame.failure, loading = false,
+            childGroups = frame.childGroups, childGroup = frame.childGroup) }
         true
     }
     fun more() = synchronized(stateLock) {
@@ -390,7 +411,9 @@ internal class StreamManagementController(
                                 publishBrowse(revision) {
                                     staleContinuations.remove(it.discoveryContextId)
                                     it.copy(entries = fresh.values.take(MAX_DISCOVERY_RESULTS), nextCursor = if (truncated) null else next,
-                                        resultsTruncated = truncated, failure = null)
+                                        resultsTruncated = truncated, failure = null,
+                                        childGroups = if (query.parent != null) result.value.groups else emptyList(),
+                                        childGroup = if (query.parent != null) result.value.group else null)
                                 }
                                 return@launch
                             }
@@ -659,7 +682,8 @@ internal class StreamManagementController(
             mutableState.value = mutableState.value.let { it.copy(entries = emptyList(), nextCursor = null,
                 capabilities = null, query = CatalogQuery(), failure = null, loading = false,
                 resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet(), retainedDiscoveryContextIds = emptyList(),
-                childHeading = null, navigationBackLabel = null, selectedTabId = null, link = null) }
+                childHeading = null, navigationBackLabel = null, selectedTabId = null, link = null,
+                childGroups = emptyList(), childGroup = null) }
         }
         cancelBrowse(); cancelLink(); mutationRevision.incrementAndGet()
         // Adapter close can cancel blocking requests; keep it off the UI thread.

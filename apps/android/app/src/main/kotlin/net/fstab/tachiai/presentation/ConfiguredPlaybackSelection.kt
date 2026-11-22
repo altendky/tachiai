@@ -16,16 +16,16 @@ internal data class ConfiguredPlaybackFeed(
     val resource: CatalogResource,
     val service: PrototypeService,
     val kind: PrototypePlaybackKind,
-    // The saved collection this chosen exact episode belongs to (#550), and the
-    // episode's provider title for display. The episode stays bound for the
-    // session, including retries and recovery.
+    // The saved collection this chosen exact episode or broadcast (#622)
+    // belongs to (#550), and its provider title for display. The choice stays
+    // bound for the session, including retries and recovery.
     val collection: CatalogResource? = null,
     val episodeTitle: String? = null,
 ) {
     init {
         require((collection == null) == (episodeTitle == null))
         require(collection == null || service == PrototypeService.ABEMA && kind == PrototypePlaybackKind.REPLAY &&
-            supportedConfiguredAbemaEpisode(resource) &&
+            (supportedConfiguredAbemaEpisode(resource) || supportedConfiguredAbemaSlot(resource)) &&
             net.fstab.tachiai.provider.abema.supportedConfiguredAbemaCollection(collection))
         require(resource.providerId.value == service.name.lowercase(Locale.ROOT))
         require(service == PrototypeService.ABEMA &&

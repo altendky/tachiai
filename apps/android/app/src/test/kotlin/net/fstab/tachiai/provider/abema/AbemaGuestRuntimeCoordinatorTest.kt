@@ -100,7 +100,9 @@ class AbemaGuestRuntimeCoordinatorTest {
                     else if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
                     searchProjection ?: "{\"modules\":[{\"id\":\"episode\",\"title\":\"Episodes\",\"total\":1,\"entries\":[{\"kind\":\"episode\",\"id\":\"episode-A\",\"title\":\"Future episode\"}]}]}"
                     else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
-                    seriesProjection ?: "{\"seriesId\":\"$seriesParent\",\"version\":\"v1\",\"programs\":[{\"id\":\"episode-A\",\"title\":\"Future episode\"}]}"
+                    seriesProjection ?: "{\"seriesId\":\"$seriesParent\",\"seasonId\":\"${seriesParent}_s1\",\"groups\":[{\"id\":\"${seriesParent}_eg1\"," +
+                        "\"name\":\"Live\"}],\"groupId\":\"${seriesParent}_eg1\",\"viewingTypes\":[1],\"items\":[{\"kind\":\"slot\",\"id\":\"slot-A\"," +
+                        "\"channelId\":\"sumo\",\"title\":\"Future broadcast\"},{\"kind\":\"episode\",\"id\":\"episode-A\",\"title\":\"Future episode\"}],\"more\":false}"
                     else JSONObject().put("id", request.episodeId).put("title", metadataTitle).toString()))
             }
             override fun accountLink(callback: (String?) -> Unit) {
@@ -337,7 +339,8 @@ class AbemaGuestRuntimeCoordinatorTest {
             val f = Fixture(AbemaGuestBootstrapOperation.FETCH_SERIES).apply { seriesParent = parent }
             assertTrue(f.start()); f.pump()
             val result = f.results.single(); assertEquals("EXACT_SERIES_PAGE", result.category)
-            assertEquals(parent, result.seriesPage!!.seriesId); assertEquals("episode-A", result.seriesPage!!.entries.single().resource.identity)
+            assertEquals(parent, result.seriesPage!!.seriesId); assertEquals(listOf("sumo/slot-A", "episode-A"), result.seriesPage!!.entries.map { it.resource.identity })
+            assertEquals(listOf("${parent}_eg1"), result.seriesPage!!.groups!!.map { it.id })
             assertNull(result.entry); assertNull(result.accountChallenge); assertNull(result.accountValidation)
             assertTrue(f.events.indexOf("destroy") < f.events.indexOf("clear-dispatched"))
             assertTrue(f.events.indexOf("clear-confirmed") < f.events.indexOf("close-backend"))
@@ -345,7 +348,7 @@ class AbemaGuestRuntimeCoordinatorTest {
     }
     @Test fun seriesWrongParentAndCleanupOwnerDeadlineLossNeverExportRows() {
         val malformed = Fixture(AbemaGuestBootstrapOperation.FETCH_SERIES).apply {
-            seriesProjection = "{\"seriesId\":\"other\",\"version\":\"v1\",\"programs\":[]}"
+            seriesProjection = "{\"seriesId\":\"other\",\"groups\":[],\"viewingTypes\":[],\"items\":[],\"more\":false}"
         }
         assertTrue(malformed.start()); malformed.pump(); assertEquals("GUEST_SERIES_RESPONSE", malformed.results.single().category)
         assertNull(malformed.results.single().seriesPage)

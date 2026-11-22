@@ -25,29 +25,38 @@ internal data class ConfiguredFeedChoice(val itemId: String, val instanceId: Str
 
 // An exact episode chosen from a saved collection for one feed (#550). It is
 // bound to that collection's public identity and is not a configured item.
+// Since #622 the child may also be an exact broadcast the collection lists.
 internal data class ConfiguredEpisodeChoice(val collection: CatalogResource, val episode: CatalogResource, val title: String) {
     init {
-        require(collection.intent == CatalogIntent.COLLECTION && episode.intent == CatalogIntent.VIDEO &&
+        require(collection.intent == CatalogIntent.COLLECTION && episode.intent in CHILD_INTENTS &&
             collection.providerId == episode.providerId)
         require(title.length in 1..160 && title == title.trim() && title.none { it.isISOControl() })
     }
     fun sameEpisode(other: ConfiguredEpisodeChoice) = collection == other.collection && episode == other.episode
 
-    // ASCII-only, for saved state and the recovery checkpoint.
-    fun encode(): String = listOf("e1", collection.providerId.value, collection.kind, collection.identity, episode.kind,
-        episode.identity, Base64.getUrlEncoder().withoutPadding().encodeToString(title.toByteArray(Charsets.UTF_8))).joinToString("|")
+    // ASCII-only, for saved state and the recovery checkpoint. A video keeps
+    // the original e1 form byte for byte; e2 adds the child's intent.
+    fun encode(): String = (listOf(if (episode.intent == CatalogIntent.VIDEO) "e1" else "e2", collection.providerId.value,
+        collection.kind, collection.identity, episode.kind, episode.identity) +
+        (if (episode.intent == CatalogIntent.VIDEO) emptyList() else listOf(episode.intent.name)) +
+        Base64.getUrlEncoder().withoutPadding().encodeToString(title.toByteArray(Charsets.UTF_8))).joinToString("|")
 
     companion object {
         const val MAX_ENCODED = 1024
+        private val CHILD_INTENTS = setOf(CatalogIntent.VIDEO, CatalogIntent.BROADCAST)
+        // A listed child that can be chosen, or null for one that cannot.
+        fun of(collection: CatalogResource, entry: CatalogEntry): ConfiguredEpisodeChoice? =
+            runCatching { ConfiguredEpisodeChoice(collection, entry.resource, entry.title) }.getOrNull()
         fun decode(encoded: String?): ConfiguredEpisodeChoice? {
             if (encoded == null || encoded.length > MAX_ENCODED) return null
             return runCatching {
                 val parts = encoded.split('|')
-                check(parts.size == 7 && parts[0] == "e1")
+                check(parts.size == 7 && parts[0] == "e1" || parts.size == 8 && parts[0] == "e2")
+                val intent = if (parts[0] == "e1") CatalogIntent.VIDEO else CatalogIntent.valueOf(parts[6])
                 val provider = ProviderId(parts[1])
-                val title = String(Base64.getUrlDecoder().decode(parts[6]), Charsets.UTF_8)
+                val title = String(Base64.getUrlDecoder().decode(parts.last()), Charsets.UTF_8)
                 ConfiguredEpisodeChoice(CatalogResource(provider, parts[2], parts[3], CatalogIntent.COLLECTION),
-                    CatalogResource(provider, parts[4], parts[5], CatalogIntent.VIDEO), title).takeIf { it.encode() == encoded }
+                    CatalogResource(provider, parts[4], parts[5], intent), title).takeIf { it.encode() == encoded }
             }.getOrNull()
         }
     }

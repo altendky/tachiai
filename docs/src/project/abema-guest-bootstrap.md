@@ -94,18 +94,34 @@ and ends the runtime before reporting **Guest prepared**.
 
 The shared catalog's explicit series-children operation under
 [#176](https://github.com/altendky/tachiai/issues/176) uses its own immutable
-series/page request in the isolated guest process. It uses fresh guest setup
-and one exact reviewed series-program GET, fixed ascending sequence order,
-20 entries and a bounded requested offset. It creates no device-authorization
-challenge, opens no browser and adopts no existing-account grant.
+series/page request in the isolated guest process. It creates no
+device-authorization challenge, opens no browser and adopts no existing-account
+grant.
+
+Since [#622](https://github.com/altendky/tachiai/issues/622) the request reads
+ABEMA's own series-page content list instead of the series-program list. After
+fresh guest setup (or the shared account bearer), a first page makes three
+GETs in order: the series structure
+(`/v1/contentlist/series/{seriesId}?includes=liveEvent%2Cslot`), the chosen
+episode group's sections and that group's contents (20 per page, `desc` for
+newest first, otherwise `asc`). A continuation carries season, group and viewing
+types and makes only the contents GET. Kotlin knows the group and viewing types
+only after the provider replies, so admission accepts the sections and contents
+URIs as templates. Each is rebuilt exactly by the request's own builder, and
+its group and season IDs must carry the series ID as a prefix and match any
+requested season or group. Each URI is admitted once, after the previous GET,
+with at most one matching preflight. The CSP adds the series path and the
+`/v1/contentlist/episodeGroups/` prefix (that group's path when it is known).
 
 Same-UID IPC binds the exact provider instance and captured route proof to the
 parent/page, original deadline, foreground heartbeat and cancellation nonce.
 Worker owner checks and confirmed WebView/proxy/backend cleanup precede public
-page publication. Only normalized exact episodes and a bounded opaque version
-leave the runtime; private guest fields and raw provider responses remain
-unexposed. Wrong parents, ambiguous data, unknown version shape and stale
-completion refuse rather than choose a different episode or route.
+page publication. Only the chosen season, its group IDs and names, the viewing
+types and normalized rows leave the runtime. Rows are exact episodes (type 1)
+or exact broadcast slots (type 3, the existing slot resource); live events and
+unknown types are skipped. Private guest fields and raw provider responses
+remain unexposed. Wrong parents, foreign group or season IDs, ambiguous data
+and stale completion refuse rather than choose a different item or route.
 
 Source/fixture checks are distinct from actual fresh-guest and versioned-paging
 acceptance. Device checks are separately opt-in and preserve existing records;

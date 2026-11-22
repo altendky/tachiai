@@ -13,7 +13,7 @@ internal class AbemaSeriesChildrenCatalog(
 ) : ProviderCatalog by delegate {
     init { require(delegate.providerId.value == "abema" && net.fstab.tachiai.presentation.validProviderInstanceId(delegate.instanceId)) }
     private class Cursor(val parent: CatalogResource, val request: AbemaSeriesPageRequest,
-        val revision: Long, val seen: Set<String>)
+        val revision: Long, val seen: Set<CatalogResource>, val groups: List<AbemaSeriesGroup>)
     private val lock = Any()
     private val operation = Any()
     private val active = AtomicReference<AbemaSeriesTransport?>()
@@ -48,6 +48,9 @@ internal class AbemaSeriesChildrenCatalog(
             return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
         val seriesId = season?.first ?: parent.identity
         val seasonId = season?.second
+        // Season parents map to that season; a group must belong to this series.
+        if (seasonId != null && !boundAbemaSeriesChild(seriesId, seasonId) ||
+            query.group != null && !boundAbemaSeriesChild(seriesId, query.group)) return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
         return synchronized(operation) {
             val local = synchronized(lock) { revision }
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
@@ -57,9 +60,11 @@ internal class AbemaSeriesChildrenCatalog(
                 else cursors.remove(query.cursor)
             }
             if (query.cursor != null && (saved == null || saved.parent != parent || saved.revision != local ||
-                    saved.request.newest != query.newest))
+                    query.group != null && query.group != saved.request.groupId))
                 return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
-            val request = saved?.request ?: AbemaSeriesPageRequest(seriesId, seasonId = seasonId, newest = query.newest)
+            // ABEMA's own series page lists each episode group newest first (#622),
+            // so every surface uses that order whatever the generic query asks.
+            val request = saved?.request ?: AbemaSeriesPageRequest(seriesId, seasonId = seasonId, groupId = query.group, newest = true)
             var transport: AbemaSeriesTransport? = null
             var cleanup = true
             val result = try {
@@ -81,26 +86,29 @@ internal class AbemaSeriesChildrenCatalog(
                 is CatalogResult.Value -> result.value
             }
             val seen = saved?.seen.orEmpty()
-            if (page.seriesId != seriesId || page.seasonId != seasonId || request.version != null && page.version != request.version || page.entries.any { it.resource.identity in seen }) {
+            if (!page.answers(request)) {
                 clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
-            if (page.entries.size == ABEMA_SERIES_PAGE_LIMIT && request.offset == ABEMA_SERIES_MAX_OFFSET) {
+            // A newest-first group can gain items between pages (a new broadcast
+            // during a tournament), shifting rows already shown onto this page.
+            val fresh = page.entries.filterNot { it.resource in seen }
+            if (page.more && request.offset == ABEMA_SERIES_MAX_OFFSET) {
                 clear(); return@synchronized CatalogResult.Failure(CatalogFailure.TEMPORARY)
             }
-            val next = if (page.entries.size == ABEMA_SERIES_PAGE_LIMIT) UUID.randomUUID().toString() else null
+            val next = if (page.more) UUID.randomUUID().toString() else null
+            // Continuations repeat the first page's group list for the caller.
+            val groups = page.groups ?: saved?.groups.orEmpty()
             val admitted = synchronized(lock) {
                 if (closed || poisoned || revision != local) false else {
                 if (next != null) {
-                    cursors[next] = Cursor(parent, AbemaSeriesPageRequest(seriesId, request.offset + 20, page.version, seasonId,
-                        request.newest), local,
-                        seen + page.entries.map { it.resource.identity })
+                    cursors[next] = Cursor(parent, request.next(page), local, seen + fresh.map { it.resource }, groups)
                     while (cursors.size > 16) cursors.remove(cursors.keys.first())
                 }
                 true }
             }
             if (!admitted) return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
-            CatalogResult.Value(CatalogPage(page.entries, next))
+            CatalogResult.Value(CatalogPage(fresh, next, groups.map { CatalogChildGroup(it.id, it.name) }, page.groupId))
         }
     }
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }

@@ -47,6 +47,61 @@ class ConfiguredEpisodeChoiceTest {
         }
     }
 
+    // #622: a broadcast listed under the series, chosen like an episode.
+    private val day15 = ConfiguredEpisodeChoice(series.entry.resource,
+        CatalogResource(ProviderId("abema"), "slot", "sumo/CQ2AnExAX8s7LT", CatalogIntent.BROADCAST),
+        "大相撲LIVE 十一月場所（幕内）15日目[千秋楽]｜11.22")
+
+    @Test fun videoEncodingIsUnchangedAndBroadcastsUseAVersionedForm() {
+        // Stored before #622: the video form stays byte for byte.
+        val stored = "e1|abema|series|394-72|episode|394-72_s10_p8541|" + java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(day12.title.toByteArray(Charsets.UTF_8))
+        assertEquals(stored, day12.encode())
+        assertEquals(day12, ConfiguredEpisodeChoice.decode(stored))
+        val encoded = day15.encode()
+        assertTrue(encoded.startsWith("e2|abema|series|394-72|slot|sumo/CQ2AnExAX8s7LT|BROADCAST|"))
+        assertTrue(encoded.all { it.code in 33..126 })
+        assertEquals(day15, ConfiguredEpisodeChoice.decode(encoded))
+        // Canonical only: a video in the e2 form, an unknown intent or a missing field.
+        for (bad in listOf(encoded.replace("|BROADCAST|", "|VIDEO|"), encoded.replace("|BROADCAST|", "|LIVE|"),
+            encoded.replace("|BROADCAST|", "|CHANNEL|"), encoded.replace("|BROADCAST|", "|"), "e1" + encoded.drop(2)))
+            assertNull(bad, ConfiguredEpisodeChoice.decode(bad))
+        assertThrows(IllegalArgumentException::class.java) {
+            ConfiguredEpisodeChoice(series.entry.resource, CatalogResource(ProviderId("abema"), "channel", "sumo", CatalogIntent.CHANNEL), "Channel")
+        }
+        assertNull(ConfiguredEpisodeChoice.of(series.entry.resource,
+            CatalogEntry(CatalogResource(ProviderId("abema"), "channel", "sumo", CatalogIntent.CHANNEL), "Channel")))
+        assertEquals(day15, ConfiguredEpisodeChoice.of(series.entry.resource, CatalogEntry(day15.episode, day15.title)))
+    }
+
+    @Test fun watchPlaysAChosenBroadcastThroughTheConfiguredSlotPath() {
+        val ready = resolve(ConfiguredFeedAssignments(series.choice, series.choice, day15, day12)) as ConfiguredPrototypeSelectionResult.Ready
+        val broadcast = ready.selection.a!!
+        assertEquals(day15.episode, broadcast.resource)
+        assertEquals(series.entry.resource, broadcast.collection); assertEquals(day15.title, broadcast.episodeTitle)
+        assertEquals(PrototypePlaybackKind.REPLAY, broadcast.kind); assertEquals("ABEMA_CONFIGURED_SLOT", broadcast.diagnosticName)
+        assertEquals("ABEMA_CONFIGURED_EPISODE", ready.selection.b!!.diagnosticName)
+        // Builds without the configured slot path refuse it like a saved slot.
+        failed(ConfiguredPrototypeSelectionFailure.UNSUPPORTED, resolveConfiguredPrototypeSelection(
+            ConfiguredFeedAssignments(series.choice, null, day15, null), listOf(series), instances, allowConfiguredAbemaSlots = false))
+        // A broadcast kind without the configured slot path never plays.
+        failed(ConfiguredPrototypeSelectionFailure.EPISODE_REQUIRED, resolve(ConfiguredFeedAssignments(series.choice, null,
+            day15.copy(episode = day15.episode.copy(kind = "broadcast")), null)))
+    }
+
+    @Test fun storesAndCheckpointRoundTripAChosenBroadcast() {
+        val both = ConfiguredFeedAssignments(series.choice, series.choice, day15, day12)
+        val memory = Memory()
+        ViewerSelectionStore(memory).save(both)
+        assertEquals(both, ViewerSelectionStore(memory).read())
+        assertEquals(both, decodeConfiguredFeedAssignments(encodeConfiguredFeedChoice(series.choice),
+            encodeConfiguredFeedChoice(series.choice), day15.encode(), day12.encode()))
+        val directory = temporary.newFolder()
+        val checkpoint = ConfiguredRecoveryCheckpoint(directory, true)
+        checkpoint.write(both)
+        assertEquals(ConfiguredRecoveryCheckpoint.Result.Restored(both), checkpoint.consume())
+    }
+
     @Test fun assigningEpisodesKeepsItemIdentityAndClearsOnItemChange() {
         val empty = ConfiguredFeedAssignments(null, null)
         val chosen = empty.assignEpisode(PrototypeSlot.A, series.choice, day12, true)

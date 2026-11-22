@@ -129,7 +129,7 @@ class ManageStreamsActivity : ComponentActivity() {
                     onRefresh = current::refresh, onDiscoveryBack = { current.back() }, header = header,
                     onReorder = current::reorder, onOpenLink = current::openLink,
                     onResolveLink = current::resolveLink, onDismissLink = current::dismissLink,
-                    onAddLink = current::addLink, onEditLink = current::editLink)
+                    onAddLink = current::addLink, onEditLink = current::editLink, onChildGroup = current::childGroup)
             } else LazyColumn(Modifier.fillMaxSize().safeDrawingPadding().tvFocusGroup(!reading).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (header != null) item { header() }

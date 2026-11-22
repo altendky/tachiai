@@ -87,6 +87,39 @@ class NativePairViewerFocusTest {
             try { viewer.refresh() } finally { a.onRead = null }
         }
         fun close() { viewer.endSession(); pair.close() }
+        // #617: a busy step stays enabled, so Android has no reason to move focus.
+        fun assertBusy(step: Button) {
+            assertTrue(step.isEnabled)
+            assertEquals(TIMING_BUSY, androidx.core.view.ViewCompat.getStateDescription(step)?.toString())
+        }
+    }
+
+    @Test fun quickRepeatedSelectOnABusyStepKeepsFocusAndNeverReachesSources() = forEachInputConfiguration { scenario, fixture ->
+        scenario.onActivity {
+            fixture.openTiming()
+            assertTrue(fixture.advance().requestFocus())
+            fixture.advance().performClick()
+            fixture.viewer.refresh()
+            fixture.assertBusy(fixture.advance())
+            assertTrue(fixture.advance().isFocused)
+        }
+        // Presses while the adjustment is still running are ignored in place.
+        select(scenario, fixture)
+        select(scenario, fixture)
+        scenario.onActivity {
+            assertTrue(fixture.advance().isFocused)
+            assertEquals(1, fixture.advances)
+            assertEquals(0, fixture.sources)
+            assertEquals(0, fixture.pauses)
+            fixture.busy = false
+            fixture.viewer.refresh()
+            assertNull(androidx.core.view.ViewCompat.getStateDescription(fixture.advance()))
+        }
+        select(scenario, fixture)
+        scenario.onActivity {
+            assertEquals(2, fixture.advances)
+            assertEquals(0, fixture.sources)
+        }
     }
 
     @Test fun busyAdvanceConsumesSelectAndRestoresSameStepBeforeNextActivation() = forEachInputConfiguration { scenario, fixture ->
@@ -95,7 +128,7 @@ class NativePairViewerFocusTest {
             assertTrue(fixture.advance().requestFocus())
             fixture.advance().performClick()
             fixture.displaceFocusDuringRefresh()
-            assertFalse(fixture.advance().isEnabled)
+            fixture.assertBusy(fixture.advance())
             assertTrue(fixture.button("Pause").isFocused)
             val now = SystemClock.uptimeMillis()
             dispatch(fixture.viewer, KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 0))
@@ -144,7 +177,7 @@ class NativePairViewerFocusTest {
             fixture.openTiming()
             assertTrue(fixture.advance().requestFocus())
             fixture.advance().performClick()
-            assertFalse(fixture.advance().isEnabled)
+            fixture.assertBusy(fixture.advance())
             fixture.viewer.post { fixture.button("Pause").requestFocus() }
         }
         idle()
@@ -170,7 +203,7 @@ class NativePairViewerFocusTest {
             fixture.openTiming()
             assertTrue(fixture.advance("1 s").requestFocus())
             fixture.advance("1 s").performClick()
-            assertFalse(fixture.advance("1 s").isEnabled)
+            fixture.assertBusy(fixture.advance("1 s"))
             fixture.busy = false
             fixture.viewer.refresh() // Queues the pending Advance focus restore.
             fixture.viewer.post {

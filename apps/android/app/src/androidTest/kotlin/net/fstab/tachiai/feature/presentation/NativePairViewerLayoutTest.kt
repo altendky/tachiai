@@ -122,6 +122,9 @@ class NativePairViewerLayoutTest {
         } }
     }
 
+    // Known failing on the SHIELD (Android TV 11), on main bd47392 and with #617, observed
+    // 2026-11-22. Not caused by #617 and not yet investigated; likely phone or
+    // portrait layout expectations that a TV configuration does not meet.
     @Test fun fullStatusRemainsAvailableWithoutDuplicatingItInAudio() {
         withFixture(false) { scenario, f ->
             onView(withText("More")).perform(click())
@@ -157,6 +160,9 @@ class NativePairViewerLayoutTest {
         } }
     }
 
+    // Known failing on the SHIELD (Android TV 11), on main bd47392 and with #617, observed
+    // 2026-11-22. Not caused by #617 and not yet investigated; likely phone or
+    // portrait layout expectations that a TV configuration does not meet.
     @Test fun qualityControlsKeepTouchTargetsAndScrollAtCompactLargeFontSizes() {
         for (landscape in listOf(false, true)) withFixture(landscape, 1.8f) { scenario, f ->
             onView(withText("More")).perform(click()); onView(withText("Quality")).perform(click())

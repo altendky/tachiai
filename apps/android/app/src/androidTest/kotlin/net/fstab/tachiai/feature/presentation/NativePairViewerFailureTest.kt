@@ -35,6 +35,9 @@ class NativePairViewerFailureTest {
         override fun close() {}
     }
 
+    // Known failing on the SHIELD (Android TV 11), on main bd47392 and with #617, observed
+    // 2026-11-22. Not caused by #617 and not yet investigated; likely phone or
+    // portrait layout expectations that a TV configuration does not meet.
     @Test fun errorsRemainInTheirSlotsAndSourcesWorksWithNoPlayableFeeds() {
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario -> scenario.onActivity { activity ->
             val a = PlayerView(activity)
@@ -187,6 +190,9 @@ class NativePairViewerFailureTest {
         } }
     }
 
+    // Known failing on the SHIELD (Android TV 11), on main bd47392 and with #617, observed
+    // 2026-11-22. Not caused by #617 and not yet investigated; likely phone or
+    // portrait layout expectations that a TV configuration does not meet.
     @Test fun portraitErrorPanelTapRevealsControlsWithoutChangingFeedOrder() {
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario -> scenario.onActivity { activity ->
             val configuration = Configuration(activity.resources.configuration).apply {

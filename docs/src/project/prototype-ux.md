@@ -882,7 +882,13 @@ System Back dismisses an open More menu first, then an Audio, Timing, Quality or
 Status panel. Dismissing a panel keeps playback, volume/mute state and pane
 selection unchanged and cancels any held adjustment button. On both phone and
 TV, the next Back hides the button bar without stopping playback. Back with
-all controls already hidden stops and returns to sources. The explicit Back to
+all controls already hidden asks "Stop playback?" before returning to sources
+([#617](https://github.com/altendky/tachiai/issues/617)). Keep watching is the
+focused default, and Back on the dialog keeps playing. The Back to sources
+button and More's Stop ask the same. Stops the app makes itself, such as
+failures, cleanup refusals and deadlines, don't ask. A timing step stays
+focused while its adjustment runs, showing "Adjustment in progress", so a quick
+repeated Select can't land on another control. The explicit Back to
 sources button remains available; phone video taps and TV remote navigation
 can reveal the hidden controls again.
 
@@ -1014,8 +1020,8 @@ With two selections, Open viewer immediately presents two labelled panes. Each s
 preparation message and independently becomes video or a scrollable error.
 A successful feed starts without waiting for the other feed. A failed feed
 closes its own session while a healthy feed continues. If both fail, the viewer
-keeps both errors visible. Sources or Android Back explicitly stops playback
-and returns to the picker, retaining the selected sources.
+keeps both errors visible. Sources or Android Back, once confirmed, stops
+playback and returns to the picker, retaining the selected sources.
 
 In landscape, tapping a floating preparation/error pane swaps it with the
 primary feed, just as tapping floating video does. Taps on either the message

@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
@@ -36,6 +37,11 @@ class StreamManagementScreenTest {
         // A lazy row may not exist in the semantics tree until its list scrolls to it.
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(matcher)
         return compose.onNode(matcher).performScrollTo()
+    }
+
+    // #624: on TV the search field accepts text only after it is selected.
+    private fun SemanticsNodeInteraction.selectedOnTv() = apply {
+        if (isTelevision(InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration)) performClick()
     }
 
     private fun text(value: String): SemanticsNodeInteraction {
@@ -148,7 +154,7 @@ class StreamManagementScreenTest {
         compose.onNodeWithText("All").assertDoesNotExist()
         compose.runOnIdle { assertTrue(fixture.calls.contains("all")); assertEquals(CatalogQuery(), fixture.state.query) }
         description("Search streams").assertIsNotEnabled()
-        text("Search streams").performTextInput("   ")
+        text("Search streams").selectedOnTv().performTextInput("   ")
         description("Search streams").assertIsNotEnabled()
         text("Search streams").performTextReplacement("Offline")
         description("Search streams").performClick()
@@ -165,7 +171,7 @@ class StreamManagementScreenTest {
         }
         val field = text("Search streams")
         compose.onNodeWithText("Search", useUnmergedTree = true).assertDoesNotExist()
-        field.performImeAction()
+        field.selectedOnTv().performImeAction()
         compose.runOnIdle { assertTrue(fixture.calls.isEmpty()) }
         field.performTextInput("Offline")
         val inputBounds = text("Search streams").fetchSemanticsNode().boundsInRoot
@@ -173,7 +179,7 @@ class StreamManagementScreenTest {
         assertTrue(iconBounds.right <= inputBounds.right && iconBounds.left > inputBounds.center.x)
         assertTrue(iconBounds.top >= inputBounds.top && iconBounds.bottom <= inputBounds.bottom)
         description("Search streams").performClick()
-        text("Search streams").performImeAction()
+        text("Search streams").selectedOnTv().performImeAction()
         compose.runOnIdle { assertEquals(listOf("search:Offline", "search:Offline"), fixture.calls) }
         listOf<(StreamManagementState) -> StreamManagementState>(
             { it.copy(loading = true) }, { it.copy(saving = true) },
@@ -259,10 +265,10 @@ class StreamManagementScreenTest {
         restoration.setContent { fixture.Render() }
         text("More items").performClick()
         text("Never-live episode").assertExists()
-        text("Search streams").performTextInput("Offline")
+        text("Search streams").selectedOnTv().performTextInput("Offline")
         restoration.emulateSavedInstanceStateRestore()
         description("Search streams").assertIsNotEnabled()
-        text("Search streams").performTextInput("Offline")
+        text("Search streams").selectedOnTv().performTextInput("Offline")
         description("Search streams").performClick()
         compose.runOnIdle { assertTrue(fixture.calls.contains("search:Offline")) }
         text("Add link").performClick()
@@ -359,7 +365,7 @@ class StreamManagementScreenTest {
         compose.onNodeWithContentDescription("Dismiss stream notice").performClick()
         text("Channels").performClick()
         text("Channels").assertIsSelected()
-        text("Search streams").performTextInput("Offline")
+        text("Search streams").selectedOnTv().performTextInput("Offline")
         description("Search streams").performClick()
         text("Search results").assertExists()
         text("Channels").assertIsNotSelected()
@@ -1092,12 +1098,22 @@ class StreamManagementScreenTest {
         channels.assertIsFocused().assertIsSelected()
         compose.runOnIdle { assertEquals(listOf("collection:following", "all"), fixture.calls) }
         channels.performKeyInput { pressKey(Key.DirectionDown) }
-        val search = compose.onNode(hasText("Search streams") and hasSetTextAction())
-        search.assertIsFocused().performTextInput("Offline")
+        // #624: focus passes over the field without starting text entry.
+        val search = compose.onNode(hasText("Search streams") and hasImeAction(ImeAction.Search))
+        search.assertIsFocused().assert(hasSetTextAction().not())
+        search.performKeyInput { pressKey(Key.DirectionDown) }
+        search.assertIsNotFocused()
+        compose.onNode(isFocused()).performKeyInput { pressKey(Key.DirectionUp) }
+        search.assertIsFocused().assert(hasSetTextAction().not())
+        search.performKeyInput { pressKey(Key.DirectionCenter) }
+        search.assertIsFocused().assert(hasSetTextAction()).performTextInput("Offline")
         search.performImeAction()
         compose.runOnIdle {
             assertEquals(listOf("collection:following", "all", "search:Offline"), fixture.calls)
             assertEquals("Offline", fixture.state.query.search)
         }
+        // Down while editing ends editing and leaves the field.
+        search.performKeyInput { pressKey(Key.DirectionDown) }
+        search.assertIsNotFocused().assert(hasSetTextAction().not())
     }
 }

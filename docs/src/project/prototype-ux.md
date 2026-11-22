@@ -16,6 +16,9 @@ The picker initially focuses Routes, then Providers when Routes is unavailable,
 or the first rendered assignment. Shared settings retain their existing actions
 and stores, with screen-level focus restoration and remote-operable controls.
 Discovery tabs form a focus group; search keeps the keyboard Search action.
+On TV, D-pad focus passes over the Search streams field without opening the
+keyboard; Select starts editing, and Back (closing the keyboard), Up, Down or
+leaving the field ends it ([#624](https://github.com/altendky/tachiai/issues/624)).
 Provider reordering uses the existing handle menu without requiring a drag.
 Twitch's device flow presents its activation QR and code on TV, without the
 phone-specific Brave/Chrome launch buttons. Credential entry remains on the

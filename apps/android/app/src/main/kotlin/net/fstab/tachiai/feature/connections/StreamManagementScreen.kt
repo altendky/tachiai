@@ -1,5 +1,15 @@
 package net.fstab.tachiai.feature.connections
 
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
@@ -130,6 +140,7 @@ private fun entryDetails(entry: CatalogEntry, actionLabel: String? = null): Stri
         (entry.durationSeconds?.let { " · ${formatCatalogDuration(it)}" } ?: "")
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun StreamManagementScreen(state: StreamManagementState,
     onSearch: (String) -> Unit, onAll: () -> Unit, onCollection: (String) -> Unit,
@@ -416,9 +427,48 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }
             if (visibleCapabilities != null && visibleCapabilities.search != CatalogAccess.UNSUPPORTED) {
                 val searchEnabled = discoveryMutable && search.isNotBlank()
+                // #624: on TV the field stays read-only until selected, because a
+                // writable focused field opens the TV keyboard and keeps D-pad moves as
+                // cursor moves. Up and Down always leave it; Select, a tap or a click
+                // starts editing; closing the keyboard or leaving the field ends it.
+                val television = LocalTelevision.current
+                val focusManager = LocalFocusManager.current
+                var searchEditing by remember { mutableStateOf(false) }
+                val searchInteractions = remember { MutableInteractionSource() }
+                LaunchedEffect(searchInteractions) {
+                    searchInteractions.interactions.collect { if (it is PressInteraction.Release) searchEditing = true }
+                }
+                val imeVisible = WindowInsets.isImeVisible
+                var imeShownWhileEditing by remember { mutableStateOf(false) }
+                LaunchedEffect(imeVisible, searchEditing) {
+                    when {
+                        !searchEditing -> imeShownWhileEditing = false
+                        imeVisible -> imeShownWhileEditing = true
+                        imeShownWhileEditing -> searchEditing = false
+                    }
+                }
                 val submitSearch = { if (searchEnabled) onSearch(search) }
                 OutlinedTextField(search, { search = it.take(160) }, enabled = discoveryMutable, singleLine = true,
-                    modifier = Modifier.fillMaxWidth(), label = { Text("Search streams") },
+                    readOnly = television && !searchEditing, interactionSource = searchInteractions,
+                    modifier = Modifier.fillMaxWidth()
+                        .onFocusChanged { if (!it.isFocused) searchEditing = false }
+                        .onPreviewKeyEvent { event ->
+                            if (!television || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when {
+                                event.key == Key.DirectionUp || event.key == Key.DirectionDown -> {
+                                    searchEditing = false
+                                    focusManager.moveFocus(if (event.key == Key.DirectionUp) FocusDirection.Up
+                                        else FocusDirection.Down)
+                                    true
+                                }
+                                searchEditing -> false
+                                event.key == Key.DirectionCenter -> { searchEditing = true; true }
+                                event.key == Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
+                                event.key == Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
+                                else -> false
+                            }
+                        },
+                    label = { Text("Search streams") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
                     trailingIcon = { IconButton(onClick = submitSearch, enabled = searchEnabled,

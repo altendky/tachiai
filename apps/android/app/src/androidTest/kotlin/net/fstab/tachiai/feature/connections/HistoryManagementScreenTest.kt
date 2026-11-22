@@ -1,5 +1,7 @@
 package net.fstab.tachiai.feature.connections
 
+import androidx.test.platform.app.InstrumentationRegistry
+import net.fstab.tachiai.feature.presentation.isTelevision
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -17,6 +19,11 @@ import org.junit.Test
 // UI and local codec. No production adapter advertises history in this test.
 class HistoryManagementScreenTest {
     @get:Rule val compose = createComposeRule()
+    // #624: on TV the search field accepts text only after it is selected.
+    private fun SemanticsNodeInteraction.selectedOnTv() = apply {
+        if (isTelevision(InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration)) performClick()
+    }
+
     private fun text(value: String): SemanticsNodeInteraction {
         val overlay = hasText(value) and !hasAnyAncestor(hasScrollToIndexAction())
         if (compose.onAllNodes(overlay).fetchSemanticsNodes().isNotEmpty()) return compose.onNode(overlay)
@@ -120,7 +127,7 @@ class HistoryManagementScreenTest {
         try {
             restoration.setContent { fixture.Render() }
             description("Add Never-live fixture episode").performClick()
-            text("Search streams").performTextInput("private fixture search")
+            text("Search streams").selectedOnTv().performTextInput("private fixture search")
             text("Add link").performClick()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/?token=unvalidated")
             compose.runOnIdle { fixture.denied = true; fixture.controller.load() }
@@ -132,7 +139,7 @@ class HistoryManagementScreenTest {
             text("All").assertIsNotEnabled()
             text("Retry catalog").performClick()
             description("Search streams").assertIsNotEnabled()
-            text("Search streams").performTextInput("another private fixture")
+            text("Search streams").selectedOnTv().performTextInput("another private fixture")
             text("Add link").performClick()
             text("Add").assertIsNotEnabled()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/private")
@@ -141,7 +148,7 @@ class HistoryManagementScreenTest {
             compose.runOnIdle { fixture.reopen() }
             compose.onNodeWithText("Add by URL or channel").assertDoesNotExist()
             description("Search streams").assertIsNotEnabled()
-            text("Search streams").performTextInput("unsaved fixture")
+            text("Search streams").selectedOnTv().performTextInput("unsaved fixture")
             text("Add link").performClick()
             text("Add").assertIsNotEnabled()
             text("Provider URL or channel").performTextInput("https://fixture.invalid/unsaved")

@@ -70,6 +70,37 @@ Provider replay availability deadlines remain independently enforced after the
 initial helper exchange. This changes local session duration, not entitlement,
 DRM exchange/renewal, TLS policy or media-origin approvals.
 
+## Live rewind buffer — 2026-11-21
+
+On 2026-11-20 the user approved an app-owned rewind buffer for live feeds, so a
+feed can be held further behind live than the provider's window
+([#568](https://github.com/altendky/tachiai/issues/568)). On 2026-11-21 the user
+confirmed it is an in-memory cache, does not need to stay encrypted, and keeps
+2 minutes beyond the provider's window.
+
+What is retained:
+
+- **Scope.** Each live ABEMA DASH feed. Replays and Twitch are not included.
+- **Content.** The media bytes this feed's player fetched, plus segments of the
+  rendition the player is using that the cache fetches just before they leave
+  the provider's window. Every request goes through the same bounded,
+  allowlisted, budgeted transport as the player.
+  - Bytes are kept exactly as fetched: encrypted where the provider encrypts.
+  - No decryption, key handling, license exchange or DRM-session change is
+    added. The one-exchange license gate is unchanged.
+- **Where.** Android shared memory outside the Java heap, mapped read-only for
+  playback. Nothing is written to disk or app storage, exported, shared, logged,
+  or included in diagnostics or crash reports.
+- **How much and how long.**
+  - Segments older than the provider's window plus 2 minutes are evicted, and
+    the cache is capped at 160 MB per feed, evicting the oldest first.
+  - It is discarded with the feed's player: on Stop, background, retry, failure
+    and session end.
+- **Manifest continuity.** The bounded manifest normalizer keeps timeline
+  entries and periods the provider dropped, but only while the rendition in use
+  has them cached. It widens the window to match, and the declared-media
+  allowlist admits only those retained segments.
+
 ## General provider integration approval — 2026-10-10
 
 The user approved general ABEMA and Twitch discovery, account/session access and

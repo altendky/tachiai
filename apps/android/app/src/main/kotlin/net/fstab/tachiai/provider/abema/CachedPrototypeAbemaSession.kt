@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.platform.media.BoundedDashManifestParser
 import net.fstab.tachiai.platform.media.BoundedMediaRequests
 import net.fstab.tachiai.platform.media.BoundedNativeDashPlayer
+import net.fstab.tachiai.platform.media.NativeLiveSegmentCache
 import net.fstab.tachiai.platform.media.DeclaredDashMediaPolicy
 import net.fstab.tachiai.platform.media.DashManifestPolicyEvent
 import net.fstab.tachiai.platform.media.NativeDashEvent
@@ -919,11 +920,14 @@ internal class CachedPrototypeAbemaSession(
         val transitions = if (effectiveReplay) null else AbemaManifestTransitionPolicy(source.kids)
         // Closed shape of each accepted refresh, logged on change (serial loader thread).
         var lastShape: NativeDashManifestShape? = null
-        val parser = BoundedDashManifestParser(source.uri, policy,
+        // #568: live feeds keep an in-memory rewind buffer beyond ABEMA's window.
+        val liveCache = if (effectiveReplay) null else NativeLiveSegmentCache()
+        val parser = BoundedDashManifestParser(source.uri, policy, liveCache = liveCache,
             preflight = { body -> transitions?.accepts(body) ?: (parseAbemaRequestInitialization(body)?.kids?.toSet() == source.kids.toSet()) },
             canRun = { current(run) }, onEvent = { event, _ ->
                 if (event == DashManifestPolicyEvent.REFUSED) remember(PrototypeFeedFailure(PrototypeFailureReason.UNSUPPORTED_MEDIA))
             },
+            onRefusal = { stage -> handler.post { if (current(run)) record("manifestRefused stage=${stage.name}") } },
             validateModel = { parsed -> (transitions?.requiresDeclarationFreeModel != true ||
                 (0 until parsed.periodCount).all { period -> parsed.getPeriod(period).adaptationSets.all { adaptation ->
                     adaptation.representations.all { it.format.drmInitData == null }
@@ -972,6 +976,7 @@ internal class CachedPrototypeAbemaSession(
                 openConnection = ::openConnection, onFailure = diagnostics.nativeObserver(),
                 transportObserver = diagnostics.nativeTransportObserver(),
                 onPeriodChange = { change -> handler.post { if (current(run)) record(change.closedSummary()) } },
+                liveCache = liveCache,
                 onCleanupOwner = { nativeCleanup = it },
                 onCleanupChanged = ::nativeCleanupChanged,
                 onCleanupUnconfirmed = { cleanupFailed = true; onCleanupChanged() })

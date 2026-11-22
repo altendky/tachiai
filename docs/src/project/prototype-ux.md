@@ -795,9 +795,24 @@ after a new alignment. Any one-sided move of at least 3 s qualifies, including
 a feed that rebuffered while the other kept playing. A restore whose movement
 cannot be confirmed leaves the offset unconfirmed, as any failed offset change
 does, and playback may need Play. A feed whose provider shifts its content,
-rather than its player, cannot be detected this way. The thin headroom of a short
-provider window remains; an app-owned rewind buffer is tracked in
-[#568](https://github.com/altendky/tachiai/issues/568).
+rather than its player, cannot be detected this way.
+
+Live ABEMA feeds keep an in-memory rewind buffer of the provider's window plus
+2 minutes ([#568](https://github.com/altendky/tachiai/issues/568); limits in
+[security and privacy](security-and-privacy.md#live-rewind-buffer--2026-11-21)).
+The feed's window grows to about 3 minutes as the buffer fills, so it can be
+held or offset that far behind live. Ad periods the provider has dropped stay
+available while they are buffered.
+
+Measured on the SHIELD on 2026-11-21, live News with a Twitch feed on B:
+
+- The window grew from 60 s to about 185 s within about 3 minutes.
+- A 117 s hold then resumed from the buffer, about 151 s behind live.
+- System shared memory rose by about 107 MB, and the Java heap was unaffected.
+- A hold past the whole buffer is still refused as `LIVE_WINDOW_EXPIRED`.
+
+Twitch feeds keep the provider's window. Sizing the buffer to the current offset
+is discussed in [#618](https://github.com/altendky/tachiai/issues/618).
 
 Each device stores its own encrypted, bounded pair preferences. Identity uses
 the exact public source and provider-instance identities, excluding titles,

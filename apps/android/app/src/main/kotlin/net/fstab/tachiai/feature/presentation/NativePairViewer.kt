@@ -871,7 +871,12 @@ internal class NativePairViewer(
         if (pendingFocus == null) rememberControlFocus()
         focusMutationDepth++
         try { refreshControls() } finally { focusMutationDepth-- }
-        if (generation == focusGeneration && scope == panel && key != null && focused?.isShown == true && !focused.isEnabled && pendingFocus == null) {
+        // A focused step that just became busy is protected like a disabled one
+        // (#617): if anything moves focus away, the next Select restores it.
+        val busyStep = focused != null && focused in advanceA + advanceB &&
+            ViewCompat.getStateDescription(focused)?.toString() == TIMING_BUSY
+        if (generation == focusGeneration && scope == panel && key != null && focused?.isShown == true &&
+            (!focused.isEnabled || busyStep) && pendingFocus == null) {
             pendingFocus = FocusIntent(key, scope, generation)
         }
         pendingFocus?.let { intent ->
@@ -911,7 +916,17 @@ internal class NativePairViewer(
         requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
         play.text = if (requestedPlaying || playbackBusy()) "Pause" else "Play"
         play.isEnabled = available.any { it != null }
-        (advanceA + advanceB).forEach { it.isEnabled = hasPairSlots && current != null && !current.busy && !playbackBusy() }
+        // A busy timing step stays enabled and keeps focus (#617). Disabling the
+        // focused step let Android move focus to another control, where a quick
+        // next Select acted on it (for example Back to sources). The step's
+        // handler ignores presses until the adjustment completes.
+        val timingReady = hasPairSlots && current != null
+        val timingBusy = current?.busy != false || playbackBusy()
+        (advanceA + advanceB).forEach { control ->
+            control.isEnabled = timingReady
+            control.alpha = if (timingReady && timingBusy) 0.5f else 1f
+            ViewCompat.setStateDescription(control, if (timingReady && timingBusy) TIMING_BUSY else null)
+        }
         val sa = runCatching { current?.a?.timingSnapshot() }.getOrNull()
         val sb = runCatching { current?.b?.timingSnapshot() }.getOrNull()
         val ta = runCatching { current?.a?.timelineEvidence() }.getOrNull()
@@ -1244,3 +1259,6 @@ internal class NativePairViewer(
         }
     }
 }
+
+// State description of a timing step while an adjustment is in progress.
+internal const val TIMING_BUSY = "Adjustment in progress"

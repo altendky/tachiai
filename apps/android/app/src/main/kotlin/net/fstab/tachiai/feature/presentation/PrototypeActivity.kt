@@ -338,6 +338,7 @@ open class PrototypeActivity : ComponentActivity() {
     private var recoveryMessage by mutableStateOf<String?>(null)
     private var hasRecovery by mutableStateOf(false)
     private var recoveryDialog: AlertDialog? = null
+    private var exitConfirmation: AlertDialog? = null
     private var restartMessage: String? = null
     private val recoveryObserver: () -> Unit = { handler.post { updateRecoveryState() } }
     private var restartOperation: () -> Unit = { restartPrototypeProcess(this, useCachedAbema, pickerAssignments) }
@@ -394,7 +395,7 @@ open class PrototypeActivity : ComponentActivity() {
         net.fstab.tachiai.platform.web.DeveloperAccess.configureWebInspection()
         onBackPressedDispatcher.addCallback(this) {
             if (viewer?.handleBack() == true) return@addCallback
-            if (budget != null) stopToPicker("Playback stopped.") else finish()
+            if (budget != null) confirmStopToPicker() else finish()
         }
         showPicker(null)
     }
@@ -1096,7 +1097,7 @@ open class PrototypeActivity : ComponentActivity() {
             onRelative = { delta -> requestRelativeAdjustment(delta) },
             onCatchUp = ::requestBackToLive,
             onDiagnostics = { pausePair(); viewer?.visibility = View.GONE; styleSystemBars(false) },
-            onStop = { stopToPicker("Playback stopped.") },
+            onStop = ::confirmStopToPicker,
             onLandscape = { landscape -> requestedOrientation = if (landscape)
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT },
             setupLabel = "Preparation / provider pages", statusOverride = { playMessage ?: playback?.status },
@@ -1138,7 +1139,7 @@ open class PrototypeActivity : ComponentActivity() {
                 if (waiting[index].active) { waiting[index].checkNow(SystemClock.elapsedRealtime()); viewer?.refresh() }
                 else requestFeedRetry(index)
             },
-            onSources = { stopToPicker("Playback stopped.") },
+            onSources = ::confirmStopToPicker,
             qualityState = { side, kind -> qualitySession?.read(side, kind)?.copy(saving = savingQuality, message = qualityMessage) },
             onQualityOverride = { side, kind, request ->
                 if (!savingQuality && playback?.busy != true) {
@@ -2001,7 +2002,27 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
+    // Leaving the feeds viewer stops playback, so the user confirms it first
+    // (#617). Keep watching is focused, and Back on the dialog dismisses it.
+    // App-initiated stops (failures, cleanup, deadlines) call stopToPicker
+    // directly. Before the viewer shows, leaving needs no confirmation.
+    private fun confirmStopToPicker() {
+        if (viewer?.visibility != View.VISIBLE) { stopToPicker("Playback stopped."); return }
+        if (exitConfirmation != null || isFinishing || isDestroyed) return
+        exitConfirmation = AlertDialog.Builder(this)
+            .setTitle("Stop playback?")
+            .setMessage("Playback stops and you return to streams.")
+            .setNegativeButton("Keep watching", null)
+            .setPositiveButton("Stop") { _, _ -> stopToPicker("Playback stopped.") }
+            .create().also { dialog ->
+                dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.requestFocus() }
+                dialog.setOnDismissListener { if (exitConfirmation === dialog) exitConfirmation = null }
+                dialog.show()
+            }
+    }
+
     private fun stopToPicker(message: String) {
+        exitConfirmation?.let { exitConfirmation = null; it.dismiss() }
         setPlaybackIntent(false, PlaybackHealthIntent.STOP)
         dispose()
         val result = message + if (cleanupFailed) " Playback cleanup reported a failure." else ""

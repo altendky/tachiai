@@ -19,15 +19,17 @@ class TwitchNativePlaybackTest {
         }
         assertEquals(value, pairs["token"])
         assertEquals("abcdef", pairs["sig"])
-        assertEquals(setOf("sig", "token", "platform", "allow_source", "allow_audio_only"), pairs.keys)
+        assertEquals(setOf("sig", "token", "platform", "allow_source", "allow_audio_only", "fast_bread"), pairs.keys)
         assertEquals("web", pairs["platform"])
+        assertEquals("true", pairs["fast_bread"])
         assertFalse(source.toString().contains("abcdef"))
         assertFalse(source.toString().contains("sample"))
     }
 
-    @Test fun `replay uses its distinct fixed v2 path`() {
-        assertEquals("/vod/v2/2080217716.m3u8",
-            twitchPlaybackSource(TwitchAccessCase.REPLAY, "2080217716", "abc", "{}").uri.path)
+    @Test fun `replay uses its distinct fixed v2 path without the low-latency request`() {
+        val replay = twitchPlaybackSource(TwitchAccessCase.REPLAY, "2080217716", "abc", "{}").uri
+        assertEquals("/vod/v2/2080217716.m3u8", replay.path)
+        assertFalse(replay.rawQuery.contains("fast_bread"))
     }
 
     @Test fun `resources cannot change resolver path or query`() {

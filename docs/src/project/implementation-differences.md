@@ -18,6 +18,13 @@ application, Kotlin provider/player/storage code and Rust timing core.
 | Launcher integration | The same APK declares ordinary Android and Leanback launcher categories, with Leanback and touchscreen support marked optional. | Make the app discoverable through the platform's applicable launcher without requiring a touchscreen. This records manifest integration, not approval of different in-app navigation or visual design. | [Manifest][manifest] |
 | Device-mode detection | TV adaptations use Android's Configuration UI mode; ordinary phone mode uses the shared default path. | Select the applicable system integration inside one application. Detection is not authorization for every UX branch it selects. | [Configuration detection][detection] |
 
+Android native Twitch live playback requests Twitch's low-latency playlists,
+plays the trailing prefetch hints as ordinary segments, and targets 6 s behind
+the live edge
+([approval](security-and-privacy.md#twitch-live-low-latency--2026-11-22)). It
+changes how far behind live the Twitch feed plays, not the controls or flow. No
+equivalent mechanism is established for the web viewer or Apple.
+
 Android also has an internal, explicitly selected account-transport
 [Network-binding prerequisite](source-network-routing.md#explicit-android-network-prerequisite).
 It binds direct HTTPS and supported proxy/tunnel outer sockets to one supplied

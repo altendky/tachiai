@@ -43,6 +43,8 @@ internal class BoundedNativePlayer(
     allowedUri: (URI) -> Boolean,
     private val onEvent: (NativeMediaEvent, Int) -> Unit,
     onManifestRejection: (Int, String) -> Unit = { _, _ -> },
+    // Provider-supplied normalization of a media playlist's text before parsing.
+    private val playlistRewrite: (String) -> String = { it },
     private val onTimingDiscontinuity: (NativeTimingSnapshot, Int) -> Unit = { _, _ -> },
     handleAudioFocus: Boolean = true,
     canRequest: () -> Boolean = { true },
@@ -149,7 +151,9 @@ internal class BoundedNativePlayer(
         }
     }
 
-    fun start(uri: URI, playWhenReady: Boolean = true, progressive: Boolean = false) {
+    // liveTargetOffsetMs: for live HLS, how far behind the live edge to play,
+    // reached with small (±3 %) speed adjustments instead of Media3's default.
+    fun start(uri: URI, playWhenReady: Boolean = true, progressive: Boolean = false, liveTargetOffsetMs: Long? = null) {
         check(!released)
         budget.check()
         val source = if (progressive) ProgressiveMediaSource.Factory {
@@ -163,7 +167,13 @@ internal class BoundedNativePlayer(
             .setPlaylistParserFactory(UnencryptedPlaylistParserFactory())
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(0))
             .createMediaSource(MediaItem.Builder().setUri(uri.toString())
-                .setMimeType(MimeTypes.APPLICATION_M3U8).build())
+                .setMimeType(MimeTypes.APPLICATION_M3U8)
+                .apply { liveTargetOffsetMs?.let { target ->
+                    require(target in 1_000..60_000)
+                    setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(target)
+                        .setMinPlaybackSpeed(0.97f).setMaxPlaybackSpeed(1.03f).build())
+                } }
+                .build())
         player.setMediaSource(source)
         // Progressive resources have no playlist callback. Their requests still
         // pass through the same origin, lifetime and byte-budget checks.
@@ -268,7 +278,14 @@ internal class BoundedNativePlayer(
                         requests.report(NativeMediaEvent.ENCRYPTION_UNSUPPORTED)
                         throw IOException()
                     }
-                    val playlist = parser.parse(uri, ByteArrayInputStream(bytes))
+                    // A provider adapter may normalize its own playlist tags.
+                    val rewritten = playlistRewrite(text)
+                    if (rewritten !== text && (rewritten.length > 512 * 1024 || !unencryptedHls(rewritten))) {
+                        requests.report(NativeMediaEvent.PLAYLIST_UNSUPPORTED)
+                        throw IOException()
+                    }
+                    val playlist = parser.parse(uri, ByteArrayInputStream(
+                        if (rewritten === text) bytes else rewritten.toByteArray(Charsets.UTF_8)))
                     budget.check()
                     if (!acceptedPlaylist.get() && System.nanoTime() / 1_000_000 >= acceptanceDeadlineMs) throw IOException()
                     acceptedPlaylist.set(true)

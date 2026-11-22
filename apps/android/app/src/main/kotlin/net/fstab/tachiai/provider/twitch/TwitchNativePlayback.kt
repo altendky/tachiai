@@ -26,9 +26,11 @@ internal fun twitchPlaybackSource(kind: TwitchAccessCase, resource: String,
     val path = if (kind == TwitchAccessCase.LIVE) "/api/v2/channel/hls/$resource.m3u8"
         else "/vod/v2/$resource.m3u8"
     // Independently implemented from observed protocol, not a public playback API.
-    // No ad suppression, integrity identity, proxy, or low-latency special flags.
+    // No ad suppression, integrity identity or proxy. Live requests ask for
+    // Twitch's low-latency playlists (user approval, 2026-11-22).
     return TwitchPlaybackSource(URI("https://usher.ttvnw.net$path?sig=${encoded(signature)}" +
-        "&token=${encoded(value)}&platform=web&allow_source=true&allow_audio_only=true"))
+        "&token=${encoded(value)}&platform=web&allow_source=true&allow_audio_only=true" +
+        if (kind == TwitchAccessCase.LIVE) "&fast_bread=true" else ""))
 }
 
 internal fun resolveTwitchPlayback(http: AccessProbeHttp, kind: TwitchAccessCase,

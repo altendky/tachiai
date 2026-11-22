@@ -189,14 +189,14 @@ class AbemaSeriesChildrenCatalogTest {
         assertEquals(CatalogFailure.INVALID_INPUT, (b.catalog.browse(CatalogQuery(parent = parent(), cursor = handle)) as CatalogResult.Failure).reason)
         assertEquals(CatalogFailure.INVALID_INPUT, (a.catalog.browse(CatalogQuery(parent = parent("other"), cursor = handle)) as CatalogResult.Failure).reason)
     }
-    @Test fun wrongReturnedParentGroupTypesAndRepeatedEpisodeRefuseInsteadOfClaimingEmpty() {
-        for (mode in 0..3) {
+    // A repeated row is skipped instead (#622; see aRowRepeatedOnTheNextPageIsSkippedInsteadOfFailing).
+    @Test fun wrongReturnedParentGroupOrTypesRefuseInsteadOfClaimingEmpty() {
+        for (mode in 0..2) {
             val f = Fixture(); val handle = f.value(f.first()).nextCursor
-            f.response = { request -> CatalogResult.Value(when (mode) {
+            f.response = { _ -> CatalogResult.Value(when (mode) {
                 0 -> abemaSeriesPage(AbemaSeriesPageRequest("other", 20, "other_s1", "other_eg1", listOf(1)), listOf(entry(20)))
                 1 -> AbemaSeriesPage("series-A", "series-A_s1", null, null, "series-A_eg1", listOf(2), listOf(entry(20)), false)
-                2 -> AbemaSeriesPage("series-A", "series-A_s1", null, null, "series-A_eg2", listOf(1), listOf(entry(20)), false)
-                else -> abemaSeriesPage(request, listOf(entry(0)))
+                else -> AbemaSeriesPage("series-A", "series-A_s1", null, null, "series-A_eg2", listOf(1), listOf(entry(20)), false)
             }) }
             assertEquals(CatalogFailure.INVALID_INPUT, (f.catalog.browse(CatalogQuery(parent = parent(), cursor = handle)) as CatalogResult.Failure).reason)
             assertEquals(2, f.closes)
@@ -249,5 +249,15 @@ class AbemaSeriesChildrenCatalogTest {
         assertEquals(CatalogFailure.TEMPORARY, (f.first() as CatalogResult.Failure).reason)
         f.failedClose = false; assertEquals(CatalogFailure.ACCESS_REQUIRED, (f.first() as CatalogResult.Failure).reason)
         assertEquals(1, f.requests.size); assertEquals(CatalogAccess.NOT_VERIFIED, f.catalog.capabilities().children)
+    }
+
+    // #622: a group gaining a broadcast between pages shifts a shown row onto the next page.
+    @Test fun aRowRepeatedOnTheNextPageIsSkippedInsteadOfFailing() {
+        val f = Fixture()
+        f.response = { request -> CatalogResult.Value(abemaSeriesPage(request,
+            if (request.offset == 0) List(20, ::entry) else listOf(entry(19), entry(20)))) }
+        val first = f.value(f.first())
+        val next = f.value(f.catalog.browse(CatalogQuery(parent = parent(), cursor = first.nextCursor)))
+        assertEquals(listOf(entry(20)), next.entries)
     }
 }

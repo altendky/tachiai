@@ -95,4 +95,15 @@ class AbemaSeriesPolicyTest {
         assertFalse(admission(next).fetch(next.seriesUrl())); assertFalse(admission(next).fetch(sections))
         assertTrue(admission(next).run { fetch(continuation) && !fetch(continuation) && !fetch(contents) })
     }
+
+    // A refused preflight must leave the chain where it was, binding nothing.
+    @Test fun aRefusedPreflightDoesNotAdvanceTheChain() {
+        val admitted = admission()
+        assertTrue(admitted.fetch(series))
+        assertFalse(admitted.admit(URI(sections), false, "OPTIONS", headers + ("Origin" to "https://example.invalid")))
+        val other = first.sectionsUrl("series-A_eg2", "series-A_s10")
+        assertTrue(admitted.fetch(other))
+        assertFalse(admitted.fetch(contents))
+        assertTrue(admission().let { it.fetch(series) && it.fetch(other) && it.fetch(first.contentsUrl("series-A_eg2", "series-A_s10", listOf(1))) })
+    }
 }

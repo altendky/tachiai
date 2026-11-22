@@ -184,6 +184,8 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
                 // Advance only after the previous URI's GET; contents must name the sections' group and season.
                 if (position != (current?.let { seriesSteps.indexOf(it.step) } ?: -1) + 1 || current != null && !profile ||
                     current?.step == AbemaSeriesStep.SECTIONS && (step.groupId != current.groupId || step.seasonId != current.seasonId)) return false
+                // Check the request before advancing, so a refused one leaves the chain where it was.
+                if (!validPreflightOrGet(method, headers)) return false
                 seriesStep = step; profileUri = null; options = false; profile = false
             }
             if (!preflightOrGet(uri, method, headers)) return false
@@ -194,13 +196,16 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
         }
         return true
     }
+    private fun validPreflightOrGet(method: String, headers: Map<String, String>): Boolean {
+        if (method != "OPTIONS") return true
+        fun header(name: String) = headers.entries.singleOrNull { it.key.equals(name, true) }?.value
+        return header("Origin") == "https://abema.tv" && header("Access-Control-Request-Method") == "GET" &&
+            header("Access-Control-Request-Headers")?.trim()?.lowercase() == "authorization"
+    }
     private fun preflightOrGet(uri: URI, method: String, headers: Map<String, String>): Boolean {
         if (profileUri != null && profileUri != uri) return false
         if (method == "OPTIONS") {
-            fun header(name: String) = headers.entries.singleOrNull { it.key.equals(name, true) }?.value
-            if (options || profile || header("Origin") != "https://abema.tv" ||
-                header("Access-Control-Request-Method") != "GET" ||
-                header("Access-Control-Request-Headers")?.trim()?.lowercase() != "authorization") return false
+            if (options || profile || !validPreflightOrGet(method, headers)) return false
             options = true
         } else {
             if (profile) return false

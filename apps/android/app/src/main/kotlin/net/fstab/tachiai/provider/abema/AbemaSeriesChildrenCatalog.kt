@@ -86,9 +86,12 @@ internal class AbemaSeriesChildrenCatalog(
                 is CatalogResult.Value -> result.value
             }
             val seen = saved?.seen.orEmpty()
-            if (!page.answers(request) || page.entries.any { it.resource in seen }) {
+            if (!page.answers(request)) {
                 clear(); return@synchronized CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
             }
+            // A newest-first group can gain items between pages (a new broadcast
+            // during a tournament), shifting rows already shown onto this page.
+            val fresh = page.entries.filterNot { it.resource in seen }
             if (page.more && request.offset == ABEMA_SERIES_MAX_OFFSET) {
                 clear(); return@synchronized CatalogResult.Failure(CatalogFailure.TEMPORARY)
             }
@@ -98,14 +101,14 @@ internal class AbemaSeriesChildrenCatalog(
             val admitted = synchronized(lock) {
                 if (closed || poisoned || revision != local) false else {
                 if (next != null) {
-                    cursors[next] = Cursor(parent, request.next(page), local, seen + page.entries.map { it.resource }, groups)
+                    cursors[next] = Cursor(parent, request.next(page), local, seen + fresh.map { it.resource }, groups)
                     while (cursors.size > 16) cursors.remove(cursors.keys.first())
                 }
                 true }
             }
             if (!admitted) return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
             if (!current(local)) { clear(); return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED) }
-            CatalogResult.Value(CatalogPage(page.entries, next, groups.map { CatalogChildGroup(it.id, it.name) }, page.groupId))
+            CatalogResult.Value(CatalogPage(fresh, next, groups.map { CatalogChildGroup(it.id, it.name) }, page.groupId))
         }
     }
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }

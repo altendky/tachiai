@@ -297,6 +297,10 @@ an unreadable store), and `OWNER_CHANGED` only when a re-read owner no longer
 matches. Both still end the attempt as a temporary failure, which the retry
 loop may retry.
 
+Since #635 step 4, the renewal job joins a renewal already in flight for the
+same account scope instead of deferring, and adopts its result under the job's
+own retry policy, within its own deadline and without sharing its Network.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

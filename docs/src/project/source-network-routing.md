@@ -416,6 +416,18 @@ ran and nothing was scheduled before natural expiry. Stop now leaves an early
 attempt for its outcome to settle: it moves to the next early step or natural
 expiry. A natural-expiry attempt is still withdrawn by Stop.
 
+Since #635 step 4, a job that finds a renewal already in flight for the same
+account scope (instance, grant snapshot and route pool) joins it instead of
+deferring. The joined renewal counts as the job's attempt and its result is
+adopted under the policy above: success completes, a temporary failure retries
+only with the same pre-TLS availability evidence, and interaction, storage and
+unconfirmed-cleanup results defer. The job only reads that renewal's in-process
+result; its Network is never handed to it, and the job starts no second
+renewal. A joined renewal still running at the job's 90-second deadline, or at
+Stop, is left running: the job settles its own attempt as a Stop (an early
+attempt falls back as above). Work for a changed scope, another instance's
+renewal holding the device slot, or a remembered result still defers.
+
 Scheduling failure preserves desired metadata for later reconciliation without
 consuming a provider attempt. Running jobs are not replaced merely to update
 metadata. API 34 adds the Network-change callback; older supported versions rely
@@ -459,7 +471,7 @@ grant or exception text):
 | `TachiaiAbemaApproval` | `APPROVAL_END automatic=… success=…` plus the frozen diagnostic fields | approval browser |
 | `TachiaiAbemaRenewal` | `BROWSER_RESULT result=…` plus the diagnostic fields | approval browser |
 | `TachiaiAbemaRenewal` | `OPERATION_RESULT result=… cleanupConfirmed=…` plus the diagnostic fields, and `OPERATION_PRODUCER …` when the browser supplied one | default |
-| `TachiaiAbemaRenewal` | `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
+| `TachiaiAbemaRenewal` | `JOB_JOINED early=…`, `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
 | `TachiaiAbemaRenewal` | `RETRY attempt=… reason=…` (`TEMPORARY_FAILURE` or `CANCELLED`) | default (foreground readiness only, #635) |
 
 The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,

@@ -73,6 +73,7 @@ import net.fstab.tachiai.platform.media.NativeTimelineConsistency
 import net.fstab.tachiai.feature.connections.viewerSelectionStore
 import net.fstab.tachiai.presentation.ViewerSelectionRestore
 import net.fstab.tachiai.platform.media.NativePairMember
+import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlaybackLivenessTracker
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
@@ -1171,6 +1172,7 @@ open class PrototypeActivity : ComponentActivity() {
             pairOffsetState = { if (selection?.isPair == true) pairOffsetReadback() else null },
             onPairOffsetEnabled = ::togglePairOffset,
             onMarkedCorrespondence = { delta, correspondence -> requestTimingAdjustment(delta, true, correspondence) },
+            onSkip = ::requestSkip,
             selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet())
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
@@ -1183,7 +1185,7 @@ open class PrototypeActivity : ComponentActivity() {
                     current != null && budget === ownedBudget && ownedBudget?.active == true &&
                     viewer === pane && pane.visibility == View.VISIBLE && !isFinishing && !isDestroyed },
                 playingRequested = { desiredPlaying || current?.playingRequested == true },
-                play = ::playPair, pause = ::pausePair)
+                play = ::playPair, pause = ::pausePair, skip = { delta -> pane.remoteSkip(delta) })
             // Route this foreground window's media keys to its own pair rather
             // than relying on another application's global media priority.
             mediaController = MediaController(this, checkNotNull(pairMediaSession).token)
@@ -1195,6 +1197,21 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun requestRelativeAdjustment(delta: Long) = requestTimingAdjustment(delta, marked = false)
+
+    // Replay skip/scrub (#655). Both feeds of a pair move by one amount, so the
+    // pair offset, its saved preference and Timing history are left alone, and
+    // the requested play state is kept: the pair resumes itself after a held
+    // skip, and a single feed keeps playing through its seek.
+    private fun requestSkip(delta: Long): NativePairSkipPlan {
+        val current = playback ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true)
+            return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        val result = current.seekTogether(delta)
+        if (result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED) invalidatePlay()
+        Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}")
+        publishPairTransport()
+        return result
+    }
 
     private fun requestMarkedAlignment(delta: Long) = requestTimingAdjustment(delta, marked = true)
 

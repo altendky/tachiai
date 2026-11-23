@@ -602,15 +602,16 @@ rather than a bar that takes space from the feeds
 - **Top bar:** **‹ Stop** (formerly Back to sources, still asking "Stop
   playback?"), then **Audio**, **Timing** (pair only) and **⋯** (More) at the end.
 - **Bottom area:** each live feed's **Back to live A/B** with its hint, then
-  **Play/Pause** for the pair or single feed. #655 adds its position row,
-  scrub bar and skips here.
+  **Play/Pause** for the pair or single feed. On replays it also holds the
+  position row, scrub bar and skips ([below](#replay-navigation--655-part-1)).
 
 Both bars sit on a dark translucent band (black at 60%) with light text, so
 they stay legible over any video in light and dark themes; buttons keep their
 surfaces, 48 dp targets and TV focus outlines. Phone, tablet and TV show the
 same controls, labels and order. Focus starts on Play/Pause when the overlay
-first appears, and a remote reveal restores the last focused control but never
-Stop, so a reflexive Select cannot ask to stop playback. A tap or any remote key reveals the overlay; it hides after four idle
+first appears. A remote reveal with Select focuses Play/Pause; other reveals
+restore the last focused control but never Stop, so a reflexive Select cannot
+ask to stop playback. A tap or any remote key reveals the overlay; it hides after four idle
 seconds while playing, stays while paused, a panel is open or a control has
 focus. There is no separate Hide button: a video tap hides the overlay on
 phone, and Back hides it on phone and TV. The Back order is unchanged: menu,
@@ -640,15 +641,93 @@ the top bar, above the transport or a bottom panel and beside a side panel;
 the pane and its video keep their bounds.
 
 Remote handling is unchanged: the first key reveals the overlay without acting,
-except Select on a focused pane recovery button (#559), and focus restoration
-and the #617 protections remain. Keys while the overlay is hidden now pass
-through one path, where #655 will add replay Left/Right skips. The phone
-orientation action stays in ⋯, and floating-feed drag and tap-to-swap are
-unchanged.
+except Select on a focused pane recovery button (#559) and replay Left/Right
+skips (#655), and focus restoration and the #617 protections remain. Keys
+while the overlay is hidden pass through one path. The phone orientation
+action stays in ⋯, and floating-feed drag and tap-to-swap are unchanged.
 
 Pure layout and notice rules have JVM tests, and the viewer instrumentation
 tests were updated for the overlay and compile. They have not yet been run on
 a device for this change.
+
+### Replay navigation — #655 part 1
+
+Replays and on-demand items gain a position row, skips and a scrub bar in the
+bottom of the overlay
+([#655](https://github.com/altendky/tachiai/issues/655), decisions on
+[#655](https://github.com/altendky/tachiai/issues/655#issuecomment-7109865042)
+and [#656](https://github.com/altendky/tachiai/issues/656#issuecomment-7109787483)):
+
+- **Position row:** the target feed's title (`A · <title>` in a pair), elapsed
+  and total time and a scrub bar. Times are `h:mm:ss` once the total reaches an
+  hour, otherwise `m:ss`, for example `2:14:05 / 4:45:00`.
+- **Transport:** **⏪ 1 min**, **⏪ 10 s**, **Play/Pause**, **10 s ⏩**,
+  **1 min ⏩**. They share up to 560 dp equally; screen readers hear "Back 1
+  minute" through "Forward 1 minute". There are no ±10 min skips, no speed
+  control and no jump to the broadcast's clock time (a later follow-up).
+- **Live:** while any playing feed is live, the position row and skips are
+  hidden and the live controls (Back to live, catch-up) are unchanged. A pair
+  of one live and one replay feed counts as live. Rewinding a live buffer is
+  [#660](https://github.com/altendky/tachiai/issues/660).
+
+**Target and pairs.** The position shown is the primary feed's (after Swap,
+the other feed's); if the primary is waiting or failed, the other replay's. A
+skip or scrub in a timed pair moves **both feeds by the same amount, keeping
+their offset**; moving one feed relative to the other stays with Timing. The
+amount is shortened so neither feed leaves its range (a forward skip stops one
+second before the nearer end, so skipping never ends a feed). If either feed
+can't move — an advertisement, a live or unseekable feed, a feed still
+preparing or buffering, or one at its start or end — neither moves and a brief
+notice names the feed, such as "B is at its end; neither feed moved." A pair
+that is missing a feed does not skip the remaining one. The skip holds both
+feeds, seeks both, waits up to 8 s for both held targets and resumes them if
+they were playing; Pause during that wait leaves both at their targets,
+paused. It records no timing settlement, so the requested offset, saved pair
+offset, event marks and Timing history are unchanged. A single feed seeks
+directly and keeps playing. Presses made while a pair skip settles add up and
+run as one skip next.
+
+**Scrub bar.** While choosing, the time shows the pending target, such as
+`→ 1:42:10 / 3:24:00`, so the landing point is visible before it commits.
+Touch drags commit on release. With a remote or keyboard, each Left/Right
+press on the focused bar moves the target by 1% of the duration, at least
+10 s (about 2 min on a 3:24 replay); after half a second of holding, steps
+grow to 5% (about 10 min). The target stays within the replay. Select, or one
+second without a change, commits; Back abandons it. Up/Down leave the bar and
+commit a pending choice. The larger steps followed the user's SHIELD trial on
+2026-11-23, where 10 s steps were too slow on 3–5 h replays.
+
+**TV remote.** While the overlay is hidden on a replay, **Left/Right skip
+−10 s/+10 s** and keep it hidden, flashing the new position as a brief notice
+such as `+10 s · 2:14:15 / 4:45:00`; a held key skips once. On live feeds they
+reveal the overlay as before. **Up/Down** reveal it on the last focused control
+and **Select** reveals it on Play/Pause. Media **fast-forward/rewind skip
+±10 s** (once per press) on replays; Play/Pause keys are unchanged. Focus moves
+top bar ↔ scrub bar ↔ transport with Up/Down.
+
+**Phone.** A **double tap** on the left or right half of the video skips
+−10 s/+10 s, and each further quick tap skips again. A single tap still shows
+or hides the overlay, after the double-tap interval while skipping is
+available (immediately on live views). The floating feed's tap still swaps at
+once and has no double tap. With the overlay hidden, a double-tap skip flashes
+the position like the TV.
+
+When the viewer opens before its feeds are ready, Play/Pause is still
+disabled and focus falls back to another transport or top-bar control (never
+Stop); it moves to Play/Pause once that is enabled, unless focus was moved
+first.
+
+Phone and TV show the same controls, labels and states; only the input
+differs, as approved for this design (UX-012 in the
+[UX variation register](ux-variations.md)). The Android TV media session still
+reports no position or duration: a pair has no shared timeline and the viewer
+shows the replay position, so it stays unknown. The controlled web fixture has
+no replay transport ([ledger](implementation-differences.md)).
+
+Pair skip planning, time formatting, key mapping, tap disambiguation and the
+pair/single-feed seek transactions have JVM tests. New instrumentation tests
+for the transport row, scrub focus, TV keys and phone double tap compile; they
+have not been run on a device for this change.
 
 ### Manual quality preferences
 

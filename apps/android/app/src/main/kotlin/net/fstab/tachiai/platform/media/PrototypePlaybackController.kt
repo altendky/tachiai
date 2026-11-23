@@ -271,6 +271,32 @@ internal class PrototypePlaybackController(
         return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
     }
 
+    // Replay skip/scrub (#655). A pair moves both feeds together; a selected
+    // pair missing one feed does not move the other alone, which would lose
+    // their offset. A single feed seeks directly and keeps its play state.
+    fun seekTogether(deltaMs: Long): NativePairSkipPlan {
+        if (closed) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        pair?.let { return it.seekTogether(deltaMs) }
+        val selected = members().singleOrNull()
+        val side = if (selected == null) null else if (a === selected) NativeMixedSide.A else NativeMixedSide.B
+        if (!singleFeed || selected == null || side == null)
+            return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE,
+                blockedBy = NativeMixedSide.entries.firstOrNull { member(it) == null })
+        if (busy || !admitted(selected)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        val plan = nativePairSkipPlan(mapOf(side to snapshot(selected)), deltaMs)
+        if (plan.outcome != NativeSeekOutcome.REQUESTED && plan.outcome != NativeSeekOutcome.CLAMPED) return plan
+        if (closed || member(side) !== selected || !admitted(selected)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        val target = plan.targets.single()
+        val accepted = try { selected.seekToMs(target.targetMs) }
+            catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+        if (accepted.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE) ||
+            accepted.targetMs != target.targetMs) {
+            message = "Skip refused; the feed keeps its position."
+            return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
+        }
+        return plan
+    }
+
     fun catchUpPlan(side: NativeMixedSide): NativeSeekPlan {
         if (closed || busy) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         pair?.let { return it.catchUpPlan(side) }

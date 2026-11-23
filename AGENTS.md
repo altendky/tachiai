@@ -74,7 +74,17 @@ physical-device DRM, decoding, audio or performance behavior.
 
 Prefer provider-supported playback. Historical web comparisons keep the
 provider's original media element, DRM session, advertisements and login flow
-intact; focus mode must not capture, record or re-encode protected video.
+intact.
+
+Protected (DRM) media stays on the device and within playback. Tachiai must not
+record, save, export, share, rebroadcast or re-encode protected video or audio
+for keeping or distribution, and must not extract keys or decrypted media for
+use outside playback. Transient on-device processing during playback is
+allowed: in-memory buffering (such as the live rewind buffer), seeking and
+time-shifting, audio mixing and overlays, and on-the-fly analysis such as
+on-screen text recognition and translation, provided frames, audio and text
+derived from them are not persisted, logged or sent off the device (user
+decision, 2026-11-23).
 Historical user-approved debug native experiments are documented in
 [native-access evidence](docs/src/project/native-access-experiments.md) and
 [security boundaries](docs/src/project/security-and-privacy.md). On 2026-10-10

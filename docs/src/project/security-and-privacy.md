@@ -138,12 +138,29 @@ responses and necessary network destinations; approval alone does not make a
 capability implemented. Record precise endpoint-policy changes under the
 [media-origin scope](media-origin-approvals.md#general-integration-scope--2026-10-10).
 
+### Protected media handling — clarified 2026-11-23
+
+The user clarified the protected-media rule. Protected (DRM) media stays on the
+device and within playback: Tachiai must not record, save, export, share,
+rebroadcast or re-encode protected video or audio for keeping or distribution,
+and must not extract keys or decrypted media for use outside playback.
+Transient on-device processing during playback is allowed, including in-memory
+buffering such as the live rewind buffer
+([#568](https://github.com/altendky/tachiai/issues/568)), seeking and
+time-shifting, audio mixing and overlays, and on-the-fly analysis such as
+on-screen text recognition and translation
+([#664](https://github.com/altendky/tachiai/issues/664)), provided frames,
+audio and text derived from them are not persisted, logged or sent off the
+device. User-controlled screenshots remain allowed as before. This replaces
+the earlier "must not capture, record or re-encode protected video" wording,
+which was broader than intended.
+
 Keep provider-controlled authentication, protected local grants, selected-route
 ownership and safe diagnostics. The local inspection exception below permits
 interactive debugging access, while the app must not collect passwords, inject
 scripts into login pages, transfer cookies between devices, bypass TLS, expose secrets,
-extract keys, copy helper algorithms, reuse licensing responses or capture/
-re-encode protected media. Verified provider entitlement and access restrictions
+extract keys, copy helper algorithms, reuse licensing responses, or record,
+save, export or re-encode protected media. Verified provider entitlement and access restrictions
 remain mandatory. Renewal/session behavior must be understood and verified
 rather than guessed from the initial experiments.
 

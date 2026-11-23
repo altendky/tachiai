@@ -164,6 +164,7 @@ class StreamManagementControllerTest {
         controller.collection(catalog.collectionId); val parent = idle(controller)
         controller.children(catalog.parent); var child = idle(controller)
         assertEquals("Episodes from Saved show", child.childHeading)
+        assertEquals("Saved show", child.childTitle)
         assertEquals("Back to Following", child.navigationBackLabel)
         assertTrue(child.retainedDiscoveryContextIds.contains(parent.discoveryContextId))
         assertNotEquals(parent.discoveryContextId, child.discoveryContextId)
@@ -176,7 +177,7 @@ class StreamManagementControllerTest {
         assertEquals(parent.discoveryContextId, restored.discoveryContextId)
         assertEquals(child.configured, restored.configured)
         assertEquals(parent.privacyRevision, restored.privacyRevision)
-        assertNull(restored.childHeading); assertNull(restored.navigationBackLabel)
+        assertNull(restored.childHeading); assertNull(restored.childTitle); assertNull(restored.navigationBackLabel)
         assertFalse(restored.retainedDiscoveryContextIds.contains(restored.discoveryContextId))
         val calls = catalog.browses
         assertFalse(controller.back()); assertEquals(calls, catalog.browses)

@@ -119,6 +119,7 @@ internal fun ProviderInstancesScreen(instances: List<ProviderInstance>, profiles
             item(key = "routes") {
                 Button(onClick = onRoutes, enabled = actionsEnabled, modifier = Modifier.padding(top = 12.dp)) { Text("Routes · import / setup") }
             }
+            item(key = "translation") { ProviderTextTranslationSection(instances, enabled = actionsEnabled) }
         } else item(key = "editor:${instance.id}") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ProviderRouteEditor(instance, instances, profiles, busy, onRoutes,

@@ -15,6 +15,8 @@ internal enum class PrivateAuthorizationSlot(val bindingName: String) {
     VIEWER_SELECTION("viewer-selection"),
     PROVIDER_INSTANCES("provider-instances"),
     REPLAY_POSITIONS("replay-positions"),
+    // Display-only translation preferences (#643); no provider text or translations.
+    PROVIDER_TEXT_TRANSLATION("provider-text-translation"),
 }
 
 internal fun twitchProviderInstanceBindingName(id: String): String {

@@ -63,6 +63,9 @@ import net.fstab.tachiai.presentation.decodeConfiguredFeedChoice
 import net.fstab.tachiai.presentation.resolveConfiguredPrototypeSelection
 import net.fstab.tachiai.presentation.configuredSourceDisplayTitle
 import net.fstab.tachiai.presentation.providerDisplayNames
+import net.fstab.tachiai.presentation.ProviderTextSource
+import net.fstab.tachiai.presentation.configuredSourceTextSource
+import net.fstab.tachiai.presentation.providerTextSource
 import net.fstab.tachiai.provider.catalog.CatalogAvailability
 import net.fstab.tachiai.provider.catalog.CatalogIntent
 import net.fstab.tachiai.provider.catalog.formatCatalogDuration
@@ -219,15 +222,17 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                         Modifier.padding(start = 24.dp), style = MaterialTheme.typography.bodySmall)
                     items.forEach { source ->
                         val feedChoice = source.choice
+                        val textSource = ProviderTextSource(service, instance.id)
+                        val shownTitle = providerText(configuredSourceDisplayTitle(source), configuredSourceTextSource(source))
                         Row(Modifier.fillMaxWidth().padding(start = 24.dp)
                             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                             .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(configuredSourceDisplayTitle(source), style = MaterialTheme.typography.titleMedium)
+                                Text(shownTitle, style = MaterialTheme.typography.titleMedium)
                                 val choosable = episodes != null && collectionEpisodesSupported(source.entry.resource)
                                 if (choosable) PrototypeSlot.entries.mapNotNull { slot ->
-                                    assignments.episode(slot)?.takeIf { assignments.choice(slot) == feedChoice }?.let { "${slot.name}: ${it.title}" }
-                                }.ifEmpty { listOf("Collection · choose an episode") }.forEach {
+                                    assignments.episode(slot)?.takeIf { assignments.choice(slot) == feedChoice }?.let { slot to it }
+                                }.map { (slot, choice) -> "${slot.name}: ${catalogTitle(choice.episode, choice.title, textSource)}" }.ifEmpty { listOf("Collection · choose an episode") }.forEach {
                                     Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 } else if (source.entry.resource.intent == CatalogIntent.COLLECTION)
                                     Text("Collection · choose a stream in Manage streams", style = MaterialTheme.typography.bodySmall)
@@ -244,8 +249,8 @@ internal fun PrototypeSourcePicker(message: String?, onConnections: (() -> Unit)
                                 val checked = (if (slot == PrototypeSlot.A) assignments.a else assignments.b) == feedChoice
                                 val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp).semantics {
                                     contentDescription = if (instance.id == defaultProviderInstanceId(service) && instance.customName == null)
-                                        "Assign ${source.entry.title} to feed ${slot.name}"
-                                    else "Assign ${source.entry.title} using $providerName to feed ${slot.name}"
+                                        "Assign $shownTitle to feed ${slot.name}"
+                                    else "Assign $shownTitle using $providerName to feed ${slot.name}"
                                     if (television) selected = checked
                                 }
                                 if (television) androidx.compose.material3.OutlinedButton(
@@ -294,6 +299,7 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
     onBack: () -> Unit, onAssign: (PrototypeSlot, ConfiguredFeedChoice, ConfiguredEpisodeChoice, Boolean) -> Unit,
     scroll: Boolean, modifier: Modifier) {
     val state = episodes.state(source)
+    val textSource = providerTextSource(source.entry.resource.providerId, source.instanceId)
     val back = remember { FocusRequester() }
     val footer = remember { FocusRequester() }
     val lastRow = remember { FocusRequester() }
@@ -312,7 +318,7 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = onBack, modifier = Modifier.focusRequester(back)) { Text("‹ Back") }
             Column(Modifier.weight(1f)) {
-                Text(configuredSourceDisplayTitle(source), Modifier.semantics { heading() },
+                Text(providerText(configuredSourceDisplayTitle(source), configuredSourceTextSource(source)), Modifier.semantics { heading() },
                     style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(listOfNotNull(providerName, "Episodes, newest first").joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -323,17 +329,18 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
             RemoteTabRow(selected) {
                 state.groups.forEach { group ->
                     RemoteTab(selected = group.id == state.group, onClick = { episodes.selectGroup(source, group.id) },
-                        text = { Text(group.title, maxLines = 1) })
+                        text = { Text(providerText(group.title, textSource), maxLines = 1) })
                 }
             }
         }
         state.entries.forEachIndexed { index, entry ->
             val episode = ConfiguredEpisodeChoice.of(source.entry.resource, entry)
+            val shownTitle = catalogTitle(entry.resource, entry.title, textSource)
             Row(Modifier.fillMaxWidth().padding(start = 12.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(entry.title, style = MaterialTheme.typography.titleMedium)
+                    Text(shownTitle, style = MaterialTheme.typography.titleMedium)
                     entry.durationSeconds?.let { Text(formatCatalogDuration(it), style = MaterialTheme.typography.bodySmall) }
                 }
                 // A child Tachiai cannot play is listed without A/B controls.
@@ -343,7 +350,7 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                     val assignmentModifier = Modifier.width(if (television) 72.dp else 48.dp).height(48.dp)
                         .then(if (index == state.entries.lastIndex && slot == PrototypeSlot.A) Modifier.focusRequester(lastRow) else Modifier)
                         .semantics {
-                        contentDescription = "Assign ${entry.title} to feed ${slot.name}"
+                        contentDescription = "Assign $shownTitle to feed ${slot.name}"
                         if (television) selected = checked
                     }
                     if (television) androidx.compose.material3.OutlinedButton(

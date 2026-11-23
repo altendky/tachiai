@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Job
+import net.fstab.tachiai.feature.presentation.ProviderTextTranslation
 import net.fstab.tachiai.feature.presentation.TachiaiPrototypeTheme
 import net.fstab.tachiai.platform.network.connectionProfileStore
 import net.fstab.tachiai.platform.network.ConnectionSummary
@@ -68,7 +69,12 @@ class ProvidersActivity : ComponentActivity() {
     }
     private fun remove(id: String) = mutate {
         runBlocking { ProviderPreferenceWrites.await(id) }
-        providerInstanceStore(this).remove(id) { legacyProviderSettings(this) }
+        providerInstanceStore(this).remove(id) { legacyProviderSettings(this) }.also {
+            // A removed instance's Source language choice is not kept (#643).
+            ProviderTextTranslation.update(this) { settings ->
+                settings.copy(sourceLanguages = settings.sourceLanguages - id)
+            }
+        }
     }
     private fun mutate(action: () -> List<ProviderInstance>): Job? {
         if (busy) return null

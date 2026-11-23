@@ -35,7 +35,9 @@ internal fun TachiaiPrototypeTheme(television: Boolean = isTelevision(LocalConfi
         MaterialTheme(colorScheme = colors) {
             Surface(Modifier.fillMaxSize()) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()
-                    .then(if (television) Modifier.padding(horizontal = 32.dp, vertical = 20.dp) else Modifier)) { content() }
+                    .then(if (television) Modifier.padding(horizontal = 32.dp, vertical = 20.dp) else Modifier)) {
+                    ProvideProviderText(content)
+                }
             }
         }
     }

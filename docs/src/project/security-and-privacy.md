@@ -70,6 +70,33 @@ Provider replay availability deadlines remain independently enforced after the
 initial helper exchange. This changes local session duration, not entitlement,
 DRM exchange/renewal, TLS policy or media-origin approvals.
 
+## Provider text translation — #643
+
+The user decided on 2026-11-22 to translate provider-supplied text for display
+([#643](https://github.com/altendky/tachiai/issues/643)). Android uses ML Kit
+on the device:
+
+- Provider titles, group names and schedule titles are translated on the device.
+  Text is not sent to a translation service.
+- Nothing runs while translation is off; it is off by default. Turning it on
+  allows a one-time model download from Google (`dl.google.com`), about 30 MB
+  per source language, through Android's DownloadManager on the system network.
+  Provider routes are not used for it.
+- ML Kit's [data disclosure](https://developers.google.com/ml-kit/android-data-disclosure)
+  lists diagnostics it collects: device and app information, latency, input and
+  output sizes, the configured language pair and identified languages. It does
+  not list the text. Its startup provider is removed, so ML Kit is not
+  initialized until translation is on. No network capture has confirmed what
+  it sends.
+- Translations are cached in memory only, keyed by source text and language
+  pair, with no provider identity or account data. They are never logged.
+- The stored preference holds only the on/off switch and per-instance Source
+  language choices, in its own encrypted no-backup record.
+- Search, matching, saved items and identities keep the original text.
+
+ML Kit's usage terms limit TV use and ask for attribution. See
+[open questions](open-questions.md#product).
+
 ## Twitch live low latency — 2026-11-22
 
 On 2026-11-22 the user approved Twitch low latency for native live playback:

@@ -13,7 +13,7 @@ internal enum class AbemaRenewalRecordFamily {
     ROUTE_PROFILES, LEGACY_SETUP, PROVIDER_REGISTRY, QUALITY, PAIR_OFFSET, REPLAY_POSITION, CONFIGURED_SOURCE, ABEMA_ACCOUNT,
     TWITCH_AUTHORIZATION, TWITCH_FORGET_PENDING, COORDINATION_LOCK, DIAGNOSTIC_JOURNAL, CDN_REVIEW_JOURNAL,
     RECOVERY_CHECKPOINT, SELECTED_ACCOUNT_AUXILIARY, ACCOUNT_AUXILIARY, PRIVATE_RECORD_AUXILIARY,
-    SHARED_PREFERENCES, RENEWAL_SCHEDULE, UNKNOWN,
+    SHARED_PREFERENCES, RENEWAL_SCHEDULE, TRANSLATION_SETTINGS, UNKNOWN,
 }
 
 internal data class AbemaRenewalFamilyMutation(val family: AbemaRenewalRecordFamily, val changed: Int, val added: Int, val removed: Int)
@@ -36,6 +36,7 @@ private fun encryptedFamily(name: String): AbemaRenewalRecordFamily? {
             PrivateAuthorizationSlot.STREAM_QUALITY -> AbemaRenewalRecordFamily.QUALITY
             PrivateAuthorizationSlot.PAIR_OFFSETS -> AbemaRenewalRecordFamily.PAIR_OFFSET
             PrivateAuthorizationSlot.REPLAY_POSITIONS -> AbemaRenewalRecordFamily.REPLAY_POSITION
+            PrivateAuthorizationSlot.PROVIDER_TEXT_TRANSLATION -> AbemaRenewalRecordFamily.TRANSLATION_SETTINGS
             PrivateAuthorizationSlot.TWITCH_PROVIDER_PLAYBACK, PrivateAuthorizationSlot.TWITCH_PROVIDER_SMART_TV,
             PrivateAuthorizationSlot.TWITCH_PROVIDER_SMART_TV_LOCAL -> AbemaRenewalRecordFamily.TWITCH_AUTHORIZATION
         }
@@ -64,7 +65,7 @@ internal fun abemaRenewalRecordFamily(key: String, selected: String): AbemaRenew
         "twitch-catalog-$it"
     }) return AbemaRenewalRecordFamily.TWITCH_FORGET_PENDING
     if (name in setOf("connection-profiles.lock", "source-setup.lock", "provider-setup.lock", "provider-instances.lock",
-            "stream-quality.lock", "pair-offsets.lock", "replay-positions.lock", "viewer-selection.lock", "failure-diagnostics.tsv.lock", "timing-failures.tsv.lock", "playback-health.tsv.lock") ||
+            "stream-quality.lock", "pair-offsets.lock", "replay-positions.lock", "viewer-selection.lock", "provider-text-translation.lock", "failure-diagnostics.tsv.lock", "timing-failures.tsv.lock", "playback-health.tsv.lock") ||
         dynamic(name, "configured-provider-instance-", ".lock", ::configuredProviderInstanceBindingName) ||
         dynamic(name, "twitch-catalog-", ".lock") { "twitch-catalog-$it" }) return AbemaRenewalRecordFamily.COORDINATION_LOCK
     when (name) {

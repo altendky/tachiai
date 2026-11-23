@@ -5,9 +5,9 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
-import java.io.RandomAccessFile
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.PrototypeSource
 import net.fstab.tachiai.presentation.SourceSetup
 import net.fstab.tachiai.presentation.SourceRouteChoice
@@ -27,9 +27,7 @@ internal class SourceSetupStore(private val store: PrivateSecretStore, private v
     }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
-        if (file == null) action() else RandomAccessFile(file, "rw").use { handle ->
-            handle.channel.lock().use { action() }
-        }
+        if (file == null) action() else processFileLocked(file, action)
     }
 
     fun read(): Map<PrototypeSource, SourceSetup> = locked { readUnlocked() }

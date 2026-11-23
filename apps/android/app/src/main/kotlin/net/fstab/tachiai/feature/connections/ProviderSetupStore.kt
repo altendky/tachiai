@@ -5,9 +5,9 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
-import java.io.RandomAccessFile
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.*
 
 // New slot: never rewrite imported route secrets or the historical per-stream record.
@@ -15,7 +15,7 @@ internal class ProviderSetupStore(private val store: PrivateSecretStore, private
     companion object { private val lock = Any() }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
-        if (file == null) action() else RandomAccessFile(file, "rw").use { handle -> handle.channel.lock().use { action() } }
+        if (file == null) action() else processFileLocked(file, action)
     }
     private fun readExplicit(): Map<PrototypeService, ProviderSetup> {
         val bytes = store.read() ?: return emptyMap()

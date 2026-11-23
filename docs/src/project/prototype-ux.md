@@ -1476,6 +1476,27 @@ Provider-free JVM and JS tests cover the waiting policy, cadence, countdown
 wording, slot-start plumbing and the Twitch offline mapping. Device
 observation is recorded separately.
 
+### Channels ABEMA isn't opening — November 22, 2026
+
+[#632](https://github.com/altendky/tachiai/issues/632): between broadcasts,
+ABEMA reports some live channels as not open for viewing
+(`viewingOpened: false` on the channel list). Playback stays refused, but the
+feed now waits instead of showing "The provider could not prepare this feed.".
+It uses the same waiting checks and automatic start as a channel between
+programs, and the pane says which state it is in:
+
+- "This channel isn't open for viewing right now. Waiting for it to open." for
+  a channel ABEMA isn't opening (user decision, 2026-11-22: always wait).
+- "Waiting for this channel to go live." for a channel between programs, as
+  before.
+
+The next-program line from #560 applies to both. On the `tachiai-dev` emulator
+(Windscribe Tokyo, saved account), ジャンプフェスタチャンネル (`jumpfesta`) was
+off air. It showed the first line, then "Next: 夜桜さんちの大作戦 #1〜13【無料ビデオ1週間】
+at 10:00 PM (in 2 h 8 min).", then "Last checked 7:51 PM". The channel-list
+check now always reports its closed `CHANNEL_UNAVAILABLE` phase; other channel
+phases stay diagnostic-only.
+
 ### Next program on a waiting ABEMA channel — November 22, 2026
 
 [#560](https://github.com/altendky/tachiai/issues/560): a waiting ABEMA live

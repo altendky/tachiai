@@ -25,6 +25,10 @@ internal enum class PrototypeFailureReason(val message: String) {
     // One sentence per line keeps it readable beside a floating feed.
     CHANNEL_NOT_AIRING("This channel isn't showing a program Tachiai can play right now.\n" +
         "It may be between broadcasts. Try again when the program starts."),
+    // The provider isn't opening this channel for viewing (#632). The viewer
+    // waits for it with its own first line; this text is the fallback.
+    CHANNEL_NOT_OPEN("This channel isn't open for viewing right now.\n" +
+        "It may be between broadcasts. Try again when the program starts."),
     // The provider says this show hasn't started (#587). The viewer shows a
     // waiting state with an optional scheduled start, not this text.
     NOT_LIVE_YET("This show hasn't started yet."),

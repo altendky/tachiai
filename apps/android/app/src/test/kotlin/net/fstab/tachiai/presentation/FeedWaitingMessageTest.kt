@@ -109,4 +109,15 @@ class FeedWaitingMessageTest {
         assertEquals("1 h 1 min", waitingRemaining(60 * 60_000L + 1))
         assertEquals("24 h", waitingRemaining(24 * 3_600_000L))
     }
+
+    // #632: a channel the provider isn't opening names that state.
+    @Test fun aNotOpenChannelSaysSo() {
+        val zone = java.time.ZoneId.of("UTC")
+        val text = feedWaitingMessage(FeedWaitingKind.CHANNEL, null, null, 0, zone, java.util.Locale.US, notOpen = true)
+        assertEquals("This channel isn't open for viewing right now. Waiting for it to open.", text)
+        assertEquals("Waiting for this channel to go live.",
+            feedWaitingMessage(FeedWaitingKind.CHANNEL, null, null, 0, zone, java.util.Locale.US))
+        assertEquals("Waiting for this broadcast to start.",
+            feedWaitingMessage(FeedWaitingKind.OCCURRENCE, null, null, 0, zone, java.util.Locale.US, notOpen = true))
+    }
 }

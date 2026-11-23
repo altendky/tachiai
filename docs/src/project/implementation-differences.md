@@ -14,7 +14,7 @@ application, Kotlin provider/player/storage code and Rust timing core.
 
 | Area | Implemented difference | System purpose and boundary | Evidence |
 | --- | --- | --- | --- |
-| Foreground media integration | TV creates a foreground pair media session and sets the Activity's media controller; phone does not create that TV-specific session. Both use the existing guarded pair play/pause operations. | Connect Android media-key delivery to the foreground TV viewer, with no second audio-focus owner or new background playback service. This records wiring, not approval of remote button UX. | [Activity][media-session] |
+| Foreground media integration | TV creates a foreground pair media session and sets the Activity's media controller; phone does not create that TV-specific session. Both use the existing guarded pair play/pause operations. Fast-forward/rewind keys reach the viewer's replay skip on both form factors through ordinary key dispatch (#655); the TV session also routes them, and controller fast-forward/rewind commands, to that same skip. | Connect Android media-key delivery to the foreground TV viewer, with no second audio-focus owner or new background playback service. This records wiring, not approval of remote button UX. | [Activity][media-session] |
 | Launcher integration | The same APK declares ordinary Android and Leanback launcher categories, with Leanback and touchscreen support marked optional. | Make the app discoverable through the platform's applicable launcher without requiring a touchscreen. This records manifest integration, not approval of different in-app navigation or visual design. | [Manifest][manifest] |
 | Device-mode detection | TV adaptations use Android's Configuration UI mode; ordinary phone mode uses the shared default path. | Select the applicable system integration inside one application. Detection is not authorization for every UX branch it selects. | [Configuration detection][detection] |
 
@@ -63,6 +63,13 @@ a same-UID Binder service, which the bound viewer keeps alive
 ([source routing](source-network-routing.md#subsequent-native-transport-implementation)). This is
 an internal mechanism with no user-visible flow; a lost owner fails the route
 into existing recovery.
+
+Replay skip and scrub (#655 part 1) are Android-only so far: a pair skip holds
+both Media3 players, seeks both by one amount checked with the shared Rust
+relative-seek rule and resumes them, and the TV session's playback state still
+reports no position. The controlled web fixture keeps only joint Play/Pause and
+has no replay position row, skips or scrub bar; it would need the same rules
+before offering them. Its layout formula already takes the measured bar heights.
 
 ## Other implementations
 

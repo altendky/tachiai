@@ -28,6 +28,7 @@ class ForegroundPairMediaSessionTest {
         val admissionChecks = AtomicInteger()
         val plays = AtomicInteger()
         val pauses = AtomicInteger()
+        val skips = java.util.concurrent.CopyOnWriteArrayList<Long>()
         lateinit var session: ForegroundPairMediaSession
         lateinit var controller: MediaController
 
@@ -37,7 +38,8 @@ class ForegroundPairMediaSessionTest {
                     admitted = { admissionChecks.incrementAndGet(); admitted.get() },
                     playingRequested = requested::get,
                     play = { plays.incrementAndGet(); requested.set(true) },
-                    pause = { pauses.incrementAndGet(); requested.set(false) })
+                    pause = { pauses.incrementAndGet(); requested.set(false) },
+                    skip = { skips += it })
                 controller = MediaController(instrumentation.targetContext, session.token)
             }
         }
@@ -60,7 +62,8 @@ class ForegroundPairMediaSessionTest {
 
     @Test fun publishedStateExposesPairTransportWithoutInventingASharedTimeline() {
         Fixture().use { fixture ->
-            val actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
+            val actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_FAST_FORWARD or PlaybackState.ACTION_REWIND
             val initial = checkNotNull(fixture.controller.playbackState)
             assertEquals(PlaybackState.STATE_PAUSED, initial.state)
             assertEquals(actions, initial.actions)
@@ -143,6 +146,32 @@ class ForegroundPairMediaSessionTest {
                 assertEquals(1, fixture.plays.get())
                 assertEquals(1, fixture.pauses.get())
             }
+        }
+    }
+
+    // #655: fast-forward/rewind skip 10 s once per press, never play or pause.
+    @Test fun fastForwardAndRewindSkipOncePerPressBehindAdmission() {
+        Fixture().use { fixture ->
+            fixture.press(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
+            await("fast-forward skips") { fixture.skips.size == 1 }
+            fixture.press(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, repeat = 1)
+            fixture.press(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, action = KeyEvent.ACTION_UP)
+            fixture.press(KeyEvent.KEYCODE_MEDIA_REWIND)
+            await("rewind skips") { fixture.skips.size == 2 }
+            fixture.controller.transportControls.fastForward()
+            fixture.controller.transportControls.rewind()
+            await("controller skips") { fixture.skips.size == 4 }
+            fixture.settled()
+            assertEquals(listOf(10_000L, -10_000L, 10_000L, -10_000L), fixture.skips.toList())
+            assertEquals(0, fixture.plays.get())
+            assertEquals(0, fixture.pauses.get())
+
+            fixture.admitted.set(false)
+            val checks = fixture.admissionChecks.get()
+            fixture.press(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
+            fixture.controller.transportControls.rewind()
+            await("both refused skips reached the admission gate") { fixture.admissionChecks.get() >= checks + 2 }
+            assertEquals(4, fixture.skips.size)
         }
     }
 

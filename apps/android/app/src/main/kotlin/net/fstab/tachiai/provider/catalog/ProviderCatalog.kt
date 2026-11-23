@@ -1,5 +1,6 @@
 package net.fstab.tachiai.provider.catalog
 
+import net.fstab.tachiai.presentation.MAX_SCHEDULED_START_EPOCH_MS
 import net.fstab.tachiai.presentation.ProviderId
 import net.fstab.tachiai.presentation.validProviderInstanceId
 
@@ -165,6 +166,22 @@ internal data class CatalogPlaybackResource(val resource: CatalogResource) {
     init { require(resource.intent != CatalogIntent.COLLECTION) }
 }
 
+// A channel's scheduled program now and the next one (#560), from provider
+// schedule metadata. Display text only: never playback, alignment, seeking or
+// proof that the channel is live. Either may be unknown.
+internal data class CatalogScheduledProgram(val title: String, val startEpochMs: Long, val endEpochMs: Long) {
+    init {
+        require(title == title.trim() && title.length in 1..160 &&
+            title.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() })
+        require(startEpochMs in 1..MAX_SCHEDULED_START_EPOCH_MS && endEpochMs > startEpochMs &&
+            endEpochMs - startEpochMs <= MAX_CATALOG_DURATION_SECONDS * 1000)
+    }
+    override fun toString() = "CatalogScheduledProgram(redacted)"
+}
+internal data class CatalogAiring(val current: CatalogScheduledProgram? = null, val next: CatalogScheduledProgram? = null) {
+    init { require(current == null || next == null || next.startEpochMs > current.startEpochMs) }
+}
+
 // Bound to one instance by construction. Implementations own its selected-route
 // transport and account lifecycle. Calls run on a worker, not the UI thread.
 internal interface ProviderCatalog : AutoCloseable {
@@ -175,6 +192,9 @@ internal interface ProviderCatalog : AutoCloseable {
     fun lookup(input: String): CatalogResult<CatalogEntry>
     fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry>
     fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource>
+    // Optional: a channel's scheduled program around nowEpochMs (#560).
+    fun airing(resource: CatalogResource, nowEpochMs: Long): CatalogResult<CatalogAiring> =
+        CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
     override fun close() {}
 }
 

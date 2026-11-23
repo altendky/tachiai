@@ -52,11 +52,19 @@ internal object AbemaScheduleMetadataIpc {
     }
     fun nonce(value: String) = AbemaEpisodeMetadataIpc.nonce(value)
     // The bounded projection decodeAbemaScheduleProjection reads on the other side.
+    // A channel-filtered snapshot's slots also carry their times, or null (#560).
     fun projection(snapshot: AbemaScheduleSnapshot): String = JSONObject().put("truncated", snapshot.truncated).put("slots", JSONArray().apply {
-        snapshot.entries.forEach { entry ->
+        snapshot.entries.forEachIndexed { index, entry ->
             val request = checkNotNull(AbemaSlotRequest.from(entry.resource))
             put(JSONObject().put("id", request.slotId).put("channelId", request.channelId).put("title", entry.title)
-                .apply { entry.durationSeconds?.let { put("durationSeconds", it) } })
+                .apply { entry.durationSeconds?.let { put("durationSeconds", it) } }
+                .apply {
+                    if (snapshot.request.channelId != null) {
+                        val times = snapshot.times[index]
+                        put("startAt", times?.startEpochSeconds ?: JSONObject.NULL)
+                        put("endAt", times?.endEpochSeconds ?: JSONObject.NULL)
+                    }
+                })
         }
     }).apply { snapshot.request.channelId?.let { put("channelId", it) } }.toString()
     fun result(value: Result) = Bundle().apply {

@@ -258,6 +258,21 @@ These paths preserve UNKNOWN availability and make no playback or entitlement
 claim. Fixture coverage establishes filtering and ownership behavior; a fresh
 device observation of channel browsing is still required.
 
+Only this channel-filtered projection also carries each slot's `startAt` and
+`endAt` epoch seconds ([#560](https://github.com/altendky/tachiai/issues/560)).
+Both are present on every filtered slot. Both are `null` unless the raw pair
+is a positive span of at most a week, starting at or after 1 and ending at or
+before 99,999,999,999. Known times must agree with the slot's
+`durationSeconds`. The decoder refuses missing, one-sided or inconsistent
+times on a filtered snapshot, and any times on the global one. The snapshot
+keeps them in a list parallel to its entries; the entries themselves keep no
+schedule timestamp. The private IPC carries the same fields. They serve only
+the catalog's scheduled now/next answer for a waiting channel's
+[next-program line](prototype-ux.md#next-program-on-a-waiting-abema-channel--november-22-2026),
+never browsable, Schedule or configured rows. Channels absent from this
+legacy timetable, such as 大相撲チャンネル (`sumo`), have no answer
+([#630](https://github.com/altendky/tachiai/issues/630)).
+
 The public catalog under [#100](https://github.com/altendky/tachiai/issues/100)
 and [#101](https://github.com/altendky/tachiai/issues/101) offers **Schedule**
 alongside **Channels**, My List and History. Schedule uses a fresh guest rather
@@ -291,8 +306,9 @@ Whole-document parsing refuses duplicate JSON keys, duplicate/conflicting
 channel or slot IDs, malformed dates, invalid identity/title types, invalid
 UTF-8 and local bounds. Valid slot identities remain configurable when a
 channel/date annotation is missing; annotations never substitute a different
-channel or occurrence. Optional groups, timing, playback, regional policy,
-entitlement and progress fields are not projected. Every returned entry retains
+channel or occurrence. Optional groups, timing (beyond the duration and the
+channel-filtered times above), playback, regional policy, entitlement and
+progress fields are not projected. Every returned entry retains
 the existing `slot` / `channelId/slotId` BROADCAST resource with UNKNOWN
 availability and no schedule timestamp. The existing exact-slot refresh and
 explicit URL import retain their separate behavior.

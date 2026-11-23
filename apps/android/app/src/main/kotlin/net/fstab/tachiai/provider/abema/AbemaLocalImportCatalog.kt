@@ -33,5 +33,6 @@ internal class AbemaLocalImportCatalog(instance: ProviderInstance, setups: Map<P
     }
     override fun refresh(resource: CatalogResource) = metadata.refresh(resource)
     override fun resolve(resource: CatalogResource) = metadata.resolve(resource)
+    override fun airing(resource: CatalogResource, nowEpochMs: Long) = metadata.airing(resource, nowEpochMs)
     override fun close() { closed = true; metadata.close() }
 }

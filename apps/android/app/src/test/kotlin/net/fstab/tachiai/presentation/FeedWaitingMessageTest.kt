@@ -6,6 +6,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FeedWaitingMessageTest {
@@ -47,6 +48,55 @@ class FeedWaitingMessageTest {
     @Test fun theLastCheckIsOnItsOwnLine() {
         assertEquals("Waiting for this channel to go live.\nLast checked ${clock(now - 60_000)}",
             message(FeedWaitingKind.CHANNEL, null, checked = now - 60_000))
+    }
+
+    private fun program(start: Long, end: Long, now: Boolean = false) = FeedWaitingProgram("大相撲LIVE 13日目", start, end, now)
+    private fun scheduled(program: FeedWaitingProgram, checked: Long? = null, kind: FeedWaitingKind = FeedWaitingKind.CHANNEL,
+        start: Long? = null, zone: ZoneId = this.zone) =
+        feedWaitingMessage(kind, start, checked, now, zone, locale, program)
+
+    @Test fun aWaitingChannelNamesItsNextProgramBeforeTheLastCheck() {
+        val start = now + 29 * 60_000L
+        assertEquals("Waiting for this channel to go live.\nNext: 大相撲LIVE 13日目 at ${clock(start)} (in 29 min).\n" +
+            "Last checked ${clock(now - 60_000)}", scheduled(program(start, start + 3_600_000), checked = now - 60_000))
+        assertEquals("Waiting for this channel to go live.\nNext: 大相撲LIVE 13日目 at ${clock(start)} (in 29 min).",
+            scheduled(program(start, start + 3_600_000)))
+        // Another local day names the weekday; hours and minutes count down.
+        val tomorrow = now + (12 * 60 + 30) * 60_000L
+        assertEquals("Waiting for this channel to go live.\nNext: 大相撲LIVE 13日目 Sat ${clock(tomorrow)} (in 12 h 30 min).",
+            scheduled(program(tomorrow, tomorrow + 60_000)))
+    }
+
+    @Test fun theProgramFollowsTheDeviceZoneAndClockSetting() {
+        val start = Instant.parse("2026-11-21T02:30:00Z").toEpochMilli()
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        val tokyoClock = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(Instant.ofEpochMilli(start).atZone(tokyo))
+        assertTrue(tokyoClock.startsWith("11:30") && tokyoClock.endsWith("AM"))
+        assertEquals("Waiting for this channel to go live.\nNext: 大相撲LIVE 13日目 at $tokyoClock (in 30 min).",
+            scheduled(program(start, start + 60_000), zone = tokyo))
+        val day = feedWaitingMessage(FeedWaitingKind.CHANNEL, null, null, now, tokyo, Locale.UK, program(start, start + 60_000))
+        assertEquals("Waiting for this channel to go live.\nNext: 大相撲LIVE 13日目 at 11:30 (in 30 min).", day)
+    }
+
+    @Test fun aProgramScheduledNowShowsWhenItEnds() {
+        val end = now + 45 * 60_000L
+        assertEquals("Waiting for this channel to go live.\nScheduled now: 大相撲LIVE 13日目 (until ${clock(end)}).",
+            scheduled(program(now - 60_000, end, now = true)))
+        val afterMidnight = now + 4 * 3_600_000L
+        assertEquals("Waiting for this channel to go live.\nScheduled now: 大相撲LIVE 13日目 (until Sat ${clock(afterMidnight)}).",
+            scheduled(program(now - 60_000, afterMidnight, now = true)))
+    }
+
+    @Test fun noProgramLineWithoutAnUpcomingChannelProgram() {
+        // A next program whose start has passed, an occurrence, or nothing known keeps the plain pane.
+        assertEquals("Waiting for this channel to go live.", scheduled(program(now - 1, now + 60_000)))
+        assertEquals("Waiting for this broadcast to start.", scheduled(program(now + 60_000, now + 120_000), kind = FeedWaitingKind.OCCURRENCE))
+        assertEquals("Waiting for this channel to go live.\nLast checked ${clock(now)}",
+            feedWaitingMessage(FeedWaitingKind.CHANNEL, null, now, now, zone, locale, null))
+        // A provider's own start keeps its line; the program is added below it.
+        val start = now + 10 * 60_000L
+        assertEquals("Not live yet. Starts at ${clock(start)} (in 10 min).\nNext: 大相撲LIVE 13日目 at ${clock(start)} (in 10 min).",
+            scheduled(program(start, start + 60_000), start = start))
     }
 
     @Test fun remainingTimeRoundsUp() {

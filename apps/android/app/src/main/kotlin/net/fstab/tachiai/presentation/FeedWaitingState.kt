@@ -66,6 +66,11 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
         private set
     var lastCheckedEpochMs: Long? = null
         private set
+    // A waiting channel's start from its schedule (#560), not a provider "not
+    // live yet" signal: it only times checks like a signalled start, from the
+    // next scheduling on, and leaves the pane's first line alone.
+    var programStartEpochMs: Long? = null
+        private set
     // A fresh waiting period may look up a schedule once; later checks don't.
     var startLookupNeeded = false
         private set
@@ -81,7 +86,7 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
     private var failedChecks = 0
 
     private fun schedule(nowElapsedMs: Long, nowEpochMs: Long) {
-        val start = startEpochMs
+        val start = startEpochMs ?: programStartEpochMs.takeIf { kind == FeedWaitingKind.CHANNEL }
         var interval = when {
             start == null -> CHECK_MS
             // Approved: no checks before an occurrence's start.
@@ -154,6 +159,10 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
         return FeedWaitingTransientResult.WAITING
     }
 
+    fun programStart(epochMs: Long?) {
+        if (active) programStartEpochMs = epochMs?.takeIf { it in 1..MAX_SCHEDULED_START_EPOCH_MS }
+    }
+
     fun takeDue(nowElapsedMs: Long): FeedWaitingCheck? {
         val due = dueMs ?: return null
         if (!active || issued != null || nowElapsedMs < due) return null
@@ -188,7 +197,7 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
     fun started() = cancel()
 
     fun cancel() {
-        active = false; startEpochMs = null; lastCheckedEpochMs = null; startLookupNeeded = false
+        active = false; startEpochMs = null; programStartEpochMs = null; lastCheckedEpochMs = null; startLookupNeeded = false
         dueMs = null; issued = null; rateLimitStreak = 0; transientStreak = 0; failedChecks = 0; accountRecheck = false
         kind = FeedWaitingKind.CHANNEL
     }

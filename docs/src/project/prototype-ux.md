@@ -1381,8 +1381,10 @@ phone/tablet and TV.
 A next-program line from the channel timetable was implemented and then
 withdrawn. During viewing, its guest-process lookup timed out every time on
 the SHIELD and may disturb the held playback route.
-[#560](https://github.com/altendky/tachiai/issues/560) tracks it behind
-[#275](https://github.com/altendky/tachiai/issues/275). On TV, a remote press on
+[#560](https://github.com/altendky/tachiai/issues/560) tracked it behind
+[#275](https://github.com/altendky/tachiai/issues/275). Once #275's guest lookups
+leased the held route, the line returned in the waiting pane; see
+[waiting for live shows](#waiting-for-live-shows--november-20-2026). On TV, a remote press on
 Retry while the control bar is hidden only reveals the controls
 ([#559](https://github.com/altendky/tachiai/issues/559)). Starting automatically
 when the program begins, and the ended indicator
@@ -1440,14 +1442,17 @@ presentation on phone, tablet and TV.
     for another local day. After a passed start: "Not live yet. Should have
     started at 9:30 PM."
   - Without one: "Waiting for this channel to go live."
-  - A second line reads "Last checked 9:01 PM".
+  - A waiting ABEMA channel adds its scheduled program when known, see
+    [next program](#next-program-on-a-waiting-abema-channel--november-22-2026).
+  - The last line reads "Last checked 9:01 PM".
   - The button is **Check now**: it checks at once and restarts the timing.
 - **Start times.**
   - ABEMA slots: the slot's own start.
   - Twitch: one status request when waiting begins, which also tells an
     offline channel from a missing one and carries any published schedule
     start (#122). Later checks in the same period skip it.
-  - ABEMA channels: none yet (#560, blocked on #275).
+  - ABEMA channels: the next program's start from the channel's timetable
+    (#560) times the checks only. The pane's first line stays unchanged.
 - **Checks.**
   - Every minute; every 15 s within 2 minutes of a known start.
   - A slot isn't checked before its start, then every 15 s.
@@ -1470,6 +1475,51 @@ presentation on phone, tablet and TV.
 Provider-free JVM and JS tests cover the waiting policy, cadence, countdown
 wording, slot-start plumbing and the Twitch offline mapping. Device
 observation is recorded separately.
+
+### Next program on a waiting ABEMA channel — November 22, 2026
+
+[#560](https://github.com/altendky/tachiai/issues/560): a waiting ABEMA live
+channel shows its next scheduled program. This rebuilds the line withdrawn from
+[#557](https://github.com/altendky/tachiai/issues/557). Its guest lookup now
+leases the route the feed already holds
+([#275](https://github.com/altendky/tachiai/issues/275) stage 4), instead of
+starting a competing device. The pane is the same on phone, tablet and TV.
+
+- **The line.** It sits between the waiting line and "Last checked":
+  - "Next: 大相撲LIVE 十一月場所 13日目 at 9:30 AM (in 29 min)." The time
+    follows the device's zone and 12/24-hour setting. The countdown and the
+    weekday for another local day match the waiting pane's.
+  - "Scheduled now: 大相撲LIVE 十一月場所 13日目 (until 6:00 PM)." when the timetable lists a
+    program now but the channel isn't playable yet.
+  - Nothing when no program is known, the lookup fails or times out, or the
+    next start has passed. The pane then reads exactly as before.
+- **Source.** ABEMA's legacy timetable, filtered to the channel. Channels the
+  timetable leaves out keep the plain pane. 大相撲チャンネル (`sumo`) is one of
+  them; [#630](https://github.com/altendky/tachiai/issues/630) covers it.
+- **Never in the way.**
+  - The pane shows at once; the line appears when an answer arrives.
+  - Lookups run on their own worker, one at a time per feed. Waiting checks,
+    **Check now** and Retry never wait for them.
+  - A result from an earlier lookup or an earlier viewer session is dropped.
+  - No lookup starts while the next check goes through account readiness.
+- **How often.** Only on a refresh of the waiting state, and at most once a
+  minute.
+  - An answer is reused for 30 minutes, or until its next start (or the current
+    program's end) passes.
+  - Failures back off from 5 minutes, doubling up to an hour. A rate limit
+    waits at least until its retry time.
+- **Checks.** The known start times the waiting checks like any known start:
+  every 15 s within 2 minutes of it. It takes effect from the next scheduled
+  check.
+- **Boundaries.** Times appear only in this line. Channel **Browse programs**,
+  the Schedule collection and configured rows still show no times; see
+  [ABEMA catalog access](abema-catalog-access.md#public-schedule-snapshot).
+  Logs hold no title, identity or URL.
+
+Provider-free JVM and JS tests cover the projection, the now/next selection,
+the wording, cadence and dropped results. The device acceptance in #560 is
+still open: the line appearing within the deadline while the other feed plays,
+and a Retry during a lookup staying unaffected.
 
 ## Historical source configuration follow-up
 

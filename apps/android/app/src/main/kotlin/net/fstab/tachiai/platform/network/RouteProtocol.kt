@@ -32,6 +32,9 @@ internal interface RouteProtocol {
     fun parse(text: String): ConnectionProfile
     fun configurationIdentity(profile: ConnectionProfile): String
     fun conflictIdentity(profile: ConnectionProfile): String? = null
+    // A non-secret key the user can match against the provider's list, such
+    // as a WireGuard public key derived from the stored private key.
+    fun publicKey(profile: ConnectionProfile): String? = null
     // New imports only. Stored profiles are re-read with parse alone, so an
     // older record stays readable and removable after admission tightens.
     fun admitImport(profile: ConnectionProfile) {}

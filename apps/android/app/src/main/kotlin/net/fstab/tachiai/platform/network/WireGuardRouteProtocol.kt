@@ -13,6 +13,11 @@ internal object WireGuardRouteProtocol : RouteProtocol {
     override fun configurationIdentity(profile: ConnectionProfile) = wireGuardFields(profile).toSortedMap()
         .entries.joinToString("\n") { "${it.key}=${it.value}" }
 
+    override fun publicKey(profile: ConnectionProfile): String? = runCatching {
+        val private = java.util.Base64.getDecoder().decode(checkNotNull(wireGuardFields(profile)["[Interface].PrivateKey"]))
+        java.util.Base64.getEncoder().encodeToString(x25519PublicKey(private)).also { private.fill(0) }
+    }.getOrNull()
+
     override fun conflictIdentity(profile: ConnectionProfile) = wireGuardFields(profile).let { fields ->
         listOf("[Interface].PrivateKey", "[Peer].PublicKey").joinToString("\n") { checkNotNull(fields[it]) }
     }

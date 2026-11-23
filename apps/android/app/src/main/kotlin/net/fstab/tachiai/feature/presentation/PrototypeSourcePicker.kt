@@ -358,6 +358,7 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
                 }
             }
         }
+        state.status?.takeIf { state.loading }?.let { Text(it) }
         state.failure?.takeUnless { state.loading }?.let { Text(it) }
         if (state.loaded && !state.loading && state.failure == null && state.entries.isEmpty()) Text("This collection has no episodes.")
         if (footerShown) {

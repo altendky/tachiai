@@ -35,7 +35,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
     private var generation = 0L
     private var pending: Check? = null
     private inner class Check(val targets: List<AbemaReadinessTarget>, val complete: (AbemaAccountReadinessResult) -> Unit,
-        val run: Long, val began: Long, val deadline: Long) : ServiceConnection {
+        val run: Long, val began: Long, val deadline: Long, val renewing: (() -> Unit)?) : ServiceConnection {
         val nonce = UUID.randomUUID().toString().replace("-", "")
         var index = 0
         var sequence = 0L
@@ -45,6 +45,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
         private val forgetSender = Runnable { lateSender = null }
         var bound = false
         var ended = false
+        var renewingReported = false
         val reply = Messenger(object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(message: Message) {
                 if (message.what != AbemaReadinessIpc.RESULT) return
@@ -66,7 +67,11 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
                     if (decision.status != AbemaRenewalReadinessCoordinator.Status.LAUNCH) clearLateSender()
                     when (decision.status) {
                         AbemaRenewalReadinessCoordinator.Status.READY -> { index++; if (index == targets.size) finish(AbemaAccountReadinessResult.READY) else send() }
-                        AbemaRenewalReadinessCoordinator.Status.WAIT -> main.postDelayed({ if (current()) send() }, 250)
+                        AbemaRenewalReadinessCoordinator.Status.WAIT -> {
+                            // WAIT observes a renewal in flight or waiting to retry.
+                            if (!renewingReported) { renewingReported = true; renewing?.let { runCatching(it) } }
+                            main.postDelayed({ if (current()) send() }, 250)
+                        }
                         AbemaRenewalReadinessCoordinator.Status.FAILURE -> finish(AbemaAccountReadinessResult.FAILURE)
                         AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE -> finish(AbemaAccountReadinessResult.TEMPORARY_FAILURE)
                         AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED -> finish(AbemaAccountReadinessResult.INTERACTION_REQUIRED)
@@ -141,7 +146,10 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
         generation++; pending?.detach(); main.removeCallbacksAndMessages(null)
     }
     fun onPause() { resumed = false; generation++; pending?.detach(); main.removeCallbacksAndMessages(null) }
-    fun ensure(targets: List<AbemaReadinessTarget>, complete: (AbemaAccountReadinessResult) -> Unit) {
+    // renewing is called at most once, on main, when a current check first
+    // observes a renewal in flight; it never replaces or answers complete.
+    fun ensure(targets: List<AbemaReadinessTarget>, renewing: (() -> Unit)? = null,
+        complete: (AbemaAccountReadinessResult) -> Unit) {
         check(Looper.myLooper() == Looper.getMainLooper())
         pending?.detach(); generation++
         if (!resumed || closed) return
@@ -150,7 +158,7 @@ internal class AbemaAccountReadiness(private val activity: ComponentActivity) : 
         if (normalized.isEmpty()) { complete(AbemaAccountReadinessResult.READY); return }
         val began = SystemClock.elapsedRealtime()
         if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { complete(AbemaAccountReadinessResult.FAILURE); return }
-        val check = Check(normalized, complete, generation, began, began + AbemaReadinessIpc.LIMIT_MS)
+        val check = Check(normalized, complete, generation, began, began + AbemaReadinessIpc.LIMIT_MS, renewing)
         pending = check
         main.postDelayed({ if (!check.ended) check.finish(AbemaAccountReadinessResult.TEMPORARY_FAILURE) }, AbemaReadinessIpc.LIMIT_MS)
         try {

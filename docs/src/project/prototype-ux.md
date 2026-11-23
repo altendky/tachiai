@@ -321,6 +321,22 @@ results, a manual approval holding the approval browser, and callers on the
 account worker that renewal itself uses fail as before. An unexpired grant never
 waits.
 
+Since #635 step 7, every screen words the saved ABEMA account's state with one
+message set: Watch, Episodes, viewer feeds and Providers. **Ready** shows nothing
+and proceeds. While a check runs, Providers and the viewer feed show
+**Checking account connection…**, Watch keeps its provider-connection status and
+Episodes its loading state; once the check observes a renewal in flight or
+waiting to retry, each shows **Renewing the remembered ABEMA account…**. **Needs
+you**: a different account says to open ABEMA account in Providers and choose
+the saved account; a renewal that cannot continue by itself says to open ABEMA
+account in Providers to check the connection. A **storage problem** keeps its own
+text and also points there. **Temporarily unavailable** appears only after the
+renewal's retries are exhausted. A viewer feed failed by its account check now
+shows the same text as the other screens; a feed's account failure before any
+check points to the same place in Providers. Each screen still owns its own
+readiness observer, because a new check retires that observer's pending one;
+since step 2 those observers join one renewal per account.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

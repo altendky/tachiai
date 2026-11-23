@@ -108,7 +108,7 @@ class PickerCollectionEpisodesTest {
     @Test fun theAccountIsCheckedBeforeTheFirstPageAndItsRefusalIsShownWithoutBrowsing() {
         val checks = mutableListOf<(String?) -> Unit>()
         val gated = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
-            { _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
+            { _, _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
         val sumo = collection("394-72")
         gated.load(sumo, false)
         assertTrue(gated.state(sumo).loading); assertTrue(opened.isEmpty())
@@ -129,10 +129,38 @@ class PickerCollectionEpisodesTest {
         assertEquals(listOf("new", "mid", "old"), gated.state(sumo).entries.map { it.resource.identity })
     }
 
+    @Test fun aRenewingAccountShowsTheSharedStatusOnlyWhileTheFirstPageWaits() {
+        val progress = mutableListOf<(String) -> Unit>()
+        val checks = mutableListOf<(String?) -> Unit>()
+        val gated = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
+            { _, status, done -> progress += status; checks += done }) { source -> Catalog().also { opened += source to it } }
+        val sumo = collection("394-72")
+        gated.load(sumo, false)
+        progress.single()(net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_RENEWING_MESSAGE)
+        assertEquals(net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_RENEWING_MESSAGE, gated.state(sumo).status)
+        assertTrue(gated.state(sumo).loading)
+        // Ready: the status ends with the account wait and the page loads.
+        checks.removeAt(0)(null)
+        assertNull(gated.state(sumo).status)
+        deliver()
+        assertEquals(listOf("new", "mid"), gated.state(sumo).entries.map { it.resource.identity })
+        // A late progress report after the answer never reappears.
+        progress.removeAt(0)("late")
+        assertNull(gated.state(sumo).status)
+        // A refusal after renewing replaces the status with the refusal.
+        gated.load(sumo, false)
+        progress.removeAt(0)(net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_RENEWING_MESSAGE)
+        val refusal = checkNotNull(net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage(
+            net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult.TEMPORARY_FAILURE))
+        checks.removeAt(0)(refusal)
+        assertNull(gated.state(sumo).status); assertEquals(refusal, gated.state(sumo).failure)
+        assertFalse(gated.state(sumo).loading)
+    }
+
     @Test fun aLateAccountAnswerAfterCloseIsIgnored() {
         val checks = mutableListOf<(String?) -> Unit>()
         val gated = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
-            { _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
+            { _, _, done -> checks += done }) { source -> Catalog().also { opened += source to it } }
         val sumo = collection("394-72")
         gated.load(sumo, false); gated.close()
         checks.single()(null); deliver()

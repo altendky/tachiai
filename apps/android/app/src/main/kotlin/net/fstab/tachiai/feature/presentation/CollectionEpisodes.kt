@@ -8,7 +8,8 @@ import net.fstab.tachiai.provider.catalog.*
 // One collection's episode list on the main picker (#550), newest first in the
 // provider's own order. Pages already loaded stay for the session. groups are
 // the provider's episode groups (tabs, #622) in its order, and group the one
-// listed; both stay empty/null for collections without groups.
+// listed; both stay empty/null for collections without groups. status is the
+// shared account message (for example renewing) while a first page waits.
 internal data class CollectionEpisodesState(
     val entries: List<CatalogEntry> = emptyList(),
     val loading: Boolean = false,
@@ -17,6 +18,7 @@ internal data class CollectionEpisodesState(
     val failure: String? = null,
     val groups: List<CatalogChildGroup> = emptyList(),
     val group: String? = null,
+    val status: String? = null,
 )
 
 internal interface CollectionEpisodes {
@@ -43,9 +45,10 @@ internal class PickerCollectionEpisodes(
     private val worker: Executor,
     private val post: (() -> Unit) -> Unit,
     // Called on main before a first page or Retry, as Watch and Manage streams
-    // check the saved account before discovery. It must answer exactly once:
-    // null to continue, or the message to show instead of loading.
-    private val accountReady: (ConfiguredSource, (String?) -> Unit) -> Unit = { _, done -> done(null) },
+    // check the saved account before discovery. It may report progress (shown
+    // while loading) and must answer exactly once: null to continue, or the
+    // message to show instead of loading.
+    private val accountReady: (ConfiguredSource, (String) -> Unit, (String?) -> Unit) -> Unit = { _, _, done -> done(null) },
     private val open: (ConfiguredSource) -> ProviderCatalog,
 ) : CollectionEpisodes {
     private val states = mutableStateMapOf<String, CollectionEpisodesState>()
@@ -74,19 +77,24 @@ internal class PickerCollectionEpisodes(
         val cursor = if (more) cursors.remove(key) ?: return else null
         if (!more) cursors.remove(key)
         val switching = group != current.group
-        states[key] = if (switching) current.copy(entries = emptyList(), group = group, loading = true, more = false, failure = null)
-            else current.copy(loading = true, failure = null)
+        states[key] = if (switching) current.copy(entries = emptyList(), group = group, loading = true, more = false, failure = null,
+            status = null) else current.copy(loading = true, failure = null, status = null)
         val local = generation
         val token = (requests[key] ?: 0L) + 1
         requests[key] = token
         val latest = { local == generation && requests[key] == token }
         // Later pages continue an already admitted listing.
         if (more) browse(source, key, cursor, group, latest)
-        else accountReady(source) { refused ->
+        else accountReady(source, { status ->
+            if (latest()) states[key]?.takeIf { it.loading }?.let { states[key] = it.copy(status = status) }
+        }) { refused ->
             if (!latest()) return@accountReady
-            if (refused == null) { browse(source, key, null, group, latest); return@accountReady }
             val previous = states[key] ?: CollectionEpisodesState()
-            states[key] = previous.copy(loading = false, loaded = true, more = false, failure = refused)
+            if (refused == null) {
+                states[key] = previous.copy(status = null)
+                browse(source, key, null, group, latest); return@accountReady
+            }
+            states[key] = previous.copy(loading = false, loaded = true, more = false, failure = refused, status = null)
         }
     }
 
@@ -114,7 +122,7 @@ internal class PickerCollectionEpisodes(
                             group = result.value.group ?: group?.takeIf { id -> result.value.groups.any { it.id == id } })
                     }
                     is CatalogResult.Failure -> previous.copy(loading = false, loaded = true, more = false,
-                        failure = collectionEpisodesFailureMessage(result.reason))
+                        failure = collectionEpisodesFailureMessage(result.reason), status = null)
                 }
             }
         }

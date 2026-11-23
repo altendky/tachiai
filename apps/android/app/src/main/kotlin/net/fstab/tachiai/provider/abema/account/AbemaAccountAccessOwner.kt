@@ -96,7 +96,10 @@ internal class AbemaAccountAccessOwner(
         }
         callback?.invoke()
     }
-    inner class Attachment internal constructor() : AutoCloseable {
+    // refresh: this attachment may wait for the device's refresh owner to renew
+    // an expired saved grant (#635 step 6). Callers that the renewal itself
+    // runs beside (the account worker) attach without it.
+    inner class Attachment internal constructor(internal val refresh: AbemaAccountAccessRefresh? = null) : AutoCloseable {
         private val active = AtomicBoolean(true)
         private val released = AtomicBoolean()
         fun acquire(beganElapsedMs: Long = elapsedMs(), deadlineElapsedMs: Long =
@@ -127,11 +130,11 @@ internal class AbemaAccountAccessOwner(
         }
         override fun toString() = "AbemaAccountAccessAttachment(redacted)"
     }
-    fun attach(): Attachment = synchronized(lock) {
+    fun attach(refresh: AbemaAccountAccessRefresh? = null): Attachment = synchronized(lock) {
         if (closed || poisoned || (attachments == 0 && flight != null)) throw AbemaAccountException(
             if (poisoned) AbemaAccountFailure.CLEANUP_FAILED else AbemaAccountFailure.CANCELLED)
         attachments++
-        Attachment()
+        Attachment(refresh)
     }
     private fun revokeLocked(): AbemaAccountCleanupReceipt<AbemaAccountTransport>? {
         generation++; proof = null
@@ -205,7 +208,34 @@ internal class AbemaAccountAccessOwner(
             { currentProof(value, attachment)?.snapshot?.record?.grant?.expiresAtMs })
         return if (lease.grant == null) AbemaAccountAccessResult.Guest(lease) else AbemaAccountAccessResult.Account(lease)
     }
+    // An expired saved grant (found before or during validation) waits once
+    // for the refresh owner's renewal, joining any renewal in flight, and then
+    // validates the renewed grant within the same deadline. Only an attachment
+    // with a refresh waits; the wait never calls back into this owner.
     private fun acquire(attachment: Attachment, began: Long, deadline: Long): AbemaAccountAccessResult {
+        val first = acquireOnce(attachment, began, deadline)
+        val refresh = attachment.refresh ?: return first
+        if (first !is AbemaAccountAccessResult.Failed || first.category !in setOf(AbemaAccountFailure.EXPIRED,
+                AbemaAccountFailure.CANCELLED) || !attachment.active() || !savedGrantExpired()) return first
+        mark("REFRESH_WAIT")
+        val outcome = runCatching {
+            refresh.await(deadline - ABEMA_ACCESS_REFRESH_VALIDATION_MS) {
+                attachment.active() && synchronized(lock) { !closed && !poisoned }
+            }
+        }.getOrDefault(AbemaAccountAccessRefresh.Outcome.UNCHANGED)
+        mark("REFRESH_${outcome.name}")
+        return when (outcome) {
+            AbemaAccountAccessRefresh.Outcome.RENEWED -> acquireOnce(attachment, began, deadline)
+            AbemaAccountAccessRefresh.Outcome.PENDING -> AbemaAccountAccessResult.Failed(AbemaAccountFailure.TEMPORARY)
+            AbemaAccountAccessRefresh.Outcome.UNCHANGED -> first
+        }
+    }
+    private fun savedGrantExpired(): Boolean = runCatching {
+        val snapshot = store.readSnapshot()
+        val record = snapshot.record
+        store.usable(snapshot.revision) && record != null && wallMs() >= record.grant.expiresAtMs
+    }.getOrDefault(false)
+    private fun acquireOnce(attachment: Attachment, began: Long, deadline: Long): AbemaAccountAccessResult {
         val entered = elapsedMs()
         if (began < 0 || began > Long.MAX_VALUE - 30_000 || entered < began || deadline <= entered ||
             deadline > began + 30_000) return AbemaAccountAccessResult.Failed(AbemaAccountFailure.TIME_LIMIT_REACHED)

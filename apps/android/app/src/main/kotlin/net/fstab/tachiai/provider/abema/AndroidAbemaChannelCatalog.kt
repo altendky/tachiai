@@ -141,7 +141,7 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
             onCleanupFailure = { accountPoisoned.set(true) },
             kind = kind,
             sharedAccountFactory = {
-                AndroidAbemaAccountAccessOwners.attach(application, instanceId, owner.proof())
+                AndroidAbemaAccountAccessOwners.attach(application, instanceId, owner.proof(), refresh = true)
             },
         )
     }

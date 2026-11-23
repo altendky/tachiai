@@ -153,9 +153,13 @@ internal object AndroidAbemaAccountAccessOwners {
         AbemaAccountWorkers.poisoned(request.instance).set(true)
     }
     fun attach(service: Service, request: AbemaAccountAccessIpc.Request): AbemaAccountAccessOwner.Attachment {
-        return attach(service, request.instance, request.proof)
+        return attach(service, request.instance, request.proof, refresh = true)
     }
-    fun attach(context: Context, instanceId: String, ownerProof: String): AbemaAccountAccessOwner.Attachment {
+    // refresh: an expired saved grant waits for the main process's renewal
+    // (#635 step 6). Callers on the account worker, which renewal itself uses,
+    // keep the default.
+    fun attach(context: Context, instanceId: String, ownerProof: String,
+        refresh: Boolean = false): AbemaAccountAccessOwner.Attachment {
         if (instanceId in blocked || AbemaAccountWorkers.poisoned(instanceId).get())
             throw AbemaAccountException(AbemaAccountFailure.CLEANUP_FAILED)
         val binding = androidAbemaAccountConnectionBinding(context, instanceId, ownerProof)
@@ -176,16 +180,17 @@ internal object AndroidAbemaAccountAccessOwners {
         // revision and exact stored record against the captured route owner.
         return attachAbemaAccountAccessOwner(owner,
             freshScopeCurrent = { binding.sameOwner(captured) && instanceId !in blocked && !AbemaAccountWorkers.poisoned(instanceId).get() },
-            cleanupFailed = { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) })
+            cleanupFailed = { blocked.add(instanceId); AbemaAccountWorkers.poisoned(instanceId).set(true) },
+            refresh = if (refresh) androidAbemaAccountAccessRefresh(context, AbemaReadinessTarget(instanceId, ownerProof)) else null)
     }
 }
 
 // Worker-only seam: cached owners must not substitute their original caller's
 // scope for the current attach request. No protected work occurs under a lock.
 internal fun attachAbemaAccountAccessOwner(owner: AbemaAccountAccessOwner, freshScopeCurrent: () -> Boolean,
-    cleanupFailed: () -> Unit): AbemaAccountAccessOwner.Attachment {
+    cleanupFailed: () -> Unit, refresh: AbemaAccountAccessRefresh? = null): AbemaAccountAccessOwner.Attachment {
     if (!runCatching(freshScopeCurrent).getOrDefault(false)) accountRefused()
-    val attachment = owner.attach()
+    val attachment = owner.attach(refresh)
     if (!runCatching(freshScopeCurrent).getOrDefault(false)) {
         attachment.close()
         if (!attachment.cleanupConfirmed) cleanupFailed()

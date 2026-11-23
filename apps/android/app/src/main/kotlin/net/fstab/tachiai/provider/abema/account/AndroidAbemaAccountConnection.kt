@@ -23,7 +23,12 @@ import net.fstab.tachiai.provider.abema.*
 import net.fstab.tachiai.presentation.validProviderInstanceId
 
 internal object AbemaAccountWorkers {
-    val worker = Executors.newSingleThreadExecutor { Thread(it, "abema-account").apply { isDaemon = true } }
+    private val onWorkerThread = ThreadLocal.withInitial { false }
+    val worker = Executors.newSingleThreadExecutor { task ->
+        Thread({ onWorkerThread.set(true); task.run() }, "abema-account").apply { isDaemon = true }
+    }
+    // Renewal operations use this worker, so nothing on it may wait for a renewal (#635 step 6).
+    fun onWorker(): Boolean = onWorkerThread.get()
     val cancellation = Executors.newFixedThreadPool(2) { Thread(it, "abema-account-cancel").apply { isDaemon = true } }
     private val poisonedOwners = ConcurrentHashMap<String, AtomicBoolean>()
     fun poisoned(instanceId: String) = poisonedOwners.computeIfAbsent(instanceId) { AtomicBoolean() }

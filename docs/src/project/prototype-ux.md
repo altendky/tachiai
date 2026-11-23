@@ -310,6 +310,17 @@ route or setup changes reschedule it; a manual approval in progress postpones
 it. The renewal job still covers a process that is not running. Screens are
 unchanged.
 
+Since #635 step 6, account access for playback, guest discovery and the
+in-process ABEMA catalogs no longer fails outright on an expired saved grant.
+The acquisition asks the main process's foreground readiness path (its own
+route, no lead) to renew, joins any renewal already in flight, and validates the
+renewed grant within its own deadline. It stops waiting 5 seconds before that
+deadline and then fails as a temporary failure; the renewal keeps its own
+90-second limit. Interaction, storage, unconfirmed-cleanup and exhausted-retry
+results, a manual approval holding the approval browser, and callers on the
+account worker that renewal itself uses fail as before. An unexpired grant never
+waits.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

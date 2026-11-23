@@ -10,15 +10,25 @@ internal fun validAbemaEmailHandoff(nonce: String, instanceId: String, ownerProo
 // serialized with cancellation; no pending credential survives process death.
 internal class AbemaEmailGrantInbox(private val elapsedMs: () -> Long, private val wallMs: () -> Long) {
     private class Pending(val instanceId: String, val proof: String, val deadline: Long,
-        val receiver: (AbemaAccountGrant) -> Unit)
+        val receiver: (AbemaAccountGrant) -> Unit, val manual: Boolean)
     private val lock = Any()
     private val pending = mutableMapOf<String, Pending>()
     fun register(nonce: String, instanceId: String, ownerProof: String, deadlineElapsedMs: Long,
-        receiver: (AbemaAccountGrant) -> Unit) = synchronized(lock) {
+        receiver: (AbemaAccountGrant) -> Unit) = add(nonce, instanceId, ownerProof, deadlineElapsedMs, receiver, false)
+    // A user-started approval: while it is pending it holds the approval
+    // browser, and the pre-expiry renewal timer (#635 step 5) does not start.
+    fun registerManual(nonce: String, instanceId: String, ownerProof: String, deadlineElapsedMs: Long,
+        receiver: (AbemaAccountGrant) -> Unit) = add(nonce, instanceId, ownerProof, deadlineElapsedMs, receiver, true)
+    private fun add(nonce: String, instanceId: String, ownerProof: String, deadlineElapsedMs: Long,
+        receiver: (AbemaAccountGrant) -> Unit, manual: Boolean) = synchronized(lock) {
         require(validAbemaEmailHandoff(nonce, instanceId, ownerProof, deadlineElapsedMs))
         val now = elapsedMs()
         require(now >= 0 && now < deadlineElapsedMs && !pending.containsKey(nonce))
-        pending[nonce] = Pending(instanceId, ownerProof, deadlineElapsedMs, receiver)
+        pending[nonce] = Pending(instanceId, ownerProof, deadlineElapsedMs, receiver, manual)
+    }
+    fun manualPending(): Boolean = synchronized(lock) {
+        val now = elapsedMs()
+        pending.values.any { it.manual && now >= 0 && now < it.deadline }
     }
     fun unregister(nonce: String) { synchronized(lock) { pending.remove(nonce) } }
     fun deliver(nonce: String, instanceId: String, ownerProof: String, deadlineElapsedMs: Long,

@@ -243,9 +243,10 @@ and authentication popups do not request keep-awake for the whole window.
 
 ## Remembered ABEMA account renewal — October 18
 
-The application checks saved ABEMA accounts on foreground startup and
-before configured discovery or playback. When the native grant has expired,
-or when the renewal job runs 15, 10 or 5 minutes before its natural expiry,
+The application checks saved ABEMA accounts before configured discovery or
+playback. When the native grant has expired, when the main process's
+pre-expiry timer fires, or when the renewal job runs 15, 10 or 5 minutes before
+its natural expiry,
 one bounded application-owned operation reuses the remembered email browser
 session through that instance's selected connection. The browser runs in an
 unattached Service and launches no Activity. A trusted passive account request
@@ -300,6 +301,14 @@ loop may retry.
 Since #635 step 4, the renewal job joins a renewal already in flight for the
 same account scope instead of deferring, and adopts its result under the job's
 own retry policy, within its own deadline and without sharing its Network.
+
+Since #635 step 5, the resume-time startup readiness check is removed. Instead,
+while the main process is alive, a timer renews each saved grant once at the
+renewal job's first due time through the foreground readiness path and its retry
+loop, joining any renewal already in flight. Renewal, acceptance, Forget and
+route or setup changes reschedule it; a manual approval in progress postpones
+it. The renewal job still covers a process that is not running. Screens are
+unchanged.
 
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue

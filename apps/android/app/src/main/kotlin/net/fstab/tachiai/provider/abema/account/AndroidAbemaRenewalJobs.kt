@@ -63,10 +63,16 @@ internal object AndroidAbemaRenewalJobs {
     @Synchronized private fun owner(context: Context): Runtime = runtime ?:
         Runtime(context.applicationContext as Application).also { runtime = it }
     fun initialize(context: Context) { if (supported(context)) owner(context).initialize() }
-    fun accepted(context: Context) { if (supported(context)) owner(context).also { it.initialize(); it.reconcileLater() } }
-    fun changed(context: Context) { if (supported(context)) owner(context).also { it.changed(); it.initialize(); it.reconcileLater() } }
+    // The pre-expiry timer (#635 step 5) follows the job's triggers: process
+    // start, account acceptance or Forget, and route or setup changes.
+    fun accepted(context: Context) {
+        if (supported(context)) owner(context).also { it.initialize(); it.reconcileLater(); it.reconcileTimer() }
+    }
+    fun changed(context: Context) {
+        if (supported(context)) owner(context).also { it.changed(); it.initialize(); it.reconcileLater(); it.reconcileTimer(reset = true) }
+    }
     fun forgotten(context: Context, instance: String) {
-        if (supported(context)) owner(context).also { it.invalidate(instance); it.initialize(); it.forget(instance) }
+        if (supported(context)) owner(context).also { it.invalidate(instance); it.initialize(); it.forget(instance); it.reconcileTimer() }
     }
     fun start(service: AbemaRenewalJobService, params: JobParameters): Boolean {
         if (!supported(service)) return false
@@ -94,10 +100,15 @@ internal object AndroidAbemaRenewalJobs {
         private val epoch = AtomicLong()
         private val running = AbemaRenewalJobOwners<Running>()
         private val retiring = ConcurrentHashMap<Int, Int>()
+        private val log = { message: String -> android.util.Log.i("TachiaiAbemaRenewal", message); Unit }
+        private val timer = AbemaRenewalTimer(System::currentTimeMillis,
+            { wait, action -> main.postDelayed({ enqueue(action) }, wait) },
+            AndroidAbemaEmailGrantHandoff.inbox::manualPending, ::renewEarly, log)
 
         fun initialize() {
             if (!initialized.compareAndSet(false, true)) return
             enqueue { ledger.recoverCold(); reconcile() }
+            reconcileTimer()
         }
         private fun unlocked() = context.getSystemService(UserManager::class.java).isUserUnlocked
         private fun enqueue(action: () -> Unit) {
@@ -116,6 +127,27 @@ internal object AndroidAbemaRenewalJobs {
             running.snapshot().filter { it.key.instance == instance }.forEach { it.run.stop() }
         }
         fun reconcileLater() = enqueue(::reconcile)
+        fun reconcileTimer(reset: Boolean = false) = enqueue {
+            if (!unlocked()) return@enqueue
+            val instances = providerInstanceStore(context).read { legacyProviderSettings(context) }
+                .filter { it.service == PrototypeService.ABEMA }.map { it.id }
+            timer.reconcile(instances.associateWith { runCatching { inspect(it)?.generation }.getOrNull() }, reset)
+        }
+
+        // The foreground readiness path with the job's lead, but this process's
+        // own route rather than a job Network, and never while a manual
+        // approval holds the approval browser.
+        private fun renewEarly(instance: String, generation: AbemaRenewalGeneration, done: () -> Unit) {
+            val began = SystemClock.elapsedRealtime()
+            if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { done(); return }
+            AbemaRenewalTimerRun(instance, generation, began + AbemaReadinessIpc.LIMIT_MS, worker,
+                SystemClock::elapsedRealtime, ::inspect,
+                { target, deadline, admitted -> AndroidAbemaRenewalReadiness.reserve(context, target, deadline,
+                    admitted = admitted, leadMs = ABEMA_RENEWAL_LEAD_MS) },
+                { !disabled.get() && timer.current(instance, generation) &&
+                    !AndroidAbemaEmailGrantHandoff.inbox.manualPending() },
+                { wait, action -> main.postDelayed(action, wait) }, done, log).start()
+        }
         fun forget(instance: String) = enqueue { ledger.reconcile(instance, null); reconcile() }
 
         private fun inspect(instance: String): AbemaRenewalJobPreflight? {

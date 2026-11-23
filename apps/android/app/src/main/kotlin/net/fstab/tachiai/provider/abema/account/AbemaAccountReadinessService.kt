@@ -129,7 +129,8 @@ internal object AndroidAbemaRenewalReadiness {
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
         })
-    // Foreground readiness only (#635 step 1); the renewal job keeps its ledger policy.
+    // Foreground-route callers only (#635 steps 1 and 5): readiness and the
+    // pre-expiry timer. The renewal job keeps its ledger policy and Network.
     private val retries: AbemaRenewalRetryLoop<Work, AbemaAccountRenewalOperation> = AbemaRenewalRetryLoop(coordinator, ownedAdmission,
         instanceOf = { it.owner.instance.id }, scopeOf = { AbemaRenewalScope.of(it.owner, it.expected) },
         elapsed = SystemClock::elapsedRealtime, log = { android.util.Log.i("TachiaiAbemaRenewal", it) })
@@ -151,7 +152,8 @@ internal object AndroidAbemaRenewalReadiness {
 
     // The owner must store the returned lease before explicitly activating it.
     // Observers never receive a ticket, operation, transport or cancellation right.
-    // leadMs > 0 (the renewal job) admits renewal that close to natural expiry.
+    // leadMs > 0 (the renewal job and pre-expiry timer) admits renewal that
+    // close to natural expiry.
     // Foreground readiness keeps treating an unexpired grant as READY, even
     // while an early renewal runs: leases on it follow the renewal's result.
     fun reserve(context: Context, target: AbemaReadinessTarget, deadline: Long,
@@ -233,7 +235,7 @@ internal object AndroidAbemaRenewalReadiness {
             retries.reserve(instance, AbemaRenewalScope.of(owner, snapshot),
                 Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline, admitted,
                 construct = { ticket, work, completed -> createOperation(context.applicationContext, ticket, work, completed) },
-                notify = notify, retry = leadMs == 0L)
+                notify = notify, retry = network == null)
         } catch (error: AbemaAccountException) {
             if (!permitted()) return AbemaRenewalReservation.Deferred
             AbemaRenewalReservation.NoWork(failed(when (error.category) {

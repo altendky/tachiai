@@ -268,6 +268,20 @@ choose the saved account. Missing candidates, timeouts, network/region/TLS
 errors, 401/403 and unregistered-email results do not establish that sign-in or
 an email code is required; ambiguous results remain temporary failures.
 
+Since #635 step 1, foreground readiness retries a renewal it launched or joined
+before answering. A temporary failure, including a changed-owner result, or a
+cancellation the caller did not request relaunches the same owner and grant
+snapshot after about 2, 5 and 15 seconds, at most three times, while observers
+keep receiving WAIT. Each retry needs the previous attempt's confirmed cleanup, a
+fresh matching owner capture and the device's single renewal slot, and must leave
+at least 20 seconds before the caller's original deadline; otherwise the caller
+receives the temporary failure. Final, interaction, storage, unconfirmed-cleanup,
+refused-clock and caller-cancelled results are not retried, nor is an approval
+browser that refuses admission, for example while a manual approval holds it.
+Only this loop may relaunch before the 10-second temporary-failure replay ends;
+other callers still receive that replay. The renewal job keeps its own retry
+policy and Network.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

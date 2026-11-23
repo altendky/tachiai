@@ -42,7 +42,7 @@ class AbemaRenewalOwnedAdmissionTest {
         val owner = AbemaRenewalOwnedAdmission(coordinator, operations,
             validate = { ticket, work -> validation(ticket, work) }, dispatch = { posting(it) },
             elapsed = { expiryClock() }, schedulePending = { deadline, action -> scheduling(deadline, action) },
-            authoritative = { _, outcome -> receiptHook(); acceptedReceipts.add(outcome) })
+            authoritative = { _, outcome, _ -> receiptHook(); acceptedReceipts.add(outcome) })
         fun reserve(work: Work = Work(Any(), elapsed + 90_000),
             scope: String = "account", notify: (AbemaRenewalOperationOutcome) -> Unit = notifications::add,
         ) = owner.reserve("instance", scope, work, work.deadline, { admissionGate() },

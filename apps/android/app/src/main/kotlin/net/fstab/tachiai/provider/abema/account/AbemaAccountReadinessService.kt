@@ -111,14 +111,19 @@ internal object AndroidAbemaRenewalReadiness {
         schedulePending = { deadline, action -> main.postDelayed(action, maxOf(0L, deadline - SystemClock.elapsedRealtime())) },
         // A same-account renewal keeps surviving leases: owners adopt the store's
         // direct successor, whose profile/email the operation already verified.
-        authoritative = { work, outcome ->
+        authoritative = { work, outcome, ownerCancelled ->
             // Every renewal trigger (job or foreground readiness) ends here. Closed constants only.
             android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_RESULT result=${outcome.result.name} " +
                 "cleanupConfirmed=${outcome.cleanupConfirmed} ${outcome.diagnostic.logFields()}")
             outcome.producerDiagnostic?.let { android.util.Log.i("TachiaiAbemaRenewal", "OPERATION_PRODUCER ${it.logFields()}") }
+            retries.completed(work, outcome, ownerCancelled)
             if (outcome.result == AbemaAutomaticRenewalResult.SUCCESS && outcome.cleanupConfirmed)
                 work.binding.accepted()
         })
+    // Foreground readiness only (#635 step 1); the renewal job keeps its ledger policy.
+    private val retries: AbemaRenewalRetryLoop<Work, AbemaAccountRenewalOperation> = AbemaRenewalRetryLoop(coordinator, ownedAdmission,
+        instanceOf = { it.owner.instance.id }, scopeOf = { Scope(it.owner.proof(), it.expected) },
+        elapsed = SystemClock::elapsedRealtime, log = { android.util.Log.i("TachiaiAbemaRenewal", it) })
 
     fun check(service: Service, target: AbemaReadinessTarget, deadline: Long,
         network: Network? = null): AbemaRenewalReadinessCoordinator.Decision {
@@ -207,11 +212,13 @@ internal object AndroidAbemaRenewalReadiness {
             }
             if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return AbemaRenewalReservation.NoWork(failed().status)
             // WAIT observes existing work; it never replaces that work's
-            // capability/deadline or grants control to this observer.
-            ownedAdmission.reserve(instance, Scope(owner.proof(), snapshot),
+            // capability/deadline or grants control to this observer. A
+            // retryable foreground result relaunches this exact scope only
+            // after this fresh owner capture and its confirmed cleanup.
+            retries.reserve(instance, Scope(owner.proof(), snapshot),
                 Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline, admitted,
                 construct = { ticket, work, completed -> createOperation(context.applicationContext, ticket, work, completed) },
-                notify = notify)
+                notify = notify, retry = leadMs == 0L)
         } catch (error: AbemaAccountException) {
             if (!permitted()) return AbemaRenewalReservation.Deferred
             AbemaRenewalReservation.NoWork(failed(when (error.category) {

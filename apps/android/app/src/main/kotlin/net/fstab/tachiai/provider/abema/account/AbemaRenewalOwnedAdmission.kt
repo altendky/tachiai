@@ -40,7 +40,9 @@ internal class AbemaRenewalOwnedAdmission<W, O : AbemaRenewalOwnedOperation>(
     private val elapsed: () -> Long,
     // Absolute original elapsed deadline, never a new relative lifetime.
     private val schedulePending: (Long, () -> Unit) -> Boolean,
-    private val authoritative: (W, AbemaRenewalOperationOutcome) -> Unit = { _, _ -> },
+    // The Boolean is whether this owner (lease, admission loss or pending
+    // expiry) requested the cancellation, which is never a retryable result.
+    private val authoritative: (W, AbemaRenewalOperationOutcome, Boolean) -> Unit = { _, _, _ -> },
 ) {
     private enum class Phase { CONSTRUCTING, RESERVED, ACTIVATING, ACTIVE, CANCELLING, FINISHING, FINISHED }
     private class Entry<W, O>(val ticket: String, val work: W, val began: Long, val deadline: Long,
@@ -64,11 +66,14 @@ internal class AbemaRenewalOwnedAdmission<W, O : AbemaRenewalOwnedOperation>(
         admitted: () -> Boolean,
         construct: (String, W, (AbemaRenewalOperationOutcome) -> Unit) -> O,
         notify: (AbemaRenewalOperationOutcome) -> Unit = {},
+        // Only the readiness retry loop (#635) relaunches a temporary failure early.
+        relaunch: Boolean = false,
     ): AbemaRenewalReservation {
         retireExpiredPending()
         if (!permitted(admitted)) return AbemaRenewalReservation.Deferred
         val began = runCatching(elapsed).getOrNull() ?: return AbemaRenewalReservation.Deferred
-        val decision = coordinator.check(instance, scope, value, deadline)
+        val decision = if (relaunch) coordinator.relaunch(instance, scope, value, deadline)
+            else coordinator.check(instance, scope, value, deadline)
         if (decision.status != AbemaRenewalReadinessCoordinator.Status.LAUNCH)
             return AbemaRenewalReservation.Observed(decision.status)
         val ticket = checkNotNull(decision.ticket)
@@ -240,7 +245,7 @@ internal class AbemaRenewalOwnedAdmission<W, O : AbemaRenewalOwnedOperation>(
         if (!accepted) return
         val outcome = if (synchronized(lock) { entry.forceUnknown }) unknown(received) else received
         // Notification/invalidation delivery cannot rewrite an actual cleanup verdict.
-        runCatching { authoritative(entry.work, outcome) }
+        runCatching { authoritative(entry.work, outcome, synchronized(lock) { entry.cancelSent }) }
         synchronized(lock) {
             entry.outcome = outcome
             entry.phase = Phase.FINISHED

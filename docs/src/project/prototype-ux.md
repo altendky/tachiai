@@ -729,6 +729,69 @@ pair/single-feed seek transactions have JVM tests. New instrumentation tests
 for the transport row, scrub focus, TV keys and phone double tap compile; they
 have not been run on a device for this change.
 
+### Replay navigation — #655 part 2
+
+Replays and on-demand items remember where you were
+([#655](https://github.com/altendky/tachiai/issues/655), decisions on
+[#655](https://github.com/altendky/tachiai/issues/655#issuecomment-7109865042)):
+
+- **Resume.** Opening an ABEMA slot or episode, a Twitch video or a YouTube
+  video that was watched before resumes it **automatically** at its saved
+  position, alone or in a pair. While it seeks, its pane reads "Resuming at
+  2:14:05…". Once the resumed feeds play, a brief notice says where:
+  "Resumed at 2:14:05. Start over is in ⋯ More." or, in a pair, "Resumed A at
+  2:14:05, B at 2:14:17. …". A saved position beyond the item's current
+  length resumes just before its end.
+- **No finished threshold or expiry** (user decision): reopening always
+  resumes at the saved position. A position saved at the very end therefore
+  plays out at once into the ended pane's **Play again**; that is accepted for
+  now.
+- **Start over** is in **⋯ More** on phone, tablet and TV, shown on replay
+  views. It moves back to the start like a long skip: a single feed returns to
+  0:00, and a pair moves both feeds by one amount until the earlier one is at
+  its start, keeping their offset. It shows "Started over · 0:00 / 3:24:00",
+  or the skip refusal notice (an advertisement, a missing feed). It also
+  forgets the remembered positions; new ones are saved as playback continues.
+- **Play again** on an ended replay starts it from its beginning, as before,
+  and also forgets its saved position.
+- **Retry** keeps resuming a failed replay at this session's last position.
+  A Retry before the feed ever prepared resumes the saved position.
+
+**What is saved.** Each feed of a replay view saves its own position: a view
+where every selected feed is a replay. A replay paired with a live feed is
+positioned relative to it through Timing, so neither is saved or resumed. Live
+feeds are never saved. A position is taken only while the feed is ready and
+outside an advertisement. Positions are written about every 10 seconds while
+they change, and at once on Pause, Stop, leaving the viewer or going to the
+background; a paused feed's unchanged position is not written again.
+
+**Pairs and the saved offset.** Each feed resumes its own position. A saved
+pair offset is relative to both feeds at their starts, and a resumed pair
+already holds that displacement, so the viewer starts its applied offset at
+the resumed difference (A − B) instead of zero. An enabled saved offset then
+restores only the remaining difference, normally a fraction of a second, so
+the pair's relative offset stays consistent with what was saved. If the feeds
+drifted apart, for example because one played on while the other had failed,
+the saved offset wins and one feed moves. Marked-timestamp offsets already
+work from absolute positions and are unchanged. A pair with no saved offset
+keeps both resumed positions, and Timing shows their difference as the
+applied offset. Without a resume, startup is unchanged.
+
+**Storage.** One encrypted, app-private, no-backup record holds at most 200
+items, most recently saved first; the least recent beyond that is dropped.
+Each item is a SHA-256 hash of its public catalog identity (provider, kind,
+identity and intent) and a position, so titles, accounts and provider
+instances never contribute, and two accounts share an item's position. Reads
+and writes run on the worker under the same cross-process file lock as the
+other stores. Unlike settings, an unreadable or invalid record reads as empty
+and the next save replaces it, so it never blocks playback. Logs name only
+fixed outcomes, never item identities.
+
+The store, resume and save decisions, the resumed pair baseline and Start over
+have JVM tests, including concurrent saves from two processes. A new
+instrumentation test for Start over in More compiles; it has not been run on a
+device for this change.
+
 ### Manual quality preferences
 
 **More → Quality** opens per-feed video and audio choices inside the viewer.
@@ -1619,7 +1682,8 @@ mid-session, both while the other feed kept playing.
   failed one does. An end never starts automatic recovery and is not journaled
   as a failure.
 - **Leaving.** A replay offers **Play again**, which reopens it from its
-  beginning instead of its last remembered position. A broadcast offers
+  beginning instead of its last remembered position, and forgets its saved
+  position ([#655 part 2](#replay-navigation--655-part-2)). A broadcast offers
   **Retry**, which reopens the source, for example when the broadcaster is live
   again. Sources leaves the viewer as usual. There are no new seek or jump controls.
 

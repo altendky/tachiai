@@ -44,7 +44,10 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         pairToken != null && applied != null && command == null && pendingSave == null, pendingSave != null,
         preference == persistedPreference, message, enabledApplied)
 
-    fun bind(token: Any) {
+    // The first binding's applied offset is normally zero. A pair resumed from
+    // remembered replay positions starts at its resumed displacement instead
+    // (#655 part 2); null when that is unknown.
+    fun bind(token: Any, initialAppliedMs: Long? = 0L) {
         if (pairToken === token) return
         val first = !boundOnce
         pairToken = token
@@ -52,7 +55,7 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         command = null; accepted = false; lastSeenRevision = null
         enabledTarget = null; correspondenceEstablished = false; enabledApplied = false
         restartAttempted = false
-        applied = if (first) 0L else null
+        applied = if (first) initialAppliedMs else null
         if (!first) { startupAttempted = true; message = "Offset baseline changed; saved preference retained." }
     }
 
@@ -144,11 +147,19 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         startupAttempted = true
         val desired = preference ?: return null
         val current = applied ?: return null
-        if (!desired.enabled || desired.offsetMs == 0L && timelineCorrectionMs == null) return null
+        if (!desired.enabled) return null
         val target = if (timelineCorrectionMs != null) runCatching { Math.addExact(current, timelineCorrectionMs) }.getOrNull()
             ?: return null else desired.offsetMs
         val delta = try { Math.subtractExact(target, current) } catch (_: ArithmeticException) { return null }
-        if (delta == 0L && timelineCorrectionMs == null) return null
+        // No seek is needed when the pair already holds the offset. A resumed
+        // pair (#655 part 2) that holds a nonzero saved offset has it applied.
+        if (delta == 0L && timelineCorrectionMs == null) {
+            if (target != 0L) {
+                enabledApplied = true; enabledTarget = target
+                message = "Saved offset kept at the resumed positions; alignment remains an estimate."
+            }
+            return null
+        }
         return plan(token, PairOffsetCommandOrigin.STARTUP, delta, true, target, beforeRevision,
             observedCorrespondence, timelineCorrectionMs != null)
     }

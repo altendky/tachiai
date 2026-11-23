@@ -28,6 +28,7 @@ class AbemaRenewalRecordFamiliesTest {
     @Test fun onlyExactSourceDefinedNamesAndCanonicalBindingsObtainKnownFamilies() {
         for ((name, expected) in listOf("connection-profiles.enc" to ROUTE_PROFILES, "source-setup.enc" to LEGACY_SETUP,
             "provider-setup.enc" to LEGACY_SETUP, "provider-instances.enc" to PROVIDER_REGISTRY, "stream-quality.enc" to QUALITY,
+            "replay-positions.enc" to REPLAY_POSITION, "replay-positions.lock" to COORDINATION_LOCK,
             "configured-provider-instance-$id.enc" to CONFIGURED_SOURCE, "abema-account-$other.enc" to ABEMA_ACCOUNT,
             "twitch-provider-playback-authorization.enc" to TWITCH_AUTHORIZATION, "twitch-provider-smart-tv-authorization.enc" to TWITCH_AUTHORIZATION,
             "twitch-provider-smart-tv-local-authorization.enc" to TWITCH_AUTHORIZATION,

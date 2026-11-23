@@ -14,6 +14,7 @@ internal enum class PrivateAuthorizationSlot(val bindingName: String) {
     PAIR_OFFSETS("pair-offsets"),
     VIEWER_SELECTION("viewer-selection"),
     PROVIDER_INSTANCES("provider-instances"),
+    REPLAY_POSITIONS("replay-positions"),
 }
 
 internal fun twitchProviderInstanceBindingName(id: String): String {

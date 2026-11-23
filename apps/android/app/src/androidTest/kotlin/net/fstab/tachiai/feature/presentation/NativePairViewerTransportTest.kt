@@ -7,6 +7,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
@@ -15,6 +16,11 @@ import androidx.activity.addCallback
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
+import androidx.test.espresso.Espresso.onData
+import androidx.test.espresso.UiController
+import androidx.test.espresso.ViewAction
+import androidx.test.espresso.matcher.RootMatchers.isPlatformPopup
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
@@ -24,6 +30,8 @@ import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.platform.media.NativeTimingSnapshot
 import net.fstab.tachiai.platform.media.nativeSeekPlan
+import net.fstab.tachiai.presentation.START_OVER_MS
+import org.hamcrest.Matchers.hasToString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -65,8 +73,10 @@ class NativePairViewerTransportTest {
         var plays = 0
         var pauses = 0
         var exits = 0
+        var startOvers = 0
         val viewer = NativePairViewer(context, PlayerView(context), PlayerView(context), "Sumo", "Commentary", { pair },
-            { plays++; pair.play() }, { pauses++; pair.pause() }, {}, {}, {}, {}, {})
+            { plays++; pair.play() }, { pauses++; pair.pause() }, {}, {}, {}, {}, {},
+            onStartOver = { startOvers++; pair.seekTogether(START_OVER_MS) })
         val overlay get() = viewer.getChildAt(1) as ViewGroup
         val notice get() = viewer.getChildAt(2) as TextView
         init {
@@ -146,6 +156,24 @@ class NativePairViewerTransportTest {
             fixture.settle()
             assertTrue(text(fixture.viewer, "1:10 / 10:00").isShown)
             assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
+        }
+    }
+
+    // Start over (#655 part 2) is in More on phone and TV. It moves both feeds
+    // back to the earlier feed's start, keeping their offset.
+    @Test fun startOverInMoreReturnsToTheEarliestStartKeepingTheOffset() {
+        for (television in listOf(true, false)) withFixture(television = television) { scenario, fixture ->
+            scenario.onActivity { assertTrue(button(fixture.viewer, "More").performClick()) }
+            onData(hasToString("Start over")).inRoot(isPlatformPopup()).perform(selectMenuItem())
+            idle()
+            scenario.onActivity {
+                assertEquals(1, fixture.startOvers)
+                assertEquals(listOf(60_000L), fixture.a.seeks)
+                assertEquals(listOf(0L), fixture.b.seeks)
+                assertEquals("Started over · 1:00 / 10:00", fixture.notice.text.toString())
+                fixture.settle()
+                assertTrue(text(fixture.viewer, "1:00 / 10:00").isShown)
+            }
         }
     }
 
@@ -281,6 +309,18 @@ class NativePairViewerTransportTest {
         idle()
     }
     private fun idle() = InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    private fun selectMenuItem() = object : ViewAction {
+        override fun getConstraints() = isDisplayed()
+        override fun getDescription() = "Select the visible popup row"
+        override fun perform(uiController: UiController, view: View) {
+            var row = view
+            while (row.parent is View && row.parent !is AdapterView<*>) row = row.parent as View
+            val list = row.parent as AdapterView<*>
+            val position = list.getPositionForView(row)
+            assertTrue(list.performItemClick(row, position, list.getItemIdAtPosition(position)))
+            uiController.loopMainThreadUntilIdle()
+        }
+    }
     private fun button(view: View, label: String): Button = descendants(view).filterIsInstance<Button>()
         .single { it.text == label || it.contentDescription == label }
     private fun text(view: View, value: String): TextView = descendants(view).filterIsInstance<TextView>()

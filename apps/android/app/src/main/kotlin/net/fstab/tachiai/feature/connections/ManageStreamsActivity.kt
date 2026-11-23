@@ -26,6 +26,8 @@ import net.fstab.tachiai.provider.abema.prepareAndroidAbemaChannelCatalogStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget
+import net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_CHECKING_MESSAGE
+import net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_RENEWING_MESSAGE
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.twitch.catalog.androidTwitchProviderCatalog
 import net.fstab.tachiai.provider.twitch.catalog.prepareAndroidTwitchCatalogStartup
@@ -43,6 +45,7 @@ class ManageStreamsActivity : ComponentActivity() {
     private var controller by mutableStateOf<StreamManagementController?>(null)
     private var reading by mutableStateOf(true)
     private var checkingAccount by mutableStateOf(false)
+    private var renewingAccount by mutableStateOf(false) // Read only while checkingAccount.
     private var message by mutableStateOf<String?>(null)
     @Volatile private var revision = 0L
     @Volatile private var resumed = false
@@ -137,7 +140,8 @@ class ManageStreamsActivity : ComponentActivity() {
                     backDescription = if (sharedOwnerProvider != null || rejectedPreview) "Done" else "Back to providers") }
                 item {
                 Text(if (savingWhileLeaving) "Saving configured streams before returning…" else message ?:
-                    if (checkingAccount) "Checking account connection…" else "Reading configured streams…")
+                    if (checkingAccount) (if (renewingAccount) ABEMA_ACCOUNT_RENEWING_MESSAGE else ABEMA_ACCOUNT_CHECKING_MESSAGE)
+                    else "Reading configured streams…")
                 if (!reading) Button(onClick = ::readOwner) { Text("Retry") }
                 }
             }
@@ -276,9 +280,10 @@ class ManageStreamsActivity : ComponentActivity() {
                 val ownerProof = effective?.proof ?: routeScope.candidates.first().proof
                 val needsAccountCheck = routeScope.configuredInstance.service == PrototypeService.ABEMA && prepared !is ProviderStartupResult.Failed
                 if (needsAccountCheck) {
-                    checkingAccount = true
+                    checkingAccount = true; renewingAccount = false
                     val readiness = suspendCancellableCoroutine { continuation ->
-                        accountReadiness.ensure(listOf(AbemaReadinessTarget(id, checkNotNull(ownerProof)))) { result ->
+                        accountReadiness.ensure(listOf(AbemaReadinessTarget(id, checkNotNull(ownerProof))),
+                            renewing = { if (resumed && revision == current) renewingAccount = true }) { result ->
                             if (continuation.isActive) continuation.resumeWith(Result.success(result))
                         }
                     }

@@ -144,6 +144,8 @@ import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
 import net.fstab.tachiai.provider.abema.prepareAndroidAbemaViewerStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
+import net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_CHECKING_MESSAGE
+import net.fstab.tachiai.provider.abema.account.ABEMA_ACCOUNT_RENEWING_MESSAGE
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.catalog.CatalogFailure
@@ -301,7 +303,10 @@ open class PrototypeActivity : ComponentActivity() {
     private var automaticPairRestoreWanted: Boolean? = null
     private val retryAccountReady = BooleanArray(2)
     private data class RetryAccountCheck(val index: Int, val retry: FeedRetryState,
-        val run: Long, val budget: NativePlaybackBudget)
+        val run: Long, val budget: NativePlaybackBudget) { var renewing = false }
+    // The shared account message for a feed failed by its account check, so the
+    // pane says what Watch, Episodes and Providers say for that state (#635).
+    private val accountCheckMessages = arrayOfNulls<Pair<PrototypeFeedFailure, String>>(2)
     private var retryAccountCheck: RetryAccountCheck? = null
     private val retryPlaybackIntent = FeedRetryPlaybackIntent()
     private var retryIntentPolicy = ViewerRetryIntentPolicy()
@@ -608,7 +613,10 @@ open class PrototypeActivity : ComponentActivity() {
                     watchReady(assignments, plan)
                     return@post
                 }
-                accountReadiness.ensure(targets) { result ->
+                accountReadiness.ensure(targets, renewing = {
+                    if (check == accountCheckRevision && resumed.get() && !isFinishing && !isDestroyed)
+                        showPicker(ABEMA_ACCOUNT_RENEWING_MESSAGE)
+                }) { result ->
                     if (check != accountCheckRevision || !resumed.get() || isFinishing || isDestroyed) return@ensure
                     checkingAccount = false
                     when (result) {
@@ -619,7 +627,7 @@ open class PrototypeActivity : ComponentActivity() {
                         AbemaAccountReadinessResult.HANDOFF -> {
                             pendingAccountSelection = assignments
                             pendingAccountPlan = plan
-                            showPicker("Renewing the remembered ABEMA account…")
+                            showPicker(ABEMA_ACCOUNT_RENEWING_MESSAGE)
                         }
                         else -> {
                             pendingAccountSelection = null
@@ -1115,7 +1123,8 @@ open class PrototypeActivity : ComponentActivity() {
             volumeRequest = { side, volume -> playback?.setVolume(side, volume) == true },
             feedMessage = { side ->
                 val index = side.ordinal
-                if (retryAccountCheck?.index == index) "Checking account connection…"
+                if (retryAccountCheck?.index == index)
+                    (if (retryAccountCheck?.renewing == true) ABEMA_ACCOUNT_RENEWING_MESSAGE else ABEMA_ACCOUNT_CHECKING_MESSAGE)
                 // A waiting feed keeps its waiting text through its own checks.
                 else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
                     val now = System.currentTimeMillis()
@@ -1127,7 +1136,8 @@ open class PrototypeActivity : ComponentActivity() {
                         "Retrying automatically (attempt ${automaticRecovery[index].attemptCount} of 3)…"
                     else "Retrying this feed…"
                 } else failures[index]?.let { failure ->
-                    val message = notAiringChecks[index]?.takeIf { it.first === failure }
+                    val message = accountCheckMessages[index]?.takeIf { it.first === failure }?.second
+                        ?: notAiringChecks[index]?.takeIf { it.first === failure }
                         ?.let { channelNotAiringMessage(failure, it.second) } ?: failure.viewerMessage
                     when {
                         automaticRecovery[index].pending != null -> "$message\nRetrying automatically shortly…"
@@ -2017,7 +2027,8 @@ open class PrototypeActivity : ComponentActivity() {
                     }
                     retryAccountCheck = check
                     viewer?.refresh()
-                    accountReadiness.ensure(listOf(net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(source.instanceId, proof))) { result ->
+                    accountReadiness.ensure(listOf(net.fstab.tachiai.provider.abema.account.AbemaReadinessTarget(source.instanceId, proof)),
+                        renewing = { if (retryAccountCheck === check) { check.renewing = true; viewer?.refresh() } }) { result ->
                         if (retryAccountCheck !== check) return@ensure
                         retryAccountCheck = null
                         if (epoch.get() != check.run || budget !== currentBudget || !resumed.get() ||
@@ -2032,7 +2043,9 @@ open class PrototypeActivity : ComponentActivity() {
                             }
                             feedDiagnostics(index).reportCategory(FailureStage.CACHED_ABEMA_ACCOUNT_PREPARE, category)
                             failures[index] = null
-                            failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE),
+                            val failure = PrototypeFeedFailure(PrototypeFailureReason.ABEMA_ACCOUNT_UNAVAILABLE)
+                            accountCheckMessages[index] = abemaAccountReadinessMessage(result)?.let { failure to it }
+                            failFeed(index, failure,
                                 transientAccountReadiness = result == AbemaAccountReadinessResult.TEMPORARY_FAILURE)
                         }
                         viewer?.refresh()
@@ -2194,7 +2207,7 @@ open class PrototypeActivity : ComponentActivity() {
     // Checks the saved ABEMA account before a collection's first episode page,
     // as Watch and Manage streams do before discovery. An expired grant starts
     // or joins renewal here instead of failing inside the catalog (#581).
-    private fun episodeAccountReady(source: ConfiguredSource, done: (String?) -> Unit) {
+    private fun episodeAccountReady(source: ConfiguredSource, progress: (String) -> Unit, done: (String?) -> Unit) {
         if (source.entry.resource.providerId != ProviderId("abema")) { done(null); return }
         episodeAccountPending?.let { episodeAccountPending = null; it(collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED)) }
         val revision = ++episodeAccountRevision
@@ -2214,9 +2227,9 @@ open class PrototypeActivity : ComponentActivity() {
                 if (revision != episodeAccountRevision) return@post
                 // An unreadable owner is left to the catalog, which reports it as before.
                 if (target == null || !resumed.get() || isFinishing || isDestroyed) { answer(null); return@post }
-                episodeAccountReadiness.ensure(listOf(target)) { result ->
-                    answer(if (result == AbemaAccountReadinessResult.READY) null else abemaAccountReadinessMessage(result))
-                }
+                episodeAccountReadiness.ensure(listOf(target), renewing = {
+                    if (revision == episodeAccountRevision && episodeAccountPending === done) progress(ABEMA_ACCOUNT_RENEWING_MESSAGE)
+                }) { result -> answer(abemaAccountReadinessMessage(result)) }
             }
         }
     }

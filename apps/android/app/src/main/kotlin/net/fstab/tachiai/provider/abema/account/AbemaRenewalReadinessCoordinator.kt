@@ -4,7 +4,11 @@ package net.fstab.tachiai.provider.abema.account
 // Activity boundaries; the exact account projection remains private here.
 internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Long,
     private val ticket: () -> String, private val lifetimeMs: Long = 90_000,
-    private val cooldownMs: Long = 60_000) {
+    private val cooldownMs: Long = 60_000,
+    // A temporary failure is remembered only briefly (#635): long enough to
+    // stop a resume loop, short enough that a deliberate Retry starts a fresh
+    // renewal instead of replaying the failure for a whole minute.
+    private val temporaryCooldownMs: Long = 10_000) {
     enum class Status { READY, LAUNCH, WAIT, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
     enum class Completion { ABSENT, PENDING, CLEANUP_UNCONFIRMED, READY, FAILURE, TEMPORARY_FAILURE, INTERACTION_REQUIRED, STORAGE_FAILURE }
     data class Evidence(val completion: Completion, val diagnostic: AbemaRenewalDiagnostic? = null,
@@ -36,7 +40,8 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         entries.filter { it.finished == null && now >= it.deadline }.forEach {
             it.finished = now; it.terminal = Status.TEMPORARY_FAILURE
         }
-        entries.removeAll { (!it.claimed || it.released) && it.finished?.let { ended -> now - ended >= cooldownMs } == true }
+        entries.removeAll { (!it.claimed || it.released) && it.finished?.let { ended -> now - ended >=
+            if (it.terminal == Status.TEMPORARY_FAILURE && !it.cleanupRefused) minOf(temporaryCooldownMs, cooldownMs) else cooldownMs } == true }
         entries.filter { it.instance == instance && it.scope != scope && it.finished == null }
             .forEach { it.finished = now }
         entries.firstOrNull { it.instance == instance && it.scope == scope }?.let {

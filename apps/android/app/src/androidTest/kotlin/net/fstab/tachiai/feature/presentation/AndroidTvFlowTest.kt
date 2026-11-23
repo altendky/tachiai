@@ -168,7 +168,7 @@ class AndroidTvFlowTest {
             val surfaceA = media.main { fixture.playerSurface(NativeMixedSide.A) }
             val surfaceB = media.main { fixture.playerSurface(NativeMixedSide.B) }
             val orientation = media.main { fixture.activity.requestedOrientation }
-            reachNative(fixture, "More"); key(KeyEvent.KEYCODE_DPAD_CENTER)
+            reachNative(fixture, description = "More"); key(KeyEvent.KEYCODE_DPAD_CENTER)
             selectMenu("Floating feed position"); selectMenu("Bottom left")
             val mediumWidth = media.main {
                 assertNativeFocus(fixture, "More")
@@ -319,7 +319,8 @@ class AndroidTvFlowTest {
     }
 
     private fun assertNativeFocus(fixture: ControlledMirroringDeviceTest.Fixture, label: String) {
-        assertEquals(label, (fixture.viewer!!.findFocus() as? android.widget.Button)?.text?.toString())
+        val focused = fixture.viewer!!.findFocus() as? android.widget.Button
+        assertTrue(label == focused?.text?.toString() || label == focused?.contentDescription?.toString())
     }
 
     // Query the existing native focus graph without requesting focus. Each edge

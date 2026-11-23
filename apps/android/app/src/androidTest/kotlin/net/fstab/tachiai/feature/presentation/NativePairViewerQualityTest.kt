@@ -137,7 +137,7 @@ class NativePairViewerQualityTest {
     private fun control(view: View, prefix: String) = descendants(view).filterIsInstance<Button>()
         .first { it.contentDescription?.startsWith(prefix) == true }
     private fun button(view: View, title: String) = descendants(view).filterIsInstance<Button>()
-        .single { it.text.toString() == title }.also { assertTrue(it.isShown); assertTrue(it.isEnabled) }
+        .single { it.text.toString() == title || it.contentDescription?.toString() == title }.also { assertTrue(it.isShown); assertTrue(it.isEnabled) }
 
     private fun invokeButton() = object : ViewAction {
         override fun getConstraints() = isDisplayed()

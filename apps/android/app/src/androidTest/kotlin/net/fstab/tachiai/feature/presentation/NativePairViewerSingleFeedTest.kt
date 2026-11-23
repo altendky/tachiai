@@ -82,7 +82,7 @@ class NativePairViewerSingleFeedTest {
                 View.MeasureSpec.makeMeasureSpec(window.decorView.height, View.MeasureSpec.EXACTLY))
             viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
         }
-        fun button(label: String) = descendants(viewer).filterIsInstance<Button>().single { it.text == label }
+        fun button(label: String) = descendants(viewer).filterIsInstance<Button>().single { it.text == label || it.contentDescription == label }
         fun player(side: NativeMixedSide) = if (side == NativeMixedSide.A) a else b
         fun assertFullStage(side: NativeMixedSide) {
             val pane = player(side).parent as ViewGroup

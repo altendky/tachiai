@@ -57,8 +57,9 @@ Providers, Routes or other unimplemented operations.
 
 ### Responsive controls and Fit video
 
-Each adjustment panel has the common Back to playback controls action and
-**Fit video: on/off** toggle. Fit starts on for each new Watch, survives panel
+Each adjustment panel has the common Back to playback controls action. Timing
+and Quality, the panels that keep their own space natively, also show the
+**Fit video: on/off** toggle; Audio and Status float over the video. Fit starts on for each new Watch, survives panel
 changes and retry, and changes geometry without playback commands or replacing
 players. Landscape with an open panel uses a bottom-aligned right dock at usable
 widths of at least 640 CSS logical pixels. Its width follows the native formula:
@@ -69,11 +70,13 @@ Panel content sizes naturally within a 60%-height scroll cap and available space
 above the fixed toolbar. The diagnostic header remains outside the measured
 usable viewer; no fullscreen or orientation-lock behavior is implied.
 
-Fit on reserves visible dock space in landscape; off allows the primary video
-underneath. The floating feed avoids the dock in both modes, using the same
-normalized position within its unobscured range. Hide restores full landscape
-space. Portrait always reserves the visible tray, or 56 logical pixels when
-hidden. Resizing, panel changes, Fit and Hide retain media elements, players,
+As in the native [playback overlay](prototype-ux.md#playback-overlay--656-step-1),
+the toolbar alone never reserves space, and hidden controls reserve nothing.
+With Timing or Quality open, Fit on reserves the dock in landscape; off allows
+the primary video underneath. Portrait always reserves that dock. Audio and
+Status never reserve. The floating feed avoids the visible dock in every case,
+using the same normalized position within its unobscured range. This bounded
+fixture keeps its existing Hide action and single dock, which holds its toolbar. Resizing, panel changes, Fit and Hide retain media elements, players,
 transport intent, mix/mutes and quality state. Manual orientation and TV-specific
 focus/placement rules are not implemented by this slice.
 

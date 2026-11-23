@@ -38,9 +38,10 @@ activating anything. The exception is a failed feed's own Retry/Go live, which
 stays visible on the feed while the controls are hidden: Select on it, when
 focused, activates it at once, as one tap does on phone
 ([#559](https://github.com/altendky/tachiai/issues/559)). Focus starts on Play/Pause, has a contrasting outline, and
-keeps the control tray visible. Audio, Timing and More retain their opening
-controls for focus restoration. Back closes a menu, then a panel, then the button
-bar; another Back with all controls hidden leaves playback. Held mix adjustment
+keeps the overlay visible. Audio, Timing and More retain their opening
+controls for focus restoration. Back closes a menu, then a panel, then the
+[playback overlay](#playback-overlay--656-step-1); another Back with all
+controls hidden asks "Stop playback?". Held mix adjustment
 stops on release, cancellation, focus/window loss,
 panel dismissal and session suspension. More offers floating-feed corner and
 Small/Medium/Large presets plus swap, retaining the same player surfaces. TV omits
@@ -592,6 +593,63 @@ failure injection.
 
 ## Current setup vocabulary and navigation
 
+### Playback overlay — #656 step 1
+
+The video always fills the viewer. The basic controls are an overlay on it
+rather than a bar that takes space from the feeds
+([#656](https://github.com/altendky/tachiai/issues/656)):
+
+- **Top bar:** **‹ Stop** (formerly Back to sources, still asking "Stop
+  playback?"), then **Audio**, **Timing** (pair only) and **⋯** (More) at the end.
+- **Bottom area:** each live feed's **Back to live A/B** with its hint, then
+  **Play/Pause** for the pair or single feed. #655 adds its position row,
+  scrub bar and skips here.
+
+Both bars sit on a dark translucent band (black at 60%) with light text, so
+they stay legible over any video in light and dark themes; buttons keep their
+surfaces, 48 dp targets and TV focus outlines. Phone, tablet and TV show the
+same controls, labels and order. Focus starts on Play/Pause when the overlay
+first appears, and a remote reveal restores the last focused control but never
+Stop, so a reflexive Select cannot ask to stop playback. A tap or any remote key reveals the overlay; it hides after four idle
+seconds while playing, stays while paused, a panel is open or a control has
+focus. There is no separate Hide button: a video tap hides the overlay on
+phone, and Back hides it on phone and TV. The Back order is unchanged: menu,
+then panel, then overlay, then "Stop playback?".
+
+Panels keep their contents. **Timing** and **Quality** keep their own space:
+Timing marks need both feeds in view, and Quality's long list is judged
+against the picture. They open as a right-hand side panel below the top bar in
+landscape at usable widths of at least 640 dp, otherwise as a bottom panel
+above the transport. While **Fit video** is on, they shrink the video beside
+them, as before; portrait always reserves the bottom panel. Fit is shown only
+in these panels. **Audio** (short, adjusted by ear) and **Status** (read-only
+text) are sheets in the same positions over the video and never resize it.
+The floating feed stays clear of the visible bars and any open panel, using
+its normalized position within that range, and returns when they hide.
+
+The always-present two-line status readback is gone. Full status, including
+the requested adjustment and quality details, is in **⋯ → Playback status**.
+A change shows as a brief notice centered over the video below the top bar,
+which fades after about three seconds: a new pair status, including play
+messages and the volume-request warning, or a feed becoming unavailable or
+ready, such as "B unavailable". The opening state is not announced, and no
+notice appears while Status is open. Each feed's waiting, failure and recovery
+message, with its Retry, Go live, Check now or Play again button, stays inside
+its own pane. While controls are visible, that content is inset to stay below
+the top bar, above the transport or a bottom panel and beside a side panel;
+the pane and its video keep their bounds.
+
+Remote handling is unchanged: the first key reveals the overlay without acting,
+except Select on a focused pane recovery button (#559), and focus restoration
+and the #617 protections remain. Keys while the overlay is hidden now pass
+through one path, where #655 will add replay Left/Right skips. The phone
+orientation action stays in ⋯, and floating-feed drag and tap-to-swap are
+unchanged.
+
+Pure layout and notice rules have JVM tests, and the viewer instrumentation
+tests were updated for the overlay and compile. They have not yet been run on
+a device for this change.
+
 ### Manual quality preferences
 
 **More → Quality** opens per-feed video and audio choices inside the viewer.
@@ -651,7 +709,7 @@ focus follows the rows. All steps are disabled while an adjustment is busy or
 two playable feeds are unavailable. Feedback still reports requested timing,
 not measured synchronization. Compact layouts retain scrollable controls and
 48 dp button targets. Cancelling More preserves the open controls and panel;
-Hide and video/background taps retain their explicit dismissal behavior.
+video/background taps and Back retain their dismissal behavior.
 
 An Advance request uses one complete legal movement: advancing that feed or
 equivalently delaying its peer. Planning compares both options and prefers more
@@ -958,15 +1016,15 @@ live-provider continuity, frame precision or acoustic synchronization.
 System Back dismisses an open More menu first, then an Audio, Timing, Quality or
 Status panel. Dismissing a panel keeps playback, volume/mute state and pane
 selection unchanged and cancels any held adjustment button. On both phone and
-TV, the next Back hides the button bar without stopping playback. Back with
+TV, the next Back hides the overlay without stopping playback. Back with
 all controls already hidden asks "Stop playback?" before returning to sources
 ([#617](https://github.com/altendky/tachiai/issues/617)). Keep watching is the
-focused default, and Back on the dialog keeps playing. The Back to sources
-button and More's Stop ask the same. Stops the app makes itself, such as
+focused default, and Back on the dialog keeps playing. The top bar's Stop
+(formerly the Back to sources button) and More's Stop ask the same. Stops the app makes itself, such as
 failures, cleanup refusals and deadlines, don't ask. A timing step stays
 focused while its adjustment runs, showing "Adjustment in progress", so a quick
-repeated Select can't land on another control. The explicit Back to
-sources button remains available; phone video taps and TV remote navigation
+repeated Select can't land on another control. The explicit Stop
+button remains available; phone video taps and TV remote navigation
 can reveal the hidden controls again.
 
 The October 18 shared Back update passed ten phone-mode dismissal tests and

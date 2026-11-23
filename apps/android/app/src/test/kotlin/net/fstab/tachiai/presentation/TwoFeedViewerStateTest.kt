@@ -74,6 +74,19 @@ class TwoFeedViewerStateTest {
         assertEquals(FloatingPosition(1f, 0f), FloatingPosition.fromPixels(500f, -40f, 100, 100))
         assertEquals(FloatingPosition(0f, 0f), FloatingPosition.fromPixels(500f, 40f, 0, 0))
     }
+    @Test fun floatingStaysBelowTheTopBarAndBetweenBothBars() {
+        val top = twoFeedBounds(1000, 600, true, true, floating = FloatingPosition(1f, 0f),
+            floatingBottom = 520, floatingTop = 80)
+        assertEquals(80, top.b.top)
+        assertEquals(ViewerRect(0, 0, 1000, 600), top.a)
+        val bottom = twoFeedBounds(1000, 600, true, true, floating = FloatingPosition(0f, 1f),
+            floatingBottom = 520, floatingTop = 80)
+        assertEquals(520, bottom.b.top + bottom.b.height)
+        // A top beyond the bottom leaves no range rather than inverting it.
+        val none = twoFeedBounds(1000, 600, true, true, floatingBottom = 100, floatingTop = 200)
+        assertEquals(0, none.b.height)
+        assertEquals(100, none.b.top)
+    }
     @Test fun rotationReusesNormalizedPosition() {
         val position = FloatingPosition(0.25f, 0.75f)
         for ((w, h) in listOf(1000 to 600, 600 to 1000, 300 to 100)) {

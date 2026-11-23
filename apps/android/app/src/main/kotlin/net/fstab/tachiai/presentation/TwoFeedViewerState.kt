@@ -54,6 +54,7 @@ internal fun twoFeedBounds(
     floatingBottom: Int = height,
     floatingRight: Int = width,
     floatingSize: FloatingFeedSize = FloatingFeedSize.MEDIUM,
+    floatingTop: Int = 0,
 ): TwoFeedBounds {
     require(width >= 0 && height >= 0)
     fun ratio(value: Float) = value.takeIf { it.isFinite() && it > 0 } ?: (16f / 9f)
@@ -67,12 +68,15 @@ internal fun twoFeedBounds(
     }
     val bottom = floatingBottom.coerceIn(0, height)
     val right = floatingRight.coerceIn(0, width)
+    // Visible overlay bars and panels bound the floating feed's range (#656).
+    val top = floatingTop.coerceIn(0, bottom)
+    val range = bottom - top
     val secondaryRatio = if (primaryA) rb else ra
-    val sw = min(right * floatingSize.widthFraction, bottom * secondaryRatio * 0.65f).roundToInt().coerceIn(0, right)
-    val sh = (sw / secondaryRatio).roundToInt().coerceIn(0, bottom)
+    val sw = min(right * floatingSize.widthFraction, range * secondaryRatio * 0.65f).roundToInt().coerceIn(0, right)
+    val sh = (sw / secondaryRatio).roundToInt().coerceIn(0, range)
     val position = floating.clamped()
     val secondary = ViewerRect(((right - sw) * position.x).roundToInt(),
-        ((bottom - sh) * position.y).roundToInt(), sw, sh)
+        top + ((range - sh) * position.y).roundToInt(), sw, sh)
     val primary = ViewerRect(0, 0, width, height)
     return if (primaryA) TwoFeedBounds(primary, secondary) else TwoFeedBounds(secondary, primary)
 }

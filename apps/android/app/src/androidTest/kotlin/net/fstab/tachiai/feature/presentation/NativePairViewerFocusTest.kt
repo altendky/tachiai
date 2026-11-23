@@ -7,7 +7,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.AdapterView
-import android.widget.ImageButton
 import androidx.activity.ComponentActivity
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
@@ -69,13 +68,11 @@ class NativePairViewerFocusTest {
             qualityState = { _, _ -> ViewerQualityReadback(NativeQualityRequest.auto, null, saving = saving) },
             onSaveQuality = { _, _ -> saving = true })
         init { activity.setContentView(viewer); viewer.open() }
-        fun button(label: String) = descendants(viewer).filterIsInstance<Button>().single { it.text == label }
+        fun button(label: String) = descendants(viewer).filterIsInstance<Button>().single { it.text == label || it.contentDescription == label }
         fun advance(step: String = "5 s") = descendants(viewer).filterIsInstance<Button>().single {
             it.contentDescription?.toString() == "Advance Beta by $step relative to Alpha"
         }
-        fun sourcesControl() = descendants(viewer).filterIsInstance<ImageButton>().single {
-            it.contentDescription?.toString() == "Back to sources"
-        }
+        fun sourcesControl() = descendants(viewer).filterIsInstance<Button>().single { it.text == "Stop" }
         fun qualitySave() = descendants(viewer).filterIsInstance<Button>().single {
             it.contentDescription?.toString() == "Save Alpha video preference as stream default"
         }
@@ -319,6 +316,27 @@ class NativePairViewerFocusTest {
         }
         idle()
         scenario.onActivity { assertTrue(fixture.button("Audio").isFocused) }
+    }
+
+    // On TV the first Select after start or after a reveal must not ask to stop (#656).
+    @Test fun startAndRevealFocusPlayPauseNeverStop() {
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            lateinit var fixture: Fixture
+            scenario.onActivity { fixture = Fixture(it, true) }
+            idle()
+            try {
+                scenario.onActivity {
+                    assertTrue(fixture.button("Play").isFocused)
+                    assertTrue(fixture.sourcesControl().requestFocus())
+                    assertTrue(fixture.viewer.handleBack())
+                }
+                idle()
+                select(scenario, fixture) // Reveals only.
+                scenario.onActivity { assertTrue(fixture.button("Play").isFocused) }
+                select(scenario, fixture)
+                scenario.onActivity { assertEquals(0, fixture.sources) }
+            } finally { scenario.onActivity { fixture.close() } }
+        }
     }
 
     private fun forEachInputConfiguration(test: (ActivityScenario<ComponentActivity>, Fixture) -> Unit) {

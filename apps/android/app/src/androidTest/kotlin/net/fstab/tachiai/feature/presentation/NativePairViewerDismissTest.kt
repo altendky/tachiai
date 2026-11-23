@@ -17,6 +17,7 @@ import androidx.test.espresso.ViewAction
 import androidx.test.espresso.UiController
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -70,8 +71,8 @@ class NativePairViewerDismissTest {
             onQualityOverride = { _, _, _ -> commands++ },
             onSaveQuality = { _, _ -> commands++ }, onResetQuality = { _, _ -> commands++ })
         val stage get() = viewer.getChildAt(0) as ViewGroup
-        val dock get() = viewer.getChildAt(1) as ViewGroup
-        val scroller get() = dock.getChildAt(0)
+        val overlay get() = viewer.getChildAt(1) as ViewGroup
+        val scroller get() = overlay.getChildAt(0)
         init {
             activity.setContentView(viewer); viewer.refresh()
             activity.onBackPressedDispatcher.addCallback(activity) {
@@ -113,7 +114,7 @@ class NativePairViewerDismissTest {
                 pressBack()
                 scenario.onActivity {
                     assertEquals("$panel Back closes the panel", View.GONE, fixture.scroller.visibility)
-                    assertEquals(View.VISIBLE, fixture.dock.visibility)
+                    assertEquals(View.VISIBLE, fixture.overlay.visibility)
                     assertEquals(View.VISIBLE, fixture.viewer.visibility)
                     assertEquals(0, fixture.exits)
                     assertEquals(0, fixture.commands)
@@ -131,20 +132,20 @@ class NativePairViewerDismissTest {
                 }
                 pressBack()
                 scenario.onActivity {
-                    assertEquals(View.GONE, fixture.dock.visibility)
+                    assertEquals(View.GONE, fixture.overlay.visibility)
                     assertEquals(0, fixture.exits); assertEquals(0, fixture.commands)
                     assertEquals(transportCalls, fixture.a.transportCalls + fixture.b.transportCalls)
                     assertEquals(volumeCalls, fixture.a.volumeCalls + fixture.b.volumeCalls)
                     assertSame(primary, fixture.stage.getChildAt(0)); assertSame(secondary, fixture.stage.getChildAt(1))
                     fixture.stage.getChildAt(0).performClick()
-                    assertEquals("Phone video tap reveals the toolbar", View.VISIBLE, fixture.dock.visibility)
+                    assertEquals("Phone video tap reveals the toolbar", View.VISIBLE, fixture.overlay.visibility)
                     assertEquals(View.GONE, fixture.scroller.visibility)
                     button(fixture.viewer, "Audio").performClick()
                     assertEquals("Unmute A", button(fixture.viewer, "Unmute A").text.toString())
                     button(fixture.viewer, "Audio").performClick()
                 }
                 pressBack()
-                scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility); assertEquals(0, fixture.exits) }
+                scenario.onActivity { assertEquals(View.GONE, fixture.overlay.visibility); assertEquals(0, fixture.exits) }
                 pressBack()
                 scenario.onActivity { assertEquals("Back with controls hidden returns to the host", 1, fixture.exits) }
             }
@@ -154,7 +155,7 @@ class NativePairViewerDismissTest {
     @Test fun systemBackDismissesMenuThenPanelThenToolbarBeforeReturningToSources() {
         withFixture(true) { scenario, fixture ->
             openPanel("Audio")
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             pressBack()
             onView(withText("Playback status")).check(doesNotExist())
             scenario.onActivity {
@@ -170,7 +171,7 @@ class NativePairViewerDismissTest {
             }
             pressBack()
             scenario.onActivity {
-                assertEquals(View.GONE, fixture.dock.visibility)
+                assertEquals(View.GONE, fixture.overlay.visibility)
                 assertEquals(0, fixture.exits); assertEquals(0, fixture.commands)
             }
             pressBack()
@@ -181,7 +182,7 @@ class NativePairViewerDismissTest {
     @Test fun dispatcherBackDismissesAnActiveMenuWithoutInvokingItsAction() {
         withFixture(false) { scenario, fixture ->
             openPanel("Audio")
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
             onView(withText("Playback status")).check(doesNotExist())
             scenario.onActivity {
@@ -225,32 +226,32 @@ class NativePairViewerDismissTest {
                     assertEquals(View.VISIBLE, fixture.scroller.visibility)
                     val calls = fixture.a.volumeCalls + fixture.b.volumeCalls
                     fixture.stage.getChildAt(0).performClick()
-                    assertEquals(View.GONE, fixture.dock.visibility)
+                    assertEquals(View.GONE, fixture.overlay.visibility)
                     assertEquals(View.GONE, fixture.scroller.visibility)
                     assertEquals(0, fixture.commands)
                     assertEquals(calls, fixture.a.volumeCalls + fixture.b.volumeCalls)
                     fixture.stage.getChildAt(0).performClick()
-                    assertEquals(View.VISIBLE, fixture.dock.visibility)
+                    assertEquals(View.VISIBLE, fixture.overlay.visibility)
                     assertEquals(View.GONE, fixture.scroller.visibility)
                 }
             }
         }
     }
 
-    @Test fun explicitHideAndBackgroundDismissPreserveMuteAndChildActions() {
+    @Test fun videoTapAndBackgroundDismissPreserveMuteAndChildActions() {
         withFixture(false) { scenario, fixture ->
             scenario.onActivity {
                 button(fixture.viewer, "Audio").performClick()
                 button(fixture.viewer, "Mute A").performClick()
-                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.overlay.visibility)
                 assertEquals(0f, fixture.a.gain, 0f)
-                button(fixture.viewer, "Hide").performClick()
-                assertEquals(View.GONE, fixture.dock.visibility)
+                fixture.stage.performClick() // A video tap hides every control layer.
+                assertEquals(View.GONE, fixture.overlay.visibility)
                 fixture.viewer.performClick()
                 button(fixture.viewer, "Audio").performClick()
                 assertEquals("Unmute A", button(fixture.viewer, "Unmute A").text.toString())
                 fixture.stage.performClick()
-                assertEquals(View.GONE, fixture.dock.visibility)
+                assertEquals(View.GONE, fixture.overlay.visibility)
                 assertEquals(0, fixture.commands)
             }
         }
@@ -264,7 +265,7 @@ class NativePairViewerDismissTest {
                 button(fixture.viewer, "Audio").performClick()
                 assertTrue(button(fixture.viewer, "◀").performLongClick())
                 assertTrue(fixture.b.gain < 0.5f)
-                button(fixture.viewer, "Hide").performClick()
+                fixture.stage.performClick()
                 calls = fixture.a.volumeCalls + fixture.b.volumeCalls
                 fixture.viewer.postDelayed({ settled.countDown() }, 400)
             }
@@ -275,7 +276,7 @@ class NativePairViewerDismissTest {
                 button(fixture.viewer, "Audio").performClick()
                 button(fixture.viewer, "◀").performClick()
                 assertTrue(fixture.a.volumeCalls + fixture.b.volumeCalls > calls)
-                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.overlay.visibility)
             }
         }
     }
@@ -301,7 +302,7 @@ class NativePairViewerDismissTest {
                 assertTrue(paneB.width > paneA.width)
                 assertSame(fixture.playerA, (paneA as ViewGroup).getChildAt(0))
                 assertSame(fixture.playerB, (paneB as ViewGroup).getChildAt(0))
-                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.overlay.visibility)
                 assertEquals(0, fixture.commands)
             }
         }
@@ -320,7 +321,7 @@ class NativePairViewerDismissTest {
                         calls = fixture.a.volumeCalls + fixture.b.volumeCalls
                     }
                     InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-                    onView(withText("More")).perform(click())
+                    onView(withContentDescription("More")).perform(click())
                     // The popup is a separate window. Wait for its actual
                     // layout, then read both targets in the same UI action;
                     // coordinates measured before opening it may be stale.
@@ -347,13 +348,13 @@ class NativePairViewerDismissTest {
                         throw AssertionError("Owned popup cancellation failed: $phase", error)
                     }
                     scenario.onActivity {
-                        assertEquals("Popup cancellation must retain the tray: $phase", View.VISIBLE, fixture.dock.visibility)
+                        assertEquals("Popup cancellation must retain the tray: $phase", View.VISIBLE, fixture.overlay.visibility)
                         assertEquals("Popup cancellation must retain the panel: $phase", View.VISIBLE, fixture.scroller.visibility)
                         assertEquals("Popup cancellation must not dispatch an action: $phase", 0, fixture.commands)
                         assertEquals("Popup cancellation must not change volume: $phase", calls,
                             fixture.a.volumeCalls + fixture.b.volumeCalls)
-                        button(fixture.viewer, "Hide").performClick()
-                        assertEquals("Explicit Hide must dismiss the retained tray: $phase", View.GONE, fixture.dock.visibility)
+                        fixture.stage.performClick()
+                        assertEquals("A video tap must dismiss the retained overlay: $phase", View.GONE, fixture.overlay.visibility)
                     }
                 }
             }
@@ -384,14 +385,14 @@ class NativePairViewerDismissTest {
 
     @Test fun popupActionStillOpensStatusAndTeardownDoesNotRevealControls() {
         withFixture(false) { scenario, fixture ->
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             onView(withText("Playback status")).perform(click())
             scenario.onActivity {
-                assertEquals(View.VISIBLE, fixture.dock.visibility)
+                assertEquals(View.VISIBLE, fixture.overlay.visibility)
                 assertEquals(View.VISIBLE, fixture.scroller.visibility)
                 assertEquals(0, fixture.commands)
             }
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             scenario.onActivity { fixture.viewer.endSession() }
             onView(withText("Playback status")).check(doesNotExist())
             scenario.onActivity { assertEquals(View.GONE, fixture.viewer.visibility) }
@@ -411,13 +412,13 @@ class NativePairViewerDismissTest {
     private fun openPanel(panel: String) {
         if (panel in listOf("Audio", "Timing")) onView(withText(panel)).perform(click())
         else {
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             onView(withText(if (panel == "Status") "Playback status" else panel)).perform(click())
         }
     }
 
     private fun button(view: View, prefix: String): Button {
-        if (view is Button && view.text.startsWith(prefix)) return view
+        if (view is Button && (view.text.startsWith(prefix) || view.contentDescription == prefix)) return view
         if (view is ViewGroup) for (index in 0 until view.childCount) {
             runCatching { button(view.getChildAt(index), prefix) }.getOrNull()?.let { return it }
         }

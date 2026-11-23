@@ -713,7 +713,7 @@ class NativePairViewerTimingTest {
         .single { it.contentDescription?.startsWith("Mark matching event in feed $feed ·") == true }
 
     private fun button(view: View, prefix: String): Button {
-        if (view is Button && view.text.startsWith(prefix)) return view
+        if (view is Button && (view.text.startsWith(prefix) || view.contentDescription == prefix)) return view
         if (view is ViewGroup) for (index in 0 until view.childCount) {
             val found = runCatching { button(view.getChildAt(index), prefix) }.getOrNull()
             if (found != null) return found

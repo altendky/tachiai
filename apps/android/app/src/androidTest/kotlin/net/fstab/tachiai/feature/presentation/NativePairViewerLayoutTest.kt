@@ -12,6 +12,7 @@ import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import net.fstab.tachiai.platform.media.NativeQualityRequest
 import net.fstab.tachiai.platform.media.NativePairMember
@@ -55,8 +56,14 @@ class NativePairViewerLayoutTest {
             catchUpPlan = { side -> if (liveMembers) nativeLiveDefaultPlan(live[side.ordinal].timingSnapshot())
                 else NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) })
         val stage get() = viewer.getChildAt(0) as ViewGroup
-        val dock get() = viewer.getChildAt(1) as ViewGroup
-        val scroller get() = dock.getChildAt(0) as ScrollView
+        val overlay get() = viewer.getChildAt(1) as ViewGroup
+        val scroller get() = overlay.getChildAt(0) as ScrollView
+        val topBar get() = overlay.getChildAt(1) as ViewGroup
+        val bottomBar get() = overlay.getChildAt(2) as ViewGroup
+        val sheetLeft get() = overlay.left + scroller.left
+        private fun all(view: View): List<View> = listOf(view) + if (view is ViewGroup)
+            (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
+        fun barTargets() = (all(topBar) + all(bottomBar)).filterIsInstance<Button>().filter { it.isShown }
         fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
         init { activity.setContentView(viewer); viewer.refresh() }
         fun layout(width: Int, height: Int) {
@@ -66,35 +73,61 @@ class NativePairViewerLayoutTest {
         }
     }
 
+    @Test fun basicOverlayFloatsOverTheFullVideoInEveryOrientation() {
+        for (landscape in listOf(true, false)) withFixture(landscape) { scenario, f -> scenario.onActivity {
+            val (w, h) = if (landscape) 850 to 420 else 400 to 800
+            f.layout(w, h)
+            val fullWidth = f.viewer.width - f.viewer.paddingLeft - f.viewer.paddingRight
+            val fullHeight = f.viewer.height - f.viewer.paddingTop - f.viewer.paddingBottom
+            assertEquals(View.VISIBLE, f.overlay.visibility)
+            assertEquals(fullWidth, f.stage.width); assertEquals(fullHeight, f.stage.height)
+            assertEquals(0, f.topBar.top); assertEquals(f.overlay.height, f.bottomBar.bottom)
+            assertTrue(f.barTargets().all { it.width >= f.dp(48) && it.height >= f.dp(48) })
+            f.viewer.performClick(); f.layout(w, h)
+            assertEquals(View.GONE, f.overlay.visibility)
+            assertEquals("Hidden controls reserve nothing", fullHeight, f.stage.height)
+            assertEquals(fullWidth, f.stage.width)
+            assertEquals(0, f.commands)
+        } }
+    }
+
     @Test fun sidePanelFitsContentAndAvoidsFloatingPaneWithoutReplacingPlayers() {
         withFixture(true) { scenario, f -> scenario.onActivity {
             f.layout(850, 420)
             val fullWidth = f.stage.width
-            val originalFloatingRight = f.stage.left + f.stage.getChildAt(1).right
-            button(f.viewer, "Timing").performClick(); f.layout(850, 420)
-            assertEquals("Fit video: on", button(f.viewer, "Fit video:").text.toString())
-            assertEquals(f.dock.left, f.stage.right)
-            assertTrue(f.stage.width < fullWidth)
-            assertTrue(f.dock.width <= f.dp(360))
-            assertTrue(f.dock.width < f.viewer.width / 2)
-            assertTrue("Content remains capped to the available video area", f.scroller.height <= (f.viewer.height * 0.6f).toInt())
-            val stageWidth = f.stage.width
             val paneA = f.stage.getChildAt(0) as ViewGroup
             val paneB = f.stage.getChildAt(1) as ViewGroup
-            assertTrue(f.stage.left + paneB.right <= f.dock.left)
-            button(f.viewer, "Hide").performClick(); f.layout(850, 420)
+            val originalFloatingRight = f.stage.left + paneB.right
+            assertTrue("The floating feed stays below the visible top bar", paneB.top >= f.topBar.bottom)
+            button(f.viewer, "Timing").performClick(); f.layout(850, 420)
+            assertEquals("Fit video: on", button(f.viewer, "Fit video:").text.toString())
+            assertEquals(f.sheetLeft, f.stage.right)
+            assertTrue(f.stage.width < fullWidth)
+            assertTrue(f.scroller.width <= f.dp(360))
+            assertTrue(f.scroller.width < f.viewer.width / 2)
+            assertTrue("The side panel opens below the top bar", f.scroller.top >= f.topBar.bottom)
+            assertTrue("Content remains capped to the available video area", f.scroller.height <= (f.viewer.height * 0.6f).toInt())
+            val stageWidth = f.stage.width
+            assertTrue(f.stage.left + paneB.right <= f.sheetLeft)
+            f.viewer.performClick(); f.layout(850, 420)
+            assertEquals(View.GONE, f.overlay.visibility)
             assertEquals(fullWidth, f.stage.width)
             assertEquals(originalFloatingRight, f.stage.left + paneB.right)
             f.viewer.performClick(); button(f.viewer, "Timing").performClick(); f.layout(850, 420)
-            assertTrue(f.stage.left + paneB.right <= f.dock.left)
+            assertTrue(f.stage.left + paneB.right <= f.sheetLeft)
             button(f.viewer, "Fit video: on").performClick(); f.layout(850, 420)
             assertEquals(fullWidth, f.stage.width)
             assertTrue(f.stage.width > stageWidth)
+            assertTrue("Fit off still keeps the floating feed clear", f.stage.left + paneB.right <= f.sheetLeft)
             assertSame(f.a, paneA.getChildAt(0)); assertSame(f.b, paneB.getChildAt(0))
-            button(f.viewer, "Hide").performClick(); f.layout(850, 420)
+            // Audio is a sheet over the video: no Fit toggle and no resize.
+            button(f.viewer, "Audio").performClick(); f.layout(850, 420)
+            assertEquals(View.VISIBLE, f.scroller.visibility)
+            assertTrue(descendants(f.scroller).filterIsInstance<Button>().none { it.text.startsWith("Fit video:") })
             assertEquals(fullWidth, f.stage.width)
-            f.viewer.performClick(); button(f.viewer, "Audio").performClick(); f.layout(850, 420)
-            assertEquals("Fit video: off", button(f.viewer, "Fit video:").text.toString())
+            assertTrue(f.stage.left + paneB.right <= f.sheetLeft)
+            // Fit stays off when Timing reopens, then reserves again when turned on.
+            button(f.viewer, "Timing").performClick(); f.layout(850, 420)
             assertEquals(fullWidth, f.stage.width)
             button(f.viewer, "Fit video: off").performClick(); f.layout(850, 420)
             assertEquals(stageWidth, f.stage.width)
@@ -106,13 +139,13 @@ class NativePairViewerLayoutTest {
         for (landscape in listOf(false, true)) withFixture(landscape, 1.8f) { scenario, f -> scenario.onActivity {
             button(f.viewer, "Audio").performClick()
             f.layout(if (landscape) 560 else 400, if (landscape) 320 else 800)
-            assertEquals(f.viewer.width - f.viewer.paddingLeft - f.viewer.paddingRight, f.dock.width)
-            assertTrue(f.dock.top >= f.viewer.paddingTop)
+            assertEquals(f.viewer.width - f.viewer.paddingLeft - f.viewer.paddingRight, f.scroller.width)
+            assertTrue(f.scroller.top >= f.topBar.bottom)
+            assertEquals("The bottom sheet sits on the transport", f.bottomBar.top, f.scroller.bottom)
             assertTrue(f.scroller.height <= (f.viewer.height * 0.6f).toInt())
-            val toolbar = f.dock.getChildAt(1) as ViewGroup
-            for (index in 0 until toolbar.childCount) {
-                assertTrue(toolbar.getChildAt(index).width >= f.dp(48))
-                assertTrue(toolbar.getChildAt(index).height >= f.dp(48))
+            for (target in f.barTargets()) {
+                assertTrue(target.width >= f.dp(48))
+                assertTrue(target.height >= f.dp(48))
             }
             val body = f.scroller.getChildAt(0)
             assertTrue(body.height > f.scroller.height || !landscape)
@@ -127,7 +160,7 @@ class NativePairViewerLayoutTest {
     // portrait layout expectations that a TV configuration does not meet.
     @Test fun fullStatusRemainsAvailableWithoutDuplicatingItInAudio() {
         withFixture(false) { scenario, f ->
-            onView(withText("More")).perform(click())
+            onView(withContentDescription("More")).perform(click())
             onView(withText("Playback status")).perform(click())
             scenario.onActivity {
                 f.layout(400, 800)
@@ -165,7 +198,7 @@ class NativePairViewerLayoutTest {
     // portrait layout expectations that a TV configuration does not meet.
     @Test fun qualityControlsKeepTouchTargetsAndScrollAtCompactLargeFontSizes() {
         for (landscape in listOf(false, true)) withFixture(landscape, 1.8f) { scenario, f ->
-            onView(withText("More")).perform(click()); onView(withText("Quality")).perform(click())
+            onView(withContentDescription("More")).perform(click()); onView(withText("Quality")).perform(click())
             scenario.onActivity {
                 f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
                 val buttons = descendants(f.scroller).filterIsInstance<Button>()
@@ -197,15 +230,14 @@ class NativePairViewerLayoutTest {
                 assertSame(actions[0], actions[1].focusSearch(View.FOCUS_LEFT))
                 button(f.viewer, "Timing").performClick()
                 f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
-                val toolbar = f.dock.getChildAt(1) as ViewGroup
-                val liveControls = f.dock.getChildAt(2)
+                val liveControls = f.bottomBar.getChildAt(0)
                 assertTrue(liveControls.height >= f.dp(48))
-                assertTrue(f.dock.top >= f.viewer.paddingTop)
-                assertTrue(liveControls.bottom <= f.dock.height - f.dock.paddingBottom)
+                assertTrue(f.bottomBar.top >= f.topBar.bottom)
+                assertTrue(f.bottomBar.bottom <= f.overlay.height)
                 assertTrue(f.scroller.height <= (f.viewer.height * 0.6f).toInt())
-                for (index in 0 until toolbar.childCount) {
-                    assertTrue(toolbar.getChildAt(index).width >= f.dp(48))
-                    assertTrue(toolbar.getChildAt(index).height >= f.dp(48))
+                for (target in f.barTargets()) {
+                    assertTrue(target.width >= f.dp(48))
+                    assertTrue(target.height >= f.dp(48))
                 }
                 assertEquals(0, f.commands)
             }

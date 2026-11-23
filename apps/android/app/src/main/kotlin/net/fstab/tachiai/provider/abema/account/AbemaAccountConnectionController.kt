@@ -191,7 +191,8 @@ internal class AbemaAccountConnectionController(
             emailLink.also { emailLink = prepared }
         }
         prior?.let { inbox.unregister(it.nonce); it.candidate = null; it.renewal?.let { value -> completeRenewal(value, AbemaAutomaticRenewalResult.CANCELLED) } }
-        inbox.register(prepared.nonce, owner.instance.id, owner.proof(), prepared.deadline) { candidate ->
+        val register = if (renewal == null) inbox::registerManual else inbox::register
+        register(prepared.nonce, owner.instance.id, owner.proof(), prepared.deadline) { candidate ->
             synchronized(lock) {
                 if (closed || emailLink !== prepared || !prepared.handedOff || elapsedMs() >= prepared.deadline) return@register
                 prepared.candidate = candidate

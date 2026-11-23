@@ -428,6 +428,17 @@ Stop, is left running: the job settles its own attempt as a Stop (an early
 attempt falls back as above). Work for a changed scope, another instance's
 renewal holding the device slot, or a remembered result still defers.
 
+Since #635 step 5, the main process also keeps an in-memory timer for each
+saved grant while it is alive, due at the job's first due time. It is
+rescheduled on process start, accepted replacements, Forget and route or setup
+changes. When it fires, it renews through the foreground readiness path: the job's
+lead, but the process's own route rather than a job Network, the device's single
+renewal slot and the readiness retry loop. It joins a renewal already in flight,
+including the job's, and the job joins the timer's. It makes one attempt per
+grant generation, or one more after a route or setup change, and is postponed
+while a manual approval holds the approval browser. The job remains the wake-up
+when the process is dead.
+
 Scheduling failure preserves desired metadata for later reconciliation without
 consuming a provider attempt. Running jobs are not replaced merely to update
 metadata. API 34 adds the Network-change callback; older supported versions rely
@@ -473,6 +484,7 @@ grant or exception text):
 | `TachiaiAbemaRenewal` | `OPERATION_RESULT result=… cleanupConfirmed=…` plus the diagnostic fields, and `OPERATION_PRODUCER …` when the browser supplied one | default |
 | `TachiaiAbemaRenewal` | `JOB_JOINED early=…`, `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
 | `TachiaiAbemaRenewal` | `RETRY attempt=… reason=…` (`TEMPORARY_FAILURE` or `CANCELLED`) | default (foreground readiness only, #635) |
+| `TachiaiAbemaRenewal` | `TIMER_SCHEDULED`, `TIMER_POSTPONED reason=MANUAL_APPROVAL`, `TIMER_FIRED` and `TIMER_RESULT result=…` | default (pre-expiry timer, #635) |
 
 The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,
 `transport`, `transportPhase`, `transportCancelled`, `startup` and `cleanup`.

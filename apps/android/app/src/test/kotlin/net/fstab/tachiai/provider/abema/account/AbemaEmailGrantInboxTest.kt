@@ -58,6 +58,21 @@ class AbemaEmailGrantInboxTest {
         assertEquals(0, calls)
     }
 
+    @Test fun onlyAPendingManualApprovalHoldsTheBrowserForTheTimer() {
+        var now = 100L
+        val inbox = AbemaEmailGrantInbox({ now }, { 1000 })
+        inbox.register(nonce, instance, proof, deadline) { }
+        assertFalse(inbox.manualPending())
+        inbox.unregister(nonce)
+        inbox.registerManual(nonce, instance, proof, deadline) { }
+        assertTrue(inbox.manualPending())
+        now = deadline
+        assertFalse(inbox.manualPending())
+        now = 100
+        assertTrue(inbox.deliver(nonce, instance, proof, deadline, grant()))
+        assertFalse(inbox.manualPending())
+    }
+
     @Test fun expiredMalformedOrInconsistentGrantNeverReachesReceiver() {
         val inbox = AbemaEmailGrantInbox({ 100 }, { 1000 })
         var calls = 0

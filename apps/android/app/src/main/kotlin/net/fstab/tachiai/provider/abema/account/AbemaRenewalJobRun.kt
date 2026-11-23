@@ -28,6 +28,11 @@ internal class AbemaRenewalJobRun<N : Any>(
     private val finished: () -> Unit,
     // Closed constants only: disposition and invocation-end names.
     private val log: (String) -> Unit = {},
+    // RAM evidence of a renewal in flight for this preflight's exact account
+    // scope (#635 step 4), or null. It carries no Network, ticket or control.
+    private val join: (AbemaRenewalJobPreflight) -> (() -> AbemaRenewalReadinessCoordinator.Evidence)? = { null },
+    private val delay: (Long, () -> Unit) -> Boolean = { _, _ -> false },
+    private val joinPollMs: Long = 500,
 ) {
     private val active = AtomicBoolean(true)
     private val ended = AtomicBoolean()
@@ -37,6 +42,7 @@ internal class AbemaRenewalJobRun<N : Any>(
     private var attempt: AbemaRenewalJobAttempt? = null // Account worker only.
     private var receiptHandled = false // Account worker only.
     private var followup: AbemaRenewalJobKey? = null // A not-yet-armed retry, account worker only.
+    private var joined: (() -> AbemaRenewalReadinessCoordinator.Evidence)? = null // Account worker only.
 
     private fun admitted() = active.get() && runCatching { current() && elapsed() >= 0 && elapsed() < deadline }.getOrDefault(false)
 
@@ -60,7 +66,10 @@ internal class AbemaRenewalJobRun<N : Any>(
         try { worker.execute {
             val early = attempt?.early == true
             log("JOB_STOPPED early=$early")
-            if (!early) runCatching { ledger.defer(followup ?: key, AbemaRenewalJobDisposition.DEFERRED_STOP) }
+            // A joined renewal belongs to its foreground owner and has no lease
+            // to report back: the job settles its own attempt as a stop.
+            if (joined != null) completed(ABEMA_JOIN_LEFT)
+            else if (!early) runCatching { ledger.defer(followup ?: key, AbemaRenewalJobDisposition.DEFERRED_STOP) }
             finish()
         } } catch (_: Throwable) { finish() }
     }
@@ -107,8 +116,20 @@ internal class AbemaRenewalJobRun<N : Any>(
                         AbemaRenewalJobDisposition.DEFERRED_STORAGE else AbemaRenewalJobDisposition.DEFERRED_FAILURE)
                 }
                 is AbemaRenewalReservation.Observed -> {
-                    // An observer never consumes an attempt or cancels foreign work.
-                    defer(AbemaRenewalJobDisposition.DEFERRED_FAILURE)
+                    // An observer never cancels foreign work. Only a renewal in
+                    // flight for this exact account scope is joined (#635 step 4)
+                    // and counts as this job's attempt; other work (another
+                    // instance's, a changed scope's or a remembered result) defers.
+                    val probe = if (reservation.status == AbemaRenewalReadinessCoordinator.Status.WAIT)
+                        runCatching { join(before) }.getOrNull() else null
+                    if (probe == null || !admitted() || runCatching(probe).getOrNull()?.completion !=
+                        AbemaRenewalReadinessCoordinator.Completion.PENDING) {
+                        defer(AbemaRenewalJobDisposition.DEFERRED_FAILURE); return
+                    }
+                    val token = ledger.consume(key, before.generation, wall()) ?: run { finish(); return }
+                    attempt = token; joined = probe
+                    log("JOB_JOINED early=${token.early}")
+                    poll()
                 }
                 AbemaRenewalReservation.Deferred -> defer(if (admitted())
                     AbemaRenewalJobDisposition.DEFERRED_FAILURE else AbemaRenewalJobDisposition.DEFERRED_STOP)
@@ -117,6 +138,20 @@ internal class AbemaRenewalJobRun<N : Any>(
             lease.get()?.let { runCatching(it::cancel) }
             defer(if (error is AbemaAccountException && error.category == AbemaAccountFailure.STORAGE_FAILED)
                 AbemaRenewalJobDisposition.DEFERRED_STORAGE else AbemaRenewalJobDisposition.DEFERRED_FAILURE)
+        }
+    }
+
+    // Observes the joined renewal within this job's own deadline. Leaving it at
+    // the deadline or a stop never cancels or extends that work.
+    private fun poll() {
+        if (receiptHandled || ended.get()) return
+        val probe = joined ?: return
+        val outcome = abemaJoinedRenewalOutcome(runCatching(probe).getOrNull())
+        when {
+            outcome != null -> completed(outcome)
+            !admitted() -> completed(ABEMA_JOIN_LEFT)
+            !runCatching { delay(joinPollMs) { runCatching { worker.execute(::poll) } } }.getOrDefault(false) ->
+                completed(ABEMA_JOIN_LEFT)
         }
     }
 
@@ -169,4 +204,31 @@ internal class AbemaRenewalJobRun<N : Any>(
         try { if (!post(callback)) callback() } catch (_: Throwable) { runCatching(callback) }
     }
     override fun toString() = "AbemaRenewalJobRun(redacted)"
+}
+
+// The job stopped observing a joined renewal (deadline, stop or no poll):
+// settled like its own cancelled attempt, without touching the joined work.
+private val ABEMA_JOIN_LEFT = AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.CANCELLED, true)
+
+// Adopts a joined renewal's published result as the job's own outcome; null
+// while it is still in flight. Only the job's ledger policy decides any retry.
+internal fun abemaJoinedRenewalOutcome(evidence: AbemaRenewalReadinessCoordinator.Evidence?): AbemaRenewalOperationOutcome? {
+    val diagnostic = evidence?.diagnostic ?: AbemaRenewalDiagnostic()
+    return when (evidence?.completion) {
+        AbemaRenewalReadinessCoordinator.Completion.PENDING -> null
+        AbemaRenewalReadinessCoordinator.Completion.READY -> AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.SUCCESS, true)
+        AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE ->
+            AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, true, diagnostic)
+        AbemaRenewalReadinessCoordinator.Completion.INTERACTION_REQUIRED ->
+            AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.INTERACTION_REQUIRED, true, diagnostic)
+        AbemaRenewalReadinessCoordinator.Completion.STORAGE_FAILURE ->
+            AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.STORAGE_FAILURE, true, diagnostic)
+        AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED ->
+            AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, false, diagnostic)
+        // A final failure carries no retry evidence of the job's own.
+        AbemaRenewalReadinessCoordinator.Completion.FAILURE ->
+            AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, true)
+        // Retired without a result (for example its owner cancelled it) or unreadable.
+        AbemaRenewalReadinessCoordinator.Completion.ABSENT, null -> ABEMA_JOIN_LEFT
+    }
 }

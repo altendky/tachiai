@@ -262,6 +262,22 @@ internal object AndroidAbemaRenewalReadiness {
             it.owner.inRoutePool(ownerProof) && AbemaRenewalScope.of(it.owner, it.expected) == AbemaRenewalScope.of(it.owner, expected)
         }
 
+    // The renewal job joins only work in flight for its own account scope
+    // (#635 step 4): this exact route pool and the job's grant generation. The
+    // probe reads RAM evidence only; no Network, ticket or control is shared.
+    fun join(context: Context, target: AbemaReadinessTarget,
+        generation: AbemaRenewalGeneration): (() -> AbemaRenewalReadinessCoordinator.Evidence)? = runCatching {
+        val binding = androidAbemaAccountConnectionBinding(context, target.instanceId, target.ownerProof)
+        val owner = binding.owner()
+        val snapshot = binding.store.readSnapshot()
+        val record = snapshot.record ?: return null
+        if (!binding.sameOwner(owner) || AbemaRenewalGeneration(record.generation, record.acceptedWallMs,
+                record.grant.expiresAtMs) != generation) return null
+        val scope = AbemaRenewalScope.of(owner, snapshot)
+        val probe = { coordinator.evidence(target.instanceId) { AbemaRenewalScope.of(it.owner, it.expected) == scope } }
+        probe
+    }.getOrNull()
+
     private fun createOperation(context: Context, ticket: String, work: Work,
         completed: (AbemaRenewalOperationOutcome) -> Unit): AbemaAccountRenewalOperation =
         AbemaAccountRenewalOperation(work.binding, work.owner, work.expected, work.deadline,

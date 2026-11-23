@@ -46,6 +46,10 @@ class AbemaRenewalJobRunTest {
         var notify: ((AbemaRenewalOperationOutcome) -> Unit)? = null
         var posting: ((() -> Unit) -> Boolean) = { main.add(it); true }
         val logs = mutableListOf<String>()
+        // A joined renewal's RAM evidence (#635 step 4); null means no same-scope probe.
+        var evidence: AbemaRenewalReadinessCoordinator.Evidence? = null
+        var probes = 0
+        val delayed = ArrayDeque<() -> Unit>()
         val lease = AbemaRenewalOwnerLease({
             assertEquals(AbemaRenewalJobDisposition.RUNNING, ledger.snapshot().single().disposition)
             starts++; true
@@ -56,7 +60,11 @@ class AbemaRenewalJobRunTest {
                 assertSame(network, selected); assertEquals(91_000L, deadline)
                 reservations++; notify = completed; reserveHook()
                 reservation ?: AbemaRenewalReservation.Owned(lease)
-            }, { refreshes++ }, { finishes++ }, { logs.add(it) })
+            }, { refreshes++ }, { finishes++ }, { logs.add(it) },
+            join = { preflight ->
+                assertSame(this.preflight, preflight)
+                evidence?.let { { probes++; checkNotNull(evidence) } }
+            }, delay = { ms, action -> assertEquals(500L, ms); delayed.add(action); true })
         fun complete(value: AbemaRenewalOperationOutcome) { outcome = value; checkNotNull(notify)(value) }
         fun pump() {
             repeat(100) {
@@ -68,6 +76,13 @@ class AbemaRenewalJobRunTest {
             error("Fixture did not settle")
         }
         fun disposition() = ledger.snapshot().single().disposition
+        fun joining(): Fixture {
+            reservation = AbemaRenewalReservation.Observed(AbemaRenewalReadinessCoordinator.Status.WAIT)
+            evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.PENDING)
+            assertTrue(run.start()); pump()
+            return this
+        }
+        fun poll() { checkNotNull(delayed.removeFirstOrNull()).invoke(); pump() }
     }
     companion object {
         private fun transient() = AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.TEMPORARY_FAILURE, true,
@@ -222,5 +237,100 @@ class AbemaRenewalJobRunTest {
             f.run.start(); f.pump(); f.complete(AbemaRenewalOperationOutcome(AbemaAutomaticRenewalResult.SUCCESS, true)); f.pump()
             assertEquals(1, f.finishes); assertEquals(AbemaRenewalJobDisposition.COMPLETED, f.disposition())
         }
+    }
+
+    @Test fun aJobJoinsSameScopeWorkInFlightAndAdoptsItsSuccessWithoutASecondLaunch() {
+        val f = Fixture().joining()
+        assertEquals(AbemaRenewalJobDisposition.RUNNING, f.disposition())
+        assertEquals(1, f.ledger.snapshot().single().attempts)
+        assertEquals(1, f.reservations); assertEquals(0, f.starts); assertEquals(0, f.cancels); assertEquals(0, f.finishes)
+        f.poll() // Still in flight.
+        assertEquals(AbemaRenewalJobDisposition.RUNNING, f.disposition()); assertEquals(1, f.delayed.size)
+        f.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.READY)
+        f.poll()
+        assertEquals(AbemaRenewalJobDisposition.COMPLETED, f.disposition())
+        assertEquals(1, f.reservations); assertEquals(0, f.starts); assertEquals(0, f.cancels)
+        assertEquals(1, f.finishes); assertEquals(1, f.refreshes); assertTrue(f.delayed.isEmpty())
+        assertEquals(listOf("JOB_JOINED early=false", "JOB_SETTLED outcome=SUCCESS early=false disposition=COMPLETED"), f.logs)
+    }
+
+    @Test fun aJoinedTemporaryFailureFollowsTheJobsOwnLedgerRetryPolicy() {
+        val f = Fixture().joining()
+        f.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE,
+            transient().diagnostic)
+        f.poll()
+        val retry = f.ledger.snapshot().single()
+        assertEquals(AbemaRenewalJobDisposition.RETRY, retry.disposition)
+        assertEquals(f.wall + 120_000, retry.dueWallMs)
+        assertEquals(1, f.reservations); assertEquals(0, f.starts); assertEquals(1, f.finishes)
+        // Without retryable transport evidence the job defers, as for its own attempt.
+        val g = Fixture().joining()
+        g.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.TEMPORARY_FAILURE)
+        g.poll()
+        assertEquals(AbemaRenewalJobDisposition.DEFERRED_FAILURE, g.disposition())
+    }
+
+    @Test fun joinedInteractionStorageCleanupAndRetiredResultsKeepTheirExistingDispositions() {
+        for ((completion, expected) in listOf(
+            AbemaRenewalReadinessCoordinator.Completion.INTERACTION_REQUIRED to AbemaRenewalJobDisposition.DEFERRED_INTERACTION,
+            AbemaRenewalReadinessCoordinator.Completion.STORAGE_FAILURE to AbemaRenewalJobDisposition.DEFERRED_STORAGE,
+            AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED to AbemaRenewalJobDisposition.DEFERRED_CLEANUP,
+            AbemaRenewalReadinessCoordinator.Completion.FAILURE to AbemaRenewalJobDisposition.DEFERRED_FAILURE,
+            AbemaRenewalReadinessCoordinator.Completion.ABSENT to AbemaRenewalJobDisposition.DEFERRED_STOP)) {
+            val f = Fixture().joining()
+            f.evidence = AbemaRenewalReadinessCoordinator.Evidence(completion); f.poll()
+            assertEquals(completion.name, expected, f.disposition())
+            assertEquals(0, f.cancels); assertEquals(1, f.finishes)
+        }
+    }
+
+    @Test fun otherScopesOtherInstancesAndRememberedResultsStillDeferWithoutJoining() {
+        // join() finds no same-scope probe: another instance holds the slot, or the scope changed.
+        val other = Fixture(); other.reservation = AbemaRenewalReservation.Observed(AbemaRenewalReadinessCoordinator.Status.WAIT)
+        other.run.start(); other.pump()
+        // A same-instance probe that is not in flight is not this job's renewal either.
+        val absent = Fixture(); absent.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.ABSENT)
+        absent.reservation = AbemaRenewalReservation.Observed(AbemaRenewalReadinessCoordinator.Status.WAIT)
+        absent.run.start(); absent.pump()
+        // A remembered terminal status is never joined.
+        val remembered = Fixture(); remembered.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.PENDING)
+        remembered.reservation = AbemaRenewalReservation.Observed(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        remembered.run.start(); remembered.pump()
+        for (f in listOf(other, absent, remembered)) {
+            assertEquals(AbemaRenewalJobDisposition.DEFERRED_FAILURE, f.disposition())
+            assertEquals(0, f.ledger.snapshot().single().attempts); assertEquals(0, f.cancels)
+            assertTrue(f.delayed.isEmpty()); assertTrue(f.logs.isEmpty()); assertEquals(1, f.finishes)
+        }
+        assertEquals(0, remembered.probes)
+    }
+
+    @Test fun joinedWorkOutlastingTheJobDeadlineEndsTheJobWithoutCancellingIt() {
+        // The deadline poll and the deadline Stop each end the job cleanly.
+        val polled = Fixture().joining(); polled.elapsed = 91_000; polled.poll()
+        val stopped = Fixture().joining(); stopped.run.stop(); stopped.pump()
+        for (f in listOf(polled, stopped)) {
+            assertEquals(AbemaRenewalJobDisposition.DEFERRED_STOP, f.disposition())
+            assertEquals(0, f.cancels); assertEquals(0, f.starts); assertEquals(1, f.finishes)
+        }
+        assertEquals(listOf("JOB_JOINED early=false", "JOB_STOPPED early=false",
+            "JOB_SETTLED outcome=CANCELLED early=false disposition=DEFERRED_STOP"), stopped.logs)
+        // An early joined attempt still falls back to natural expiry.
+        val early = Fixture(); early.wall = 9_000; early.joining()
+        assertEquals(1, early.ledger.snapshot().single().earlyAttempts)
+        early.run.stop(); early.pump()
+        val next = early.ledger.snapshot().single()
+        assertEquals(AbemaRenewalJobDisposition.RETRY, next.disposition)
+        assertEquals(early.generation.expiresWallMs, next.dueWallMs); assertEquals(0, early.cancels)
+    }
+
+    @Test fun anEndedJobNeitherReusesItsNetworkNorObservesTheJoinedWorkAgain() {
+        val f = Fixture().joining()
+        f.run.stop(); f.pump()
+        val probes = f.probes
+        f.evidence = AbemaRenewalReadinessCoordinator.Evidence(AbemaRenewalReadinessCoordinator.Completion.READY)
+        f.poll() // The poll armed before Stop.
+        assertEquals(probes, f.probes); assertEquals(1, f.reservations); assertEquals(0, f.starts)
+        assertEquals(AbemaRenewalJobDisposition.DEFERRED_STOP, f.disposition())
+        assertTrue(f.delayed.isEmpty()); assertEquals(1, f.finishes)
     }
 }

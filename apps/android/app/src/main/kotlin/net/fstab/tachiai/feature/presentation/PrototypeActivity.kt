@@ -147,9 +147,12 @@ import net.fstab.tachiai.provider.abema.account.AbemaAccountReadinessResult
 import net.fstab.tachiai.provider.abema.account.abemaAccountReadinessMessage
 import net.fstab.tachiai.provider.catalog.CatalogResource
 import net.fstab.tachiai.provider.catalog.CatalogFailure
+import net.fstab.tachiai.provider.catalog.CatalogResult
 import net.fstab.tachiai.presentation.endedFeedFailure
 import net.fstab.tachiai.presentation.channelNotAiringMessage
 import net.fstab.tachiai.presentation.FeedWaitingState
+import net.fstab.tachiai.presentation.FeedAiringLookup
+import net.fstab.tachiai.presentation.FeedWaitingKind
 import net.fstab.tachiai.presentation.FeedRecoveryAction
 import net.fstab.tachiai.presentation.feedWaitingMessage
 import net.fstab.tachiai.provider.catalog.CatalogIntent
@@ -212,6 +215,8 @@ open class PrototypeActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     // Episode pages take tens of seconds; they never queue behind or block Watch.
     private val episodeWorker = Executors.newSingleThreadExecutor()
+    // A waiting channel's schedule lookups (#560) likewise never block feed checks.
+    private val airingWorker = Executors.newSingleThreadExecutor()
     // Separate from Watch's readiness: ensure() retires any check pending on the
     // same instance, and an episode page must not cancel Watch's account check.
     private val episodeAccountReadiness by lazy { AbemaAccountReadiness(this) }
@@ -291,6 +296,8 @@ open class PrototypeActivity : ComponentActivity() {
     private var waiting = List(2) { FeedWaitingState() }
     // Whether the current attempt already asked for a published schedule.
     private val waitingLookup = BooleanArray(2)
+    // A waiting channel's scheduled program from the provider's schedule (#560).
+    private var airing = List(2) { FeedAiringLookup() }
     private var automaticPairRestoreWanted: Boolean? = null
     private val retryAccountReady = BooleanArray(2)
     private data class RetryAccountCheck(val index: Int, val retry: FeedRetryState,
@@ -677,7 +684,7 @@ open class PrototypeActivity : ComponentActivity() {
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
         automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
-        waiting = List(2) { FeedWaitingState() }; waitingLookup.fill(false)
+        waiting = List(2) { FeedWaitingState() }; waitingLookup.fill(false); airing = List(2) { FeedAiringLookup() }
         retryIntentPolicy = ViewerRetryIntentPolicy()
         automaticPairRestoreWanted = null
         retryAccountCheck = null
@@ -1111,7 +1118,8 @@ open class PrototypeActivity : ComponentActivity() {
                 if (retryAccountCheck?.index == index) "Checking account connection…"
                 // A waiting feed keeps its waiting text through its own checks.
                 else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
-                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, System.currentTimeMillis())
+                    val now = System.currentTimeMillis()
+                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, now, program = airing[index].program(now))
                 }
                 else if (feedRetries[index].retrying) {
                     if (automaticRecovery[index].automaticAttemptActive)
@@ -1798,6 +1806,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (automaticPairRestoreWanted == null)
             automaticPairRestoreWanted = offset?.preference?.enabled == true && offset.enabledApplied
         val waitingNow = updateWaiting(index, failure, now, transientAccountReadiness)
+        if (waitingNow) refreshAiring(index)
         // Waiting is not a recovery incident: its checks spend no automatic retries.
         if (waitingNow) automaticRecovery[index].cancel()
         val autoDecision = if (waitingNow) FeedAutoRecoveryDecision.SKIPPED else automaticRecovery[index].failed(member, failure,
@@ -1863,6 +1872,41 @@ open class PrototypeActivity : ComponentActivity() {
         if (disposing || !resumed.get() || !canRetryFeed(index)) { state.cancel(); return false }
         val channel = selection?.slots?.getOrNull(index)?.resource?.intent == CatalogIntent.CHANNEL
         return state.failed(failure, channel, waitingLookup[index], now, System.currentTimeMillis(), transientAccount)
+    }
+
+    // A waiting ABEMA channel's scheduled program (#560), on each refresh of its
+    // waiting state. The pane shows at once and gains the schedule line when an
+    // answer arrives; the lookup runs on its own worker, never delays a check,
+    // Check now or Retry, and a superseded or late result is dropped.
+    private fun refreshAiring(index: Int) {
+        val state = waiting[index]
+        val lookup = airing[index]
+        val source = selection?.slots?.getOrNull(index) ?: return
+        if (!useCachedAbema || !state.active || state.kind != FeedWaitingKind.CHANNEL || state.accountRecheck ||
+            source.service != PrototypeService.ABEMA || source.resource.intent != CatalogIntent.CHANNEL) return
+        state.programStart(lookup.start(System.currentTimeMillis()))
+        // The lookup's guest runtime leases the route this feed holds (#275).
+        val ownerProof = routeOwners[source.instanceId]?.proof ?: return
+        val token = lookup.begin(SystemClock.elapsedRealtime(), System.currentTimeMillis()) ?: return
+        val run = epoch.get()
+        val canUse = { resumed.get() && epoch.get() == run && !isFinishing }
+        val result = { catalogResult: CatalogResult<net.fstab.tachiai.provider.catalog.CatalogAiring> ->
+            handler.post {
+                if (airing[index] !== lookup ||
+                    !lookup.complete(token, catalogResult, SystemClock.elapsedRealtime(), System.currentTimeMillis())) return@post
+                if (waiting[index] === state && state.active) state.programStart(lookup.start(System.currentTimeMillis()))
+                viewer?.refresh()
+            }
+        }
+        try {
+            airingWorker.execute {
+                result(try {
+                    net.fstab.tachiai.provider.abema.androidAbemaChannelCatalog(this, source.instanceId, emptyMap(),
+                        canUse = canUse, expectedOwnerProof = ownerProof).use { it.airing(source.resource, System.currentTimeMillis()) }
+                } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) })
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) { lookup.complete(token,
+            CatalogResult.Failure(CatalogFailure.TEMPORARY), SystemClock.elapsedRealtime(), System.currentTimeMillis()) }
     }
 
     private fun processWaitingChecks() {
@@ -2294,7 +2338,7 @@ open class PrototypeActivity : ComponentActivity() {
         resumed.set(false); dispose()
         // Let queued route preparation reach its cancellation/result cleanup;
         // dropping the task would strand process-wide routesPending forever.
-        pickerEpisodes.close(); episodeWorker.shutdown()
+        pickerEpisodes.close(); episodeWorker.shutdown(); airingWorker.shutdown()
         worker.shutdown()
         super.onDestroy()
     }

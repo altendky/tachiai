@@ -201,6 +201,8 @@ internal class AbemaAccountCollectionsCatalog(
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }
     override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> { clear(); return delegate.refresh(resource) }
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { clear(); return delegate.resolve(resource) }
+    // Public schedule metadata; account collections and their cursors are untouched.
+    override fun airing(resource: CatalogResource, nowEpochMs: Long): CatalogResult<CatalogAiring> = delegate.airing(resource, nowEpochMs)
     override fun close() {
         if (closed) return
         closed = true; revision.incrementAndGet(); clear()

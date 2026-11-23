@@ -69,6 +69,33 @@ class FeedWaitingStateTest {
         assertEquals(60_000L, s.dueAt(0))
     }
 
+    @Test fun aScheduledProgramStartTimesAChannelsChecksFromTheNextScheduling() {
+        val s = state()
+        val start = epoch + 10 * 60_000
+        s.programStart(start)
+        assertNull("only while waiting", s.programStartEpochMs)
+        s.waiting(channel, lookedUp = true, nowElapsedMs = 0, nowEpochMs = start - 120_000)
+        // Applied after this scheduling: the current check stays a minute away.
+        s.programStart(start)
+        assertEquals(60_000L, s.dueAt(0))
+        s.waiting(channel, true, 60_000, start - 60_000)
+        assertEquals(75_000L, s.dueAt(60_000))
+        // It never changes the signalled start or the pane's first line.
+        assertNull(s.startEpochMs)
+        // A provider's own start wins, and an occurrence ignores a program start.
+        val signalled = state()
+        signalled.waiting(FeedWaitingSignal(FeedWaitingKind.CHANNEL, start + 3_600_000), true, 0, start - 60_000)
+        signalled.programStart(start)
+        signalled.waiting(FeedWaitingSignal(FeedWaitingKind.CHANNEL), true, 0, start - 60_000)
+        assertEquals(60_000L, signalled.dueAt(0))
+        val occurrence = state()
+        occurrence.waiting(FeedWaitingSignal(FeedWaitingKind.OCCURRENCE), true, 0, start - 60_000)
+        occurrence.programStart(start)
+        occurrence.waiting(FeedWaitingSignal(FeedWaitingKind.OCCURRENCE), true, 0, start - 60_000)
+        assertEquals(60_000L, occurrence.dueAt(0))
+        s.cancel(); assertNull(s.programStartEpochMs)
+    }
+
     @Test fun anOccurrenceIsNotCheckedBeforeItsStartThenEveryFifteenSeconds() {
         val s = state(jitter = 5_000)
         val start = epoch + 30 * 60_000

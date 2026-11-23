@@ -614,8 +614,12 @@
         matching++;
         // Scheduled length in seconds (#608). Anything else stays unknown.
         const span = Number.isSafeInteger(item.startAt) && Number.isSafeInteger(item.endAt) ? item.endAt - item.startAt : 0;
+        // Epoch-second times only beside one channel's programs (#560), for the
+        // viewer's next-program line; never on the browsable timetable.
+        const timed = span > 0 && span <= 604800 && item.startAt >= 1 && item.endAt <= 99999999999;
         if (slots.length < 501) slots.push(Object.freeze({ id: item.id, channelId: item.channelId, title: item.title.trim(),
-          ...(span > 0 && span <= 604800 ? { durationSeconds: span } : {}) }));
+          ...(span > 0 && span <= 604800 ? { durationSeconds: span } : {}),
+          ...(channelId === undefined ? {} : timed ? { startAt: item.startAt, endAt: item.endAt } : { startAt: null, endAt: null }) }));
       }
     }
     if (channelId !== undefined) return Object.freeze({ slots, truncated: matching > slots.length, channelId });

@@ -47,8 +47,20 @@ private class ScheduleProjectionReader(private val text: String, private val exp
         check(digits.length in 1..6 && digits[0] != '0')
         return digits.toLong().also { check(it in 1..MAX_CATALOG_DURATION_SECONDS) }
     }
+    // Epoch seconds or null (#560), only beside a channel-filtered snapshot's slots.
+    private fun epochSeconds(): Long? {
+        space()
+        if (text.startsWith("null", at)) { at += 4; return null }
+        val start = at
+        while (at < text.length && text[at] in '0'..'9') at++
+        val digits = text.substring(start, at)
+        check(digits.length in 1..11 && digits[0] != '0')
+        return digits.toLong().also { check(it in 1..ABEMA_SCHEDULE_MAX_EPOCH_SECONDS) }
+    }
     fun read(): AbemaScheduleSnapshot {
         val entries = mutableListOf<CatalogEntry>(); var truncated = false
+        val filtered = expected.channelId != null
+        val times = mutableListOf<AbemaSlotTimes?>()
         fields(setOf("slots", "truncated") + if (expected.channelId != null) setOf("channelId") else emptySet()) { key -> when (key) {
             "channelId" -> check(string() == expected.channelId)
             "truncated" -> {
@@ -62,20 +74,27 @@ private class ScheduleProjectionReader(private val text: String, private val exp
                     do {
                         check(entries.size < ABEMA_SCHEDULE_PREFIX_LIMIT)
                         var id: String? = null; var channel: String? = null; var title: String? = null
-                        var duration: Long? = null
-                        fields(setOf("id", "channelId", "title"), setOf("durationSeconds")) { field -> when (field) {
+                        var duration: Long? = null; var startAt: Long? = null; var endAt: Long? = null
+                        fields(setOf("id", "channelId", "title") + if (filtered) setOf("startAt", "endAt") else emptySet(),
+                            setOf("durationSeconds")) { field -> when (field) {
                             "id" -> id = string(); "channelId" -> channel = string(); "title" -> title = string()
+                            "startAt" -> startAt = epochSeconds(); "endAt" -> endAt = epochSeconds()
                             else -> duration = seconds()
                         } }
                         val request = AbemaSlotRequest(checkNotNull(channel), checkNotNull(id))
                         check(safeAbemaSeriesText(checkNotNull(title), 160))
                         entries += CatalogEntry(request.resource, title!!, durationSeconds = duration)
+                        // Both times or neither; known times agree with the projected length.
+                        check((startAt == null) == (endAt == null))
+                        val slotTimes = startAt?.let { AbemaSlotTimes(it, checkNotNull(endAt)) }
+                        check(slotTimes == null || duration == slotTimes.endEpochSeconds - slotTimes.startEpochSeconds)
+                        if (filtered) times += slotTimes
                     } while (take(','))
                     need(']')
                 }
             }
         } }
         space(); check(at == text.length)
-        return AbemaScheduleSnapshot(entries, truncated, expected)
+        return AbemaScheduleSnapshot(entries, truncated, expected, times.takeIf { filtered })
     }
 }

@@ -102,7 +102,8 @@ class AbemaScheduleCatalogTest {
         assertNull(decodeAbemaScheduleProjection(empty))
         assertNull(decodeAbemaScheduleProjection(empty, AbemaScheduleRequest("channel-B")))
         assertNull(decodeAbemaScheduleProjection("""{"slots":[],"truncated":false}""", request))
-        assertNull(decodeAbemaScheduleProjection(empty.replace("[]", """[{"id":"slot-A","channelId":"channel-B","title":"Other"}]"""), request))
+        assertNull(decodeAbemaScheduleProjection(empty.replace("[]",
+            """[{"id":"slot-A","channelId":"channel-B","title":"Other","startAt":null,"endAt":null}]"""), request))
         assertNull(decodeAbemaScheduleProjection(empty.replace("\"channelId\":", "\"channelId\":\"channel-A\",\"\\u0063hannelId\":"), request))
     }
     @Test fun channelCloseCancelsActiveFetchAndCleanupFailurePoisonsFurtherRequests() {

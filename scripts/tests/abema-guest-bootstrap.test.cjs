@@ -480,6 +480,28 @@ test('schedule slots project their scheduled length only from valid start and en
   assert.deepEqual(projection.slots.map(s => s.durationSeconds), [1800, undefined, undefined, undefined, undefined, undefined]);
   assert.doesNotMatch(JSON.stringify(projection), /PRIVATE_|startAt|endAt/);
 });
+test('only channel programs project their valid start and end seconds, otherwise both null (#560)', async () => {
+  const schedule = scheduleReply();
+  const base = schedule.slots[0];
+  const slot = (id, startAt, endAt, channelId = 'fixture-channel') => ({ ...base, id, channelId, startAt, endAt });
+  schedule.slots = [slot('slot-0', 1000, 2800), slot('slot-1', 1000, 1000), slot('slot-2', 2800, 1000),
+    slot('slot-3', 'PRIVATE_UNVERIFIED', 2800), slot('slot-4', 0, 1800), slot('slot-5', 1.5, 1801),
+    slot('slot-6', 99999999000, 100000000000), slot('slot-7', 1000, 605801), slot('slot-8', 5000, 6800, 'unrelated')];
+  const filtered = fixture({ operation: 'FETCH_SCHEDULE', resourceId: { channelId: 'fixture-channel' }, schedule });
+  filtered.start(); await settle();
+  assert.equal(filtered.state().state, 'SCHEDULE_SNAPSHOT');
+  const programs = JSON.parse(filtered.call(`window['${apiName}'].metadata()`));
+  assert.deepEqual(programs.slots.map(s => [s.id, s.startAt, s.endAt]), [['slot-0', 1000, 2800], ['slot-1', null, null],
+    ['slot-2', null, null], ['slot-3', null, null], ['slot-4', null, null], ['slot-5', null, null],
+    ['slot-6', null, null], ['slot-7', null, null]]);
+  assert.ok(programs.slots.every(s => Object.hasOwn(s, 'startAt') && Object.hasOwn(s, 'endAt')));
+  assert.deepEqual(programs.slots[0], { id: 'slot-0', channelId: 'fixture-channel', title: base.title, durationSeconds: 1800,
+    startAt: 1000, endAt: 2800 });
+  assert.doesNotMatch(JSON.stringify(programs), /PRIVATE_|timeshift|unrelated/);
+  const browsable = fixture({ operation: 'FETCH_SCHEDULE', schedule }); browsable.start(); await settle();
+  assert.equal(browsable.state().state, 'SCHEDULE_SNAPSHOT');
+  assert.doesNotMatch(browsable.call(`window['${apiName}'].metadata()`), /startAt|endAt/);
+});
 
 const slotRequest = (channelId = 'channel-A', slotId = 'slot-A') => ({ channelId, slotId });
 test('slot operation binds two exact channel and slot identities and discards timing sources and private metadata', async () => {

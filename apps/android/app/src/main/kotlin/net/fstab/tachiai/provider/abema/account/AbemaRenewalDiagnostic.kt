@@ -21,7 +21,9 @@ internal data class AbemaRenewalDiagnostic(
 ) {
     enum class Phase { NONE, ADMISSION, STARTUP_CLEANUP, BROWSER_BIND, BROWSER_START, ROUTE, PROXY, PAGE,
         REGION, CANDIDATE, PROFILE, EMAIL, ADOPTION, LIFETIME, OPERATION, CLEANUP }
-    enum class Reason { NONE, REFUSED, OWNER_CHANGED, CLOCK_REFUSED, DEADLINE, EXCEPTION, CANCELLED,
+    // OWNER_CHECK_FAILED: the owner could not be re-read (#635 step 3), as
+    // distinct from OWNER_CHANGED, a re-read owner that no longer matches.
+    enum class Reason { NONE, REFUSED, OWNER_CHANGED, OWNER_CHECK_FAILED, CLOCK_REFUSED, DEADLINE, EXCEPTION, CANCELLED,
         BIND_REFUSED, BROKER_LOST, ROUTE_PREPARATION, PROXY_REFUSED, NAVIGATION_REFUSED,
         NETWORK_ERROR, HTTP_ERROR, TLS_REFUSED, REGION_REJECTED, REGION_FAILURE, RENDERER_GONE,
         CANDIDATE_MISSING, CANDIDATE_INVALID, PROFILE_REJECTED, PROFILE_INCONCLUSIVE, IDENTITY_MISMATCH,
@@ -102,3 +104,10 @@ internal class AbemaRenewalDiagnostics {
             cleanup(incoming.cleanup == AbemaRenewalDiagnostic.Cleanup.CONFIRMED)
     }
 }
+
+// Why an owner re-check refuses work (#635 step 3): null while the owner still
+// matches, OWNER_CHANGED for a re-read owner that differs, OWNER_CHECK_FAILED
+// when the owner could not be re-read at all.
+internal fun abemaOwnerMismatch(sameOwner: () -> Boolean): AbemaRenewalDiagnostic.Reason? =
+    try { if (sameOwner()) null else AbemaRenewalDiagnostic.Reason.OWNER_CHANGED }
+    catch (_: Throwable) { AbemaRenewalDiagnostic.Reason.OWNER_CHECK_FAILED }

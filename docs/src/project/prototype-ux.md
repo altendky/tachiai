@@ -291,6 +291,12 @@ admits it: a proof that matches no current candidate is refused and starts no
 work. In-flight work is superseded only by a changed grant snapshot or route
 pool, and the retry loop follows the same scope.
 
+Since #635 step 3, the approval browser's owner re-check reports
+`OWNER_CHECK_FAILED` when the owner record could not be re-read (for example
+an unreadable store), and `OWNER_CHANGED` only when a re-read owner no longer
+matches. Both still end the attempt as a temporary failure, which the retry
+loop may retry.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

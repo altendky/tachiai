@@ -45,7 +45,15 @@ import net.fstab.tachiai.presentation.FloatingFeedSize
 import net.fstab.tachiai.presentation.TwoFeedMix
 import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.ViewerTimingStep
+import net.fstab.tachiai.presentation.ViewerOverlayPlan
+import net.fstab.tachiai.presentation.ViewerPanelSpace
+import net.fstab.tachiai.presentation.ViewerStatusNotices
 import net.fstab.tachiai.presentation.twoFeedBounds
+import net.fstab.tachiai.presentation.viewerOverlayPlan
+import net.fstab.tachiai.presentation.viewerPaneInsets
+import net.fstab.tachiai.presentation.viewerSheetCap
+import net.fstab.tachiai.presentation.viewerSheetWidth
+import net.fstab.tachiai.presentation.viewerSideSheet
 import kotlin.math.abs
 
 internal data class ViewerFeedRecovery(val label: String, val enabled: Boolean = true)
@@ -104,7 +112,6 @@ internal class NativePairViewer(
     private var mix = TwoFeedMix()
     private var panel: String? = null
     private var fitVideo = true
-    private var sideDock = false
     private var activeMenu: PopupMenu? = null
     private var activeMenuAnchor: View? = null
     private var panelReturnFocus: View? = null
@@ -129,18 +136,33 @@ internal class NativePairViewer(
         val choose: Button, val readback: TextView, val capability: TextView, val save: Button, val reset: Button)
     private val qualityFields = mutableListOf<QualityField>()
     private val hideControls = Runnable {
-        if (panel == null && requestedPlaying && !dock.hasFocus() && pendingFocus == null) {
-            dock.visibility = GONE; requestLayout()
+        if (panel == null && requestedPlaying && !overlay.hasFocus() && pendingFocus == null) {
+            overlay.visibility = GONE; requestLayout()
         }
     }
+    // Layers, bottom to top: the video stage fills the viewer; the controls
+    // overlay floats over it (top bar, bottom transport and an open panel);
+    // brief status notices sit above both (#656).
     private val stage = FeedStage()
-    private val dock = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4))
+    private val overlay = ControlsLayer()
+    private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val scroller = CappedScrollView().apply {
+        addView(content)
+        setPadding(dp(8), dp(4), dp(8), dp(4))
         background = context.prototypeSurface(R.color.prototype_panel)
     }
-    private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val scroller = CappedScrollView().apply { addView(content) }
-    private val scrollerParams = LinearLayout.LayoutParams(-1, -2)
+    private val notices = ViewerStatusNotices()
+    private val statusNotice = text("").apply {
+        visibility = GONE; maxLines = 4; gravity = Gravity.CENTER
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        background = context.prototypeSurface(R.color.prototype_panel)
+        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+    }
+    private val fadeNotice = Runnable {
+        statusNotice.animate().alpha(0f).setDuration(ViewerStatusNotices.FADE_MS)
+            .withEndAction { statusNotice.visibility = GONE }
+    }
+    private var plan: ViewerOverlayPlan? = null
     private val play = button("Play") {
         pendingMarkAlignment = null
         if (requestedPlaying || playbackBusy()) onPause() else onPlay()
@@ -148,8 +170,15 @@ internal class NativePairViewer(
     }
     private val audioControl = button("Audio") { togglePanel("Audio", it) }
     private val timingControl = button("Timing") { togglePanel("Timing", it) }
-    private val moreControl = button("More") { showMore(it) }
-    private val readback = text("").apply { textSize = 12f; maxLines = 2 }
+    private val moreControl = button("⋯", "More") { showMore(it) }.apply { contentDescription = "More" }
+    private val stopControl = onSources?.let { action ->
+        button("Stop", STOP_KEY) { action() }.apply {
+            contentDescription = "Stop playback"
+            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.navigation_back, 0, 0, 0)
+            compoundDrawablePadding = dp(4)
+            compoundDrawableTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_text))
+        }
+    }
     private val details = text("")
     private val adjustmentLabel = text("").apply { textSize = 12f }
     private val eventMarks = NativeEventMarks()
@@ -198,18 +227,34 @@ internal class NativePairViewer(
             contentDescription = "Back to live ${side.name} · ${if (side == NativeMixedSide.A) labelA else labelB}"
         }
     }
-    private val liveHint = text("").apply { textSize = 12f }
+    private val liveHint = text("").apply { textSize = 12f; setTextColor(OVERLAY_TEXT) }
     private val liveControls = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         addView(row(*backToLive.toTypedArray()))
         addView(liveHint)
         visibility = GONE
     }
-    private val toolbar = row(*listOfNotNull(onSources?.let { action -> nativeBackButton(context, "Back to sources", action).apply {
-            imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.prototype_text))
-            remoteControl(this)
-        } }, play, audioControl, timingControl, moreControl,
-        button("Hide") { dismissControls() }.apply { contentDescription = "Hide all playback controls" }).toTypedArray())
+    // The top bar holds Stop and the secondary controls; the bottom area the
+    // live affordances and transport. #655 adds its position row and skips there.
+    private val topBar = LinearLayout(context).apply {
+        gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
+        background = overlayScrim()
+        stopControl?.let { addView(it, LinearLayout.LayoutParams(-2, -2)) }
+        addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+        listOf(audioControl, timingControl, moreControl).forEach { control ->
+            addView(control, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
+        }
+    }
+    private val transportRow = LinearLayout(context).apply {
+        gravity = Gravity.CENTER
+        addView(play, LinearLayout.LayoutParams(-2, -2))
+    }
+    private val bottomBar = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
+        background = overlayScrim()
+        addView(liveControls, LinearLayout.LayoutParams(-1, -2))
+        addView(transportRow, LinearLayout.LayoutParams(-1, -2))
+    }
 
     init {
         timingControl.visibility = if (hasPairSlots) VISIBLE else GONE
@@ -239,12 +284,13 @@ internal class NativePairViewer(
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
+        play.minWidth = dp(96)
         addView(stage)
-        addView(dock)
-        dock.addView(scroller, scrollerParams)
-        dock.addView(toolbar)
-        dock.addView(liveControls)
-        dock.addView(readback)
+        addView(overlay)
+        addView(statusNotice)
+        overlay.addView(scroller)
+        overlay.addView(topBar)
+        overlay.addView(bottomBar)
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
         balance.contentDescription = "Mix: $labelA to $labelB; centre is equal"
@@ -263,6 +309,17 @@ internal class NativePairViewer(
         updateLabels()
     }
 
+    // A dark translucent band, with light text, keeps the bars legible over any
+    // video in both themes. Buttons keep their own surfaces and focus outlines.
+    private fun overlayScrim() = ColorDrawable(OVERLAY_SCRIM)
+    private fun panelSpace(value: String?) = when (value) {
+        // Marking matching events needs both feeds in view; quality choices are
+        // long and judged against the picture. Both keep their own space.
+        "Timing", "Quality" -> ViewerPanelSpace.RESERVE
+        null -> null
+        // Audio is short and adjusted by ear; Status is read-only text.
+        else -> ViewerPanelSpace.OVERLAY
+    }
     private fun text(value: String) = TextView(context).apply {
         text = value; setTextColor(context.getColor(R.color.prototype_text)); textSize = 14f
     }
@@ -305,7 +362,8 @@ internal class NativePairViewer(
     private fun rememberControlFocus() {
         val focused = findFocus() ?: return
         val key = controlKeys[focused] ?: return
-        if (key == "Hide") return
+        // Revealing never lands on Stop: a reflexive Select must not ask to stop.
+        if (key == STOP_KEY) return
         var ancestor = focused.parent
         while (ancestor is View && ancestor !== content) ancestor = ancestor.parent
         if (ancestor === content && panel != null) panelFocus[checkNotNull(panel)] = key
@@ -322,14 +380,14 @@ internal class NativePairViewer(
     private fun restoreRemoteFocus(preferred: View? = play, key: String? = null, pending: FocusIntent? = null) {
         // Preserve real keyboard/remote focus on every form factor. Initial TV
         // focus retains its existing behavior; touch alone never creates intent.
-        if (!television && isInTouchMode && key == null && !dock.hasFocus()) return
+        if (!television && isInTouchMode && key == null && !overlay.hasFocus()) return
         val generation = focusGeneration
         val scope = panel
         val ticket = ++focusRestoreTicket
         post {
             if (generation != focusGeneration || ticket != focusRestoreTicket || scope != panel ||
-                !isAttachedToWindow || !isShown || dock.isGone || activeMenu != null) return@post
-            val target = if (key != null) findControl(key) else preferred
+                !isAttachedToWindow || !isShown || overlay.isGone || activeMenu != null) return@post
+            val target = if (key != null && key != STOP_KEY) findControl(key) else preferred
             if (pending != null && (pendingFocus != pending || target?.isEnabled != true)) return@post
             restoringFocus = true
             try {
@@ -343,7 +401,8 @@ internal class NativePairViewer(
                 }
                 if (pending != null) return@post
                 if (focus(play)) return@post
-                for (index in 0 until toolbar.childCount) if (focus(toolbar.getChildAt(index))) return@post
+                for (bar in listOf(topBar, transportRow))
+                    for (index in 0 until bar.childCount) if (focus(bar.getChildAt(index))) return@post
             } finally {
                 restoringFocus = false
             }
@@ -383,18 +442,21 @@ internal class NativePairViewer(
                 if (event.action == KeyEvent.ACTION_UP) revealPress = null
                 return true
             }
-            if (event.action == KeyEvent.ACTION_DOWN && dock.isGone) {
-                // A feed pane's Retry/Go live is already shown while the dock
-                // is hidden; Select on it acts, as one tap does (#559).
-                if (activation && focusedPaneRecovery()) return super.dispatchKeyEvent(event)
-                revealPress = press
-                showControls(); restoreRemoteFocus(key = overlayFocus)
-                return true
-            }
+            if (event.action == KeyEvent.ACTION_DOWN && overlay.isGone) return hiddenOverlayKey(event, press, activation)
             if (event.action == KeyEvent.ACTION_UP || event.isCanceled) cancelRepeats()
             if (event.action == KeyEvent.ACTION_DOWN) removeCallbacks(hideControls)
         }
         return super.dispatchKeyEvent(event)
+    }
+    // A remote key while the basic overlay is hidden. #655 adds replay
+    // Left/Right skip here; every other key reveals the overlay first.
+    private fun hiddenOverlayKey(event: KeyEvent, press: Pair<Int, Long>, activation: Boolean): Boolean {
+        // A feed pane's Retry/Go live is already shown while the overlay is
+        // hidden; Select on it acts, as one tap does (#559).
+        if (activation && focusedPaneRecovery()) return super.dispatchKeyEvent(event)
+        revealPress = press
+        showControls(); restoreRemoteFocus(key = overlayFocus)
+        return true
     }
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) invalidateFocusIntent()
@@ -424,7 +486,7 @@ internal class NativePairViewer(
         }
     }
     private fun markEvent(side: NativeMixedSide) {
-        if (!hasPairSlots || !isAttachedToWindow || !isShown || !dock.isShown || panel != "Timing") return
+        if (!hasPairSlots || !isAttachedToWindow || !isShown || !overlay.isShown || panel != "Timing") return
         val current = pair() ?: return
         if (current !== observedPair || current.busy || playbackBusy()) { refresh(); return }
         val sa = runCatching { current.a.timingSnapshot() }.getOrNull()
@@ -511,7 +573,7 @@ internal class NativePairViewer(
         return true.takeIf { value.hasCorrespondence || value.savedOffsetMs != null && value.savedOffsetMs != 0L }
     }
     private fun requestPairOffset() {
-        if (panel != "Timing" || !isAttachedToWindow || !isShown || !dock.isShown) return
+        if (panel != "Timing" || !isAttachedToWindow || !isShown || !overlay.isShown) return
         val current = pair()
         val value = pairOffsetState()
         if (current == null || current !== shownPairOffsetOwner || value == null || value != shownPairOffset ||
@@ -589,7 +651,7 @@ internal class NativePairViewer(
     private fun requestBackToLive(side: NativeMixedSide, control: Button,
         shown: NativePairMember? = liveTargets[side.ordinal]) {
         val selectedPair = pair()
-        if (!control.isEnabled || !isAttachedToWindow || visibility != VISIBLE || dock.visibility != VISIBLE ||
+        if (!control.isEnabled || !isAttachedToWindow || visibility != VISIBLE || overlay.visibility != VISIBLE ||
             shown == null || liveTargets[side.ordinal] !== shown || liveMember(side) !== shown ||
             currentCatchUpPlan(side, shown).outcome != NativeSeekOutcome.REQUESTED ||
             pair() !== selectedPair || liveMember(side) !== shown) {
@@ -602,18 +664,18 @@ internal class NativePairViewer(
         showControls(); refresh()
     }
     private fun showControls() {
-        dock.visibility = VISIBLE; removeCallbacks(hideControls)
+        overlay.visibility = VISIBLE; removeCallbacks(hideControls)
         if (panel == null && requestedPlaying) postDelayed(hideControls, 4_000)
         requestLayout()
     }
     private fun cancelRepeats() { repeats.forEach { removeCallbacks(it) }; repeats.clear() }
-    private fun toggleControls() { if (dock.isGone) showControls() else dismissControls() }
+    private fun toggleControls() { if (overlay.isGone) showControls() else dismissControls() }
     private fun dismissControls() {
         rememberControlFocus()
         suspendControls(); panel = null; content.removeAllViews()
         panelReturnFocus = null
         qualityFields.clear()
-        scroller.visibility = GONE; dock.visibility = GONE
+        scroller.visibility = GONE; overlay.visibility = GONE
         if (television) requestFocus()
         requestLayout()
     }
@@ -621,7 +683,7 @@ internal class NativePairViewer(
         if (value == "Timing" && !hasPairSlots) return
         rememberControlFocus()
         invalidateFocusIntent()
-        val preserveFocus = television || !isInTouchMode || dock.hasFocus()
+        val preserveFocus = television || !isInTouchMode || overlay.hasFocus()
         focusMutationDepth++
         try {
         if (panel != value && preserveFocus) panelReturnFocus = opener ?: activeMenuAnchor ?: moreControl
@@ -640,7 +702,8 @@ internal class NativePairViewer(
                     remoteControl(this)
                 }, LinearLayout.LayoutParams(dp(48), dp(48)))
                 addView(text("$current controls").apply { gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0, -2, 1f))
-                addView(fit, LinearLayout.LayoutParams(0, -2, 1f))
+                // Fit applies only to a panel that takes space from the video.
+                if (panelSpace(current) == ViewerPanelSpace.RESERVE) addView(fit, LinearLayout.LayoutParams(0, -2, 1f))
             })
         }
         if (panel == "Audio") {
@@ -964,9 +1027,10 @@ internal class NativePairViewer(
         }
         val playbackStatus = statusOverride() ?: current?.status ?: "Use setup to prepare playback."
         val audioWarning = if (volumeFailed) "Volume request failed; shown mix is requested, not confirmed.\n" else ""
-        readback.text = audioWarning + playbackStatus
-        // Full status is scrollable under More; the compact tray prioritizes
-        // refusal/failure over the informational requested-adjustment ledger.
+        // Full status is in the Status panel; its changes show as brief notices.
+        notices.observe(audioWarning + playbackStatus, selectedSides.associate { side ->
+            side.name to (feedMessage(side) == null)
+        })?.let(::showNotice)
         val quality = available.mapIndexedNotNull { index, member ->
             member?.qualitySnapshot()?.let { "${if (index == 0) "A" else "B"} quality:\n${it.details()}" }
         }.joinToString("\n")
@@ -1005,59 +1069,88 @@ internal class NativePairViewer(
             return true
         }
         panel?.let { togglePanel(it); return true }
-        if (!dock.isGone) {
+        if (!overlay.isGone) {
             dismissControls()
             return true
         }
         return false
     }
     fun open() { visibility = VISIBLE; showControls(); refresh(); restoreRemoteFocus(key = panel?.let(panelFocus::get) ?: overlayFocus) }
-    fun endSession() { suspendControls(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
+    fun endSession() { suspendControls(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
     fun suspendControls() {
         invalidateFocusIntent()
         dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
     }
-    override fun onDetachedFromWindow() { suspendControls(); stage.unbindPlayers(); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() { suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow() }
+    private fun showNotice(message: String) {
+        if (panel == "Status") return // The open panel already shows it.
+        removeCallbacks(fadeNotice); statusNotice.animate().cancel()
+        statusNotice.text = message; statusNotice.alpha = 1f; statusNotice.visibility = VISIBLE
+        postDelayed(fadeNotice, ViewerStatusNotices.SHOWN_MS)
+    }
+    private fun clearNotice() {
+        removeCallbacks(fadeNotice); statusNotice.animate().cancel(); statusNotice.visibility = GONE
+    }
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val w = MeasureSpec.getSize(widthSpec); val h = MeasureSpec.getSize(heightSpec)
         val contentW = (w - paddingLeft - paddingRight).coerceAtLeast(0)
         val contentH = (h - paddingTop - paddingBottom).coerceAtLeast(0)
-        // A side strip keeps more video clear. Below 640 dp use the full-width
-        // bottom tray so the toolbar keeps at least 48 dp touch widths.
-        sideDock = landscape() && panel != null && contentW >= dp(640)
-        val minimumCells = if (panel == "Timing") maxOf(toolbar.childCount, advanceA.size + 1) else toolbar.childCount
-        val minimumDockWidth = minimumCells * dp(48) + dock.paddingLeft + dock.paddingRight
-        val dockW = if (sideDock) minOf(dp(360), (contentW * 0.45f).toInt().coerceAtLeast(minimumDockWidth)) else contentW
-        val innerW = (dockW - dock.paddingLeft - dock.paddingRight).coerceAtLeast(0)
-        val childWidth = MeasureSpec.makeMeasureSpec(innerW, MeasureSpec.EXACTLY)
-        val childHeight = MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST)
-        toolbar.measure(childWidth, childHeight); readback.measure(childWidth, childHeight)
-        if (liveControls.visibility != GONE) liveControls.measure(childWidth, childHeight)
-        val liveHeight = if (liveControls.visibility == GONE) 0 else liveControls.measuredHeight
-        scroller.maximumHeight = minOf((contentH * 0.6f).toInt(),
-            (contentH - toolbar.measuredHeight - readback.measuredHeight - liveHeight - dock.paddingTop - dock.paddingBottom).coerceAtLeast(0))
-        dock.measure(MeasureSpec.makeMeasureSpec(dockW, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST))
-        val visible = !dock.isGone
-        val reserveW = if (visible && sideDock && fitVideo) dock.measuredWidth else 0
-        val reserveH = if (!landscape()) { if (visible) dock.measuredHeight else dp(56) }
-            else if (visible && !sideDock && fitVideo) dock.measuredHeight else 0
-        val stageW = (contentW - reserveW).coerceAtLeast(0)
-        val stageH = (contentH - reserveH).coerceAtLeast(0)
-        stage.floatingRight = if (visible && sideDock) (contentW - dock.measuredWidth).coerceIn(0, stageW) else stageW
-        stage.floatingBottom = if (visible && !sideDock && landscape()) (contentH - dock.measuredHeight).coerceIn(0, stageH) else stageH
-        stage.measure(MeasureSpec.makeMeasureSpec(stageW, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(stageH, MeasureSpec.EXACTLY))
+        val density = resources.displayMetrics.density
+        val open = panel != null
+        val side = viewerSideSheet(contentW, landscape(), open, density)
+        val sheetW = viewerSheetWidth(contentW, landscape(), open, density, scroller.paddingLeft + scroller.paddingRight)
+        val barWidth = MeasureSpec.makeMeasureSpec(contentW, MeasureSpec.EXACTLY)
+        val atMost = MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.AT_MOST)
+        topBar.measure(barWidth, atMost); bottomBar.measure(barWidth, atMost)
+        scroller.maximumHeight = viewerSheetCap(contentH, topBar.measuredHeight, bottomBar.measuredHeight)
+        if (scroller.visibility != GONE) scroller.measure(MeasureSpec.makeMeasureSpec(sheetW, MeasureSpec.EXACTLY), atMost)
+        val visible = !overlay.isGone
+        val next = viewerOverlayPlan(contentW, contentH, landscape(), visible, panelSpace(panel), fitVideo,
+            topBar.measuredHeight, bottomBar.measuredHeight, sheetW,
+            if (scroller.visibility != GONE) scroller.measuredHeight else 0, side)
+        plan = next
+        next.sheet?.let { sheet ->
+            scroller.measure(MeasureSpec.makeMeasureSpec(sheet.width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(sheet.height, MeasureSpec.EXACTLY))
+        }
+        overlay.measure(barWidth, MeasureSpec.makeMeasureSpec(contentH, MeasureSpec.EXACTLY))
+        stage.floatingTop = next.floatingTop
+        stage.floatingRight = next.floatingRight
+        stage.floatingBottom = next.floatingBottom
+        stage.measure(MeasureSpec.makeMeasureSpec(next.stage.width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(next.stage.height, MeasureSpec.EXACTLY))
+        statusNotice.measure(MeasureSpec.makeMeasureSpec(minOf(dp(480), (next.stage.width - dp(32)).coerceAtLeast(0)),
+            MeasureSpec.AT_MOST), atMost)
         setMeasuredDimension(w, h)
     }
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        val dockTop = height - paddingBottom - dock.measuredHeight
         stage.layout(paddingLeft, paddingTop, paddingLeft + stage.measuredWidth, paddingTop + stage.measuredHeight)
-        if (dock.visibility != GONE) dock.layout(width - paddingRight - dock.measuredWidth, dockTop,
-            width - paddingRight, height - paddingBottom)
+        if (overlay.visibility != GONE) overlay.layout(paddingLeft, paddingTop,
+            paddingLeft + overlay.measuredWidth, paddingTop + overlay.measuredHeight)
+        if (statusNotice.visibility != GONE) {
+            // Centered over the video, below where the top bar appears.
+            val x = paddingLeft + (stage.measuredWidth - statusNotice.measuredWidth) / 2
+            val y = paddingTop + topBar.measuredHeight + dp(8)
+            statusNotice.layout(x, y, x + statusNotice.measuredWidth, y + statusNotice.measuredHeight)
+        }
     }
     private fun landscape() = television || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    // Children are measured by the viewer and placed at its overlay plan.
+    private inner class ControlsLayer : FrameLayout(context) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec))
+        }
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+            val current = plan ?: return
+            fun place(view: View, rect: ViewerRect?) {
+                if (view.visibility == GONE || rect == null) return
+                view.layout(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
+            }
+            place(topBar, current.topBar); place(bottomBar, current.bottomBar); place(scroller, current.sheet)
+        }
+    }
 
     private inner class CappedScrollView : ScrollView(context) {
         var maximumHeight = 0
@@ -1068,6 +1161,8 @@ internal class NativePairViewer(
     }
 
     private inner class FeedStage : FrameLayout(context) {
+        var floatingTop = 0
+            set(value) { if (field != value) { field = value; requestLayout() } }
         var floatingBottom = 0
             set(value) { if (field != value) { field = value; requestLayout() } }
         var floatingRight = 0
@@ -1211,8 +1306,8 @@ internal class NativePairViewer(
                             val dx = event.rawX - downX; val dy = event.rawY - downY
                             if (abs(dx) > slop || abs(dy) > slop) dragged = true
                             if (dragged) {
-                                floating = FloatingPosition.fromPixels(originLeft + dx, originTop + dy,
-                                    floatingRight - view.width, floatingBottom - view.height)
+                                floating = FloatingPosition.fromPixels(originLeft + dx, originTop + dy - floatingTop,
+                                    floatingRight - view.width, floatingBottom - floatingTop - view.height)
                                 requestLayout()
                             }
                         }
@@ -1230,17 +1325,25 @@ internal class NativePairViewer(
             }
             if (television) isFocusable = false
         }
+        // Notice content avoids the visible bars and panels without moving the video.
+        private fun insetNotice(notice: FeedNotice, rect: ViewerRect) {
+            val insets = viewerPaneInsets(rect, floatingTop, floatingRight, floatingBottom)
+            notice.scroll.setPadding(0, insets.top, insets.right, insets.bottom)
+        }
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec))
             if (!hasPairSlots) {
+                val full = ViewerRect(0, 0, measuredWidth, measuredHeight)
+                insetNotice(noticeA, full); insetNotice(noticeB, full)
                 for (index in 0 until childCount) getChildAt(index).measure(
                     MeasureSpec.makeMeasureSpec(measuredWidth, MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(measuredHeight, MeasureSpec.EXACTLY))
                 return
             }
             val bounds = twoFeedBounds(measuredWidth, measuredHeight, landscape(), primaryA, ratioA, ratioB, floating,
-                floatingBottom, floatingRight, floatingSize)
+                floatingBottom, floatingRight, floatingSize, floatingTop)
             fun measure(view: View, rect: ViewerRect) { view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY)) }
+            insetNotice(noticeA, bounds.a); insetNotice(noticeB, bounds.b)
             measure(paneA, bounds.a); measure(paneB, bounds.b)
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -1249,7 +1352,7 @@ internal class NativePairViewer(
                 return
             }
             val bounds = twoFeedBounds(width, height, landscape(), primaryA, ratioA, ratioB, floating,
-                floatingBottom, floatingRight, floatingSize)
+                floatingBottom, floatingRight, floatingSize, floatingTop)
             fun place(view: View, rect: ViewerRect) {
                 view.measure(MeasureSpec.makeMeasureSpec(rect.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(rect.height, MeasureSpec.EXACTLY))
                 view.layout(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
@@ -1259,6 +1362,10 @@ internal class NativePairViewer(
         }
     }
 }
+
+private const val STOP_KEY = "Stop"
+private const val OVERLAY_SCRIM = 0x99000000.toInt() // Black at 60%.
+private const val OVERLAY_TEXT = 0xFFE8ECEE.toInt()
 
 // State description of a timing step while an adjustment is in progress.
 internal const val TIMING_BUSY = "Adjustment in progress"

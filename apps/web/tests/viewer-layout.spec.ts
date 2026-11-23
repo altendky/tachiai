@@ -1,9 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 import { viewerLayout } from '../src/viewer-layout';
 
-test('native logical-unit vectors include threshold minimum, fit underlay and portrait hidden reserve', () => {
+test('native logical-unit vectors include threshold minimum, fit underlay and overlay-only controls', () => {
   const plan = (w: number, h: number, landscape = true, controls = true, fit = true) =>
-    viewerLayout(w, h, landscape, true, controls, fit, 48, 400);
+    viewerLayout(w, h, landscape, true, controls, fit, 48, 400, true);
   expect(plan(639, 420)).toMatchObject({ sideDock: false, dock: { width: 639, height: 308, top: 112 },
     stage: { width: 639, height: 112 }, floatingRight: 639, floatingBottom: 112, bodyCap: 252 });
   expect(plan(640, 420)).toMatchObject({ sideDock: true, dock: { width: 304, left: 336 }, stage: { width: 336, height: 420 } });
@@ -13,7 +13,17 @@ test('native logical-unit vectors include threshold minimum, fit underlay and po
   expect(plan(560, 320, true, true, false)).toMatchObject({ stage: { width: 560, height: 320 }, floatingBottom: 72 });
   expect(plan(850, 420, true, false)).toMatchObject({ stage: { width: 850, height: 420 }, floatingRight: 850, floatingBottom: 420 });
   expect(plan(400, 800, false)).toMatchObject({ stage: { width: 400, height: 344 }, dock: { width: 400, height: 456 } });
-  expect(plan(400, 800, false, false)).toMatchObject({ stage: { width: 400, height: 744 } });
+  // Hidden controls no longer reserve 56 units in portrait (#656).
+  expect(plan(400, 800, false, false)).toMatchObject({ stage: { width: 400, height: 800 } });
+  // The basic toolbar floats over the video; the floating feed still avoids it in landscape.
+  const toolbar = (w: number, h: number, landscape = true) => viewerLayout(w, h, landscape, false, true, true, 48, 400, false);
+  expect(toolbar(850, 420)).toMatchObject({ stage: { width: 850, height: 420 }, floatingRight: 850, floatingBottom: 364 });
+  expect(toolbar(400, 800, false)).toMatchObject({ stage: { width: 400, height: 800 } });
+  // Audio and Status sheets float over the video regardless of Fit; the floating feed avoids them.
+  const sheet = (w: number, h: number, landscape = true) => viewerLayout(w, h, landscape, true, true, true, 48, 400, false);
+  expect(sheet(850, 420)).toMatchObject({ sideDock: true, stage: { width: 850, height: 420 }, floatingRight: 490 });
+  expect(sheet(560, 320)).toMatchObject({ stage: { width: 560, height: 320 }, floatingBottom: 72 });
+  expect(sheet(400, 800, false)).toMatchObject({ stage: { width: 400, height: 800 } });
 });
 
 async function open(page: Page, width = 850, height = 500) {
@@ -54,9 +64,14 @@ test('wide Fit toggles and panel/Hide/resize retain real players, transport, mix
   await page.getByRole('button', { name: 'Hide', exact: true }).click();
   b = await boxes(page); expect(b.stage.width).toBe(full); expect(b.b.right).toBe(b.viewer.right);
   await page.locator('#pane-A').click({ position: { x: 20, y: 100 } });
-  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await page.getByRole('button', { name: 'Timing', exact: true }).click();
   await expect(page.locator('#fit-video')).toHaveText('Fit video: off');
   await page.locator('#fit-video').click();
+  b = await boxes(page); expect(b.stage.right).toBe(b.dock.x);
+  // Audio is a sheet over the video: no Fit toggle and no reserved width.
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(page.locator('#fit-video')).toBeHidden();
+  b = await boxes(page); expect(b.stage.width).toBe(full); expect(b.b.right).toBeLessThanOrEqual(b.dock.x + 1);
   await page.getByRole('button', { name: 'Back to playback controls', exact: true }).click();
   await expect(page.locator('#panel-body')).toBeHidden();
   await page.getByRole('button', { name: 'More', exact: true }).click();
@@ -117,7 +132,7 @@ test('real 639/640/641 dock thresholds and wide underlay drag retain normalized 
   expect(await page.evaluate(() => window.pair.observe().floating)).toEqual(position);
 });
 
-test('portrait and large text keep fixed 48px toolbar targets, capped scroll body and 56px hidden reserve', async ({ page }) => {
+test('portrait and large text keep fixed 48px toolbar targets, capped scroll body and no hidden reserve', async ({ page }) => {
   await open(page, 400, 800);
   // Keep the usable height fractional: clientHeight rounds it before the 60% cap.
   await page.addStyleTag({ content: 'html { font-size: 28.8px; } .diagnostic { min-height: 291.55px; } #dock nav button { font-size: 21.6px; }' });
@@ -133,11 +148,11 @@ test('portrait and large text keep fixed 48px toolbar targets, capped scroll bod
   for (const target of read.targets) { expect(target.w).toBeGreaterThanOrEqual(48); expect(target.h).toBeGreaterThanOrEqual(48); }
   let b = await boxes(page); expect(b.stage.bottom).toBeCloseTo(b.dock.y, 0); expect(b.a.y).toBeLessThan(b.b.y);
   await page.getByRole('button', { name: 'Hide', exact: true }).click(); b = await boxes(page);
-  expect(b.viewer.height - b.stage.height).toBe(56);
+  expect(b.viewer.height - b.stage.height).toBe(0);
 });
 
 test('Fit survives one-feed retry but new Watch restores on', async ({ page }) => {
-  await open(page); await page.getByRole('button', { name: 'Audio', exact: true }).click(); await page.locator('#fit-video').click();
+  await open(page); await page.getByRole('button', { name: 'Timing', exact: true }).click(); await page.locator('#fit-video').click();
   const retained = await page.evaluate(async () => {
     const pair = window.pair, partner = pair.slots.B.current;
     (pair.slots.A.current as any).player.dispatchEvent({ type: 'error' });

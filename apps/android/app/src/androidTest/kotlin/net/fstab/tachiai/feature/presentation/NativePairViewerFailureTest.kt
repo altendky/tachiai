@@ -53,13 +53,13 @@ class NativePairViewerFailureTest {
             assertEquals(View.GONE, a.visibility)
             assertEquals(View.GONE, b.visibility)
             assertFalse(button(viewer, "Play").isEnabled)
-            descendants(viewer).single { it.contentDescription == "Back to sources" }.performClick()
+            descendants(viewer).filterIsInstance<Button>().single { it.text == "Stop" }.performClick()
             assertEquals(1, returns)
             viewer.endSession()
         } }
     }
 
-    @Test fun eitherHealthySlotEnablesTransportAndKeepsSixToolbarTargetsAtCompactSideWidth() {
+    @Test fun eitherHealthySlotEnablesTransportAndKeepsOverlayTargetsAtCompactSideWidth() {
         for (healthy in NativeMixedSide.entries) {
             ActivityScenario.launch(ComponentActivity::class.java).use { scenario -> scenario.onActivity { activity ->
                 val configuration = Configuration(activity.resources.configuration).apply {
@@ -93,10 +93,13 @@ class NativePairViewerFailureTest {
                 viewer.measure(View.MeasureSpec.makeMeasureSpec(dp(640), View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(dp(420), View.MeasureSpec.EXACTLY))
                 viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
-                val dock = viewer.getChildAt(1) as ViewGroup
-                val toolbar = dock.getChildAt(1) as ViewGroup
-                assertEquals(6, toolbar.childCount)
-                for (index in 0 until toolbar.childCount) assertTrue(toolbar.getChildAt(index).width >= dp(48))
+                val overlay = viewer.getChildAt(1) as ViewGroup
+                val bars = listOf(overlay.getChildAt(1), overlay.getChildAt(2))
+                val targets = bars.flatMap { descendants(it) }.filterIsInstance<Button>().filter { it.isShown }
+                assertEquals(listOf("Stop", "Audio", "Timing", "⋯", "Play"), targets.map { it.text.toString() })
+                for (target in targets) assertTrue(target.width >= dp(48) && target.height >= dp(48))
+                // The Timing panel keeps the six-cell minimum beside the video.
+                assertTrue(overlay.getChildAt(0).width >= 6 * dp(48))
                 viewer.endSession()
             } }
         }
@@ -206,16 +209,16 @@ class NativePairViewerFailureTest {
             try {
                 activity.setContentView(viewer)
                 viewer.open()
-                button(viewer, "Hide").performClick()
+                assertTrue(viewer.handleBack())
                 layout(viewer, 400, 800)
                 val stage = viewer.getChildAt(0) as ViewGroup
                 val pane = b.parent as ViewGroup
                 val paneA = a.parent as ViewGroup
-                val dock = viewer.getChildAt(1)
-                assertEquals(View.GONE, dock.visibility)
+                val overlay = viewer.getChildAt(1)
+                assertEquals(View.GONE, overlay.visibility)
                 tap(viewer, stage.left + pane.left + pane.width / 2f, stage.top + pane.top + pane.height / 2f)
                 layout(viewer, 400, 800)
-                assertEquals(View.VISIBLE, dock.visibility)
+                assertEquals(View.VISIBLE, overlay.visibility)
                 assertEquals(0, paneA.top)
                 assertEquals(paneA.bottom, pane.top)
             } finally { viewer.endSession() }

@@ -72,8 +72,8 @@ class NativePairViewerRemoteTest {
             feedRecovery = { side -> ViewerFeedRecovery("Retry", recoveries.isEmpty()).takeIf { failedA && side == NativeMixedSide.A } },
             onRecoverFeed = { recoveries += it })
         val stage get() = viewer.getChildAt(0) as ViewGroup
-        val dock get() = viewer.getChildAt(1) as ViewGroup
-        val scroller get() = dock.getChildAt(0)
+        val overlay get() = viewer.getChildAt(1) as ViewGroup
+        val scroller get() = overlay.getChildAt(0)
         val volumeCalls get() = a.volumeCalls + b.volumeCalls
         init {
             activity.setContentView(viewer)
@@ -98,9 +98,8 @@ class NativePairViewerRemoteTest {
 
     @Test fun hiddenControlsConsumeRevealPressAndItsRepeatsBeforeAcceptingSelect() = withFixture { scenario, fixture ->
         scenario.onActivity { assertTrue(button(fixture.viewer, "Play").isFocused) }
-        focus(scenario, fixture, "Hide")
-        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
-        scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility) }
+        hide(scenario, fixture)
+        scenario.onActivity { assertEquals(View.GONE, fixture.overlay.visibility) }
         scenario.onActivity {
             val down = SystemClock.uptimeMillis()
             fixture.viewer.dispatchKeyEvent(KeyEvent(down, down, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 0))
@@ -109,7 +108,7 @@ class NativePairViewerRemoteTest {
         }
         idle()
         scenario.onActivity {
-            assertEquals(View.VISIBLE, fixture.dock.visibility)
+            assertEquals(View.VISIBLE, fixture.overlay.visibility)
             assertTrue(button(fixture.viewer, "Play").isFocused)
             assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
         }
@@ -117,22 +116,20 @@ class NativePairViewerRemoteTest {
         scenario.onActivity { assertEquals(1, fixture.plays); assertEquals(0, fixture.pauses) }
     }
 
-    // #559: the pane's Retry stays visible while the dock is hidden, so Select on it acts once.
+    // #559: the pane's Retry stays visible while the overlay is hidden, so Select on it acts once.
     @Test fun selectOnAFocusedPaneRetryActsWhileControlsAreHidden() = withFixture(failedA = true) { scenario, fixture ->
-        focus(scenario, fixture, "Hide")
-        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
-        scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility) }
+        hide(scenario, fixture)
+        scenario.onActivity { assertEquals(View.GONE, fixture.overlay.visibility) }
         focus(scenario, fixture, "Retry")
         // A directional key still only reveals the controls.
         key(scenario, fixture, KeyEvent.KEYCODE_DPAD_UP)
         scenario.onActivity {
-            assertEquals(View.VISIBLE, fixture.dock.visibility); assertTrue(fixture.recoveries.isEmpty())
+            assertEquals(View.VISIBLE, fixture.overlay.visibility); assertTrue(fixture.recoveries.isEmpty())
         }
-        focus(scenario, fixture, "Hide")
-        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
+        hide(scenario, fixture)
         focus(scenario, fixture, "Retry")
         scenario.onActivity {
-            assertEquals(View.GONE, fixture.dock.visibility)
+            assertEquals(View.GONE, fixture.overlay.visibility)
             // One held press with a repeat activates exactly once.
             val down = SystemClock.uptimeMillis()
             fixture.viewer.dispatchKeyEvent(KeyEvent(down, down, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 0))
@@ -150,7 +147,7 @@ class NativePairViewerRemoteTest {
         scenario.onActivity { assertTrue(button(fixture.viewer, "Pause").isFocused) }
         after(scenario, fixture, 4_300)
         scenario.onActivity {
-            assertEquals(View.VISIBLE, fixture.dock.visibility)
+            assertEquals(View.VISIBLE, fixture.overlay.visibility)
             assertTrue(button(fixture.viewer, "Pause").isFocused)
             assertNotNull(button(fixture.viewer, "Pause").foreground)
             assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
@@ -200,18 +197,18 @@ class NativePairViewerRemoteTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         idle()
         scenario.onActivity {
-            assertEquals(View.GONE, fixture.dock.visibility)
+            assertEquals(View.GONE, fixture.overlay.visibility)
             assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
         }
         key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
         scenario.onActivity {
-            assertEquals(View.VISIBLE, fixture.dock.visibility)
+            assertEquals(View.VISIBLE, fixture.overlay.visibility)
             assertTrue("Revealing controls restores the last toolbar action", button(fixture.viewer, "Audio").isFocused)
             assertEquals(0, fixture.exits); assertEquals(0, fixture.plays); assertEquals(0, fixture.pauses)
         }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         idle()
-        scenario.onActivity { assertEquals(View.GONE, fixture.dock.visibility); assertEquals(0, fixture.exits) }
+        scenario.onActivity { assertEquals(View.GONE, fixture.overlay.visibility); assertEquals(0, fixture.exits) }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         idle()
         scenario.onActivity { assertEquals(1, fixture.exits) }
@@ -307,6 +304,12 @@ class NativePairViewerRemoteTest {
             try { test(scenario, fixture) } finally { scenario.onActivity { fixture.close() } }
         }
     }
+    // The overlay has no separate Hide control: remote Back hides it.
+    private fun hide(scenario: ActivityScenario<ComponentActivity>, fixture: Fixture) {
+        scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        idle()
+        scenario.onActivity { assertEquals(0, fixture.exits) }
+    }
     private fun focus(scenario: ActivityScenario<ComponentActivity>, fixture: Fixture, label: String) {
         scenario.onActivity { assertTrue(button(fixture.viewer, label).requestFocus()) }
     }
@@ -325,7 +328,8 @@ class NativePairViewerRemoteTest {
         idle()
     }
     private fun idle() = InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-    private fun button(view: View, label: String): Button = descendants(view).filterIsInstance<Button>().single { it.text == label }
+    private fun button(view: View, label: String): Button = descendants(view).filterIsInstance<Button>()
+        .single { it.text == label || it.contentDescription == label }
     private fun descendants(view: View): List<View> = listOf(view) + if (view is ViewGroup)
         (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
 }

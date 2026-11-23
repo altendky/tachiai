@@ -251,13 +251,17 @@ These mechanisms preserve the common scopes without adding a UX exception.
 
 ### Controlled browser Fit and control dock
 
-The browser fixture follows the existing native Fit toggle, stage reservations,
-floating avoidance and responsive control-dock formulas using CSS logical pixels
+The browser fixture follows the native Fit toggle, stage reservations,
+floating avoidance and responsive panel formulas using CSS logical pixels
 and measured DOM toolbar/content heights. Android uses its View measurement in
 dp; the implemented Fit/reservation rules keep the same panel threshold,
-minimum targets, capped scroll body and normalized floating position. Android
-also measures compact status/live rows; this bounded fixture retains its
-existing external status output. The browser's owned diagnostic header stays
+minimum targets, capped scroll body and normalized floating position. Since
+[#656 step 1](prototype-ux.md#playback-overlay--656-step-1), only an open Timing
+or Quality panel reserves space on both; basic controls and Audio/Status float
+over the video. Android splits the controls into a top bar and a bottom
+transport around its panel and keeps the floating feed below the top bar; the
+fixture keeps one dock that holds its toolbar and panel, and its existing Hide
+action and external status output. The browser's owned diagnostic header stays
 outside its measured usable viewer. This adds no fullscreen/orientation-lock mechanism,
 provider behavior or platform-specific UX exception.
 

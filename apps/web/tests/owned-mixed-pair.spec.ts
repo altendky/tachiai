@@ -240,7 +240,7 @@ test('swap, floating drag, Fit and portrait resize preserve iframe ownership and
   expect(await iframe.evaluate(node => getComputedStyle(node).pointerEvents)).toBe('none');
   await page.locator('#pane-B').click();
   expect((await page.evaluate(() => window.pair.observe())).primary).toBe('B');
-  await page.locator('#audio').click();
+  await page.locator('#timing').click();
   await page.locator('#fit-video').click();
   expect((await page.evaluate(() => window.pair.observe())).fitVideo).toBe(false);
   const pane = (await page.locator('#pane-A').boundingBox())!;

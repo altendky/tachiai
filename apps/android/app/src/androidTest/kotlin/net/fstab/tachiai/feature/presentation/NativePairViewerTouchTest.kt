@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
 class NativePairViewerTouchTest {
     @Test fun portraitStageBackgroundRevealsControls() = checkBackgroundTap(false)
 
-    @Test fun portraitFooterBackgroundRevealsControls() = checkBackgroundTap(true)
+    @Test fun portraitBottomEdgeRevealsControls() = checkBackgroundTap(true)
 
     @Test fun paneClicksRequireAnUncancelledMatchingDownAndDismissExactlyOnce() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -42,7 +42,7 @@ class NativePairViewerTouchTest {
             instrumentation.waitForIdleSync()
             scenario.onActivity {
                 val stage = viewer.getChildAt(0) as ViewGroup
-                val dock = viewer.getChildAt(1) as ViewGroup
+                val overlay = viewer.getChildAt(1) as ViewGroup
                 for (index in 0 until stage.childCount) {
                     button(viewer, "Audio").performClick()
                     viewer.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
@@ -56,18 +56,18 @@ class NativePairViewerTouchTest {
                         try { assertTrue(pane.dispatchTouchEvent(event)) } finally { event.recycle() }
                     }
                     fun retained() {
-                        assertEquals("Pane $index must retain the tray", View.VISIBLE, dock.visibility)
-                        assertEquals("Pane $index must retain the panel", View.VISIBLE, dock.getChildAt(0).visibility)
+                        assertEquals("Pane $index must retain the overlay", View.VISIBLE, overlay.visibility)
+                        assertEquals("Pane $index must retain the panel", View.VISIBLE, overlay.getChildAt(0).visibility)
                         assertEquals(0, commands)
                     }
                     send(MotionEvent.ACTION_UP); retained()
                     send(MotionEvent.ACTION_DOWN); send(MotionEvent.ACTION_CANCEL); send(MotionEvent.ACTION_UP); retained()
                     send(MotionEvent.ACTION_DOWN); send(MotionEvent.ACTION_UP, downTime + 1); retained()
                     send(MotionEvent.ACTION_DOWN); send(MotionEvent.ACTION_UP)
-                    assertEquals("Matching pane $index gesture dismisses controls", View.GONE, dock.visibility)
-                    assertEquals(View.GONE, dock.getChildAt(0).visibility)
+                    assertEquals("Matching pane $index gesture dismisses controls", View.GONE, overlay.visibility)
+                    assertEquals(View.GONE, overlay.getChildAt(0).visibility)
                     send(MotionEvent.ACTION_UP)
-                    assertEquals("A duplicate up must not reveal controls", View.GONE, dock.visibility)
+                    assertEquals("A duplicate up must not reveal controls", View.GONE, overlay.visibility)
                     assertEquals(0, commands)
                 }
                 viewer.endSession()
@@ -84,7 +84,7 @@ class NativePairViewerTouchTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
             lateinit var viewer: NativePairViewer
-            lateinit var dock: View
+            lateinit var overlay: View
             scenario.onActivity { activity ->
                 val configuration = Configuration(activity.resources.configuration).apply {
                     orientation = Configuration.ORIENTATION_PORTRAIT
@@ -97,14 +97,15 @@ class NativePairViewerTouchTest {
             instrumentation.waitForIdleSync()
             scenario.onActivity {
                 val stage = viewer.getChildAt(0) as ViewGroup
-                dock = viewer.getChildAt(1)
-                dock.visibility = View.GONE
+                overlay = viewer.getChildAt(1)
+                overlay.visibility = View.GONE
                 viewer.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY))
                 viewer.layout(0, 0, 1080, 2400)
                 val y = if (footer) viewer.height - 1f else stage.bottom - 1f
                 assertTrue("Tap lies below both video panes", y > stage.getChildAt(1).bottom)
-                if (footer) assertTrue("Tap lies outside the stage", y > stage.bottom)
+                // The video stage fills the viewer; no footer is reserved under it (#656).
+                if (footer) assertEquals(viewer.height - viewer.paddingBottom, stage.bottom)
                 val now = SystemClock.uptimeMillis()
                 for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
                     val event = MotionEvent.obtain(now, now, action, 540f, y, 0)
@@ -114,7 +115,7 @@ class NativePairViewerTouchTest {
             // View posts its click callback after ACTION_UP on an attached view.
             instrumentation.waitForIdleSync()
             scenario.onActivity {
-                assertEquals(View.VISIBLE, dock.visibility)
+                assertEquals(View.VISIBLE, overlay.visibility)
                 viewer.suspendControls()
             }
         }

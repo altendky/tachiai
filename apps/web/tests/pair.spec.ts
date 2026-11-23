@@ -414,8 +414,11 @@ test('swap, floating drag and viewport resize retain both media elements and ses
   await page.locator('#pane-B').click({ position: { x: secondary.width / 2, y: secondary.height / 2 } });
   expect((await page.evaluate(() => window.pair.observe())).primary).toBe('B');
   secondary = (await page.locator('#pane-A').boundingBox())!;
+  // The visible toolbar overlays the video; the floating range stops above it.
+  const dock = await page.locator('#dock').boundingBox();
+  const rangeBottom = dock ? Math.min(dock.y, stage.y + stage.height) : stage.y + stage.height;
   const dx = stage.x + (stage.width - secondary.width) * 0.2 - secondary.x;
-  const dy = stage.y + (stage.height - secondary.height) * 0.7 - secondary.y;
+  const dy = stage.y + (rangeBottom - stage.y - secondary.height) * 0.7 - secondary.y;
   await page.mouse.move(secondary.x + secondary.width / 2, secondary.y + secondary.height / 2);
   await page.mouse.down();
   await page.mouse.move(secondary.x + secondary.width / 2 + dx, secondary.y + secondary.height / 2 + dy, { steps: 8 });

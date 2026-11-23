@@ -2,7 +2,7 @@ import shaka from 'shaka-player/dist/shaka-player.compiled';
 import { type TimingCore } from './player';
 import { PairFixture, SIDES, TIMING_STEPS, pairBounds, type Side } from './pair';
 import { qualityTitle, observedQualityTitle, qualityExplanation, sameRequest } from './quality';
-import { controlDockWidth, viewerLayout, type ViewerLayout } from './viewer-layout';
+import { controlDockWidth, reservingPanel, viewerLayout, type ViewerLayout } from './viewer-layout';
 import { ViewerHistory, type ViewerHistoryPanel } from './viewer-history';
 import { takePairBootstrap } from './pair-bootstrap';
 import './pair-style.css';
@@ -64,7 +64,7 @@ const layout = () => {
   const toolbarHeight = dock.querySelector('nav')!.getBoundingClientRect().height;
   dock.style.setProperty('--toolbar-height', `${toolbarHeight}px`);
   const next = viewerLayout(width, height, landscape(), panel !== undefined, controls, state.fitVideo,
-    toolbarHeight, body.getBoundingClientRect().height);
+    toolbarHeight, body.getBoundingClientRect().height, reservingPanel(panel));
   body.style.maxHeight = `${next.bodyCap}px`;
   if (measuredLayout && [next.stage.width, next.stage.height, next.floatingRight, next.floatingBottom].some((value, i) =>
     value !== [measuredLayout!.stage.width, measuredLayout!.stage.height, measuredLayout!.floatingRight, measuredLayout!.floatingBottom][i])) resetPointers();
@@ -102,6 +102,8 @@ const render = () => {
   element('quality-panel').hidden = panel !== 'quality';
   element('panel-body').hidden = panel === undefined;
   element('panel-title').textContent = panel ? `${{ audio: 'Audio', timing: 'Timing', status: 'Status', quality: 'Quality' }[panel]} controls` : '';
+  // Fit applies only to a panel that keeps its own space.
+  element('fit-video').hidden = !reservingPanel(panel);
   element('fit-video').textContent = `Fit video: ${state.fitVideo ? 'on' : 'off'}`;
   element('fit-video').setAttribute('aria-pressed', String(state.fitVideo));
   element('more-menu').hidden = !menu;

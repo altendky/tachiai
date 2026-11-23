@@ -8,7 +8,7 @@ class AbemaRenewalReadinessCoordinatorTest {
         var now = 100L
         var nonce = 0
         val coordinator = AbemaRenewalReadinessCoordinator<String>({ now }, { (++nonce).toString(16).padStart(32, '0') },
-            lifetimeMs = 1000, cooldownMs = 500)
+            lifetimeMs = 1000, cooldownMs = 500, temporaryCooldownMs = 100)
     }
     @Test fun sameRecordConsumersJoinOneFlightAndOnlyOneClaimObtainsPrivateWork() {
         val f = Fixture()
@@ -229,5 +229,34 @@ class AbemaRenewalReadinessCoordinatorTest {
         assertEquals(AbemaRenewalDiagnostic.Cleanup.CONFIRMED, evidence.producerDiagnostic!!.cleanup)
         assertEquals(AbemaRenewalReadinessCoordinator.Completion.CLEANUP_UNCONFIRMED, evidence.completion)
         assertNull(f.coordinator.evidence("instance") { it == "foreign-predecessor" }.producerDiagnostic)
+    }
+    // #635: a temporary failure is replayed only briefly, so a deliberate Retry
+    // starts a fresh renewal; other results keep the full cooldown.
+    @Test fun aTemporaryFailureRelaunchesAfterItsShortCooldownOnly() {
+        val f = Fixture(); val first = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(first))
+        f.coordinator.finish(first, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        f.now += 99
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
+        f.now += 1
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.LAUNCH, f.coordinator.check("a", "record", "private").status)
+        assertEquals(2, f.nonce)
+        for (status in listOf(AbemaRenewalReadinessCoordinator.Status.FAILURE,
+            AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED, AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE)) {
+            val g = Fixture(); val ticket = checkNotNull(g.coordinator.check("a", "record", "private").ticket)
+            assertEquals("private", g.coordinator.claim(ticket))
+            g.coordinator.finish(ticket, status)
+            g.now += 100
+            assertEquals(status, g.coordinator.check("a", "record", "private").status)
+        }
+    }
+    // Unconfirmed cleanup still blocks a relaunch after the short cooldown.
+    @Test fun anUnconfirmedTemporaryFailureNeverRelaunchesEarly() {
+        val f = Fixture(); val first = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(first))
+        f.coordinator.finish(first, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, cleanupConfirmed = false)
+        f.now += 1000
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
+        assertEquals(1, f.nonce)
     }
 }

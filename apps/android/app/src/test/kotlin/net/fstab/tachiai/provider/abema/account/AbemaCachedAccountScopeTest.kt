@@ -3,6 +3,7 @@ package net.fstab.tachiai.provider.abema.account
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Test
@@ -63,6 +64,47 @@ class AbemaCachedAccountScopeTest {
             assertTrue(original.isIdle); assertEquals(0, registry.retiredCount)
             assertTrue((fresh.acquire() as AbemaAccountAccessResult.Guest).lease.checkWorker())
         } finally { old.close(); fresh.close() }
+    }
+    // #633: two feeds of one instance attach and acquire at once. Both share
+    // the registry owner and its single validation flight.
+    @Test fun concurrentAttachesShareOneOwnerAndOneValidationFlight() {
+        val instanceId = UUID.randomUUID().toString()
+        val store = AbemaAccountGrantStore(instanceId, MemoryAbemaAccountStorage())
+        store.replace(decodedAbemaGrant(fixtureAccountToken(), "intended-account", 1000000L), 1000000L, store.revision()) { true }
+        val registry = AbemaAccountAccessOwnerRegistry()
+        val profiles = AtomicInteger()
+        val profileEntered = CountDownLatch(1); val bothAttached = CountDownLatch(2)
+        fun create() = AbemaAccountAccessOwner(instanceId, "fixture-owner", store, { 1000000L }, { 1000L }, { true }, { _ ->
+            object : AbemaAccountTransport {
+                override fun profile(id: String, bearer: String): AbemaAccountProfileResult {
+                    profiles.incrementAndGet(); profileEntered.countDown()
+                    check(bothAttached.await(5, TimeUnit.SECONDS))
+                    return AbemaAccountProfileResult.Identity("intended-account")
+                }
+                override fun emailRegistration(id: String, bearer: String) = AbemaAccountEmailResult.REGISTERED
+                override fun token(challenge: AbemaAccountChallenge): AbemaAccountTokenResult = error("NO TOKEN EXCHANGE")
+                override fun cancelActiveRequest() {}
+                override fun close() {}
+            } }, { true })
+        val start = CountDownLatch(1)
+        val results = List(2) { AtomicReference<Any>() }
+        val attachments = List(2) { AtomicReference<AbemaAccountAccessOwner.Attachment>() }
+        val feeds = List(2) { index -> Thread {
+            try {
+                check(start.await(5, TimeUnit.SECONDS))
+                val owner = registry.owner(instanceId, "fixture-owner", { true }, ::create)
+                val attached = attachAbemaAccountAccessOwner(owner, { true }, { error("No cleanup failure") })
+                attachments[index].set(attached); bothAttached.countDown()
+                // The second feed joins while the first feed's validation is in flight.
+                if (index == 1) check(profileEntered.await(5, TimeUnit.SECONDS))
+                results[index].set(attached.acquire())
+            } catch (error: Throwable) { results[index].set(error); bothAttached.countDown() }
+        } }
+        try {
+            feeds.forEach(Thread::start); start.countDown(); feeds.forEach { it.join(10000) }
+            results.forEach { assertTrue(it.get().toString(), it.get() is AbemaAccountAccessResult.Account) }
+            assertEquals(1, profiles.get()); assertEquals(0, registry.retiredCount)
+        } finally { attachments.forEach { it.get()?.close() } }
     }
     @Test fun cleanupPoisonRemainsPerInstanceAcrossCandidateProofChanges() {
         val instanceId = UUID.randomUUID().toString()

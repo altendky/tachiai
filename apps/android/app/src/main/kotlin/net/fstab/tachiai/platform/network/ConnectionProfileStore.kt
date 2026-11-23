@@ -6,9 +6,9 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
 import java.io.File
-import java.io.RandomAccessFile
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
+import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.MAX_PROVIDER_ROUTES
 
 // publicKey: a non-secret key to match against the provider's list (WireGuard), or null.
@@ -22,9 +22,7 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
     private class Entry(val id: String, val name: String, val profile: ConnectionProfile)
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
-        if (file == null) action() else RandomAccessFile(file, "rw").use { handle ->
-            handle.channel.lock().use { action() }
-        }
+        if (file == null) action() else processFileLocked(file, action)
     }
     private fun read(): List<Entry> {
         val bytes = secrets.read() ?: return emptyList()

@@ -5,11 +5,11 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.Collections
 import java.util.UUID
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.platform.storage.PrivateSecretStore
+import net.fstab.tachiai.platform.storage.processFileLocked
 import net.fstab.tachiai.presentation.*
 
 // Provenance describes this one locked read, never a cached existence check.
@@ -30,7 +30,7 @@ internal class ProviderInstanceStore(private val store: PrivateSecretStore, priv
     companion object { private val lock = Any() }
     private fun <T> locked(action: () -> T): T = synchronized(lock) {
         val file = lockFile
-        if (file == null) action() else RandomAccessFile(file, "rw").use { it.channel.lock().use { action() } }
+        if (file == null) action() else processFileLocked(file, action)
     }
     fun read(legacy: () -> Map<PrototypeService, ProviderSetup>): List<ProviderInstance> = readSnapshot(legacy).instances
     fun readSnapshot(legacy: () -> Map<PrototypeService, ProviderSetup>): ProviderInstanceRegistrySnapshot =

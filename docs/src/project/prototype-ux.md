@@ -1490,7 +1490,7 @@ programs, and the pane says which state it is in:
 - "Waiting for this channel to go live." for a channel between programs, as
   before.
 
-#560's next-program line applies to both. On the `tachiai-dev` emulator
+The next-program line from #560 applies to both. On the `tachiai-dev` emulator
 (Windscribe Tokyo, saved account), ジャンプフェスタチャンネル (`jumpfesta`) was
 off air. It showed the first line, then "Next: 夜桜さんちの大作戦 #1〜13【無料ビデオ1週間】
 at 10:00 PM (in 2 h 8 min).", then "Last checked 7:51 PM". The channel-list

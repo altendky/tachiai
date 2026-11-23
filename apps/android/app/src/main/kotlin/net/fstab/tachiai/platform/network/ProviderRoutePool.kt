@@ -31,8 +31,11 @@ internal class ProviderEffectiveRoute internal constructor(
     configuredInstance: ProviderInstance,
     val candidate: ProviderRouteCandidate,
     val poolProof: String,
+    candidateProofs: List<String>,
 ) {
     val configuredInstance: ProviderInstance = frozenInstance(configuredInstance)
+    // Every candidate proof issued with this same pool snapshot, in pool order.
+    val candidateProofs: List<String> = frozen(candidateProofs)
     val choice get() = candidate.choice
     val profile get() = candidate.profile
     val proof get() = candidate.proof
@@ -59,7 +62,7 @@ internal class ProviderRoutePoolSnapshot internal constructor(
         else candidates.singleOrNull { it.proof == expectedProof }
             ?: throw ProviderRoutePoolException(ProviderRoutePoolFailure.OWNER_MISMATCH)
         if (!candidate.available) throw ProviderRoutePoolException(ProviderRoutePoolFailure.PROFILE_MISSING)
-        return ProviderEffectiveRoute(configuredInstance, candidate, proof)
+        return ProviderEffectiveRoute(configuredInstance, candidate, proof, candidates.map { it.proof })
     }
 
     override fun toString() = "ProviderRoutePoolSnapshot(redacted)"

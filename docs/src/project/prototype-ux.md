@@ -282,6 +282,15 @@ Only this loop may relaunch before the 10-second temporary-failure replay ends;
 other callers still receive that replay. The renewal job keeps its own retry
 policy and Network.
 
+Since #635 step 2, there is one renewal scope per account: the instance, its
+grant snapshot and the route pool of the main process's own owner capture.
+Screens that selected different candidates of the same pool, such as Episodes
+and startup (first candidate) and Watch and Providers (effective candidate),
+join one renewal instead of ending each other's. A caller's owner proof only
+admits it: a proof that matches no current candidate is refused and starts no
+work. In-flight work is superseded only by a changed grant snapshot or route
+pool, and the retry loop follows the same scope.
+
 Pausing a readiness observer detaches that observer without cancelling admitted
 work or extending its original 90-second deadline. The operation can continue
 while the application process survives; it never revives a paused player,

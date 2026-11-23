@@ -277,11 +277,16 @@ class AbemaAccountAccessService : Service() {
                 ?: run { busy.set(false); end(seq); return }
             worker {
                 var result = AbemaAccountAccessIpc.Result(AbemaAccountAccessIpc.Status.FAILURE, failure = AbemaAccountFailure.CANCELLED)
+                // Which step a failure came from (#633), as a closed marker.
+                var stage = "SCOPE"
                 try {
                     if (!current()) accountRefused()
+                    stage = "ATTACH"
                     val attached = AndroidAbemaAccountAccessOwners.attach(this@AbemaAccountAccessService, request)
                     attachment = attached
+                    stage = "ATTACHED_SCOPE"
                     if (!current()) { attached.close(); accountRefused() }
+                    stage = "ACQUIRE"
                     when (val access = attached.acquire(began, deadline)) {
                         is AbemaAccountAccessResult.Account -> {
                             val grant = access.lease.grant ?: accountRefused()
@@ -302,6 +307,7 @@ class AbemaAccountAccessService : Service() {
                 } catch (_: Throwable) { result = AbemaAccountAccessIpc.Result(
                     AbemaAccountAccessIpc.Status.FAILURE, failure = AbemaAccountFailure.TEMPORARY) }
                 val observed = result
+                observed.failure?.let { android.util.Log.d("TachiaiAbemaAccount", "owner=ACQUIRE_FAILED stage=$stage category=${it.name}") }
                 main.post {
                     busy.set(false)
                     if (ended.get()) return@post

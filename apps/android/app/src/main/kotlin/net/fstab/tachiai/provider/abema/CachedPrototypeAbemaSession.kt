@@ -625,7 +625,7 @@ internal class CachedPrototypeAbemaSession(
                         accountClient.set(client); accountCleanupPending.set(true)
                     }
                     val access = client.acquire()
-                    record("startup=ACCOUNT_ACQUIRED status=${access.status.name}")
+                    record("startup=ACCOUNT_ACQUIRED status=${access.status.name}" + (access.failure?.let { " category=${it.name}" } ?: ""))
                     when (access.status) {
                         AbemaAccountAccessIpc.Status.ACCOUNT -> {
                             val grant = checkNotNull(access.grant)

@@ -235,17 +235,19 @@ internal class AbemaApprovalBrowserRuntime(
     private fun sameOwner() = request.ownerProof == captureAbemaCatalogRouteOwner(request.instanceId,
         { providerInstanceStore(applicationContext).read { legacyProviderSettings(applicationContext) } },
         { connectionProfileStore(applicationContext).snapshot(it) }, request.ownerProof).proof()
+    // A failed re-read is not evidence that the owner changed (#635 step 3).
+    private fun ownerMismatch(): Reason? = abemaOwnerMismatch(::sameOwner)
     private fun current() = !ending && ready && active && operationCurrent() && !poisoned.get() && request.current(SystemClock.elapsedRealtime())
     // WebView interception is on Chromium's worker. Protected owner reads never
     // occur in navigation, proxy-authentication or main-thread UI callbacks.
     private fun currentOnWorker(): Boolean {
         if (!current()) return false
-        val matches = runCatching(::sameOwner).getOrDefault(false)
-        if (!matches) {
-            diagnostics.refuse(Phase.OPERATION, Reason.OWNER_CHANGED)
+        val mismatch = ownerMismatch()
+        if (mismatch != null) {
+            diagnostics.refuse(Phase.OPERATION, mismatch)
             main.post { close(false) }
         }
-        return matches && current()
+        return mismatch == null && current()
     }
     private fun prepareFreshSession() {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
@@ -351,8 +353,8 @@ internal class AbemaApprovalBrowserRuntime(
         if (!checkPending) {
             checkPending = true
             workers.execute {
-                val matches = runCatching(::sameOwner).getOrDefault(false)
-                main.post { checkPending = false; if (!matches) refuse(Phase.OPERATION, Reason.OWNER_CHANGED) }
+                val mismatch = ownerMismatch()
+                main.post { checkPending = false; if (mismatch != null) refuse(Phase.OPERATION, mismatch) }
             }
         }
         main.postDelayed(::watchOwner, 1000)
@@ -539,8 +541,8 @@ internal class AbemaApprovalBrowserRuntime(
         active = true
         if (ready && !ending) {
             workers.execute {
-                val matches = runCatching(::sameOwner).getOrDefault(false)
-                main.post { if (matches && current()) resumeBrowser() else if (!ending) refuse(Phase.OPERATION, Reason.OWNER_CHANGED) }
+                val mismatch = ownerMismatch()
+                main.post { if (mismatch == null && current()) resumeBrowser() else if (!ending) refuse(Phase.OPERATION, mismatch ?: Reason.OWNER_CHANGED) }
             }
         }
     }

@@ -6,7 +6,9 @@ import kotlin.random.Random
 // occurrence (an exact scheduled broadcast) cannot start before its start time.
 internal enum class FeedWaitingKind { CHANNEL, OCCURRENCE }
 
-internal data class FeedWaitingSignal(val kind: FeedWaitingKind, val startEpochMs: Long? = null) {
+// notOpen: the provider isn't opening a channel for viewing (#632), which the
+// pane names separately from a channel between programs.
+internal data class FeedWaitingSignal(val kind: FeedWaitingKind, val startEpochMs: Long? = null, val notOpen: Boolean = false) {
     init { require(startEpochMs == null || startEpochMs in 1..MAX_SCHEDULED_START_EPOCH_MS) }
 }
 
@@ -16,6 +18,7 @@ internal fun PrototypeFeedFailure.waitingSignal(channel: Boolean): FeedWaitingSi
     PrototypeFailureReason.NOT_LIVE_YET ->
         FeedWaitingSignal(if (channel) FeedWaitingKind.CHANNEL else FeedWaitingKind.OCCURRENCE, scheduledStartEpochMs)
     PrototypeFailureReason.CHANNEL_NOT_AIRING -> FeedWaitingSignal(FeedWaitingKind.CHANNEL)
+    PrototypeFailureReason.CHANNEL_NOT_OPEN -> FeedWaitingSignal(FeedWaitingKind.CHANNEL, notOpen = true)
     PrototypeFailureReason.BROADCAST_ENDED -> FeedWaitingSignal(FeedWaitingKind.CHANNEL).takeIf { channel }
     else -> null
 }
@@ -63,6 +66,9 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
     var kind = FeedWaitingKind.CHANNEL
         private set
     var startEpochMs: Long? = null
+        private set
+    // Whether the latest signal was a channel the provider isn't opening (#632).
+    var notOpen = false
         private set
     var lastCheckedEpochMs: Long? = null
         private set
@@ -112,7 +118,7 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
     fun waiting(signal: FeedWaitingSignal, lookedUp: Boolean, nowElapsedMs: Long, nowEpochMs: Long) {
         if (nowElapsedMs < 0) return
         startLookupNeeded = if (active) startLookupNeeded && !lookedUp else !lookedUp
-        active = true; kind = signal.kind
+        active = true; kind = signal.kind; notOpen = signal.notOpen
         signal.startEpochMs?.let { startEpochMs = it }
         issued = null; transientStreak = 0; rateLimitStreak = 0; failedChecks = 0; accountRecheck = false
         lastCheckedEpochMs = nowEpochMs
@@ -199,6 +205,6 @@ internal class FeedWaitingState(private val jitter: (Long) -> Long = { bound -> 
     fun cancel() {
         active = false; startEpochMs = null; programStartEpochMs = null; lastCheckedEpochMs = null; startLookupNeeded = false
         dueMs = null; issued = null; rateLimitStreak = 0; transientStreak = 0; failedChecks = 0; accountRecheck = false
-        kind = FeedWaitingKind.CHANNEL
+        kind = FeedWaitingKind.CHANNEL; notOpen = false
     }
 }

@@ -1119,7 +1119,8 @@ open class PrototypeActivity : ComponentActivity() {
                 // A waiting feed keeps its waiting text through its own checks.
                 else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
                     val now = System.currentTimeMillis()
-                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, now, program = airing[index].program(now))
+                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, now, program = airing[index].program(now),
+                        notOpen = it.notOpen)
                 }
                 else if (feedRetries[index].retrying) {
                     if (automaticRecovery[index].automaticAttemptActive)
@@ -1831,7 +1832,7 @@ open class PrototypeActivity : ComponentActivity() {
         failures[index] = failure
         // Play again starts an ended replay from its beginning, not its last position.
         if (failure.reason == PrototypeFailureReason.REPLAY_ENDED) feedRetries[index].forgetReplay()
-        if (failure.reason == PrototypeFailureReason.CHANNEL_NOT_AIRING) notAiringChecks[index] = failure to System.currentTimeMillis()
+        if (failure.reason == PrototypeFailureReason.CHANNEL_NOT_AIRING || failure.reason == PrototypeFailureReason.CHANNEL_NOT_OPEN) notAiringChecks[index] = failure to System.currentTimeMillis()
         retryPlaybackIntent.cancel(index); retryPlaybackJoins[index] = null
         retryPlaybackStart = null
         timingEvidenceRequest?.let { writeTimingEvidence(it); timingEvidenceRequest = null }

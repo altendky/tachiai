@@ -19,12 +19,16 @@ class FeedWaitingStateTest {
         assertEquals(FeedWaitingSignal(FeedWaitingKind.OCCURRENCE, epoch), notLive.waitingSignal(channel = false))
         assertEquals(FeedWaitingSignal(FeedWaitingKind.CHANNEL),
             PrototypeFeedFailure(PrototypeFailureReason.CHANNEL_NOT_AIRING).waitingSignal(channel = true))
+        // #632: a channel the provider isn't opening waits too, named separately.
+        assertEquals(FeedWaitingSignal(FeedWaitingKind.CHANNEL, notOpen = true),
+            PrototypeFeedFailure(PrototypeFailureReason.CHANNEL_NOT_OPEN).waitingSignal(channel = true))
         // A live show ending waits for the next one; an occurrence that ended keeps its ended state.
         val ended = PrototypeFeedFailure(PrototypeFailureReason.BROADCAST_ENDED)
         assertEquals(FeedWaitingSignal(FeedWaitingKind.CHANNEL), ended.waitingSignal(channel = true))
         assertNull(ended.waitingSignal(channel = false))
         for (reason in PrototypeFailureReason.entries.filter { it !in setOf(PrototypeFailureReason.NOT_LIVE_YET,
-                PrototypeFailureReason.CHANNEL_NOT_AIRING, PrototypeFailureReason.BROADCAST_ENDED) })
+                PrototypeFailureReason.CHANNEL_NOT_AIRING, PrototypeFailureReason.CHANNEL_NOT_OPEN,
+                PrototypeFailureReason.BROADCAST_ENDED) })
             assertNull(reason.name, PrototypeFeedFailure(reason).waitingSignal(channel = true))
     }
 
@@ -246,5 +250,18 @@ class FeedWaitingStateTest {
                 PrototypeFailureReason.ROUTE_FAILED, PrototypeFailureReason.LICENSE_FAILED,
                 PrototypeFailureReason.MEDIA_BLOCKED, PrototypeFailureReason.CLEANUP_FAILED))
             assertFalse(reason.name, PrototypeFeedFailure(reason).transientWhileWaiting())
+    }
+
+    // #632: the waiting state remembers which channel state it is in, and a
+    // later between-programs signal replaces it.
+    @Test fun aNotOpenChannelIsRememberedUntilAnotherSignal() {
+        val state = FeedWaitingState()
+        state.waiting(FeedWaitingSignal(FeedWaitingKind.CHANNEL, notOpen = true), true, 1_000, epoch)
+        assertTrue(state.active); assertTrue(state.notOpen)
+        state.waiting(channel, true, 2_000, epoch + 1_000)
+        assertFalse(state.notOpen)
+        state.waiting(FeedWaitingSignal(FeedWaitingKind.CHANNEL, notOpen = true), true, 3_000, epoch + 2_000)
+        state.cancel()
+        assertFalse(state.notOpen)
     }
 }

@@ -800,7 +800,10 @@
         typeof channel.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(channel.id)))) refuseChannel('CHANNEL_ENVELOPE_REFUSED');
     const channels = metadata.channels?.filter(channel => channel.id === channelId);
     if (!Array.isArray(channels) || channels.length !== 1) refuseChannel('CHANNEL_SELECTION_REFUSED');
-    if (!modernChannelContext && channels[0].viewingOpened !== true) refuseChannel('CHANNEL_UNAVAILABLE');
+    // A channel ABEMA isn't opening for viewing (between broadcasts, #632) is
+    // still refused; this one closed phase is always reported so the viewer
+    // can wait for it instead of showing a preparation failure.
+    if (!modernChannelContext && channels[0].viewingOpened !== true) { phase = 'CHANNEL_UNAVAILABLE'; throw new Error(); }
     if (typeof channels[0].playback?.dash !== 'string') refuseChannel('CHANNEL_PLAYLIST_REFUSED');
     if (channels[0].status?.drm !== undefined && typeof channels[0].status.drm !== 'boolean') refuseChannel('CHANNEL_DRM_REFUSED');
     const channel = channels[0];

@@ -18,7 +18,7 @@ internal data class FeedWaitingProgram(val title: String, val startEpochMs: Long
 // shown as given; it is not a promise the show is live.
 internal fun feedWaitingMessage(kind: FeedWaitingKind, startEpochMs: Long?, lastCheckedEpochMs: Long?,
     nowEpochMs: Long, zone: ZoneId = ZoneId.systemDefault(), locale: Locale = Locale.getDefault(),
-    program: FeedWaitingProgram? = null): String {
+    program: FeedWaitingProgram? = null, notOpen: Boolean = false): String {
     val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
     fun clock(epochMs: Long) = time.format(Instant.ofEpochMilli(epochMs).atZone(zone))
     fun sameDay(epochMs: Long) = Instant.ofEpochMilli(epochMs).atZone(zone).toLocalDate() ==
@@ -28,8 +28,10 @@ internal fun feedWaitingMessage(kind: FeedWaitingKind, startEpochMs: Long?, last
     fun moment(epochMs: Long, preposition: String): String =
         if (sameDay(epochMs)) "$preposition ${clock(epochMs)}" else "${weekday(epochMs)} ${clock(epochMs)}"
     val line = when {
-        startEpochMs == null -> if (kind == FeedWaitingKind.CHANNEL) "Waiting for this channel to go live."
-            else "Waiting for this broadcast to start."
+        startEpochMs == null -> if (kind != FeedWaitingKind.CHANNEL) "Waiting for this broadcast to start."
+            // The provider isn't opening the channel for viewing (#632).
+            else if (notOpen) "This channel isn't open for viewing right now. Waiting for it to open."
+            else "Waiting for this channel to go live."
         startEpochMs > nowEpochMs ->
             "Not live yet. Starts ${moment(startEpochMs, "at")} (in ${waitingRemaining(startEpochMs - nowEpochMs)})."
         else -> "Not live yet. Should have started ${moment(startEpochMs, "at")}."

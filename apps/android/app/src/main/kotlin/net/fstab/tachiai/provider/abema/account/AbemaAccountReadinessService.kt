@@ -81,23 +81,32 @@ internal object AbemaReadinessIpc {
     }
 }
 
+// One renewal scope per account (#635 step 2): the main process's own route
+// owner capture contributes only its route pool, so callers that selected
+// different candidates of one pool (for example Episodes' first candidate and
+// Watch's effective one) join one renewal instead of superseding each other.
+// Only a changed grant snapshot or route pool is a different scope.
+internal class AbemaRenewalScope private constructor(private val routePool: String, private val snapshot: AbemaAccountSnapshot) {
+    companion object {
+        fun of(owner: AbemaCatalogRouteOwner, snapshot: AbemaAccountSnapshot) = AbemaRenewalScope(owner.routePoolProof(), snapshot)
+    }
+    override fun equals(other: Any?): Boolean {
+        if (other !is AbemaRenewalScope || routePool != other.routePool || snapshot.revision != other.snapshot.revision) return false
+        val a = snapshot.record ?: return false
+        val b = other.snapshot.record ?: return false
+        return a.grant.userId == b.grant.userId && a.grant.bearer == b.grant.bearer &&
+            a.grant.expiresAtMs == b.grant.expiresAtMs && a.acceptedWallMs == b.acceptedWallMs && a.generation == b.generation
+    }
+    override fun hashCode() = routePool.hashCode() * 31 + snapshot.revision.hashCode()
+    override fun toString() = "AbemaRenewalScope(redacted)"
+}
+
 internal object AndroidAbemaRenewalReadiness {
     class Work(val binding: AbemaAccountConnectionBinding, val owner: AbemaCatalogRouteOwner,
         val expected: AbemaAccountSnapshot, val beganWall: Long, val deadline: Long,
         val network: AbemaRenewalNetwork? = null) {
         init { require(network == null || network.deadlineElapsedMs == deadline) }
         override fun toString() = "AbemaRenewalWork(redacted)"
-    }
-    private class Scope(val owner: String, val snapshot: AbemaAccountSnapshot) {
-        override fun equals(other: Any?): Boolean {
-            if (other !is Scope || owner != other.owner || snapshot.revision != other.snapshot.revision) return false
-            val a = snapshot.record ?: return false
-            val b = other.snapshot.record ?: return false
-            return a.grant.userId == b.grant.userId && a.grant.bearer == b.grant.bearer &&
-                a.grant.expiresAtMs == b.grant.expiresAtMs && a.acceptedWallMs == b.acceptedWallMs && a.generation == b.generation
-        }
-        override fun hashCode() = owner.hashCode() * 31 + snapshot.revision.hashCode()
-        override fun toString() = "AbemaRenewalScope(redacted)"
     }
     private val coordinator = AbemaRenewalReadinessCoordinator<Work>(SystemClock::elapsedRealtime,
         { UUID.randomUUID().toString().replace("-", "") })
@@ -122,7 +131,7 @@ internal object AndroidAbemaRenewalReadiness {
         })
     // Foreground readiness only (#635 step 1); the renewal job keeps its ledger policy.
     private val retries: AbemaRenewalRetryLoop<Work, AbemaAccountRenewalOperation> = AbemaRenewalRetryLoop(coordinator, ownedAdmission,
-        instanceOf = { it.owner.instance.id }, scopeOf = { Scope(it.owner.proof(), it.expected) },
+        instanceOf = { it.owner.instance.id }, scopeOf = { AbemaRenewalScope.of(it.owner, it.expected) },
         elapsed = SystemClock::elapsedRealtime, log = { android.util.Log.i("TachiaiAbemaRenewal", it) })
 
     fun check(service: Service, target: AbemaReadinessTarget, deadline: Long,
@@ -152,7 +161,11 @@ internal object AndroidAbemaRenewalReadiness {
     ): AbemaRenewalReservation {
         val instance = target.instanceId
         fun permitted() = runCatching(admitted).getOrDefault(false)
+        // A caller's own refusal or READY ends only work on its exact candidate;
+        // a caller of another candidate in the same pool joined that work instead.
         fun invalidateTarget() = coordinator.invalidate(instance) { it.owner.proof() == target.ownerProof }
+        // Claimed work on any candidate of the caller's pool is this account's renewal.
+        fun observeClaimed() = coordinator.observeClaimed(instance) { it.owner.inRoutePool(target.ownerProof) }
         fun failed(status: AbemaRenewalReadinessCoordinator.Status = AbemaRenewalReadinessCoordinator.Status.FAILURE): AbemaRenewalReadinessCoordinator.Decision {
             invalidateTarget()
             return AbemaRenewalReadinessCoordinator.Decision(status)
@@ -173,7 +186,7 @@ internal object AndroidAbemaRenewalReadiness {
                 if (leadMs == 0L && status == AbemaRenewalReadinessCoordinator.Status.WAIT && usable())
                     AbemaRenewalReservation.NoWork(AbemaRenewalReadinessCoordinator.Status.READY)
                 else AbemaRenewalReservation.Observed(status)
-            coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }?.let {
+            observeClaimed()?.let {
                 return observedReservation(it.status) {
                     runCatching {
                         val probe = androidAbemaAccountConnectionBinding(context, instance, target.ownerProof)
@@ -191,8 +204,7 @@ internal object AndroidAbemaRenewalReadiness {
             var observed = false
             abemaReadinessRecordAdmission(
                 ownerCurrent = { owner.instance.id == instance && owner.proof() == target.ownerProof && binding.sameOwner(owner) },
-                claimed = { coordinator.observeClaimed(instance) { it.owner.proof() == target.ownerProof }
-                    ?.also { observed = true } },
+                claimed = { observeClaimed()?.also { observed = true } },
                 recordCurrent = { binding.store.usable(snapshot.revision) }, refused = { failed() })?.let {
                 return if (observed) observedReservation(it.status) { unexpired(binding, owner, snapshot, wall) }
                     else AbemaRenewalReservation.NoWork(it.status)
@@ -212,10 +224,13 @@ internal object AndroidAbemaRenewalReadiness {
             }
             if (!abemaRenewalSnapshotMatches(snapshot, snapshot, wall)) return AbemaRenewalReservation.NoWork(failed().status)
             // WAIT observes existing work; it never replaces that work's
-            // capability/deadline or grants control to this observer. A
-            // retryable foreground result relaunches this exact scope only
-            // after this fresh owner capture and its confirmed cleanup.
-            retries.reserve(instance, Scope(owner.proof(), snapshot),
+            // capability/deadline or grants control to this observer. The
+            // caller's proof only admits it: binding.owner() above refused a
+            // proof that matches no current candidate. The scope is this
+            // main-process capture's route pool and grant snapshot. A
+            // retryable foreground result relaunches this scope only after
+            // this fresh owner capture and its confirmed cleanup.
+            retries.reserve(instance, AbemaRenewalScope.of(owner, snapshot),
                 Work(binding, owner, snapshot, wall, deadline, capturedNetwork), deadline, admitted,
                 construct = { ticket, work, completed -> createOperation(context.applicationContext, ticket, work, completed) },
                 notify = notify, retry = leadMs == 0L)
@@ -242,10 +257,10 @@ internal object AndroidAbemaRenewalReadiness {
     fun completion(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Completion {
         return evidence(instance, ownerProof, expected).completion
     }
-    fun evidence(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Evidence {
-        val scope = Scope(ownerProof, expected)
-        return coordinator.evidence(instance) { Scope(it.owner.proof(), it.expected) == scope }
-    }
+    fun evidence(instance: String, ownerProof: String, expected: AbemaAccountSnapshot): AbemaRenewalReadinessCoordinator.Evidence =
+        coordinator.evidence(instance) {
+            it.owner.inRoutePool(ownerProof) && AbemaRenewalScope.of(it.owner, it.expected) == AbemaRenewalScope.of(it.owner, expected)
+        }
 
     private fun createOperation(context: Context, ticket: String, work: Work,
         completed: (AbemaRenewalOperationOutcome) -> Unit): AbemaAccountRenewalOperation =

@@ -82,7 +82,9 @@ class AbemaRenewalReadinessCoordinatorTest {
         f.coordinator.finish(old, true)
         assertEquals("new-record", f.coordinator.claim(fresh)); assertTrue(f.coordinator.current(fresh))
     }
-    @Test fun selectedCandidateChangeCannotAdoptAnotherRoutesReadyResultOrClaimedTicket() {
+    // Production scopes are route pools (#635 step 2): another candidate of the
+    // same pool joins, so distinct scopes here model a changed pool.
+    @Test fun changedRoutePoolCannotAdoptAnotherRoutesReadyResultOrClaimedTicket() {
         val f = Fixture()
         val instance = "00000000-0000-0000-0000-000000000001"
         val firstOwner = AbemaReadinessTarget(instance, "a".repeat(64))

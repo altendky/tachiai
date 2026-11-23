@@ -18,14 +18,16 @@ import net.fstab.tachiai.provider.catalog.*
 import net.fstab.tachiai.provider.abema.account.*
 
 internal class AbemaCatalogRouteOwner private constructor(val instance: ProviderInstance, val profile: ConnectionProfile?,
-    val configuredInstance: ProviderInstance, private val candidateProof: String?) {
+    val configuredInstance: ProviderInstance, private val candidateProof: String?,
+    private val poolProof: String?, private val poolCandidateProofs: List<String>) {
     // Direct construction is retained for provider-free ownership fixtures.
-    constructor(instance: ProviderInstance, profile: ConnectionProfile?) : this(instance, profile, instance, null)
+    constructor(instance: ProviderInstance, profile: ConnectionProfile?) : this(instance, profile, instance, null, null, emptyList())
     // A viewer's worker-built route plan supplies this proof. The first worker
     // ownership check still reconciles its choice/profile with protected state.
     constructor(instance: ProviderInstance, profile: ConnectionProfile?, expectedProof: String) :
-        this(instance, profile, instance, expectedProof)
-    constructor(route: ProviderEffectiveRoute) : this(route.effectiveInstance, route.profile, route.configuredInstance, route.proof)
+        this(instance, profile, instance, expectedProof, null, emptyList())
+    constructor(route: ProviderEffectiveRoute) : this(route.effectiveInstance, route.profile, route.configuredInstance, route.proof,
+        route.poolProof, route.candidateProofs)
     init { require(candidateProof == null || candidateProof.matches(Regex("[a-f0-9]{64}"))) }
     private val choice = checkNotNull(instance.setup.route)
     private val fingerprint = "${instance.id}|${instance.service.name}|${choice.mode.name}|${choice.connectionId ?: ""}|" +
@@ -33,6 +35,12 @@ internal class AbemaCatalogRouteOwner private constructor(val instance: Provider
     fun sameOwnership(other: AbemaCatalogRouteOwner) = proof() == other.proof() && fingerprint == other.fingerprint
     fun proof(): String = candidateProof ?: MessageDigest.getInstance("SHA-256").digest(fingerprint.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 255) }
+    // Account-level route identity (#635 step 2): every candidate captured from
+    // one route pool shares it, and a changed route list or profile
+    // configuration changes it. An owner built without a pool uses its own proof.
+    fun routePoolProof(): String = poolProof ?: proof()
+    // Whether a caller's candidate proof was issued with this owner's pool.
+    fun inRoutePool(candidateProof: String) = candidateProof == proof() || candidateProof in poolCandidateProofs
     override fun toString() = "AbemaCatalogRouteOwner(redacted)"
 }
 

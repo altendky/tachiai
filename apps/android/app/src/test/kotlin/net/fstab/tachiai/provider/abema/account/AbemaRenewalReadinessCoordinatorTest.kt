@@ -259,4 +259,58 @@ class AbemaRenewalReadinessCoordinatorTest {
         assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
         assertEquals(1, f.nonce)
     }
+    // #635 step 1: only the readiness retry loop relaunches a confirmed
+    // temporary failure early; ordinary callers keep its replay.
+    @Test fun retryLoopRelaunchesAConfirmedTemporaryFailureEarlyWhileOrdinaryCallersKeepTheReplay() {
+        val f = Fixture(); val first = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(first))
+        f.coordinator.finish(first, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        f.now += 1
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
+        val retry = f.coordinator.relaunch("a", "record", "retry")
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.LAUNCH, retry.status)
+        assertEquals(2, f.nonce)
+        // The relaunched flight is joined, not replaced, by ordinary callers and another retry.
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, f.coordinator.check("a", "record", "other").status)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, f.coordinator.relaunch("a", "record", "other").status)
+        assertEquals("retry", f.coordinator.claim(checkNotNull(retry.ticket)))
+        f.coordinator.finish(checkNotNull(retry.ticket), AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, f.coordinator.check("a", "record", "private").status)
+        assertEquals(2, f.nonce)
+    }
+    @Test fun relaunchNeverReplacesFinalUnconfirmedOrRefusedResultsOrOtherDeviceWork() {
+        for (status in listOf(AbemaRenewalReadinessCoordinator.Status.FAILURE, AbemaRenewalReadinessCoordinator.Status.READY,
+            AbemaRenewalReadinessCoordinator.Status.INTERACTION_REQUIRED, AbemaRenewalReadinessCoordinator.Status.STORAGE_FAILURE)) {
+            val f = Fixture(); val ticket = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+            assertEquals("private", f.coordinator.claim(ticket))
+            f.coordinator.finish(ticket, status)
+            assertEquals(status, f.coordinator.relaunch("a", "record", "private").status)
+            assertEquals(1, f.nonce)
+        }
+        val unconfirmed = Fixture(); val held = checkNotNull(unconfirmed.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", unconfirmed.coordinator.claim(held))
+        unconfirmed.coordinator.finish(held, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, cleanupConfirmed = false)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE,
+            unconfirmed.coordinator.relaunch("a", "record", "private").status)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, unconfirmed.coordinator.relaunch("b", "other", "other").status)
+        assertEquals(1, unconfirmed.nonce)
+
+        // A retry waits for another instance's flight and does not supersede
+        // a different scope of its own instance either.
+        val busy = Fixture(); val failed = checkNotNull(busy.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", busy.coordinator.claim(failed))
+        busy.coordinator.finish(failed, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        val other = checkNotNull(busy.coordinator.check("b", "other", "other").ticket)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.WAIT, busy.coordinator.relaunch("a", "record", "private").status)
+        assertTrue(busy.coordinator.current(other))
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, busy.coordinator.check("a", "record", "private").status)
+        busy.coordinator.finish(other, true)
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.LAUNCH, busy.coordinator.relaunch("a", "record", "private").status)
+
+        val rollback = Fixture(); val ticket = checkNotNull(rollback.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", rollback.coordinator.claim(ticket))
+        rollback.coordinator.finish(ticket, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE)
+        rollback.now--
+        assertEquals(AbemaRenewalReadinessCoordinator.Status.FAILURE, rollback.coordinator.relaunch("a", "record", "private").status)
+    }
 }

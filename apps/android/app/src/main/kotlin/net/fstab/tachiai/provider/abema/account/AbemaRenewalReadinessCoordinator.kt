@@ -35,13 +35,16 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         lastElapsed = maxOf(lastElapsed, value)
         return value.takeUnless { refusedClock }
     }
-    @Synchronized fun check(instance: String, scope: Any, value: T, originalDeadline: Long = Long.MAX_VALUE): Decision {
-        val now = now() ?: return Decision(Status.FAILURE)
+    private fun prune(now: Long) {
         entries.filter { it.finished == null && now >= it.deadline }.forEach {
             it.finished = now; it.terminal = Status.TEMPORARY_FAILURE
         }
         entries.removeAll { (!it.claimed || it.released) && it.finished?.let { ended -> now - ended >=
             if (it.terminal == Status.TEMPORARY_FAILURE && !it.cleanupRefused) minOf(temporaryCooldownMs, cooldownMs) else cooldownMs } == true }
+    }
+    @Synchronized fun check(instance: String, scope: Any, value: T, originalDeadline: Long = Long.MAX_VALUE): Decision {
+        val now = now() ?: return Decision(Status.FAILURE)
+        prune(now)
         entries.filter { it.instance == instance && it.scope != scope && it.finished == null }
             .forEach { it.finished = now }
         entries.firstOrNull { it.instance == instance && it.scope == scope }?.let {
@@ -54,6 +57,25 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         if (!nonce.matches(Regex("[a-f0-9]{32}")) || entries.any { it.ticket == nonce }) return Decision(Status.FAILURE)
         entries.add(Entry(instance, scope, value, nonce, now, minOf(now + lifetimeMs, originalDeadline)))
         return Decision(Status.LAUNCH, nonce)
+    }
+    // Only the readiness retry loop (#635) calls this, never an ordinary caller:
+    // the same exact scope may start again before its temporary failure's
+    // replay ends, so the loop's backoff rather than that replay paces it.
+    // Only a remembered TEMPORARY_FAILURE whose cleanup receipt was confirmed
+    // qualifies; any other remembered or in-flight result answers as check()
+    // would. A retry waits for, and never supersedes, other work on the device.
+    @Synchronized fun relaunch(instance: String, scope: Any, value: T, originalDeadline: Long = Long.MAX_VALUE): Decision {
+        val now = now() ?: return Decision(Status.FAILURE)
+        prune(now)
+        val previous = entries.firstOrNull { it.instance == instance && it.scope == scope }
+        if (previous != null) {
+            if (previous.finished == null) return Decision(Status.WAIT)
+            if (previous.terminal != Status.TEMPORARY_FAILURE || !previous.released || previous.cleanupRefused)
+                return Decision(previous.terminal)
+        }
+        if (entries.any { it !== previous && (it.finished == null || it.claimed && !it.released) }) return Decision(Status.WAIT)
+        previous?.let(entries::remove)
+        return check(instance, scope, value, originalDeadline)
     }
     fun invalidate(instance: String) = invalidate(instance) { true }
     @Synchronized fun invalidate(instance: String, matches: (T) -> Boolean) {

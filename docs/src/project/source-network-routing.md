@@ -460,6 +460,7 @@ grant or exception text):
 | `TachiaiAbemaRenewal` | `BROWSER_RESULT result=…` plus the diagnostic fields | approval browser |
 | `TachiaiAbemaRenewal` | `OPERATION_RESULT result=… cleanupConfirmed=…` plus the diagnostic fields, and `OPERATION_PRODUCER …` when the browser supplied one | default |
 | `TachiaiAbemaRenewal` | `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
+| `TachiaiAbemaRenewal` | `RETRY attempt=… reason=…` (`TEMPORARY_FAILURE` or `CANCELLED`) | default (foreground readiness only, #635) |
 
 The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,
 `transport`, `transportPhase`, `transportCancelled`, `startup` and `cleanup`.

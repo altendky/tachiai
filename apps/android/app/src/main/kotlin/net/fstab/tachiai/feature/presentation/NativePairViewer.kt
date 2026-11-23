@@ -9,6 +9,8 @@ import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.os.SystemClock
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -31,8 +33,11 @@ import androidx.media3.ui.PlayerView
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativeEventMarks
 import net.fstab.tachiai.platform.media.NativePairMember
+import net.fstab.tachiai.platform.media.NativePairSkipPlan
+import net.fstab.tachiai.platform.media.SKIP_END_MARGIN_MS
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.NativeSeekPlan
+import net.fstab.tachiai.platform.media.NativeTimingSnapshot
 import net.fstab.tachiai.R
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativeQualityKind
@@ -48,7 +53,19 @@ import net.fstab.tachiai.presentation.ViewerTimingStep
 import net.fstab.tachiai.presentation.ViewerOverlayPlan
 import net.fstab.tachiai.presentation.ViewerPanelSpace
 import net.fstab.tachiai.presentation.ViewerStatusNotices
+import net.fstab.tachiai.presentation.ViewerHiddenKey
+import net.fstab.tachiai.presentation.ViewerTap
+import net.fstab.tachiai.presentation.ViewerTapGesture
+import net.fstab.tachiai.presentation.ViewerTransportSteps
+import net.fstab.tachiai.presentation.formatPlaybackPosition
+import net.fstab.tachiai.presentation.formatPlaybackTime
+import net.fstab.tachiai.presentation.formatScrubTarget
+import net.fstab.tachiai.presentation.formatSkipAmount
 import net.fstab.tachiai.presentation.twoFeedBounds
+import net.fstab.tachiai.presentation.viewerHiddenKey
+import net.fstab.tachiai.presentation.viewerMediaSkipMs
+import net.fstab.tachiai.presentation.viewerScrubStepMs
+import net.fstab.tachiai.presentation.viewerSkipRefusal
 import net.fstab.tachiai.presentation.viewerOverlayPlan
 import net.fstab.tachiai.presentation.viewerPaneInsets
 import net.fstab.tachiai.presentation.viewerSheetCap
@@ -97,6 +114,10 @@ internal class NativePairViewer(
     private val pairOffsetState: () -> ViewerPairOffsetReadback? = { null },
     private val onPairOffsetEnabled: (Boolean) -> Unit = {},
     private val onMarkedCorrespondence: ((Long, PairOffsetCorrespondence) -> NativeSeekPlan?)? = null,
+    // Replay skip/scrub by a relative amount; a pair moves both feeds (#655).
+    private val onSkip: (Long) -> NativePairSkipPlan = { delta ->
+        pair()?.seekTogether(delta) ?: NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+    },
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -135,8 +156,22 @@ internal class NativePairViewer(
     private data class QualityField(val side: NativeMixedSide, val kind: NativeQualityKind,
         val choose: Button, val readback: TextView, val capability: TextView, val save: Button, val reset: Button)
     private val qualityFields = mutableListOf<QualityField>()
+    // Replay navigation (#655): the position, skips and scrub refer to the
+    // primary feed of a pair (or the single feed); a skip moves every feed.
+    private data class TransportTarget(val side: NativeMixedSide, val positionMs: Long, val durationMs: Long)
+    private var transport: TransportTarget? = null
+    private var skipInFlight = false
+    private var queuedSkipMs = 0L
+    private var expectedPositionMs: Long? = null
+    private var scrubbingMs: Long? = null
+    private var scrubTouch = false
+    private val commitScrubTask = Runnable { commitScrub() }
+    private val tapGesture = ViewerTapGesture(ViewConfiguration.getDoubleTapTimeout().toLong())
+    private val deferredToggle = Runnable { tapGesture.deferredDone(); toggleControls() }
+    private var lastTouchX: Float? = null
+    private var startFocusPending = false
     private val hideControls = Runnable {
-        if (panel == null && requestedPlaying && !overlay.hasFocus() && pendingFocus == null) {
+        if (panel == null && requestedPlaying && !overlay.hasFocus() && pendingFocus == null && scrubbingMs == null) {
             overlay.visibility = GONE; requestLayout()
         }
     }
@@ -165,6 +200,7 @@ internal class NativePairViewer(
     private var plan: ViewerOverlayPlan? = null
     private val play = button("Play") {
         pendingMarkAlignment = null
+        queuedSkipMs = 0L
         if (requestedPlaying || playbackBusy()) onPause() else onPlay()
         showControls(); refresh()
     }
@@ -235,7 +271,7 @@ internal class NativePairViewer(
         visibility = GONE
     }
     // The top bar holds Stop and the secondary controls; the bottom area the
-    // live affordances and transport. #655 adds its position row and skips there.
+    // live affordances, the replay position row (#655) and the transport.
     private val topBar = LinearLayout(context).apply {
         gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
         background = overlayScrim()
@@ -245,15 +281,56 @@ internal class NativePairViewer(
             addView(control, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
         }
     }
-    private val transportRow = LinearLayout(context).apply {
+    // Position row (#655): the target feed's title, elapsed / total and a
+    // scrub bar. Shown only while every playing feed is a replay.
+    private val positionTitle = text("").apply {
+        textSize = 12f; setTextColor(OVERLAY_TEXT); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+    }
+    private val positionTime = text("").apply { textSize = 12f; setTextColor(OVERLAY_TEXT) }
+    private val scrub = SeekBar(context).apply {
+        id = View.generateViewId(); max = 1; minimumHeight = dp(48)
+        contentDescription = "Playback position"
+        progressTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_primary))
+        thumbTintList = progressTintList
+    }
+    private val positionRow = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), 0, dp(8), 0)
+            addView(positionTitle, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(positionTime, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        }, LinearLayout.LayoutParams(-1, -2))
+        addView(scrub, LinearLayout.LayoutParams(-1, dp(48)))
+        visibility = GONE
+    }
+    // ⏪ 1 min, ⏪ 10 s, Play/Pause, 10 s ⏩, 1 min ⏩.
+    private val skipButtons = listOf(-ViewerTransportSteps.LONG_MS, -ViewerTransportSteps.SHORT_MS,
+        ViewerTransportSteps.SHORT_MS, ViewerTransportSteps.LONG_MS).map { delta ->
+        val amount = if (kotlin.math.abs(delta) >= 60_000) "1 min" else "10 s"
+        button(amount, "skip:$delta") { requestSkip(delta, flash = false); showControls() }.apply {
+            id = View.generateViewId(); maxLines = 1
+            contentDescription = (if (delta < 0) "Back " else "Forward ") +
+                if (kotlin.math.abs(delta) >= 60_000) "1 minute" else "10 seconds"
+            val icon = context.getDrawable(if (delta < 0) R.drawable.transport_rewind else R.drawable.transport_fast_forward)
+            icon?.setBounds(0, 0, dp(18), dp(18))
+            setCompoundDrawablesRelative(if (delta < 0) icon else null, null, if (delta < 0) null else icon, null)
+            compoundDrawablePadding = dp(2)
+            compoundDrawableTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_text))
+            visibility = GONE
+        }
+    }
+    private val transportRow = TransportRow().apply {
         gravity = Gravity.CENTER
-        addView(play, LinearLayout.LayoutParams(-2, -2))
+        listOf(skipButtons[0], skipButtons[1], play, skipButtons[2], skipButtons[3]).forEachIndexed { index, control ->
+            addView(control, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(4) })
+        }
     }
     private val bottomBar = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
         background = overlayScrim()
         addView(liveControls, LinearLayout.LayoutParams(-1, -2))
-        addView(transportRow, LinearLayout.LayoutParams(-1, -2))
+        addView(positionRow, LinearLayout.LayoutParams(-1, -2))
+        addView(transportRow, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
     }
 
     init {
@@ -279,7 +356,7 @@ internal class NativePairViewer(
         if (television) { isFocusable = true; isFocusableInTouchMode = true }
         // Consume empty-area taps here rather than passing them to the hidden
         // provider page. Child controls and pane gestures keep their handlers.
-        setOnClickListener { toggleControls() }
+        setOnClickListener { videoTap() }
         ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
@@ -306,7 +383,145 @@ internal class NativePairViewer(
         }
         volume.setOnSeekBarChangeListener(listener { changeMix(mix.copy(overall = it)) })
         balance.setOnSeekBarChangeListener(listener { changeMix(mix.copy(balance = it)) })
+        setUpScrub()
         updateLabels()
+    }
+
+    // Touch drags and commits on release; Left/Right (hold to speed up) and
+    // accessibility adjustments commit on Select or after a short idle.
+    private fun setUpScrub() {
+        remoteControl(scrub, "scrub")
+        val focusBase = scrub.onFocusChangeListener
+        scrub.onFocusChangeListener = View.OnFocusChangeListener { view, focused ->
+            focusBase?.onFocusChange(view, focused)
+            if (!focused && scrubbingMs != null && !scrubTouch) commitScrub()
+        }
+        scrub.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, value: Int, user: Boolean) {
+                if (!user || transport == null) return
+                if (scrubTouch) showScrub(value * 1_000L) else updateScrub(value * 1_000L)
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) {
+                scrubTouch = true; removeCallbacks(hideControls); removeCallbacks(commitScrubTask)
+                showScrub(bar.progress * 1_000L)
+            }
+            override fun onStopTrackingTouch(bar: SeekBar) { scrubTouch = false; commitScrub() }
+        })
+        scrub.setOnKeyListener { _, code, event ->
+            val target = transport ?: return@setOnKeyListener false
+            when (code) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        val step = viewerScrubStepMs((event.eventTime - event.downTime).coerceAtLeast(0), target.durationMs)
+                        val base = scrubbingMs ?: target.positionMs
+                        updateScrub((base + if (code == KeyEvent.KEYCODE_DPAD_RIGHT) step else -step)
+                            .coerceIn(0, target.durationMs))
+                    }
+                    true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+                KeyEvent.KEYCODE_BUTTON_A -> {
+                    if (scrubbingMs == null) return@setOnKeyListener false
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) commitScrub()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+    private fun showScrub(ms: Long) {
+        val target = transport ?: return
+        scrubbingMs = ms.coerceIn(0, target.durationMs)
+        positionTime.text = formatScrubTarget(checkNotNull(scrubbingMs), target.durationMs)
+    }
+    private fun updateScrub(ms: Long) {
+        val target = transport ?: return
+        showScrub(ms)
+        scrub.progress = (checkNotNull(scrubbingMs) / 1_000).toInt()
+        ViewCompat.setStateDescription(scrub, positionDescription(checkNotNull(scrubbingMs), target.durationMs))
+        removeCallbacks(hideControls); removeCallbacks(commitScrubTask)
+        postDelayed(commitScrubTask, ViewerTransportSteps.SCRUB_COMMIT_IDLE_MS)
+    }
+    private fun cancelScrub() {
+        removeCallbacks(commitScrubTask)
+        scrubbingMs = null; scrubTouch = false
+    }
+    // A scrub is a skip by the distance from the target feed's current position.
+    private fun commitScrub() {
+        val chosen = scrubbingMs ?: return
+        cancelScrub()
+        val target = transportTarget()
+        if (target != null && isAttachedToWindow && isShown) requestSkip(chosen - target.positionMs, flash = false)
+        if (!overlay.isGone) showControls()
+    }
+    private fun positionDescription(positionMs: Long, durationMs: Long) =
+        "${formatPlaybackTime(positionMs, durationMs)} of ${formatPlaybackTime(durationMs, durationMs)}"
+    // The target feed: the primary feed of a pair, otherwise the other feed if
+    // the primary is unavailable. Absent while any playing feed is live, so live
+    // views keep LIVE / Back to live (#660).
+    private fun transportTarget(): TransportTarget? {
+        val available = selectedMembers()
+        val replays = mutableMapOf<NativeMixedSide, NativeTimingSnapshot>()
+        for (side in selectedSides) {
+            if (feedMessage(side) != null) continue
+            val snapshot = available.getOrNull(side.ordinal)?.let { runCatching { it.timingSnapshot() }.getOrNull() } ?: continue
+            if (snapshot.live || snapshot.dynamic) return null
+            val duration = snapshot.durationMs
+            if (snapshot.positionMs != null && duration != null && duration > 0) replays[side] = snapshot
+        }
+        val primary = if (hasPairSlots) stage.primarySide else selectedSides.firstOrNull() ?: return null
+        val side = (listOf(primary) + NativeMixedSide.entries).firstOrNull { it in replays } ?: return null
+        val snapshot = replays.getValue(side)
+        val duration = checkNotNull(snapshot.durationMs)
+        return TransportTarget(side, checkNotNull(snapshot.positionMs).coerceIn(0, duration), duration)
+    }
+    // Keys, gestures and buttons all skip here. While this viewer's own pair
+    // skip is settling, further presses add up and run next.
+    private fun requestSkip(deltaMs: Long, flash: Boolean) {
+        if (!isAttachedToWindow || visibility != VISIBLE) return
+        val target = transportTarget() ?: return
+        if (skipInFlight && playbackBusy()) {
+            queuedSkipMs = runCatching { Math.addExact(queuedSkipMs, deltaMs) }.getOrDefault(queuedSkipMs)
+            val predicted = ((expectedPositionMs ?: target.positionMs) + queuedSkipMs)
+                .coerceIn(0, (target.durationMs - SKIP_END_MARGIN_MS).coerceAtLeast(0))
+            if (flash) flashPosition(deltaMs, predicted, target.durationMs)
+            return
+        }
+        if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
+        dispatchSkip(deltaMs, flash, target)
+    }
+    private fun dispatchSkip(deltaMs: Long, flash: Boolean, target: TransportTarget) {
+        val plan = runCatching { onSkip(deltaMs) }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
+        if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
+            val moved = plan.targets.firstOrNull { it.side == target.side }?.targetMs ?: (target.positionMs + plan.movementMs)
+            skipInFlight = playbackBusy()
+            expectedPositionMs = moved.takeIf { skipInFlight }
+            if (flash) flashPosition(plan.movementMs, moved, target.durationMs)
+        } else viewerSkipRefusal(plan, deltaMs > 0, hasPairSlots)?.let(::showNotice)
+        refresh()
+    }
+    private fun flashPosition(deltaMs: Long, positionMs: Long, durationMs: Long) =
+        showNotice("${formatSkipAmount(deltaMs)} · ${formatPlaybackPosition(positionMs, durationMs)}")
+    // A remote fast-forward/rewind from the media session; false when nothing can skip.
+    fun remoteSkip(deltaMs: Long): Boolean {
+        if (transportTarget() == null) return false
+        requestSkip(deltaMs, flash = overlay.isGone)
+        return true
+    }
+    // Phone video taps: a single tap shows or hides the overlay; a double tap
+    // on either half skips while skipping is available (#655).
+    private fun videoTap() {
+        val x = lastTouchX
+        lastTouchX = null
+        val tap = if (x == null || television) ViewerTap.TOGGLE_NOW
+            else tapGesture.tap(SystemClock.uptimeMillis(), x, width, transportTarget() != null)
+        removeCallbacks(deferredToggle)
+        when (tap) {
+            ViewerTap.TOGGLE_NOW -> toggleControls()
+            ViewerTap.DEFER_TOGGLE -> postDelayed(deferredToggle, ViewConfiguration.getDoubleTapTimeout().toLong())
+            ViewerTap.SKIP_BACK -> requestSkip(-ViewerTransportSteps.SHORT_MS, flash = overlay.isGone)
+            ViewerTap.SKIP_FORWARD -> requestSkip(ViewerTransportSteps.SHORT_MS, flash = overlay.isGone)
+        }
     }
 
     // A dark translucent band, with light text, keeps the bars legible over any
@@ -401,8 +616,10 @@ internal class NativePairViewer(
                 }
                 if (pending != null) return@post
                 if (focus(play)) return@post
-                for (bar in listOf(topBar, transportRow))
-                    for (index in 0 until bar.childCount) if (focus(bar.getChildAt(index))) return@post
+                // Never fall back to Stop: a reflexive Select must not ask to stop.
+                for (bar in listOf(transportRow, topBar))
+                    for (index in 0 until bar.childCount) bar.getChildAt(index).takeIf { controlKeys[it] != STOP_KEY }
+                        ?.let { if (focus(it)) return@post }
             } finally {
                 restoringFocus = false
             }
@@ -422,6 +639,13 @@ internal class NativePairViewer(
             if (event.action == KeyEvent.ACTION_UP || event.isCanceled) suppressedFocusPress = null
             return true
         }
+        // Fast-forward/rewind skip a replay 10 s on every form factor (#655).
+        // Unhandled (live) presses continue to the foreground media session.
+        viewerMediaSkipMs(event.keyCode)?.let { delta ->
+            if (!isShown || transportTarget() == null) return super.dispatchKeyEvent(event)
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) requestSkip(delta, flash = overlay.isGone)
+            return true
+        }
         val activation = event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_SPACE)
         if (activation && pendingFocus != null) {
@@ -436,7 +660,10 @@ internal class NativePairViewer(
         if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP,
                 KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_TAB)) {
             invalidateFocusIntent()
+            if (!overlay.isGone) startFocusPending = false
         }
+        if (event.action == KeyEvent.ACTION_DOWN && !overlay.isGone && (activation || remoteKey(event.keyCode)))
+            startFocusPending = false
         if (television && isShown && remoteKey(event.keyCode)) {
             if (revealPress == press) {
                 if (event.action == KeyEvent.ACTION_UP) revealPress = null
@@ -448,18 +675,27 @@ internal class NativePairViewer(
         }
         return super.dispatchKeyEvent(event)
     }
-    // A remote key while the basic overlay is hidden. #655 adds replay
-    // Left/Right skip here; every other key reveals the overlay first.
+    // A remote key while the basic overlay is hidden. On a replay, Left/Right
+    // skip 10 s with a brief position flash and keep the overlay hidden (#655);
+    // Select reveals it on Play/Pause and other keys on the last control.
+    // The press's repeats and release are consumed either way.
     private fun hiddenOverlayKey(event: KeyEvent, press: Pair<Int, Long>, activation: Boolean): Boolean {
         // A feed pane's Retry/Go live is already shown while the overlay is
         // hidden; Select on it acts, as one tap does (#559).
         if (activation && focusedPaneRecovery()) return super.dispatchKeyEvent(event)
         revealPress = press
-        showControls(); restoreRemoteFocus(key = overlayFocus)
+        when (viewerHiddenKey(event.keyCode, transportTarget() != null)) {
+            ViewerHiddenKey.SKIP_BACK -> requestSkip(-ViewerTransportSteps.SHORT_MS, flash = true)
+            ViewerHiddenKey.SKIP_FORWARD -> requestSkip(ViewerTransportSteps.SHORT_MS, flash = true)
+            ViewerHiddenKey.REVEAL_ON_PLAY -> { showControls(); restoreRemoteFocus(play) }
+            ViewerHiddenKey.REVEAL -> { showControls(); restoreRemoteFocus(key = overlayFocus) }
+        }
         return true
     }
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) invalidateFocusIntent()
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) { invalidateFocusIntent(); startFocusPending = false }
+        // Taps are handled during the release; their side picks a skip direction.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP) lastTouchX = event.x
         return super.dispatchTouchEvent(event)
     }
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
@@ -976,9 +1212,13 @@ internal class NativePairViewer(
             else "Returns to live and resumes if playing. Timing alignment is not restored."
         if (available.any { it != null } && !volumeApplied) applyVolume()
         val wasPlaying = requestedPlaying
-        requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
-        play.text = if (requestedPlaying || playbackBusy()) "Pause" else "Play"
+        // A pair skip holds both feeds briefly; keep the requested state shown
+        // so the overlay neither flickers nor appears for a hidden skip.
+        val holdingSkip = skipInFlight && playbackBusy()
+        if (!holdingSkip) requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
+        play.text = if (requestedPlaying || playbackBusy() && !holdingSkip) "Pause" else "Play"
         play.isEnabled = available.any { it != null }
+        refreshTransport(holdingSkip)
         // A busy timing step stays enabled and keeps focus (#617). Disabling the
         // focused step let Android move focus to another control, where a quick
         // next Select acted on it (for example Back to sources). The step's
@@ -1057,8 +1297,47 @@ internal class NativePairViewer(
             field.choose.isEnabled = enabled; field.save.isEnabled = enabled; field.reset.isEnabled = enabled
         }
         if (wasPlaying != requestedPlaying) showControls()
+        // The viewer opens before its feeds are ready, while Play/Pause is
+        // still disabled and focus had to fall back. Until the person moves
+        // focus, put it on Play/Pause as soon as that can take it (#656).
+        if (startFocusPending && play.isEnabled && play.isShown && !play.isFocused && panel == null &&
+            activeMenu == null && pendingFocus == null) {
+            startFocusPending = false
+            restoreRemoteFocus(play)
+        } else if (play.isFocused) startFocusPending = false
         if (available.all { it == null }) suspendControls()
     }
+    private fun refreshTransport(holdingSkip: Boolean) {
+        val target = transportTarget()
+        transport = target
+        positionRow.visibility = if (target == null) GONE else VISIBLE
+        skipButtons.forEach { it.visibility = if (target == null) GONE else VISIBLE }
+        if (target == null) {
+            if (scrubbingMs != null) cancelScrub()
+        } else {
+            val label = if (target.side == NativeMixedSide.A) labelA else labelB
+            positionTitle.text = if (hasPairSlots) "${target.side.name} · $label" else label
+            val shown = scrubbingMs ?: expectedPositionMs?.takeIf { holdingSkip } ?: target.positionMs
+            positionTime.text = scrubbingMs?.let { formatScrubTarget(it, target.durationMs) }
+                ?: formatPlaybackPosition(shown, target.durationMs)
+            positionTime.contentDescription = positionDescription(shown, target.durationMs)
+            scrub.max = (target.durationMs / 1_000).toInt().coerceAtLeast(1)
+            if (scrubbingMs == null) scrub.progress = (shown / 1_000).toInt()
+            scrub.contentDescription = "Position in ${positionTitle.text}"
+            ViewCompat.setStateDescription(scrub, positionDescription(shown, target.durationMs))
+        }
+        if (skipInFlight && !holdingSkip) {
+            skipInFlight = false; expectedPositionMs = null
+            val queued = queuedSkipMs
+            queuedSkipMs = 0L
+            // Further presses made while the last skip settled run as one skip.
+            if (queued != 0L) post {
+                val next = transportTarget()
+                if (next != null && !playbackBusy() && isAttachedToWindow && visibility == VISIBLE) dispatchSkip(queued, false, next)
+            }
+        }
+    }
+
     // System Back unwinds menus, panels and the toolbar before stopping playback.
     // Popup windows normally consume Back themselves; also handle dispatcher
     // delivery here without invoking any menu action or playback command.
@@ -1068,6 +1347,8 @@ internal class NativePairViewer(
             dismissMenu(); showControls()
             return true
         }
+        // Back abandons an uncommitted scrub without moving the feeds.
+        if (scrubbingMs != null) { cancelScrub(); showControls(); refresh(); return true }
         panel?.let { togglePanel(it); return true }
         if (!overlay.isGone) {
             dismissControls()
@@ -1075,11 +1356,12 @@ internal class NativePairViewer(
         }
         return false
     }
-    fun open() { visibility = VISIBLE; showControls(); refresh(); restoreRemoteFocus(key = panel?.let(panelFocus::get) ?: overlayFocus) }
+    fun open() { visibility = VISIBLE; startFocusPending = panel == null && overlayFocus == null; showControls(); refresh(); restoreRemoteFocus(key = panel?.let(panelFocus::get) ?: overlayFocus) }
     fun endSession() { suspendControls(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
     fun suspendControls() {
         invalidateFocusIntent()
         dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
+        cancelScrub(); removeCallbacks(deferredToggle); tapGesture.reset(); queuedSkipMs = 0L
     }
     override fun onDetachedFromWindow() { suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow() }
     private fun showNotice(message: String) {
@@ -1152,6 +1434,19 @@ internal class NativePairViewer(
         }
     }
 
+    // With skips shown, the five transport controls share up to 560 dp
+    // equally; otherwise Play/Pause keeps its own width.
+    private inner class TransportRow : LinearLayout(context) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            val available = MeasureSpec.getSize(widthSpec)
+            val width = if (skipButtons.any { it.visibility != GONE }) minOf(available, dp(560)) else {
+                play.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), heightSpec)
+                minOf(available, play.measuredWidth)
+            }
+            super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), heightSpec)
+        }
+    }
+
     private inner class CappedScrollView : ScrollView(context) {
         var maximumHeight = 0
             set(value) { if (field != value) { field = value; requestLayout() } }
@@ -1168,6 +1463,7 @@ internal class NativePairViewer(
         var floatingRight = 0
             set(value) { if (field != value) { field = value; requestLayout() } }
         private var primaryA = true
+        val primarySide get() = if (primaryA) NativeMixedSide.A else NativeMixedSide.B
         private var floating = FloatingPosition()
         val floatingPosition get() = floating
         var floatingSize = FloatingFeedSize.MEDIUM
@@ -1187,7 +1483,7 @@ internal class NativePairViewer(
         private val noticeB = notice(paneB, NativeMixedSide.B)
         private inner class FeedNotice(val scroll: ScrollView, val message: TextView, val recovery: Button)
         init {
-            setOnClickListener { toggleControls() }
+            setOnClickListener { videoTap() }
             if (television) isFocusable = false
             if (NativeMixedSide.A in selectedSides) addView(paneA)
             if (NativeMixedSide.B in selectedSides) addView(paneB)
@@ -1282,7 +1578,7 @@ internal class NativePairViewer(
             update(NativeMixedSide.B, b, labelB, noticeB)
         }
         fun unbindPlayers() { playerA?.removeListener(listenerA); playerB?.removeListener(listenerB); playerA = null; playerB = null }
-        fun swap() { if (hasPairSlots) { primaryA = !primaryA; showControls(); requestLayout() } }
+        fun swap() { if (hasPairSlots) { primaryA = !primaryA; cancelScrub(); showControls(); requestLayout(); refresh() } }
         @SuppressLint("ClickableViewAccessibility")
         private fun pane(player: PlayerView, label: String, sideA: Boolean) = FrameLayout(context).apply {
             setBackgroundColor(Color.BLACK)
@@ -1290,7 +1586,8 @@ internal class NativePairViewer(
             // Parent handles viewing gestures, never the PlayerView's own transport.
             player.isClickable = false; player.isFocusable = false
             contentDescription = if (hasPairSlots) "$label feed; tap floating feed to swap, drag to move" else "$label feed"
-            setOnClickListener { if (hasPairSlots && landscape() && sideA != primaryA) swap() else toggleControls() }
+            // The floating feed's tap swaps at once; it has no double tap.
+            setOnClickListener { if (hasPairSlots && landscape() && sideA != primaryA) swap() else videoTap() }
             var downX = 0f; var downY = 0f; var originLeft = 0; var originTop = 0; var dragged = false
             var gestureActive = false; var gestureDownTime = 0L
             val slop = ViewConfiguration.get(context).scaledTouchSlop

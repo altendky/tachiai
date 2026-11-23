@@ -66,7 +66,9 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
             }
         } else {
             SettingsSection("Import preview", actions = { SettingsHelp("Saving a route", "Saved locally with encryption, excluded from backups. The original downloaded file remains outside Tachiai; delete it yourself after saving if no longer needed.") })
-            Text("${draft.kind.title}\nEndpoint: ${draft.endpoint}\nPrivate keys and credentials: hidden")
+            Text("${draft.kind.title}\nEndpoint: ${draft.endpoint}" +
+                (routeProtocols.protocols.firstOrNull { it.kind == draft.kind }?.publicKey(draft)?.let { "\nPublic key: $it" } ?: "") +
+                "\nPrivate keys and credentials: hidden")
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Route name") },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             Text("Not connected or tested.", style = MaterialTheme.typography.bodySmall)
@@ -76,7 +78,8 @@ internal fun ConnectionProfilesScreen(profiles: List<ConnectionSummary>, draft: 
         SettingsSection("Saved routes")
         if (profiles.isEmpty()) Text("No saved routes.")
         profiles.forEach { profile ->
-            Text("${profile.name} · ${profile.kind.title}\n${profile.endpoint}\nSaved only · not connected")
+            Text("${profile.name} · ${profile.kind.title}\n${profile.endpoint}" +
+                (profile.publicKey?.let { "\nPublic key: $it" } ?: "") + "\nSaved only · not connected")
             TextButton(onClick = { removal = profile }, enabled = !busy) { Text("Delete ${profile.name}") }
         }
     }

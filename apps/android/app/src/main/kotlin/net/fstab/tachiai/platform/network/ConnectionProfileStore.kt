@@ -11,7 +11,9 @@ import net.fstab.tachiai.platform.storage.PrivateSecretStore
 import net.fstab.tachiai.platform.storage.PRIVATE_SECRET_LIMIT
 import net.fstab.tachiai.presentation.MAX_PROVIDER_ROUTES
 
-internal data class ConnectionSummary(val id: String, val name: String, val kind: ConnectionKind, val endpoint: String)
+// publicKey: a non-secret key to match against the provider's list (WireGuard), or null.
+internal data class ConnectionSummary(val id: String, val name: String, val kind: ConnectionKind, val endpoint: String,
+    val publicKey: String? = null)
 
 // Default-process mutations and playback-process snapshots share the same fixed file lock.
 internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, private val lockFile: File? = null,
@@ -67,7 +69,10 @@ internal class ConnectionProfileStore(private val secrets: PrivateSecretStore, p
         summaries(read())
     }
 
-    private fun summaries(entries: List<Entry>) = entries.map { ConnectionSummary(it.id, it.name, it.profile.kind, it.profile.endpoint) }
+    private fun summaries(entries: List<Entry>) = entries.map { entry ->
+        ConnectionSummary(entry.id, entry.name, entry.profile.kind, entry.profile.endpoint,
+            protocols.protocols.firstOrNull { it.kind == entry.profile.kind }?.publicKey(entry.profile))
+    }
 
     // Worker-only secret snapshot; never sent through intents, UI state or diagnostics.
     fun selected(id: String): ConnectionProfile = locked { checkNotNull(read().find { it.id == id }).profile }

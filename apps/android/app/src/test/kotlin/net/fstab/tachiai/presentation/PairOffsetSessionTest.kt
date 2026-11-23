@@ -31,6 +31,44 @@ class PairOffsetSessionTest {
         assertEquals(-26_400L, session.state.appliedOffsetMs)
     }
 
+    // #655 part 2: a pair resumed from remembered replay positions already
+    // holds its displacement, so the saved offset is not added again.
+    @Test fun resumedPairRestoresOnlyTheRemainingDifferenceFromItsSavedOffset() {
+        val token = Any(); val original = PairOffsetPreference(-26_400, true)
+        val session = PairOffsetSession(original); session.bind(token, initialAppliedMs = -26_000)
+        assertEquals(-26_000L, session.state.appliedOffsetMs)
+        val command = session.planStartup(token, 0)!!
+        assertEquals(-400L, command.deltaMs); assertEquals(-26_400L, command.targetOffsetMs)
+        settle(session, command)
+        assertEquals(-26_400L, session.state.appliedOffsetMs); assertTrue(session.state.enabledApplied)
+        assertEquals(original, session.state.preference); assertNull(session.pendingSave)
+        // Toggling off undoes the whole offset from the resumed baseline.
+        assertEquals(26_400L, session.planToggle(token, false, 1)!!.deltaMs)
+    }
+
+    @Test fun resumedPairThatAlreadyHoldsItsOffsetIsActiveWithoutASeek() {
+        val token = Any(); val original = PairOffsetPreference(-26_400, true)
+        val session = PairOffsetSession(original); session.bind(token, initialAppliedMs = -26_400)
+        assertNull(session.planStartup(token, 0))
+        assertFalse(session.state.busy); assertTrue(session.state.enabledApplied)
+        assertEquals(-26_400L, session.state.appliedOffsetMs); assertNull(session.pendingSave)
+        assertEquals(-16_000L, session.planRecovery(token, 0, -16_000)!!.deltaMs)
+    }
+
+    @Test fun resumedPairWithAZeroOffsetRealignsAndADisabledOffsetStays() {
+        val token = Any()
+        val zero = PairOffsetSession(PairOffsetPreference(0, true)); zero.bind(token, initialAppliedMs = 5_000)
+        assertEquals(-5_000L, zero.planStartup(token, 0)!!.deltaMs)
+        val disabled = PairOffsetSession(PairOffsetPreference(-26_400, false)); disabled.bind(token, initialAppliedMs = 5_000)
+        assertNull(disabled.planStartup(token, 0)); assertEquals(5_000L, disabled.state.appliedOffsetMs)
+        assertFalse(disabled.state.enabledApplied)
+        val unknown = PairOffsetSession(PairOffsetPreference(-26_400, true)); unknown.bind(token, initialAppliedMs = null)
+        assertNull(unknown.planStartup(token, 0)); assertNull(unknown.state.appliedOffsetMs)
+        // Without a resume, a zero offset still needs nothing.
+        val plain = PairOffsetSession(PairOffsetPreference(0, true)); plain.bind(token)
+        assertNull(plain.planStartup(token, 0)); assertFalse(plain.state.enabledApplied)
+    }
+
     @Test fun recoveryRestoresAnAppliedOffsetWithoutChangingOrSavingThePreference() {
         val token = Any(); val original = PairOffsetPreference(-47_173, true)
         val session = PairOffsetSession(original); session.bind(token)

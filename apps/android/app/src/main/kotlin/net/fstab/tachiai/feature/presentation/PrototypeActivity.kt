@@ -41,6 +41,16 @@ import net.fstab.tachiai.feature.connections.ObsoleteSourceSetupException
 import net.fstab.tachiai.feature.connections.ProvidersActivity
 import net.fstab.tachiai.feature.connections.sourceSetupStore
 import net.fstab.tachiai.feature.connections.pairOffsetStore
+import net.fstab.tachiai.feature.connections.replayPositionStore
+import net.fstab.tachiai.presentation.ReplayPositionSaver
+import net.fstab.tachiai.presentation.ReplayResumed
+import net.fstab.tachiai.presentation.START_OVER_MS
+import net.fstab.tachiai.presentation.formatPlaybackTime
+import net.fstab.tachiai.presentation.pairOffsetResumeBaselineMs
+import net.fstab.tachiai.presentation.rememberedReplayPositionMs
+import net.fstab.tachiai.presentation.replayPositionKeys
+import net.fstab.tachiai.presentation.replayResumeNotice
+import net.fstab.tachiai.presentation.replayResumeTargetMs
 import net.fstab.tachiai.platform.media.NativeMixedPair
 import net.fstab.tachiai.platform.media.NativePendingSeekDiagnostic
 import net.fstab.tachiai.platform.diagnostics.TimingFailureKind
@@ -319,6 +329,15 @@ open class PrototypeActivity : ComponentActivity() {
     private var retryPlaybackStart: RetryPlaybackStart? = null
     private val retryDeadline = LongArray(2)
     private val replayRestoreTarget = arrayOfNulls<Long>(2)
+    // Remembered replay positions (#655 part 2). Keys are null outside a replay
+    // view. A saved position is resumed until the slot first prepares.
+    private var replayPositionKeys: List<String?> = listOf(null, null)
+    private var replayPositionsLoading = false
+    private val savedReplayResume = arrayOfNulls<Long>(2)
+    private val replayResumeFromSaved = BooleanArray(2)
+    private val replayResumed = arrayOfNulls<ReplayResumed>(2)
+    private var replayResumeNoticePending = false
+    private var replayPositionSaver = ReplayPositionSaver(0)
     private var surfaces = emptyList<PlayerView>()
     private var budget: NativePlaybackBudget? = null
     private var pairMediaSession: ForegroundPairMediaSession? = null
@@ -690,6 +709,7 @@ open class PrototypeActivity : ComponentActivity() {
         val sharedBudget = NativePlaybackBudget.continuous(::active)
         budget = sharedBudget
         loadPairOffset(selected, run)
+        loadReplayPositions(selected, run)
         failures.fill(null); prepared.fill(false); initialCatchUp.fill(false); catchUpDeadline.fill(0)
         feedRetries = List(2) { FeedRetryState() }; retryDeadline.fill(0); replayRestoreTarget.fill(null)
         automaticRecovery = List(2) { FeedAutoRecoveryState() }; retryAccountReady.fill(false)
@@ -1005,9 +1025,7 @@ open class PrototypeActivity : ComponentActivity() {
             sessions.forEachIndexed { index, host ->
                 try {
                     if (prepared[index] && selection?.slots?.get(index)?.kind == PrototypePlaybackKind.REPLAY) {
-                        host?.member?.timingSnapshot()?.takeIf {
-                            it.state == Player.STATE_READY && !it.live && !it.dynamic && !it.playingAd
-                        }?.positionMs?.let(feedRetries[index]::rememberReplay)
+                        rememberedReplayPositionMs(host?.member?.timingSnapshot())?.let(feedRetries[index]::rememberReplay)
                     }
                     // A prepared feed whose player reached the end of its media (#553).
                     val ended = if (!prepared[index] || failures[index] != null) null
@@ -1037,6 +1055,8 @@ open class PrototypeActivity : ComponentActivity() {
                 playReadyFeeds()
             }
             viewer?.refresh()
+            saveReplayPositions(force = false)
+            announceReplayResume()
             val now = SystemClock.elapsedRealtime()
             val timingStatus = playback?.status
             if (timingStatus != lastTimingStatus) {
@@ -1146,7 +1166,8 @@ open class PrototypeActivity : ComponentActivity() {
                         else -> message
                     }
                 }
-                    ?: if (!prepared[index]) "Preparing this feed…" else null
+                    ?: if (!prepared[index]) replayRestoreTarget[index]?.takeIf { replayResumeFromSaved[index] }
+                        ?.let { "Resuming at ${formatPlaybackTime(it)}…" } ?: "Preparing this feed…" else null
             }, feedRecovery = { side ->
                 val index = side.ordinal
                 if (waiting[index].active && canRetryFeed(index))
@@ -1173,6 +1194,7 @@ open class PrototypeActivity : ComponentActivity() {
             onPairOffsetEnabled = ::togglePairOffset,
             onMarkedCorrespondence = { delta, correspondence -> requestTimingAdjustment(delta, true, correspondence) },
             onSkip = ::requestSkip,
+            onStartOver = ::requestStartOver,
             selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet())
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
@@ -1211,6 +1233,75 @@ open class PrototypeActivity : ComponentActivity() {
         Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}")
         publishPairTransport()
         return result
+    }
+
+    // Start over (#655 part 2) is a skip back to the earliest feed's start, so a
+    // pair keeps its offset. It also forgets the remembered positions.
+    private fun requestStartOver(): NativePairSkipPlan {
+        val result = requestSkip(START_OVER_MS)
+        if (result.outcome in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.CLAMPED, NativeSeekOutcome.NO_CHANGE))
+            forgetReplayPositions(selectedSlotIndices())
+        return result
+    }
+
+    private fun loadReplayPositions(selected: ConfiguredPlaybackSelection, run: Long) {
+        val keys = replayPositionKeys(selected)
+        replayPositionKeys = keys
+        savedReplayResume.fill(null); replayResumeFromSaved.fill(false); replayResumed.fill(null)
+        replayResumeNoticePending = false
+        replayPositionSaver = ReplayPositionSaver(SystemClock.elapsedRealtime())
+        replayPositionsLoading = keys.any { it != null }
+        if (!replayPositionsLoading) return
+        val saver = replayPositionSaver
+        worker.execute {
+            val result = runCatching { replayPositionStore(this).read() }
+            handler.post {
+                if (epoch.get() != run || replayPositionKeys !== keys || replayPositionSaver !== saver || isDestroyed) return@post
+                replayPositionsLoading = false
+                val saved = result.getOrElse { Log.d("TachiaiPrototype", "replayPositions=UNAVAILABLE"); emptyMap() }
+                keys.forEachIndexed { index, key -> savedReplayResume[index] = key?.let(saved::get) }
+                saver.seed(saved.filterKeys { it in keys })
+            }
+        }
+    }
+
+    // Periodically while playing, and at once on pause or leaving. Only this
+    // session's remembered positions outside advertisements are written.
+    private fun saveReplayPositions(force: Boolean) {
+        val current = linkedMapOf<String, Long>()
+        replayPositionKeys.forEachIndexed { index, key ->
+            if (key != null) feedRetries.getOrNull(index)?.replayPositionMs?.let { current[key] = it }
+        }
+        if (current.isEmpty()) return
+        val due = replayPositionSaver.due(SystemClock.elapsedRealtime(), current, force)
+        if (due.isEmpty()) return
+        worker.execute {
+            runCatching { replayPositionStore(this).record(due) }
+                .onFailure { Log.d("TachiaiPrototype", "replayPositions=SAVE_FAILED") }
+        }
+    }
+
+    private fun forgetReplayPositions(indices: Collection<Int>) {
+        indices.forEach { savedReplayResume[it] = null }
+        val keys = indices.mapNotNull { replayPositionKeys.getOrNull(it) }.toSet()
+        if (keys.isEmpty()) return
+        replayPositionSaver.forget(keys)
+        worker.execute {
+            runCatching { replayPositionStore(this).forget(keys) }
+                .onFailure { Log.d("TachiaiPrototype", "replayPositions=FORGET_FAILED") }
+        }
+    }
+
+    // Once the resumed feeds play, a brief notice names where they resumed.
+    private fun announceReplayResume() {
+        if (!replayResumeNoticePending) return
+        val slots = selectedSlotIndices()
+        if (slots.any { !prepared[it] && failures[it] == null }) return
+        if (playback?.busy == true || pairOffsetLoading || pairOffsetSession?.state?.busy == true) return
+        if (slots.none { runCatching { sessions[it]?.member?.timingSnapshot()?.playing == true }.getOrDefault(false) }) return
+        replayResumeNoticePending = false
+        val resumed = slots.mapNotNull { index -> replayResumed[index]?.let { NativeMixedSide.entries[index] to it } }.toMap()
+        replayResumeNotice(resumed, selection?.isPair == true)?.let { viewer?.announce(it) }
     }
 
     private fun requestMarkedAlignment(delta: Long) = requestTimingAdjustment(delta, marked = true)
@@ -1350,7 +1441,10 @@ open class PrototypeActivity : ComponentActivity() {
             return
         }
         if (pairOffsetOwner !== pair) {
-            state.bind(pair); pairOffsetOwner = pair
+            // A resumed replay pair starts from its resumed displacement (#655 part 2).
+            state.bind(pair, pairOffsetResumeBaselineMs(replayResumeFromSaved.any { it },
+                runCatching { pair.a.timingSnapshot() }.getOrNull(), runCatching { pair.b.timingSnapshot() }.getOrNull()))
+            pairOffsetOwner = pair
             if (pairOffsetBaselineLost) state.invalidate(pair, "Waiting to restore the previous offset after feed recovery.")
             if (pairOffsetSkipStartup) state.skipStartup()
         }
@@ -1614,18 +1708,22 @@ open class PrototypeActivity : ComponentActivity() {
         val snapshot = member.timingSnapshot() ?: return
         if (snapshot.state != Player.STATE_READY || snapshot.playWhenReady || snapshot.playingAd) return
         val retry = feedRetries[index]
-        if (retry.retrying && selection?.slots?.get(index)?.kind == PrototypePlaybackKind.REPLAY &&
-            !snapshot.live && !snapshot.dynamic && retry.replayPositionMs != null) {
+        val replay = selection?.slots?.get(index)?.kind == PrototypePlaybackKind.REPLAY && !snapshot.live && !snapshot.dynamic
+        // A replay waits for its remembered position before it prepares (#655 part 2).
+        if (replay && replayPositionsLoading && replayPositionKeys.getOrNull(index) != null) return
+        val resume = if (replay) replayResumeTargetMs(retry.retrying, retry.replayPositionMs, savedReplayResume[index]) else null
+        if (resume != null) {
             val target = replayRestoreTarget[index]
             if (target == null) {
                 val duration = snapshot.durationMs ?: return
                 if (duration <= 0) return
-                val requested = checkNotNull(retry.replayPositionMs).coerceIn(0, duration - 1)
+                val requested = resume.coerceIn(0, duration - 1)
                 val plan = member.seekToMs(requested)
                 if (plan.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.NO_CHANGE) || plan.targetMs != requested) {
                     failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.PLAYER_FAILED)); return
                 }
                 replayRestoreTarget[index] = requested
+                replayResumeFromSaved[index] = !(retry.retrying && retry.replayPositionMs != null)
                 catchUpDeadline[index] = SystemClock.elapsedRealtime() + 8_000
                 return
             }
@@ -1647,6 +1745,12 @@ open class PrototypeActivity : ComponentActivity() {
                 snapshot.durationMs <= 0 || snapshot.positionMs !in 0..snapshot.durationMs)) return
         prepared[index] = true
         retry.ready()
+        if (replayResumeFromSaved[index] && savedReplayResume[index] != null) replayRestoreTarget[index]?.let { target ->
+            replayResumed[index] = ReplayResumed(target, snapshot.durationMs ?: target)
+            replayResumeNoticePending = true
+        }
+        // A saved position is resumed once; later retries use this session's position.
+        savedReplayResume[index] = null
         if (waiting[index].active) {
             waiting[index].started()
             // Approved for #587: a show that goes live plays, even after a user pause.
@@ -1722,6 +1826,7 @@ open class PrototypeActivity : ComponentActivity() {
     private fun pausePair() {
         cancelPairOffsetPending()
         setPlaybackIntent(false, PlaybackHealthIntent.USER_PAUSE); invalidatePlay(); playback?.pause(); viewer?.refresh(); publishPairTransport()
+        saveReplayPositions(force = true)
     }
 
     private fun playPair() {
@@ -1955,6 +2060,8 @@ open class PrototypeActivity : ComponentActivity() {
         // A waiting check may follow a passing failure that has no user action of its own.
         if (!canRetryFeed(index) || !waitingCheck && failures[index]?.recoveryAction() == null ||
             !feedRetries[index].request()) return false
+        // Play again starts the replay from its beginning and forgets its saved position.
+        if (failures[index]?.reason == PrototypeFailureReason.REPLAY_ENDED) forgetReplayPositions(listOf(index))
         val sibling = playback?.member(NativeMixedSide.entries[1 - index])
         val siblingRequested = runCatching { sibling?.timingSnapshot()?.playWhenReady == true }.getOrDefault(false)
         val intent = retryIntentPolicy.plan(
@@ -2110,6 +2217,9 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun dispose(retainStartups: Boolean = false) {
+        // Leaving, the background and a new viewer all save the last positions first.
+        saveReplayPositions(force = true)
+        replayPositionKeys = listOf(null, null); replayPositionsLoading = false; replayResumeNoticePending = false
         cancelRetryPlaybackIntent()
         // Leaving the viewer (including the background) stops monitoring.
         waiting.forEach { it.cancel() }

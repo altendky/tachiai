@@ -61,6 +61,7 @@ import net.fstab.tachiai.presentation.formatPlaybackPosition
 import net.fstab.tachiai.presentation.formatPlaybackTime
 import net.fstab.tachiai.presentation.formatScrubTarget
 import net.fstab.tachiai.presentation.formatSkipAmount
+import net.fstab.tachiai.presentation.startOverNotice
 import net.fstab.tachiai.presentation.twoFeedBounds
 import net.fstab.tachiai.presentation.viewerHiddenKey
 import net.fstab.tachiai.presentation.viewerMediaSkipMs
@@ -118,6 +119,9 @@ internal class NativePairViewer(
     private val onSkip: (Long) -> NativePairSkipPlan = { delta ->
         pair()?.seekTogether(delta) ?: NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
     },
+    // Start over moves back to the earliest feed's start, keeping a pair's
+    // offset, and forgets remembered positions (#655 part 2).
+    private val onStartOver: (() -> NativePairSkipPlan)? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -498,6 +502,21 @@ internal class NativePairViewer(
             expectedPositionMs = moved.takeIf { skipInFlight }
             if (flash) flashPosition(plan.movementMs, moved, target.durationMs)
         } else viewerSkipRefusal(plan, deltaMs > 0, hasPairSlots)?.let(::showNotice)
+        refresh()
+    }
+    private fun startOver() {
+        if (!isAttachedToWindow || visibility != VISIBLE) return
+        val action = onStartOver ?: return
+        val target = transportTarget() ?: return
+        if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
+        cancelScrub(); queuedSkipMs = 0L
+        val plan = runCatching { action() }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
+        val moved = plan.targets.firstOrNull { it.side == target.side }?.targetMs
+        if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
+            skipInFlight = playbackBusy()
+            expectedPositionMs = moved.takeIf { skipInFlight }
+        }
+        startOverNotice(plan, moved, target.durationMs, hasPairSlots)?.let(::showNotice)
         refresh()
     }
     private fun flashPosition(deltaMs: Long, positionMs: Long, durationMs: Long) =
@@ -1095,6 +1114,10 @@ internal class NativePairViewer(
         val shownPair = pair()
         val holdLabel = if (selectedMembers().count { it != null } == 1) "holds this feed" else "holds both"
         showMenu(anchor) {
+            if (onStartOver != null && transportTarget() != null) menu.add("Start over").apply {
+                isEnabled = !playbackBusy()
+                setOnMenuItemClickListener { startOver(); true }
+            }
             menu.add("Playback status").setOnMenuItemClickListener { togglePanel("Status"); true }
             menu.add("Quality").apply {
                 isEnabled = selectedSides.any { qualityState(it, NativeQualityKind.VIDEO) != null }
@@ -1364,6 +1387,8 @@ internal class NativePairViewer(
         cancelScrub(); removeCallbacks(deferredToggle); tapGesture.reset(); queuedSkipMs = 0L
     }
     override fun onDetachedFromWindow() { suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow() }
+    // A brief notice from the owner, such as where remembered positions resumed.
+    fun announce(message: String) { if (isAttachedToWindow && visibility == VISIBLE) showNotice(message) }
     private fun showNotice(message: String) {
         if (panel == "Status") return // The open panel already shows it.
         removeCallbacks(fadeNotice); statusNotice.animate().cancel()

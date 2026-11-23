@@ -165,7 +165,7 @@ class AbemaRenewalRetryLoopTest {
         f.elapsed += 2_000
         // The renewal job (retry = false) sees the ordinary remembered result.
         assertEquals(TEMPORARY, f.poll(retry = false))
-        // A changed owner proof or grant snapshot is a different scope.
+        // A changed route pool or grant snapshot is a different scope.
         assertEquals(WAIT, f.poll(scope = "changed")); assertEquals(2, f.constructed.size)
         assertTrue(f.logs.isEmpty())
         assertEquals("AbemaRenewalRetryLoop(redacted)", f.loop.toString())

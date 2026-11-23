@@ -7,10 +7,10 @@ internal const val ABEMA_RENEWAL_RETRY_MINIMUM_ATTEMPT_MS = 20_000L
 
 // Main-process RAM only (#635 step 1). When a foreground readiness renewal it
 // launched or joined ends with a retryable result, polling callers keep seeing
-// WAIT while the same exact scope (owner proof and grant snapshot) relaunches
-// after a short backoff. Every relaunch still passes the caller's fresh owner
-// capture, the coordinator's one-renewal-per-device slot and the caller's
-// original deadline; nothing extends a limit. Renewal jobs pass retry = false
+// WAIT while the same scope (route pool and grant snapshot, #635 step 2)
+// relaunches after a short backoff. Every relaunch still passes the caller's
+// fresh owner capture, the coordinator's one-renewal-per-device slot and the
+// caller's original deadline; nothing extends a limit. Renewal jobs pass retry = false
 // and keep their own ledger policy and Network.
 internal class AbemaRenewalRetryLoop<W, O : AbemaRenewalOwnedOperation>(
     private val coordinator: AbemaRenewalReadinessCoordinator<W>,

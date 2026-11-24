@@ -17,7 +17,9 @@ class AbemaSeriesMetadataService : Service() {
             if (message.sendingUid != Process.myUid()) return
             val schedule = message.what in setOf(AbemaScheduleMetadataIpc.START, AbemaScheduleMetadataIpc.CANCEL, AbemaScheduleMetadataIpc.PULSE)
             val search = message.what in setOf(AbemaSearchMetadataIpc.START, AbemaSearchMetadataIpc.CANCEL, AbemaSearchMetadataIpc.PULSE)
+            val replay = message.what in setOf(AbemaReplayLengthIpc.START, AbemaReplayLengthIpc.CANCEL, AbemaReplayLengthIpc.PULSE)
             val fields = runCatching { when {
+                replay -> AbemaReplayLengthIpc.fields(message.data)
                 search -> AbemaSearchMetadataIpc.fields(message.data)
                 schedule -> AbemaScheduleMetadataIpc.fields(message.data)
                 else -> AbemaSeriesMetadataIpc.fields(message.data)
@@ -35,11 +37,17 @@ class AbemaSeriesMetadataService : Service() {
                     val request = AbemaSearchMetadataIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
                     start(request, message.replyTo ?: return)
                 }
+                AbemaReplayLengthIpc.START -> {
+                    val request = AbemaReplayLengthIpc.decodeStart(fields, SystemClock.elapsedRealtime()) ?: return
+                    start(request, message.replyTo ?: return)
+                }
                 AbemaSeriesMetadataIpc.CANCEL, AbemaSeriesMetadataIpc.PULSE,
                 AbemaScheduleMetadataIpc.CANCEL, AbemaScheduleMetadataIpc.PULSE,
-                AbemaSearchMetadataIpc.CANCEL, AbemaSearchMetadataIpc.PULSE -> {
+                AbemaSearchMetadataIpc.CANCEL, AbemaSearchMetadataIpc.PULSE,
+                AbemaReplayLengthIpc.CANCEL, AbemaReplayLengthIpc.PULSE -> {
                     val nonce = AbemaEpisodeMetadataIpc.decodeNonce(fields) ?: return
-                    val cancelCode = when { search -> AbemaSearchMetadataIpc.CANCEL; schedule -> AbemaScheduleMetadataIpc.CANCEL; else -> AbemaSeriesMetadataIpc.CANCEL }
+                    val cancelCode = when { replay -> AbemaReplayLengthIpc.CANCEL; search -> AbemaSearchMetadataIpc.CANCEL
+                        schedule -> AbemaScheduleMetadataIpc.CANCEL; else -> AbemaSeriesMetadataIpc.CANCEL }
                     val owner = active?.takeIf { it.nonce == nonce && it.cancelCode == cancelCode && it.reply.binder == message.replyTo?.binder } ?: return
                     if (message.what == cancelCode || !owner.lease.pulse(nonce)) {
                         owner.lease.cancel(nonce); runtime?.cancel(nonce)
@@ -110,6 +118,26 @@ class AbemaSeriesMetadataService : Service() {
                 what = AbemaSearchMetadataIpc.RESULT
                 data = AbemaSearchMetadataIpc.result(AbemaSearchMetadataIpc.Result(request.nonce, outcome,
                     result.searchReply.takeIf { outcome == "OK" }))
+            }) } catch (_: Exception) { /* Closed failure only. */ }
+        }
+    }
+    private fun start(request: AbemaReplayLengthIpc.Start, reply: Messenger) {
+        start(request.nonce, request.deadline, reply, AbemaReplayLengthIpc.CANCEL, { lease ->
+            AbemaMetadataRuntimeRequest(request.instanceId, AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS,
+                nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
+                replayRequest = request.request, canRemainActive = lease::current)
+        }) { result ->
+            // Closed coordinator category only; no slot, URL or manifest detail.
+            if (result.category != "REPLAY_LENGTHS") android.util.Log.i("TachiaiAbemaReplayRuntime", result.category)
+            val outcome = when (result.category) {
+                "REPLAY_LENGTHS" -> if (result.replayLengths != null) "OK" else "TEMPORARY"
+                "GUEST_REPLAY_HTTP_429" -> "RATE_LIMITED"
+                else -> "TEMPORARY"
+            }
+            try { reply.send(Message.obtain().apply {
+                what = AbemaReplayLengthIpc.RESULT
+                data = AbemaReplayLengthIpc.result(AbemaReplayLengthIpc.Result(request.nonce, outcome,
+                    result.replayLengths.takeIf { outcome == "OK" }))
             }) } catch (_: Exception) { /* Closed failure only. */ }
         }
     }

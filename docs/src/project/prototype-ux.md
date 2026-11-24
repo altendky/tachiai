@@ -1549,6 +1549,12 @@ coverage, so Tachiai does not choose an episode itself.
   - **Broadcasts.** A group can list ABEMA broadcasts (slots) mixed with
     on-demand videos in ABEMA's order. A broadcast row shows its title and
     length like an episode row and is chosen for A or B the same way.
+  - **Replay lengths (#672).** ABEMA lists a broadcast with its reserved slot
+    span, which can be longer than the replay. While the page is shown, the
+    real length of each finished broadcast is read from its replay manifest
+    in the background and replaces the span when it arrives. A live,
+    in-progress or upcoming broadcast, or one whose manifest cannot be read,
+    keeps the span, with no error. Known lengths stay for the session.
   - Loading, empty and failure states are shown, with Retry starting again
     from the newest page. Pages already loaded stay for the session.
   - Episode loads use their own worker, so they never delay Watch.

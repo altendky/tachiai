@@ -27,7 +27,17 @@ class PickerCollectionEpisodesTest {
         override fun lookup(input: String): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
         override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> = CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+        val lengthRequests = mutableListOf<List<CatalogResource>>()
+        var lengthCancels = 0
+        override fun replayLengths(resources: List<CatalogResource>, canContinue: () -> Boolean): CatalogResult<Map<CatalogResource, Long>> {
+            lengthRequests += resources
+            return if (!canContinue()) CatalogResult.Failure(CatalogFailure.TEMPORARY) else lengthReply(resources)
+        }
+        override fun cancelReplayLengths() { lengthCancels++ }
         override fun close() { closes++ }
+    }
+    private var lengthReply: (List<CatalogResource>) -> CatalogResult<Map<CatalogResource, Long>> = { resources ->
+        CatalogResult.Value(resources.filter { it.identity != "sumo/live" }.associateWith { 12240L })
     }
     // Applies to every catalog, including ones reopened after a failure.
     private var override: ((CatalogQuery) -> CatalogResult<CatalogPage>)? = null
@@ -234,5 +244,76 @@ class PickerCollectionEpisodesTest {
     @Test fun routeFailuresPointToProvidersAndInterruptionsDoNot() {
         assertTrue(collectionEpisodesFailureMessage(CatalogFailure.NOT_VERIFIED).contains("Providers"))
         assertEquals("Episodes could not be loaded.", collectionEpisodesFailureMessage(CatalogFailure.ACCESS_REQUIRED))
+    }
+
+    // #672: real replay lengths replace scheduled spans in the background while the page is shown.
+    private fun broadcastPage(vararg ids: String) = CatalogResult.Value(CatalogPage(ids.map(::slot) + entry("talk")))
+    private fun durations(state: CollectionEpisodesState) = state.entries.associate { it.resource.identity to it.durationSeconds }
+
+    @Test fun replayLengthsLoadOnlyWhileShownForListedBroadcastsAndStayForTheSession() {
+        override = { broadcastPage("day15", "live") }
+        val sumo = collection("394-72")
+        episodes.load(sumo, false); deliver()
+        // Not shown: the listed spans stay and no length is requested.
+        assertTrue(opened.single().second.lengthRequests.isEmpty())
+        assertEquals(mapOf("sumo/day15" to 17100L, "sumo/live" to 17100L, "talk" to null), durations(episodes.state(sumo)))
+        episodes.shown(sumo, true); deliver()
+        val catalog = opened.single().second
+        // Only broadcasts are asked, once; videos keep their own lengths.
+        assertEquals(listOf(listOf(slot("day15").resource, slot("live").resource)), catalog.lengthRequests)
+        assertEquals(mapOf("sumo/day15" to 12240L, "sumo/live" to 17100L, "talk" to null), durations(episodes.state(sumo)))
+        // A broadcast without a length (live, in progress or failed) is not asked again for this listing.
+        episodes.shown(sumo, false); episodes.shown(sumo, true); deliver()
+        assertEquals(1, catalog.lengthRequests.size)
+        // A reload retries it and a known length applies at once, without asking again.
+        lengthReply = { CatalogResult.Value(emptyMap()) }
+        episodes.load(sumo, false)
+        deliver()
+        assertEquals(listOf(slot("live").resource), catalog.lengthRequests.last())
+        assertEquals(12240L, durations(episodes.state(sumo))["sumo/day15"])
+    }
+
+    @Test fun aFailedOrCancelledLengthRequestKeepsTheSpanAndIsRetriedWithTheNextPage() {
+        val tasks = mutableListOf<Runnable>()
+        val paced = PickerCollectionEpisodes({ task -> tasks += task }, { action -> queued += action }) { source ->
+            Catalog().also { opened += source to it }
+        }
+        fun run() { while (tasks.isNotEmpty() || queued.isNotEmpty()) { tasks.toList().also { tasks.clear() }.forEach { it.run() }; deliver() } }
+        override = { query -> if (query.cursor == null) CatalogResult.Value(CatalogPage(listOf(slot("day15")), "next"))
+            else CatalogResult.Value(CatalogPage(listOf(slot("day14")))) }
+        val sumo = collection("394-72")
+        paced.shown(sumo, true)
+        paced.load(sumo, false); run()
+        val catalog = opened.single().second
+        assertEquals(listOf(listOf(slot("day15").resource)), catalog.lengthRequests)
+        assertEquals(12240L, paced.state(sumo).entries.single().durationSeconds)
+        // A failure shows no error and keeps the span.
+        lengthReply = { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        paced.load(sumo, true)
+        tasks.removeAt(0).run(); deliver()
+        assertEquals(17100L, paced.state(sumo).entries.last().durationSeconds)
+        assertNull(paced.state(sumo).failure)
+        // A page load requested while a length request runs cancels it.
+        lengthReply = { paced.load(sumo, false); CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        tasks.removeAt(0).run(); deliver()
+        assertEquals(1, catalog.lengthCancels)
+        assertEquals(listOf(slot("day14").resource), catalog.lengthRequests.last())
+        lengthReply = { resources -> CatalogResult.Value(resources.associateWith { 8853L }) }
+        run()
+        // The newest page lists day15 (known) and the retried request covers only the unknown.
+        assertEquals(12240L, paced.state(sumo).entries.single().durationSeconds)
+        paced.load(sumo, true); run()
+        assertEquals(listOf(slot("day14").resource), catalog.lengthRequests.last())
+        assertEquals(listOf(12240L, 8853L), paced.state(sumo).entries.map { it.durationSeconds })
+        // A request queued before the page is left never reaches the provider.
+        override = { CatalogResult.Value(CatalogPage(listOf(slot("day13")))) }
+        paced.load(sumo, false); tasks.removeAt(0).run(); deliver()
+        assertEquals(1, tasks.size)
+        paced.shown(sumo, false)
+        val asked = catalog.lengthRequests.size
+        run()
+        assertEquals(asked, catalog.lengthRequests.size)
+        paced.close(); run()
+        assertFalse(paced.state(sumo).loaded)
     }
 }

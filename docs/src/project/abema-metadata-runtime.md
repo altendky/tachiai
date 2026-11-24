@@ -147,6 +147,59 @@ no persistent-device operation interrupts pending provider-controlled account
 approval. The operation remains independent of existing-account My List and
 History access.
 
+## Replay-length operation
+
+ABEMA's content list gives a broadcast its reserved slot span
+(`info.duration` = `endAt − startAt`), but the replay ends when the broadcast
+actually ended; the real length exists only in the replay manifest
+([#665](https://github.com/altendky/tachiai/issues/665#issuecomment-7118944323)).
+On 2026-11-24 the user approved fetching each listed finished replay's
+manifest, and nothing else, for this purpose
+([#672](https://github.com/altendky/tachiai/issues/672)).
+
+`FETCH_REPLAY_LENGTHS` is a separate discovery operation on the same list
+service, process and account binding. Its request is one listing page of at
+most 20 distinct exact broadcasts (channel and slot IDs) and nothing else. It
+reuses catch-up playback's source path: one `GET /v1/media/token` with
+playback's fixed client query, then for each slot the existing
+`/v1/media/slots/{slotId}?include=payperview` GET and the unchanged provider
+playlist selector (module 21470) with that token, which yields the slot's
+`playback.dash` manifest with the closed legacy query (`t`, `enc=clear`, `dt`,
+`ut`, `ccf=0`, optional `sw=0`). It then reads that manifest alone, without
+credentials or headers. No segment, license, region, player or other request
+is made. At most five slots are read at a time, no new slot starts after 16 s
+and each request has a 7 s limit, so the run ends inside the 45-second
+deadline. Slots a run did not start are reported as an unread count (a suffix
+of the request); the catalog reads them in up to two more runs.
+
+Only finished broadcasts are read: a slot whose `endAt` has not passed (live,
+in progress or upcoming), without `flags.timeshift`, with DRM or with a
+selected URL outside the closed form is skipped before its manifest. A static
+manifest's `mediaPresentationDuration`, or else the sum of its Period
+durations, becomes whole seconds (1 s to 7 days); a dynamic manifest,
+declarations or malformed tags refuse. Measured examples: 12240.427 s for the
+2026-11-22 幕内 slot and 8853.109 s for day 3. One slot's refusal only omits
+that slot; a refused media token ends the run with a closed `REPLAY_*`
+category. Only `{channelId, slotId, durationSeconds}` rows and the unread
+count leave the runtime; the token, URLs and manifest stay in the JavaScript
+closure and are never logged.
+
+Admission is exact and ordered: the media-token URI once (one preflight and
+GET), then each requested slot URI once, then that slot's manifest once,
+only after its slot GET and only if it passes playback's own
+`allowsAbemaSlotSource` policy for that slot (the approved `*-abematv`
+CDN family, the slot's path and the closed query). The route purpose
+`ABEMA_GUEST_REPLAY_LENGTH` adds `*-abematv.akamaized.net` to the series
+hosts. The CSP adds the token and media-slot paths and
+`https://*.akamaized.net`; Kotlin admission remains the exact gate.
+
+The picker's Episodes page runs it in the background, one page of the shown
+listing's broadcasts at a time, after the page loads. A page load or leaving
+the page cancels it, and the client waits until the service reports the run
+finished so the following listing is not refused during cleanup. Known
+lengths stay in memory for the session; a broadcast without one keeps its
+span and is retried only when the listing is reloaded. Nothing is persisted.
+
 ## Preparation timing
 
 Since [#629](https://github.com/altendky/tachiai/issues/629) each metadata runtime

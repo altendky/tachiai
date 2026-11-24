@@ -193,12 +193,14 @@ CDN family, the slot's path and the closed query). The route purpose
 hosts. The CSP adds the token and media-slot paths and
 `https://*.akamaized.net`; Kotlin admission remains the exact gate.
 
-The picker's Episodes page runs it in the background, one page of the shown
-listing's broadcasts at a time, after the page loads. A page load or leaving
-the page cancels it, and the client waits until the service reports the run
-finished so the following listing is not refused during cleanup. Known
-lengths stay in memory for the session; a broadcast without one keeps its
-span and is retried only when the listing is reloaded. Nothing is persisted.
+The picker's Episodes page and the provider screen's Browse episodes run it in
+the background, one page of the shown listing's broadcasts at a time, after
+the page loads. A page load or leaving the page cancels it, as does any other
+catalog request on the provider screen, and the client waits until the
+service reports the run finished so the following listing is not refused
+during cleanup. Known lengths stay in memory for the app session, shared by
+both lists; a broadcast without one keeps its span and is retried only when
+the listing is reloaded. Nothing is persisted.
 
 ## Preparation timing
 

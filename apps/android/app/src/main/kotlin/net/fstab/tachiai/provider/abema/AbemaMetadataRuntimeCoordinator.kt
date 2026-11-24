@@ -25,6 +25,7 @@ internal class AbemaMetadataRuntimeRequest(
     val slotRequest: AbemaSlotRequest? = null,
     val searchRequest: AbemaSearchRequest? = null,
     val scheduleRequest: AbemaScheduleRequest = AbemaScheduleRequest(),
+    val replayRequest: AbemaReplayLengthRequest? = null,
     val canRemainActive: () -> Boolean,
 ) {
     init {
@@ -39,6 +40,7 @@ internal class AbemaMetadataRuntimeRequest(
         require(operation != AbemaMetadataRuntimeOperation.FETCH_SCHEDULE || expectedOwnerProof != null)
         require(operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE || scheduleRequest.channelId == null)
         require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) searchRequest != null && expectedOwnerProof != null else searchRequest == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS) replayRequest != null && expectedOwnerProof != null else replayRequest == null)
         require(operation !in setOf(AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK,
             AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
     }
@@ -48,7 +50,8 @@ internal class AbemaMetadataRuntimeRequest(
 
 internal class AbemaMetadataRuntimeResult(val category: String, val entry: CatalogEntry? = null,
     val accountChallenge: AbemaAccountChallenge? = null, val accountValidation: AbemaAccountValidationContext? = null,
-    val seriesPage: AbemaSeriesPage? = null, val scheduleSnapshot: AbemaScheduleSnapshot? = null, val searchReply: AbemaSearchReply? = null) {
+    val seriesPage: AbemaSeriesPage? = null, val scheduleSnapshot: AbemaScheduleSnapshot? = null, val searchReply: AbemaSearchReply? = null,
+    val replayLengths: AbemaReplayLengths? = null) {
     override fun toString() = "AbemaMetadataRuntimeResult(status only)"
 }
 
@@ -117,6 +120,7 @@ internal class AbemaMetadataRuntimeCoordinator(
         var seriesPage: AbemaSeriesPage? = null
         var scheduleSnapshot: AbemaScheduleSnapshot? = null
         var searchReply: AbemaSearchReply? = null
+        var replayLengths: AbemaReplayLengths? = null
     }
     @Volatile private var attempt: Attempt? = null
     private var retainedAttempt: Attempt? = null
@@ -226,6 +230,18 @@ internal class AbemaMetadataRuntimeCoordinator(
             val state = value?.opt("state") as? String
             val failure = value?.opt("failure") as? String
             when {
+                state == "REPLAY_LENGTHS" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS ->
+                    view.metadata { metadata ->
+                        if (!runtimeCurrent(active) || active.view !== view) return@metadata
+                        val lengths = runCatching {
+                            val outer = JSONTokener(metadata?.takeIf { it.length <= ABEMA_REPLAY_LENGTH_PROJECTION_BYTES * 2 } ?: error("Replay response refused"))
+                            val text = outer.nextValue() as? String ?: error("Replay response refused")
+                            check(outer.nextClean() == '\u0000')
+                            decodeAbemaReplayLengthProjection(text, checkNotNull(active.request.replayRequest))
+                        }.getOrNull()
+                        if (lengths == null) stop(active, "GUEST_REPLAY_RESPONSE")
+                        else { active.replayLengths = lengths; verifyThen(active) { stop(active, "REPLAY_LENGTHS") } }
+                    }
                 state == "SEARCH_PAGE" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
@@ -320,6 +336,9 @@ internal class AbemaMetadataRuntimeCoordinator(
                     (failure?.startsWith("SLOT_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) &&
                     (failure?.startsWith("SCHEDULE_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE) &&
                     (failure?.startsWith("SEARCH_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) &&
+                    (failure?.startsWith("REPLAY_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS) &&
+                    (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS ||
+                        listOf("EPISODE_", "SERIES_", "SLOT_", "SCHEDULE_", "SEARCH_", "PROFILE_").none { failure?.startsWith(it) == true }) &&
                     (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_SEARCH ||
                         listOf("EPISODE_", "SERIES_", "SLOT_", "SCHEDULE_", "PROFILE_").none { failure?.startsWith(it) == true }) &&
                     (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_SCHEDULE ||
@@ -330,6 +349,7 @@ internal class AbemaMetadataRuntimeCoordinator(
                     state == "SLOT" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT ||
                     state == "SCHEDULE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE ||
                     state == "SEARCH" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH ||
+                    state == "REPLAY" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS ||
                     state == "CHALLENGE" && active.request.operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION,
                         AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK) ||
                     state == "TOKEN" && active.request.operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN) && failure == "NONE") ->
@@ -402,6 +422,7 @@ internal class AbemaMetadataRuntimeCoordinator(
         }
     }
     private fun retain(active: Attempt) {
+        active.replayLengths = null
         active.searchReply = null
         active.scheduleSnapshot = null
         active.seriesPage = null
@@ -421,6 +442,8 @@ internal class AbemaMetadataRuntimeCoordinator(
             val seriesPage = active.seriesPage.takeIf { outcome == "EXACT_SERIES_PAGE" }
             val scheduleSnapshot = active.scheduleSnapshot.takeIf { outcome == "SCHEDULE_SNAPSHOT" }
             val searchReply = active.searchReply.takeIf { outcome == "SEARCH_PAGE" }
+            val replayLengths = active.replayLengths.takeIf { outcome == "REPLAY_LENGTHS" }
+            active.replayLengths = null
             active.searchReply = null
             active.scheduleSnapshot = null
             active.seriesPage = null
@@ -432,12 +455,16 @@ internal class AbemaMetadataRuntimeCoordinator(
             active.accountValidation = null
             val missingPrivateResult = outcome == "ACCOUNT_LINK_READY" && challenge == null ||
                 outcome == "ACCOUNT_VALIDATION_READY" && validation == null
-            active.completed(AbemaMetadataRuntimeResult(if (missingPrivateResult) "CANCELLED" else outcome, entry, challenge, validation, seriesPage, scheduleSnapshot, searchReply))
+            active.completed(AbemaMetadataRuntimeResult(if (missingPrivateResult) "CANCELLED" else outcome, entry, challenge, validation, seriesPage, scheduleSnapshot, searchReply,
+                replayLengths))
         }
     }
 
     companion object {
         private val FAILURES = setOf("HTTP", "RESPONSE", "POLICY", "RUNTIME", "TIMEOUT", "PROFILE_HTTP", "PROFILE_RESPONSE",
+            "REPLAY_RESPONSE", "REPLAY_TIMEOUT", "REPLAY_TRANSPORT", "REPLAY_REDIRECT",
+            "REPLAY_HTTP_401", "REPLAY_HTTP_403", "REPLAY_HTTP_404", "REPLAY_HTTP_410", "REPLAY_HTTP_429",
+            "REPLAY_HTTP_3XX", "REPLAY_HTTP_4XX", "REPLAY_HTTP_5XX", "REPLAY_HTTP_OTHER",
             "SEARCH_RESPONSE", "SEARCH_TIMEOUT", "SEARCH_TRANSPORT", "SEARCH_REDIRECT",
             "SEARCH_HTTP_401", "SEARCH_HTTP_403", "SEARCH_HTTP_404", "SEARCH_HTTP_410", "SEARCH_HTTP_429",
             "SEARCH_HTTP_3XX", "SEARCH_HTTP_4XX", "SEARCH_HTTP_5XX", "SEARCH_HTTP_OTHER",

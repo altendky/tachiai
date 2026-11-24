@@ -111,7 +111,11 @@ internal fun androidAbemaChannelCatalog(context: Context, instanceId: String,
         transportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
             AndroidAbemaSeriesMetadataClient(application, instanceId, captured.proof(),
                 canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
-        }, canPublish = ::current)
+        }, canPublish = ::current,
+        replayTransportFactory = if (captured == null || android.os.Build.VERSION.SDK_INT < 28) null else { gate ->
+            AndroidAbemaSeriesMetadataClient(application, instanceId, captured.proof(),
+                canRequest = { gate() && current() }, canRemainActive = ::canRemainActive)
+        })
     // Account proof is worker-owned and cannot start Connect or mutate storage.
     // Its cleanup gate is separate so an unverified collection does not disable
     // independently usable public discovery or local configured-item management.

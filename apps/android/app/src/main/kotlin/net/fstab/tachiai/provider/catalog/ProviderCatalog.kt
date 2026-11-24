@@ -43,6 +43,8 @@ internal data class CatalogEntry(
 
 // A week bounds every listed item; longer values are not display metadata.
 internal const val MAX_CATALOG_DURATION_SECONDS = 7L * 24 * 60 * 60
+// Broadcasts per ProviderCatalog.replayLengths call: one listing page.
+internal const val REPLAY_LENGTH_LIMIT = 20
 
 // `1h 58m`, `45m`, or `40s` under a minute; minutes round to the nearest.
 internal fun formatCatalogDuration(seconds: Long): String {
@@ -195,6 +197,15 @@ internal interface ProviderCatalog : AutoCloseable {
     // Optional: a channel's scheduled program around nowEpochMs (#560).
     fun airing(resource: CatalogResource, nowEpochMs: Long): CatalogResult<CatalogAiring> =
         CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+    // Optional (#672): the actual length, in seconds, of listed broadcasts whose
+    // listed duration is only their scheduled span. Display only, like
+    // durationSeconds. A resource without a known length is omitted; at most
+    // REPLAY_LENGTH_LIMIT per call. canContinue false before the provider is
+    // asked, or cancelReplayLengths, ends the call early.
+    fun replayLengths(resources: List<CatalogResource>, canContinue: () -> Boolean = { true }): CatalogResult<Map<CatalogResource, Long>> =
+        CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+    // Thread-safe: ends a running replayLengths call early, so a listing can proceed.
+    fun cancelReplayLengths() {}
     override fun close() {}
 }
 

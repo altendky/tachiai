@@ -25,6 +25,7 @@ import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as Dropdown
 import net.fstab.tachiai.feature.presentation.RemoteIconButton as IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -307,6 +308,11 @@ private fun CollectionEpisodesPage(source: ConfiguredSource, episodes: Collectio
     LaunchedEffect(source.id, source.instanceId) {
         if (!state.loaded && !state.loading) episodes.load(source, more = false)
         if (television) runCatching { back.requestFocus() }
+    }
+    // Replay lengths load in the background only while this page is shown (#672).
+    DisposableEffect(source.id, source.instanceId) {
+        episodes.shown(source, true)
+        onDispose { episodes.shown(source, false) }
     }
     // TV: the footer button stays while loading so focus is kept; if it goes
     // away after the last page, focus moves to the last episode row.

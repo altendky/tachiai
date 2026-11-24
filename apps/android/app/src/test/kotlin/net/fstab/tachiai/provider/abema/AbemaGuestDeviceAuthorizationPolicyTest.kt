@@ -23,8 +23,10 @@ class AbemaGuestDeviceAuthorizationPolicyTest {
             val series = if (other == AbemaMetadataRuntimeOperation.FETCH_SERIES) AbemaSeriesPageRequest("fixture-series") else null
             val slot = if (other == AbemaMetadataRuntimeOperation.FETCH_SLOT) AbemaSlotRequest("fixture-channel", "fixture-slot") else null
             val search = if (other == AbemaMetadataRuntimeOperation.FETCH_SEARCH) AbemaSearchRequest("fixture query") else null
-            assertFalse(AbemaMetadataRuntimePolicy.allows(challenge, false, "POST", other, id, series, slot, search))
-            assertFalse(AbemaMetadataRuntimePolicy.contentSecurityPolicy(other, id, series, slot, search).contains(AbemaMetadataRuntimePolicy.CHALLENGE))
+            val replay = if (other == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS)
+                AbemaReplayLengthRequest(listOf(AbemaSlotRequest("fixture-channel", "fixture-slot"))) else null
+            assertFalse(AbemaMetadataRuntimePolicy.allows(challenge, false, "POST", other, id, series, slot, search, replay))
+            assertFalse(AbemaMetadataRuntimePolicy.contentSecurityPolicy(other, id, series, slot, search, replay = replay).contains(AbemaMetadataRuntimePolicy.CHALLENGE))
         }
         for (method in listOf("GET", "OPTIONS"))
             assertTrue(AbemaMetadataRuntimePolicy.allows(profile, false, method, operation))

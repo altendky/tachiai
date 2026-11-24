@@ -148,9 +148,7 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
         val saved = (owner as Owner).saved
         check(canRequest())
         prepared.timing.mark(AbemaPreparationPhase.OWNER_READ)
-        val discovery = request.operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
-            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
-            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH)
+        val discovery = request.operation in AbemaMetadataRuntimePolicy.DISCOVERY
         val accountContext = if (discovery) {
             val resource = when (request.operation) {
                 AbemaMetadataRuntimeOperation.FETCH_EPISODE -> AbemaMetadataRuntimePolicy.episodeUrl(checkNotNull(request.episodeId))
@@ -158,6 +156,7 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
                 AbemaMetadataRuntimeOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
                 AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> AbemaMetadataRuntimePolicy.SCHEDULE + "|" + request.scheduleRequest.channelId.orEmpty()
                 AbemaMetadataRuntimeOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
+                AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS -> checkNotNull(request.replayRequest).key()
                 else -> error("Discovery operation refused")
             }
             val source = MessageDigest.getInstance("SHA-256").digest(
@@ -194,6 +193,7 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
             AbemaMetadataRuntimeOperation.FETCH_SLOT -> RouteSession.createAbemaGuestSlot(saved.profile, prepared.preparing)
             AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> RouteSession.createAbemaGuestSchedule(saved.profile, prepared.preparing)
             AbemaMetadataRuntimeOperation.FETCH_SEARCH -> RouteSession.createAbemaGuestSearch(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS -> RouteSession.createAbemaGuestReplayLength(saved.profile, prepared.preparing)
         }
         prepared.own(route)
         check(canRequest())
@@ -232,6 +232,9 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
                 else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH)
                     ", " + checkNotNull(request.searchRequest).let { JSONObject().put("query", it.query).put("moduleId", it.moduleId ?: JSONObject.NULL)
                         .put("offset", it.offset).toString() }
+                else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS)
+                    ", " + JSONObject().put("slots", org.json.JSONArray().apply { checkNotNull(request.replayRequest).slots.forEach {
+                        put(JSONObject().put("channelId", it.channelId).put("slotId", it.slotId)) } }).toString()
                 else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && request.scheduleRequest.channelId != null)
                     ", " + JSONObject().put("channelId", request.scheduleRequest.channelId).toString()
                 else if (accountContext != null) ", undefined" else ""
@@ -274,7 +277,7 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
         private val main = Handler(Looper.getMainLooper())
         private val view = WebView(context).also { preparation.timing.mark(AbemaPreparationPhase.WEBVIEW_CREATED) }
         private val admission = AbemaMetadataRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest,
-            request.slotRequest, request.searchRequest, preparation.accountBound.get())
+            request.slotRequest, request.searchRequest, preparation.accountBound.get(), request.replayRequest)
         private var documentStarted = false
         private var cleanupFailed = false
         override val cleanupConfirmed get() = !cleanupFailed
@@ -308,14 +311,15 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
                         request.seriesRequest?.let { AbemaMetadataRuntimePolicy.seriesStep(uri, it) } != null ||
                         uri.toString() == request.slotRequest?.url() ||
                         request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && uri.toString() == AbemaMetadataRuntimePolicy.SCHEDULE ||
-                        request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) {
+                        request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url() ||
+                        request.replayRequest?.let { AbemaMetadataRuntimePolicy.replayStep(uri, it) } != null) {
                         preparation.timing.providerRequest(); return null
                     }
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                         200, "OK", mapOf("Content-Security-Policy" to AbemaMetadataRuntimePolicy.contentSecurityPolicy(request.operation,
                             request.policyEpisodeId, request.seriesRequest, request.slotRequest, request.searchRequest,
-                            preparation.accountBound.get()), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
+                            preparation.accountBound.get(), request.replayRequest), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     if (!current(this@OwnedMetadataView)) return
@@ -349,8 +353,7 @@ internal class AndroidAbemaMetadataEnvironment(private val context: Context) : A
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.status() || null", callback)
         }
         override fun metadata(callback: (String?) -> Unit) {
-            check(request.operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE, AbemaMetadataRuntimeOperation.FETCH_SERIES,
-                AbemaMetadataRuntimeOperation.FETCH_SLOT, AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
+            check(request.operation in AbemaMetadataRuntimePolicy.DISCOVERY)
             if (preparation.account.get() == null) {
                 view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback); return
             }

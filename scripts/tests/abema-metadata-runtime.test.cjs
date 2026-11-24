@@ -21,12 +21,31 @@ function fixture(options = {}) {
     Date: class extends Date { static now() { return options.wallMs ?? Date.now(); } },
     performance: { now: () => options.elapsedMs ?? 0 },
     location: { origin: options.origin || 'https://abema.tv' },
+    navigator: { language: 'ja-JP' },
     crypto: { randomUUID: () => device },
     setTimeout: callback => { timers.set(++timer, callback); return timer; },
     clearTimeout: id => timers.delete(id),
     fake: options,
     fetch: async (url, request) => {
       requests.push({ url, request });
+      if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/media/token?')) {
+        if (Object.hasOwn(options, 'mediaTokenStatus')) return {
+          status: options.mediaTokenStatus, get body() { options.refusedBodyRead = true; throw new Error('PRIVATE_REFUSAL_BODY'); } };
+        return new Response(options.mediaTokenText ?? JSON.stringify({ token: 'PRIVATE_MEDIA_TOKEN', expiry: 'PRIVATE' }), { status: 200 });
+      }
+      if (options.operation === 'FETCH_REPLAY_LENGTHS' && url.startsWith('https://api.p-c3-e.abema-tv.com/v1/media/slots/')) {
+        const slotId = url.slice('https://api.p-c3-e.abema-tv.com/v1/media/slots/'.length).split('?')[0];
+        const reply = (options.replaySlots || {})[slotId] ?? replaySlot(slotId);
+        if (typeof reply === 'number') return { status: reply, get body() { options.refusedBodyRead = true; throw new Error(); } };
+        return new Response(JSON.stringify(reply), { status: 200 });
+      }
+      if (url.startsWith('https://vod-abematv.akamaized.net/')) {
+        const slotId = new URL(url).pathname.split('/')[2];
+        const reply = (options.manifests || {})[slotId] ?? replayManifest();
+        if (options.delayedManifest) await delayed;
+        if (typeof reply === 'number') return { status: reply, get body() { options.refusedBodyRead = true; throw new Error(); } };
+        return new Response(reply, { status: 200 });
+      }
       if (url.startsWith('https://api.p-c3-e.abema-tv.com/v1/search/modules')) {
         if (options.delayedSearch) await delayed;
         if (options.searchNetworkFailure) throw new Error('PRIVATE_SEARCH_ERROR');
@@ -201,7 +220,7 @@ function fixture(options = {}) {
       return new Response(bytes, { status: options.status || 200 });
     },
   }, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; generated = []; serialized = []; challengeSerialized = []; tokenSerialized = [];', context);
+  vm.runInContext('window = globalThis; window.addEventListener = () => {}; loaded = []; selected = []; generated = []; serialized = []; challengeSerialized = []; tokenSerialized = [];', context);
   vm.runInContext(options.controlSource ?? source, context, { timeout: 1000 });
   vm.runInContext(`window.__LOADABLE_LOADED_CHUNKS__.push([[1], {
     2833(module, exports, require) { loaded.push(2833); require(32746); module.exports = {
@@ -253,7 +272,20 @@ function fixture(options = {}) {
     32746() { loaded.push(32746); }
   }, () => { throw new Error('FRAMEWORK_CALLBACK_MUST_NOT_RUN'); }]);
   window.__LOADABLE_LOADED_CHUNKS__.push([[3], {
-    21470() { throw new Error('LEGACY_SOURCE_MUST_NOT_LOAD'); }
+    21470(module) {
+      if (fake.operation !== 'FETCH_REPLAY_LENGTHS') throw new Error('LEGACY_SOURCE_MUST_NOT_LOAD');
+      loaded.push(21470); module.exports = { tw: config => {
+        selected.push(config);
+        if (fake.selectedURL) return fake.selectedURL;
+        const url = new URL(config.sourceParam.playlists.dash);
+        url.searchParams.set('t', config.sourceParam.mediaToken);
+        url.searchParams.set('enc', config.sourceParam.isDrm ? 'wv' : 'clear'); url.searchParams.set('dt', 'pc_chrome');
+        url.searchParams.set('ut', '1'); url.searchParams.set('ccf', config.sourceParam.cffId);
+        return url.href;
+      } };
+    },
+    68610(module) { module.exports = { Y1: { Streaming: 'FIXTURE_STREAMING' } }; },
+    60506(module) { module.exports = { N: { browser: { name: 'FIXTURE_BROWSER' } } }; }
   }]);
   window.__LOADABLE_LOADED_CHUNKS__.push([[4], {
     75284() { throw new Error('DRM_MUST_NOT_LOAD'); }
@@ -2016,4 +2048,121 @@ test('private challenge expiry prevents token admission and rejects replies afte
     const value = fixture(options); value.start(); await settle(); options.elapsedMs = 45000; value.release(); await settle();
     assert.deepEqual(value.state(), { state: 'REFUSED', failure: 'TOKEN_TIMEOUT' }); assert.equal(value.requests.length, count);
   }
+});
+// Replay lengths (#672): a finished broadcast's real length from its catch-up manifest.
+function replaySlot(slotId, extra = {}) {
+  return { slot: { id: slotId, channelId: 'sumo', title: 'PRIVATE_TITLE', startAt: 1000, endAt: 2000, timeshiftEndAt: 9000,
+    flags: { timeshift: true, timeshiftFree: true }, mark: { live: true }, playback: {
+      dash: `https://vod-abematv.akamaized.net/slot/${slotId}/playlist.mpd`, hls: 'https://private.invalid/MUST_NOT_FETCH' }, ...extra } };
+}
+function replayManifest(root = 'type="static" mediaPresentationDuration="PT3H24M0.427S"', periods = ['PT18M37.116S']) {
+  return '<?xml version="1.0" encoding="utf-8"?>\n<!-- generated -->\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" ' +
+    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ' + root + ' profiles="urn:mpeg:dash:profile:isoff-live:2011">' +
+    '<BaseURL>https://private.invalid/MUST_NOT_FETCH/</BaseURL>' +
+    periods.map((duration, index) => `<Period id="${1763792100000 + index}"${duration ? ` duration="${duration}"` : ''}>` +
+      '<AdaptationSet mimeType="video/mp4"><SegmentTemplate media="$Number$.m4s" initialization="init.mp4"/></AdaptationSet></Period>').join('') +
+    '</MPD>';
+}
+const replayRequest = (...ids) => ({ slots: ids.map(slotId => ({ channelId: 'sumo', slotId })) });
+const replayLengths = f => JSON.parse(f.call(`window['${apiName}'].metadata()`));
+test('replay lengths read one media token, each slot and only its manifest, and project whole seconds', async () => {
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('day15', 'day3'), wallMs: 3000000,
+    manifests: { day3: replayManifest('mediaPresentationDuration="PT2H27M33.109S"') } });
+  f.start(); await settle(); await settle();
+  assert.deepEqual(f.state(), { state: 'REPLAY_LENGTHS', failure: 'NONE' });
+  assert.deepEqual(replayLengths(f), { lengths: [{ channelId: 'sumo', slotId: 'day15', durationSeconds: 12240 },
+    { channelId: 'sumo', slotId: 'day3', durationSeconds: 8853 }], unread: 0 });
+  const urls = f.requests.map(r => r.url);
+  assert.equal(urls[0], 'https://abema.tv/api/auth/login/guest');
+  assert.match(urls[1], /^https:\/\/api\.p-c3-e\.abema-tv\.com\/v1\/media\/token\?osName=pc&osVersion=1\.0\.0&osLang=ja-JP&osTimezone=[^&]+&appVersion=v26\.1119\.1$/);
+  assert.deepEqual(urls.slice(2).filter(url => url.includes('/v1/media/slots/')).sort(), [
+    'https://api.p-c3-e.abema-tv.com/v1/media/slots/day15?include=payperview', 'https://api.p-c3-e.abema-tv.com/v1/media/slots/day3?include=payperview']);
+  const manifests = f.requests.filter(r => r.url.includes('akamaized.net'));
+  assert.deepEqual(manifests.map(r => r.url).sort(), ['day15', 'day3'].map(id =>
+    `https://vod-abematv.akamaized.net/slot/${id}/playlist.mpd?t=PRIVATE_MEDIA_TOKEN&enc=clear&dt=pc_chrome&ut=1&ccf=0`));
+  for (const { request } of manifests) {
+    assert.equal(request.headers, undefined); assert.ok(request.credentials === 'omit' && request.redirect === 'error' && request.cache === 'no-store');
+  }
+  // Nothing but the token, the two slots and their manifests: no license, segment, base URL or HLS.
+  assert.equal(f.requests.length, 6);
+  for (const { request } of f.requests.slice(1, 4)) assert.equal(request.headers.authorization, 'Bearer FIXTURE_ACCESS');
+  assert.equal(f.context.selected[0].sourceParam.mediaToken, 'PRIVATE_MEDIA_TOKEN');
+  assert.doesNotMatch(f.call(`window['${apiName}'].metadata()`), /PRIVATE|FIXTURE|akamaized|token|startAt/);
+  f.stop(); assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+});
+test('replay lengths sum period durations when the manifest has no total and refuse unusable manifests', async () => {
+  // 2026-11-22 幕内: seven contiguous periods totalling 12240.427 s.
+  const periods = ['PT18M37.116S', 'PT10M56.656S', 'PT41M0.925S', 'PT14.981S', 'PT1H12M33.382S', 'PT1H0M28.191S', 'PT9.176S'];
+  const bad = { doctype: '<!DOCTYPE MPD [<!ENTITY x "y">]>' + replayManifest(), dynamic: replayManifest('type="dynamic"'),
+    missing: replayManifest('', ['PT1H', '']), none: replayManifest('', []), malformed: replayManifest('mediaPresentationDuration="3 hours"'),
+    duplicate: replayManifest('type="static" type="static" mediaPresentationDuration="PT1H"'),
+    namespace: replayManifest().replace('urn:mpeg:dash:schema:mpd:2011', 'urn:private'), long: replayManifest('mediaPresentationDuration="P8D"'),
+    zero: replayManifest('mediaPresentationDuration="PT0.4S"'), two: replayManifest() + replayManifest(), text: 'PRIVATE not xml',
+    status: 403, large: replayManifest().replace('<!-- generated -->', '<!--' + ' '.repeat(256 * 1024) + '-->') };
+  const ids = ['sum', ...Object.keys(bad)];
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest(...ids), wallMs: 3000000,
+    manifests: { sum: replayManifest('type="static"', periods), ...bad } });
+  f.start(); await settle(); await settle(); await settle();
+  assert.deepEqual(f.state(), { state: 'REPLAY_LENGTHS', failure: 'NONE' });
+  assert.deepEqual(replayLengths(f), { lengths: [{ channelId: 'sumo', slotId: 'sum', durationSeconds: 12240 }], unread: 0 });
+  assert.equal(f.requests.filter(r => r.url.includes('akamaized.net')).length, ids.length);
+});
+test('replay lengths exclude live, in-progress, upcoming and unavailable broadcasts before their manifest', async () => {
+  const replaySlots = { live: replaySlot('live', { startAt: 1000, endAt: 4000 }), upcoming: replaySlot('upcoming', { startAt: 3500, endAt: 4000 }),
+    closed: replaySlot('closed', { flags: { timeshift: false } }), drm: replaySlot('drm', { mark: { drm: true } }),
+    foreign: replaySlot('foreign', { channelId: 'other' }), noplay: replaySlot('noplay', { playback: null }),
+    host: replaySlot('host', { playback: { dash: 'https://private.example/slot/host/playlist.mpd' } }), missing: 404, done: replaySlot('done') };
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest(...Object.keys(replaySlots)), wallMs: 3000000, replaySlots });
+  f.start(); await settle(); await settle(); await settle();
+  assert.deepEqual(f.state(), { state: 'REPLAY_LENGTHS', failure: 'NONE' });
+  assert.deepEqual(replayLengths(f).lengths.map(length => length.slotId), ['done']);
+  assert.deepEqual(f.requests.filter(r => r.url.includes('akamaized.net')).map(r => new URL(r.url).pathname), ['/slot/done/playlist.mpd']);
+  assert.ok(!f.requests.some(r => r.url.includes('private.example')));
+  const none = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('live'), wallMs: 3000000,
+    replaySlots: { live: replaySlots.live } });
+  none.start(); await settle(); await settle();
+  assert.deepEqual(replayLengths(none), { lengths: [], unread: 0 });
+});
+test('replay lengths refuse a failed media token without slot requests and keep the selected manifest closed', async () => {
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('day15'), wallMs: 3000000, mediaTokenStatus: 403 });
+  f.start(); await settle(); await settle();
+  assert.deepEqual(f.state(), { state: 'REFUSED', failure: 'REPLAY_HTTP_403' }); assert.equal(f.requests.length, 2);
+  assert.equal(f.call(`window['${apiName}'].metadata()`), null);
+  for (const selectedURL of ['https://vod-abematv.akamaized.net/slot/day15/playlist.mpd?t=OTHER&enc=clear&dt=pc_chrome&ut=1&ccf=0',
+    'https://vod-abematv.akamaized.net/slot/day15/playlist.mpd?t=PRIVATE_MEDIA_TOKEN&enc=clear&dt=pc_chrome&ut=1&ccf=0&extra=1',
+    'https://vod-abematv.akamaized.net/slot/other/playlist.mpd?t=PRIVATE_MEDIA_TOKEN&enc=clear&dt=pc_chrome&ut=1&ccf=0',
+    'https://evil-abematv.akamaized.net.invalid/slot/day15/playlist.mpd?t=PRIVATE_MEDIA_TOKEN&enc=clear&dt=pc_chrome&ut=1&ccf=0']) {
+    const g = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('day15'), wallMs: 3000000, selectedURL });
+    g.start(); await settle(); await settle();
+    assert.deepEqual(replayLengths(g), { lengths: [], unread: 0 }); assert.equal(g.requests.length, 3);
+  }
+});
+test('replay lengths accept only one listing page of distinct exact slots and use a shared account bearer', async () => {
+  for (const resourceId of [undefined, { slots: [] }, replayRequest('a', 'a'), replayRequest(...Array.from({ length: 21 }, (_, i) => 's' + i)),
+    replayRequest('../x'), { slots: [{ channelId: 'sumo', slotId: 'a', url: 'https://private.invalid/' }] }, { ...replayRequest('a'), extra: 1 }]) {
+    const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId }); f.start(); await settle();
+    assert.equal(f.requests.length, 0);
+  }
+  const account = { userId: 'PRIVATE_ACCOUNT', bearer: 'PRIVATE_ACCOUNT_BEARER', expiresAtMs: 9000000 };
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('day15'), accountContext: account, wallMs: 3000000 });
+  f.start(); await settle(); await settle();
+  assert.deepEqual(replayLengths(f).lengths.map(length => length.durationSeconds), [12240]);
+  assert.equal(f.requests.length, 3); assert.equal(f.context.generated.length, 0);
+  for (const { request } of f.requests.slice(0, 2)) assert.equal(request.headers.authorization, 'Bearer PRIVATE_ACCOUNT_BEARER');
+});
+test('replay lengths start nothing after their time limit and report the unstarted suffix as unread', async () => {
+  const options = { operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('s0', 's1', 's2', 's3', 's4', 's5', 's6'),
+    wallMs: 3000000, delayedManifest: true, elapsedMs: 0 };
+  const f = fixture(options); f.start(); await settle(); await settle();
+  // Five workers each hold one manifest; the clock passes the start limit before they finish.
+  options.elapsedMs = 16000; f.release(); await settle(); await settle();
+  assert.deepEqual(f.state(), { state: 'REPLAY_LENGTHS', failure: 'NONE' });
+  assert.deepEqual(replayLengths(f), { lengths: ['s0', 's1', 's2', 's3', 's4'].map(slotId =>
+    ({ channelId: 'sumo', slotId, durationSeconds: 12240 })), unread: 2 });
+  assert.ok(!f.requests.some(r => r.url.includes('/s5') || r.url.includes('/s6')));
+});
+test('replay length cancellation suppresses delayed manifests and metadata', async () => {
+  const f = fixture({ operation: 'FETCH_REPLAY_LENGTHS', resourceId: replayRequest('day15'), wallMs: 3000000, delayedManifest: true });
+  f.start(); await settle(); f.stop(); f.release(); await settle();
+  assert.equal(f.call(`window['${apiName}'].metadata()`), null);
 });

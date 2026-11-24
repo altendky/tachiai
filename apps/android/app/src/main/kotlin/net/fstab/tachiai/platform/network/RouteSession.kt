@@ -32,7 +32,7 @@ private const val PLAYBACK_HOSTS = "abema.tv,api.p-c3-e.abema-tv.com,api.abema.i
 
 // A route owner in another process derives allowed hosts from this closed
 // purpose itself; a lease client never supplies a host list.
-internal enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATCHING, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION, ABEMA_ACCOUNT_BOOTSTRAP, ABEMA_ACCOUNT_SESSION, ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT, ABEMA_APPROVAL_BROWSER;
+internal enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WATCHING, ABEMA_CATALOG, ABEMA_GUEST, ABEMA_GUEST_PROFILE, ABEMA_EPISODE_METADATA, ABEMA_GUEST_EPISODE, ABEMA_GUEST_DEVICE_AUTHORIZATION, ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, ABEMA_ACCOUNT_COLLECTION, ABEMA_ACCOUNT_BOOTSTRAP, ABEMA_ACCOUNT_SESSION, ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT, ABEMA_GUEST_REPLAY_LENGTH, ABEMA_APPROVAL_BROWSER;
     val allowedHosts: String get() = when (this) {
         TWITCH_CATALOG -> "id.twitch.tv,api.twitch.tv"
         TWITCH_CONTINUE_WATCHING -> "gql.twitch.tv"
@@ -42,6 +42,8 @@ internal enum class RoutePurpose { PLAYBACK, TWITCH_CATALOG, TWITCH_CONTINUE_WAT
         ABEMA_EPISODE_METADATA -> "api.p-c3-e.abema-tv.com"
         ABEMA_GUEST_EPISODE -> "abema.tv,api.p-c3-e.abema-tv.com"
         ABEMA_GUEST_SERIES, ABEMA_GUEST_SLOT -> "abema.tv,api.p-c3-e.abema-tv.com"
+        // Replay lengths (#672) also read catch-up manifests from playback's CDN family.
+        ABEMA_GUEST_REPLAY_LENGTH -> "abema.tv,api.p-c3-e.abema-tv.com,*-abematv.akamaized.net"
         ABEMA_GUEST_DEVICE_AUTHORIZATION -> "abema.tv,api.p-c3-e.abema-tv.com"
         ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> "abema.tv,api.p-c3-e.abema-tv.com"
         ABEMA_ACCOUNT_COLLECTION -> "api.p-c3-e.abema-tv.com"
@@ -96,7 +98,7 @@ internal class RouteSession private constructor(
     // Anonymous ABEMA metadata uses a private, credential-free client even on
     // System. Java's process-global authenticators/cookie handlers cannot attach
     // account state to that request; existing playback/Twitch openers are retained.
-    private val client: OkHttpClient? = if (backend == null && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) null else OkHttpClient.Builder()
+    private val client: OkHttpClient? = if (backend == null && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_GUEST_REPLAY_LENGTH, RoutePurpose.ABEMA_APPROVAL_BROWSER)) null else OkHttpClient.Builder()
         .proxy(if (backend == null) Proxy.NO_PROXY else Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
         .proxyAuthenticator(if (backend == null) Authenticator.NONE else
             routeProxyAuthenticator(proxyUsername, proxyPassword, proxyRealm, proxyPort))
@@ -127,6 +129,8 @@ internal class RouteSession private constructor(
             RoutePurpose.ABEMA_EPISODE_METADATA -> require(url.host == "api.p-c3-e.abema-tv.com")
             RoutePurpose.ABEMA_GUEST_EPISODE -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
+            // Native opens are the public-bundle downloads; manifests go through the WebView proxy.
+            RoutePurpose.ABEMA_GUEST_REPLAY_LENGTH -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION -> require(url.host in setOf("abema.tv", "api.p-c3-e.abema-tv.com"))
             RoutePurpose.ABEMA_ACCOUNT_COLLECTION -> require(url.host == "api.p-c3-e.abema-tv.com")
@@ -135,7 +139,7 @@ internal class RouteSession private constructor(
             RoutePurpose.ABEMA_APPROVAL_BROWSER -> require(AbemaApprovalBrowserPolicy.allowedResource(url.toExternalForm()))
             RoutePurpose.PLAYBACK -> Unit
         }
-        if (!hasProxyBridge && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
+        if (!hasProxyBridge && purpose !in setOf(RoutePurpose.TWITCH_CONTINUE_WATCHING, RoutePurpose.ABEMA_CATALOG, RoutePurpose.ABEMA_GUEST, RoutePurpose.ABEMA_GUEST_PROFILE, RoutePurpose.ABEMA_EPISODE_METADATA, RoutePurpose.ABEMA_GUEST_EPISODE, RoutePurpose.ABEMA_GUEST_DEVICE_AUTHORIZATION, RoutePurpose.ABEMA_GUEST_DEVICE_TOKEN_OBSERVATION, RoutePurpose.ABEMA_ACCOUNT_COLLECTION, RoutePurpose.ABEMA_ACCOUNT_BOOTSTRAP, RoutePurpose.ABEMA_ACCOUNT_SESSION, RoutePurpose.ABEMA_GUEST_SERIES, RoutePurpose.ABEMA_GUEST_SLOT, RoutePurpose.ABEMA_GUEST_REPLAY_LENGTH, RoutePurpose.ABEMA_APPROVAL_BROWSER)) return url.openConnection() as HttpsURLConnection
         val connection = RoutedHttpsConnection(url, checkNotNull(client), { !closed.get() && networkEgress?.isActive() != false },
             allowProgressingMediaBody = purpose == RoutePurpose.PLAYBACK) { connections.remove(it) }
         connections.add(connection)
@@ -291,6 +295,15 @@ internal class RouteSession private constructor(
                 selected.protocol.createBackend(selected, security, preparation)
             },
         ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_SLOT)
+
+        // Series/slot hosts plus the approved catch-up CDN family; the private
+        // runtime policy admits only the exact token, slot and manifest URIs.
+        fun createAbemaGuestReplayLength(profile: ConnectionProfile?,
+            preparation: RoutePreparation = RoutePreparation(),
+            createBackend: (ConnectionProfile, RouteProxySecurity) -> RouteBackend = { selected, security ->
+                selected.protocol.createBackend(selected, security, preparation)
+            },
+        ): RouteSession = createOwned(profile, preparation, createBackend, RoutePurpose.ABEMA_GUEST_REPLAY_LENGTH)
 
         fun createAbemaGuestSeries(profile: ConnectionProfile?,
             preparation: RoutePreparation = RoutePreparation(),

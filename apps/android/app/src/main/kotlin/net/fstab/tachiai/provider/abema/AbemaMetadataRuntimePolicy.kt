@@ -2,16 +2,26 @@ package net.fstab.tachiai.provider.abema
 
 import java.net.URI
 
-internal enum class AbemaMetadataRuntimeOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE, FETCH_SEARCH }
+internal enum class AbemaMetadataRuntimeOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE, FETCH_SEARCH, FETCH_REPLAY_LENGTHS }
 
 // One admitted request of the series contentlist chain and the IDs it names.
 internal enum class AbemaSeriesStep { SERIES, SECTIONS, CONTENTS }
 internal class AbemaSeriesUri(val step: AbemaSeriesStep, val groupId: String?, val seasonId: String?) {
     override fun toString() = "AbemaSeriesUri(redacted)"
 }
+// One admitted request of a replay-length run (#672): the media token, a
+// requested slot, or that slot's catch-up manifest.
+internal enum class AbemaReplayStep { TOKEN, SLOT, MANIFEST }
+internal class AbemaReplayUri(val step: AbemaReplayStep, val slot: AbemaSlotRequest?) {
+    override fun toString() = "AbemaReplayUri(redacted)"
+}
 
 internal object AbemaMetadataRuntimePolicy {
     const val PROFILE_SUFFIX = "abema-guest-bootstrap"
+    // Configured discovery operations, which run account-bound when an account is saved.
+    val DISCOVERY = setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE, AbemaMetadataRuntimeOperation.FETCH_SERIES,
+        AbemaMetadataRuntimeOperation.FETCH_SLOT, AbemaMetadataRuntimeOperation.FETCH_SCHEDULE,
+        AbemaMetadataRuntimeOperation.FETCH_SEARCH, AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS)
     const val PAGE = "https://abema.tv/_tachiai/guest/index.html"
     const val GUEST = "https://abema.tv/api/auth/login/guest"
     const val CHALLENGE = "https://abema.tv/api/auth/oauth/device/authorization"
@@ -20,6 +30,7 @@ internal object AbemaMetadataRuntimePolicy {
     const val SCHEDULE = "$PROFILE_ORIGIN/v1/timetable/dataSet"
     const val EPISODE_ID = "394-72_s10_p8529"
     const val EPISODE = "$PROFILE_ORIGIN/v1/video/programs/$EPISODE_ID"
+    const val MEDIA_TOKEN = "$PROFILE_ORIGIN/v1/media/token"
     const val CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self'; " +
         "connect-src https://abema.tv/api/auth/login/guest; " +
         "img-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; " +
@@ -29,6 +40,27 @@ internal object AbemaMetadataRuntimePolicy {
     private val SERIES_CHILD = Regex("https://api\\.p-c3-e\\.abema-tv\\.com/v1/contentlist/episodeGroups/" +
         "([A-Za-z0-9][A-Za-z0-9_-]{0,127})/(sections|contents)\\?seasonId=([A-Za-z0-9][A-Za-z0-9_-]{0,127})&.*")
     private val VIEWING_TYPES = Regex(".*&viewingTypes=([1-9][0-9]?(?:%2C[1-9][0-9]?){0,3})")
+    // Playback's media-token query: fixed client fields plus the WebView's own
+    // language and time zone, as URLSearchParams encodes them.
+    private val MEDIA_TOKEN_QUERY = Regex("osName=pc&osVersion=1\\.0\\.0&osLang=[A-Za-z0-9-]{1,35}" +
+        "&osTimezone=[A-Za-z0-9_.%-]{1,128}&appVersion=v26\\.1119\\.1")
+
+    // A replay-length run reads one media token, then each requested slot's
+    // exact media-slot URI and that slot's catch-up manifest. The manifest
+    // must pass playback's own selected-source policy for that slot: the
+    // approved CDN family, the slot's path and the closed legacy query.
+    fun replayStep(uri: URI, request: AbemaReplayLengthRequest): AbemaReplayUri? {
+        if (uri.host == "api.p-c3-e.abema-tv.com") {
+            if (uri.scheme != "https" || uri.port != -1 || uri.rawUserInfo != null || uri.rawFragment != null ||
+                uri.rawPath != uri.path || uri.normalize() != uri) return null
+            val text = uri.toString()
+            if (uri.rawPath == "/v1/media/token" && uri.rawQuery?.let(MEDIA_TOKEN_QUERY::matches) == true &&
+                text == "$MEDIA_TOKEN?${uri.rawQuery}") return AbemaReplayUri(AbemaReplayStep.TOKEN, null)
+            return request.slots.singleOrNull { it.url() == text }?.let { AbemaReplayUri(AbemaReplayStep.SLOT, it) }
+        }
+        return request.slots.singleOrNull { allowsAbemaSlotSource(uri, it.channelId, it.slotId) }
+            ?.let { AbemaReplayUri(AbemaReplayStep.MANIFEST, it) }
+    }
 
     // Kotlin cannot know a group or its viewing types before the series and
     // sections replies, so those URIs are templates bound to the requested
@@ -60,7 +92,9 @@ internal object AbemaMetadataRuntimePolicy {
         return "$PROFILE_ORIGIN/v1/video/programs/$id"
     }
 
-    private fun validResource(operation: AbemaMetadataRuntimeOperation, episodeId: String?, series: AbemaSeriesPageRequest?, slot: AbemaSlotRequest?, search: AbemaSearchRequest?) =
+    private fun validResource(operation: AbemaMetadataRuntimeOperation, episodeId: String?, series: AbemaSeriesPageRequest?, slot: AbemaSlotRequest?, search: AbemaSearchRequest?,
+        replay: AbemaReplayLengthRequest? = null) =
+        (if (operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS) replay != null else replay == null) &&
         (if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) search != null else search == null) &&
         (if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) slot != null else slot == null) &&
         (if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES) series != null else series == null) &&
@@ -68,11 +102,10 @@ internal object AbemaMetadataRuntimePolicy {
         else validEpisodeId(episodeId) && (operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE || episodeId == EPISODE_ID)
 
     fun contentSecurityPolicy(operation: AbemaMetadataRuntimeOperation, episodeId: String? = null, series: AbemaSeriesPageRequest? = null,
-        slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null, accountBound: Boolean = false): String {
-        require(validResource(operation, episodeId, series, slot, search))
-        require(!accountBound || operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
-            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
-            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
+        slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null, accountBound: Boolean = false,
+        replay: AbemaReplayLengthRequest? = null): String {
+        require(validResource(operation, episodeId, series, slot, search, replay))
+        require(!accountBound || operation in DISCOVERY)
         val policy = when (operation) {
             AbemaMetadataRuntimeOperation.GUEST_ONLY -> CONTENT_SECURITY_POLICY
             AbemaMetadataRuntimeOperation.VERIFY_PROFILE, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/;")
@@ -82,6 +115,10 @@ internal object AbemaMetadataRuntimePolicy {
             AbemaMetadataRuntimeOperation.FETCH_SLOT -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(slot).url()};")
             AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $SCHEDULE;")
             AbemaMetadataRuntimeOperation.FETCH_SEARCH -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(search).url()};")
+            // CSP host wildcards cannot express the -abematv label family;
+            // Kotlin admission (replayStep) remains the exact manifest gate.
+            AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;",
+                "connect-src $GUEST $MEDIA_TOKEN $PROFILE_ORIGIN/v1/media/slots/ https://*.akamaized.net;")
             AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE;")
             AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE $DEVICE_TOKEN;")
         }
@@ -103,8 +140,12 @@ internal object AbemaMetadataRuntimePolicy {
 
     fun allows(uri: URI, mainFrame: Boolean, method: String,
         operation: AbemaMetadataRuntimeOperation = AbemaMetadataRuntimeOperation.GUEST_ONLY,
-        episodeId: String? = null, series: AbemaSeriesPageRequest? = null, slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null): Boolean {
-        if (!validResource(operation, episodeId, series, slot, search)) return false
+        episodeId: String? = null, series: AbemaSeriesPageRequest? = null, slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null,
+        replay: AbemaReplayLengthRequest? = null): Boolean {
+        if (!validResource(operation, episodeId, series, slot, search, replay)) return false
+        // The manifest carries no authorization header, so it has no preflight.
+        if (operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS && !mainFrame && replay != null)
+            replayStep(uri, replay)?.let { return method == "GET" || method == "OPTIONS" && it.step != AbemaReplayStep.MANIFEST }
         if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH && !mainFrame && uri.toString() == search?.url())
             return method in setOf("GET", "OPTIONS")
         if (operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && !mainFrame && uri.toString() == SCHEDULE)
@@ -140,7 +181,8 @@ internal object AbemaMetadataRuntimePolicy {
 // never expose this object/URI through diagnostics, state, Intents or storage.
 internal class AbemaMetadataRequestAdmission(private val operation: AbemaMetadataRuntimeOperation,
     requestedEpisodeId: String? = null, private val series: AbemaSeriesPageRequest? = null, private val slot: AbemaSlotRequest? = null,
-    private val search: AbemaSearchRequest? = null, private val accountBound: Boolean = false) {
+    private val search: AbemaSearchRequest? = null, private val accountBound: Boolean = false,
+    private val replay: AbemaReplayLengthRequest? = null) {
     private val episodeId = requestedEpisodeId ?: AbemaMetadataRuntimePolicy.EPISODE_ID
     init {
         require(operation != AbemaMetadataRuntimeOperation.FETCH_EPISODE || requestedEpisodeId != null)
@@ -149,9 +191,8 @@ internal class AbemaMetadataRequestAdmission(private val operation: AbemaMetadat
         require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES) series != null else series == null)
         require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) slot != null else slot == null)
         require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) search != null else search == null)
-        require(!accountBound || operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
-            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
-            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS) replay != null else replay == null)
+        require(!accountBound || operation in AbemaMetadataRuntimePolicy.DISCOVERY)
     }
     private var guest = accountBound
     private var profile = false
@@ -162,9 +203,29 @@ internal class AbemaMetadataRequestAdmission(private val operation: AbemaMetadat
     // Series chain position: each URI in order, at most one preflight and GET.
     private val seriesSteps = if (series?.viewingTypes == null) AbemaSeriesStep.values().toList() else listOf(AbemaSeriesStep.CONTENTS)
     private var seriesStep: AbemaSeriesUri? = null
+    // Replay-length run: the token first, then per slot at most one preflight
+    // and GET of its media-slot URI, then one GET of its manifest.
+    private var replayTokenPreflight = false
+    private var replayToken = false
+    private val replayPreflights = mutableSetOf<AbemaSlotRequest>()
+    private val replaySlots = mutableSetOf<AbemaSlotRequest>()
+    private val replayManifests = mutableSetOf<AbemaSlotRequest>()
 
     @Synchronized fun admit(uri: URI, mainFrame: Boolean, method: String, headers: Map<String, String> = emptyMap()): Boolean {
-        if (!AbemaMetadataRuntimePolicy.allows(uri, mainFrame, method, operation, episodeId, series, slot, search)) return false
+        if (!AbemaMetadataRuntimePolicy.allows(uri, mainFrame, method, operation, episodeId, series, slot, search, replay)) return false
+        val replayed = if (operation == AbemaMetadataRuntimeOperation.FETCH_REPLAY_LENGTHS && !mainFrame && replay != null)
+            AbemaMetadataRuntimePolicy.replayStep(uri, replay) else null
+        if (replayed != null) {
+            if (!guest || !validPreflightOrGet(method, headers)) return false
+            val owner = replayed.slot
+            return when (replayed.step) {
+                AbemaReplayStep.TOKEN -> if (method == "OPTIONS") !replayToken && !replayTokenPreflight.also { replayTokenPreflight = true }
+                    else !replayToken.also { replayToken = true }
+                AbemaReplayStep.SLOT -> replayToken && checkNotNull(owner) !in replayManifests &&
+                    (if (method == "OPTIONS") owner !in replaySlots && replayPreflights.add(owner) else replaySlots.add(owner))
+                AbemaReplayStep.MANIFEST -> method == "GET" && checkNotNull(owner) in replaySlots && replayManifests.add(owner)
+            }
+        }
         if (uri.toString() == AbemaMetadataRuntimePolicy.GUEST) {
             if (accountBound || guest) return false
             guest = true

@@ -18,6 +18,7 @@
   let slot;
   let schedule;
   let search;
+  let replay;
   let challengeStarted;
   let budgetFailure = 'CHALLENGE_TIMEOUT';
   let tokenObservation;
@@ -36,6 +37,7 @@
     slot = undefined;
     schedule = undefined;
     search = undefined;
+    replay = undefined;
     tokenObservation = undefined;
     accountLink = undefined;
     accountValidation = undefined;
@@ -264,17 +266,17 @@
     };
     return load;
   }
-  async function boundedReply(url, options, project, prefix = '', maximum = 65536) {
+  async function boundedReply(url, options, project, prefix = '', maximum = 65536, timeout = 15000) {
     alive();
     const controller = new AbortController();
     controllers.add(controller);
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), timeout);
     const withinDeadline = () => {
       alive();
       if (controller.signal.aborted) throw new Error();
     };
     let reader;
-    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_' || prefix === 'SCHEDULE_' || prefix === 'SEARCH_';
+    const categorizedRequest = prefix === 'EPISODE_' || prefix === 'CHALLENGE_' || prefix === 'SERIES_' || prefix === 'SLOT_' || prefix === 'SCHEDULE_' || prefix === 'SEARCH_' || prefix === 'REPLAY_';
     let refused = categorizedRequest ? 'TRANSPORT' : 'HTTP';
     const parts = [];
     try {
@@ -315,7 +317,9 @@
       try { return project(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
       finally { bytes.fill(0); }
     } catch {
-      if (!stopped && failure !== budgetFailure && failure !== 'RUNTIME') failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
+      // A null prefix is one optional item of a larger operation: its refusal
+      // is the caller's to handle and never becomes the operation's failure.
+      if (prefix !== null && !stopped && failure !== budgetFailure && failure !== 'RUNTIME') failure = prefix + (controller.signal.aborted ? 'TIMEOUT' : refused);
       throw new Error();
     } finally {
       for (const part of parts) part.fill(0);
@@ -501,6 +505,61 @@
       Object.keys(value).sort().join(',') === 'channelId,slotId' &&
       ['channelId', 'slotId'].every(key => typeof value[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value[key]));
   }
+  // Up to one listing page of distinct broadcasts whose replay length to read (#672).
+  function validReplayRequest(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).join(',') === 'slots' &&
+      Array.isArray(value.slots) && value.slots.length >= 1 && value.slots.length <= 20 && value.slots.every(validSlotRequest) &&
+      new Set(value.slots.map(slot => slot.channelId + '/' + slot.slotId)).size === value.slots.length;
+  }
+  // ISO 8601 duration as the DASH schema writes it (days at most), in milliseconds.
+  function manifestMilliseconds(value) {
+    const match = typeof value === 'string' &&
+      /^P(?:([0-9]{1,3})D)?(?:T(?=[0-9])(?:([0-9]{1,4})H)?(?:([0-9]{1,6})M)?(?:([0-9]{1,8})(?:\.([0-9]{1,9}))?S)?)?$/.exec(value);
+    if (!match || value === 'P') return undefined;
+    const [, days = '0', hours = '0', minutes = '0', seconds = '0', fraction = ''] = match;
+    const total = ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60000 + Number(seconds) * 1000 +
+      Number((fraction + '000').slice(0, 3));
+    return Number.isSafeInteger(total) ? total : undefined;
+  }
+  // A replay's real length exists only in its manifest: the slot and content
+  // list carry the reserved span (#665). Reads only the root MPD and Period
+  // attributes; no URL, ID or other manifest value leaves this function.
+  // A dynamic (live) manifest, declarations and malformed tags refuse.
+  function parseManifestSeconds(text) {
+    if (/<!(?:DOCTYPE|ENTITY|\[CDATA\[)/i.test(text)) throw new Error();
+    const body = text.replace(/<!--[\s\S]*?-->/g, '');
+    if (body.includes('<!--')) throw new Error();
+    const tag = name => new RegExp('<' + name + '(?=[\\s/>])((?:[^<>"\']|"[^"<]*"|\'[^\'<]*\')*)>', 'g');
+    const attributes = raw => {
+      const values = Object.create(null);
+      const rest = raw.replace(/\/$/, '').replace(/\s+([A-Za-z_][-A-Za-z0-9_.:]*)\s*=\s*(?:"([^"<]*)"|'([^'<]*)')/g, (_, key, double, single) => {
+        if (Object.hasOwn(values, key)) throw new Error();
+        values[key] = double ?? single;
+        return '';
+      });
+      if (rest.trim()) throw new Error();
+      return values;
+    };
+    const roots = [...body.matchAll(tag('MPD'))];
+    if (roots.length !== 1 || !/^\s*(?:<\?xml\s[^<>]*\?>\s*)?$/.test(body.slice(0, roots[0].index))) throw new Error();
+    const root = attributes(roots[0][1]);
+    if (root.xmlns !== 'urn:mpeg:dash:schema:mpd:2011' || (root.type !== undefined && root.type !== 'static')) throw new Error();
+    let total = root.mediaPresentationDuration === undefined ? undefined : manifestMilliseconds(root.mediaPresentationDuration);
+    if (root.mediaPresentationDuration !== undefined && total === undefined) throw new Error();
+    if (total === undefined) {
+      const periods = [...body.matchAll(tag('Period'))];
+      if (!periods.length || periods.length !== (body.match(/<Period[\s/>]/g) || []).length) throw new Error();
+      total = 0;
+      for (const period of periods) {
+        const duration = manifestMilliseconds(attributes(period[1]).duration);
+        if (duration === undefined) throw new Error();
+        total += duration;
+      }
+    }
+    const seconds = Math.round(total / 1000);
+    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 604800) throw new Error();
+    return seconds;
+  }
   const searchModules = ['ppv', 'nowonair', 'package', 'episode', 'timeshift', 'scheduled'];
   function validSearchRequest(value) {
     return value && typeof value === 'object' && !Array.isArray(value) &&
@@ -625,22 +684,101 @@
     if (channelId !== undefined) return Object.freeze({ slots, truncated: matching > slots.length, channelId });
     return Object.freeze({ slots, truncated: reply.slots.length > slots.length });
   }
+  // The playback selector's exact catch-up manifest: the reviewed CDN family,
+  // that slot's own path and the closed legacy query bound to this media token.
+  function replayManifest(value, slotId, mediaToken) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || /[\u0000- \\#]/.test(value)) return false;
+    const raw = value.split('?')[0];
+    if (!/^https:\/\/[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net\//.test(raw) || raw.includes('%') ||
+      raw.split('/').some(part => part === '.' || part === '..')) return false;
+    const url = new URL(value);
+    const names = [...url.searchParams.keys()];
+    const allowed = ['t', 'enc', 'dt', 'ut', 'ccf', 'sw'];
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+      /^[a-z0-9][a-z0-9-]{0,54}-abematv\.akamaized\.net$/.test(url.hostname) &&
+      url.pathname.split('/').includes(slotId) && url.pathname.endsWith('.mpd') && /^[A-Za-z0-9_./~$-]+$/.test(url.pathname) &&
+      new Set(names).size === names.length && names.every(key => allowed.includes(key)) &&
+      url.search.slice(1).split('&').every(pair => pair.includes('=') && allowed.includes(pair.split('=')[0]) && pair.slice(pair.indexOf('=') + 1)) &&
+      url.searchParams.get('t') === mediaToken && url.searchParams.get('enc') === 'clear' && url.searchParams.get('ut') === '1' &&
+      url.searchParams.get('ccf') === '0' && ['pc_chrome', 'pc_unknown'].includes(url.searchParams.get('dt')) &&
+      (!url.searchParams.has('sw') || url.searchParams.get('sw') === '0');
+  }
+  // Finished broadcasts' replay lengths (#672), through playback's own source
+  // path: one media token, each slot's media-slot response and the unchanged
+  // provider playlist selector, then that manifest alone. No segment, license
+  // or player request is made. A live, upcoming, refused or unreadable slot is
+  // omitted and keeps its listed span; only whole seconds leave the runtime.
+  async function replayLengths(load, apiOrigin, slots, bearer) {
+    const options = { method: 'GET', mode: 'cors', headers: { accept: 'application/json', authorization: 'Bearer ' + bearer } };
+    const began = performance.now();
+    const tokenURL = new URL(apiOrigin + '/v1/media/token');
+    for (const [key, value] of Object.entries({ osName: 'pc', osVersion: '1.0.0', osLang: navigator.language,
+      osTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone, appVersion: 'v26.1119.1' })) tokenURL.searchParams.set(key, value);
+    const mediaToken = await boundedReply(tokenURL.href, options, text => {
+      const reply = parseBoundedJsonText(text);
+      if (!record(reply) || typeof reply.token !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(reply.token)) throw new Error();
+      return reply.token;
+    }, 'REPLAY_', 65536, 7000);
+    alive();
+    const browser = load(60506).N;
+    const streaming = load(68610).Y1.Streaming;
+    const selector = load(21470).tw;
+    const seconds = value => Number.isSafeInteger(value) && value > 0 && value < 100000000000;
+    const length = async ({ channelId, slotId }) => {
+      const slot = await boundedReply(apiOrigin + '/v1/media/slots/' + slotId + '?include=payperview', options, text => {
+        const raw = parseBoundedJsonText(text, true);
+        if (!record(raw) || !record(raw.slot) || raw.slot.id !== slotId || raw.slot.channelId !== channelId) throw new Error();
+        return raw.slot;
+      }, null, 512 * 1024, 7000);
+      alive();
+      // Finished broadcasts only: live, in-progress and upcoming ones keep their scheduled span.
+      if (!seconds(slot.startAt) || !seconds(slot.endAt) || slot.startAt >= slot.endAt || slot.endAt * 1000 > Date.now() ||
+        !record(slot.flags) || slot.flags.timeshift !== true || !record(slot.playback)) return undefined;
+      const selected = selector({ sourceParam: { type: streaming, playlists: slot.playback, isDrm: slot.mark?.drm === true,
+        contentId: slotId, mediaToken, cffId: 0, dtid: null }, preferDashPlaylist: true, enforcePlainStream: false, ua: browser });
+      if (!replayManifest(selected, slotId, mediaToken)) return undefined;
+      return boundedReply(selected, { method: 'GET', mode: 'cors' }, parseManifestSeconds, null, 256 * 1024, 7000);
+    };
+    const found = new Map();
+    let next = 0;
+    // Five at a time, starting nothing after 16 s, so every request ends
+    // inside the operation deadline. Slots never started are reported as
+    // unread (a suffix of the request) for another run.
+    const worker = async () => {
+      while (next < slots.length && performance.now() - began < 16000) {
+        const slot = slots[next++];
+        try {
+          const value = await length(slot);
+          if (value !== undefined) found.set(slot, value);
+        } catch {
+          // One slot's refusal keeps its listed span; stop and the budget end the run.
+          if (stopped || failure !== 'NONE') throw new Error();
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker(), worker()]);
+    alive();
+    return Object.freeze({ lengths: Object.freeze(slots.filter(slot => found.has(slot)).map(slot =>
+      Object.freeze({ channelId: slot.channelId, slotId: slot.slotId, durationSeconds: found.get(slot) }))),
+    unread: slots.length - next });
+  }
   window.__tachiaiStartGuestBootstrap = (nonce, operation = 'GUEST_ONLY', resourceId, accountContext) => {
     if (started || stopped || typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce) ||
-      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH'].includes(operation) ||
+      !['GUEST_ONLY', 'VERIFY_PROFILE', 'VERIFY_EPISODE', 'FETCH_EPISODE', 'VERIFY_DEVICE_AUTHORIZATION', 'OBSERVE_DEVICE_TOKEN', 'PREPARE_ACCOUNT_LINK', 'PREPARE_ACCOUNT_VALIDATION', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH', 'FETCH_REPLAY_LENGTHS'].includes(operation) ||
       (operation === 'FETCH_EPISODE' ? typeof resourceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(resourceId) :
         operation === 'FETCH_SERIES' ? !validSeriesRequest(resourceId) :
         operation === 'FETCH_SLOT' ? !validSlotRequest(resourceId) :
         operation === 'FETCH_SCHEDULE' ? resourceId !== undefined && (!resourceId || Array.isArray(resourceId) ||
           typeof resourceId !== 'object' || Object.keys(resourceId).join(',') !== 'channelId' ||
           typeof resourceId.channelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(resourceId.channelId)) :
-        operation === 'FETCH_SEARCH' ? !validSearchRequest(resourceId) : resourceId !== undefined)) {
+        operation === 'FETCH_SEARCH' ? !validSearchRequest(resourceId) :
+        operation === 'FETCH_REPLAY_LENGTHS' ? !validReplayRequest(resourceId) : resourceId !== undefined)) {
       stop('RUNTIME'); return;
     }
     const accountBound = accountContext !== undefined;
     if (accountBound) try {
       const now = Date.now();
-      if (!['FETCH_EPISODE', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH'].includes(operation) ||
+      if (!['FETCH_EPISODE', 'FETCH_SERIES', 'FETCH_SLOT', 'FETCH_SCHEDULE', 'FETCH_SEARCH', 'FETCH_REPLAY_LENGTHS'].includes(operation) ||
         !accountContext || Array.isArray(accountContext) || typeof accountContext !== 'object' ||
         Object.keys(accountContext).sort().join(',') !== 'bearer,expiresAtMs,userId' ||
         typeof accountContext.userId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(accountContext.userId) ||
@@ -658,6 +796,8 @@
     const slotRequest = operation === 'FETCH_SLOT' ? Object.freeze({ ...resourceId }) : undefined;
     const scheduleChannel = operation === 'FETCH_SCHEDULE' ? resourceId?.channelId : undefined;
     const searchRequest = operation === 'FETCH_SEARCH' ? Object.freeze({ ...resourceId }) : undefined;
+    const replayRequest = operation === 'FETCH_REPLAY_LENGTHS' ?
+      Object.freeze(resourceId.slots.map(slot => Object.freeze({ channelId: slot.channelId, slotId: slot.slotId }))) : undefined;
     Object.defineProperty(window, '__tachiaiGuest_' + nonce, { configurable: true, value: Object.freeze({
       status: () => stringify({ state, failure, ...(tokenObservation || {}) }), stop: () => stop(),
       ...(operation === 'FETCH_EPISODE' ? { metadata: () => !stopped && state === 'EXACT_EPISODE_METADATA' && failure === 'NONE' ?
@@ -670,6 +810,8 @@
         metadataText(schedule) : null } : {}),
       ...(operation === 'FETCH_SEARCH' ? { metadata: () => !stopped && state === 'SEARCH_PAGE' && failure === 'NONE' ?
         metadataText(search) : null } : {}),
+      ...(operation === 'FETCH_REPLAY_LENGTHS' ? { metadata: () => !stopped && state === 'REPLAY_LENGTHS' && failure === 'NONE' ?
+        metadataText(replay) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_LINK' ? { accountLink: () => !stopped && state === 'ACCOUNT_LINK_READY' && failure === 'NONE' ?
         stringify(accountLink) : null } : {}),
       ...(operation === 'PREPARE_ACCOUNT_VALIDATION' ? { accountValidation: () => {
@@ -693,6 +835,7 @@
         if (operation === 'FETCH_SLOT') { budgetFailure = 'SLOT_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         if (operation === 'FETCH_SCHEDULE') { budgetFailure = 'SCHEDULE_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         if (operation === 'FETCH_SEARCH') { budgetFailure = 'SEARCH_TIMEOUT'; challengeStarted = performance.now(); alive(); }
+        if (operation === 'FETCH_REPLAY_LENGTHS') { budgetFailure = 'REPLAY_TIMEOUT'; challengeStarted = performance.now(); alive(); }
         const load = loadModules();
         let apiOrigin;
         let challengeEndpoint;
@@ -800,6 +943,10 @@
             accountValidation = Object.freeze({ guestId: guest.userId, guestBearer: guest.accessToken });
             guest = undefined; state = 'ACCOUNT_VALIDATION_READY';
           } else state = 'GUEST_PROFILE_BOUND';
+        } else if (operation === 'FETCH_REPLAY_LENGTHS') {
+          state = 'REPLAY';
+          replay = await replayLengths(load, apiOrigin, replayRequest, guest.accessToken);
+          alive(); guest = undefined; failure = 'NONE'; state = 'REPLAY_LENGTHS';
         } else if (operation === 'FETCH_SEARCH') {
           state = 'SEARCH';
           const url = new URL(apiOrigin + '/v1/search/modules' + (searchRequest.moduleId === null ? '' : '/' + searchRequest.moduleId));

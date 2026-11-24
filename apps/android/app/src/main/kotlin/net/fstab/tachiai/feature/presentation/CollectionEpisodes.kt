@@ -2,6 +2,8 @@ package net.fstab.tachiai.feature.presentation
 
 import androidx.compose.runtime.mutableStateMapOf
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import net.fstab.tachiai.presentation.ConfiguredSource
 import net.fstab.tachiai.provider.catalog.*
 
@@ -28,6 +30,9 @@ internal interface CollectionEpisodes {
     fun load(source: ConfiguredSource, more: Boolean)
     // Lists another of the collection's groups from its newest page.
     fun selectGroup(source: ConfiguredSource, group: String)
+    // The collection's page is shown (true) or left (false). Background work
+    // for its listing, such as replay lengths (#672), runs only while shown.
+    fun shown(source: ConfiguredSource, visible: Boolean) {}
 }
 
 internal fun collectionEpisodesFailureMessage(reason: CatalogFailure): String = when (reason) {
@@ -56,6 +61,15 @@ internal class PickerCollectionEpisodes(
     private val requests = mutableMapOf<String, Long>() // Main-owned; the latest load per collection.
     private val catalogs = mutableMapOf<String, ProviderCatalog>() // Worker-owned.
     private var generation = 0L // Main-owned.
+    // Replay lengths (#672): a listed finished broadcast shows its scheduled
+    // span until its real length arrives in the background, while its page is
+    // shown. Known lengths stay for the session; a broadcast without one keeps
+    // its span. Attempts are retried only when the listing is reloaded.
+    private val lengths = mutableMapOf<CatalogResource, Long>() // Main-owned.
+    private val lengthsTried = mutableSetOf<CatalogResource>() // Main-owned.
+    private var shownKey: String? = null // Main-owned.
+    private val lengthsRun = AtomicLong()
+    private val lengthsCatalog = AtomicReference<ProviderCatalog?>()
     private fun key(source: ConfiguredSource) = source.instanceId + "|" + source.entry.resource.kind + "|" + source.entry.resource.identity
 
     override fun state(source: ConfiguredSource) = states[key(source)] ?: CollectionEpisodesState()
@@ -75,7 +89,9 @@ internal class PickerCollectionEpisodes(
         if (current.loading && (more || group == current.group)) return
         // A continuation is single use; a failed or missing one restarts from the newest page.
         val cursor = if (more) cursors.remove(key) ?: return else null
-        if (!more) cursors.remove(key)
+        if (!more) { cursors.remove(key); lengthsTried.clear() }
+        // The listing comes first: a background length run yields to it.
+        stopLengths()
         val switching = group != current.group
         states[key] = if (switching) current.copy(entries = emptyList(), group = group, loading = true, more = false, failure = null,
             status = null) else current.copy(loading = true, failure = null, status = null)
@@ -116,7 +132,7 @@ internal class PickerCollectionEpisodes(
                 states[key] = when (result) {
                     is CatalogResult.Value -> {
                         result.value.nextCursor?.let { cursors[key] = it }
-                        val entries = (if (more) previous.entries else emptyList()) + result.value.entries
+                        val entries = (if (more) previous.entries else emptyList()) + result.value.entries.map(::withLength)
                         CollectionEpisodesState(entries.distinctBy { it.resource }, loaded = true,
                             more = result.value.nextCursor != null, groups = result.value.groups,
                             group = result.value.group ?: group?.takeIf { id -> result.value.groups.any { it.id == id } })
@@ -124,6 +140,53 @@ internal class PickerCollectionEpisodes(
                     is CatalogResult.Failure -> previous.copy(loading = false, loaded = true, more = false,
                         failure = collectionEpisodesFailureMessage(result.reason), status = null)
                 }
+                if (result is CatalogResult.Value) fetchLengths(key)
+            }
+        }
+    }
+
+    override fun shown(source: ConfiguredSource, visible: Boolean) {
+        val key = key(source)
+        if (visible) { shownKey = key; fetchLengths(key) }
+        else if (shownKey == key) { shownKey = null; stopLengths() }
+    }
+
+    private fun withLength(entry: CatalogEntry) = lengths[entry.resource]?.let { entry.copy(durationSeconds = it) } ?: entry
+
+    // Main thread. Ends a running length request; its broadcasts can be tried again.
+    private fun stopLengths() {
+        lengthsRun.incrementAndGet()
+        lengthsCatalog.get()?.let { runCatching { it.cancelReplayLengths() } }
+    }
+
+    // Main thread. One page of the shown listing's broadcasts at a time, on
+    // the listing's own catalog after any page load already queued.
+    private fun fetchLengths(key: String) {
+        val state = states[key]
+        if (shownKey != key || state == null || state.loading || !state.loaded) return
+        val wanted = state.entries.map { it.resource }
+            .filter { it.intent == CatalogIntent.BROADCAST && it !in lengths && it !in lengthsTried }.take(REPLAY_LENGTH_LIMIT)
+        if (wanted.isEmpty()) return
+        lengthsTried += wanted
+        val run = lengthsRun.incrementAndGet()
+        val local = generation
+        val current = { lengthsRun.get() == run }
+        worker.execute {
+            val catalog = catalogs[key]
+            val result = if (catalog == null) null else try {
+                lengthsCatalog.set(catalog)
+                if (!current()) null else catalog.replayLengths(wanted, current)
+            } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+            finally { lengthsCatalog.compareAndSet(catalog, null) }
+            post {
+                if (local != generation) return@post
+                if (result is CatalogResult.Value) {
+                    lengths += result.value.filter { (resource, seconds) -> resource in wanted && seconds in 1..MAX_CATALOG_DURATION_SECONDS }
+                    for ((other, value) in states.toList()) states[other] = value.copy(entries = value.entries.map(::withLength))
+                    // A cancelled request may have returned only part of its page.
+                    if (current()) fetchLengths(key) else lengthsTried -= wanted.filterNot { it in lengths }.toSet()
+                } else if (result == null || result is CatalogResult.Failure &&
+                    result.reason in setOf(CatalogFailure.TEMPORARY, CatalogFailure.ACCESS_REQUIRED)) lengthsTried -= wanted.toSet()
             }
         }
     }
@@ -131,7 +194,9 @@ internal class PickerCollectionEpisodes(
     // Ends every listing; loaded pages are discarded with the session.
     fun close() {
         generation++
+        stopLengths()
         states.clear(); cursors.clear(); requests.clear()
+        lengths.clear(); lengthsTried.clear(); shownKey = null
         worker.execute {
             catalogs.values.forEach { runCatching { it.close() } }
             catalogs.clear()

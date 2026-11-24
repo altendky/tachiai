@@ -203,6 +203,9 @@ internal class AbemaAccountCollectionsCatalog(
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { clear(); return delegate.resolve(resource) }
     // Public schedule metadata; account collections and their cursors are untouched.
     override fun airing(resource: CatalogResource, nowEpochMs: Long): CatalogResult<CatalogAiring> = delegate.airing(resource, nowEpochMs)
+    // Public listing metadata (#672); account collections and their cursors are untouched.
+    override fun replayLengths(resources: List<CatalogResource>, canContinue: () -> Boolean) = delegate.replayLengths(resources, canContinue)
+    override fun cancelReplayLengths() = delegate.cancelReplayLengths()
     override fun close() {
         if (closed) return
         closed = true; revision.incrementAndGet(); clear()

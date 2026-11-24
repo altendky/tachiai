@@ -10,6 +10,8 @@ internal class AbemaSeriesChildrenCatalog(
     private val delegate: ProviderCatalog,
     private val transportFactory: ((canRequest: () -> Boolean) -> AbemaSeriesTransport)?,
     private val canPublish: () -> Boolean = { true },
+    // Replay lengths of listed finished broadcasts (#672), on the same runtime.
+    private val replayTransportFactory: ((canRequest: () -> Boolean) -> AbemaReplayLengthTransport)? = null,
 ) : ProviderCatalog by delegate {
     init { require(delegate.providerId.value == "abema" && net.fstab.tachiai.presentation.validProviderInstanceId(delegate.instanceId)) }
     private class Cursor(val parent: CatalogResource, val request: AbemaSeriesPageRequest,
@@ -17,6 +19,7 @@ internal class AbemaSeriesChildrenCatalog(
     private val lock = Any()
     private val operation = Any()
     private val active = AtomicReference<AbemaSeriesTransport?>()
+    private val replayActive = AtomicReference<AbemaReplayLengthTransport?>()
     private val cursors = linkedMapOf<String, Cursor>()
     private var revision = 0L
     @Volatile private var closed = false
@@ -111,6 +114,57 @@ internal class AbemaSeriesChildrenCatalog(
             CatalogResult.Value(CatalogPage(fresh, next, groups.map { CatalogChildGroup(it.id, it.name) }, page.groupId))
         }
     }
+    // Listed broadcasts only; continuations and their cursors are untouched.
+    override fun replayLengths(resources: List<CatalogResource>, canContinue: () -> Boolean): CatalogResult<Map<CatalogResource, Long>> {
+        val slots = resources.map { AbemaSlotRequest.from(it) ?: return CatalogResult.Failure(CatalogFailure.INVALID_INPUT) }
+        if (slots.isEmpty() || slots.size > ABEMA_REPLAY_LENGTH_LIMIT || resources.distinct().size != resources.size)
+            return CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
+        return synchronized(operation) {
+            val local = synchronized(lock) { revision }
+            if (!current(local)) return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
+            val factory = replayTransportFactory ?: return@synchronized CatalogResult.Failure(CatalogFailure.UNSUPPORTED)
+            var transport: AbemaReplayLengthTransport? = null
+            var cleanup = true
+            val result: CatalogResult<Map<CatalogResource, Long>> = try {
+                transport = factory { current(local) && canContinue() }
+                replayActive.set(transport)
+                // A run reads what its time limit allows and reports the rest
+                // unread; a few more runs finish one listing page.
+                val found = linkedMapOf<CatalogResource, Long>()
+                var pending = slots
+                var outcome: CatalogResult<Map<CatalogResource, Long>>? = null
+                for (run in 1..ABEMA_REPLAY_LENGTH_RUNS) {
+                    // Checked after publishing the transport, so a concurrent
+                    // cancelReplayLengths either sees it or is seen here.
+                    if (!canContinue()) { outcome = CatalogResult.Failure(CatalogFailure.TEMPORARY); break }
+                    if (!current(local)) { outcome = CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED); break }
+                    when (val reply = transport.fetch(AbemaReplayLengthRequest(pending))) {
+                        is CatalogResult.Failure -> { outcome = reply; break }
+                        is CatalogResult.Value -> { found += reply.value.seconds; pending = reply.value.unread }
+                    }
+                    if (pending.isEmpty()) break
+                }
+                // Lengths already read are kept even if a later run fails.
+                if (found.isNotEmpty() || outcome == null) CatalogResult.Value(found) else outcome
+            } catch (_: Throwable) { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+            finally {
+                try { transport?.close() } catch (_: Throwable) {
+                    cleanup = false; poisoned = true; closed = true; clear()
+                    retained.add(this); transport?.let(retained::add)
+                }
+                if (cleanup) replayActive.compareAndSet(transport, null)
+            }
+            if (!cleanup) return@synchronized CatalogResult.Failure(CatalogFailure.TEMPORARY)
+            if (!current(local)) return@synchronized CatalogResult.Failure(CatalogFailure.ACCESS_REQUIRED)
+            result
+        }
+    }
+    override fun cancelReplayLengths() {
+        val transport = replayActive.get()
+        try { transport?.cancelActiveRequest() } catch (_: Throwable) {
+            poisoned = true; retained.add(this); transport?.let(retained::add)
+        }
+    }
     override fun lookup(input: String): CatalogResult<CatalogEntry> { clear(); return delegate.lookup(input) }
     override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> { clear(); return delegate.refresh(resource) }
     override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> { clear(); return delegate.resolve(resource) }
@@ -120,6 +174,7 @@ internal class AbemaSeriesChildrenCatalog(
         try { transport?.cancelActiveRequest() } catch (_: Throwable) {
             poisoned = true; retained.add(this); transport?.let(retained::add)
         }
+        cancelReplayLengths()
         delegate.close()
     }
     override fun toString() = "AbemaSeriesChildrenCatalog(redacted)"

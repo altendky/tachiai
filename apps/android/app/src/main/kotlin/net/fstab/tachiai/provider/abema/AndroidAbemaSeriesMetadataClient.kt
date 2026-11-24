@@ -105,6 +105,33 @@ internal class AbemaSearchClientOperation(
     override fun toString() = "AbemaSearchClientOperation(redacted)"
 }
 
+internal class AbemaReplayLengthClientOperation(
+    val request: AbemaReplayLengthIpc.Start,
+    private val clockMs: () -> Long,
+    private val canRemainActive: () -> Boolean,
+) {
+    private val lock = Any()
+    private var cancelled = false
+    private var result: AbemaReplayLengthIpc.Result? = null
+    val completed = CountDownLatch(1)
+    fun current(): Boolean = synchronized(lock) {
+        !cancelled && clockMs() < request.deadline && runCatching(canRemainActive).getOrDefault(false)
+    }
+    fun accept(value: AbemaReplayLengthIpc.Result): Boolean = synchronized(lock) {
+        if (!current() || result != null || value.nonce != request.nonce || value.outcome == "OK" &&
+            (value.lengths == null || value.lengths.request.key() != request.request.key())) false
+        else { result = value; completed.countDown(); true }
+    }
+    fun cancel() = synchronized(lock) { cancelled = true; result = null; completed.countDown() }
+    fun result(): AbemaReplayLengthIpc.Result? = synchronized(lock) { result.takeIf { current() } }
+    fun workerResult(canRequest: () -> Boolean, clientCurrent: () -> Boolean): AbemaReplayLengthIpc.Result? {
+        val value = result() ?: return null
+        if (!clientCurrent() || !runCatching(canRequest).getOrDefault(false) || !clientCurrent()) return null
+        return result()?.takeIf { it === value }
+    }
+    override fun toString() = "AbemaReplayLengthClientOperation(redacted)"
+}
+
 // Worker-side synchronous facade over a same-UID isolated-process service.
 // Protected owner checks run only at fetch admission/final publication. Main
 // Binder/heartbeat callbacks use the separate cheap foreground/revision gate.
@@ -114,7 +141,7 @@ internal class AndroidAbemaSeriesMetadataClient(
     private val expectedOwnerProof: String,
     private val canRequest: () -> Boolean,
     private val canRemainActive: () -> Boolean,
-) : AbemaSeriesTransport, AbemaScheduleTransport, AbemaSearchTransport {
+) : AbemaSeriesTransport, AbemaScheduleTransport, AbemaSearchTransport, AbemaReplayLengthTransport {
     init {
         require(validProviderInstanceId(instanceId))
         require(expectedOwnerProof.matches(Regex("[a-f0-9]{64}")))
@@ -125,23 +152,37 @@ internal class AndroidAbemaSeriesMetadataClient(
     private val lock = Any()
     // Closed list operations share the existing Binder/foreground lifecycle.
     private class ListResult(val outcome: String, val page: AbemaSeriesPage? = null, val snapshot: AbemaScheduleSnapshot? = null,
-        val searchReply: AbemaSearchReply? = null)
+        val searchReply: AbemaSearchReply? = null, val lengths: AbemaReplayLengths? = null)
     private class ListOperation(val series: AbemaSeriesClientOperation? = null, val schedule: AbemaScheduleClientOperation? = null,
-        val search: AbemaSearchClientOperation? = null) {
-        init { require(listOf(series, schedule, search).count { it != null } == 1) }
-        val nonce get() = series?.request?.nonce ?: schedule?.request?.nonce ?: checkNotNull(search).request.nonce
-        val deadline get() = series?.request?.deadline ?: schedule?.request?.deadline ?: checkNotNull(search).request.deadline
-        val completed get() = series?.completed ?: schedule?.completed ?: checkNotNull(search).completed
-        val startCode get() = when { search != null -> AbemaSearchMetadataIpc.START; series != null -> AbemaSeriesMetadataIpc.START; else -> AbemaScheduleMetadataIpc.START }
-        val cancelCode get() = when { search != null -> AbemaSearchMetadataIpc.CANCEL; series != null -> AbemaSeriesMetadataIpc.CANCEL; else -> AbemaScheduleMetadataIpc.CANCEL }
-        val pulseCode get() = when { search != null -> AbemaSearchMetadataIpc.PULSE; series != null -> AbemaSeriesMetadataIpc.PULSE; else -> AbemaScheduleMetadataIpc.PULSE }
-        val resultCode get() = when { search != null -> AbemaSearchMetadataIpc.RESULT; series != null -> AbemaSeriesMetadataIpc.RESULT; else -> AbemaScheduleMetadataIpc.RESULT }
-        fun current() = series?.current() ?: schedule?.current() ?: checkNotNull(search).current()
-        fun cancel() { when { series != null -> series.cancel(); schedule != null -> schedule.cancel(); else -> checkNotNull(search).cancel() } }
+        val search: AbemaSearchClientOperation? = null, val replay: AbemaReplayLengthClientOperation? = null) {
+        init { require(listOf(series, schedule, search, replay).count { it != null } == 1) }
+        val nonce get() = series?.request?.nonce ?: schedule?.request?.nonce ?: search?.request?.nonce ?: checkNotNull(replay).request.nonce
+        val deadline get() = series?.request?.deadline ?: schedule?.request?.deadline ?: search?.request?.deadline ?: checkNotNull(replay).request.deadline
+        val completed get() = series?.completed ?: schedule?.completed ?: search?.completed ?: checkNotNull(replay).completed
+        val startCode get() = when { replay != null -> AbemaReplayLengthIpc.START; search != null -> AbemaSearchMetadataIpc.START; series != null -> AbemaSeriesMetadataIpc.START; else -> AbemaScheduleMetadataIpc.START }
+        val cancelCode get() = when { replay != null -> AbemaReplayLengthIpc.CANCEL; search != null -> AbemaSearchMetadataIpc.CANCEL; series != null -> AbemaSeriesMetadataIpc.CANCEL; else -> AbemaScheduleMetadataIpc.CANCEL }
+        val pulseCode get() = when { replay != null -> AbemaReplayLengthIpc.PULSE; search != null -> AbemaSearchMetadataIpc.PULSE; series != null -> AbemaSeriesMetadataIpc.PULSE; else -> AbemaScheduleMetadataIpc.PULSE }
+        val resultCode get() = when { replay != null -> AbemaReplayLengthIpc.RESULT; search != null -> AbemaSearchMetadataIpc.RESULT; series != null -> AbemaSeriesMetadataIpc.RESULT; else -> AbemaScheduleMetadataIpc.RESULT }
+        // The service sends a result, even for a cancelled run, only after the
+        // runtime has finished cleanup and can admit the next operation.
+        @Volatile var started = false
+        val settled = CountDownLatch(1)
+        fun answers(message: Message) = (when {
+            replay != null -> AbemaReplayLengthIpc.fields(message.data)
+            search != null -> AbemaSearchMetadataIpc.fields(message.data)
+            schedule != null -> AbemaScheduleMetadataIpc.fields(message.data)
+            else -> AbemaSeriesMetadataIpc.fields(message.data)
+        })?.get("nonce") == nonce
+        fun current() = series?.current() ?: schedule?.current() ?: search?.current() ?: checkNotNull(replay).current()
+        fun cancel() { when { series != null -> series.cancel(); schedule != null -> schedule.cancel(); search != null -> search.cancel()
+            else -> checkNotNull(replay).cancel() } }
         fun start() = series?.let { AbemaSeriesMetadataIpc.start(it.request) } ?: schedule?.let { AbemaScheduleMetadataIpc.start(it.request) }
-            ?: AbemaSearchMetadataIpc.start(checkNotNull(search).request)
+            ?: search?.let { AbemaSearchMetadataIpc.start(it.request) } ?: AbemaReplayLengthIpc.start(checkNotNull(replay).request)
         fun accept(message: Message) {
-            if (series != null) {
+            if (replay != null) {
+                val fields = AbemaReplayLengthIpc.fields(message.data) ?: return
+                replay.accept(AbemaReplayLengthIpc.decodeResult(fields, replay.request.request) ?: return)
+            } else if (series != null) {
                 val fields = AbemaSeriesMetadataIpc.fields(message.data) ?: return
                 series.accept(AbemaSeriesMetadataIpc.decodeResult(fields, series.request.page) ?: return)
             } else if (schedule != null) {
@@ -156,6 +197,7 @@ internal class AndroidAbemaSeriesMetadataClient(
             series?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, page = it.page) }
                 ?: schedule?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, snapshot = it.snapshot) }
                 ?: search?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, searchReply = it.reply) }
+                ?: replay?.workerResult(canRequest, clientCurrent)?.let { ListResult(it.outcome, lengths = it.lengths) }
     }
     private var active: ListOperation? = null
     private var connection: Connection? = null // Main thread only.
@@ -167,8 +209,10 @@ internal class AndroidAbemaSeriesMetadataClient(
         val death = IBinder.DeathRecipient { operation.cancel(); main.post { release(this) } }
         val reply = Messenger(object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(message: Message) {
-                if (message.sendingUid != Process.myUid() || message.what != operation.resultCode ||
-                    connection !== this@Connection || !isCurrent(operation)) return
+                if (message.sendingUid != Process.myUid() || message.what != operation.resultCode) return
+                // Even a late result for a cancelled run marks the service idle.
+                if (runCatching { operation.answers(message) }.getOrDefault(false)) operation.settled.countDown()
+                if (connection !== this@Connection || !isCurrent(operation)) return
                 runCatching { operation.accept(message) }
             }
         })
@@ -179,6 +223,7 @@ internal class AndroidAbemaSeriesMetadataClient(
                 remoteBinder = service
                 remote = Messenger(service)
                 send(operation.startCode)
+                operation.started = true
                 pulse()
             } catch (_: Exception) { operation.cancel(); release(this) }
         }
@@ -230,6 +275,15 @@ internal class AndroidAbemaSeriesMetadataClient(
             is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.searchReply))
         }
     }
+    override fun fetch(request: AbemaReplayLengthRequest): CatalogResult<AbemaReplayLengths> {
+        val start = AbemaReplayLengthIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
+            request, expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaSeriesMetadataIpc.OPERATION_MS)
+        val operation = ListOperation(replay = AbemaReplayLengthClientOperation(start, SystemClock::elapsedRealtime) { !closed.get() && canRemainActive() })
+        return when (val result = fetch(operation)) {
+            is CatalogResult.Failure -> result
+            is CatalogResult.Value -> CatalogResult.Value(checkNotNull(result.value.lengths))
+        }
+    }
     private fun fetch(operation: ListOperation): CatalogResult<ListResult> {
         if (Looper.myLooper() == Looper.getMainLooper()) return CatalogResult.Failure(CatalogFailure.TEMPORARY)
         if (Build.VERSION.SDK_INT < 28) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
@@ -254,7 +308,16 @@ internal class AndroidAbemaSeriesMetadataClient(
                 }
             }
             val result = operation.workerResult(canRequest) { isCurrent(operation) }
-                ?: return CatalogResult.Failure(CatalogFailure.TEMPORARY)
+            if (result == null) {
+                // A background replay-length run is cancelled so a listing can
+                // start; wait until the service has released the runtime, which
+                // otherwise refuses that listing while it cleans up (#672).
+                if (operation.replay != null && operation.started) {
+                    main.post { connection?.takeIf { it.operation === operation }?.let(::release) }
+                    operation.settled.await(REPLAY_SETTLE_MS, TimeUnit.MILLISECONDS)
+                }
+                return CatalogResult.Failure(CatalogFailure.TEMPORARY)
+            }
             return when (result.outcome) {
                 "OK" -> CatalogResult.Value(result)
                 "NOT_FOUND" -> CatalogResult.Failure(CatalogFailure.NOT_FOUND)
@@ -286,4 +349,5 @@ internal class AndroidAbemaSeriesMetadataClient(
     }
     override fun close() { if (closed.compareAndSet(false, true)) cancelActiveRequest() }
     override fun toString() = "AndroidAbemaSeriesMetadataClient(redacted)"
+    private companion object { const val REPLAY_SETTLE_MS = 10_000L }
 }

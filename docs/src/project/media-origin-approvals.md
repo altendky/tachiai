@@ -250,6 +250,25 @@ admits each URI once, in order. No new host, redirect, media or license
 destination is added; broadcast rows reuse the existing exact slot path. See
 [the series operation](abema-metadata-runtime.md#exact-series-page-catalog-operation).
 
+### ABEMA replay lengths — 2026-11-24
+
+The user approved, on 2026-11-24, fetching the replay manifest (MPD only) of
+each finished broadcast listed in Episodes, to show its real length
+([#672](https://github.com/altendky/tachiai/issues/672)). The metadata
+runtime's replay-length operation adds three cookie-free GETs, all on
+destinations playback already uses: the media token
+(`/v1/media/token` on `api.p-c3-e.abema-tv.com`, bearer), each requested
+slot's existing `/v1/media/slots/{slotId}?include=payperview` (bearer), and
+that slot's catch-up manifest from the provider playlist selector, on the
+approved `https://*-abematv.akamaized.net` family with no credentials or
+headers. The manifest must pass playback's selected-slot source policy: the
+slot's own path, `.mpd` and the closed legacy query. No segment, license,
+image, region or other destination is admitted, and no new origin is added.
+Its route purpose adds the approved CDN family to the series hosts. Manifest
+URLs and tokens are never logged or persisted; only whole seconds leave the
+runtime. See
+[the replay-length operation](abema-metadata-runtime.md#replay-length-operation).
+
 ### Scrub-preview image hosts — 2026-11-24
 
 The user approved scrub thumbnails for ABEMA and Twitch replays, including the

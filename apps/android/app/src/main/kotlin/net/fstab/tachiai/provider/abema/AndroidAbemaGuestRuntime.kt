@@ -75,6 +75,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         override fun toString() = "AbemaGuestRuntimeOwner(redacted)"
     }
     private class Preparation(val preparing: RoutePreparation) : AbemaGuestRuntimePreparation {
+        val timing = AbemaPreparationTiming(SystemClock::elapsedRealtime) { android.util.Log.i(AbemaPreparationTiming.TAG, it) }
         private val routeReceipt = AbemaGuestRouteReceipt()
         val route get() = routeReceipt.route
         val download = AtomicReference<AbemaPublicBundleHttp?>()
@@ -146,6 +147,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         val prepared = preparation as Preparation
         val saved = (owner as Owner).saved
         check(canRequest())
+        prepared.timing.mark(AbemaPreparationPhase.OWNER_READ)
         val discovery = request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE,
             AbemaGuestBootstrapOperation.FETCH_SERIES, AbemaGuestBootstrapOperation.FETCH_SLOT,
             AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH)
@@ -168,6 +170,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             if (access.status == AbemaAccountAccessIpc.Status.FAILURE)
                 throw AbemaAccountException(access.failure ?: AbemaAccountFailure.REFUSED)
             check(canRequest() && client.current())
+            prepared.timing.mark(AbemaPreparationPhase.ACCOUNT_ACQUIRED)
             when (access.status) {
                 AbemaAccountAccessIpc.Status.ACCOUNT -> {
                     val grant = checkNotNull(access.grant)
@@ -194,18 +197,28 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         }
         prepared.own(route)
         check(canRequest())
+        prepared.timing.mark(AbemaPreparationPhase.ROUTE_LEASED)
         val files = linkedMapOf<String, ByteArray>()
+        // Chunked public-code reads/downloads check this between 8 KiB blocks;
+        // a full saved-owner read per block dominated preparation (#629).
+        val bundleAdmission = AbemaBundleAdmission(SystemClock::elapsedRealtime, live = {
+            !prepared.preparing.isCancelled && request.canRemainActive() &&
+                SystemClock.elapsedRealtime() < request.deadlineElapsedMs && prepared.account.get()?.current() != false
+        }, owner = canRequest)
         for ((name, identity) in listOf("bundle" to AbemaPublicBundleIdentity(),
             "support" to AbemaPublicBundleIdentity.bootstrapSupport(), "legacy" to AbemaPublicBundleIdentity.legacySource(),
             "utilities" to AbemaPublicBundleIdentity.sourceUtilities())) {
-            val http = AbemaPublicBundleHttp(canRun = { canRequest() && prepared.account.get()?.current() != false },
-                identity = identity, open = { url -> check(prepared.checkAccess()); route.open(url) },
+            check(bundleAdmission.checkOwner())
+            val http = AbemaPublicBundleHttp(canRun = bundleAdmission::current,
+                identity = identity, open = { url -> check(bundleAdmission.checkOwner() && prepared.checkAccess()); route.open(url) },
                 onFailure = { diagnostics.report(FailureStage.BUNDLE_DISCONNECT, it) })
             prepared.download.set(http)
             try { files["/_tachiai/guest/$name.js"] = AbemaPublicBundleCache(File(context.cacheDir, "abema-helper-bundle"),
-                canRequest, identity).prepare(http::fetch).bytes }
+                bundleAdmission::current, identity) { prepared.timing.mark(it, identity.asset) }.prepare(http::fetch).bytes }
             finally { http.close(); prepared.download.compareAndSet(http, null) }
+            prepared.timing.mark(AbemaPreparationPhase.BUNDLE_READY, identity.asset)
         }
+        prepared.timing.mark(AbemaPreparationPhase.BUNDLES_READY)
         files["/_tachiai/guest/index.html"] = context.assets.open("abema/guest-bootstrap.html").use { it.readBytes() }
         files["/_tachiai/guest/control.js"] = context.assets.open("abema/guest-bootstrap.js").use { it.readBytes() }
         val resourceArgument = if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
@@ -230,10 +243,16 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         if (accountContext != null) prepared.ownInitialize(initialization)
         files["/_tachiai/guest/initialize.js"] = initialization
         check(canRequest())
+        prepared.timing.mark(AbemaPreparationPhase.FILES_PREPARED)
         return files
     }
-    override fun install(preparation: AbemaGuestRuntimePreparation, callback: (Boolean) -> Unit) =
-        webRoute.install(checkNotNull((preparation as Preparation).route.get()), callback, diagnostics)
+    override fun install(preparation: AbemaGuestRuntimePreparation, callback: (Boolean) -> Unit) {
+        val prepared = preparation as Preparation
+        webRoute.install(checkNotNull(prepared.route.get()), { applied ->
+            if (applied) prepared.timing.mark(AbemaPreparationPhase.ROUTE_INSTALLED)
+            callback(applied)
+        }, diagnostics)
+    }
     override fun clear(callback: () -> Unit) = webRoute.clear(diagnostics, callback)
     override fun report(error: Throwable) {
         // The coordinator's PREPARATION_REFUSED hides why; an account refusal is a
@@ -253,7 +272,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         private val failed: (AbemaGuestRuntimeView, String) -> Unit, private val diagnostics: FailureReporter) : AbemaGuestRuntimeView {
         companion object { private val projectionWorker = Executors.newSingleThreadExecutor() }
         private val main = Handler(Looper.getMainLooper())
-        private val view = WebView(context)
+        private val view = WebView(context).also { preparation.timing.mark(AbemaPreparationPhase.WEBVIEW_CREATED) }
         private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest,
             request.slotRequest, request.searchRequest, preparation.accountBound.get())
         private var documentStarted = false
@@ -289,7 +308,9 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                         request.seriesRequest?.let { AbemaGuestBootstrapPolicy.seriesStep(uri, it) } != null ||
                         uri.toString() == request.slotRequest?.url() ||
                         request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE ||
-                        request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) return null
+                        request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) {
+                        preparation.timing.providerRequest(); return null
+                    }
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
                         200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(request.operation,
@@ -299,7 +320,11 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     if (!current(this@OwnedGuestView)) return
                     if (url != AbemaGuestBootstrapPolicy.PAGE || documentStarted) failed(this@OwnedGuestView, "NAVIGATION_REFUSED")
-                    else documentStarted = true
+                    else { documentStarted = true; preparation.timing.mark(AbemaPreparationPhase.PAGE_STARTED) }
+                }
+                override fun onPageFinished(view: WebView, url: String?) {
+                    if (current(this@OwnedGuestView) && documentStarted && url == AbemaGuestBootstrapPolicy.PAGE)
+                        preparation.timing.mark(AbemaPreparationPhase.PAGE_LOADED)
                 }
                 override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                     if (current(this@OwnedGuestView) && url != AbemaGuestBootstrapPolicy.PAGE) failed(this@OwnedGuestView, "NAVIGATION_REFUSED")

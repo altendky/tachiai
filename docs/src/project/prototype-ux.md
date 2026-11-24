@@ -1573,9 +1573,10 @@ coverage, so Tachiai does not choose an episode itself.
     that also records the child's intent (#622).
   - An episode is dropped when its item no longer holds that collection.
 - **Scope.** Collections without episode browsing keep the existing refusal.
-  Each page is one fresh guest series operation, about 20–30 s; faster loading
-  is a separate follow-up. Since #622 a first page makes three content-list
-  requests (series, sections and contents) within that operation.
+  Each page is one fresh guest series operation. It took about 20–30 s until
+  #629 (below) removed most of that preparation. Since #622 a first page makes
+  three content-list requests (series, sections and contents) within that
+  operation.
 
 On the SHIELD (Android 11, signed-in ABEMA, Windscribe Tokyo route), the
 Episodes page for ABEMA大相撲2026 listed, newest first:
@@ -1619,6 +1620,35 @@ account first (readiness), but the Episodes page did not.
 The catalog IPC still reports an account refusal as a temporary failure. The
 readiness check makes that a narrow race, and Retry runs the check again. A
 dedicated IPC outcome was not added.
+
+#### Episodes preparation time — November 23, 2026
+
+[#629](https://github.com/altendky/tachiai/issues/629): opening Episodes spent
+most of the 45 s operation deadline before the first provider request, and
+several attempts ended `CANCELLED` at the deadline. Closed timing markers found
+the cause: the guest runtime re-read the saved provider and route records
+(an encrypted, protected read) before and after every 8 KiB block of the four
+cached public bundles, about 600 reads per operation. The bundle cache was
+already hit on every warm run; the reads, not downloads or verification, were
+the cost.
+
+- Bundle reads and downloads now check cancellation, lease and deadline on
+  every block, and re-read the saved owner at most every 500 ms and before
+  each bundle and each download. The usual owner checks before the route
+  lease, after the bundles and before any WebView request are unchanged.
+  Identity/size/SHA-256 verification, the exact request admission, route
+  rules and the deadline are unchanged.
+- Bundles still come from the same on-disk cache and are hash-verified on
+  every load. Keeping them in memory or warming a WebView was not needed.
+- The timings and the remaining account check are recorded in
+  [ABEMA guest preparation](abema-guest-bootstrap.md#preparation-timing).
+
+On `tachiai-dev` (Windscribe Tokyo WireGuard, saved ABEMA account), opening
+ABEMA大相撲2026 › Episodes and switching its episode groups succeeded on every
+one of four cold-process and five warm-process operations after the change.
+The first provider request came 4.2–4.9 s after preparation began, instead of
+about 12–13 s on the same emulator before it (and about 34 s in the original
+report).
 
 ### ABEMA channel between broadcasts — November 19, 2026
 

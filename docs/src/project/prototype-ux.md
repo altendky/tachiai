@@ -202,7 +202,14 @@ also offers move actions for keyboard and accessibility use. Browsable titles
 and subtitles form one target; the existing subtitle names the action, such as
 “Browse programs › · Availability unknown”. A result with a known length
 (an ABEMA scheduled broadcast or a Twitch video) ends its subtitle with it, in
-the same format as episode rows (#608). Provider adapters distinguish
+the same format as episode rows (#608). Browse episodes shows replay
+lengths like the picker's Episodes page (#672): while the listing is shown,
+each finished ABEMA broadcast's real length is read in the background, a page
+at a time, and replaces the slot span when it arrives. Live, in-progress,
+upcoming and unreadable broadcasts keep the span, with no error. Any other
+catalog request or navigation comes first and ends a running read. Known
+lengths stay in memory for the app session, shared with the picker. Provider
+adapters distinguish
 channel programs, series episodes and broadcaster videos. Exact videos and
 broadcasts do not advertise child browsing. Refresh and removal remain separate
 targets. Removal requires confirmation. Refresh retrieves
@@ -1590,7 +1597,8 @@ coverage, so Tachiai does not choose an episode itself.
     real length of each finished broadcast is read from its replay manifest
     in the background and replaces the span when it arrives. A live,
     in-progress or upcoming broadcast, or one whose manifest cannot be read,
-    keeps the span, with no error. Known lengths stay for the session.
+    keeps the span, with no error. Known lengths stay for the app session,
+    shared with the provider screen's Browse episodes.
   - Loading, empty and failure states are shown, with Retry starting again
     from the newest page. Pages already loaded stay for the session.
   - Episode loads use their own worker, so they never delay Watch.

@@ -254,7 +254,9 @@ destination is added; broadcast rows reuse the existing exact slot path. See
 
 The user approved, on 2026-11-24, fetching the replay manifest (MPD only) of
 each finished broadcast listed in Episodes, to show its real length
-([#672](https://github.com/altendky/tachiai/issues/672)). The metadata
+([#672](https://github.com/altendky/tachiai/issues/672)). The same day the
+user asked for the provider screen's Browse episodes list to show them too; it
+uses the same operation and destinations. The metadata
 runtime's replay-length operation adds three cookie-free GETs, all on
 destinations playback already uses: the media token
 (`/v1/media/token` on `api.p-c3-e.abema-tv.com`, bearer), each requested

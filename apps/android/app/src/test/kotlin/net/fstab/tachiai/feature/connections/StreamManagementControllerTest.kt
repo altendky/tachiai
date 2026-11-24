@@ -32,7 +32,7 @@ class StreamManagementControllerTest {
         val episode = entry("never-live-episode", CatalogIntent.VIDEO, "On-demand episode", CatalogAvailability.AVAILABLE)
         val future = entry("upcoming-broadcast", CatalogIntent.BROADCAST, "Upcoming broadcast", CatalogAvailability.UPCOMING)
         val series = CatalogEntry(parent, "Saved show")
-        val children = listOf(episode, entry("second-episode", CatalogIntent.VIDEO, "Second episode", CatalogAvailability.EXPIRED))
+        var children = listOf(episode, entry("second-episode", CatalogIntent.VIDEO, "Second episode", CatalogAvailability.EXPIRED))
         val items = listOf(offline, episode, future, series)
         // Provider child groups (#622); the second group lists its own children.
         var childGroups: List<CatalogChildGroup> = emptyList()
@@ -107,15 +107,24 @@ class StreamManagementControllerTest {
         }
         override fun refresh(resource: CatalogResource): CatalogResult<CatalogEntry> = CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
         override fun resolve(resource: CatalogResource): CatalogResult<CatalogPlaybackResource> = CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
+        val lengthRequests: MutableList<List<CatalogResource>> = java.util.Collections.synchronizedList(mutableListOf())
+        @Volatile var lengthCancels = 0
+        var onLengths: () -> Unit = {}
+        var lengthReply: (List<CatalogResource>) -> CatalogResult<Map<CatalogResource, Long>> = { CatalogResult.Failure(CatalogFailure.UNSUPPORTED) }
+        override fun replayLengths(resources: List<CatalogResource>, canContinue: () -> Boolean): CatalogResult<Map<CatalogResource, Long>> {
+            lengthRequests += resources; onLengths()
+            return if (!canContinue()) CatalogResult.Failure(CatalogFailure.TEMPORARY) else lengthReply(resources)
+        }
+        override fun cancelReplayLengths() { lengthCancels++ }
         override fun close() { closed = true; closedSignal.complete(Unit) }
     }
     private fun store(memory: Memory, instance: ProviderInstance) = ConfiguredSourceStore(memory, instance.id,
         ProviderId(instance.service.name.lowercase(java.util.Locale.ROOT)))
     private fun controller(scope: CoroutineScope, catalog: Catalog, memory: Memory,
         io: CoroutineDispatcher = Dispatchers.Unconfined, diagnostics: FailureReporter = FailureReporter.NONE,
-        clockMs: () -> Long = System::currentTimeMillis) =
+        clockMs: () -> Long = System::currentTimeMillis, lengthCache: ReplayLengthCache = ReplayLengthCache()) =
         StreamManagementController(catalog.instance, catalog, store(memory, catalog.instance), { emptyList() }, scope, io, diagnostics,
-            clockMs = clockMs)
+            clockMs = clockMs, lengthCache = lengthCache)
     private suspend fun idle(controller: StreamManagementController) = withTimeout(5_000) {
         controller.state.first { !it.loading && !it.saving }
     }
@@ -956,5 +965,92 @@ class StreamManagementControllerTest {
             assertFalse(controller.preview(catalog.future))
             assertEquals(0, memory.writes)
         } finally { release.countDown(); controller.close() }
+    }
+    // #672: Browse episodes shows real replay lengths like the picker's Episodes.
+    private fun slot(catalog: Catalog, id: String) = CatalogEntry(CatalogResource(catalog.providerId, "slot", "sumo/$id", CatalogIntent.BROADCAST),
+        "Broadcast $id", CatalogAvailability.AVAILABLE, durationSeconds = 17_100)
+    private suspend fun settle() {
+        while (true) {
+            val active = currentCoroutineContext()[Job]!!.children.filter { it.isActive }.toList()
+            if (active.isEmpty()) return
+            active.forEach { it.join() }
+        }
+    }
+
+    @Test fun browseEpisodesReplaceSpansWithReplayLengthsInTheBackgroundAndShareThem() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.ABEMA })
+        val (day15, live, day14) = listOf("day15", "live", "day14").map { slot(catalog, it) }
+        catalog.children = listOf(day15, live, day14, catalog.episode)
+        catalog.lengthReply = { resources -> CatalogResult.Value(resources.filter { it != live.resource }
+            .associateWith { if (it == day14.resource) 8_853L else 12_240L }) }
+        val cache = ReplayLengthCache()
+        val memory = Memory()
+        val controller = controller(this, catalog, memory, lengthCache = cache)
+        controller.load(); idle(controller); settle()
+        // Other listings keep their broadcasts' spans and ask nothing.
+        assertTrue(catalog.lengthRequests.isEmpty())
+        controller.children(catalog.parent); idle(controller); settle()
+        assertEquals(listOf(listOf(day15.resource, live.resource)), catalog.lengthRequests)
+        assertEquals(listOf(12_240L, 17_100L), controller.state.value.entries.map { it.durationSeconds })
+        assertNull(controller.state.value.failure)
+        // The next page asks only its own broadcast and keeps the listing's continuation.
+        controller.more(); idle(controller); settle()
+        assertNotNull(catalog.lastQuery!!.cursor)
+        assertEquals(listOf(day14.resource), catalog.lengthRequests.last())
+        assertEquals(listOf(12_240L, 17_100L, 8_853L, null), controller.state.value.entries.map { it.durationSeconds })
+        // Reopening the listing retries only the broadcast without a length.
+        assertTrue(controller.back()); idle(controller)
+        controller.children(catalog.parent); idle(controller); settle()
+        assertEquals(listOf(live.resource), catalog.lengthRequests.last())
+        assertEquals(listOf(12_240L, 17_100L), controller.state.value.entries.map { it.durationSeconds })
+        controller.close()
+        // Known lengths stay for the session and apply at once in another listing;
+        // a failed request keeps the span without an error.
+        val asked = catalog.lengthRequests.size
+        catalog.lengthReply = { CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+        val next = controller(this, catalog, memory, lengthCache = cache)
+        next.load(); idle(next); next.children(catalog.parent); idle(next); settle()
+        assertEquals(listOf(12_240L, 17_100L), next.state.value.entries.map { it.durationSeconds })
+        assertEquals(listOf(live.resource), catalog.lengthRequests.last()); assertEquals(asked + 1, catalog.lengthRequests.size)
+        assertNull(next.state.value.failure)
+        next.close()
+    }
+
+    @Test fun otherCatalogCallsCancelARunningLengthRequestAndItResumesAfterThem() = runBlocking {
+        val catalog = Catalog(defaultProviderInstances().single { it.service == PrototypeService.ABEMA })
+        val (day15, live) = listOf("day15", "live").map { slot(catalog, it) }
+        catalog.children = listOf(day15, live)
+        catalog.lengthReply = { resources -> CatalogResult.Value(resources.associateWith { 12_240L }) }
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var entered = CountDownLatch(1); var release = CountDownLatch(1)
+        catalog.onLengths = { order += "lengths"; entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        catalog.onLookup = { order += "lookup" }
+        val controller = controller(this, catalog, Memory(), io = Dispatchers.IO)
+        controller.load(); idle(controller)
+        controller.children(catalog.parent); idle(controller)
+        assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+        // A lookup ends the running request and waits for it before asking the provider.
+        controller.openLink(); controller.resolveLink(catalog.episode.resource.identity)
+        withTimeout(5_000) { while (catalog.lengthCancels == 0) delay(10) }
+        assertEquals(listOf("lengths"), order.toList())
+        release.countDown(); linkIdle(controller); settle()
+        assertEquals(catalog.episode, controller.state.value.link!!.entry)
+        // The cancelled request's broadcasts are asked again after the lookup.
+        assertEquals(listOf("lengths", "lookup", "lengths"), order.toList())
+        assertEquals(listOf(12_240L, 12_240L), controller.state.value.entries.map { it.durationSeconds })
+        // Leaving the listing ends a running request without resuming it elsewhere.
+        val day13 = slot(catalog, "day13")
+        catalog.children = listOf(day13)
+        entered = CountDownLatch(1); release = CountDownLatch(1)
+        controller.dismissLink(); controller.children(catalog.parent); idle(controller)
+        assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+        val cancels = catalog.lengthCancels; val asked = catalog.lengthRequests.size
+        assertTrue(controller.back())
+        assertEquals(cancels + 1, catalog.lengthCancels)
+        release.countDown(); settle()
+        assertEquals(asked, catalog.lengthRequests.size)
+        controller.children(catalog.parent); idle(controller); settle()
+        assertEquals(listOf(day13.resource), catalog.lengthRequests.last())
+        controller.close()
     }
 }

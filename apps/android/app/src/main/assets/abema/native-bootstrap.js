@@ -22,6 +22,9 @@
   let selectedEpisode;
   let selectedChannel;
   let selectedSlot;
+  // Scrub thumbnails (#673): the selected replay's public timeline sprite
+  // prefix. Not playback eligibility; published only beside a READY source.
+  let timeline;
   let expectedGateway;
   let license;
   let user;
@@ -60,7 +63,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     response?.fill(0);
-    response = selected = selectedEpisode = selectedChannel = selectedSlot = expectedGateway = license = user = operation = offerAccount = undefined;
+    response = selected = selectedEpisode = selectedChannel = selectedSlot = timeline = expectedGateway = license = user = operation = offerAccount = undefined;
     accountExpiry = accountWall = slotPremiumExpiry = slotPremiumCandidate = slotChaseCandidate = slotChaseExpiry = undefined;
     sourceExpiry = sourceWall = undefined;
     selectedChase = selectedLinear = false;
@@ -475,6 +478,7 @@
       },
       sourceBinding: () => usable() && state === 'READY' && replay && !configuredSlot ? stringify({ episodeId: selectedEpisode, uri: selected }) : null,
       channelBinding: () => usable() && state === 'READY' && !replay ? stringify({ channelId: selectedChannel, uri: selected }) : null,
+      timelineThumbnails: () => usable() && state === 'READY' && replay && timeline !== undefined ? timeline : null,
       slotBinding: () => usable() && state === 'READY' && configuredSlot ?
         stringify({ channelId: selectedChannel, slotId: selectedSlot, uri: selected,
           ...(selectedChase ? { chase: true } : selectedLinear ? { linear: true } : {}) }) : null,
@@ -690,6 +694,7 @@
         !/^[A-Za-z0-9_:.~-]{1,256}$/.test(program.playback.arin) ||
         program.playback.arin === '.' || program.playback.arin === '..') throw new Error();
       content = { source: { type: 'program', programId: episodeId, arin: program.playback.arin } };
+      timeline = timelineThumbnailPrefix(metadata.timelineThumbComponent, 'programs', episodeId);
       if (configured) expectedGateway = 'https://streaming-api-cf.p-c2-x.abema-tv.com/v1/playbackResources/' + program.playback.arin;
     }
     const useCase = replay ? 'vod' : 'live';
@@ -985,6 +990,18 @@
     selectedChannel = channelId;
     selectedSlot = slotId;
     selectedChase = chase;
+    if (!chase) timeline = timelineThumbnailPrefix(slot.timelineThumbComponent, 'slots', slotId);
+  }
+  // Public timeline sprites on ABEMA's image host (#673), bound to the
+  // selected slot or program. Anything else means no thumbnails, never a failure.
+  function timelineThumbnailPrefix(component, kind, id) {
+    if (!component || typeof component !== 'object' || Array.isArray(component) ||
+      component.extension !== 'png' || typeof component.urlPrefix !== 'string') return undefined;
+    const prefix = component.urlPrefix;
+    const expected = 'https://image.p-c2-x.abema-tv.com/media/' + kind + '/' + id + '/';
+    if (prefix.length > 512 || !prefix.startsWith(expected) ||
+      !/^[A-Za-z0-9_-]{1,64}\/timeline$/.test(prefix.slice(expected.length))) return undefined;
+    return prefix;
   }
   function boundedAuthorityIds(value) {
     return Array.isArray(value) && value.length >= 1 && value.length <= 1000 &&

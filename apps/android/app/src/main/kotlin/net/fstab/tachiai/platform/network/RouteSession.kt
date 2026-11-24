@@ -26,7 +26,9 @@ import net.fstab.tachiai.provider.abema.account.AbemaApprovalBrowserPolicy
 // source identity, request method and media-origin policies above it.
 private const val PLAYBACK_HOSTS = "abema.tv,api.p-c3-e.abema-tv.com,api.abema.io," +
     "streaming-api-cf.p-c2-x.abema-tv.com,license.p-c3-e.abema-tv.com,*-abematv.akamaized.net," +
-    "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net"
+    "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net," +
+    // Scrub-preview sprites (#673), user-approved 2026-11-24.
+    "image.p-c2-x.abema-tv.com"
 
 // A route owner in another process derives allowed hosts from this closed
 // purpose itself; a lease client never supplies a host list.

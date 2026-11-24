@@ -1859,6 +1859,31 @@ rebuilt and reinstalled, and the normal launcher was restored with all 20
 protected files still unchanged.
 Issue #193 remains open; this source-only option does not enable normal live playback.
 
+### Timeline thumbnails — #673
+
+Slots and video programs carry a public `timelineThumbComponent`, `{urlPrefix,
+extension: "png"}`. For slots the prefix is
+`https://image.p-c2-x.abema-tv.com/media/slots/{slotId}/{opaque}/timeline`; for
+programs `…/media/programs/{programId}/{n}/timeline`. Sprites are
+`{urlPrefix}/{600·k}.png`, one per 10 minutes. Each is 1920×648, a 10×6 grid of
+192×108 tiles filled row by row, one tile per 10 s; the last sprite has only
+the rows it needs and the next one returns 404. The bytes are JPEG despite the
+extension. The host is behind Cloudflare, needs no cookie, token or Japanese
+exit, and its resizer (`?width=1280&quality=50`, as the web player also uses
+the resizer) returns a 1280-wide sheet of about 80 KB instead of about 300 KB.
+On the 千秋楽 幕内 replay of 2026-11-22, frames at 1:12:27–1:13:18 matched the
+tiles for the same positions, so replay position 0 is the sprite timeline's 0.
+
+The native bootstrap publishes the prefix through a separate
+`timelineThumbnails()` projection, only for a READY replay slot or program
+(not Chase or a linear continuation). It must start with the exact selected
+slot or program path and end in one `[A-Za-z0-9_-]` segment plus `/timeline`;
+the native side checks the same shape again. Anything else means no
+thumbnails, never a preparation failure, and the binding projections are
+unchanged. The viewer fetches only resized sprites under that prefix through
+the feed's own route. The image host is in the playback route's CONNECT host
+list ([approval](media-origin-approvals.md#scrub-preview-image-hosts--2026-11-24)).
+
 ## Preparation failure observations — 2026-10-14
 
 The cached native session now retains its already-parsed helper prefix or first

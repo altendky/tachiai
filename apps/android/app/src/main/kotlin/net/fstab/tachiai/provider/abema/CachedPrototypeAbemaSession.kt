@@ -215,6 +215,10 @@ internal class CachedPrototypeAbemaSession(
     @Volatile private var budget: NativePlaybackBudget? = null
     @Volatile private var deadline = 0L
     private val playbackAvailability = AtomicReference<AbemaPlaybackAvailability?>()
+    // The selected replay's public timeline sprites (#673), bound to its slot
+    // or program; null when it has none. Scrub previews only, never eligibility.
+    @Volatile var timelineThumbnailPrefix: String? = null
+        private set
     private var started = false
     private var documentStarted = false
     private var preparingNative = false
@@ -999,7 +1003,8 @@ internal class CachedPrototypeAbemaSession(
             if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
             else view.evaluateJavascript("(() => { const h = window['$name']; return JSON.stringify({" +
                 "binding: h?.${when { slotResource != null -> "slotBinding"; episodeResource != null -> "sourceBinding"; channelResource != null -> "channelBinding"; else -> "selectedSource" }}() || null," +
-                "availability: h?.playbackAvailability() || null}); })()") { raw ->
+                "availability: h?.playbackAvailability() || null," +
+                "timeline: h?.timelineThumbnails?.() || null}); })()") { raw ->
                 if (!current(run) || SystemClock.elapsedRealtime() >= sourceDeadline || !allows(view.url)) completion.complete(null)
                 else {
                     val projection = runCatching { org.json.JSONObject(quoted(raw, 24_000) ?: "") }.getOrNull()
@@ -1056,6 +1061,14 @@ internal class CachedPrototypeAbemaSession(
                         record("sourcePolicy=$category shape=$shape")
                     }
                     if (allowed) playbackAvailability.compareAndSet(null, availability)
+                    if (allowed && replay && slotBinding?.linear != true && slotBinding?.chase != true) {
+                        val timeline = projection?.opt("timeline") as? String
+                        timelineThumbnailPrefix = when {
+                            slotResource != null -> abemaTimelineThumbnailPrefix(timeline, AbemaTimelineKind.SLOT, slotId)
+                            episodeResource != null -> abemaTimelineThumbnailPrefix(timeline, AbemaTimelineKind.PROGRAM, episodeId)
+                            else -> null
+                        }
+                    }
                     completion.complete(uri?.takeIf { allowed && playbackAvailability.get()?.current() == true })
                 }
             }

@@ -729,6 +729,42 @@ pair/single-feed seek transactions have JVM tests. New instrumentation tests
 for the transport row, scrub focus, TV keys and phone double tap compile; they
 have not been run on a device for this change.
 
+### Scrub previews — #673
+
+While choosing a scrub target on an ABEMA or Twitch replay or on-demand item,
+a thumbnail of the target position shows above the position row, centred on the
+pending point of the scrub bar and kept within the bar
+([#673](https://github.com/altendky/tachiai/issues/673), user approval
+2026-11-24). It is 16:9, 192 dp wide (a third of the width on a narrow view),
+with a thin light border, on phone, tablet and TV alike; it follows touch drags
+and remote steps the same way. In a pair it shows only the target feed's image
+(the feed the position row names). It disappears when the scrub commits or is
+abandoned.
+
+- **Sources:** ABEMA's timeline sprites (one tile per 10 s) and Twitch's VOD
+  seek-preview storyboard (one tile per few minutes on long VODs; Twitch
+  chooses the spacing). See the
+  [ABEMA](abema-catalog-access.md#timeline-thumbnails--673) and
+  [Twitch](twitch-catalog-access.md#vod-seek-previews--673) notes and the
+  [image-host approval](media-origin-approvals.md#scrub-preview-image-hosts--2026-11-24).
+- **Fetching:** only while the scrub bar is in use: the target's sprite sheet
+  first, then the neighbouring sheets, on two background workers; work for an
+  older target is dropped. Decoded sheets stay in an 8 MB memory cache for the
+  viewer; nothing is written to disk. Requests use the feed's own route. Logs
+  name only fixed outcomes and timings (`TachiaiScrubPreview`), never an address.
+- **Missing data:** a feed without thumbnails, a failed request or a tile past
+  the end of a sheet shows no image; scrubbing, its time and its commit are
+  unchanged. A later scrub retries failed requests once more.
+
+On tachiai-dev (2026-11-24, ABEMA through a Windscribe Tokyo WireGuard route
+from the US), a new sheet took about 1.2–1.8 s to appear (2.5–3 s on the first
+connection) and positions within an already loaded sheet (10 minutes of an
+ABEMA replay) appeared at once. Video frames at several positions matched their
+tiles to within one tile. The Twitch path was verified against real responses
+from a JVM check; its on-device check is still pending because the emulator's
+Twitch connection needs reconnecting. The tile mapping and the provider parsing
+have JVM tests; the viewer placement has no instrumentation test.
+
 ### Replay navigation — #655 part 2
 
 Replays and on-demand items remember where you were

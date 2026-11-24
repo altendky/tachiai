@@ -154,6 +154,9 @@ import net.fstab.tachiai.presentation.ConfiguredPlaybackSelection
 import net.fstab.tachiai.presentation.PrototypeService
 import net.fstab.tachiai.provider.abema.androidAbemaEpisodePlaybackOwnership
 import net.fstab.tachiai.provider.abema.CachedPrototypeAbemaSession
+import net.fstab.tachiai.provider.abema.abemaScrubPreviewSource
+import net.fstab.tachiai.provider.twitch.twitchScrubPreviewSource
+import net.fstab.tachiai.presentation.ScrubPreviewSource
 import net.fstab.tachiai.provider.abema.configureAbemaCachedPlaybackProfile
 import net.fstab.tachiai.provider.abema.prepareAndroidAbemaViewerStartup
 import net.fstab.tachiai.provider.abema.account.AbemaAccountReadiness
@@ -1199,6 +1202,7 @@ open class PrototypeActivity : ComponentActivity() {
             onMarkedCorrespondence = { delta, correspondence -> requestTimingAdjustment(delta, true, correspondence) },
             onSkip = ::requestSkip,
             onStartOver = ::requestStartOver,
+            scrubPreviews = ScrubPreviewLoader(sources = { side -> scrubPreviewSource(side.ordinal) }),
             selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet())
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
@@ -1223,6 +1227,18 @@ open class PrototypeActivity : ComponentActivity() {
     }
 
     private fun requestRelativeAdjustment(delta: Long) = requestTimingAdjustment(delta, marked = false)
+
+    // Scrub previews (#673) for a replay feed, fetched through its own route.
+    private fun scrubPreviewSource(index: Int): ScrubPreviewSource? {
+        val source = selection?.slots?.getOrNull(index)?.takeIf { it.kind == PrototypePlaybackKind.REPLAY } ?: return null
+        val route = routes[source.instanceId] ?: return null
+        return when (source.service) {
+            PrototypeService.ABEMA -> (sessions[index] as? CachedPrototypeAbemaSession)?.timelineThumbnailPrefix
+                ?.let { abemaScrubPreviewSource(it, route::open) }
+            PrototypeService.TWITCH -> twitchScrubPreviewSource(source.resource.identity, route::open)
+            else -> null
+        }
+    }
 
     // Replay skip/scrub (#655). Both feeds of a pair move by one amount, so the
     // pair offset, its saved preference and Timing history are left alone, and

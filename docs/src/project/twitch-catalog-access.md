@@ -229,3 +229,32 @@ sensitive evidence. Fixture success proves contract behavior, not provider
 access. Completion of #98 documents the Helix design and signed-out decision;
 the subsequently selected Smart TV identity and shared native use remain an
 experiment and do not complete those observations or #99.
+
+## VOD seek previews — #673
+
+Scrub previews for a configured Twitch video use one undocumented GQL field,
+`video(id) { seekPreviewsURL }`, under the
+[general integration scope](security-and-privacy.md#general-provider-integration-approval--2026-10-10)
+and the user's scrub-thumbnail approval of 2026-11-24. The request is an
+anonymous POST to `https://gql.twitch.tv/gql` with the Smart TV client ID and no
+account token, so it never touches the shared connection's lease. Sub-only or
+otherwise restricted videos may therefore have no previews.
+
+Observed on 2026-11-24 for midnightsumo VODs: `seekPreviewsURL` is
+`https://d….cloudfront.net/{storage directory}/storyboards/{videoId}-info.json`,
+on the VOD's own CloudFront storage distribution (it varies between VODs). The
+JSON lists one entry per quality with `count` tiles of `width`×`height`, `cols`
+× `rows` per sheet, one tile every `interval` seconds, and sheet file names in
+the same directory: for an 80,940 s VOD, 200 tiles every 405 s, `low` 160×90 in
+one 5×40 sheet and `high` 220×124 in four 5×10 sheets (1100×1240 JPEG, about
+200 KB). Neither URL carries a token.
+
+Tachiai accepts only a storyboard URL ending in this video's `-info.json` on a
+`d[a-z0-9]{8,32}.cloudfront.net` host without query, port or fragment, prefers
+`high` sheets and fetches only `{videoId}-(high|low)-{n}.jpg` from the same
+directory. All three requests use the feed's route. On a System route that is
+the device network; an imported route's CONNECT host list does not include
+these CloudFront distributions (only the separately observed replay CDN host),
+so previews are currently unavailable there. A JVM check against the real
+service resolved and fetched one of these storyboards; Android device acceptance
+is pending.

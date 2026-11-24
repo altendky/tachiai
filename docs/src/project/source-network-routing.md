@@ -605,6 +605,13 @@ Evidence:
 - [ABEMA preparation and native creation](https://github.com/altendky/tachiai/blob/0e6bb1ff66ab715c8b4824f7e4fb19b9a22fdebc/apps/android/app/src/debug/kotlin/net/fstab/tachiai/provider/abema/CachedPrototypeAbemaSession.kt#L196-L455)
   and [Chromium bootstrap requests](https://github.com/altendky/tachiai/blob/0e6bb1ff66ab715c8b4824f7e4fb19b9a22fdebc/apps/android/app/src/debug/assets/abema/native-bootstrap.js#L129-L347).
 
+Later, scrub-preview images (#673: ABEMA timeline sprites, the Twitch
+storyboard query, JSON and sheets) use the feed's own route session through
+native bounded HTTPS, not the System network, although ABEMA's image host needs
+no Japanese exit. The ABEMA image host is in the playback CONNECT host list;
+Twitch's per-VOD CloudFront storyboard hosts are not, so imported Twitch routes
+show no previews.
+
 Both feed slots currently run in one presentation process. Historical and
 cached prototypes have different named processes and WebView data-directory
 suffixes, but neither creates a process per feed or a separate application UID.

@@ -84,7 +84,8 @@ reports no position. The controlled web fixture keeps only joint Play/Pause and
 has no replay position row, skips or scrub bar; it would need the same rules
 before offering them. Its layout formula already takes the measured bar heights.
 Remembered replay positions and Start over (#655 part 2) are Android-only too:
-the web fixture does not save or resume positions.
+the web fixture does not save or resume positions. So are scrub previews (#673),
+which need the scrub bar the web fixture lacks.
 
 ## Other implementations
 

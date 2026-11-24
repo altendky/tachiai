@@ -43,7 +43,10 @@ class PickerCollectionEpisodesTest {
     private var override: ((CatalogQuery) -> CatalogResult<CatalogPage>)? = null
     private val queued = mutableListOf<() -> Unit>()
     private val opened = mutableListOf<Pair<ConfiguredSource, Catalog>>()
-    private val episodes = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action }) { source ->
+    // Lengths are shared for the app session; each test starts without any.
+    private val lengthCache = ReplayLengthCache()
+    private val episodes = PickerCollectionEpisodes({ task -> task.run() }, { action -> queued += action },
+        lengthCache = lengthCache) { source ->
         Catalog().also { opened += source to it }
     }
     private fun deliver() { val due = queued.toList(); queued.clear(); due.forEach { it() } }
@@ -275,7 +278,8 @@ class PickerCollectionEpisodesTest {
 
     @Test fun aFailedOrCancelledLengthRequestKeepsTheSpanAndIsRetriedWithTheNextPage() {
         val tasks = mutableListOf<Runnable>()
-        val paced = PickerCollectionEpisodes({ task -> tasks += task }, { action -> queued += action }) { source ->
+        val paced = PickerCollectionEpisodes({ task -> tasks += task }, { action -> queued += action },
+            lengthCache = lengthCache) { source ->
             Catalog().also { opened += source to it }
         }
         fun run() { while (tasks.isNotEmpty() || queued.isNotEmpty()) { tasks.toList().also { tasks.clear() }.forEach { it.run() }; deliver() } }

@@ -83,6 +83,7 @@ internal class StreamManagementController(
     private val diagnostics: FailureReporter = FailureReporter.NONE,
     notice: String? = null,
     private val clockMs: () -> Long = System::currentTimeMillis,
+    lengthCache: ReplayLengthCache = ReplayLengthCache.session,
 ) : AutoCloseable {
     private companion object { val privacyRevisions = AtomicLong(); val discoveryContexts = AtomicLong() }
     init {
@@ -111,6 +112,14 @@ internal class StreamManagementController(
     private val roots = linkedMapOf<String, DiscoveryFrame>()
     private val staleContinuations = mutableSetOf<Long>()
     @Volatile private var closed = false
+    // Replay lengths (#672), as on the picker's Episodes: a browsed parent's
+    // listed finished broadcasts show their real length when it arrives in the
+    // background. Navigation and every other catalog call come first; they end
+    // a running request, and its broadcasts are asked again after them.
+    private val lengths = ReplayLengthRequests(lengthCache) // stateLock
+    private val lengthsRun = AtomicLong()
+    private var lengthsActive = 0L // stateLock; the current request's run, if any.
+    private var foregroundCalls = 0 // stateLock
     @Volatile var pendingMutation: Job? = null
         private set
 
@@ -146,7 +155,7 @@ internal class StreamManagementController(
             childHeading = null, childTitle = null, navigationBackLabel = null, childGroups = emptyList(), childGroup = null) }
     }
     private fun current(revision: Long) = !closed && browseRevision.get() == revision
-    private fun cancelBrowse() { browseRevision.incrementAndGet(); browseJob?.cancel(); browseJob = null }
+    private fun cancelBrowse() { browseRevision.incrementAndGet(); browseJob?.cancel(); browseJob = null; stopLengths() }
     private fun cancelLink() { linkRevision.incrementAndGet(); linkJob?.cancel(); linkJob = null }
     private fun valid(entries: List<CatalogEntry>): List<CatalogEntry> = entries.also {
         check(it.all { entry -> entry.resource.providerId == catalog.providerId })
@@ -154,7 +163,12 @@ internal class StreamManagementController(
     // Provider adapters may discard opaque continuations whenever another
     // query or lookup runs. Retained rows are safe to show, but their cursors
     // must be rebuilt before requesting another page.
-    private suspend fun <T> catalogCall(action: () -> T): T = withContext(io) {
+    private suspend fun <T> catalogCall(action: () -> T): T {
+        synchronized(stateLock) { foregroundCalls++ }
+        stopLengths()
+        try { return lockedCall(action) } finally { synchronized(stateLock) { foregroundCalls-- }; fetchLengths() }
+    }
+    private suspend fun <T> lockedCall(action: () -> T): T = withContext(io) {
         catalogCalls.withLock {
             synchronized(stateLock) {
                 staleContinuations.retainAll(retainedIds() + state.value.discoveryContextId)
@@ -162,6 +176,46 @@ internal class StreamManagementController(
                 staleContinuations.addAll(retainedIds())
             }
             action()
+        }
+    }
+    // Ends a running length request early; the catalog call waiting behind it then proceeds.
+    private fun stopLengths() {
+        val running = synchronized(stateLock) { lengthsRun.incrementAndGet(); (lengthsActive != 0L).also { lengthsActive = 0 } }
+        if (running) runCatching { catalog.cancelReplayLengths() }
+    }
+    // Browse episodes: a browsed collection's listing, like the picker's Episodes.
+    private fun episodes(snapshot: StreamManagementState) = snapshot.query.parent?.intent == CatalogIntent.COLLECTION
+    // One page of the shown episode listing's broadcasts at a time, once it has
+    // loaded and no other catalog call is pending. Known lengths apply at once.
+    // Replay lengths leave continuations untouched, so this skips catalogCall.
+    private fun fetchLengths(): Unit = synchronized(stateLock) {
+        val snapshot = state.value
+        if (closed || foregroundCalls > 0 || !episodes(snapshot) || snapshot.loading) return
+        val shown = snapshot.entries.map(lengths.cache::withLength)
+        if (shown != snapshot.entries) publish { it.copy(entries = shown) }
+        if (lengthsActive != 0L) return
+        val asked = lengths.next(shown)
+        if (asked.isEmpty()) return
+        val run = lengthsRun.incrementAndGet()
+        lengthsActive = run
+        val current = { !closed && lengthsRun.get() == run }
+        scope.launch {
+            var result: CatalogResult<Map<CatalogResource, Long>>? = null
+            try {
+                result = withContext(io) { catalogCalls.withLock { if (current()) catalog.replayLengths(asked, current) else null } }
+            } catch (_: CancellationException) {
+            } catch (_: Exception) { result = CatalogResult.Failure(CatalogFailure.TEMPORARY) }
+            val completed = current()
+            val next = synchronized(stateLock) {
+                if (lengthsActive == run) lengthsActive = 0
+                if (closed) return@launch
+                lengths.finished(asked, result, completed).also {
+                    if (result is CatalogResult.Value) publish {
+                        if (episodes(it)) it.copy(entries = it.entries.map(lengths.cache::withLength)) else it
+                    }
+                }
+            }
+            if (next || !completed) fetchLengths()
         }
     }
     private fun clearDiscovery(failure: CatalogResult.Failure, keepCapabilities: Boolean = false, keepLink: Boolean = false) {
@@ -278,6 +332,7 @@ internal class StreamManagementController(
         lastRefreshId = null
         initialQueryChosen = true
         cancelBrowse()
+        if (!append) synchronized(stateLock) { lengths.reset() }
         if (!append && !preserveContext) {
             retainRoot()
             resetNavigation(clearRoots = false)
@@ -296,7 +351,7 @@ internal class StreamManagementController(
             catch (error: Exception) {
                 if (current(revision)) { diagnostics.report(FailureStage.CATALOG_LOAD, error)
                     publishBrowse(revision) { it.copy(failure = CatalogResult.Failure(CatalogFailure.TEMPORARY)) } }
-            } finally { publishBrowse(revision) { it.copy(loading = false) } }
+            } finally { publishBrowse(revision) { it.copy(loading = false) }; fetchLengths() }
         }
     }
     private fun selectTab(id: String, query: CatalogQuery) = synchronized(stateLock) {
@@ -380,6 +435,7 @@ internal class StreamManagementController(
             resultsTruncated = frame.resultsTruncated, childHeading = frame.heading, childTitle = frame.title, navigationBackLabel = frame.backLabel,
             discoveryContextId = frame.id, retainedDiscoveryContextIds = retainedIds(frame.id), failure = frame.failure, loading = false,
             childGroups = frame.childGroups, childGroup = frame.childGroup) }
+        fetchLengths()
         true
     }
     fun more() = synchronized(stateLock) {
@@ -431,7 +487,7 @@ internal class StreamManagementController(
                     diagnostics.report(FailureStage.CATALOG_LOAD, error)
                     failed(CatalogResult.Failure(CatalogFailure.TEMPORARY), revision = revision)
                 }
-            } finally { publishBrowse(revision) { it.copy(loading = false) } }
+            } finally { publishBrowse(revision) { it.copy(loading = false) }; fetchLengths() }
         }
     }
     fun retry() {

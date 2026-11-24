@@ -330,4 +330,4 @@ internal fun closeAbemaAccountOwnedResources(preparation: RoutePreparation,
 }
 internal fun allowedAccountUrl(url: URL) = url.toExternalForm() == "https://abema.tv/api/auth/oauth/device/token" ||
     abemaEmailRegistrationId(url.toExternalForm()) != null ||
-    runCatching { AbemaGuestBootstrapPolicy.isProfile(url.toURI()) }.getOrDefault(false)
+    runCatching { AbemaMetadataRuntimePolicy.isProfile(url.toURI()) }.getOrDefault(false)

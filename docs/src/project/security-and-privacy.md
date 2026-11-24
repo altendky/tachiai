@@ -290,7 +290,7 @@ issue #248; emulator checks alone do not establish phone behavior.
 
 ## Authentication boundary
 
-The debug [ABEMA guest-only preparation](abema-guest-bootstrap.md) runs in a
+The debug [ABEMA guest-only preparation](abema-metadata-runtime.md) runs in a
 separate cookie-disabled process/profile and stops after the fresh guest
 response. Its native boundary exposes fixed status categories only; guest
 credentials remain in the owned runtime and are discarded at teardown. It
@@ -1015,7 +1015,7 @@ boundaries. Media-facing stream close exposes a fixed exception without a raw
 provider cause or message; private receipt failure still blocks confirmation.
 The existing explicit recovery actions remain, with no automatic process kill,
 route fallback or new provider/media/license permission. The ordinary noncached
-viewer and isolated guest runtime retain separate lifecycle contracts. See the
+viewer and isolated metadata runtime retain separate lifecycle contracts. See the
 [cleanup verification boundaries](prototype-ux.md#cached-viewer-cleanup-ownership).
 
 The user subsequently approved the single-label `*-abematv.akamaized.net`

@@ -398,9 +398,9 @@ internal class AbemaCollectionAccountBinding(
         val resource = it.resource
         resource.providerId == ProviderId("abema") && it.availability == CatalogAvailability.UNKNOWN && it.scheduledStartEpochMs == null &&
             safeMyListTitle(it.title) && it.title == it.title.trim() && when (resource.kind) {
-                "episode" -> resource.intent == CatalogIntent.VIDEO && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
-                "series", "slot_group" -> kind == AbemaCollectionKind.MY_LIST && resource.intent == CatalogIntent.COLLECTION && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
-                "live_event" -> resource.intent == CatalogIntent.BROADCAST && AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)
+                "episode" -> resource.intent == CatalogIntent.VIDEO && AbemaMetadataRuntimePolicy.validEpisodeId(resource.identity)
+                "series", "slot_group" -> kind == AbemaCollectionKind.MY_LIST && resource.intent == CatalogIntent.COLLECTION && AbemaMetadataRuntimePolicy.validEpisodeId(resource.identity)
+                "live_event" -> resource.intent == CatalogIntent.BROADCAST && AbemaMetadataRuntimePolicy.validEpisodeId(resource.identity)
                 "slot" -> resource.intent == CatalogIntent.BROADCAST && resource.identity.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))
                 else -> false
             }

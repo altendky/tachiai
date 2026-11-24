@@ -1,4 +1,22 @@
-# ABEMA guest preparation and metadata verification
+# ABEMA metadata runtime
+
+The isolated ABEMA metadata runtime runs Episodes, Browse programs, Schedule,
+search and slot/episode metadata operations in the `:abema_guest_bootstrap`
+process. It began as a guest-only experiment, described below. With a saved
+account it runs account-bound: it acquires the account grant from the main
+process, refuses the anonymous guest login (admission policy and CSP) and sends
+the account's bearer. Only signed-out use is a guest session.
+
+Since [#629](https://github.com/altendky/tachiai/issues/629) its code, asset and
+document names say "metadata runtime" (for example
+`AbemaMetadataRuntimeCoordinator`, `AbemaMetadataRuntimePolicy` and
+`metadata-runtime.js`). Persisted or closed identifiers keep their names: the
+`:abema_guest_bootstrap` process and `abema-guest-bootstrap` WebView profile
+directory, the owned document path `/_tachiai/guest/`, the JavaScript entry
+points, the `ABEMA_GUEST_*` route purposes, the `GUEST_*` outcome categories, the
+`TachiaiAbemaGuestRuntime` log tag and `GUEST_ONLY`, which is a genuine guest
+operation. The debug `AbemaGuestBootstrapActivity` keeps its name because its
+actions prepare a guest.
 
 Issue [#150](https://github.com/altendky/tachiai/issues/150) adds an explicit
 debug observation entry for a fresh ABEMA guest. It is a prerequisite experiment
@@ -94,7 +112,7 @@ and ends the runtime before reporting **Guest prepared**.
 
 The shared catalog's explicit series-children operation under
 [#176](https://github.com/altendky/tachiai/issues/176) uses its own immutable
-series/page request in the isolated guest process. It creates no
+series/page request in the isolated metadata runtime process. It creates no
 device-authorization challenge, opens no browser and adopts no existing-account
 grant.
 
@@ -131,8 +149,8 @@ History access.
 
 ## Preparation timing
 
-Since [#629](https://github.com/altendky/tachiai/issues/629) each guest operation
-logs closed preparation markers under `TachiaiAbemaPreparation`. A line holds a
+Since [#629](https://github.com/altendky/tachiai/issues/629) each metadata runtime
+operation logs closed preparation markers under `TachiaiAbemaPreparation`. A line holds a
 fixed phase name, for a bundle phase one fixed bundle slot
 (`APPLICATION`, `BOOTSTRAP_SUPPORT`, `LEGACY_SOURCE` or `SOURCE_UTILITIES`), and
 the milliseconds since preparation began. It holds no identifier, URL, account,
@@ -682,7 +700,7 @@ real guest bearer acceptance, current endpoint/schema compatibility or CORS.
 The Android guest fixtures skip in the ordinary instrumentation process before
 any WebView/CookieManager API. To run them, use a temporary test-only instrumentation
 target-process override for `net.fstab.tachiai:abema_guest_bootstrap` and select only
-`AbemaGuestBootstrapDeviceTest`. They initialize the same dedicated guest suffix
+`AbemaMetadataRuntimeDeviceTest`. They initialize the same dedicated guest suffix
 before WebView, leave cookies disabled and make no provider request or saved-store
 write. These isolated synthetic guest-profile fixtures can be run on verified
 `tachiai-dev` while preserving its ordinary profiles/data; default-profile and

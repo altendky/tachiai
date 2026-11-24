@@ -1436,7 +1436,7 @@ backend closure retains the run and blocks replacement admission. A timeout or
 late callback cannot manufacture cleanup confirmation. This state survives
 Activity recreation in the same process and preserves the existing explicit
 Ignore/Restart recovery flow; no automatic process termination or route
-fallback is added. The separate guest runtime and ordinary noncached viewer
+fallback is added. The separate metadata runtime and ordinary noncached viewer
 retain their own lifecycle contracts.
 
 Implementation and verification are tracked in
@@ -1573,7 +1573,7 @@ coverage, so Tachiai does not choose an episode itself.
     that also records the child's intent (#622).
   - An episode is dropped when its item no longer holds that collection.
 - **Scope.** Collections without episode browsing keep the existing refusal.
-  Each page is one fresh guest series operation. It took about 20–30 s until
+  Each page is one series operation in the isolated metadata runtime. It took about 20–30 s until
   #629 (below) removed most of that preparation. Since #622 a first page makes
   three content-list requests (series, sections and contents) within that
   operation.
@@ -1626,7 +1626,7 @@ dedicated IPC outcome was not added.
 [#629](https://github.com/altendky/tachiai/issues/629): opening Episodes spent
 most of the 45 s operation deadline before the first provider request, and
 several attempts ended `CANCELLED` at the deadline. Closed timing markers found
-the cause: the guest runtime re-read the saved provider and route records
+the cause: the metadata runtime re-read the saved provider and route records
 (an encrypted, protected read) before and after every 8 KiB block of the four
 cached public bundles, about 600 reads per operation. The bundle cache was
 already hit on every warm run; the reads, not downloads or verification, were
@@ -1641,7 +1641,7 @@ the cost.
 - Bundles still come from the same on-disk cache and are hash-verified on
   every load. Keeping them in memory or warming a WebView was not needed.
 - The timings and the remaining account check are recorded in
-  [ABEMA guest preparation](abema-guest-bootstrap.md#preparation-timing).
+  [ABEMA metadata runtime](abema-metadata-runtime.md#preparation-timing).
 
 On `tachiai-dev` (Windscribe Tokyo WireGuard, saved ABEMA account), opening
 ABEMA大相撲2026 › Episodes and switching its episode groups succeeded on every

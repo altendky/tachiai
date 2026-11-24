@@ -20,13 +20,13 @@ import org.junit.Assume.assumeTrue
 
 // Synthetic owned runtime only; no provider module, network, saved-store
 // mutation, cookie inspection/deletion or actual provider challenge.
-class AbemaGuestBootstrapDeviceTest {
+class AbemaMetadataRuntimeDeviceTest {
     private fun guestInstrumentation() = InstrumentationRegistry.getInstrumentation().also { instrumentation ->
         // Default instrumentation must skip before any WebView/CookieManager
         // API. A test-only target-process override is required for these cases.
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         assumeTrue(Application.getProcessName() == "${instrumentation.targetContext.packageName}:abema_guest_bootstrap")
-        instrumentation.runOnMainSync { configureAbemaGuestBootstrapProfile(instrumentation.targetContext) }
+        instrumentation.runOnMainSync { configureAbemaMetadataRuntimeProfile(instrumentation.targetContext) }
     }
 
     @Test fun diagnosticEntryHasSeparateProcessAndRuntimeDisablesStorageCookiesAndPermissions() {
@@ -35,12 +35,12 @@ class AbemaGuestBootstrapDeviceTest {
         val info = context.packageManager.getActivityInfo(ComponentName(context, AbemaGuestBootstrapActivity::class.java), 0)
         assertEquals("${context.packageName}:abema_guest_bootstrap", info.processName)
         assertTrue(info.exported) // Explicit debug adb entry, no intent-filter/autostart.
-        assertEquals("abema-guest-bootstrap", AbemaGuestBootstrapPolicy.PROFILE_SUFFIX)
+        assertEquals("abema-guest-bootstrap", AbemaMetadataRuntimePolicy.PROFILE_SUFFIX)
         instrumentation.runOnMainSync {
             val cookies = CookieManager.getInstance()
             val view = WebView(context)
             try {
-                configureAbemaGuestWebView(view)
+                configureAbemaMetadataWebView(view)
                 assertFalse(cookies.acceptCookie()); assertFalse(cookies.acceptThirdPartyCookies(view))
                 assertFalse(view.settings.domStorageEnabled)
                 assertFalse(view.settings.allowFileAccess); assertFalse(view.settings.allowContentAccess)
@@ -118,10 +118,10 @@ class AbemaGuestBootstrapDeviceTest {
         searchRequest: AbemaSearchRequest? = null) {
         val instrumentation = guestInstrumentation()
         val context = instrumentation.targetContext
-        val script = context.assets.open("abema/guest-bootstrap.js").bufferedReader().use { it.readText() }
+        val script = context.assets.open("abema/metadata-runtime.js").bufferedReader().use { it.readText() }
         val nonce = "1234567890abcdef1234567890abcdef"
-        val requested = resourceId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
-        check(AbemaGuestBootstrapPolicy.validEpisodeId(requested))
+        val requested = resourceId ?: AbemaMetadataRuntimePolicy.EPISODE_ID
+        check(AbemaMetadataRuntimePolicy.validEpisodeId(requested))
         // The contentlist chain this request makes: series, sections and contents, or contents alone.
         val seriesId = seriesRequest?.seriesId ?: "fixture-series"
         val seriesSeason = seriesRequest?.seasonId ?: "${seriesId}_s1"; val seriesGroup = seriesRequest?.groupId ?: "${seriesId}_eg1"
@@ -170,7 +170,7 @@ class AbemaGuestBootstrapDeviceTest {
             window.fetch = async (url, options) => {
               window.requests.push({url, options});
               if (url === $searchUrl) return new Response($searchReply, {status:200});
-              if (url === '${AbemaGuestBootstrapPolicy.SCHEDULE}') return new Response($scheduleReply, {status:200});
+              if (url === '${AbemaMetadataRuntimePolicy.SCHEDULE}') return new Response($scheduleReply, {status:200});
               if (url === $slotUrl) return new Response($slotReply, {status:200});
               if ($seriesUrls.includes(url)) return new Response($seriesReplies[$seriesUrls.indexOf(url)], {status:200});
               if (url === 'https://abema.tv/api/auth/oauth/device/token') {
@@ -210,9 +210,9 @@ class AbemaGuestBootstrapDeviceTest {
         val browser = AtomicReference<WebView>()
         instrumentation.runOnMainSync {
             browser.set(WebView(context).apply {
-                configureAbemaGuestWebView(this)
+                configureAbemaMetadataWebView(this)
                 settings.blockNetworkLoads = true // Even a fixture mistake cannot contact the provider.
-                loadDataWithBaseURL(AbemaGuestBootstrapPolicy.PAGE,
+                loadDataWithBaseURL(AbemaMetadataRuntimePolicy.PAGE,
                     "<html><script>$before</script><script>$script</script><script>$after</script></html>",
                     "text/html", "UTF-8", null)
             })
@@ -280,7 +280,7 @@ class AbemaGuestBootstrapDeviceTest {
                 slot:requests.length===2 && requests[1].url===$slotUrl && requests[1].options.method==='GET' &&
                   requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' && requests[1].options.mode==='cors' &&
                   requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
-                schedule:requests.length===2 && requests[1].url==='${AbemaGuestBootstrapPolicy.SCHEDULE}' &&
+                schedule:requests.length===2 && requests[1].url==='${AbemaMetadataRuntimePolicy.SCHEDULE}' &&
                   requests[1].options.method==='GET' && requests[1].options.headers.authorization==='Bearer FIXTURE_ACCESS' &&
                   requests[1].options.mode==='cors' && requests[1].options.cache==='no-store' && requests[1].options.redirect==='error',
                 search:requests.length===2 && requests[1].url===$searchUrl && requests[1].options.method==='GET' &&

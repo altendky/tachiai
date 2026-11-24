@@ -39,7 +39,7 @@ REQUIRED_COMPONENTS = {
 }
 REQUIRED_ASSETS = {
     f"abema/{stem}{suffix}"
-    for stem in ("native-bootstrap", "guest-bootstrap")
+    for stem in ("native-bootstrap", "metadata-runtime")
     for suffix in (".html", ".js", "-initialize.js")
 }
 

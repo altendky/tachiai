@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const assets = path.resolve(__dirname, '../../apps/android/app/src/main/assets/abema');
-const source = fs.readFileSync(path.join(assets, 'guest-bootstrap.js'), 'utf8');
+const source = fs.readFileSync(path.join(assets, 'metadata-runtime.js'), 'utf8');
 const nonce = '1234567890abcdef1234567890abcdef';
 const apiName = '__tachiaiGuest_' + nonce;
 let sequence = 0;
@@ -1411,10 +1411,10 @@ test('four reviewed chunk closure is required, entries and unrelated factory req
 });
 
 test('owned document has only the reviewed four external-code slots and no media/form/iframe', () => {
-  const html = fs.readFileSync(path.join(assets, 'guest-bootstrap.html'), 'utf8');
+  const html = fs.readFileSync(path.join(assets, 'metadata-runtime.html'), 'utf8');
   assert.equal((html.match(/<script /g) || []).length, 6);
   assert.doesNotMatch(html, /<video|<audio|<iframe|<form|https:\/\//);
-  const initialize = fs.readFileSync(path.join(assets, 'guest-bootstrap-initialize.js'), 'utf8');
+  const initialize = fs.readFileSync(path.join(assets, 'metadata-runtime-initialize.js'), 'utf8');
   assert.equal(initialize.trim(), "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__'__RESOURCE_ARGUMENT__);");
   assert.equal(initialize.replace('__RESOURCE_ARGUMENT__', '').trim(),
     "window.__tachiaiStartGuestBootstrap('__NONCE__', '__OPERATION__');");

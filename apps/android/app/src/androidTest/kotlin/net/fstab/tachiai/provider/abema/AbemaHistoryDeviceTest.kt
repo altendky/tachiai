@@ -441,8 +441,8 @@ class AbemaHistoryDeviceTest {
                 entry.resource.providerId == ProviderId("abema") &&
                     safeMyListTitle(entry.title) && entry.title == entry.title.trim() &&
                     when (entry.resource.kind) {
-                        "episode" -> entry.resource.intent == CatalogIntent.VIDEO && AbemaGuestBootstrapPolicy.validEpisodeId(entry.resource.identity)
-                        "live_event" -> entry.resource.intent == CatalogIntent.BROADCAST && AbemaGuestBootstrapPolicy.validEpisodeId(entry.resource.identity)
+                        "episode" -> entry.resource.intent == CatalogIntent.VIDEO && AbemaMetadataRuntimePolicy.validEpisodeId(entry.resource.identity)
+                        "live_event" -> entry.resource.intent == CatalogIntent.BROADCAST && AbemaMetadataRuntimePolicy.validEpisodeId(entry.resource.identity)
                         "slot" -> AbemaSlotRequest.from(entry.resource) != null
                         else -> false
                     } &&

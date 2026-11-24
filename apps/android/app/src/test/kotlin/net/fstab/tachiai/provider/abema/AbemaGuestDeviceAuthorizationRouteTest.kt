@@ -28,8 +28,8 @@ class AbemaGuestDeviceAuthorizationRouteTest {
                 backend
             }
             try {
-                for (url in listOf(AbemaGuestBootstrapPolicy.GUEST, AbemaGuestBootstrapPolicy.CHALLENGE,
-                    "${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/FIXTURE_USER")) {
+                for (url in listOf(AbemaMetadataRuntimePolicy.GUEST, AbemaMetadataRuntimePolicy.CHALLENGE,
+                    "${AbemaMetadataRuntimePolicy.PROFILE_ORIGIN}/v1/users/FIXTURE_USER")) {
                     val connection = route.open(URL(url))
                     assertTrue(connection is RoutedHttpsConnection)
                     assertEquals(selected != null, connection.usingProxy()); connection.disconnect()
@@ -50,7 +50,7 @@ class AbemaGuestDeviceAuthorizationRouteTest {
                     assertThrows(IllegalArgumentException::class.java) { route.open(URL("https://$host/")) }
             } finally { route.close() }
             route.close(); assertEquals(if (selected == null) 0 else 1, backend.closes)
-            assertThrows(IOException::class.java) { route.open(URL(AbemaGuestBootstrapPolicy.CHALLENGE)) }
+            assertThrows(IOException::class.java) { route.open(URL(AbemaMetadataRuntimePolicy.CHALLENGE)) }
         }
     }
 
@@ -70,9 +70,9 @@ class AbemaGuestDeviceAuthorizationRouteTest {
         assertEquals(1, cancelled.closes)
         val backend = Backend(failClose = true)
         val route = RouteSession.createAbemaGuestDeviceAuthorization(selected) { _, _ -> backend }
-        route.open(URL(AbemaGuestBootstrapPolicy.CHALLENGE))
+        route.open(URL(AbemaMetadataRuntimePolicy.CHALLENGE))
         assertThrows(IOException::class.java) { route.close() }
         route.close(); assertEquals(1, backend.closes)
-        assertThrows(IOException::class.java) { route.open(URL(AbemaGuestBootstrapPolicy.CHALLENGE)) }
+        assertThrows(IOException::class.java) { route.open(URL(AbemaMetadataRuntimePolicy.CHALLENGE)) }
     }
 }

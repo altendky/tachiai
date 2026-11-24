@@ -9,7 +9,7 @@ import android.os.Process
 // Binding configures the isolated profile; only a valid explicit START can
 // prepare a route or make a request. No Activity/window/account is launched.
 class AbemaEpisodeMetadataService : Service() {
-    private var runtime: AbemaGuestRuntimeCoordinator? = null
+    private var runtime: AbemaMetadataRuntimeCoordinator? = null
     private class Request(val episode: AbemaEpisodeMetadataIpc.Start? = null, val slot: AbemaSlotMetadataIpc.Start? = null) {
         init { require((episode == null) != (slot == null)) }
         val nonce get() = episode?.nonce ?: checkNotNull(slot).nonce
@@ -51,7 +51,7 @@ class AbemaEpisodeMetadataService : Service() {
     private val messenger = Messenger(handler)
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
+        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaMetadataRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
     private fun start(request: Request, reply: Messenger) {
@@ -65,8 +65,8 @@ class AbemaEpisodeMetadataService : Service() {
         try { reply.binder.linkToDeath(death, 0) } catch (_: Exception) { return }
         val owner = Active(request, reply, lease, death)
         active = owner
-        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId,
-            if (request.slot == null) AbemaGuestBootstrapOperation.FETCH_EPISODE else AbemaGuestBootstrapOperation.FETCH_SLOT,
+        val accepted = coordinator.start(AbemaMetadataRuntimeRequest(request.instanceId,
+            if (request.slot == null) AbemaMetadataRuntimeOperation.FETCH_EPISODE else AbemaMetadataRuntimeOperation.FETCH_SLOT,
             request.episode?.episodeId, request.nonce, request.proof, request.deadline,
             slotRequest = request.slot?.slot, canRemainActive = lease::current)) completed@{ result ->
             if (active !== owner) return@completed

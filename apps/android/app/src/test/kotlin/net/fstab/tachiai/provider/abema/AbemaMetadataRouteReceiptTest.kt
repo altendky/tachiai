@@ -7,11 +7,11 @@ import net.fstab.tachiai.platform.network.RouteSession
 import org.junit.Assert.*
 import org.junit.Test
 
-class AbemaGuestRouteReceiptTest {
+class AbemaMetadataRouteReceiptTest {
     @Test fun heldRouteCloseKeepsActualOwnerAndSecondaryCallerCannotConfirmOrRepeatCleanup() {
         val owned = RouteSession.createAbemaGuestSchedule(null)
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val closes = AtomicInteger()
-        val receipt = AbemaGuestRouteReceipt { route ->
+        val receipt = AbemaMetadataRouteReceipt { route ->
             closes.incrementAndGet(); entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); route.close()
         }
         receipt.own(owned)
@@ -26,7 +26,7 @@ class AbemaGuestRouteReceiptTest {
     }
     @Test fun systemRouteFailureRetainsActualOwnerAndNeverBecomesSuccessfulOnRepeatedClose() {
         val owned = RouteSession.createAbemaGuestSchedule(null); var closes = 0
-        val receipt = AbemaGuestRouteReceipt { closes++; throw AssertionError("Fixture cleanup failure") }
+        val receipt = AbemaMetadataRouteReceipt { closes++; throw AssertionError("Fixture cleanup failure") }
         try {
             receipt.own(owned)
             assertThrows(AssertionError::class.java) { receipt.close() }
@@ -37,7 +37,7 @@ class AbemaGuestRouteReceiptTest {
     @Test fun lateOwnershipAfterSealClosesOnlyOnceAndKeepsUnconfirmedRouteOnFailure() {
         for (fails in listOf(false, true)) {
             val owned = RouteSession.createAbemaGuestSchedule(null); var closes = 0
-            val receipt = AbemaGuestRouteReceipt { route -> closes++; if (fails) throw AssertionError("Fixture late cleanup failure") else route.close() }
+            val receipt = AbemaMetadataRouteReceipt { route -> closes++; if (fails) throw AssertionError("Fixture late cleanup failure") else route.close() }
             try {
                 receipt.close(); assertTrue(receipt.cleanupConfirmed)
                 if (fails) assertThrows(AssertionError::class.java) { receipt.own(owned) } else receipt.own(owned)

@@ -2,7 +2,7 @@ package net.fstab.tachiai.provider.abema
 
 import java.net.URI
 
-internal enum class AbemaGuestBootstrapOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE, FETCH_SEARCH }
+internal enum class AbemaMetadataRuntimeOperation { GUEST_ONLY, VERIFY_PROFILE, VERIFY_EPISODE, FETCH_EPISODE, VERIFY_DEVICE_AUTHORIZATION, OBSERVE_DEVICE_TOKEN, PREPARE_ACCOUNT_LINK, PREPARE_ACCOUNT_VALIDATION, FETCH_SERIES, FETCH_SLOT, FETCH_SCHEDULE, FETCH_SEARCH }
 
 // One admitted request of the series contentlist chain and the IDs it names.
 internal enum class AbemaSeriesStep { SERIES, SECTIONS, CONTENTS }
@@ -10,7 +10,7 @@ internal class AbemaSeriesUri(val step: AbemaSeriesStep, val groupId: String?, v
     override fun toString() = "AbemaSeriesUri(redacted)"
 }
 
-internal object AbemaGuestBootstrapPolicy {
+internal object AbemaMetadataRuntimePolicy {
     const val PROFILE_SUFFIX = "abema-guest-bootstrap"
     const val PAGE = "https://abema.tv/_tachiai/guest/index.html"
     const val GUEST = "https://abema.tv/api/auth/login/guest"
@@ -60,30 +60,30 @@ internal object AbemaGuestBootstrapPolicy {
         return "$PROFILE_ORIGIN/v1/video/programs/$id"
     }
 
-    private fun validResource(operation: AbemaGuestBootstrapOperation, episodeId: String?, series: AbemaSeriesPageRequest?, slot: AbemaSlotRequest?, search: AbemaSearchRequest?) =
-        (if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) search != null else search == null) &&
-        (if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slot != null else slot == null) &&
-        (if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) series != null else series == null) &&
-        if (episodeId == null) operation != AbemaGuestBootstrapOperation.FETCH_EPISODE
-        else validEpisodeId(episodeId) && (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE || episodeId == EPISODE_ID)
+    private fun validResource(operation: AbemaMetadataRuntimeOperation, episodeId: String?, series: AbemaSeriesPageRequest?, slot: AbemaSlotRequest?, search: AbemaSearchRequest?) =
+        (if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) search != null else search == null) &&
+        (if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) slot != null else slot == null) &&
+        (if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES) series != null else series == null) &&
+        if (episodeId == null) operation != AbemaMetadataRuntimeOperation.FETCH_EPISODE
+        else validEpisodeId(episodeId) && (operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE || episodeId == EPISODE_ID)
 
-    fun contentSecurityPolicy(operation: AbemaGuestBootstrapOperation, episodeId: String? = null, series: AbemaSeriesPageRequest? = null,
+    fun contentSecurityPolicy(operation: AbemaMetadataRuntimeOperation, episodeId: String? = null, series: AbemaSeriesPageRequest? = null,
         slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null, accountBound: Boolean = false): String {
         require(validResource(operation, episodeId, series, slot, search))
-        require(!accountBound || operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            AbemaGuestBootstrapOperation.FETCH_SERIES, AbemaGuestBootstrapOperation.FETCH_SLOT,
-            AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH))
+        require(!accountBound || operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
+            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
+            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
         val policy = when (operation) {
-            AbemaGuestBootstrapOperation.GUEST_ONLY -> CONTENT_SECURITY_POLICY
-            AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/;")
-            AbemaGuestBootstrapOperation.VERIFY_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $EPISODE;")
-            AbemaGuestBootstrapOperation.FETCH_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${episodeUrl(checkNotNull(episodeId))};")
-            AbemaGuestBootstrapOperation.FETCH_SERIES -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${seriesSources(checkNotNull(series))};")
-            AbemaGuestBootstrapOperation.FETCH_SLOT -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(slot).url()};")
-            AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $SCHEDULE;")
-            AbemaGuestBootstrapOperation.FETCH_SEARCH -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(search).url()};")
-            AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE;")
-            AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE $DEVICE_TOKEN;")
+            AbemaMetadataRuntimeOperation.GUEST_ONLY -> CONTENT_SECURITY_POLICY
+            AbemaMetadataRuntimeOperation.VERIFY_PROFILE, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/;")
+            AbemaMetadataRuntimeOperation.VERIFY_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $EPISODE;")
+            AbemaMetadataRuntimeOperation.FETCH_EPISODE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${episodeUrl(checkNotNull(episodeId))};")
+            AbemaMetadataRuntimeOperation.FETCH_SERIES -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${seriesSources(checkNotNull(series))};")
+            AbemaMetadataRuntimeOperation.FETCH_SLOT -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(slot).url()};")
+            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $SCHEDULE;")
+            AbemaMetadataRuntimeOperation.FETCH_SEARCH -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST ${checkNotNull(search).url()};")
+            AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE;")
+            AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN -> CONTENT_SECURITY_POLICY.replace("connect-src $GUEST;", "connect-src $GUEST $PROFILE_ORIGIN/v1/users/ $CHALLENGE $DEVICE_TOKEN;")
         }
         return if (accountBound) policy.replace("connect-src $GUEST ", "connect-src ") else policy
     }
@@ -102,23 +102,23 @@ internal object AbemaGuestBootstrapPolicy {
         }
 
     fun allows(uri: URI, mainFrame: Boolean, method: String,
-        operation: AbemaGuestBootstrapOperation = AbemaGuestBootstrapOperation.GUEST_ONLY,
+        operation: AbemaMetadataRuntimeOperation = AbemaMetadataRuntimeOperation.GUEST_ONLY,
         episodeId: String? = null, series: AbemaSeriesPageRequest? = null, slot: AbemaSlotRequest? = null, search: AbemaSearchRequest? = null): Boolean {
         if (!validResource(operation, episodeId, series, slot, search)) return false
-        if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH && !mainFrame && uri.toString() == search?.url())
+        if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH && !mainFrame && uri.toString() == search?.url())
             return method in setOf("GET", "OPTIONS")
-        if (operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && !mainFrame && uri.toString() == SCHEDULE)
+        if (operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && !mainFrame && uri.toString() == SCHEDULE)
             return method in setOf("GET", "OPTIONS")
-        if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT && !mainFrame && uri.toString() == slot?.url())
+        if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT && !mainFrame && uri.toString() == slot?.url())
             return method in setOf("GET", "OPTIONS")
-        if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && !mainFrame && series != null && seriesStep(uri, series) != null)
+        if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES && !mainFrame && series != null && seriesStep(uri, series) != null)
             return method in setOf("GET", "OPTIONS")
         val selectedEpisodeId = episodeId ?: EPISODE_ID
-        if (operation in setOf(AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
-            AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
-            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION) && !mainFrame && isProfile(uri))
+        if (operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_PROFILE, AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION,
+            AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK,
+            AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION) && !mainFrame && isProfile(uri))
             return method in setOf("GET", "OPTIONS")
-        if (operation in setOf(AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE) &&
+        if (operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_EPISODE, AbemaMetadataRuntimeOperation.FETCH_EPISODE) &&
             !mainFrame && isEpisode(uri, selectedEpisodeId))
             return method in setOf("GET", "OPTIONS")
         if (uri.scheme != "https" || uri.host != "abema.tv" || uri.port != -1 ||
@@ -126,9 +126,9 @@ internal object AbemaGuestBootstrapPolicy {
             uri.rawPath != uri.path || uri.normalize() != uri) return false
         if (mainFrame) return method == "GET" && uri.toString() == PAGE
         if (uri.toString() == GUEST) return method == "POST"
-        if (uri.toString() == CHALLENGE) return operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
-            AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK) && method == "POST"
-        if (uri.toString() == DEVICE_TOKEN) return operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN && method == "POST"
+        if (uri.toString() == CHALLENGE) return operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION,
+            AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK) && method == "POST"
+        if (uri.toString() == DEVICE_TOKEN) return operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN && method == "POST"
         return method == "GET" && uri.toString() == "https://abema.tv${uri.path}" &&
             uri.path in setOf("/_tachiai/guest/control.js", "/_tachiai/guest/support.js",
                 "/_tachiai/guest/utilities.js", "/_tachiai/guest/bundle.js",
@@ -138,20 +138,20 @@ internal object AbemaGuestBootstrapPolicy {
 
 // Attempt-owned policy. The profile URI carries a private guest ID transiently;
 // never expose this object/URI through diagnostics, state, Intents or storage.
-internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBootstrapOperation,
+internal class AbemaMetadataRequestAdmission(private val operation: AbemaMetadataRuntimeOperation,
     requestedEpisodeId: String? = null, private val series: AbemaSeriesPageRequest? = null, private val slot: AbemaSlotRequest? = null,
     private val search: AbemaSearchRequest? = null, private val accountBound: Boolean = false) {
-    private val episodeId = requestedEpisodeId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
+    private val episodeId = requestedEpisodeId ?: AbemaMetadataRuntimePolicy.EPISODE_ID
     init {
-        require(operation != AbemaGuestBootstrapOperation.FETCH_EPISODE || requestedEpisodeId != null)
-        require(AbemaGuestBootstrapPolicy.validEpisodeId(episodeId))
-        require(operation == AbemaGuestBootstrapOperation.FETCH_EPISODE || episodeId == AbemaGuestBootstrapPolicy.EPISODE_ID)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) series != null else series == null)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slot != null else slot == null)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) search != null else search == null)
-        require(!accountBound || operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            AbemaGuestBootstrapOperation.FETCH_SERIES, AbemaGuestBootstrapOperation.FETCH_SLOT,
-            AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH))
+        require(operation != AbemaMetadataRuntimeOperation.FETCH_EPISODE || requestedEpisodeId != null)
+        require(AbemaMetadataRuntimePolicy.validEpisodeId(episodeId))
+        require(operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE || episodeId == AbemaMetadataRuntimePolicy.EPISODE_ID)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES) series != null else series == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) slot != null else slot == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) search != null else search == null)
+        require(!accountBound || operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
+            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
+            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
     }
     private var guest = accountBound
     private var profile = false
@@ -164,19 +164,19 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
     private var seriesStep: AbemaSeriesUri? = null
 
     @Synchronized fun admit(uri: URI, mainFrame: Boolean, method: String, headers: Map<String, String> = emptyMap()): Boolean {
-        if (!AbemaGuestBootstrapPolicy.allows(uri, mainFrame, method, operation, episodeId, series, slot, search)) return false
-        if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST) {
+        if (!AbemaMetadataRuntimePolicy.allows(uri, mainFrame, method, operation, episodeId, series, slot, search)) return false
+        if (uri.toString() == AbemaMetadataRuntimePolicy.GUEST) {
             if (accountBound || guest) return false
             guest = true
-        } else if (uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE) {
+        } else if (uri.toString() == AbemaMetadataRuntimePolicy.CHALLENGE) {
             if (!guest || !profile || profileUri == null || challenge) return false
             challenge = true
-        } else if (uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN) {
+        } else if (uri.toString() == AbemaMetadataRuntimePolicy.DEVICE_TOKEN) {
             if (!guest || !profile || profileUri == null || !challenge || token) return false
             token = true
-        } else if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES && series != null &&
-            AbemaGuestBootstrapPolicy.seriesStep(uri, series) != null) {
-            val step = checkNotNull(AbemaGuestBootstrapPolicy.seriesStep(uri, series))
+        } else if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES && series != null &&
+            AbemaMetadataRuntimePolicy.seriesStep(uri, series) != null) {
+            val step = checkNotNull(AbemaMetadataRuntimePolicy.seriesStep(uri, series))
             val current = seriesStep
             val position = seriesSteps.indexOf(step.step)
             if (!guest || position < 0) return false
@@ -189,9 +189,9 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
                 seriesStep = step; profileUri = null; options = false; profile = false
             }
             if (!preflightOrGet(uri, method, headers)) return false
-        } else if (AbemaGuestBootstrapPolicy.isProfile(uri) || AbemaGuestBootstrapPolicy.isEpisode(uri, episodeId) ||
+        } else if (AbemaMetadataRuntimePolicy.isProfile(uri) || AbemaMetadataRuntimePolicy.isEpisode(uri, episodeId) ||
             uri.toString() == slot?.url() || uri.toString() == search?.url() ||
-            operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE) {
+            operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && uri.toString() == AbemaMetadataRuntimePolicy.SCHEDULE) {
             if (!guest || !preflightOrGet(uri, method, headers)) return false
         }
         return true
@@ -215,5 +215,5 @@ internal class AbemaGuestRequestAdmission(private val operation: AbemaGuestBoots
         return true
     }
 
-    override fun toString() = "AbemaGuestRequestAdmission(redacted)"
+    override fun toString() = "AbemaMetadataRequestAdmission(redacted)"
 }

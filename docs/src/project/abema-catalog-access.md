@@ -1,6 +1,6 @@
 # ABEMA catalog and account access
 
-The [guest-only preparation experiment](abema-guest-bootstrap.md) isolates the
+The [guest-only preparation experiment](abema-metadata-runtime.md) isolates the
 fresh-session prerequisite for account linking. Its guest evidence is separate
 from the later [native email account acceptance](#native-email-account-acceptance--2026-10-12),
 [My List observation](#intended-account-my-list-acceptance--2026-10-12) and
@@ -801,7 +801,7 @@ constraints:
 | Area | Current hostname coupling |
 | --- | --- |
 | Route purposes | `RouteSession` repeats `api.p-c3-e.abema-tv.com` in native request admission and CONNECT host lists for profile, metadata, account and collection operations. |
-| Guest preparation | `AbemaGuestBootstrapPolicy` and `guest-bootstrap.js` require that exact configured API origin; generated CSP repeats it. |
+| Guest preparation | `AbemaMetadataRuntimePolicy` and `metadata-runtime.js` require that exact configured API origin; generated CSP repeats it. |
 | Email grant adoption | `AbemaAccountAuthorization` recognizes the email-setting request only on that host; native profile/email request constructors also select it. |
 | Replay preparation | Native helper CSP, Kotlin request policy and JavaScript checks repeat the fixed API, `streaming-api-cf.p-c2-x` and `license.p-c3-e` gateways. |
 | Slot region check | `AbemaNativeBootstrapPolicy` still accepts only the global-linear Akamai `/region`, although approval networking recognizes the provider-selected linear alternative. |
@@ -955,7 +955,7 @@ Series-local search is not global video search, and calendar timestamp
 conversion does not establish every provider timestamp's units.
 
 The initial adapter uses ascending `seq`, a fixed page size of 20 and bounded
-locally requested offsets. The isolated guest operation retains one immutable
+locally requested offsets. The isolated metadata runtime operation retains one immutable
 series/page request, the owning instance/route proof, original deadline and
 foreground checks. It exports only strictly normalized public episode rows
 after confirmed runtime/route cleanup. Duplicate or wrong-parent joins,
@@ -1295,7 +1295,7 @@ harness, not eligible-slot, live, Chase, account, audio or physical-device proof
 
 [Issue #153](https://github.com/altendky/tachiai/issues/153) adds explicit metadata
 refresh for a configured exact episode through the shared catalog contract. Its
-[isolated guest service](abema-guest-bootstrap.md#configured-episode-metadata-refresh)
+[isolated metadata runtime service](abema-metadata-runtime.md#configured-episode-metadata-refresh)
 uses the owning instance's captured route and the exact public episode ID.
 Only validated public ID/title metadata can return after cleanup and final
 ownership checks; availability remains UNKNOWN. Missing/inaccessible metadata

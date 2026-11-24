@@ -29,7 +29,7 @@ internal object AbemaEpisodeMetadataIpc {
         val episode = fields["episode"] as? String ?: return null
         val proof = fields["proof"] as? String ?: return null
         val deadline = fields["deadline"] as? Long ?: return null
-        if (!validNonce(nonce) || !validProviderInstanceId(instance) || !AbemaGuestBootstrapPolicy.validEpisodeId(episode) ||
+        if (!validNonce(nonce) || !validProviderInstanceId(instance) || !AbemaMetadataRuntimePolicy.validEpisodeId(episode) ||
             !proof.matches(Regex("[a-f0-9]{64}")) || now < 0 || deadline <= now || deadline - now > OPERATION_MS) return null
         return Start(nonce, instance, episode, proof, deadline)
     }
@@ -43,7 +43,7 @@ internal object AbemaEpisodeMetadataIpc {
         if (fields.keys != setOf("nonce", "outcome", "id", "title")) return null
         val id = fields["id"] as? String ?: return null
         val title = fields["title"] as? String ?: return null
-        if (!AbemaGuestBootstrapPolicy.validEpisodeId(id) || !AbemaGuestRuntimeCoordinator.safeEpisodeTitle(title)) return null
+        if (!AbemaMetadataRuntimePolicy.validEpisodeId(id) || !AbemaMetadataRuntimeCoordinator.safeEpisodeTitle(title)) return null
         return Result(nonce, outcome, id, title)
     }
     @Suppress("DEPRECATION")

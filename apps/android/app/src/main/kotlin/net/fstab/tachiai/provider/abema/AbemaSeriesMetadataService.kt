@@ -8,7 +8,7 @@ import android.os.Process
 // Same-UID, nonexported, no work on bind. The existing process coordinator
 // exclusively owns routes, runtime admission and uncertain-cleanup retention.
 class AbemaSeriesMetadataService : Service() {
-    private var runtime: AbemaGuestRuntimeCoordinator? = null
+    private var runtime: AbemaMetadataRuntimeCoordinator? = null
     private class Active(val nonce: String, val reply: Messenger, val cancelCode: Int,
         val lease: AbemaEpisodeRequestLease, val death: IBinder.DeathRecipient)
     private var active: Active? = null
@@ -51,12 +51,12 @@ class AbemaSeriesMetadataService : Service() {
     private val messenger = Messenger(handler)
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
+        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaMetadataRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
     private fun start(request: AbemaSeriesMetadataIpc.Start, reply: Messenger) {
         start(request.nonce, request.deadline, reply, AbemaSeriesMetadataIpc.CANCEL, { lease ->
-            AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_SERIES,
+            AbemaMetadataRuntimeRequest(request.instanceId, AbemaMetadataRuntimeOperation.FETCH_SERIES,
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 seriesRequest = request.page, canRemainActive = lease::current)
         }) { result ->
@@ -73,7 +73,7 @@ class AbemaSeriesMetadataService : Service() {
     }
     private fun start(request: AbemaScheduleMetadataIpc.Start, reply: Messenger) {
         start(request.nonce, request.deadline, reply, AbemaScheduleMetadataIpc.CANCEL, { lease ->
-            AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_SCHEDULE,
+            AbemaMetadataRuntimeRequest(request.instanceId, AbemaMetadataRuntimeOperation.FETCH_SCHEDULE,
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 scheduleRequest = request.request, canRemainActive = lease::current)
         }) { result ->
@@ -93,7 +93,7 @@ class AbemaSeriesMetadataService : Service() {
     }
     private fun start(request: AbemaSearchMetadataIpc.Start, reply: Messenger) {
         start(request.nonce, request.deadline, reply, AbemaSearchMetadataIpc.CANCEL, { lease ->
-            AbemaGuestRuntimeRequest(request.instanceId, AbemaGuestBootstrapOperation.FETCH_SEARCH,
+            AbemaMetadataRuntimeRequest(request.instanceId, AbemaMetadataRuntimeOperation.FETCH_SEARCH,
                 nonce = request.nonce, expectedOwnerProof = request.ownerProof, deadlineElapsedMs = request.deadline,
                 searchRequest = request.search, canRemainActive = lease::current)
         }) { result ->
@@ -114,9 +114,9 @@ class AbemaSeriesMetadataService : Service() {
         }
     }
     private fun start(nonce: String, deadline: Long, reply: Messenger, cancelCode: Int,
-        request: (AbemaEpisodeRequestLease) -> AbemaGuestRuntimeRequest, completed: (AbemaGuestRuntimeResult) -> Unit) {
+        request: (AbemaEpisodeRequestLease) -> AbemaMetadataRuntimeRequest, completed: (AbemaMetadataRuntimeResult) -> Unit) {
         val coordinator = runtime ?: return
-        if (active != null || coordinator.unavailable) { completed(AbemaGuestRuntimeResult("TEMPORARY")); return }
+        if (active != null || coordinator.unavailable) { completed(AbemaMetadataRuntimeResult("TEMPORARY")); return }
         val lease = AbemaEpisodeRequestLease(nonce, deadline, SystemClock::elapsedRealtime)
         var owner: Active? = null
         val death = IBinder.DeathRecipient { lease.cancel(nonce); handler.post {
@@ -130,7 +130,7 @@ class AbemaSeriesMetadataService : Service() {
         }
         if (!accepted) {
             active = null; lease.cancel(nonce); runCatching { reply.binder.unlinkToDeath(death, 0) }
-            completed(AbemaGuestRuntimeResult("TEMPORARY"))
+            completed(AbemaMetadataRuntimeResult("TEMPORARY"))
         }
     }
     private fun send(reply: Messenger, result: AbemaSeriesMetadataIpc.Result, parent: String) {

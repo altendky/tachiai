@@ -2022,7 +2022,7 @@ open class PrototypeActivity : ComponentActivity() {
         if (!useCachedAbema || !state.active || state.kind != FeedWaitingKind.CHANNEL || state.accountRecheck ||
             source.service != PrototypeService.ABEMA || source.resource.intent != CatalogIntent.CHANNEL) return
         state.programStart(lookup.start(System.currentTimeMillis()))
-        // The lookup's guest runtime leases the route this feed holds (#275).
+        // The lookup's metadata runtime leases the route this feed holds (#275).
         val ownerProof = routeOwners[source.instanceId]?.proof ?: return
         val token = lookup.begin(SystemClock.elapsedRealtime(), System.currentTimeMillis()) ?: return
         val run = epoch.get()

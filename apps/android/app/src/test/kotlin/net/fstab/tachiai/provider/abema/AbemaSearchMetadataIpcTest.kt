@@ -18,16 +18,16 @@ class AbemaSearchMetadataIpcTest {
         for (bad in listOf(fields() + ("url" to "https://private.invalid/"), fields() + ("module" to "other"),
             fields() + ("query" to "\u202eprivate"), fields() + ("offset" to 20), fields() + ("deadline" to 46001L),
             fields() + ("deadline" to 1000L), fields() + ("offset" to 0L))) assertNull(AbemaSearchMetadataIpc.decodeStart(bad, 1000))
-        val request = start.search; val policy = AbemaGuestRequestAdmission(AbemaGuestBootstrapOperation.FETCH_SEARCH, search = request)
+        val request = start.search; val policy = AbemaMetadataRequestAdmission(AbemaMetadataRuntimeOperation.FETCH_SEARCH, search = request)
         val uri = URI(request.url())
-        assertFalse(policy.admit(uri, false, "GET")); assertTrue(policy.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertFalse(policy.admit(uri, false, "GET")); assertTrue(policy.admit(URI(AbemaMetadataRuntimePolicy.GUEST), false, "POST"))
         assertFalse(policy.admit(URI(request.url() + "&offset=20"), false, "GET"))
         assertFalse(policy.admit(URI("https://api.p-c3-e.abema-tv.com/v1/users/private"), false, "GET"))
         assertTrue(policy.admit(uri, false, "OPTIONS", mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET",
             "Access-Control-Request-Headers" to "authorization")))
         assertTrue(policy.admit(uri, false, "GET")); assertFalse(policy.admit(uri, false, "GET"))
-        assertFalse(AbemaGuestBootstrapPolicy.allows(uri, false, "GET", AbemaGuestBootstrapOperation.FETCH_SCHEDULE))
-        assertTrue(AbemaGuestBootstrapPolicy.contentSecurityPolicy(AbemaGuestBootstrapOperation.FETCH_SEARCH, search = request).contains(request.url()))
+        assertFalse(AbemaMetadataRuntimePolicy.allows(uri, false, "GET", AbemaMetadataRuntimeOperation.FETCH_SCHEDULE))
+        assertTrue(AbemaMetadataRuntimePolicy.contentSecurityPolicy(AbemaMetadataRuntimeOperation.FETCH_SEARCH, search = request).contains(request.url()))
     }
     @Test fun projectionRequiresExactNormalizedFieldsModuleIdentityAndStrictCounts() {
         val request = AbemaSearchRequest("Public", "episode")

@@ -121,7 +121,7 @@ class AbemaEpisodeMetadataIpcDeviceTest {
         val idle = AtomicReference<Boolean>()
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, service: IBinder) {
-                idle.set(!AbemaGuestRuntimeProcess.get(context).unavailable)
+                idle.set(!AbemaMetadataRuntimeProcess.get(context).unavailable)
                 connected.countDown()
             }
             override fun onServiceDisconnected(name: ComponentName) = Unit

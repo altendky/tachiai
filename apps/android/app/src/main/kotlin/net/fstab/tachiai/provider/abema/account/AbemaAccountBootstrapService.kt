@@ -7,7 +7,7 @@ import android.os.Process
 import net.fstab.tachiai.provider.abema.*
 
 class AbemaAccountBootstrapService : Service() {
-    private var runtime: AbemaGuestRuntimeCoordinator? = null
+    private var runtime: AbemaMetadataRuntimeCoordinator? = null
     private class Active(val start: AbemaAccountBootstrapIpc.Start, val reply: Messenger,
         val lease: AbemaEpisodeRequestLease, val death: IBinder.DeathRecipient)
     private var active: Active? = null
@@ -32,7 +32,7 @@ class AbemaAccountBootstrapService : Service() {
     private val messenger = Messenger(handler)
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaGuestRuntimeProcess.get(this)
+        if (Build.VERSION.SDK_INT >= 28) runtime = AbemaMetadataRuntimeProcess.get(this)
     }
     override fun onBind(intent: Intent): IBinder? = if (runtime != null) messenger.binder else null
     private fun start(request: AbemaAccountBootstrapIpc.Start, reply: Messenger) {
@@ -43,8 +43,8 @@ class AbemaAccountBootstrapService : Service() {
         try { reply.binder.linkToDeath(death, 0) } catch (_: Exception) { return }
         val owner = Active(request, reply, lease, death); active = owner
         val operation = if (request.mode == AbemaAccountBootstrapIpc.Mode.VALIDATION)
-            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION else AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK
-        val accepted = coordinator.start(AbemaGuestRuntimeRequest(request.instanceId, operation,
+            AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION else AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK
+        val accepted = coordinator.start(AbemaMetadataRuntimeRequest(request.instanceId, operation,
             nonce = request.nonce, expectedOwnerProof = request.proof, deadlineElapsedMs = request.deadline, canRemainActive = lease::current)) completed@{ result ->
             if (active !== owner) return@completed
             active = null; runCatching { reply.binder.unlinkToDeath(death, 0) }

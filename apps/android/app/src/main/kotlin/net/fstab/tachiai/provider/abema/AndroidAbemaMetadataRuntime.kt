@@ -23,7 +23,7 @@ import net.fstab.tachiai.platform.network.*
 import net.fstab.tachiai.provider.abema.account.*
 import org.json.JSONObject
 
-internal class AndroidAbemaGuestMain(private val handler: Handler = Handler(Looper.getMainLooper())) : AbemaGuestRuntimeMain {
+internal class AndroidAbemaMetadataMain(private val handler: Handler = Handler(Looper.getMainLooper())) : AbemaMetadataRuntimeMain {
     override fun checkThread() { check(Looper.myLooper() == Looper.getMainLooper()) }
     override fun post(token: Any, action: () -> Unit) { handler.postAtTime(action, token, SystemClock.uptimeMillis()) }
     override fun delay(token: Any, millis: Long, action: () -> Unit) {
@@ -34,20 +34,20 @@ internal class AndroidAbemaGuestMain(private val handler: Handler = Handler(Loop
 
 // The activity and service MUST use this same process-owned instance. Retained
 // uncertain views/routes and cleanup workers outlive either component.
-internal object AbemaGuestRuntimeProcess {
-    private var coordinator: AbemaGuestRuntimeCoordinator? = null
-    fun get(context: Context): AbemaGuestRuntimeCoordinator {
+internal object AbemaMetadataRuntimeProcess {
+    private var coordinator: AbemaMetadataRuntimeCoordinator? = null
+    fun get(context: Context): AbemaMetadataRuntimeCoordinator {
         check(Looper.myLooper() == Looper.getMainLooper())
-        configureAbemaGuestBootstrapProfile(context)
-        return coordinator ?: AbemaGuestRuntimeCoordinator(AndroidAbemaGuestEnvironment(context.applicationContext),
-            AndroidAbemaGuestMain(), Executors.newSingleThreadExecutor(), Executors.newFixedThreadPool(2),
+        configureAbemaMetadataRuntimeProfile(context)
+        return coordinator ?: AbemaMetadataRuntimeCoordinator(AndroidAbemaMetadataEnvironment(context.applicationContext),
+            AndroidAbemaMetadataMain(), Executors.newSingleThreadExecutor(), Executors.newFixedThreadPool(2),
             SystemClock::elapsedRealtime).also { coordinator = it }
     }
 }
 
 // One Preparation owns one route. The close claim is distinct from a successful
 // receipt because RouteSession's own seal is not proof that cleanup completed.
-internal class AbemaGuestRouteReceipt(private val closeRoute: (RouteSession) -> Unit = { it.close() }) {
+internal class AbemaMetadataRouteReceipt(private val closeRoute: (RouteSession) -> Unit = { it.close() }) {
     val route = AtomicReference<RouteSession?>()
     private val closed = AtomicBoolean()
     private val closeClaimed = AtomicBoolean()
@@ -67,16 +67,16 @@ internal class AbemaGuestRouteReceipt(private val closeRoute: (RouteSession) -> 
     fun close() { closed.set(true); route.get()?.let(::closeOwned) }
 }
 
-internal class AndroidAbemaGuestEnvironment(private val context: Context) : AbemaGuestRuntimeEnvironment {
+internal class AndroidAbemaMetadataEnvironment(private val context: Context) : AbemaMetadataRuntimeEnvironment {
     private val diagnostics = FailureDiagnostics.create(context)
     private val webRoute = AbemaWebViewRoute()
-    private class Owner(val saved: AbemaCatalogRouteOwner) : AbemaGuestRuntimeOwner {
+    private class Owner(val saved: AbemaCatalogRouteOwner) : AbemaMetadataRuntimeOwner {
         override val proof get() = saved.proof()
-        override fun toString() = "AbemaGuestRuntimeOwner(redacted)"
+        override fun toString() = "AbemaMetadataRuntimeOwner(redacted)"
     }
-    private class Preparation(val preparing: RoutePreparation) : AbemaGuestRuntimePreparation {
+    private class Preparation(val preparing: RoutePreparation) : AbemaMetadataRuntimePreparation {
         val timing = AbemaPreparationTiming(SystemClock::elapsedRealtime) { android.util.Log.i(AbemaPreparationTiming.TAG, it) }
-        private val routeReceipt = AbemaGuestRouteReceipt()
+        private val routeReceipt = AbemaMetadataRouteReceipt()
         val route get() = routeReceipt.route
         val download = AtomicReference<AbemaPublicBundleHttp?>()
         val account = AtomicReference<AndroidAbemaAccountAccessClient?>()
@@ -134,30 +134,30 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
     private fun savedInstances() = providerInstanceStore(context).read { legacyProviderSettings(context) }
     private fun readSavedOwner(id: String, expectedProof: String?) = captureAbemaCatalogRouteOwner(id, ::savedInstances,
         { connectionProfileStore(context).snapshot(it) }, expectedProof)
-    override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner = readOwner(instanceId, null)
-    override fun readOwner(instanceId: String, expectedProof: String?): AbemaGuestRuntimeOwner = Owner(readSavedOwner(instanceId, expectedProof))
-    override fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean {
+    override fun readOwner(instanceId: String): AbemaMetadataRuntimeOwner = readOwner(instanceId, null)
+    override fun readOwner(instanceId: String, expectedProof: String?): AbemaMetadataRuntimeOwner = Owner(readSavedOwner(instanceId, expectedProof))
+    override fun sameOwner(owner: AbemaMetadataRuntimeOwner): Boolean {
         val captured = (owner as Owner).saved
         return captured.sameOwnership(readSavedOwner(captured.instance.id, captured.proof()))
     }
-    override fun newPreparation(): AbemaGuestRuntimePreparation = Preparation(RoutePreparation(diagnostics))
-    override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
-        preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
+    override fun newPreparation(): AbemaMetadataRuntimePreparation = Preparation(RoutePreparation(diagnostics))
+    override fun prepare(owner: AbemaMetadataRuntimeOwner, request: AbemaMetadataRuntimeRequest,
+        preparation: AbemaMetadataRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
         check(Looper.myLooper() != Looper.getMainLooper())
         val prepared = preparation as Preparation
         val saved = (owner as Owner).saved
         check(canRequest())
         prepared.timing.mark(AbemaPreparationPhase.OWNER_READ)
-        val discovery = request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE,
-            AbemaGuestBootstrapOperation.FETCH_SERIES, AbemaGuestBootstrapOperation.FETCH_SLOT,
-            AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH)
+        val discovery = request.operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE,
+            AbemaMetadataRuntimeOperation.FETCH_SERIES, AbemaMetadataRuntimeOperation.FETCH_SLOT,
+            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH)
         val accountContext = if (discovery) {
             val resource = when (request.operation) {
-                AbemaGuestBootstrapOperation.FETCH_EPISODE -> AbemaGuestBootstrapPolicy.episodeUrl(checkNotNull(request.episodeId))
-                AbemaGuestBootstrapOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).key()
-                AbemaGuestBootstrapOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
-                AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> AbemaGuestBootstrapPolicy.SCHEDULE + "|" + request.scheduleRequest.channelId.orEmpty()
-                AbemaGuestBootstrapOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
+                AbemaMetadataRuntimeOperation.FETCH_EPISODE -> AbemaMetadataRuntimePolicy.episodeUrl(checkNotNull(request.episodeId))
+                AbemaMetadataRuntimeOperation.FETCH_SERIES -> checkNotNull(request.seriesRequest).key()
+                AbemaMetadataRuntimeOperation.FETCH_SLOT -> checkNotNull(request.slotRequest).let { "${it.channelId}|${it.url()}" }
+                AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> AbemaMetadataRuntimePolicy.SCHEDULE + "|" + request.scheduleRequest.channelId.orEmpty()
+                AbemaMetadataRuntimeOperation.FETCH_SEARCH -> checkNotNull(request.searchRequest).url()
                 else -> error("Discovery operation refused")
             }
             val source = MessageDigest.getInstance("SHA-256").digest(
@@ -182,18 +182,18 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             }
         } else null
         val route = when (request.operation) {
-            AbemaGuestBootstrapOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.VERIFY_PROFILE, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION ->
+            AbemaMetadataRuntimeOperation.GUEST_ONLY -> RouteSession.createAbemaGuest(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.VERIFY_PROFILE, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION ->
                 RouteSession.createAbemaGuestProfile(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION -> RouteSession.createAbemaGuestDeviceAuthorization(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN -> RouteSession.createAbemaGuestDeviceTokenObservation(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK -> RouteSession.createAbemaAccountBootstrap(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE ->
+            AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION -> RouteSession.createAbemaGuestDeviceAuthorization(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN -> RouteSession.createAbemaGuestDeviceTokenObservation(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK -> RouteSession.createAbemaAccountBootstrap(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.VERIFY_EPISODE, AbemaMetadataRuntimeOperation.FETCH_EPISODE ->
                 RouteSession.createAbemaGuestEpisode(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.FETCH_SERIES -> RouteSession.createAbemaGuestSeries(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.FETCH_SLOT -> RouteSession.createAbemaGuestSlot(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.FETCH_SCHEDULE -> RouteSession.createAbemaGuestSchedule(saved.profile, prepared.preparing)
-            AbemaGuestBootstrapOperation.FETCH_SEARCH -> RouteSession.createAbemaGuestSearch(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.FETCH_SERIES -> RouteSession.createAbemaGuestSeries(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.FETCH_SLOT -> RouteSession.createAbemaGuestSlot(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.FETCH_SCHEDULE -> RouteSession.createAbemaGuestSchedule(saved.profile, prepared.preparing)
+            AbemaMetadataRuntimeOperation.FETCH_SEARCH -> RouteSession.createAbemaGuestSearch(saved.profile, prepared.preparing)
         }
         prepared.own(route)
         check(canRequest())
@@ -219,23 +219,23 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             prepared.timing.mark(AbemaPreparationPhase.BUNDLE_READY, identity.asset)
         }
         prepared.timing.mark(AbemaPreparationPhase.BUNDLES_READY)
-        files["/_tachiai/guest/index.html"] = context.assets.open("abema/guest-bootstrap.html").use { it.readBytes() }
-        files["/_tachiai/guest/control.js"] = context.assets.open("abema/guest-bootstrap.js").use { it.readBytes() }
-        val resourceArgument = if (request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
-                ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES)
+        files["/_tachiai/guest/index.html"] = context.assets.open("abema/metadata-runtime.html").use { it.readBytes() }
+        files["/_tachiai/guest/control.js"] = context.assets.open("abema/metadata-runtime.js").use { it.readBytes() }
+        val resourceArgument = if (request.operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE)
+                ", " + JSONObject.quote(request.episodeId) else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SERIES)
                 ", " + checkNotNull(request.seriesRequest).let { JSONObject().put("seriesId", it.seriesId).put("offset", it.offset)
                     .apply { it.seasonId?.let { season -> put("seasonId", season) }; it.groupId?.let { group -> put("groupId", group) }
                         it.viewingTypes?.let { types -> put("viewingTypes", org.json.JSONArray(types)) }
                         if (it.newest) put("order", "desc") }.toString() }
-                else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT)
+                else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT)
                     ", " + checkNotNull(request.slotRequest).let { JSONObject().put("channelId", it.channelId).put("slotId", it.slotId).toString() }
-                else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH)
+                else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH)
                     ", " + checkNotNull(request.searchRequest).let { JSONObject().put("query", it.query).put("moduleId", it.moduleId ?: JSONObject.NULL)
                         .put("offset", it.offset).toString() }
-                else if (request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && request.scheduleRequest.channelId != null)
+                else if (request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && request.scheduleRequest.channelId != null)
                     ", " + JSONObject().put("channelId", request.scheduleRequest.channelId).toString()
                 else if (accountContext != null) ", undefined" else ""
-        val initialization = context.assets.open("abema/guest-bootstrap-initialize.js")
+        val initialization = context.assets.open("abema/metadata-runtime-initialize.js")
             .bufferedReader().use { it.readText() }.replace("__NONCE__", request.nonce)
             .replace("__OPERATION__", request.operation.name)
             .replace("__RESOURCE_ARGUMENT__", resourceArgument + if (accountContext != null) ", $accountContext" else "")
@@ -246,7 +246,7 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         prepared.timing.mark(AbemaPreparationPhase.FILES_PREPARED)
         return files
     }
-    override fun install(preparation: AbemaGuestRuntimePreparation, callback: (Boolean) -> Unit) {
+    override fun install(preparation: AbemaMetadataRuntimePreparation, callback: (Boolean) -> Unit) {
         val prepared = preparation as Preparation
         webRoute.install(checkNotNull(prepared.route.get()), { applied ->
             if (applied) prepared.timing.mark(AbemaPreparationPhase.ROUTE_INSTALLED)
@@ -260,26 +260,26 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
         if (error is AbemaAccountException) android.util.Log.i("TachiaiAbemaGuestRuntime", "ACCOUNT_${error.category.name}")
         diagnostics.report(FailureStage.CATALOG_LOAD, error)
     }
-    override fun newView(request: AbemaGuestRuntimeRequest, preparation: AbemaGuestRuntimePreparation,
-        files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaGuestRuntimeView) -> Boolean,
-        failed: (AbemaGuestRuntimeView, String) -> Unit): AbemaGuestRuntimeView =
-        OwnedGuestView(context, request, preparation as Preparation, files, canRequest, currentView, failed, diagnostics)
+    override fun newView(request: AbemaMetadataRuntimeRequest, preparation: AbemaMetadataRuntimePreparation,
+        files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaMetadataRuntimeView) -> Boolean,
+        failed: (AbemaMetadataRuntimeView, String) -> Unit): AbemaMetadataRuntimeView =
+        OwnedMetadataView(context, request, preparation as Preparation, files, canRequest, currentView, failed, diagnostics)
 
     @SuppressLint("MissingOnRenderProcessGone")
-    private class OwnedGuestView(context: Context, private val request: AbemaGuestRuntimeRequest,
+    private class OwnedMetadataView(context: Context, private val request: AbemaMetadataRuntimeRequest,
         private val preparation: Preparation, private val files: Map<String, ByteArray>,
-        private val canRequest: () -> Boolean, private val current: (AbemaGuestRuntimeView) -> Boolean,
-        private val failed: (AbemaGuestRuntimeView, String) -> Unit, private val diagnostics: FailureReporter) : AbemaGuestRuntimeView {
+        private val canRequest: () -> Boolean, private val current: (AbemaMetadataRuntimeView) -> Boolean,
+        private val failed: (AbemaMetadataRuntimeView, String) -> Unit, private val diagnostics: FailureReporter) : AbemaMetadataRuntimeView {
         companion object { private val projectionWorker = Executors.newSingleThreadExecutor() }
         private val main = Handler(Looper.getMainLooper())
         private val view = WebView(context).also { preparation.timing.mark(AbemaPreparationPhase.WEBVIEW_CREATED) }
-        private val admission = AbemaGuestRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest,
+        private val admission = AbemaMetadataRequestAdmission(request.operation, request.policyEpisodeId, request.seriesRequest,
             request.slotRequest, request.searchRequest, preparation.accountBound.get())
         private var documentStarted = false
         private var cleanupFailed = false
         override val cleanupConfirmed get() = !cleanupFailed
         private fun configure() {
-            configureAbemaGuestWebView(view)
+            configureAbemaMetadataWebView(view)
             view.webChromeClient = object : WebChromeClient() {
                 override fun onConsoleMessage(message: ConsoleMessage) = true
                 override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
@@ -291,66 +291,66 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             }
             view.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, resource: WebResourceRequest): Boolean {
-                    if (!current(this@OwnedGuestView)) return true
-                    if (resource.isForMainFrame && !documentStarted && resource.url.toString() == AbemaGuestBootstrapPolicy.PAGE) return false
-                    failed(this@OwnedGuestView, "NAVIGATION_REFUSED"); return true
+                    if (!current(this@OwnedMetadataView)) return true
+                    if (resource.isForMainFrame && !documentStarted && resource.url.toString() == AbemaMetadataRuntimePolicy.PAGE) return false
+                    failed(this@OwnedMetadataView, "NAVIGATION_REFUSED"); return true
                 }
                 override fun shouldInterceptRequest(view: WebView, resource: WebResourceRequest): WebResourceResponse? {
                     val uri = runCatching { URI(resource.url.toString()) }.getOrNull()
-                    val allowed = current(this@OwnedGuestView) && uri != null && runCatching(canRequest).getOrDefault(false) &&
-                        runCatching { preparation.checkAccess() }.getOrDefault(false) && current(this@OwnedGuestView) &&
+                    val allowed = current(this@OwnedMetadataView) && uri != null && runCatching(canRequest).getOrDefault(false) &&
+                        runCatching { preparation.checkAccess() }.getOrDefault(false) && current(this@OwnedMetadataView) &&
                         admission.admit(uri, resource.isForMainFrame, resource.method,
-                            AbemaGuestBootstrapPolicy.corsHeaders(resource.method) { resource.requestHeaders })
-                    if (!allowed) { failed(this@OwnedGuestView, "RESOURCE_REFUSED"); return refused() }
-                    if (uri.toString() == AbemaGuestBootstrapPolicy.GUEST || uri.toString() == AbemaGuestBootstrapPolicy.CHALLENGE ||
-                        uri.toString() == AbemaGuestBootstrapPolicy.DEVICE_TOKEN || AbemaGuestBootstrapPolicy.isProfile(uri) ||
-                        AbemaGuestBootstrapPolicy.isEpisode(uri, request.policyEpisodeId) ||
-                        request.seriesRequest?.let { AbemaGuestBootstrapPolicy.seriesStep(uri, it) } != null ||
+                            AbemaMetadataRuntimePolicy.corsHeaders(resource.method) { resource.requestHeaders })
+                    if (!allowed) { failed(this@OwnedMetadataView, "RESOURCE_REFUSED"); return refused() }
+                    if (uri.toString() == AbemaMetadataRuntimePolicy.GUEST || uri.toString() == AbemaMetadataRuntimePolicy.CHALLENGE ||
+                        uri.toString() == AbemaMetadataRuntimePolicy.DEVICE_TOKEN || AbemaMetadataRuntimePolicy.isProfile(uri) ||
+                        AbemaMetadataRuntimePolicy.isEpisode(uri, request.policyEpisodeId) ||
+                        request.seriesRequest?.let { AbemaMetadataRuntimePolicy.seriesStep(uri, it) } != null ||
                         uri.toString() == request.slotRequest?.url() ||
-                        request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE && uri.toString() == AbemaGuestBootstrapPolicy.SCHEDULE ||
-                        request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) {
+                        request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE && uri.toString() == AbemaMetadataRuntimePolicy.SCHEDULE ||
+                        request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH && uri.toString() == request.searchRequest?.url()) {
                         preparation.timing.providerRequest(); return null
                     }
                     val bytes = files[uri.path] ?: return refused()
                     return WebResourceResponse(if (resource.isForMainFrame) "text/html" else "application/javascript", "UTF-8",
-                        200, "OK", mapOf("Content-Security-Policy" to AbemaGuestBootstrapPolicy.contentSecurityPolicy(request.operation,
+                        200, "OK", mapOf("Content-Security-Policy" to AbemaMetadataRuntimePolicy.contentSecurityPolicy(request.operation,
                             request.policyEpisodeId, request.seriesRequest, request.slotRequest, request.searchRequest,
                             preparation.accountBound.get()), "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), ByteArrayInputStream(bytes))
                 }
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                    if (!current(this@OwnedGuestView)) return
-                    if (url != AbemaGuestBootstrapPolicy.PAGE || documentStarted) failed(this@OwnedGuestView, "NAVIGATION_REFUSED")
+                    if (!current(this@OwnedMetadataView)) return
+                    if (url != AbemaMetadataRuntimePolicy.PAGE || documentStarted) failed(this@OwnedMetadataView, "NAVIGATION_REFUSED")
                     else { documentStarted = true; preparation.timing.mark(AbemaPreparationPhase.PAGE_STARTED) }
                 }
                 override fun onPageFinished(view: WebView, url: String?) {
-                    if (current(this@OwnedGuestView) && documentStarted && url == AbemaGuestBootstrapPolicy.PAGE)
+                    if (current(this@OwnedMetadataView) && documentStarted && url == AbemaMetadataRuntimePolicy.PAGE)
                         preparation.timing.mark(AbemaPreparationPhase.PAGE_LOADED)
                 }
                 override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-                    if (current(this@OwnedGuestView) && url != AbemaGuestBootstrapPolicy.PAGE) failed(this@OwnedGuestView, "NAVIGATION_REFUSED")
+                    if (current(this@OwnedMetadataView) && url != AbemaMetadataRuntimePolicy.PAGE) failed(this@OwnedMetadataView, "NAVIGATION_REFUSED")
                 }
                 override fun onReceivedHttpAuthRequest(view: WebView, auth: HttpAuthHandler, host: String, realm: String) {
                     val route = preparation.route.get()
-                    if (current(this@OwnedGuestView) && route?.matchesProxyChallenge(host, realm) == true)
+                    if (current(this@OwnedMetadataView) && route?.matchesProxyChallenge(host, realm) == true)
                         auth.proceed(route.proxyUsername, route.proxyPassword) else auth.cancel()
                 }
                 override fun onReceivedSslError(view: WebView, auth: SslErrorHandler, error: SslError) {
-                    auth.cancel(); if (current(this@OwnedGuestView)) failed(this@OwnedGuestView, "TLS_REFUSED")
+                    auth.cancel(); if (current(this@OwnedMetadataView)) failed(this@OwnedMetadataView, "TLS_REFUSED")
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                    if (current(this@OwnedGuestView)) failed(this@OwnedGuestView, "RENDERER_GONE"); return true
+                    if (current(this@OwnedMetadataView)) failed(this@OwnedMetadataView, "RENDERER_GONE"); return true
                 }
             }
         }
         private fun refused() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(byteArrayOf()))
-        override fun open() { configure(); view.loadUrl(AbemaGuestBootstrapPolicy.PAGE) }
+        override fun open() { configure(); view.loadUrl(AbemaMetadataRuntimePolicy.PAGE) }
         override fun status(callback: (String?) -> Unit) {
-            if (view.url != AbemaGuestBootstrapPolicy.PAGE || preparation.account.get()?.current() == false) { callback(null); return }
+            if (view.url != AbemaMetadataRuntimePolicy.PAGE || preparation.account.get()?.current() == false) { callback(null); return }
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.status() || null", callback)
         }
         override fun metadata(callback: (String?) -> Unit) {
-            check(request.operation in setOf(AbemaGuestBootstrapOperation.FETCH_EPISODE, AbemaGuestBootstrapOperation.FETCH_SERIES,
-                AbemaGuestBootstrapOperation.FETCH_SLOT, AbemaGuestBootstrapOperation.FETCH_SCHEDULE, AbemaGuestBootstrapOperation.FETCH_SEARCH))
+            check(request.operation in setOf(AbemaMetadataRuntimeOperation.FETCH_EPISODE, AbemaMetadataRuntimeOperation.FETCH_SERIES,
+                AbemaMetadataRuntimeOperation.FETCH_SLOT, AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, AbemaMetadataRuntimeOperation.FETCH_SEARCH))
             if (preparation.account.get() == null) {
                 view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.metadata() || null", callback); return
             }
@@ -367,19 +367,19 @@ internal class AndroidAbemaGuestEnvironment(private val context: Context) : Abem
             } } catch (_: Throwable) { preparation.projectionDone.countDown(); callback(null) }
         }
         override fun accountLink(callback: (String?) -> Unit) {
-            check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)
-            if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
+            check(request.operation == AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK)
+            if (view.url != AbemaMetadataRuntimePolicy.PAGE) { callback(null); return }
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.accountLink() || null", callback)
         }
         override fun accountValidation(callback: (String?) -> Unit) {
-            check(request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION)
-            if (view.url != AbemaGuestBootstrapPolicy.PAGE) { callback(null); return }
+            check(request.operation == AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION)
+            if (view.url != AbemaMetadataRuntimePolicy.PAGE) { callback(null); return }
             view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.accountValidation() || null", callback)
         }
         override fun destroy(): Boolean {
             var failed = false
             if (!diagnostics.cleanup(FailureStage.HELPER_STOP) {
-                if (view.url == AbemaGuestBootstrapPolicy.PAGE) view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.stop()", null)
+                if (view.url == AbemaMetadataRuntimePolicy.PAGE) view.evaluateJavascript("window['__tachiaiGuest_${request.nonce}']?.stop()", null)
             }) failed = true
             for ((stage, stop) in listOf<Pair<FailureStage, () -> Unit>>(
                 FailureStage.WEBVIEW_STOP to { view.stopLoading() }, FailureStage.WEBVIEW_PAUSE to { view.onPause() },

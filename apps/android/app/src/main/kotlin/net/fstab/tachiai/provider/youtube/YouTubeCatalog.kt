@@ -41,8 +41,7 @@ internal class YouTubeCatalog(override val instanceId: String,
     @Volatile private var closed = false
     init { require(validProviderInstanceId(instanceId)) }
     private fun current() = !closed && canUse()
-    private fun entry(resource: CatalogResource) = CatalogEntry(resource,
-        "YouTube video ${resource.identity} (metadata not checked)", CatalogAvailability.UNKNOWN)
+    private fun entry(resource: CatalogResource) = CatalogEntry(resource, youTubeUncheckedTitle(resource), CatalogAvailability.UNKNOWN)
     override fun capabilities() = if (!current()) CatalogCapabilities() else CatalogCapabilities(
         lookup = CatalogAccess.AVAILABLE, playback = CatalogAccess.AVAILABLE,
         collections = listOf(CatalogCollection("subscriptions", "Subscriptions", CatalogAccess.AUTHORIZATION_REQUIRED)))
@@ -64,3 +63,6 @@ internal class YouTubeCatalog(override val instanceId: String,
     override fun close() { closed = true }
     override fun toString() = "YouTubeCatalog(redacted)"
 }
+
+// Tachiai's own title for an imported link; YouTube metadata is not read (#643: never translated).
+internal fun youTubeUncheckedTitle(resource: CatalogResource): String = "YouTube video ${resource.identity} (metadata not checked)"

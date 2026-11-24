@@ -25,6 +25,19 @@ the live edge
 changes how far behind live the Twitch feed plays, not the controls or flow. No
 equivalent mechanism is established for the web viewer or Apple.
 
+Android translates provider text
+([#643](prototype-ux.md#provider-text-translation--643)) with Google ML Kit's
+on-device Translation (`com.google.mlkit:translate` 17.0.3) and bundled
+Language Identification (`com.google.mlkit:language-id` 17.0.6). Both are the
+bundled variants, so they do not need Google Play services at runtime; their
+Play services client libraries are linked. ML Kit's startup provider is removed,
+so it initializes on the first translation after the user turns it on. Models
+download from `dl.google.com` through Android's DownloadManager. That download
+uses the system network, not a provider's route, because it is not provider
+traffic. Phone and TV share the same code and settings. The same rules are
+expected to use Apple's Translation framework on iOS and macOS and Chrome's
+built-in Translator API on the web; neither is implemented.
+
 Android also has an internal, explicitly selected account-transport
 [Network-binding prerequisite](source-network-routing.md#explicit-android-network-prerequisite).
 It binds direct HTTPS and supported proxy/tunnel outer sockets to one supplied

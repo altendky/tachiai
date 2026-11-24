@@ -99,6 +99,13 @@
   durability and other provider/device combinations remain open.
 - How should initial mute be enforced when a provider creates or replaces its
   media element after main-frame load? The current command is best effort only.
+- Provider text translation ([#643](https://github.com/altendky/tachiai/issues/643)):
+  how should the ML Kit attribution mark appear? The
+  [Cloud Translation attribution rules](https://docs.cloud.google.com/translate/attribution),
+  which ML Kit's guidelines reference, ask for a "powered by Google Translate"
+  mark next to translated results. For now the translation setting names Google
+  as the engine. The engine choice itself is recorded in
+  [decisions](decisions.md).
 
 ## ABEMA
 

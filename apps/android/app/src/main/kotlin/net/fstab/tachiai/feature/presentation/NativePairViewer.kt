@@ -85,8 +85,8 @@ internal class NativePairViewer(
     context: Context,
     private val a: PlayerView,
     private val b: PlayerView,
-    private val labelA: String,
-    private val labelB: String,
+    labelA: String,
+    labelB: String,
     private val pair: () -> NativeMixedPair?,
     private val onPlay: () -> Unit,
     private val onPause: () -> Unit,
@@ -124,6 +124,13 @@ internal class NativePairViewer(
     private val onStartOver: (() -> NativePairSkipPlan)? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
+    // Feed labels may change once a provider title's translation is ready (#643).
+    private var labelA = labelA
+    private var labelB = labelB
+    fun updateLabels(a: String, b: String) {
+        labelA = a; labelB = b
+        refresh()
+    }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     // Selection is independent of readiness: a selected preparing/failed feed
     // keeps its pane and recovery controls instead of promoting its sibling.

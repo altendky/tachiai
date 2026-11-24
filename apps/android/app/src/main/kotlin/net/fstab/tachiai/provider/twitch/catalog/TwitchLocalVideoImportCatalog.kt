@@ -78,7 +78,7 @@ internal class TwitchLocalVideoImportCatalog(
                 if (video == null) CatalogResult.Failure(CatalogFailure.INVALID_INPUT)
                 else CatalogResult.Value(CatalogEntry(
                     CatalogResource(providerId, "video", video.id, CatalogIntent.VIDEO),
-                    "Public Twitch video ${video.id} (metadata not checked)", CatalogAvailability.UNKNOWN,
+                    twitchUncheckedVideoTitle(video.id), CatalogAvailability.UNKNOWN,
                 ))
             }
         }

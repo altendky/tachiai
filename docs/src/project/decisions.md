@@ -138,6 +138,15 @@
   pending evidence from the actual target devices.
 - **Matta!** may label a realignment interaction, paired with descriptive
   accessibility text.
+- Provider text translation ([#643](https://github.com/altendky/tachiai/issues/643))
+  uses Google ML Kit on-device translation on every Android device, including
+  Android TV (user decision, 2026-11-23). This is despite the
+  [translation guidelines](https://developers.google.com/ml-kit/language/translation/translation-terms),
+  which say the API "may not be used in any applications for any embedded
+  devices such as cars, TVs" without Google's written permission. ML Kit also
+  sends usage metrics (not the text) to Google, with no opt-out. Mozilla's
+  on-device Bergamot engine is the alternative if this needs to change; it would
+  be an implementation difference, not a UX change.
 
 ## Deferred
 

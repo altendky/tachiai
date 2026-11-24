@@ -59,6 +59,9 @@ import net.fstab.tachiai.platform.diagnostics.TimingFailureTarget
 import net.fstab.tachiai.platform.diagnostics.TimingFailureEvidence
 import net.fstab.tachiai.platform.diagnostics.TimingFailureJournal
 import net.fstab.tachiai.presentation.PairOffsetIdentity
+import net.fstab.tachiai.presentation.ProviderTextSource
+import net.fstab.tachiai.presentation.configuredSourceTextSource
+import net.fstab.tachiai.presentation.tachiaiCatalogTitle
 import net.fstab.tachiai.presentation.PairOffsetPreference
 import net.fstab.tachiai.presentation.PairOffsetSession
 import net.fstab.tachiai.presentation.PairOffsetRetryEstimate
@@ -1149,7 +1152,8 @@ open class PrototypeActivity : ComponentActivity() {
                 // A waiting feed keeps its waiting text through its own checks.
                 else if (waiting[index].active && canRetryFeed(index)) waiting[index].let {
                     val now = System.currentTimeMillis()
-                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, now, program = airing[index].program(now),
+                    feedWaitingMessage(it.kind, it.startEpochMs, it.lastCheckedEpochMs, now,
+                        program = airing[index].program(now)?.let { program -> program.copy(title = viewerProviderText(index, program.title)) },
                         notOpen = it.notOpen)
                 }
                 else if (feedRetries[index].retrying) {
@@ -2487,9 +2491,26 @@ open class PrototypeActivity : ComponentActivity() {
     private fun sourceLabel(index: Int): String {
         val feed = selection?.slots?.getOrNull(index) ?: return "${NativeMixedSide.entries[index].name} · No source selected"
         val instance = checkNotNull(feed.resolve(activeInstances))
-        val title = selection?.slots?.getOrNull(index)?.episodeTitle
-            ?: configuredSourceDisplayTitle(checkNotNull(activeConfiguredSources[index]))
+        val episodeTitle = feed.episodeTitle
+        // Display only (#643): the label shows a translation once ready; the
+        // selection, matching and saved state keep the original title.
+        val title = if (episodeTitle != null) {
+            if (tachiaiCatalogTitle(feed.resource, episodeTitle)) episodeTitle else viewerProviderText(index, episodeTitle)
+        }
+            else checkNotNull(activeConfiguredSources[index]).let { configured -> configuredSourceDisplayTitle(configured).let { original ->
+                if (configuredSourceTextSource(configured) == null) original else viewerProviderText(index, original)
+            } }
         return "${if (index == 0) "A" else "B"} · ${net.fstab.tachiai.presentation.providerDisplayNames(instance).inline} · $title"
+    }
+
+    private fun viewerProviderText(index: Int, text: String): String {
+        val feed = selection?.slots?.getOrNull(index) ?: return text
+        return ProviderTextTranslation.displayNow(this, text, ProviderTextSource(feed.service, feed.instanceId)) {
+            val shown = viewer ?: return@displayNow
+            // The selection may have changed since the request; keep the old labels then.
+            if (!isDestroyed) runCatching { sourceLabel(0) to sourceLabel(1) }
+                .onSuccess { (a, b) -> if (viewer === shown) shown.updateLabels(a, b) }
+        }
     }
 
     private fun selectedSlotIndices(): List<Int> = selection?.slots?.indices?.filter { selection?.slots?.get(it) != null }.orEmpty()

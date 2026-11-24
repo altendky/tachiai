@@ -1812,6 +1812,67 @@ the wording, cadence and dropped results. The device acceptance in #560 is
 still open: the line appearing within the deadline while the other feed plays,
 and a Retry during a lookup staying unaffected.
 
+### Provider text translation — #643
+
+[#643](https://github.com/altendky/tachiai/issues/643) translates
+provider-supplied text into the device's language for display. This is common
+UX: phone, tablet, TV and future Apple and web clients follow the same rules.
+Only the engine differs; see the
+[implementation difference ledger](implementation-differences.md#android-phone-and-tv).
+
+- **What is translated.** Provider text only:
+  - configured stream titles and the picker's **A:**/**B:** episode lines;
+  - Episodes tabs and rows;
+  - Find streams, search, Schedule and browse/children rows, their group tabs
+    and the browsed parent's name in the heading;
+  - the viewer's feed labels and a waiting channel's scheduled program title.
+
+  Tachiai's own labels, tab names and messages are never translated. Neither
+  are titles Tachiai makes itself: link placeholders such as "ABEMA broadcast ·
+  sumo/…" before provider metadata, "Unavailable Twitch video …", unchecked
+  YouTube and Twitch links, and legacy built-in labels. Each is recognized by
+  the function that builds it, for that exact resource.
+- **Display.** The original shows at once. When a translation is ready it
+  replaces the original in place; the two are not shown together. Nothing waits
+  for translation, and row order, keys and focus stay the same. Rows keep
+  their existing line limits, so a swap does not move remote focus.
+- **Display only.** Search, matching, saved streams, saved episode choices,
+  identities and the stored selection keep the original text.
+- **Settings.**
+  - **Providers → Translation → Translate provider text** turns it on or off.
+    It is off by default. Its status line says when a model is downloading, or
+    when translation is unavailable.
+  - Each provider's details have a **Source language**: **Auto** or a fixed
+    language. ABEMA defaults to **Japanese**; Twitch, YouTube and later
+    providers default to **Auto**. **Auto** detects each string's language on
+    the device. Text already in the device's language, or whose language is
+    unclear, stays original.
+  - A fixed language skips detection. This avoids kanji-only titles such as
+    大相撲 or 十一月場所 being detected as Chinese.
+  - When the fixed language has its own script, text with none of that script
+    stays original. For example, a Latin-only title under ABEMA's Japanese is
+    not translated. Japanese needs kana or kanji, Chinese Han, Korean Hangul,
+    Russian Cyrillic, and so on. Latin-script languages are not checked.
+- **On-device.** Provider text is translated on the device and is not sent to
+  a translation service. Turning translation on allows a one-time model
+  download from the platform's engine, about 30 MB per source language.
+- **Unavailable.** If the device language or a source language is unsupported,
+  or a model cannot be downloaded, originals stay and the setting says
+  translation is unavailable. A failed download is retried after 5 minutes.
+- **Cache.** Translations are cached in memory per process, at most 1,024
+  entries. A key is the source text with its language pair; no provider
+  identity or account data is kept with it. Nothing is cached on disk.
+- **No glossary.** There is no sumo or other domain glossary, as decided.
+
+Provider-free JVM tests cover the translator states (original first,
+replacement, unsure, unsupported and same-language text kept, cache hits,
+download failure and retry), Source language defaults, the script guard,
+Tachiai-made titles and the stored setting.
+The device record in #643 is still open: model download and translation on the
+phone and SHIELD, and the quality of representative ABEMA titles. The ML Kit
+usage terms raise a question for TV; see
+[open questions](open-questions.md#product).
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

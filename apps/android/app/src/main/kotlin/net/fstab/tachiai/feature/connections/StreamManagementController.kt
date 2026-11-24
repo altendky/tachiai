@@ -41,6 +41,8 @@ internal data class StreamManagementState(
     val discoveryContextId: Long = 0,
     val retainedDiscoveryContextIds: List<Long> = emptyList(),
     val childHeading: String? = null,
+    // The browsed parent's provider title inside childHeading, for display translation only.
+    val childTitle: String? = null,
     val navigationBackLabel: String? = null,
     val selectedTabId: String? = null,
     val link: StreamLinkState? = null,
@@ -102,7 +104,7 @@ internal class StreamManagementController(
     private var lastRefreshId: String? = null
     private var initialQueryChosen = false
     private data class DiscoveryFrame(val id: Long, val query: CatalogQuery, val entries: List<CatalogEntry>,
-        val nextCursor: String?, val resultsTruncated: Boolean, val heading: String?, val backLabel: String?,
+        val nextCursor: String?, val resultsTruncated: Boolean, val heading: String?, val title: String?, val backLabel: String?,
         val failure: CatalogResult.Failure?, val lookup: String?,
         val childGroups: List<CatalogChildGroup>, val childGroup: String?)
     private val parents = ArrayDeque<DiscoveryFrame>()
@@ -122,7 +124,7 @@ internal class StreamManagementController(
         (roots.values.map { it.id } + parents.map { it.id }).distinct().filterNot { it == currentId }
     private fun frame(snapshot: StreamManagementState) = DiscoveryFrame(snapshot.discoveryContextId,
         snapshot.query, snapshot.entries.toList(), snapshot.nextCursor, snapshot.resultsTruncated,
-        snapshot.childHeading, snapshot.navigationBackLabel, snapshot.failure, lastLookup,
+        snapshot.childHeading, snapshot.childTitle, snapshot.navigationBackLabel, snapshot.failure, lastLookup,
         snapshot.childGroups, snapshot.childGroup)
     private fun retainRoot() = synchronized(stateLock) {
         val snapshot = state.value
@@ -141,7 +143,7 @@ internal class StreamManagementController(
         if (clearRoots) staleContinuations.clear()
         val id = discoveryContexts.incrementAndGet()
         publish { it.copy(discoveryContextId = id, retainedDiscoveryContextIds = retainedIds(id),
-            childHeading = null, navigationBackLabel = null, childGroups = emptyList(), childGroup = null) }
+            childHeading = null, childTitle = null, navigationBackLabel = null, childGroups = emptyList(), childGroup = null) }
     }
     private fun current(revision: Long) = !closed && browseRevision.get() == revision
     private fun cancelBrowse() { browseRevision.incrementAndGet(); browseJob?.cancel(); browseJob = null }
@@ -315,7 +317,7 @@ internal class StreamManagementController(
             publish { it.copy(selectedTabId = id, query = cached.query, entries = cached.entries,
                 nextCursor = cached.nextCursor, resultsTruncated = cached.resultsTruncated,
                 discoveryContextId = cached.id, retainedDiscoveryContextIds = retainedIds(cached.id),
-                childHeading = null, navigationBackLabel = null, failure = cached.failure, loading = false, message = null,
+                childHeading = null, childTitle = null, navigationBackLabel = null, failure = cached.failure, loading = false, message = null,
                 childGroups = emptyList(), childGroup = null) }
         } else {
             resetNavigation(clearRoots = false)
@@ -342,8 +344,9 @@ internal class StreamManagementController(
                 return
             }
             parents.addLast(frame(snapshot))
-            val title = (snapshot.entries.firstOrNull { it.resource == resource } ?:
-                snapshot.configured.firstOrNull { it.entry.resource == resource }?.entry)?.title ?: resource.identity
+            val known = (snapshot.entries.firstOrNull { it.resource == resource } ?:
+                snapshot.configured.firstOrNull { it.entry.resource == resource }?.entry)?.title
+            val title = known ?: resource.identity
             val label = when {
                 snapshot.query.parent != null -> "Back to ${snapshot.childHeading ?: "items"}"
                 lastLookup != null -> "Back to lookup results"
@@ -353,7 +356,8 @@ internal class StreamManagementController(
             }
             val id = discoveryContexts.incrementAndGet()
             publish { it.copy(discoveryContextId = id, retainedDiscoveryContextIds = retainedIds(id),
-                childHeading = "${snapshot.capabilities?.childrenFor(resource, catalog.providerId)?.headingPrefix ?: "Items under"} $title", navigationBackLabel = label,
+                childHeading = "${snapshot.capabilities?.childrenFor(resource, catalog.providerId)?.headingPrefix ?: "Items under"} $title",
+                childTitle = known, navigationBackLabel = label,
                 childGroups = emptyList(), childGroup = null) }
         }
         browse(CatalogQuery(parent = resource), preserveContext = true)
@@ -373,7 +377,7 @@ internal class StreamManagementController(
         lastLookup = frame.lookup
         lastRefreshId = null
         publish { it.copy(query = frame.query, entries = frame.entries, nextCursor = frame.nextCursor,
-            resultsTruncated = frame.resultsTruncated, childHeading = frame.heading, navigationBackLabel = frame.backLabel,
+            resultsTruncated = frame.resultsTruncated, childHeading = frame.heading, childTitle = frame.title, navigationBackLabel = frame.backLabel,
             discoveryContextId = frame.id, retainedDiscoveryContextIds = retainedIds(frame.id), failure = frame.failure, loading = false,
             childGroups = frame.childGroups, childGroup = frame.childGroup) }
         true
@@ -682,7 +686,7 @@ internal class StreamManagementController(
             mutableState.value = mutableState.value.let { it.copy(entries = emptyList(), nextCursor = null,
                 capabilities = null, query = CatalogQuery(), failure = null, loading = false,
                 resultsTruncated = false, privacyRevision = privacyRevisions.incrementAndGet(), retainedDiscoveryContextIds = emptyList(),
-                childHeading = null, navigationBackLabel = null, selectedTabId = null, link = null,
+                childHeading = null, childTitle = null, navigationBackLabel = null, selectedTabId = null, link = null,
                 childGroups = emptyList(), childGroup = null) }
         }
         cancelBrowse(); cancelLink(); mutationRevision.incrementAndGet()

@@ -30,6 +30,8 @@ import net.fstab.tachiai.feature.presentation.RemoteTabRow
 import net.fstab.tachiai.feature.presentation.RemoteDropdownMenuItem as DropdownMenuItem
 import net.fstab.tachiai.feature.presentation.tvFocusGroup
 import net.fstab.tachiai.feature.presentation.tvFocusIndicator
+import net.fstab.tachiai.feature.presentation.catalogTitle
+import net.fstab.tachiai.feature.presentation.providerText
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -161,6 +163,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     val mutable = !state.saving && !state.loading && !state.storageFailed && state.configured != null
     val capabilities = state.capabilities
     val providerId = ProviderId(state.instance.service.name.lowercase(java.util.Locale.ROOT))
+    val textSource = ProviderTextSource(state.instance.service, state.instance.id)
     // Keep only public control labels/support across access rechecks. Old access
     // states, entries and cursors must not become authorization evidence.
     var discoveryLabels by remember(state.instance.id) { mutableStateOf<CatalogCapabilities?>(null) }
@@ -269,7 +272,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     contentDescription = if (link.saving) "Saving stream" else "Resolving stream"
                 })
                 resolved?.let {
-                    Text(it.title, style = MaterialTheme.typography.titleMedium); Text(entryDetails(it))
+                    Text(catalogTitle(it.resource, it.title, textSource), style = MaterialTheme.typography.titleMedium); Text(entryDetails(it))
                     TextButton(onClick = onEditLink, enabled = !busy) { Text("Edit link") }
                 }
                 val error = link.message ?: link.failure?.let(::catalogFailureExplanation)
@@ -283,8 +286,9 @@ internal fun StreamManagementScreen(state: StreamManagementState,
     var pendingRemoval by remember(state.instance.id, state.privacyRevision) { mutableStateOf<String?>(null) }
     LaunchedEffect(ids) { if (pendingRemoval !in ids) pendingRemoval = null }
     pendingRemoval?.let { id -> sources.singleOrNull { it.id == id }?.let { source ->
+        val shownTitle = catalogTitle(source.entry.resource, source.entry.title, textSource)
         AlertDialog(onDismissRequest = { pendingRemoval = null }, title = { Text("Remove stream?") },
-            text = { Text("Remove “${source.entry.title}” from your configured streams?",
+            text = { Text("Remove “$shownTitle” from your configured streams?",
                 Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = {
                 val current = latestState
@@ -293,7 +297,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     pendingRemoval = null; remove(id)
                 }
             }, enabled = actionsEnabled, modifier = Modifier.semantics {
-                contentDescription = "Confirm remove ${source.entry.title}"
+                contentDescription = "Confirm remove $shownTitle"
             }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } })
     } }
@@ -337,6 +341,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             val pinnable = LocalPinnableContainer.current
             val childCapability = capabilities?.childrenFor(source.entry.resource, providerId)
                 ?.takeIf { it.access == CatalogAccess.AVAILABLE }
+            val shownTitle = catalogTitle(source.entry.resource, source.entry.title, textSource)
             Box(Modifier.zIndex(if (drag.draggedId == source.id) 1f else 0f)
                 .onGloballyPositioned { drag.positioned(source.id, it) }) {
             Column(Modifier.graphicsLayer {
@@ -353,7 +358,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     Box {
                         IconButton(onClick = { moveMenu = true }, enabled = actionsEnabled && displayed.size > 1,
                             modifier = Modifier.size(48.dp).onGloballyPositioned { handleCoordinates = it }
-                                .semantics { contentDescription = "Reorder ${source.entry.title}"
+                                .semantics { contentDescription = "Reorder $shownTitle"
                                     stateDescription = "${index + 1} of ${displayed.size}" }
                                 .pointerInput(source.id, drag, canDrag) {
                                     if (canDrag)
@@ -370,30 +375,30 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                         DropdownMenu(expanded = moveMenu && actionsEnabled, onDismissRequest = { moveMenu = false }) {
                             DropdownMenuItem(text = { Text("Move earlier") }, enabled = index > 0,
                                 onClick = { moveMenu = false; onMove(source.id, -1) },
-                                modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} earlier" })
+                                modifier = Modifier.semantics { contentDescription = "Move $shownTitle earlier" })
                             DropdownMenuItem(text = { Text("Move later") }, enabled = index < displayed.lastIndex,
                                 onClick = { moveMenu = false; onMove(source.id, 1) },
-                                modifier = Modifier.semantics { contentDescription = "Move ${source.entry.title} later" })
+                                modifier = Modifier.semantics { contentDescription = "Move $shownTitle later" })
                         }
                     }
                     val browse = if (childCapability != null) Modifier.tvFocusIndicator().clickable(enabled = actionsEnabled, role = Role.Button,
                         onClickLabel = childCapability.actionLabel,
                         onClick = { onChildren(source.entry.resource) }).semantics(mergeDescendants = true) {
-                            contentDescription = "${childCapability.actionLabel} for ${source.entry.title}"
+                            contentDescription = "${childCapability.actionLabel} for $shownTitle"
                         }
                         else Modifier
                     Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
-                        Text(source.entry.title, style = MaterialTheme.typography.titleMedium,
+                        Text(shownTitle, style = MaterialTheme.typography.titleMedium,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(entryDetails(source.entry, childCapability?.actionLabel), style = MaterialTheme.typography.bodySmall)
                     }
                     IconButton(onClick = { onRefresh(source.id) },
                         enabled = actionsEnabled && retryReady && capabilities?.refresh == CatalogAccess.AVAILABLE,
-                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Refresh metadata for ${source.entry.title}" }) {
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Refresh metadata for $shownTitle" }) {
                         Icon(painterResource(R.drawable.stream_refresh), contentDescription = null)
                     }
                     IconButton(onClick = { pendingRemoval = source.id }, enabled = actionsEnabled,
-                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Remove ${source.entry.title}" }) {
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Remove $shownTitle" }) {
                         Icon(painterResource(R.drawable.stream_remove), contentDescription = null)
                     }
                 }
@@ -482,7 +487,12 @@ internal fun StreamManagementScreen(state: StreamManagementState,
             }
         } }
         item(key = DISCOVERY_CONTEXT_KEY) { Column {
-            val heading = state.childHeading ?: state.query.parent?.let {
+            val childHeading = state.childHeading?.let { heading ->
+                state.childTitle?.takeIf { heading.endsWith(it) }?.let { title ->
+                    heading.removeSuffix(title) + (state.query.parent?.let { catalogTitle(it, title, textSource) } ?: title)
+                } ?: heading
+            }
+            val heading = childHeading ?: state.query.parent?.let {
                 "${capabilities?.childrenFor(it, providerId)?.headingPrefix ?: "Items under"} ${it.identity}"
             } ?: state.query.search?.let { "Search results" }
             if (state.navigationBackLabel != null) SettingsPageHeader(heading ?: "Find streams",
@@ -495,7 +505,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                     state.childGroups.forEach { group ->
                         Tab(selected = group.id == state.childGroup, enabled = !state.saving && !state.storageFailed &&
                             state.configured != null && state.link == null,
-                            onClick = { selectChildGroup(group.id) }, text = { Text(group.title, maxLines = 1) })
+                            onClick = { selectChildGroup(group.id) }, text = { Text(providerText(group.title, textSource), maxLines = 1) })
                     }
                 }
             }
@@ -506,14 +516,15 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                 val added = state.configured.orEmpty().any { it.entry.resource == entry.resource }
                 val childCapability = capabilities?.childrenFor(entry.resource, providerId)
                     ?.takeIf { it.access == CatalogAccess.AVAILABLE }
+                val shownTitle = catalogTitle(entry.resource, entry.title, textSource)
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     val browse = if (childCapability != null) Modifier.tvFocusIndicator().clickable(enabled = mutable, role = Role.Button,
                         onClickLabel = childCapability.actionLabel,
-                        onClick = { onChildren(entry.resource) }).semantics { contentDescription = "Browse ${entry.title}" }
+                        onClick = { onChildren(entry.resource) }).semantics { contentDescription = "Browse $shownTitle" }
                         else Modifier
                     Column(Modifier.weight(1f).heightIn(min = 48.dp).then(browse).padding(vertical = 8.dp)) {
-                        Text(entry.title, style = MaterialTheme.typography.titleMedium,
+                        Text(shownTitle, style = MaterialTheme.typography.titleMedium,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Top) {
                             Text(entryDetails(entry), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -525,7 +536,7 @@ internal fun StreamManagementScreen(state: StreamManagementState,
                         enabled = mutable && !added && state.configured.orEmpty().size < MAX_CONFIGURED_SOURCES,
                         colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.primary),
                         modifier = Modifier.size(48.dp).semantics {
-                            contentDescription = "Add ${entry.title}"
+                            contentDescription = "Add $shownTitle"
                             stateDescription = if (added) "Already added" else "Not added"
                         }) {
                         Icon(painterResource(if (added) R.drawable.stream_check else R.drawable.stream_plus), contentDescription = null)

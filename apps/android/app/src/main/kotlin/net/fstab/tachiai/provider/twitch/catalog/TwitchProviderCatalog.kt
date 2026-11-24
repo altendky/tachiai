@@ -343,11 +343,11 @@ internal class TwitchProviderCatalog(
             resource.providerId != providerId -> throw Abort(CatalogFailure.INVALID_INPUT)
             broadcaster(resource) -> {
                 val user = exactUser(context, TwitchCatalogPublicInput.BroadcasterId(resource.identity))
-                if (user == null) CatalogEntry(resource, "Unavailable Twitch channel ${resource.identity}", CatalogAvailability.UNAVAILABLE)
+                if (user == null) CatalogEntry(resource, twitchUnavailableTitle(resource), CatalogAvailability.UNAVAILABLE)
                 else exactBroadcasterEntry(context, user)
             }
             video(resource) -> exactVideo(context, resource.identity)?.let(::videoEntry)
-                ?: CatalogEntry(resource, "Unavailable Twitch video ${resource.identity}", CatalogAvailability.UNAVAILABLE)
+                ?: CatalogEntry(resource, twitchUnavailableTitle(resource), CatalogAvailability.UNAVAILABLE)
             resource.kind == "channel" -> throw Abort(CatalogFailure.NOT_VERIFIED)
             else -> throw Abort(CatalogFailure.UNSUPPORTED)
         }
@@ -439,3 +439,10 @@ internal class TwitchProviderCatalog(
     }
     override fun toString() = "TwitchProviderCatalog(redacted)"
 }
+
+// Tachiai's own titles when Twitch no longer returns the item (#643: never translated).
+internal fun twitchUnavailableTitle(resource: CatalogResource): String =
+    "Unavailable Twitch ${if (resource.kind == "video") "video" else "channel"} ${resource.identity}"
+
+// Tachiai's own title for a public video link imported without metadata (#643: never translated).
+internal fun twitchUncheckedVideoTitle(id: String): String = "Public Twitch video $id (metadata not checked)"

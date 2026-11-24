@@ -269,11 +269,34 @@ URLs and tokens are never logged or persisted; only whole seconds leave the
 runtime. See
 [the replay-length operation](abema-metadata-runtime.md#replay-length-operation).
 
+### Scrub-preview image hosts — 2026-11-24
+
+The user approved scrub thumbnails for ABEMA and Twitch replays, including the
+image hosts they need ([#673](https://github.com/altendky/tachiai/issues/673)).
+These are public images, not media or license traffic, and only the viewer's
+scrub preview fetches them, through the feed's own route:
+
+- **ABEMA:** `https://image.p-c2-x.abema-tv.com`, only resized timeline sprites
+  under the selected slot's or program's `timelineThumbComponent` prefix
+  ([details](abema-catalog-access.md#timeline-thumbnails--673)). The host needs no
+  cookie, token or Japanese exit; it was added to the playback route's CONNECT
+  host list so imported routes can reach it.
+- **Twitch:** the storyboard JSON and sheets that GQL `seekPreviewsURL` names on
+  the VOD's CloudFront storage distribution (`d….cloudfront.net`), only this
+  video's files in that storyboard directory
+  ([details](twitch-catalog-access.md#vod-seek-previews--673)). No CloudFront
+  pattern was added to the CONNECT host list, so imported Twitch routes show no
+  previews.
+
+No redirects, cookies or disk caching; addresses are never logged.
+
 ## Decisions
 
 | Date | Origin or pattern | Decision | Evidence and scope |
 | --- | --- | --- | --- |
 | 2026-10-07 | `https://*-abematv.akamaized.net` | Approved by user | One DNS label ending in `-abematv`, including the observed `linear-abematv`, `ds-vod-abematv` and gateway-selected `vod-abematv` hosts. Cached native News/replay only. |
+| 2026-11-24 | `https://image.p-c2-x.abema-tv.com` | Approved by user | Scrub-preview timeline sprites of the selected slot or program only ([#673](https://github.com/altendky/tachiai/issues/673)). |
+| 2026-11-24 | Twitch storyboard host from `seekPreviewsURL` (`https://d….cloudfront.net`) | Approved by user | That video's storyboard JSON and sheets only ([#673](https://github.com/altendky/tachiai/issues/673)); not a general CloudFront approval. |
 
 The observed domain is **akamaized.net**, not **akamized.net**. The wildcard
 means a nonempty ASCII DNS prefix in that single label, not nested subdomains,
@@ -283,7 +306,8 @@ fixed content eligibility and manifest-declared segment membership remain
 independent restrictions. Approving an origin does not approve every URL on it.
 API, license, public-bundle and browser navigation boundaries are unchanged.
 
-No additional exact origin has been approved or rejected yet.
+No additional exact media origin has been approved or rejected for the cached
+CDN policy yet; the 2026-11-24 rows are scrub-preview image hosts outside it.
 
 ## Review workflow
 

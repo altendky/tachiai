@@ -18,6 +18,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
@@ -122,6 +123,8 @@ internal class NativePairViewer(
     // Start over moves back to the earliest feed's start, keeping a pair's
     // offset, and forgets remembered positions (#655 part 2).
     private val onStartOver: (() -> NativePairSkipPlan)? = null,
+    // The target feed's thumbnail above the scrub bar while choosing (#673).
+    private val scrubPreviews: ViewerScrubPreviews? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
     // Feed labels may change once a provider title's translation is ready (#643).
@@ -176,6 +179,7 @@ internal class NativePairViewer(
     private var expectedPositionMs: Long? = null
     private var scrubbingMs: Long? = null
     private var scrubTouch = false
+    private var previewTicket = 0L
     private val commitScrubTask = Runnable { commitScrub() }
     private val tapGesture = ViewerTapGesture(ViewConfiguration.getDoubleTapTimeout().toLong())
     private val deferredToggle = Runnable { tapGesture.deferredDone(); toggleControls() }
@@ -304,6 +308,17 @@ internal class NativePairViewer(
         progressTintList = ColorStateList.valueOf(context.getColor(R.color.prototype_primary))
         thumbTintList = progressTintList
     }
+    // Scrub preview (#673): the target tile, above the scrub bar at the
+    // pending position. Hidden when there is none; scrubbing is unchanged.
+    private val scrubPreview = ImageView(context).apply {
+        scaleType = ImageView.ScaleType.FIT_XY
+        setPadding(dp(2), dp(2), dp(2), dp(2))
+        background = GradientDrawable().apply {
+            setColor(Color.BLACK); setStroke(dp(2), OVERLAY_TEXT); cornerRadius = dp(4).toFloat()
+        }
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        visibility = GONE
+    }
     private val positionRow = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         addView(LinearLayout(context).apply {
@@ -379,6 +394,7 @@ internal class NativePairViewer(
         overlay.addView(scroller)
         overlay.addView(topBar)
         overlay.addView(bottomBar)
+        overlay.addView(scrubPreview)
         scroller.visibility = GONE
         volume.contentDescription = "Overall mix volume"
         balance.contentDescription = "Mix: $labelA to $labelB; centre is equal"
@@ -444,6 +460,21 @@ internal class NativePairViewer(
         val target = transport ?: return
         scrubbingMs = ms.coerceIn(0, target.durationMs)
         positionTime.text = formatScrubTarget(checkNotNull(scrubbingMs), target.durationMs)
+        requestPreview(target.side, checkNotNull(scrubbingMs), target.durationMs)
+    }
+    private fun requestPreview(side: NativeMixedSide, positionMs: Long, durationMs: Long) {
+        val previews = scrubPreviews ?: return
+        val ticket = ++previewTicket
+        previews.request(side, positionMs, durationMs) { image ->
+            if (ticket != previewTicket || scrubbingMs == null) return@request
+            if (image == null) hidePreview()
+            else { scrubPreview.setImageBitmap(image); scrubPreview.visibility = VISIBLE }
+            overlay.requestLayout()
+        }
+        overlay.requestLayout()
+    }
+    private fun hidePreview() {
+        if (scrubPreview.visibility != GONE) { scrubPreview.visibility = GONE; scrubPreview.setImageDrawable(null) }
     }
     private fun updateScrub(ms: Long) {
         val target = transport ?: return
@@ -456,6 +487,7 @@ internal class NativePairViewer(
     private fun cancelScrub() {
         removeCallbacks(commitScrubTask)
         scrubbingMs = null; scrubTouch = false
+        previewTicket++; hidePreview(); scrubPreviews?.stop()
     }
     // A scrub is a skip by the distance from the target feed's current position.
     private fun commitScrub() {
@@ -1387,7 +1419,7 @@ internal class NativePairViewer(
         return false
     }
     fun open() { visibility = VISIBLE; startFocusPending = panel == null && overlayFocus == null; showControls(); refresh(); restoreRemoteFocus(key = panel?.let(panelFocus::get) ?: overlayFocus) }
-    fun endSession() { suspendControls(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
+    fun endSession() { suspendControls(); scrubPreviews?.clear(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
     fun suspendControls() {
         invalidateFocusIntent()
         dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
@@ -1436,6 +1468,14 @@ internal class NativePairViewer(
             MeasureSpec.makeMeasureSpec(next.stage.height, MeasureSpec.EXACTLY))
         statusNotice.measure(MeasureSpec.makeMeasureSpec(minOf(dp(480), (next.stage.width - dp(32)).coerceAtLeast(0)),
             MeasureSpec.AT_MOST), atMost)
+        if (scrubPreview.visibility != GONE) {
+            // 16:9, 192 dp wide, or a third of the width on a narrow view.
+            val previewW = minOf(dp(192), contentW / 3) + scrubPreview.paddingLeft + scrubPreview.paddingRight
+            val previewH = (previewW - scrubPreview.paddingLeft - scrubPreview.paddingRight) * 9 / 16 +
+                scrubPreview.paddingTop + scrubPreview.paddingBottom
+            scrubPreview.measure(MeasureSpec.makeMeasureSpec(previewW, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(previewH, MeasureSpec.EXACTLY))
+        }
         setMeasuredDimension(w, h)
     }
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -1463,6 +1503,19 @@ internal class NativePairViewer(
                 view.layout(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
             }
             place(topBar, current.topBar); place(bottomBar, current.bottomBar); place(scroller, current.sheet)
+            placePreview(current.bottomBar)
+        }
+        // Above the scrub bar, centred on the pending position within the bar.
+        private fun placePreview(bar: ViewerRect?) {
+            if (scrubPreview.visibility == GONE || bar == null || positionRow.visibility == GONE) return
+            val track = (scrub.width - scrub.paddingLeft - scrub.paddingRight).coerceAtLeast(0)
+            val fraction = if (scrub.max > 0) scrub.progress.toFloat() / scrub.max else 0f
+            val thumb = bar.left + positionRow.left + scrub.left + scrub.paddingLeft + (track * fraction).toInt()
+            val w = scrubPreview.measuredWidth; val h = scrubPreview.measuredHeight
+            val minX = bar.left + dp(8)
+            val x = (thumb - w / 2).coerceIn(minX, (bar.left + bar.width - dp(8) - w).coerceAtLeast(minX))
+            val y = (bar.top + positionRow.top - h - dp(4)).coerceAtLeast(0)
+            scrubPreview.layout(x, y, x + w, y + h)
         }
     }
 

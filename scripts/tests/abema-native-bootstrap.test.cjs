@@ -2550,3 +2550,32 @@ test('slot raw metadata duplicate encoding corruption and bounds refuse before s
   value.startSlot('sumo/fixture-slot'); await waitFor(value, 'FAILED');
   assert.equal(value.requests.length, 4); assert.equal(value.evaluate('observed.legacy.length'), 0);
 });
+
+test('replays publish only a timeline thumbnail prefix bound to the selected slot or program', async () => {
+  const thumbnails = value => value.evaluate(`window['${name}'].timelineThumbnails()`);
+  const slotPrefix = 'https://image.p-c2-x.abema-tv.com/media/slots/fixture-slot/FIXTURE_ID/timeline';
+  for (const [component, expected] of [
+    [{ urlPrefix: slotPrefix, extension: 'png' }, slotPrefix],
+    [{ urlPrefix: slotPrefix, extension: 'jpg' }, null],
+    [{ urlPrefix: 'https://image.p-c2-x.abema-tv.com/media/slots/other-slot/FIXTURE_ID/timeline', extension: 'png' }, null],
+    [{ urlPrefix: 'https://example.test/media/slots/fixture-slot/FIXTURE_ID/timeline', extension: 'png' }, null],
+    [{ urlPrefix: slotPrefix + '?x=1', extension: 'png' }, null],
+    [undefined, null],
+  ]) {
+    const slot = { ...freeSlot(), ...(component ? { timelineThumbComponent: component } : {}) };
+    const value = fixture({ configuredSlot: true, slot, account: savedAccount() });
+    value.startSlot('sumo/fixture-slot');
+    assert.equal(thumbnails(value), null);
+    await waitFor(value, 'READY');
+    assert.equal(thumbnails(value), expected);
+    value.stop();
+    assert.equal(thumbnails(value), null);
+  }
+  const id = 'fixture-episode';
+  const programPrefix = `https://image.p-c2-x.abema-tv.com/media/programs/${id}/1/timeline`;
+  const value = fixture({ program: { ...freeProgram(id), timelineThumbComponent: { urlPrefix: programPrefix, extension: 'png' } } });
+  value.start(true, id); await waitFor(value, 'READY');
+  assert.equal(thumbnails(value), programPrefix);
+  const live = fixture(); live.start(); await waitFor(live, 'READY');
+  assert.equal(thumbnails(live), null);
+});

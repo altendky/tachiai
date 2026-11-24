@@ -140,18 +140,18 @@ class AbemaSlotMetadataTest {
     }
     @Test fun exactSlotPolicyRequiresGuestAndSingleStrictPreflightGetWithoutAccountOrOtherQuery() {
         val request = AbemaSlotRequest("channel-A", "slot-A")
-        val operation = AbemaGuestBootstrapOperation.FETCH_SLOT
-        val uri = URI(request.url()); val admission = AbemaGuestRequestAdmission(operation, slot = request)
+        val operation = AbemaMetadataRuntimeOperation.FETCH_SLOT
+        val uri = URI(request.url()); val admission = AbemaMetadataRequestAdmission(operation, slot = request)
         assertFalse(admission.admit(uri, false, "GET"))
-        assertTrue(admission.admit(URI(AbemaGuestBootstrapPolicy.GUEST), false, "POST"))
+        assertTrue(admission.admit(URI(AbemaMetadataRuntimePolicy.GUEST), false, "POST"))
         val cors = mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET", "Access-Control-Request-Headers" to "authorization")
         assertTrue(admission.admit(uri, false, "OPTIONS", cors)); assertFalse(admission.admit(uri, false, "OPTIONS", cors))
         assertTrue(admission.admit(uri, false, "GET")); assertFalse(admission.admit(uri, false, "GET"))
-        assertTrue(AbemaGuestBootstrapPolicy.contentSecurityPolicy(operation, slot = request).contains(request.url()))
+        assertTrue(AbemaMetadataRuntimePolicy.contentSecurityPolicy(operation, slot = request).contains(request.url()))
         for (url in listOf(request.url() + "&division=1", request.url().replace("payperview", "all"),
             request.url().replace("slot-A", "slot-B"), request.url().replace("api.p-c3-e.abema-tv.com", "api.abema.io"),
-            AbemaGuestBootstrapPolicy.CHALLENGE, AbemaGuestBootstrapPolicy.EPISODE))
-            assertFalse(AbemaGuestBootstrapPolicy.allows(URI(url), false, "GET", operation, slot = request))
-        assertTrue(AbemaGuestBootstrapPolicy.corsHeaders("GET") { error("Private headers must not be read") }.isEmpty())
+            AbemaMetadataRuntimePolicy.CHALLENGE, AbemaMetadataRuntimePolicy.EPISODE))
+            assertFalse(AbemaMetadataRuntimePolicy.allows(URI(url), false, "GET", operation, slot = request))
+        assertTrue(AbemaMetadataRuntimePolicy.corsHeaders("GET") { error("Private headers must not be read") }.isEmpty())
     }
 }

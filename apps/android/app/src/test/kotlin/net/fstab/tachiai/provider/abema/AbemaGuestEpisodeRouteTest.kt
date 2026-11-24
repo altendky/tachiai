@@ -12,7 +12,7 @@ import org.junit.Test
 
 // Route objects only; no connection is dispatched or provider contacted.
 class AbemaGuestEpisodeRouteTest {
-    private val endpoint = URL(AbemaGuestBootstrapPolicy.EPISODE)
+    private val endpoint = URL(AbemaMetadataRuntimePolicy.EPISODE)
     private fun profile() = parseConnectionProfile("http://fixture:private@proxy.example.test:3128".toByteArray())
     private class Backend(private val failClose: Boolean = false) : RouteBackend {
         override val proxyPort = 12345
@@ -31,7 +31,7 @@ class AbemaGuestEpisodeRouteTest {
                 backend
             }
             try {
-                for (url in listOf(URL(AbemaGuestBootstrapPolicy.GUEST), endpoint)) {
+                for (url in listOf(URL(AbemaMetadataRuntimePolicy.GUEST), endpoint)) {
                     val connection = route.open(url)
                     assertTrue(connection is RoutedHttpsConnection)
                     assertEquals(selected != null, connection.usingProxy())
@@ -86,6 +86,6 @@ class AbemaGuestEpisodeRouteTest {
         assertThrows(IOException::class.java) { route.close() }
         route.close(); assertEquals(1, failed.closes)
         assertThrows(IOException::class.java) { route.open(endpoint) }
-        assertThrows(IOException::class.java) { route.open(URL(AbemaGuestBootstrapPolicy.GUEST)) }
+        assertThrows(IOException::class.java) { route.open(URL(AbemaMetadataRuntimePolicy.GUEST)) }
     }
 }

@@ -231,24 +231,24 @@ class AbemaSeasonCandidateDeviceTest {
         val owner = phases.at(HarnessPhase.OWNER_CHECK) {
             readOwner().also { check(it.profile != null && it.instance.setup.route?.mode == SourceRouteMode.SAVED_CONNECTION) }
         }
-        phases.at(HarnessPhase.PROFILE_SETUP) { instrumentation.runOnMainSync { configureAbemaGuestBootstrapProfile(context) } }
+        phases.at(HarnessPhase.PROFILE_SETUP) { instrumentation.runOnMainSync { configureAbemaMetadataRuntimeProfile(context) } }
         val active = AtomicBoolean(); val foreground = IdleForeground(instrumentation, active)
-        val environment = CandidateEnvironment(AndroidAbemaGuestEnvironment(context), observation, ::stableRecords)
+        val environment = CandidateEnvironment(AndroidAbemaMetadataEnvironment(context), observation, ::stableRecords)
         val probe = Probe(environment)
         val nonce = UUID.randomUUID().toString().replace("-", "")
-        val result = AtomicReference<AbemaGuestRuntimeResult?>(); val completed = CountDownLatch(1)
+        val result = AtomicReference<AbemaMetadataRuntimeResult?>(); val completed = CountDownLatch(1)
         var admitted = false; var activityFinished = false; val started = SystemClock.elapsedRealtime()
         try {
             phases.at(HarnessPhase.ACTIVITY_LAUNCH) { foreground.launch(context) }
             val activity = phases.at(HarnessPhase.ACTIVITY_ADOPTION) { foreground.adopt() }
             phases.at(HarnessPhase.FOREGROUND_CHECK) {
                 var idle = false
-                instrumentation.runOnMainSync { idle = !AbemaGuestRuntimeProcess.get(activity).unavailable }
+                instrumentation.runOnMainSync { idle = !AbemaMetadataRuntimeProcess.get(activity).unavailable }
                 check(idle && active.get() && owner.sameOwnership(readOwner()))
             }
             phases.at(HarnessPhase.RUNTIME_ADMISSION) {
                 check(retained.compareAndSet(null, probe))
-                val request = AbemaGuestRuntimeRequest(instanceId, observation.operation,
+                val request = AbemaMetadataRuntimeRequest(instanceId, observation.operation,
                     nonce = nonce, expectedOwnerProof = owner.proof(), deadlineElapsedMs = SystemClock.elapsedRealtime() + 45_000,
                     seriesRequest = if (observation == Observation.SERIES_CANDIDATE) AbemaSeriesPageRequest(SERIES) else null,
                     slotRequest = if (observation == Observation.SLOT_SHAPE) AbemaSlotRequest(SLOT_CHANNEL, SLOT_ID) else null,
@@ -414,12 +414,12 @@ class AbemaSeasonCandidateDeviceTest {
         // never acceptance of a fabricated parent or an automatic retry.
     }
 
-    private enum class Observation(val operation: AbemaGuestBootstrapOperation, val tag: String) {
-        SERIES_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SERIES, "TachiaiAbemaSeasonCandidateProbe"),
-        SLOT_SHAPE(AbemaGuestBootstrapOperation.FETCH_SLOT, "TachiaiAbemaSlotShapeProbe"),
-        SCHEDULE_SHAPE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaScheduleShapeProbe"),
-        CATCHUP_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaCatchupCandidateProbe"),
-        ONGOING_CANDIDATE(AbemaGuestBootstrapOperation.FETCH_SCHEDULE, "TachiaiAbemaOngoingCandidateProbe"),
+    private enum class Observation(val operation: AbemaMetadataRuntimeOperation, val tag: String) {
+        SERIES_CANDIDATE(AbemaMetadataRuntimeOperation.FETCH_SERIES, "TachiaiAbemaSeasonCandidateProbe"),
+        SLOT_SHAPE(AbemaMetadataRuntimeOperation.FETCH_SLOT, "TachiaiAbemaSlotShapeProbe"),
+        SCHEDULE_SHAPE(AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, "TachiaiAbemaScheduleShapeProbe"),
+        CATCHUP_CANDIDATE(AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, "TachiaiAbemaCatchupCandidateProbe"),
+        ONGOING_CANDIDATE(AbemaMetadataRuntimeOperation.FETCH_SCHEDULE, "TachiaiAbemaOngoingCandidateProbe"),
     }
 
     private class ScheduleLead(val eligibleRows: Int, val candidate: AbemaSlotRequest?) {
@@ -516,11 +516,11 @@ class AbemaSeasonCandidateDeviceTest {
     private class Probe(environment: CandidateEnvironment) {
         val worker = Executors.newSingleThreadExecutor()
         val cleanup = Executors.newFixedThreadPool(2)
-        val runtime = AbemaGuestRuntimeCoordinator(environment, AndroidAbemaGuestMain(), worker, cleanup, SystemClock::elapsedRealtime)
+        val runtime = AbemaMetadataRuntimeCoordinator(environment, AndroidAbemaMetadataMain(), worker, cleanup, SystemClock::elapsedRealtime)
     }
 
-    private class CandidateEnvironment(private val base: AbemaGuestRuntimeEnvironment, private val observation: Observation,
-        private val stableRecords: () -> Unit = {}) : AbemaGuestRuntimeEnvironment by base {
+    private class CandidateEnvironment(private val base: AbemaMetadataRuntimeEnvironment, private val observation: Observation,
+        private val stableRecords: () -> Unit = {}) : AbemaMetadataRuntimeEnvironment by base {
         val slotShapes = AtomicReference<SlotShapes?>()
         val scheduleShapes = AtomicReference<AbemaScheduleShapeObservation.Counts?>()
         val catchupCandidate = AtomicReference<AbemaScheduleCatchupCandidateObservation.Stripped?>()
@@ -535,14 +535,14 @@ class AbemaSeasonCandidateDeviceTest {
                 accountFailure.compareAndSet(null, error.category)
             base.report(error)
         }
-        override fun readOwner(instanceId: String): AbemaGuestRuntimeOwner {
+        override fun readOwner(instanceId: String): AbemaMetadataRuntimeOwner {
             stableRecords(); return base.readOwner(instanceId).also { stableRecords() }
         }
-        override fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean {
+        override fun sameOwner(owner: AbemaMetadataRuntimeOwner): Boolean {
             stableRecords(); return base.sameOwner(owner).also { stableRecords() }
         }
-        override fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
-            preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
+        override fun prepare(owner: AbemaMetadataRuntimeOwner, request: AbemaMetadataRuntimeRequest,
+            preparation: AbemaMetadataRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray> {
             check(request.operation == observation.operation && when (observation) {
                 Observation.SERIES_CANDIDATE -> request.seriesRequest?.let {
                     it.seriesId == SERIES && it.offset == 0 && it.groupId == null && it.seasonId == null
@@ -571,13 +571,13 @@ class AbemaSeasonCandidateDeviceTest {
             check(source.length <= 128 * 1024 && source.split(anchor).size == 2)
             return files + (CONTROL_PATH to source.replace(anchor, projection).toByteArray(Charsets.UTF_8))
         }
-        override fun newView(request: AbemaGuestRuntimeRequest, preparation: AbemaGuestRuntimePreparation,
-            files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaGuestRuntimeView) -> Boolean,
-            failed: (AbemaGuestRuntimeView, String) -> Unit): AbemaGuestRuntimeView {
-            lateinit var wrapped: AbemaGuestRuntimeView
+        override fun newView(request: AbemaMetadataRuntimeRequest, preparation: AbemaMetadataRuntimePreparation,
+            files: Map<String, ByteArray>, canRequest: () -> Boolean, currentView: (AbemaMetadataRuntimeView) -> Boolean,
+            failed: (AbemaMetadataRuntimeView, String) -> Unit): AbemaMetadataRuntimeView {
+            lateinit var wrapped: AbemaMetadataRuntimeView
             val actual = base.newView(request, preparation, files, canRequest,
                 { currentView(wrapped) }, { _, category -> failed(wrapped, category) })
-            wrapped = object : AbemaGuestRuntimeView by actual {
+            wrapped = object : AbemaMetadataRuntimeView by actual {
                 override fun metadata(callback: (String?) -> Unit) = actual.metadata { raw ->
                     if (observation == Observation.SERIES_CANDIDATE) {
                         callback(raw)

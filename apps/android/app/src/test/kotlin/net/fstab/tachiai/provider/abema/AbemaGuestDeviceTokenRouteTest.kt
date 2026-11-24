@@ -27,8 +27,8 @@ class AbemaGuestDeviceTokenRouteTest {
                 assertEquals("abema.tv,api.p-c3-e.abema-tv.com", security.allowedHosts); backend
             }
             try {
-                for (url in listOf(AbemaGuestBootstrapPolicy.GUEST, AbemaGuestBootstrapPolicy.CHALLENGE,
-                    AbemaGuestBootstrapPolicy.DEVICE_TOKEN, "${AbemaGuestBootstrapPolicy.PROFILE_ORIGIN}/v1/users/FIXTURE_USER")) {
+                for (url in listOf(AbemaMetadataRuntimePolicy.GUEST, AbemaMetadataRuntimePolicy.CHALLENGE,
+                    AbemaMetadataRuntimePolicy.DEVICE_TOKEN, "${AbemaMetadataRuntimePolicy.PROFILE_ORIGIN}/v1/users/FIXTURE_USER")) {
                     val connection = route.open(URL(url))
                     assertTrue(connection is RoutedHttpsConnection)
                     assertEquals(selected != null, connection.usingProxy()); connection.disconnect()
@@ -46,7 +46,7 @@ class AbemaGuestDeviceTokenRouteTest {
             } finally { route.close() }
             route.close(); assertEquals(if (selected == null) 0 else 1, creations)
             assertEquals(if (selected == null) 0 else 1, backend.closes)
-            assertThrows(IOException::class.java) { route.open(URL(AbemaGuestBootstrapPolicy.DEVICE_TOKEN)) }
+            assertThrows(IOException::class.java) { route.open(URL(AbemaMetadataRuntimePolicy.DEVICE_TOKEN)) }
         }
     }
 

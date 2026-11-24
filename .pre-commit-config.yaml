@@ -144,18 +144,18 @@ repos:
         files: 'abema/cached-helper[^/]*\.(html|js)$|scripts/tests/abema-cached-helper\.test\.cjs$'
         pass_filenames: false
 
-      - id: abema-guest-bootstrap-tests
-        name: ABEMA guest bootstrap and metadata fixture tests
-        entry: node scripts/tests/abema-guest-bootstrap.test.cjs
+      - id: abema-metadata-runtime-tests
+        name: ABEMA metadata runtime fixture tests
+        entry: node scripts/tests/abema-metadata-runtime.test.cjs
         language: system
-        files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-guest-bootstrap\.test\.cjs$'
+        files: 'abema/metadata-runtime[^/]*\.(html|js)$|scripts/tests/abema-metadata-runtime\.test\.cjs$'
         pass_filenames: false
 
       - id: abema-ongoing-candidate-tests
         name: ABEMA ongoing Schedule lead fixture tests
         entry: node --test scripts/tests/abema-ongoing-candidate.test.cjs
         language: system
-        files: 'abema/guest-bootstrap[^/]*\.(html|js)$|scripts/tests/abema-ongoing-candidate\.test\.cjs$|AbemaScheduleOngoingCandidateObservation\.kt$'
+        files: 'abema/metadata-runtime[^/]*\.(html|js)$|scripts/tests/abema-ongoing-candidate\.test\.cjs$|AbemaScheduleOngoingCandidateObservation\.kt$'
         pass_filenames: false
 
       - id: abema-helper-runtime-tests

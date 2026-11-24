@@ -36,7 +36,7 @@ internal fun allowedAbemaPublicBundleUri(uri: URI): Boolean = AbemaPublicBundleA
 internal class AbemaPublicBundleIdentity(
     val sha256: String = "1fa2860d7ec94db123ce7e8f321b4de9b4663dd1733410757d4f1559bba35e73",
     val expectedBytes: Int = 1_801_875,
-    asset: AbemaPublicBundleAsset = AbemaPublicBundleAsset.APPLICATION,
+    val asset: AbemaPublicBundleAsset = AbemaPublicBundleAsset.APPLICATION,
 ) {
     val uri: URI = asset.uri
     companion object {
@@ -81,6 +81,8 @@ internal class AbemaPublicBundleCache(
     private val directory: File,
     private val canRun: () -> Boolean = { true },
     private val identity: AbemaPublicBundleIdentity = AbemaPublicBundleIdentity(),
+    // Closed phase observation only; never receives bytes, paths or failures.
+    private val observe: (AbemaPreparationPhase) -> Unit = {},
 ) {
     companion object { private val cacheLock = Any() }
 
@@ -108,6 +110,7 @@ internal class AbemaPublicBundleCache(
                 try {
                     identity.verify(cached)
                     checkActive()
+                    observe(AbemaPreparationPhase.BUNDLE_CACHE_HIT)
                     return@synchronized AbemaBundlePrepared(cached, AbemaBundleOrigin.CACHE_HIT)
                 } catch (error: AbemaBundleException) {
                     if (error.category !in setOf(AbemaBundleFailure.SIZE_REFUSED, AbemaBundleFailure.PIN_REFUSED)) throw error
@@ -115,10 +118,12 @@ internal class AbemaPublicBundleCache(
             }
         }
         checkActive()
+        observe(AbemaPreparationPhase.BUNDLE_CACHE_MISS)
         val downloaded = try { fetch() }
         catch (error: AbemaBundleException) { throw error }
         catch (_: Exception) { throw AbemaBundleException(AbemaBundleFailure.DOWNLOAD_FAILED) }
         checkActive()
+        observe(AbemaPreparationPhase.BUNDLE_DOWNLOADED)
         identity.verify(downloaded)
         writeVerified(destination, downloaded)
         // Verify committed bytes, rather than silently returning an uncached copy.
@@ -126,6 +131,7 @@ internal class AbemaPublicBundleCache(
             ?: throw AbemaBundleException(AbemaBundleFailure.CACHE_WRITE_FAILED)
         identity.verify(committed)
         checkActive()
+        observe(AbemaPreparationPhase.BUNDLE_VERIFIED)
         AbemaBundlePrepared(committed, if (replacing) AbemaBundleOrigin.REPLACED_VERIFIED else AbemaBundleOrigin.DOWNLOADED_VERIFIED)
     }
 

@@ -28,21 +28,21 @@ class AbemaAccountBootstrapIpcTest {
         assertNotNull(refused); assertNull(refused?.challenge)
     }
     @Test fun privatePreparationHasOnlyGuestProfileChallengeAndNeverWebTokenOrLoginNavigation() {
-        val op = AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK
-        val admission = AbemaGuestRequestAdmission(op)
-        val guest = URI(AbemaGuestBootstrapPolicy.GUEST)
+        val op = AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK
+        val admission = AbemaMetadataRequestAdmission(op)
+        val guest = URI(AbemaMetadataRuntimePolicy.GUEST)
         val profile = URI("https://api.p-c3-e.abema-tv.com/v1/users/guest")
-        val challenge = URI(AbemaGuestBootstrapPolicy.CHALLENGE)
+        val challenge = URI(AbemaMetadataRuntimePolicy.CHALLENGE)
         assertFalse(admission.admit(challenge, false, "POST"))
         assertTrue(admission.admit(guest, false, "POST")); assertFalse(admission.admit(guest, false, "POST"))
         assertTrue(admission.admit(profile, false, "OPTIONS", mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET", "Access-Control-Request-Headers" to "authorization")))
         assertFalse(admission.admit(URI("https://api.p-c3-e.abema-tv.com/v1/users/other"), false, "GET"))
         assertTrue(admission.admit(profile, false, "GET")); assertTrue(admission.admit(challenge, false, "POST")); assertFalse(admission.admit(challenge, false, "POST"))
-        assertFalse(admission.admit(URI(AbemaGuestBootstrapPolicy.DEVICE_TOKEN), false, "POST"))
+        assertFalse(admission.admit(URI(AbemaMetadataRuntimePolicy.DEVICE_TOKEN), false, "POST"))
         assertFalse(admission.admit(URI("https://abema.tv/api/auth/accessToken"), false, "POST"))
         assertFalse(admission.admit(URI("https://abema.tv/account/transfer"), true, "GET"))
-        val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(op)
-        assertTrue(csp.contains(AbemaGuestBootstrapPolicy.CHALLENGE)); assertFalse(csp.contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
+        val csp = AbemaMetadataRuntimePolicy.contentSecurityPolicy(op)
+        assertTrue(csp.contains(AbemaMetadataRuntimePolicy.CHALLENGE)); assertFalse(csp.contains(AbemaMetadataRuntimePolicy.DEVICE_TOKEN))
     }
     @Test fun validationStartIsClosedAndLeavesLegacyLinkStartUnchanged() {
         val old = mapOf("nonce" to nonce, "instance" to instance, "proof" to "a".repeat(64), "deadline" to 46000L)
@@ -78,21 +78,21 @@ class AbemaAccountBootstrapIpcTest {
         assertNotNull(refused); assertNull(refused?.challenge); assertNull(refused?.validation)
     }
     @Test fun validationAdmissionHasOneGuestAndBoundProfileOnlyWithNoChallengeTokenOrNavigation() {
-        val op = AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION
-        val admission = AbemaGuestRequestAdmission(op)
-        val guest = URI(AbemaGuestBootstrapPolicy.GUEST); val profile = URI("https://api.p-c3-e.abema-tv.com/v1/users/guest")
+        val op = AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION
+        val admission = AbemaMetadataRequestAdmission(op)
+        val guest = URI(AbemaMetadataRuntimePolicy.GUEST); val profile = URI("https://api.p-c3-e.abema-tv.com/v1/users/guest")
         val options = mapOf("Origin" to "https://abema.tv", "Access-Control-Request-Method" to "GET", "Access-Control-Request-Headers" to "authorization")
         assertFalse(admission.admit(profile, false, "GET")); assertFalse(admission.admit(profile, false, "OPTIONS", options))
         assertTrue(admission.admit(guest, false, "POST")); assertFalse(admission.admit(guest, false, "POST"))
         assertTrue(admission.admit(profile, false, "OPTIONS", options)); assertFalse(admission.admit(profile, false, "OPTIONS", options))
         assertFalse(admission.admit(URI("https://api.p-c3-e.abema-tv.com/v1/users/other"), false, "GET"))
         assertTrue(admission.admit(profile, false, "GET")); assertFalse(admission.admit(profile, false, "GET"))
-        for (url in listOf(AbemaGuestBootstrapPolicy.CHALLENGE, AbemaGuestBootstrapPolicy.DEVICE_TOKEN,
-            "https://abema.tv/api/auth/accessToken", AbemaGuestBootstrapPolicy.EPISODE))
+        for (url in listOf(AbemaMetadataRuntimePolicy.CHALLENGE, AbemaMetadataRuntimePolicy.DEVICE_TOKEN,
+            "https://abema.tv/api/auth/accessToken", AbemaMetadataRuntimePolicy.EPISODE))
             for (method in listOf("POST", "GET", "OPTIONS")) assertFalse(admission.admit(URI(url), false, method))
         assertFalse(admission.admit(URI("https://abema.tv/account/transfer"), true, "GET"))
-        val csp = AbemaGuestBootstrapPolicy.contentSecurityPolicy(op)
-        assertTrue(csp.contains(AbemaGuestBootstrapPolicy.GUEST)); assertTrue(csp.contains("/v1/users/"))
-        assertFalse(csp.contains(AbemaGuestBootstrapPolicy.CHALLENGE)); assertFalse(csp.contains(AbemaGuestBootstrapPolicy.DEVICE_TOKEN))
+        val csp = AbemaMetadataRuntimePolicy.contentSecurityPolicy(op)
+        assertTrue(csp.contains(AbemaMetadataRuntimePolicy.GUEST)); assertTrue(csp.contains("/v1/users/"))
+        assertFalse(csp.contains(AbemaMetadataRuntimePolicy.CHALLENGE)); assertFalse(csp.contains(AbemaMetadataRuntimePolicy.DEVICE_TOKEN))
     }
 }

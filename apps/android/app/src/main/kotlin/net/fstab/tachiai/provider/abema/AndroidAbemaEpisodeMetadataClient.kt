@@ -141,7 +141,7 @@ internal class AndroidAbemaEpisodeMetadataClient private constructor(
         val slot = if (slotMode) AbemaSlotRequest.from(resource) else null
         if (slotMode) { if (slot == null) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED) }
         else if (resource.providerId.value != "abema" || resource.kind != "episode" || resource.intent != CatalogIntent.VIDEO ||
-            !AbemaGuestBootstrapPolicy.validEpisodeId(resource.identity)) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
+            !AbemaMetadataRuntimePolicy.validEpisodeId(resource.identity)) return CatalogResult.Failure(CatalogFailure.NOT_VERIFIED)
         if (closed.get() || !runCatching(canRequest).getOrDefault(false)) return CatalogResult.Failure(CatalogFailure.TEMPORARY)
         val request = AbemaEpisodeMetadataIpc.Start(UUID.randomUUID().toString().replace("-", ""), instanceId,
             slot?.slotId ?: resource.identity, expectedOwnerProof, SystemClock.elapsedRealtime() + AbemaEpisodeMetadataIpc.OPERATION_MS)

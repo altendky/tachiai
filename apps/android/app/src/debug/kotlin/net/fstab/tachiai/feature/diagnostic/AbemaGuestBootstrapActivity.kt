@@ -27,7 +27,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val foreground = AtomicBoolean()
-    private lateinit var runtime: AbemaGuestRuntimeCoordinator
+    private lateinit var runtime: AbemaMetadataRuntimeCoordinator
     private lateinit var status: TextView
     private lateinit var choose: Spinner
     private lateinit var start: Button
@@ -41,7 +41,7 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG || Build.VERSION.SDK_INT < 28) { finish(); return }
-        runtime = AbemaGuestRuntimeProcess.get(this)
+        runtime = AbemaMetadataRuntimeProcess.get(this)
         intent = android.content.Intent()
         val host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
@@ -55,15 +55,15 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
         status = TextView(this).apply { text = "Loading saved providers. No provider request has started." }; host.addView(status)
         choose = Spinner(this).apply { isEnabled = false }; host.addView(choose)
         start = Button(this).apply { text = "Prepare guest"; isEnabled = false
-            setOnClickListener { begin(AbemaGuestBootstrapOperation.GUEST_ONLY) } }; host.addView(start)
+            setOnClickListener { begin(AbemaMetadataRuntimeOperation.GUEST_ONLY) } }; host.addView(start)
         verifyProfile = Button(this).apply { text = "Verify guest profile"; isEnabled = false
-            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_PROFILE) } }; host.addView(verifyProfile)
+            setOnClickListener { begin(AbemaMetadataRuntimeOperation.VERIFY_PROFILE) } }; host.addView(verifyProfile)
         verifyEpisode = Button(this).apply { text = "Verify guest episode metadata"; isEnabled = false
-            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_EPISODE) } }; host.addView(verifyEpisode)
+            setOnClickListener { begin(AbemaMetadataRuntimeOperation.VERIFY_EPISODE) } }; host.addView(verifyEpisode)
         verifyChallenge = Button(this).apply { text = "Verify device authorization challenge"; isEnabled = false
-            setOnClickListener { begin(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION) } }; host.addView(verifyChallenge)
+            setOnClickListener { begin(AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION) } }; host.addView(verifyChallenge)
         observeToken = Button(this).apply { text = "Observe one device-token response"; isEnabled = false
-            setOnClickListener { begin(AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) } }; host.addView(observeToken)
+            setOnClickListener { begin(AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN) } }; host.addView(observeToken)
         host.addView(Button(this).apply { text = "Stop"; setOnClickListener { cancel() } })
         setContentView(host)
         worker.execute {
@@ -105,11 +105,11 @@ class AbemaGuestBootstrapActivity : ComponentActivity() {
             else -> "Guest preparation ended: $category. No account is connected."
         }
     }
-    private fun begin(operation: AbemaGuestBootstrapOperation) {
+    private fun begin(operation: AbemaMetadataRuntimeOperation) {
         val selected = instances.getOrNull(choose.selectedItemPosition) ?: return
         val active = UUID.randomUUID().toString().replace("-", "")
         nonce = active
-        val accepted = runtime.start(AbemaGuestRuntimeRequest(selected.id, operation, nonce = active,
+        val accepted = runtime.start(AbemaMetadataRuntimeRequest(selected.id, operation, nonce = active,
             deadlineElapsedMs = SystemClock.elapsedRealtime() + 45_000, canRemainActive = { foreground.get() }),
             progress = { if (!isDestroyed && nonce == active) { outcome(it); controls() } },
             completed = { if (!isDestroyed && nonce == active) { nonce = null; outcome(it.category); controls() } })

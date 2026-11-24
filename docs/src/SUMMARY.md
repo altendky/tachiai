@@ -7,7 +7,7 @@
   - [Provider integrations](project/provider-integrations.md)
   - [ABEMA catalog and account access](project/abema-catalog-access.md)
   - [Language assistance for provider account pages](project/provider-page-language-assistance.md)
-  - [ABEMA guest preparation and metadata verification](project/abema-guest-bootstrap.md)
+  - [ABEMA metadata runtime](project/abema-metadata-runtime.md)
   - [ABEMA public bundle analysis](project/abema-public-bundle-analysis.md)
   - [ABEMA public Search and exact Seasons](project/abema-search.md)
   - [Configured sources and provider catalogs](project/configured-catalog.md)

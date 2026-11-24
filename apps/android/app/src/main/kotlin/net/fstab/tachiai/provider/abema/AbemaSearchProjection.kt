@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 // Normalized public metadata only. Raw provider JSON is checked inside the
-// isolated guest runtime; duplicate keys/Unicode are checked again at IPC.
+// isolated metadata runtime; duplicate keys/Unicode are checked again at IPC.
 internal fun decodeAbemaSearchProjection(text: String, request: AbemaSearchRequest): AbemaSearchReply? = runCatching {
     check(text.length <= ABEMA_SEARCH_PROJECTION_BYTES && text.toByteArray(Charsets.UTF_8).size <= ABEMA_SEARCH_PROJECTION_BYTES)
     checkAbemaCollectionJson(text)

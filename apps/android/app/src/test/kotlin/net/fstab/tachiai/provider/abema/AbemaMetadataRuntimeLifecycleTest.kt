@@ -6,7 +6,7 @@ import net.fstab.tachiai.presentation.*
 import org.junit.Assert.*
 import org.junit.Test
 
-class AbemaGuestBootstrapLifecycleTest {
+class AbemaMetadataRuntimeLifecycleTest {
     private class Proxy : AbemaWebViewProxyBackend {
         override val supported = true
         var installed: (() -> Unit)? = null
@@ -18,7 +18,7 @@ class AbemaGuestBootstrapLifecycleTest {
 
     @Test fun runtimeRequiresAppliedRouteAndLateInstallCannotReviveCancelledAttempt() {
         var now = 1000L
-        val gate = AbemaGuestBootstrapLifecycle { now }
+        val gate = AbemaMetadataRuntimeLifecycle { now }
         val proxy = Proxy(); val route = AbemaWebViewRoute(proxy) {}
         assertNull(gate.begin(false))
         val run = checkNotNull(gate.begin(true))
@@ -40,7 +40,7 @@ class AbemaGuestBootstrapLifecycleTest {
     }
 
     @Test fun failedOrUnconfirmedClearBlocksRecreationAndLateSuccessCannotUnblock() {
-        val gate = AbemaGuestBootstrapLifecycle { 1000L }
+        val gate = AbemaMetadataRuntimeLifecycle { 1000L }
         val proxy = Proxy(); val route = AbemaWebViewRoute(proxy) {}
         val run = checkNotNull(gate.begin(true))
         route.installProxy(12345) { gate.routeApplied(run, true) }; proxy.installed!!.invoke()
@@ -58,7 +58,7 @@ class AbemaGuestBootstrapLifecycleTest {
 
     @Test fun destructionFailureNeverClearsOverrideOrClosesBackendAndSuccessfulTeardownIsOrdered() {
         for (destroyed in listOf(false, true)) {
-            val gate = AbemaGuestBootstrapLifecycle { 1000L }
+            val gate = AbemaMetadataRuntimeLifecycle { 1000L }
             val proxy = Proxy(); val override = AbemaWebViewRoute(proxy) {}
             val events = mutableListOf<String>()
             val selected = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
@@ -101,7 +101,7 @@ class AbemaGuestBootstrapLifecycleTest {
     }
 
     @Test fun staleRuntimeAndCleanupCallbacksCannotAffectReplacementRunOrWrongView() {
-        val gate = AbemaGuestBootstrapLifecycle { 1000L }
+        val gate = AbemaMetadataRuntimeLifecycle { 1000L }
         val first = checkNotNull(gate.begin(true)); assertTrue(gate.routeApplied(first, true))
         assertTrue(gate.beginCleanup(first))
         gate.destroyBeforeRouteClear(first, { true }) {}
@@ -121,7 +121,7 @@ class AbemaGuestBootstrapLifecycleTest {
 
     @Test fun throwingDestructionPoisonsAdmissionWithoutClearingOrClosingBackend() {
         for (failure in listOf<Throwable>(IllegalStateException("Fixture destroy failure"), AssertionError("Fixture destroy error"))) {
-            val gate = AbemaGuestBootstrapLifecycle { 1000L }
+            val gate = AbemaMetadataRuntimeLifecycle { 1000L }
             val proxy = Proxy(); val override = AbemaWebViewRoute(proxy) {}
             var closes = 0; var clears = 0
             val selected = parseConnectionProfile("http://proxy.example.test:3128".toByteArray())
@@ -216,7 +216,7 @@ class AbemaGuestBootstrapLifecycleTest {
     }
 
     @Test fun boundProfileOutcomeWaitsForConfirmedCleanupAndCannotSurviveBackgroundOrStaleRun() {
-        val gate = AbemaGuestBootstrapLifecycle { 1000L }
+        val gate = AbemaMetadataRuntimeLifecycle { 1000L }
         val proxy = Proxy(); val route = AbemaWebViewRoute(proxy) {}
         val run = checkNotNull(gate.begin(true))
         route.installProxy(12345) { gate.routeApplied(run, true) }; proxy.installed!!.invoke()

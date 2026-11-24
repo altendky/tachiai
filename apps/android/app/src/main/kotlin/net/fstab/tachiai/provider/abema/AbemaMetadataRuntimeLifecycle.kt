@@ -2,7 +2,7 @@ package net.fstab.tachiai.provider.abema
 
 // Process-owned admission: recreation cannot discard in-flight proxy cleanup.
 // No credentials or persisted state. All methods are bounded memory operations.
-internal class AbemaGuestBootstrapLifecycle(private val clockMs: () -> Long) {
+internal class AbemaMetadataRuntimeLifecycle(private val clockMs: () -> Long) {
     private val lock = Any()
     private var sequence = 0L
     private var run: Long? = null
@@ -86,5 +86,5 @@ internal class AbemaGuestBootstrapLifecycle(private val clockMs: () -> Long) {
 
     val unavailable: Boolean get() = synchronized(lock) { run != null || blocked }
     val cleanupPending: Boolean get() = synchronized(lock) { cleaning }
-    override fun toString() = "AbemaGuestBootstrapLifecycle(status only)"
+    override fun toString() = "AbemaMetadataRuntimeLifecycle(status only)"
 }

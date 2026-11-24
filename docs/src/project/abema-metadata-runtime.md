@@ -1,4 +1,22 @@
-# ABEMA guest preparation and metadata verification
+# ABEMA metadata runtime
+
+The isolated ABEMA metadata runtime runs Episodes, Browse programs, Schedule,
+search and slot/episode metadata operations in the `:abema_guest_bootstrap`
+process. It began as a guest-only experiment, described below. With a saved
+account it runs account-bound: it acquires the account grant from the main
+process, refuses the anonymous guest login (admission policy and CSP) and sends
+the account's bearer. Only signed-out use is a guest session.
+
+Since [#629](https://github.com/altendky/tachiai/issues/629) its code, asset and
+document names say "metadata runtime" (for example
+`AbemaMetadataRuntimeCoordinator`, `AbemaMetadataRuntimePolicy` and
+`metadata-runtime.js`). Persisted or closed identifiers keep their names: the
+`:abema_guest_bootstrap` process and `abema-guest-bootstrap` WebView profile
+directory, the owned document path `/_tachiai/guest/`, the JavaScript entry
+points, the `ABEMA_GUEST_*` route purposes, the `GUEST_*` outcome categories, the
+`TachiaiAbemaGuestRuntime` log tag and `GUEST_ONLY`, which is a genuine guest
+operation. The debug `AbemaGuestBootstrapActivity` keeps its name because its
+actions prepare a guest.
 
 Issue [#150](https://github.com/altendky/tachiai/issues/150) adds an explicit
 debug observation entry for a fresh ABEMA guest. It is a prerequisite experiment
@@ -94,7 +112,7 @@ and ends the runtime before reporting **Guest prepared**.
 
 The shared catalog's explicit series-children operation under
 [#176](https://github.com/altendky/tachiai/issues/176) uses its own immutable
-series/page request in the isolated guest process. It creates no
+series/page request in the isolated metadata runtime process. It creates no
 device-authorization challenge, opens no browser and adopts no existing-account
 grant.
 
@@ -128,6 +146,58 @@ acceptance. Device checks are separately opt-in and preserve existing records;
 no persistent-device operation interrupts pending provider-controlled account
 approval. The operation remains independent of existing-account My List and
 History access.
+
+## Preparation timing
+
+Since [#629](https://github.com/altendky/tachiai/issues/629) each metadata runtime
+operation logs closed preparation markers under `TachiaiAbemaPreparation`. A line holds a
+fixed phase name, for a bundle phase one fixed bundle slot
+(`APPLICATION`, `BOOTSTRAP_SUPPORT`, `LEGACY_SOURCE` or `SOURCE_UTILITIES`), and
+the milliseconds since preparation began. It holds no identifier, URL, account,
+route, request or response detail. The phases, in order, are `OWNER_READ`,
+`ACCOUNT_ACQUIRED` (discovery operations only), `ROUTE_LEASED`, per bundle
+`BUNDLE_CACHE_HIT` or `BUNDLE_CACHE_MISS`/`BUNDLE_DOWNLOADED`/`BUNDLE_VERIFIED`
+then `BUNDLE_READY`, `BUNDLES_READY`, `FILES_PREPARED`, `ROUTE_INSTALLED`,
+`WEBVIEW_CREATED`, `PAGE_STARTED`, `PAGE_LOADED` and `FIRST_PROVIDER_REQUEST`.
+
+Bundle preparation reads and downloads the four pinned public chunks in 8 KiB
+blocks and checks admission between blocks. Before #629 every check was the
+full worker owner check, which decrypts the saved provider-instance and route
+records: about 600 protected reads per operation. Now each block checks only
+cancellation, the request lease, the deadline and the account lease; the saved
+owner is reread at most every 500 ms, before each bundle and before each
+download connection. An owner refusal stays terminal for that preparation. The
+owner checks after preparation and before every WebView request are unchanged,
+as are the pinned identities, size/SHA-256 verification of every cached or
+downloaded chunk, the exact request admission, the route purposes and the
+45-second deadline.
+
+Measured on `tachiai-dev` (Android 16 emulator, Windscribe Tokyo WireGuard,
+saved ABEMA account) opening ABEMA大相撲2026 › Episodes, in milliseconds from
+the start of preparation. Cold is a new runtime process after force-stop; warm
+reuses it for another episode group. Each bundle cache hit re-verifies the hash.
+
+| Phase | Before, cold | Before, warm | After, cold (4 runs) | After, warm (5 runs) | After, cache miss |
+| --- | --- | --- | --- | --- | --- |
+| Account acquired | 3,429 | 3,722 | 3,945–4,117 | 3,550–3,754 | 4,069 |
+| Route leased | 3,479 | 3,748 | 3,993–4,168 | 3,578–3,783 | 4,116 |
+| Bundles ready | 12,232 | 11,705 | 4,107–4,282 | 3,669–3,884 | 10,137 |
+| Page loaded | 12,807 | 12,129 | 4,687–4,856 | 4,148–4,364 | 10,797 |
+| First provider request | 12,848 | 12,171 | 4,736–4,902 | 4,198–4,413 | 10,842 |
+
+Before the change the bundle phase took 8.0–8.8 s with every bundle a cache
+hit; its 592 owner reads took 7.9–8.7 s of that. After the change it takes
+90–120 ms with four owner reads. The cache-miss run, with the cache directory temporarily
+moved aside, spent about 6 s downloading the four chunks through the route.
+After the lease, file preparation, proxy install, WebView creation and page
+load take about 0.6–0.8 s together. The original report's about 27 s after the
+lease is consistent with slower protected reads under load.
+
+The largest remaining cost is account acquisition before the route lease, about
+3.5–4 s: the main process checks the saved account with a profile request
+(about 2.2 s) and an email request (about 0.9 s) through its own route lease on
+every discovery operation. That check is part of the account binding and is
+unchanged here.
 
 ## Exact broadcast-slot catalog operation
 
@@ -630,7 +700,7 @@ real guest bearer acceptance, current endpoint/schema compatibility or CORS.
 The Android guest fixtures skip in the ordinary instrumentation process before
 any WebView/CookieManager API. To run them, use a temporary test-only instrumentation
 target-process override for `net.fstab.tachiai:abema_guest_bootstrap` and select only
-`AbemaGuestBootstrapDeviceTest`. They initialize the same dedicated guest suffix
+`AbemaMetadataRuntimeDeviceTest`. They initialize the same dedicated guest suffix
 before WebView, leave cookies disabled and make no provider request or saved-store
 write. These isolated synthetic guest-profile fixtures can be run on verified
 `tachiai-dev` while preserving its ordinary profiles/data; default-profile and

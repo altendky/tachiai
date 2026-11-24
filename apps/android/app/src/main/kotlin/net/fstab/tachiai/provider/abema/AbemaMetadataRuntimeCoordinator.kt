@@ -14,9 +14,9 @@ import net.fstab.tachiai.provider.abema.account.decodeAbemaAccountChallenge
 import net.fstab.tachiai.provider.abema.account.AbemaAccountValidationContext
 import net.fstab.tachiai.provider.abema.account.decodeAbemaAccountValidationContext
 
-internal class AbemaGuestRuntimeRequest(
+internal class AbemaMetadataRuntimeRequest(
     val instanceId: String,
-    val operation: AbemaGuestBootstrapOperation,
+    val operation: AbemaMetadataRuntimeOperation,
     val episodeId: String? = null,
     val nonce: String,
     val expectedOwnerProof: String? = null,
@@ -31,42 +31,42 @@ internal class AbemaGuestRuntimeRequest(
         require(validProviderInstanceId(instanceId))
         require(nonce.matches(Regex("[a-f0-9]{32}")))
         require(expectedOwnerProof == null || expectedOwnerProof.matches(Regex("[a-f0-9]{64}")))
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_EPISODE)
-            episodeId != null && AbemaGuestBootstrapPolicy.validEpisodeId(episodeId) && expectedOwnerProof != null else episodeId == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE)
+            episodeId != null && AbemaMetadataRuntimePolicy.validEpisodeId(episodeId) && expectedOwnerProof != null else episodeId == null)
         require(deadlineElapsedMs >= 0)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SERIES) seriesRequest != null && expectedOwnerProof != null else seriesRequest == null)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SLOT) slotRequest != null && expectedOwnerProof != null else slotRequest == null)
-        require(operation != AbemaGuestBootstrapOperation.FETCH_SCHEDULE || expectedOwnerProof != null)
-        require(operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE || scheduleRequest.channelId == null)
-        require(if (operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) searchRequest != null && expectedOwnerProof != null else searchRequest == null)
-        require(operation !in setOf(AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK,
-            AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SERIES) seriesRequest != null && expectedOwnerProof != null else seriesRequest == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) slotRequest != null && expectedOwnerProof != null else slotRequest == null)
+        require(operation != AbemaMetadataRuntimeOperation.FETCH_SCHEDULE || expectedOwnerProof != null)
+        require(operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE || scheduleRequest.channelId == null)
+        require(if (operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) searchRequest != null && expectedOwnerProof != null else searchRequest == null)
+        require(operation !in setOf(AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK,
+            AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION) || expectedOwnerProof != null)
     }
-    val policyEpisodeId get() = episodeId ?: AbemaGuestBootstrapPolicy.EPISODE_ID
-    override fun toString() = "AbemaGuestRuntimeRequest(redacted)"
+    val policyEpisodeId get() = episodeId ?: AbemaMetadataRuntimePolicy.EPISODE_ID
+    override fun toString() = "AbemaMetadataRuntimeRequest(redacted)"
 }
 
-internal class AbemaGuestRuntimeResult(val category: String, val entry: CatalogEntry? = null,
+internal class AbemaMetadataRuntimeResult(val category: String, val entry: CatalogEntry? = null,
     val accountChallenge: AbemaAccountChallenge? = null, val accountValidation: AbemaAccountValidationContext? = null,
     val seriesPage: AbemaSeriesPage? = null, val scheduleSnapshot: AbemaScheduleSnapshot? = null, val searchReply: AbemaSearchReply? = null) {
-    override fun toString() = "AbemaGuestRuntimeResult(status only)"
+    override fun toString() = "AbemaMetadataRuntimeResult(status only)"
 }
 
-internal interface AbemaGuestRuntimeMain {
+internal interface AbemaMetadataRuntimeMain {
     fun checkThread()
     fun post(token: Any, action: () -> Unit)
     fun delay(token: Any, millis: Long, action: () -> Unit)
     fun remove(token: Any)
 }
-internal interface AbemaGuestRuntimeOwner { val proof: String }
-internal interface AbemaGuestRuntimePreparation : AutoCloseable {
+internal interface AbemaMetadataRuntimeOwner { val proof: String }
+internal interface AbemaMetadataRuntimePreparation : AutoCloseable {
     fun cancel()
     fun cancelTransport()
     val cleanupConfirmed: Boolean
     // Worker-only access proof, checked before projection publication/closure.
     fun checkAccess(): Boolean = true
 }
-internal interface AbemaGuestRuntimeView {
+internal interface AbemaMetadataRuntimeView {
     fun open()
     fun status(callback: (String?) -> Unit)
     fun metadata(callback: (String?) -> Unit)
@@ -75,18 +75,18 @@ internal interface AbemaGuestRuntimeView {
     fun destroy(): Boolean
     val cleanupConfirmed: Boolean get() = true
 }
-internal interface AbemaGuestRuntimeEnvironment {
-    fun readOwner(instanceId: String): AbemaGuestRuntimeOwner
-    fun readOwner(instanceId: String, expectedProof: String?): AbemaGuestRuntimeOwner = readOwner(instanceId)
-    fun sameOwner(owner: AbemaGuestRuntimeOwner): Boolean
-    fun newPreparation(): AbemaGuestRuntimePreparation
-    fun prepare(owner: AbemaGuestRuntimeOwner, request: AbemaGuestRuntimeRequest,
-        preparation: AbemaGuestRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray>
-    fun install(preparation: AbemaGuestRuntimePreparation, callback: (Boolean) -> Unit)
-    fun newView(request: AbemaGuestRuntimeRequest, preparation: AbemaGuestRuntimePreparation,
+internal interface AbemaMetadataRuntimeEnvironment {
+    fun readOwner(instanceId: String): AbemaMetadataRuntimeOwner
+    fun readOwner(instanceId: String, expectedProof: String?): AbemaMetadataRuntimeOwner = readOwner(instanceId)
+    fun sameOwner(owner: AbemaMetadataRuntimeOwner): Boolean
+    fun newPreparation(): AbemaMetadataRuntimePreparation
+    fun prepare(owner: AbemaMetadataRuntimeOwner, request: AbemaMetadataRuntimeRequest,
+        preparation: AbemaMetadataRuntimePreparation, canRequest: () -> Boolean): Map<String, ByteArray>
+    fun install(preparation: AbemaMetadataRuntimePreparation, callback: (Boolean) -> Unit)
+    fun newView(request: AbemaMetadataRuntimeRequest, preparation: AbemaMetadataRuntimePreparation,
         files: Map<String, ByteArray>, canRequest: () -> Boolean,
-        currentView: (AbemaGuestRuntimeView) -> Boolean,
-        failed: (AbemaGuestRuntimeView, String) -> Unit): AbemaGuestRuntimeView
+        currentView: (AbemaMetadataRuntimeView) -> Boolean,
+        failed: (AbemaMetadataRuntimeView, String) -> Unit): AbemaMetadataRuntimeView
     fun clear(callback: () -> Unit)
     fun report(error: Throwable)
 }
@@ -94,23 +94,23 @@ internal interface AbemaGuestRuntimeEnvironment {
 // One coordinator owns the process-wide proxy, admission and poisoned context.
 // Only its main queue mutates attempt/view state; owner/disk/backend work stays
 // on workers. The environment seams are exercised by orchestration fixtures.
-internal class AbemaGuestRuntimeCoordinator(
-    private val environment: AbemaGuestRuntimeEnvironment,
-    private val main: AbemaGuestRuntimeMain,
+internal class AbemaMetadataRuntimeCoordinator(
+    private val environment: AbemaMetadataRuntimeEnvironment,
+    private val main: AbemaMetadataRuntimeMain,
     private val worker: Executor,
     private val cleanup: Executor,
     private val clockMs: () -> Long,
 ) {
-    private val admission = AbemaGuestBootstrapLifecycle(clockMs)
-    private class Attempt(val run: Long, val request: AbemaGuestRuntimeRequest, val beganElapsedMs: Long,
-        val preparation: AbemaGuestRuntimePreparation, val progress: (String) -> Unit,
-        val completed: (AbemaGuestRuntimeResult) -> Unit) {
+    private val admission = AbemaMetadataRuntimeLifecycle(clockMs)
+    private class Attempt(val run: Long, val request: AbemaMetadataRuntimeRequest, val beganElapsedMs: Long,
+        val preparation: AbemaMetadataRuntimePreparation, val progress: (String) -> Unit,
+        val completed: (AbemaMetadataRuntimeResult) -> Unit) {
         val prepared = CountDownLatch(1)
         val cancellationFinished = CountDownLatch(1)
         val cleanupFailed = AtomicBoolean()
         val retained = AtomicBoolean()
-        @Volatile var owner: AbemaGuestRuntimeOwner? = null
-        @Volatile var view: AbemaGuestRuntimeView? = null
+        @Volatile var owner: AbemaMetadataRuntimeOwner? = null
+        @Volatile var view: AbemaMetadataRuntimeView? = null
         var entry: CatalogEntry? = null
         var accountChallenge: AbemaAccountChallenge? = null
         var accountValidation: AbemaAccountValidationContext? = null
@@ -133,8 +133,8 @@ internal class AbemaGuestRuntimeCoordinator(
             environment.sameOwner(owner) && current(active)
     }
 
-    fun start(request: AbemaGuestRuntimeRequest, progress: (String) -> Unit = {},
-        completed: (AbemaGuestRuntimeResult) -> Unit): Boolean {
+    fun start(request: AbemaMetadataRuntimeRequest, progress: (String) -> Unit = {},
+        completed: (AbemaMetadataRuntimeResult) -> Unit): Boolean {
         main.checkThread()
         val now = clockMs()
         if (request.deadlineElapsedMs <= now || request.deadlineElapsedMs - now > 45_000 ||
@@ -144,7 +144,7 @@ internal class AbemaGuestRuntimeCoordinator(
             environment.report(error)
             admission.beginCleanup(run)
             admission.destroyBeforeRouteClear(run, { true }, {})
-            admission.finishCleanup(run, true, {}) { completed(AbemaGuestRuntimeResult("PREPARATION_REFUSED")) }
+            admission.finishCleanup(run, true, {}) { completed(AbemaMetadataRuntimeResult("PREPARATION_REFUSED")) }
             return true
         }
         val active = Attempt(run, request, now, preparation, progress, completed)
@@ -219,14 +219,14 @@ internal class AbemaGuestRuntimeCoordinator(
         val view = active.view ?: return
         view.status { raw ->
             if (!runtimeCurrent(active) || active.view !== view) return@status
-            val decoded = json(raw, if (active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) 1024 else 256)
-            val observation = decoded?.takeIf { active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN }
+            val decoded = json(raw, if (active.request.operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN) 1024 else 256)
+            val observation = decoded?.takeIf { active.request.operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN }
                 ?.let(AbemaDeviceTokenObservation::category)
             val value = decoded?.takeIf { it.length() == 2 }
             val state = value?.opt("state") as? String
             val failure = value?.opt("failure") as? String
             when {
-                state == "SEARCH_PAGE" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH ->
+                state == "SEARCH_PAGE" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
                         val reply = runCatching {
@@ -238,7 +238,7 @@ internal class AbemaGuestRuntimeCoordinator(
                         if (reply == null) stop(active, "GUEST_SEARCH_RESPONSE")
                         else { active.searchReply = reply; verifyThen(active) { stop(active, "SEARCH_PAGE") } }
                     }
-                state == "SCHEDULE_SNAPSHOT" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE ->
+                state == "SCHEDULE_SNAPSHOT" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
                         val snapshot = runCatching {
@@ -250,7 +250,7 @@ internal class AbemaGuestRuntimeCoordinator(
                         if (snapshot == null) stop(active, "GUEST_SCHEDULE_RESPONSE")
                         else { active.scheduleSnapshot = snapshot; verifyThen(active) { stop(active, "SCHEDULE_SNAPSHOT") } }
                     }
-                state == "EXACT_SLOT_METADATA" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT ->
+                state == "EXACT_SLOT_METADATA" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
                         val value = json(metadata, 4096)?.takeIf { it.length() == 3 }
@@ -260,7 +260,7 @@ internal class AbemaGuestRuntimeCoordinator(
                             title == null || !safeEpisodeTitle(title)) stop(active, "GUEST_SLOT_RESPONSE")
                         else { active.entry = CatalogEntry(slot.resource, title); verifyThen(active) { stop(active, "EXACT_SLOT_METADATA") } }
                     }
-                state == "EXACT_SERIES_PAGE" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SERIES ->
+                state == "EXACT_SERIES_PAGE" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SERIES ->
                     view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
                         val page = runCatching {
@@ -273,11 +273,11 @@ internal class AbemaGuestRuntimeCoordinator(
                         else { active.seriesPage = page; verifyThen(active) { stop(active, "EXACT_SERIES_PAGE") } }
                     }
                 observation != null -> verifyThen(active) { stop(active, observation) }
-                state == "PREPARED" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.GUEST_ONLY ->
+                state == "PREPARED" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.GUEST_ONLY ->
                     verifyThen(active) { stop(active, "PREPARED") }
-                state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_PROFILE ->
+                state == "GUEST_PROFILE_BOUND" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.VERIFY_PROFILE ->
                     verifyThen(active) { stop(active, "GUEST_PROFILE_BOUND") }
-                state == "ACCOUNT_VALIDATION_READY" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_VALIDATION ->
+                state == "ACCOUNT_VALIDATION_READY" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_VALIDATION ->
                     view.accountValidation { rawContext ->
                         if (!runtimeCurrent(active) || active.view !== view) return@accountValidation
                         val context = runCatching {
@@ -290,9 +290,9 @@ internal class AbemaGuestRuntimeCoordinator(
                         if (context == null) stop(active, "GUEST_PROFILE_RESPONSE")
                         else { active.accountValidation = context; verifyThen(active) { stop(active, "ACCOUNT_VALIDATION_READY") } }
                     }
-                state == "CHALLENGE_VALIDATED_AND_DISCARDED" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION ->
+                state == "CHALLENGE_VALIDATED_AND_DISCARDED" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION ->
                     verifyThen(active) { stop(active, "CHALLENGE_VALIDATED_AND_DISCARDED") }
-                state == "ACCOUNT_LINK_READY" && failure == "NONE" && active.request.operation == AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK ->
+                state == "ACCOUNT_LINK_READY" && failure == "NONE" && active.request.operation == AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK ->
                     view.accountLink { rawLink ->
                         if (!runtimeCurrent(active) || active.view !== view) return@accountLink
                         val link = runCatching {
@@ -305,8 +305,8 @@ internal class AbemaGuestRuntimeCoordinator(
                         else { active.accountChallenge = link; verifyThen(active) { stop(active, "ACCOUNT_LINK_READY") } }
                     }
                 state == "EXACT_EPISODE_METADATA" && failure == "NONE" && active.request.operation in
-                    setOf(AbemaGuestBootstrapOperation.VERIFY_EPISODE, AbemaGuestBootstrapOperation.FETCH_EPISODE) -> {
-                    if (active.request.operation == AbemaGuestBootstrapOperation.FETCH_EPISODE) view.metadata { metadata ->
+                    setOf(AbemaMetadataRuntimeOperation.VERIFY_EPISODE, AbemaMetadataRuntimeOperation.FETCH_EPISODE) -> {
+                    if (active.request.operation == AbemaMetadataRuntimeOperation.FETCH_EPISODE) view.metadata { metadata ->
                         if (!runtimeCurrent(active) || active.view !== view) return@metadata
                         val entry = decodeMetadata(active.request, metadata)
                         if (entry == null) stop(active, "GUEST_EPISODE_RESPONSE")
@@ -314,36 +314,36 @@ internal class AbemaGuestRuntimeCoordinator(
                     } else verifyThen(active) { stop(active, "EXACT_EPISODE_METADATA") }
                 }
                 state == "REFUSED" && failure in FAILURES && (failure?.startsWith("CHALLENGE_") != true ||
-                    active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
-                        AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK)) && (failure?.startsWith("TOKEN_") != true ||
-                    active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) &&
-                    (failure?.startsWith("SLOT_") != true || active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT) &&
-                    (failure?.startsWith("SCHEDULE_") != true || active.request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE) &&
-                    (failure?.startsWith("SEARCH_") != true || active.request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH) &&
-                    (active.request.operation != AbemaGuestBootstrapOperation.FETCH_SEARCH ||
+                    active.request.operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION,
+                        AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK)) && (failure?.startsWith("TOKEN_") != true ||
+                    active.request.operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN) &&
+                    (failure?.startsWith("SLOT_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT) &&
+                    (failure?.startsWith("SCHEDULE_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE) &&
+                    (failure?.startsWith("SEARCH_") != true || active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH) &&
+                    (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_SEARCH ||
                         listOf("EPISODE_", "SERIES_", "SLOT_", "SCHEDULE_", "PROFILE_").none { failure?.startsWith(it) == true }) &&
-                    (active.request.operation != AbemaGuestBootstrapOperation.FETCH_SCHEDULE ||
+                    (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_SCHEDULE ||
                         failure?.startsWith("EPISODE_") != true && failure?.startsWith("SERIES_") != true && failure?.startsWith("PROFILE_") != true) &&
-                    (active.request.operation != AbemaGuestBootstrapOperation.FETCH_SLOT ||
+                    (active.request.operation != AbemaMetadataRuntimeOperation.FETCH_SLOT ||
                         failure?.startsWith("EPISODE_") != true && failure?.startsWith("SERIES_") != true && failure?.startsWith("PROFILE_") != true) -> stop(active, "GUEST_$failure")
                 raw == null || raw == "null" || ((state in setOf("WAITING", "MODULES", "GUEST", "PROFILE", "EPISODE", "SERIES") ||
-                    state == "SLOT" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SLOT ||
-                    state == "SCHEDULE" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SCHEDULE ||
-                    state == "SEARCH" && active.request.operation == AbemaGuestBootstrapOperation.FETCH_SEARCH ||
-                    state == "CHALLENGE" && active.request.operation in setOf(AbemaGuestBootstrapOperation.VERIFY_DEVICE_AUTHORIZATION,
-                        AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN, AbemaGuestBootstrapOperation.PREPARE_ACCOUNT_LINK) ||
-                    state == "TOKEN" && active.request.operation == AbemaGuestBootstrapOperation.OBSERVE_DEVICE_TOKEN) && failure == "NONE") ->
+                    state == "SLOT" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SLOT ||
+                    state == "SCHEDULE" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SCHEDULE ||
+                    state == "SEARCH" && active.request.operation == AbemaMetadataRuntimeOperation.FETCH_SEARCH ||
+                    state == "CHALLENGE" && active.request.operation in setOf(AbemaMetadataRuntimeOperation.VERIFY_DEVICE_AUTHORIZATION,
+                        AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN, AbemaMetadataRuntimeOperation.PREPARE_ACCOUNT_LINK) ||
+                    state == "TOKEN" && active.request.operation == AbemaMetadataRuntimeOperation.OBSERVE_DEVICE_TOKEN) && failure == "NONE") ->
                     main.delay(active, 100) { poll(active) }
                 else -> stop(active, "STATUS_REFUSED")
             }
         }
     }
 
-    private fun decodeMetadata(request: AbemaGuestRuntimeRequest, raw: String?): CatalogEntry? = runCatching {
+    private fun decodeMetadata(request: AbemaMetadataRuntimeRequest, raw: String?): CatalogEntry? = runCatching {
         val value = json(raw, 4096)?.takeIf { it.length() == 2 } ?: return null
         val id = value.opt("id") as? String ?: return null
         val title = value.opt("title") as? String ?: return null
-        if (id != request.episodeId || !AbemaGuestBootstrapPolicy.validEpisodeId(id) || !safeEpisodeTitle(title)) return null
+        if (id != request.episodeId || !AbemaMetadataRuntimePolicy.validEpisodeId(id) || !safeEpisodeTitle(title)) return null
         CatalogEntry(CatalogResource(ProviderId("abema"), "episode", id, CatalogIntent.VIDEO), title)
     }.getOrNull()
 
@@ -398,7 +398,7 @@ internal class AbemaGuestRuntimeCoordinator(
         }
         if (!dispatched) {
             retain(active); main.remove(active)
-            active.completed(AbemaGuestRuntimeResult("CLEANUP_FAILED"))
+            active.completed(AbemaMetadataRuntimeResult("CLEANUP_FAILED"))
         }
     }
     private fun retain(active: Attempt) {
@@ -432,7 +432,7 @@ internal class AbemaGuestRuntimeCoordinator(
             active.accountValidation = null
             val missingPrivateResult = outcome == "ACCOUNT_LINK_READY" && challenge == null ||
                 outcome == "ACCOUNT_VALIDATION_READY" && validation == null
-            active.completed(AbemaGuestRuntimeResult(if (missingPrivateResult) "CANCELLED" else outcome, entry, challenge, validation, seriesPage, scheduleSnapshot, searchReply))
+            active.completed(AbemaMetadataRuntimeResult(if (missingPrivateResult) "CANCELLED" else outcome, entry, challenge, validation, seriesPage, scheduleSnapshot, searchReply))
         }
     }
 

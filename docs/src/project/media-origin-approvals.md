@@ -94,7 +94,7 @@ route purpose leaves catalog and playback purposes unchanged. No token-polling,
 renewal, verification-navigation, collection or media destination is added.
 The returned verification URIs remain in JavaScript, are locally restricted and
 discarded, and confer no navigation approval. See
-[the challenge boundary](abema-guest-bootstrap.md#optional-device-authorization-challenge-verification).
+[the challenge boundary](abema-metadata-runtime.md#optional-device-authorization-challenge-verification).
 
 ### Memory-only ABEMA pre-approval device-token observation
 
@@ -108,7 +108,7 @@ No new host, browser navigation, cookie use, polling/retry, renewal or media
 destination is admitted. Only bounded refusal-schema and reviewed recovery
 vocabulary categories can leave the runtime, after confirmed cleanup. An
 unexpected success body is never opened or adopted. See
-[the observation boundary](abema-guest-bootstrap.md#optional-pre-approval-device-token-observation).
+[the observation boundary](abema-metadata-runtime.md#optional-pre-approval-device-token-observation).
 Actual response acceptance is recorded separately and cannot qualify unobserved
 terminal states or establish a connected account.
 
@@ -238,7 +238,7 @@ slot manifest/license/rendered playback still unverified. See
 
 ### ABEMA series content list — 2026-11-22
 
-Under the general integration approval, the guest series operation replaces
+Under the general integration approval, the metadata runtime's series operation replaces
 its series-program GET with three cookie-free bearer GETs on the existing
 `api.p-c3-e.abema-tv.com` host: `/v1/contentlist/series/{seriesId}`,
 `/v1/contentlist/episodeGroups/{groupId}/sections` and
@@ -248,7 +248,7 @@ endpoints used by ABEMA's own series page
 group and season IDs to the requested series, rebuilds each query exactly and
 admits each URI once, in order. No new host, redirect, media or license
 destination is added; broadcast rows reuse the existing exact slot path. See
-[the series operation](abema-guest-bootstrap.md#exact-series-page-catalog-operation).
+[the series operation](abema-metadata-runtime.md#exact-series-page-catalog-operation).
 
 ## Decisions
 

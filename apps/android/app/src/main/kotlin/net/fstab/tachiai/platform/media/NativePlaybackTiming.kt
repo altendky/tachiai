@@ -24,6 +24,9 @@ internal data class NativeTimingSnapshot(
     val playWhenReady: Boolean,
     val state: Int,
     val speed: Float,
+    // A live window's resolved target live offset: how far behind the live
+    // edge the player aims to play (#660). Unknown for replays.
+    val targetLiveOffsetMs: Long? = null,
 ) {
     // Live position alone is relative to a sliding window, not a stable clock.
     val contentTimeMs: Long? get() = coreContentTimeMs(coreContext())

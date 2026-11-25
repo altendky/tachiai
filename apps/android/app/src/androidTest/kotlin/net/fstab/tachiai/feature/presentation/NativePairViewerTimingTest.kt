@@ -17,6 +17,7 @@ import androidx.test.espresso.ViewAction
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.assertion.ViewAssertions.matches
+import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.espresso.matcher.ViewMatchers.isEnabled
 import androidx.test.espresso.matcher.RootMatchers.isPlatformPopup
 import androidx.test.espresso.matcher.ViewMatchers.withText
@@ -457,6 +458,8 @@ class NativePairViewerTimingTest {
         }
     }
 
+    // Each feed's own Back to live is in More (user, 2026-11-25); the full-width
+    // bar is gone. It still breaks the offset and holds both until settled.
     @Test fun backToLiveWhilePlayingResumesBothAfterHeldSettlement() {
         for (side in NativeMixedSide.entries) {
             val a = LiveMember(); val b = LiveMember()
@@ -471,8 +474,9 @@ class NativePairViewerTimingTest {
                     activity.setContentView(viewer); viewer.open()
                 }
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+                openMore(scenario) { viewer }
+                selectMenuItem(backToLiveTitle(side, if (side == NativeMixedSide.A) "Alpha" else "Beta"))
                 scenario.onActivity {
-                    button(viewer, "Back to live ${side.name}").performClick()
                     assertTrue(pair.busy)
                     assertFalse(a.snapshot.playWhenReady || b.snapshot.playWhenReady)
                     pair.poll(); viewer.refresh()
@@ -487,7 +491,7 @@ class NativePairViewerTimingTest {
         }
     }
 
-    @Test fun visibleBackToLiveTargetsBothSidesAndPreservesHeldSettlement() {
+    @Test fun backToLiveInMoreTargetsBothSidesAndPreservesHeldSettlement() {
         val a = LiveMember(); val b = LiveMember()
         val requested = mutableListOf<NativeMixedSide>()
         val pair = NativeMixedPair(a, b, { true }, {})
@@ -497,32 +501,32 @@ class NativePairViewerTimingTest {
                 viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "Alpha", "Beta", { pair },
                     {}, {}, {}, { side -> requested.add(side); pair.catchUp(side) }, {}, {}, {})
                 activity.setContentView(viewer); viewer.open()
-                assertTrue(button(viewer, "Back to live A").isShown)
-                assertTrue(button(viewer, "Back to live B").isShown)
-                assertTrue(button(viewer, "Back to live A").isEnabled)
-                assertTrue(button(viewer, "Back to live B").isEnabled)
-                assertTrue(button(viewer, "Back to live A").contentDescription.contains("Alpha"))
-                assertTrue(button(viewer, "Back to live B").contentDescription.contains("Beta"))
+                assertTrue(descendants(viewer).filterIsInstance<Button>().none { it.isShown && it.text.startsWith("Back to live") })
             }
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             captureOwnedFixtureIfRequested()
+            openMore(scenario) { viewer }
+            checkMenuItem("Back to live A · Alpha", enabled = true)
+            checkMenuItem("Back to live B · Beta", enabled = true)
+            selectMenuItem("Back to live A · Alpha")
             scenario.onActivity {
-                button(viewer, "Back to live A").performClick()
                 assertEquals(1, a.seeks); assertEquals(0, b.seeks)
                 assertTrue(pair.busy); assertFalse(pair.requestedAdjustmentValid)
                 assertFalse(a.snapshot.playWhenReady); assertFalse(b.snapshot.playWhenReady)
-                assertFalse(button(viewer, "Back to live B").isEnabled)
-                button(viewer, "Back to live B").performClick()
+            }
+            openMore(scenario) { viewer }
+            checkMenuItem("Back to live B · Beta", enabled = false)
+            selectMenuItem("Back to live B · Beta")
+            pressBack()
+            scenario.onActivity {
                 assertEquals(0, b.seeks)
                 pair.poll(); viewer.refresh()
                 assertFalse(pair.busy)
-                button(viewer, "Back to live B").performClick()
+            }
+            openMore(scenario) { viewer }
+            selectMenuItem("Back to live B · Beta")
+            scenario.onActivity {
                 assertEquals(1, b.seeks); pair.poll(); viewer.refresh()
-                assertTrue(descendants(viewer).filterIsInstance<android.widget.TextView>().any {
-                    it.text.toString().contains("resumes both feeds if both were playing")
-                })
-                val left = button(viewer, "Back to live A"); val right = button(viewer, "Back to live B")
-                assertEquals(right.id, left.nextFocusRightId); assertEquals(left.id, right.nextFocusLeftId)
                 viewer.endSession()
             }
         }
@@ -535,42 +539,58 @@ class NativePairViewerTimingTest {
         val pair = NativeMixedPair(a, b, { true }, {})
         var requested = 0
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            lateinit var viewer: NativePairViewer
             scenario.onActivity { activity ->
-                val viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { pair },
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { pair },
                     {}, {}, {}, { requested++ }, {}, {}, {})
                 activity.setContentView(viewer); viewer.open()
-                val action = button(viewer, "Back to live A")
-                for (changed in listOf(a.snapshot.copy(canSeekDefault = false), a.snapshot.copy(playingAd = true),
-                    a.snapshot.copy(state = 2), a.snapshot.copy(defaultPositionMs = null),
-                    a.snapshot.copy(defaultPositionMs = 70_000), a.snapshot.copy(positionMs = 55_000))) {
-                    val before = a.snapshot; a.snapshot = changed; viewer.refresh()
-                    assertFalse(action.isEnabled); action.performClick(); assertEquals(0, requested)
-                    a.snapshot = before
-                }
-                viewer.refresh(); assertTrue(action.isEnabled)
-                b.snapshot = b.snapshot.copy(playingAd = true); viewer.refresh()
-                assertFalse(action.isEnabled); b.snapshot = b.snapshot.copy(playingAd = false)
-                a.snapshot = a.snapshot.copy(live = false, dynamic = false); viewer.refresh()
-                assertEquals(View.GONE, action.visibility)
-                a.snapshot = a.snapshot.copy(dynamic = true); viewer.refresh()
-                assertEquals(View.GONE, action.visibility) // Backend cannot recover a dynamic-only clock.
-                b.snapshot = b.snapshot.copy(live = false, dynamic = false); viewer.refresh()
-                assertEquals(View.GONE, button(viewer, "Back to live B").visibility)
-                viewer.endSession()
             }
+            val original = a.snapshot
+            for (changed in listOf(original.copy(canSeekDefault = false), original.copy(playingAd = true),
+                original.copy(state = 2), original.copy(defaultPositionMs = null),
+                original.copy(defaultPositionMs = 70_000), original.copy(positionMs = 55_000))) {
+                scenario.onActivity { a.snapshot = changed; viewer.refresh() }
+                openMore(scenario) { viewer }
+                checkMenuItem("Back to live A · A", enabled = false)
+                selectMenuItem("Back to live A · A")
+                pressBack()
+                scenario.onActivity { assertEquals(0, requested); a.snapshot = original; viewer.refresh() }
+            }
+            scenario.onActivity { b.snapshot = b.snapshot.copy(playingAd = true); viewer.refresh() }
+            openMore(scenario) { viewer }
+            checkMenuItem("Back to live A · A", enabled = false)
+            pressBack()
+            scenario.onActivity {
+                b.snapshot = b.snapshot.copy(playingAd = false)
+                a.snapshot = a.snapshot.copy(live = false, dynamic = false); viewer.refresh()
+            }
+            openMore(scenario) { viewer }
+            checkMenuItemAbsent("Back to live A · A")
+            pressBack()
+            // Backend cannot recover a dynamic-only clock.
+            scenario.onActivity { a.snapshot = a.snapshot.copy(dynamic = true); viewer.refresh() }
+            openMore(scenario) { viewer }
+            checkMenuItemAbsent("Back to live A · A")
+            pressBack()
+            scenario.onActivity { b.snapshot = b.snapshot.copy(live = false, dynamic = false); viewer.refresh() }
+            openMore(scenario) { viewer }
+            checkMenuItemAbsent("Back to live B · B")
+            pressBack()
+            scenario.onActivity { assertEquals(0, requested); viewer.endSession() }
         }
         pair.close()
     }
 
     @Test fun staleDisplayedMemberAndChangesDuringCapabilityReadNeverDispatch() {
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            val first = LiveMember(); val replacement = LiveMember()
+            var selected: NativePairMember? = first
+            var changeDuringRead = false
+            var admitted = true
+            var requested = 0
+            lateinit var viewer: NativePairViewer
             scenario.onActivity { activity ->
-                val first = LiveMember(); val replacement = LiveMember()
-                var selected: NativePairMember? = first
-                var changeDuringRead = false
-                var admitted = true
-                var requested = 0
-                val viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { null },
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { null },
                     {}, {}, {}, { requested++ }, {}, {}, {}, members = { listOf(selected, null) },
                     catchUpPlan = {
                         val plan = if (admitted) nativeLiveDefaultPlan(selected?.timingSnapshot())
@@ -579,23 +599,38 @@ class NativePairViewerTimingTest {
                         plan
                     })
                 activity.setContentView(viewer); viewer.open()
-                val action = button(viewer, "Back to live A")
-                assertTrue(action.isEnabled)
-                selected = replacement; action.performClick(); assertEquals(0, requested)
-                selected = first; viewer.refresh()
-                changeDuringRead = true; action.performClick(); assertEquals(0, requested)
-                selected = first; viewer.refresh(); admitted = false
-                action.performClick(); assertEquals(0, requested); assertFalse(action.isEnabled)
+            }
+            // The item keeps the member it was shown for.
+            openMore(scenario) { viewer }
+            checkMenuItem("Back to live A · A", enabled = true)
+            scenario.onActivity { selected = replacement }
+            selectMenuItem("Back to live A · A")
+            scenario.onActivity { assertEquals(0, requested); selected = first; viewer.refresh() }
+            openMore(scenario) { viewer }
+            scenario.onActivity { changeDuringRead = true }
+            selectMenuItem("Back to live A · A")
+            scenario.onActivity { assertEquals(0, requested); selected = first; viewer.refresh(); admitted = false }
+            openMore(scenario) { viewer }
+            checkMenuItem("Back to live A · A", enabled = false)
+            selectMenuItem("Back to live A · A")
+            pressBack()
+            scenario.onActivity {
+                assertEquals(0, requested)
                 admitted = true; viewer.refresh()
                 first.snapshot = first.snapshot.copy(playingAd = true)
-                action.performClick(); assertEquals(0, requested)
-                selected = null; viewer.refresh(); assertEquals(View.GONE, action.visibility)
-                viewer.endSession(); action.performClick(); assertEquals(0, requested)
             }
+            openMore(scenario) { viewer }
+            selectMenuItem("Back to live A · A")
+            pressBack()
+            scenario.onActivity { assertEquals(0, requested); selected = null; viewer.refresh() }
+            openMore(scenario) { viewer }
+            checkMenuItemAbsent("Back to live A · A")
+            pressBack()
+            scenario.onActivity { viewer.endSession(); assertEquals(0, requested) }
         }
     }
 
-    @Test fun catchUpAliasesRejectChangedMembersAndDisableReplayWhileFreshLiveDispatches() {
+    @Test fun backToLiveAliasesRejectChangedMembersAndDropReplayWhileFreshLiveDispatches() {
         val originalA = LiveMember(); val originalB = LiveMember()
         val replacementA = LiveMember(); val replacementB = LiveMember()
         val original = NativeMixedPair(originalA, originalB, { true }, {})
@@ -610,23 +645,19 @@ class NativePairViewerTimingTest {
                 activity.setContentView(viewer); viewer.open()
             }
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-            scenario.onActivity { button(viewer, "More").performClick() }
+            openMore(scenario) { viewer }
             scenario.onActivity { current = replacement; viewer.refresh() }
-            selectMenuItem("Catch up Alpha (holds both)")
+            selectMenuItem("Back to live A · Alpha")
             scenario.onActivity { assertTrue("An alias must retain its originally displayed member", requested.isEmpty()) }
-            scenario.onActivity { button(viewer, "More").performClick() }
-            selectMenuItem("Catch up Beta (holds both)")
+            openMore(scenario) { viewer }
+            selectMenuItem("Back to live B · Beta")
             scenario.onActivity {
                 assertEquals(listOf(NativeMixedSide.B), requested)
                 replacementB.snapshot = replacementB.snapshot.copy(live = false, dynamic = false)
                 viewer.refresh()
             }
-            scenario.onActivity { button(viewer, "More").performClick() }
-            onData(hasToString<Any>("Catch up Beta (holds both)"))
-                .inRoot(isPlatformPopup())
-                .check(matches(not(isEnabled())))
-            selectMenuItem("Catch up Beta (holds both)")
-            scenario.onActivity { assertEquals(listOf(NativeMixedSide.B), requested) }
+            openMore(scenario) { viewer }
+            checkMenuItemAbsent("Back to live B · Beta")
             pressBack()
             scenario.onActivity {
                 assertEquals(listOf(NativeMixedSide.B), requested)
@@ -645,36 +676,58 @@ class NativePairViewerTimingTest {
             var requested: NativeMixedSide? = null
             var playRequests = 0
             var pauseRequests = 0
+            val title = backToLiveTitle(side, side.name)
             ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                lateinit var viewer: NativePairViewer
                 scenario.onActivity { activity ->
-                    val viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { controller.pair },
+                    viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "A", "B", { controller.pair },
                         { playRequests++; controller.play() }, { pauseRequests++; controller.pause() }, {},
                         { requested = it; controller.catchUp(it) }, {}, {}, {},
                         members = { listOf(controller.member(NativeMixedSide.A), controller.member(NativeMixedSide.B)) },
                         catchUpPlan = controller::catchUpPlan, playbackBusy = { controller.busy })
                     activity.setContentView(viewer); viewer.open()
-                    val action = button(viewer, "Back to live ${side.name}")
-                    assertTrue(action.isEnabled); action.performClick()
+                }
+                openMore(scenario) { viewer }
+                checkMenuItemAbsent(backToLiveTitle(if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A,
+                    if (side == NativeMixedSide.A) "B" else "A"))
+                selectMenuItem(title)
+                scenario.onActivity {
                     assertEquals(side, requested); assertEquals(1, member.seeks)
                     assertFalse(member.snapshot.playWhenReady)
-                    assertTrue(descendants(viewer).filterIsInstance<android.widget.TextView>().any {
-                        it.text.toString().contains("Returns to live and resumes if playing")
-                    })
                     assertTrue(controller.busy)
                     button(viewer, "Pause").performClick()
                     assertFalse(controller.busy); assertEquals(1, pauseRequests); assertEquals(0, playRequests)
                     assertFalse(member.snapshot.playWhenReady)
                     member.snapshot = member.snapshot.copy(positionMs = 20_000); viewer.refresh()
-                    assertTrue(action.isEnabled); action.performClick(); assertEquals(2, member.seeks)
+                }
+                openMore(scenario) { viewer }
+                selectMenuItem(title)
+                scenario.onActivity {
+                    assertEquals(2, member.seeks)
                     controller.poll(); viewer.refresh(); assertFalse(controller.busy)
                     assertEquals("Play", button(viewer, "Play").text.toString())
                     assertEquals(0, playRequests); assertFalse(member.snapshot.playWhenReady)
-                    assertEquals(View.GONE, button(viewer, "Back to live ${if (side == NativeMixedSide.A) "B" else "A"}").visibility)
                     viewer.endSession()
                 }
             }
             controller.close()
         }
+    }
+
+    private fun backToLiveTitle(side: NativeMixedSide, label: String) = "Back to live ${side.name} · $label"
+
+    private fun openMore(scenario: ActivityScenario<ComponentActivity>, viewer: () -> NativePairViewer) {
+        scenario.onActivity { button(viewer(), "More").performClick() }
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+
+    private fun checkMenuItem(title: String, enabled: Boolean) {
+        onData(hasToString<Any>(title)).inRoot(isPlatformPopup())
+            .check(matches(if (enabled) isEnabled() else not(isEnabled())))
+    }
+
+    private fun checkMenuItemAbsent(title: String) {
+        onView(withText(title)).inRoot(isPlatformPopup()).check(doesNotExist())
     }
 
     private fun captureOwnedFixtureIfRequested() {

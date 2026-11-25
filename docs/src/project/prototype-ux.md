@@ -1210,7 +1210,28 @@ Measured on the SHIELD on 2026-11-21, live News with a Twitch feed on B:
 - The window grew from 60 s to about 185 s within about 3 minutes.
 - A 117 s hold then resumed from the buffer, about 151 s behind live.
 - System shared memory rose by about 107 MB, and the Java heap was unaffected.
-- A hold past the whole buffer is still refused as `LIVE_WINDOW_EXPIRED`.
+- A hold past the whole buffer was then refused as `LIVE_WINDOW_EXPIRED`.
+
+On 2026-11-25 the user sized the buffer to the feed's delay
+([#618](https://github.com/altendky/tachiai/issues/618)):
+
+- **Floor plus growth.** A feed keeps the provider's window plus 2 minutes, so
+  skipping back is instant. While it is held or offset further behind live,
+  the buffer grows to its distance behind live plus 30 s. History the providers
+  no longer offer can't be fetched again, so only what was recorded can be
+  rewound to. At the start, the provider's window behind the starting point is
+  recorded too.
+- **Cap.** A 6:00 delay or 256 MB per feed, whichever comes first. An Advance,
+  Mark or saved-offset restore that would hold a live feed more than 6:00
+  behind live is refused with "Delay is limited to 6:00", and no feed moves.
+- **Paused past the buffer.** Play on a live feed that was paused until it fell
+  past its oldest recorded point resumes it from just inside that point,
+  instead of failing into Back to live. When its partner can move forward by
+  the same amount, both move and the pair keeps its offset. Otherwise only the
+  stale feed moves, and the applied offset is reported as no longer held, as
+  after Back to live. A notice names the feed, for example "A passed the oldest
+  recorded point while paused, so playback resumed there." A feed that can't be
+  sought still fails as before.
 
 Twitch feeds keep the provider's window. Live Twitch feeds play about 6 s behind
 the live edge, using Twitch's low-latency playlists

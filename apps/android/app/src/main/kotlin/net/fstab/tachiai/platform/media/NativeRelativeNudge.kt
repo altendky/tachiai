@@ -29,6 +29,8 @@ internal fun nativeRelativeNudgePlan(a: NativeTimingSnapshot?, b: NativeTimingSn
         val target = try { Math.addExact(position, movement) } catch (_: ArithmeticException) { return null }
         val targetClock = try { Math.addExact(initialClock, movement) } catch (_: ArithmeticException) { return null }
         if (targetClock < 0 || rescue && target !in 0..duration) return null
+        // #618: never hold a live feed further behind live than the delay limit.
+        if (live && nativeLiveDelayExceeded(sample, movement)) return null
         val plan = nativeRelativeSeekPlan(sample, movement)
         if (plan.outcome != NativeSeekOutcome.REQUESTED || plan.targetMs != target) return null
         return if (live) minOf(target, duration - target) else Long.MAX_VALUE
@@ -63,3 +65,11 @@ internal fun nativeRelativeNudgePlan(a: NativeTimingSnapshot?, b: NativeTimingSn
 }
 
 private const val COMFORTABLE_LIVE_MARGIN_MS = 10_000L
+
+// True when the step's backward option (A back for a negative delta, B back
+// for a positive one) is refused by the live delay limit (#618).
+internal fun nativeNudgeDelayLimited(a: NativeTimingSnapshot?, b: NativeTimingSnapshot?, deltaMs: Long): Boolean {
+    if (deltaMs == 0L || deltaMs == Long.MIN_VALUE) return false
+    val (sample, movement) = if (deltaMs > 0) b to -deltaMs else a to deltaMs
+    return sample != null && nativeLiveDelayExceeded(sample, movement)
+}

@@ -175,7 +175,8 @@ class PrototypePlaybackControllerTest {
             replay.copy(live = true, positionMs = null),
             replay.copy(dynamic = true, durationMs = null),
             replay.copy(live = true, durationMs = 0),
-            replay.copy(live = true, positionMs = -1),
+            // Resumable from its oldest point when seekable (#618).
+            replay.copy(live = true, positionMs = -1, seekable = false),
             replay.copy(live = true, positionMs = 60_001),
         )
         for (sample in refused) {

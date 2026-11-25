@@ -161,7 +161,13 @@ internal class NativeMixedPair(
             val duration = value.durationMs ?: return false
             return duration > 0 && position >= 0 && position <= duration
         }
+        // #618: a feed paused past its oldest recorded point resumes there.
+        var resumed: NativeOldestResumePlan? = null
         if (requireCurrentLiveWindowOnPlay && (!inLiveWindow(sa) || !inLiveWindow(sb))) {
+            resumed = nativeOldestResumePlan(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb))
+            if (resumed != null && !resumeFromOldest(resumed)) return false
+        }
+        if (resumed == null && requireCurrentLiveWindowOnPlay && (!inLiveWindow(sa) || !inLiveWindow(sb))) {
             // The presentation owner may retire just the affected sessions.
             // Return immediately: that callback can detach or close this pair.
             if (onStaleLive != null) return onStaleLive(buildSet {
@@ -179,7 +185,33 @@ internal class NativeMixedPair(
         val pa = playing(a, true)
         val pb = playing(b, true)
         if (!pa || !pb) { pause(); status = "Play refused; pause requested for both."; return false }
-        status = "Play requested; no synchronization lock."
+        status = resumed?.let { nativeOldestResumeNotice(it, pair = true) } ?: "Play requested; no synchronization lock."
+        return true
+    }
+
+    // The last Play that moved a feed to its oldest recorded point (#618).
+    var lastOldestResume: NativeOldestResumePlan? = null
+        private set
+
+    private fun resumeFromOldest(plan: NativeOldestResumePlan): Boolean {
+        val began = generation
+        if (!timingAdmitted(began)) return false
+        lastOldestResume = plan
+        lastTimingAttempt = Any()
+        // Feeds moved apart no longer hold the requested offset.
+        if (!plan.keepsOffset) requestedAdjustmentValid = false
+        for (target in plan.targets) {
+            val accepted = try { member(target.side).seekToMs(target.targetMs) }
+                catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+            if (!timingAdmitted(began) || accepted.outcome != NativeSeekOutcome.REQUESTED ||
+                accepted.targetMs != target.targetMs) {
+                requestedAdjustmentValid = false
+                if (!closed && generation == began) {
+                    pause(); status = "Resuming from the oldest recorded point was refused; pause requested for both."
+                }
+                return false
+            }
+        }
         return true
     }
 
@@ -219,6 +251,10 @@ internal class NativeMixedPair(
         }
         val movement = try { Math.subtractExact(target, position) }
             catch (_: ArithmeticException) { return NativeSeekPlan(NativeSeekOutcome.OUTSIDE_WINDOW) }
+        if (liveClock && nativeLiveDelayExceeded(selected, movement)) {
+            status = LIVE_DELAY_LIMIT_MESSAGE
+            return NativeSeekPlan(NativeSeekOutcome.OUTSIDE_WINDOW)
+        }
         if (requireFullStep && (plan.outcome != NativeSeekOutcome.REQUESTED || movement != deltaMs ||
                 position < 0 || position > checkNotNull(selected.durationMs) || sa?.state != 3 || sb?.state != 3)) {
             status = "Relative shift refused: selected full step no longer available."
@@ -278,10 +314,12 @@ internal class NativeMixedPair(
             if (!closed) status = "Relative shift refused: wait for the current seek check."
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         }
-        val plan = nativeRelativeNudgePlan(snapshot(a), snapshot(b), deltaMs)
+        val sa = snapshot(a); val sb = snapshot(b)
+        val plan = nativeRelativeNudgePlan(sa, sb, deltaMs)
         lastRelativePlan = plan
         if (plan.outcome != NativeRelativeNudgeOutcome.SELECTED) {
-            status = "Relative shift: ${plan.outcome}; no full step selected."
+            status = if (plan.outcome == NativeRelativeNudgeOutcome.NO_FULL_STEP && nativeNudgeDelayLimited(sa, sb, deltaMs))
+                LIVE_DELAY_LIMIT_MESSAGE else "Relative shift: ${plan.outcome}; no full step selected."
             return NativeSeekPlan(when (plan.outcome) {
                 NativeRelativeNudgeOutcome.AD_BLOCKED -> NativeSeekOutcome.AD_BLOCKED
                 NativeRelativeNudgeOutcome.NO_CHANGE -> NativeSeekOutcome.NO_CHANGE
@@ -309,6 +347,7 @@ internal class NativeMixedPair(
         lastAlignmentPlan = initial
         if (initial.outcome != NativeSeekOutcome.REQUESTED) {
             status = if (initial.outcome == NativeSeekOutcome.NO_CHANGE) "No adjustment needed for the marked event."
+            else if (initial.delayLimited) LIVE_DELAY_LIMIT_MESSAGE
             else initial.availableMagnitudeMs?.let {
                 "Marked alignment unavailable: requested ${kotlin.math.abs(deltaMs / 1_000.0)} s; combined current windows allow ${it / 1_000.0} s."
             } ?: "Marked alignment refused: ${initial.outcome}."

@@ -48,8 +48,9 @@ class BoundedDashManifestRetentionTest {
 
     private fun segment(rendition: String, seconds: Int) = URI("$base$rendition-$seconds.m4s")
 
-    private fun run(cachedSeconds: List<Int>): Pair<Long, DeclaredDashMediaPolicy> {
+    private fun run(cachedSeconds: List<Int>, behindLiveMs: Long = 0): Pair<Long, DeclaredDashMediaPolicy> {
         val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        cache.setBehindLiveMs(behindLiveMs)
         val policy = DeclaredDashMediaPolicy(manifest) { true }
         var nowMs = availability + 100_000
         val parser = BoundedDashManifestParser(manifest, policy, { true }, { true }, { _, _ -> },
@@ -65,7 +66,8 @@ class BoundedDashManifestRetentionTest {
         nowMs += 5_000
         val refreshed = parser.parse(uri, mpd(55).byteInputStream())
         val index = checkNotNull(refreshed.getPeriod(0).adaptationSets.single().representations.first().index)
-        assertEquals(60_000L + RETAINED_WINDOW_MS, refreshed.timeShiftBufferDepthMs)
+        // #618: the window reaches the rewind buffer's span plus slack.
+        assertEquals(liveRewindSpanMs(60_000, behindLiveMs) + RETAINED_WINDOW_SLACK_MS, refreshed.timeShiftBufferDepthMs)
         return index.getTimeUs(index.firstSegmentNum) to policy
     }
 
@@ -74,6 +76,14 @@ class BoundedDashManifestRetentionTest {
         assertEquals(40_000_000L, firstUs)
         assertTrue(policy.allows(segment("high", 40)))
         assertTrue(policy.allows(segment("high", 45)))
+    }
+
+    @Test fun theWindowFollowsTheFeedsDistanceBehindLive() {
+        // Floor 180 s, 300 s behind live 330 s, and the 390 s cap.
+        for (behind in listOf(0L, 300_000L, 3_600_000L)) {
+            val (firstUs, _) = run(listOf(40, 45, 50, 55, 60), behind)
+            assertEquals(40_000_000L, firstUs)
+        }
     }
 
     @Test fun aGapInTheCacheEndsRetention() {

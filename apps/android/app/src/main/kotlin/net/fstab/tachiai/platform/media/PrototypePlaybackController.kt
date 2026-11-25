@@ -90,10 +90,24 @@ internal class PrototypePlaybackController(
             message = "The available feed must be READY and outside an advertisement before Play."
             return false
         }
+        // #618: a feed paused past its oldest recorded point resumes there.
+        var resumed: NativeOldestResumePlan? = null
         if (value.live || value.dynamic) {
             val position = value.positionMs
             val duration = value.durationMs
-            if (position == null || duration == null || duration <= 0 || position !in 0..duration) {
+            if (position == null || duration == null || duration <= 0 || position !in 0..duration)
+                resumed = nativeOldestResumePlan(mapOf(side to value))
+            resumed?.targets?.single()?.let { target ->
+                val accepted = try { selected.seekToMs(target.targetMs) }
+                    catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+                if (accepted.outcome != NativeSeekOutcome.REQUESTED || accepted.targetMs != target.targetMs) {
+                    val held = pause()
+                    message = if (held) "Resuming from the oldest recorded point was refused; feed paused."
+                        else "Play refused and pause refused; return to sources."
+                    return false
+                }
+            }
+            if (resumed == null && (position == null || duration == null || duration <= 0 || position !in 0..duration)) {
                 if (onStaleLive != null) return isolateStale(
                     setOf(side), original, onStaleLive)
                 val held = pause()
@@ -113,7 +127,7 @@ internal class PrototypePlaybackController(
                 else "Play refused and pause refused; return to sources."
             return false
         }
-        message = playingMessage()
+        message = resumed?.let { nativeOldestResumeNotice(it, pair = false) } ?: playingMessage()
         return true
     }
 

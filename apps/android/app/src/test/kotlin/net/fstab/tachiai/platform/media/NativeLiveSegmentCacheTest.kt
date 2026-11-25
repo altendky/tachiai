@@ -51,23 +51,70 @@ class NativeLiveSegmentCacheTest {
         cache.attach { fetched += it }
         cache.publish(window(0, 11), 60_000)
         assertTrue("nothing is recorded before the player picks a rendition", fetched.isEmpty())
-        cache.notePlayerRequest(uri("v1", 2))
+        cache.notePlayerRequest(uri("v1", 8))
         cache.publish(window(0, 11), 60_000)
         // Newest end is base+60 s; segments ending at or before base+30 s are due,
-        // from the player's first request onward, plus the rendition's initialization.
-        assertEquals(listOf(init("v1")) + (2..5).map { uri("v1", it) }, fetched)
+        // plus the rendition's initialization. #618 startup backfill: that
+        // includes the window already behind the player's first request.
+        assertEquals(listOf(init("v1")) + (0..5).map { uri("v1", it) }, fetched)
         assertTrue(fetched.none { it.path.contains("/v2/") })
     }
 
-    @Test fun keepsTheProviderWindowPlusRetentionAndEvictsOldestFirst() {
-        val cache = NativeLiveSegmentCache(retentionMs = 20_000, executor = InlineExecutor())
-        cache.publish(window(0, 11), 60_000)
-        cache.notePlayerRequest(uri("v1", 0))
-        (0..11).forEach { cache.put(uri("v1", it), ByteArray(10)) }
-        // Twelve segments later the provider window starts at segment 12. With
-        // 20 s of retention, segments ending at or after 40 s remain (7..11).
-        cache.publish(window(12, 23), 60_000)
-        assertEquals((7..11).map { it * 5_000_000L }.toSet(), cache.cachedStartsUs("p1", 0))
+    @Test fun aShortProviderWindowIsRecordedOnlyInItsOlderHalf() {
+        val fetched = mutableListOf<URI>()
+        val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        cache.attach { fetched += it }
+        // A 30 s window: recording waits until 15 s remain, so a player near
+        // the live edge fetches its own segments first.
+        cache.publish(window(0, 5), 30_000)
+        cache.notePlayerRequest(uri("v1", 5))
+        cache.publish(window(0, 5), 30_000)
+        assertEquals(listOf(init("v1")) + (0..2).map { uri("v1", it) }, fetched)
+    }
+
+    @Test fun keepsTheFloorGrowsWithTheDelayAndStopsAtTheCap() {
+        val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        fun cachedIndexes() = cache.cachedStartsUs("p1", 0).map { (it / 5_000_000L).toInt() }.toSortedSet()
+        // Record 8 minutes of five-second segments, refreshing every segment.
+        for (newest in 11..95) {
+            cache.publish(window(newest - 11, newest), 60_000)
+            if (newest == 11) cache.notePlayerRequest(uri("v1", 0))
+            cache.put(uri("v1", newest - 11), ByteArray(10))
+        }
+        // Newest end 480 s; floor = 60 s window + 120 s, so segments ending at
+        // or after 300 s stay: indexes 59..84 are cached (85..95 not yet put).
+        assertEquals(180_000L, cache.retentionSpanMs())
+        assertEquals((59..84).toSortedSet(), cachedIndexes())
+        // Held 200 s behind live: 230 s are kept from the next refresh, but
+        // history already evicted cannot come back.
+        cache.setBehindLiveMs(200_000)
+        assertEquals(230_000L, cache.retentionSpanMs())
+        assertEquals(170_000L, cache.retentionBeyondWindowMs(60_000))
+        for (newest in 96..130) {
+            cache.publish(window(newest - 11, newest), 60_000)
+            cache.put(uri("v1", newest - 11), ByteArray(10))
+        }
+        // Newest end 655 s: segments ending at or after 425 s, index 84 on.
+        assertEquals((84..119).toSortedSet(), cachedIndexes())
+        // Far behind live, the span stops at the cap (6:00 + 30 s).
+        cache.setBehindLiveMs(3_600_000)
+        assertEquals(390_000L, cache.retentionSpanMs())
+        assertEquals(330_000L, cache.retentionBeyondWindowMs(60_000))
+        for (newest in 131..200) {
+            cache.publish(window(newest - 11, newest), 60_000)
+            cache.put(uri("v1", newest - 11), ByteArray(10))
+        }
+        // Newest end 1005 s: segments ending at or after 615 s, index 122 on.
+        assertEquals((122..189).toSortedSet(), cachedIndexes())
+        // Back near live, the next refresh shrinks it to the floor again.
+        cache.setBehindLiveMs(8_000)
+        cache.publish(window(190, 201), 60_000)
+        assertEquals(180_000L, cache.retentionSpanMs())
+        // Newest end 1010 s: segments ending at or after 830 s, index 165 on.
+        assertEquals((165..189).toSortedSet(), cachedIndexes())
+    }
+
+    @Test fun evictsOldestFirstAtTheByteCap() {
         val bytesCapped = NativeLiveSegmentCache(maxBytes = 25, executor = InlineExecutor())
         bytesCapped.publish(window(0, 11), 60_000)
         bytesCapped.notePlayerRequest(uri("v1", 0))
@@ -76,6 +123,13 @@ class NativeLiveSegmentCacheTest {
         // 25 bytes hold the 5-byte initialization and the two newest 10-byte segments.
         assertEquals(setOf(10_000_000L, 15_000_000L), bytesCapped.cachedStartsUs("p1", 0))
         assertNotNull("initialization survives the byte cap", bytesCapped.lease(init("v1"), player = false))
+        // Backfill stores older segments after newer ones; the byte cap still
+        // evicts by content time, so no hole opens in the newer history.
+        val backfilled = NativeLiveSegmentCache(maxBytes = 20, executor = InlineExecutor())
+        backfilled.publish(window(0, 11), 60_000)
+        backfilled.notePlayerRequest(uri("v1", 3))
+        listOf(3, 2, 1).forEach { backfilled.put(uri("v1", it), ByteArray(10)) }
+        assertEquals(setOf(10_000_000L, 15_000_000L), backfilled.cachedStartsUs("p1", 0))
     }
 
     @Test fun followsTheSameRenditionIntoANewPeriodOrTheClosestBandwidth() {

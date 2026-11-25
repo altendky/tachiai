@@ -38,7 +38,7 @@ import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.SKIP_END_MARGIN_MS
 import net.fstab.tachiai.platform.media.nativeLiveSkipRange
 import net.fstab.tachiai.platform.media.nativeBehindLivePointMs
-import net.fstab.tachiai.platform.media.nativePairSkipPlan
+import net.fstab.tachiai.platform.media.nativeLivePlan
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.R
@@ -70,6 +70,7 @@ import net.fstab.tachiai.presentation.viewerHiddenKey
 import net.fstab.tachiai.presentation.viewerMediaSkipMs
 import net.fstab.tachiai.presentation.viewerScrubStepMs
 import net.fstab.tachiai.presentation.viewerSkipRefusal
+import net.fstab.tachiai.presentation.viewerLiveNotice
 import net.fstab.tachiai.presentation.viewerOverlayPlan
 import net.fstab.tachiai.presentation.viewerPaneInsets
 import net.fstab.tachiai.presentation.viewerSheetCap
@@ -121,6 +122,12 @@ internal class NativePairViewer(
     // Skip/scrub by a relative amount, replay or live; a pair moves both feeds (#655, #660).
     private val onSkip: (Long) -> NativePairSkipPlan = { delta ->
         pair()?.seekTogether(delta) ?: NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+    },
+    // Live (user, 2026-11-25): to the nearer live point keeping a pair's
+    // offset, or each live feed to its own when one outside its window can't
+    // come back that way (#660).
+    private val onLive: () -> NativePairSkipPlan = {
+        pair()?.goLive() ?: NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
     },
     // Start over moves back to the earliest feed's start, keeping a pair's
     // offset, and forgets remembered positions (#655 part 2).
@@ -184,6 +191,7 @@ internal class NativePairViewer(
     private var skipInFlight = false
     private var skipStartedMs = 0L
     private var queuedSkipMs = 0L
+    private var liveQueued = false
     private var expectedPositionMs: Long? = null
     private var scrubbingMs: Long? = null
     private var scrubTouch = false
@@ -223,7 +231,7 @@ internal class NativePairViewer(
     private var plan: ViewerOverlayPlan? = null
     private val play = button("Play") {
         pendingMarkAlignment = null
-        queuedSkipMs = 0L
+        queuedSkipMs = 0L; liveQueued = false
         if (requestedPlaying || playbackBusy()) onPause() else onPlay()
         showControls(); refresh()
     }
@@ -572,17 +580,34 @@ internal class NativePairViewer(
         } else viewerSkipRefusal(plan, deltaMs > 0, hasPairSlots)?.let(::showNotice)
         refresh()
     }
-    // Live (user, 2026-11-25): a skip to the right end, so a pair moves
-    // together until the nearer feed is live and keeps its offset. A single
-    // live feed without a transport (no stable live point) uses Back to live.
+    // Live (user, 2026-11-25): to the right end, so a pair moves together
+    // until the nearer feed is live and keeps its offset. A feed outside its
+    // window is brought back, keeping the offset when the shared move can,
+    // otherwise moving each live feed to its own live point; a notice says
+    // which (#660). Pressed while a skip settles, it runs next. A single live
+    // feed without a transport (no stable live point) uses Back to live.
     private fun goLive() {
         if (!isAttachedToWindow || visibility != VISIBLE) return
         showControls()
         if (liveAtEdge) { showNotice("Already live."); return }
         val target = transportTarget()
-        if (target != null && target.anyLive) { requestSkip(ViewerTransportSteps.TO_LIVE_MS, flash = false); return }
+        if (target != null && target.anyLive) {
+            if (skipInFlight && skipSettling()) { liveQueued = true; queuedSkipMs = 0L; return }
+            if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
+            dispatchLive(target)
+            return
+        }
         val side = NativeMixedSide.entries.singleOrNull { it in selectedSides && liveTargets[it.ordinal] != null }
         if (!hasPairSlots && side != null) requestBackToLive(side) else refresh()
+    }
+    private fun dispatchLive(target: TransportTarget) {
+        liveQueued = false
+        val plan = runCatching { onLive() }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
+        if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
+            skipDispatched(plan.targets.firstOrNull { it.side == target.side }?.targetMs ?: target.positionMs)
+            viewerLiveNotice(plan, hasPairSlots)?.let(::showNotice)
+        } else viewerSkipRefusal(plan, forward = true, pair = hasPairSlots, live = true)?.let(::showNotice)
+        refresh()
     }
     // Whether Live would move nothing: the view is already within the LIVE
     // margin of the nearer feed's live point.
@@ -596,15 +621,15 @@ internal class NativePairViewer(
         val feeds = selectedSides.associateWith { side ->
             available.getOrNull(side.ordinal)?.let { runCatching { it.timingSnapshot() }.getOrNull() }
         }
-        val plan = nativePairSkipPlan(feeds, ViewerTransportSteps.TO_LIVE_MS)
-        return plan.limitedAtLive && plan.movementMs <= ViewerTransportSteps.LIVE_EDGE_MS
+        val plan = nativeLivePlan(feeds)
+        return plan.limitedAtLive && plan.keepsOffset && plan.movementMs <= ViewerTransportSteps.LIVE_EDGE_MS
     }
     private fun startOver() {
         if (!isAttachedToWindow || visibility != VISIBLE) return
         val action = onStartOver ?: return
         val target = transportTarget()?.takeIf { !it.anyLive } ?: return
         if (playbackBusy()) { showNotice("Wait for the current adjustment to finish."); return }
-        cancelScrub(); queuedSkipMs = 0L
+        cancelScrub(); queuedSkipMs = 0L; liveQueued = false
         val plan = runCatching { action() }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
         val moved = plan.targets.firstOrNull { it.side == target.side }?.targetMs
         if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) skipDispatched(moved)
@@ -1447,6 +1472,17 @@ internal class NativePairViewer(
         }
         if (skipInFlight && !holdingSkip) {
             skipInFlight = false; expectedPositionMs = null
+            // Live pressed while the last skip settled runs next; later presses
+            // stay queued behind it.
+            if (liveQueued) {
+                liveQueued = false
+                post {
+                    val next = transportTarget()
+                    if (next != null && next.anyLive && !playbackBusy() && isAttachedToWindow && visibility == VISIBLE)
+                        dispatchLive(next)
+                }
+                return
+            }
             val queued = queuedSkipMs
             queuedSkipMs = 0L
             // Further presses made while the last skip settled run as one skip.
@@ -1480,7 +1516,7 @@ internal class NativePairViewer(
     fun suspendControls() {
         invalidateFocusIntent()
         dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
-        cancelScrub(); removeCallbacks(deferredToggle); tapGesture.reset(); queuedSkipMs = 0L
+        cancelScrub(); removeCallbacks(deferredToggle); tapGesture.reset(); queuedSkipMs = 0L; liveQueued = false
     }
     override fun onDetachedFromWindow() { suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow() }
     // A brief notice from the owner, such as where remembered positions resumed.

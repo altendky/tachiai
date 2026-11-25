@@ -9,7 +9,10 @@ internal data class NativeSkipTarget(val side: NativeMixedSide, val fromMs: Long
 // One movement shared by every feed, so a pair keeps its relative offset (#655).
 // blockedBy names the feed that refused; limitedBy the feed whose start or end
 // shortened (CLAMPED) or prevented (NO_CHANGE) the movement. limitedAtLive:
-// that limit was a live feed's live point.
+// that limit was a live feed's live point. OUTSIDE_WINDOW with blockedBy: that
+// feed is outside its window and this movement can't bring it back. Only Live
+// can give up the shared movement (keepsOffset false): each live feed then
+// moves to its own live point, and movementMs is the largest of those moves.
 internal data class NativePairSkipPlan(
     val outcome: NativeSeekOutcome,
     val movementMs: Long = 0,
@@ -17,6 +20,7 @@ internal data class NativePairSkipPlan(
     val blockedBy: NativeMixedSide? = null,
     val limitedBy: NativeMixedSide? = null,
     val limitedAtLive: Boolean = false,
+    val keepsOffset: Boolean = true,
 )
 
 // A forward skip stops this far before the nearest end, so skipping never ends
@@ -66,12 +70,57 @@ internal fun nativeLiveSkipRange(sample: NativeTimingSnapshot): NativeLiveSkipRa
 // skip to the right end returns the nearer feed to live, keeping the offset.
 // Each target is checked with the shared Rust relative-seek rule. Unrelated
 // clocks are never subtracted.
-internal fun nativePairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot?>, deltaMs: Long): NativePairSkipPlan {
+//
+// A live feed that slid behind its window (paused or stalled past its oldest
+// point) can only move forward, and only far enough to land back inside it;
+// a smaller shared movement is refused as OUTSIDE_WINDOW naming that feed.
+internal fun nativePairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot?>, deltaMs: Long): NativePairSkipPlan =
+    pairSkipPlan(feeds, deltaMs, toLive = false)
+
+// Live (user, 2026-11-25): to the right end, so a pair moves together until
+// the nearer feed is live, keeping its offset. When a feed is outside its
+// window and the shared movement can't bring it back, Live still brings the
+// view to live: each live feed moves to its own live point and the offset is
+// not kept (#660). Replays stay where they are in that case.
+internal fun nativeLivePlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot?>): NativePairSkipPlan {
+    val together = pairSkipPlan(feeds, Long.MAX_VALUE, toLive = true)
+    if (together.outcome != NativeSeekOutcome.OUTSIDE_WINDOW) return together
+    // Only a live feed that the shared movement can't bring back is repaired.
+    val blocked = together.blockedBy?.let { feeds[it] }
+    if (blocked == null || !(blocked.live || blocked.dynamic)) return together
+    val targets = mutableListOf<NativeSkipTarget>()
+    for (side in NativeMixedSide.entries.filter { it in feeds }) {
+        val sample = feeds[side]
+        if (sample == null || sample.state != 3) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
+        if (sample.playingAd) return NativePairSkipPlan(NativeSeekOutcome.AD_BLOCKED, blockedBy = side)
+        if (!(sample.live || sample.dynamic)) continue
+        if (!sample.seekable) return NativePairSkipPlan(NativeSeekOutcome.UNSUPPORTED, blockedBy = side)
+        val position = sample.positionMs ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
+        val duration = sample.durationMs ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
+        // Ahead of its window's end: nothing a seek within it can repair.
+        if (position > duration) return NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = side)
+        val range = nativeLiveSkipRange(sample) ?: return NativePairSkipPlan(NativeSeekOutcome.UNSUPPORTED, blockedBy = side)
+        val movement = range.liveMs - position
+        if (movement <= 0) continue
+        val checked = nativeSeekPlan(sample, range.liveMs)
+        val clock = checkNotNull(sample.contentTimeMs) + movement // Known: the range requires it.
+        if (checked.outcome != NativeSeekOutcome.REQUESTED || checked.targetMs != range.liveMs || clock < 0)
+            return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
+        targets += NativeSkipTarget(side, position, range.liveMs, true, clock)
+    }
+    if (targets.isEmpty()) return together
+    return NativePairSkipPlan(NativeSeekOutcome.REQUESTED, targets.maxOf { it.targetMs - it.fromMs }, targets,
+        keepsOffset = feeds.size == 1)
+}
+
+private fun pairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot?>, deltaMs: Long,
+    toLive: Boolean): NativePairSkipPlan {
     if (feeds.isEmpty()) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
     val sides = NativeMixedSide.entries.filter { it in feeds }
     data class Feed(val side: NativeMixedSide, val sample: NativeTimingSnapshot, val position: Long,
         val start: Long, val end: Long, val live: Boolean)
     val ready = mutableListOf<Feed>()
+    val forward = deltaMs > 0
     for (side in sides) {
         val sample = feeds[side]
         if (sample == null || sample.state != 3) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
@@ -81,8 +130,11 @@ internal fun nativePairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot
         val duration = sample.durationMs
         if (position == null || duration == null || duration <= 0)
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side)
-        if (position !in 0..duration) return NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = side)
-        ready += if (sample.live || sample.dynamic) {
+        val live = sample.live || sample.dynamic
+        // Only a live feed behind its window, moving forward, can come back.
+        if (position > duration || position < 0 && !(live && forward))
+            return NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = side)
+        ready += if (live) {
             // Without a live point or a content clock the target can't be
             // bounded or confirmed after the window slides.
             val range = nativeLiveSkipRange(sample) ?: return NativePairSkipPlan(NativeSeekOutcome.UNSUPPORTED, blockedBy = side)
@@ -90,12 +142,16 @@ internal fun nativePairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot
         } else Feed(side, sample, position, 0, duration - SKIP_END_MARGIN_MS, false)
     }
     if (deltaMs == 0L) return NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE)
-    val forward = deltaMs > 0
     fun room(feed: Feed): Long = (if (forward) feed.end - feed.position else feed.position - feed.start).coerceAtLeast(0)
     val tightest = ready.minBy(::room)
     val available = room(tightest)
     val magnitude = if (deltaMs == Long.MIN_VALUE) Long.MAX_VALUE else kotlin.math.abs(deltaMs)
     val amount = minOf(magnitude, available)
+    // A feed behind its window must land at least at its oldest point.
+    ready.filter { it.position < it.start && it.position < 0 }.maxByOrNull { it.start - it.position }?.let { behind ->
+        if (amount < behind.start - behind.position)
+            return NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = behind.side)
+    }
     val limited = if (amount < magnitude) tightest.side else null
     val atLive = limited != null && forward && tightest.live
     if (amount == 0L) return NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = limited, limitedAtLive = atLive)
@@ -112,6 +168,7 @@ internal fun nativePairSkipPlan(feeds: Map<NativeMixedSide, NativeTimingSnapshot
             NativeSkipTarget(feed.side, feed.position, target, true, clock)
         } else NativeSkipTarget(feed.side, feed.position, target)
     }
-    return NativePairSkipPlan(if (limited == null) NativeSeekOutcome.REQUESTED else NativeSeekOutcome.CLAMPED,
-        movement, targets, limitedBy = limited, limitedAtLive = atLive)
+    // Live reports the movement it planned, never its unbounded request.
+    val outcome = if (limited == null || toLive) NativeSeekOutcome.REQUESTED else NativeSeekOutcome.CLAMPED
+    return NativePairSkipPlan(outcome, movement, targets, limitedBy = limited, limitedAtLive = atLive)
 }

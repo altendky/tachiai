@@ -432,14 +432,22 @@ internal class NativeMixedPair(
     // move, neither is sought; a refused second dispatch rolls the first back.
     // A live feed's target is confirmed on its content clock, since its
     // window can slide while the pair is held (#660).
-    fun seekTogether(deltaMs: Long): NativePairSkipPlan {
+    fun seekTogether(deltaMs: Long): NativePairSkipPlan = moveTogether { nativePairSkipPlan(it, deltaMs) }
+
+    // Live (user, 2026-11-25): the same held transaction to the nearer live
+    // point, keeping the offset. If a feed is outside its window and that
+    // can't bring it back, each live feed goes to its own live point instead,
+    // and the requested offset is no longer valid (#660).
+    fun goLive(): NativePairSkipPlan = moveTogether(::nativeLivePlan)
+
+    private fun moveTogether(planner: (Map<NativeMixedSide, NativeTimingSnapshot?>) -> NativePairSkipPlan): NativePairSkipPlan {
         lastSkipPlan = null
         if (closed || busy) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val began = generation
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val sa = snapshot(a); val sb = snapshot(b)
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        val initial = nativePairSkipPlan(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb), deltaMs)
+        val initial = planner(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb))
         lastSkipPlan = initial
         if (initial.outcome != NativeSeekOutcome.REQUESTED && initial.outcome != NativeSeekOutcome.CLAMPED) return initial
         val before = status
@@ -452,10 +460,12 @@ internal class NativeMixedPair(
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         }
         val freshA = snapshot(a); val freshB = snapshot(b)
-        // Recheck the held feeds with exactly the planned movement.
-        val fresh = nativePairSkipPlan(mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB), initial.movementMs)
+        // Recheck the held feeds: the same plan must still give the same targets.
+        val fresh = planner(mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB))
+        fun targets(plan: NativePairSkipPlan) = plan.targets.map { it.side to it.targetMs }
         if (!current() || !heldReady(freshA) || !heldReady(freshB) ||
-            fresh.outcome != NativeSeekOutcome.REQUESTED || fresh.movementMs != initial.movementMs)
+            fresh.outcome !in setOf(NativeSeekOutcome.REQUESTED, NativeSeekOutcome.CLAMPED) ||
+            targets(fresh) != targets(initial) || fresh.keepsOffset != initial.keepsOffset)
             return refuse("Skip refused after holding both feeds; both paused.")
         val wasValid = requestedAdjustmentValid
         busy = true
@@ -476,11 +486,12 @@ internal class NativeMixedPair(
                 return refuse("Skip refused by ${target.side}; both paused.")
             }
         }
-        requestedAdjustmentValid = wasValid
+        // Feeds moved by different amounts no longer hold the requested offset.
+        requestedAdjustmentValid = wasValid && initial.keepsOffset
         val started = clockMs()
         if (!current()) return refuse("Skip authorization lost; both paused.")
         skipPending = SkipPending(fresh.targets, resume, started, expected,
-            minOf(100L, kotlin.math.abs(initial.movementMs) / 2), before)
+            minOf(100L, fresh.targets.minOf { kotlin.math.abs(it.targetMs - it.fromMs) } / 2), before)
         // Keep the previous status: a skip is not a status change to announce.
         status = before
         return initial

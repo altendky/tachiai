@@ -16,9 +16,6 @@ internal object ViewerTransportSteps {
     const val SCRUB_ACCELERATE_AFTER_MS = 500L
     // A live feed this close behind its live point reads LIVE (#660).
     const val LIVE_EDGE_MS = 3_000L
-    // Live skips by this much: far enough to reach any live point, and small
-    // enough that queued presses still add up without overflow.
-    const val TO_LIVE_MS = Long.MAX_VALUE / 4
 }
 
 // h:mm:ss, or m:ss while the total is under an hour. Negative values show 0.
@@ -138,7 +135,9 @@ internal class ViewerTapGesture(private val windowMs: Long) {
 
 // A brief notice when a skip moves nothing, naming the feed that prevented it.
 // Successful skips return null: the position row or a position flash shows them.
-internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair: Boolean): String? {
+// live: the refusal is for Live, whose last resort is each feed's own Back to
+// live in More.
+internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair: Boolean, live: Boolean = false): String? {
     val blocked = plan.blockedBy?.name?.takeIf { pair }
     val limited = plan.limitedBy?.name?.takeIf { pair }
     return when (plan.outcome) {
@@ -146,7 +145,7 @@ internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair:
         NativeSeekOutcome.NO_CHANGE -> when {
             limited != null && plan.limitedAtLive -> "$limited is live; neither feed moved."
             plan.limitedAtLive -> "Already live."
-            limited != null && forward ->"$limited is at its end; neither feed moved."
+            limited != null && forward -> "$limited is at its end; neither feed moved."
             limited != null -> "$limited is at its start; neither feed moved."
             plan.limitedBy == null -> null
             forward -> "At the end."
@@ -156,8 +155,32 @@ internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair:
             else "Skipping waits for the advertisement to finish."
         NativeSeekOutcome.UNSUPPORTED -> if (blocked != null) "$blocked can't skip, so neither feed moved."
             else "This feed can't skip."
-        NativeSeekOutcome.UNAVAILABLE, NativeSeekOutcome.OUTSIDE_WINDOW ->
+        // A feed outside its window (#660): name it and what brings it back.
+        NativeSeekOutcome.OUTSIDE_WINDOW -> when {
+            live && blocked != null -> "$blocked is outside its window; use Back to live $blocked in ⋯ More."
+            live -> "The feed is outside its window; use Back to live in ⋯ More."
+            blocked != null -> "$blocked is outside its window; neither feed moved. Live brings it back."
+            else -> "The feed is outside its window. Live brings it back."
+        }
+        NativeSeekOutcome.UNAVAILABLE ->
             if (blocked != null) "Skipping waits for $blocked; neither feed moved."
             else "Skipping is unavailable right now."
     }
+}
+
+// Live's notice when it brought a feed back from outside its window (#660):
+// whether the pair kept its offset. Null for an ordinary move to live, which
+// the position row shows.
+internal fun viewerLiveNotice(plan: NativePairSkipPlan, pair: Boolean): String? {
+    if (plan.outcome != NativeSeekOutcome.REQUESTED && plan.outcome != NativeSeekOutcome.CLAMPED) return null
+    val outside = plan.targets.filter { it.fromMs < 0 }.map { it.side }
+    val subject = when (outside.size) {
+        0 -> "A feed was outside its window"
+        1 -> "${outside.single().name} was outside its window"
+        else -> "Both feeds were outside their windows"
+    }
+    if (pair && !plan.keepsOffset) return "$subject, so each feed returned to live; the offset was not kept."
+    if (outside.isEmpty()) return null
+    return if (pair) "$subject; both feeds moved forward to live together, keeping the offset."
+        else "The feed was outside its window; it returned to live."
 }

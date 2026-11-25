@@ -779,6 +779,19 @@ delay; older footage that was never recorded can't be reached.
   is live. Once the view is live it stays focusable but dimmed, reads "At
   live" to screen readers and says "Already live." when pressed. A single
   live feed without a transport (below) uses its Back to live instead.
+- **A feed outside its window:** a live feed that slid behind its window (for
+  example paused past its oldest point) can't take an ordinary skip; the
+  notice names it, such as "B is outside its window; neither feed moved. Live
+  brings it back." Live still brings the view to live. If moving both feeds
+  together to the nearer live point also lands that feed back inside its
+  window, the pair keeps its offset and the notice says so ("B was outside its
+  window; both feeds moved forward to live together, keeping the offset.").
+  Otherwise each live feed returns to its own live point, a replay stays where
+  it is, and the notice says "…, so each feed returned to live; the offset was
+  not kept." Like Back to live, that drops the applied offset until the pair
+  is reopened. A feed ahead of its window's end can't be repaired this way;
+  the notice points to Back to live in ⋯ More. Live pressed while a skip
+  settles runs once it has settled.
 - **Pairs:** a skip moves both feeds by one amount, as for replays. Each
   feed's own **Back to live A · title** / **B · title** is in **⋯ More**
   (a single feed: **Back to live · title**), and still breaks the offset; the
@@ -811,11 +824,12 @@ rendition that was never recorded. Track selection is not pinned for this
 yet (a follow-up with [#618](https://github.com/altendky/tachiai/issues/618)).
 
 The live skip plan (bounds, clamping, the target-aware live point, mixed
-pairs and content-clock settlement while the window slides) and the position
-text have JVM tests. Instrumentation tests for live position, hidden
-Left/Right, the live point, live scrubbing, Live, Back to live in More and a
-skip during single-feed buffering compile; they have not been run on a device
-for this change.
+pairs, content-clock settlement while the window slides, and Live with a feed
+outside its window, single and paired) and the position and notice text have
+JVM tests. Instrumentation tests for live position, hidden Left/Right, the
+live point, live scrubbing, Live (including from outside a window), Back to
+live in More and a skip during single-feed buffering compile; they have not
+been run on a device for this change.
 
 ### Scrub previews — #673
 

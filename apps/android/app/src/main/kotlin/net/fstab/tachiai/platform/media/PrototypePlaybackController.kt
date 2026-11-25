@@ -291,13 +291,27 @@ internal class PrototypePlaybackController(
     fun seekTogether(deltaMs: Long): NativePairSkipPlan {
         if (closed) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         pair?.let { return it.seekTogether(deltaMs) }
+        return seekSingle { nativePairSkipPlan(it, deltaMs) }
+    }
+
+    // Live (user, 2026-11-25): a pair moves to the nearer live point keeping
+    // its offset, or each live feed to its own when a feed outside its window
+    // can't come back that way; a single feed moves to its live point, from
+    // behind its window too (#660).
+    fun goLive(): NativePairSkipPlan {
+        if (closed) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        pair?.let { return it.goLive() }
+        return seekSingle(::nativeLivePlan)
+    }
+
+    private fun seekSingle(planner: (Map<NativeMixedSide, NativeTimingSnapshot?>) -> NativePairSkipPlan): NativePairSkipPlan {
         val selected = members().singleOrNull()
         val side = if (selected == null) null else if (a === selected) NativeMixedSide.A else NativeMixedSide.B
         if (!singleFeed || selected == null || side == null)
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE,
                 blockedBy = NativeMixedSide.entries.firstOrNull { member(it) == null })
         if (busy || !admitted(selected)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        val plan = nativePairSkipPlan(mapOf(side to snapshot(selected)), deltaMs)
+        val plan = planner(mapOf(side to snapshot(selected)))
         if (plan.outcome != NativeSeekOutcome.REQUESTED && plan.outcome != NativeSeekOutcome.CLAMPED) return plan
         if (closed || member(side) !== selected || !admitted(selected)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val target = plan.targets.single()

@@ -418,4 +418,118 @@ class NativePairSkipTest {
         assertEquals(NativeSeekOutcome.NO_CHANGE, single.seekTogether(10_000).outcome)
         assertEquals(1, member.seeks.size)
     }
+
+    // Live with a feed that slid behind its window (#660): it is brought back,
+    // keeping the offset when the shared move reaches it, otherwise each live
+    // feed goes to its own live point. Ordinary skips name the feed instead.
+    @Test fun liveBringsASingleFeedBackFromBehindItsWindow() {
+        val plan = nativeLivePlan(mapOf(A to live(-74_000)))
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertTrue(plan.keepsOffset)
+        assertEquals(244_000L, plan.movementMs)
+        assertEquals(listOf(NativeSkipTarget(A, -74_000, 170_000, true, 1_170_000)), plan.targets)
+        // At live already: nothing to do.
+        val atLive = nativeLivePlan(mapOf(A to live(170_000)))
+        assertEquals(NativeSeekOutcome.NO_CHANGE, atLive.outcome)
+        assertTrue(atLive.limitedAtLive)
+    }
+
+    @Test fun liveKeepsThePairOffsetWhenTheSharedMoveReachesTheFeedBehindItsWindow() {
+        val plan = nativeLivePlan(mapOf(A to live(60_000), B to live(-20_000)))
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertTrue(plan.keepsOffset)
+        assertEquals(110_000L, plan.movementMs) // A reaches live; B lands inside its window.
+        assertEquals(listOf(170_000L, 90_000L), plan.targets.map { it.targetMs })
+        assertEquals(A, plan.limitedBy)
+        assertTrue(plan.limitedAtLive)
+    }
+
+    @Test fun liveDropsThePairOffsetWhenOnlySeparateMovesReachLive() {
+        // A is 20 s from live; B needs 79 s just to re-enter its window.
+        val plan = nativeLivePlan(mapOf(A to live(150_000), B to live(-74_000, windowStart = 7_000_000)))
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertFalse(plan.keepsOffset)
+        assertEquals(listOf(NativeSkipTarget(A, 150_000, 170_000, true, 1_170_000),
+            NativeSkipTarget(B, -74_000, 170_000, true, 7_170_000)), plan.targets)
+        assertEquals(244_000L, plan.movementMs)
+        // A live feed already at live stays put; only the stale one moves.
+        val oneMoves = nativeLivePlan(mapOf(A to live(170_000), B to live(-74_000)))
+        assertFalse(oneMoves.keepsOffset)
+        assertEquals(listOf(B), oneMoves.targets.map { it.side })
+        // A replay paired with a stale live feed stays where it is.
+        val mixed = nativeLivePlan(mapOf(A to replay(595_000), B to live(-74_000)))
+        assertFalse(mixed.keepsOffset)
+        assertEquals(listOf(B), mixed.targets.map { it.side })
+        val together = nativeLivePlan(mapOf(A to replay(50_000), B to live(-74_000)))
+        assertTrue(together.keepsOffset)
+        assertEquals(listOf(294_000L, 170_000L), together.targets.map { it.targetMs })
+    }
+
+    @Test fun aFeedOutsideItsWindowGetsAClearReasonElsewhere() {
+        // Ordinary skips can't bring it back: they name it.
+        for (delta in listOf(10_000L, -10_000L)) {
+            val plan = nativePairSkipPlan(mapOf(A to live(100_000), B to live(-74_000)), delta)
+            assertEquals(NativeSeekOutcome.OUTSIDE_WINDOW, plan.outcome)
+            assertEquals(B, plan.blockedBy)
+            assertTrue(plan.targets.isEmpty())
+        }
+        // A forward skip large enough to re-enter the window keeps the offset.
+        val large = nativePairSkipPlan(mapOf(A to live(10_000), B to live(-10_000)), 60_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, large.outcome)
+        assertEquals(listOf(70_000L, 50_000L), large.targets.map { it.targetMs })
+        // Ahead of its window's end, nothing a seek within it can repair.
+        val ahead = nativeLivePlan(mapOf(A to live(100_000), B to live(200_000)))
+        assertEquals(NativeSeekOutcome.OUTSIDE_WINDOW, ahead.outcome)
+        assertEquals(B, ahead.blockedBy)
+        // Other refusals win over the repair.
+        assertEquals(NativeSeekOutcome.AD_BLOCKED,
+            nativeLivePlan(mapOf(A to live(-74_000), B to live(100_000).copy(playingAd = true))).outcome)
+    }
+
+    @Test fun aLivePairGoesLiveFromBehindItsWindowAndLosesTheOffset() {
+        val a = Member(live(150_000)); val b = Member(live(-74_000, windowStart = 7_000_000))
+        var now = 0L
+        val pair = NativeMixedPair(a, b, { true }, {}, { now })
+        assertTrue(pair.requestedAdjustmentValid)
+        val plan = pair.goLive()
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertFalse(plan.keepsOffset)
+        assertEquals(listOf(170_000L), a.seeks)
+        assertEquals(listOf(170_000L), b.seeks)
+        assertFalse(pair.requestedAdjustmentValid) // The feeds moved by different amounts.
+        assertNull(pair.lastTimingSettlement)
+        now = 500
+        pair.poll()
+        assertFalse(pair.busy)
+        assertTrue(a.sample.playWhenReady && b.sample.playWhenReady)
+    }
+
+    @Test fun aLivePairGoesLiveFromBehindItsWindowKeepingTheOffset() {
+        val a = Member(live(60_000)); val b = Member(live(-20_000))
+        val pair = NativeMixedPair(a, b, { true }, {}, { 0L })
+        val plan = pair.goLive()
+        assertTrue(plan.keepsOffset)
+        assertEquals(listOf(170_000L), a.seeks)
+        assertEquals(listOf(90_000L), b.seeks)
+        assertTrue(pair.requestedAdjustmentValid)
+        pair.poll()
+        assertFalse(pair.busy)
+    }
+
+    @Test fun controllerGoesLiveWithASingleFeedBehindItsWindow() {
+        val single = PrototypePlaybackController({ true }, singleFeed = true)
+        val member = Member(live(-74_000))
+        single.setMember(NativeMixedSide.A, member)
+        val plan = single.goLive()
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertEquals(listOf(170_000L), member.seeks)
+        // An ordinary skip names it instead of moving it.
+        val behind = Member(live(-74_000))
+        val other = PrototypePlaybackController({ true }, singleFeed = true)
+        other.setMember(NativeMixedSide.B, behind)
+        val refused = other.seekTogether(10_000)
+        assertEquals(NativeSeekOutcome.OUTSIDE_WINDOW, refused.outcome)
+        assertEquals(NativeMixedSide.B, refused.blockedBy)
+        assertTrue(behind.seeks.isEmpty())
+    }
 }

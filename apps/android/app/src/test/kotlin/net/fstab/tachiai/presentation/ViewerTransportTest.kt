@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
+import net.fstab.tachiai.platform.media.NativeSkipTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -99,7 +100,7 @@ class ViewerTransportTest {
             viewerSkipRefusal(plan(NativeSeekOutcome.UNSUPPORTED, NativeMixedSide.A), true, true))
         assertEquals("Skipping waits for B; neither feed moved.",
             viewerSkipRefusal(plan(NativeSeekOutcome.UNAVAILABLE, NativeMixedSide.B), true, true))
-        assertEquals("Skipping is unavailable right now.", viewerSkipRefusal(plan(NativeSeekOutcome.OUTSIDE_WINDOW), true, true))
+        assertEquals("Skipping is unavailable right now.", viewerSkipRefusal(plan(NativeSeekOutcome.UNAVAILABLE), true, true))
     }
 
     // #660: a live feed reads how far behind its live point it is.
@@ -133,5 +134,34 @@ class ViewerTransportTest {
         // The oldest point keeps the replay start wording.
         assertEquals("B is at its start; neither feed moved.", viewerSkipRefusal(
             NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = NativeMixedSide.B), false, true))
+    }
+
+    // #660: a feed outside its window is named, with what brings it back.
+    @Test fun aFeedOutsideItsWindowIsNamedWithWhatBringsItBack() {
+        val outside = NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = NativeMixedSide.B)
+        assertEquals("B is outside its window; neither feed moved. Live brings it back.",
+            viewerSkipRefusal(outside, true, true))
+        assertEquals("The feed is outside its window. Live brings it back.", viewerSkipRefusal(outside, false, false))
+        assertEquals("B is outside its window; use Back to live B in ⋯ More.",
+            viewerSkipRefusal(outside, true, true, live = true))
+        assertEquals("The feed is outside its window; use Back to live in ⋯ More.",
+            viewerSkipRefusal(outside, true, false, live = true))
+    }
+
+    @Test fun liveSaysWhetherAPairKeptItsOffsetAfterBringingAFeedBack() {
+        val a = NativeSkipTarget(NativeMixedSide.A, 150_000, 170_000, true, 1_170_000)
+        val b = NativeSkipTarget(NativeMixedSide.B, -74_000, 170_000, true, 7_170_000)
+        assertEquals("B was outside its window, so each feed returned to live; the offset was not kept.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000, listOf(a, b), keepsOffset = false), true))
+        assertEquals("B was outside its window; both feeds moved forward to live together, keeping the offset.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 20_000, listOf(a, b.copy(targetMs = 90_000))), true))
+        assertEquals("Both feeds were outside their windows, so each feed returned to live; the offset was not kept.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000,
+                listOf(a.copy(fromMs = -1_000), b), keepsOffset = false), true))
+        assertEquals("The feed was outside its window; it returned to live.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000, listOf(b)), false))
+        // An ordinary move to live, or a refusal, needs no notice.
+        assertNull(viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 20_000, listOf(a)), true))
+        assertNull(viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = NativeMixedSide.B), true))
     }
 }

@@ -235,6 +235,69 @@ class NativePairViewerTransportTest {
         }
     }
 
+    // #660: Live still brings the view to live with a feed behind its window,
+    // keeping the offset when the shared move re-enters that window.
+    @Test fun liveBringsAFeedBackFromBehindItsWindowKeepingTheOffset() =
+        withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+            scenario.onActivity {
+                fixture.b.sample = fixture.b.sample.copy(positionMs = -74_000); fixture.viewer.refresh()
+                button(fixture.viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), fixture.a.seeks)
+                assertEquals(listOf(386_000L), fixture.b.seeks)
+                assertEquals("B was outside its window; both feeds moved forward to live together, keeping the offset.",
+                    fixture.notice.text.toString())
+                fixture.settle()
+                assertTrue(fixture.pair.requestedAdjustmentValid)
+            }
+        }
+
+    // Otherwise each live feed returns to its own live point, and the notice
+    // says the offset was not kept. Ordinary skips name the feed instead.
+    @Test fun liveReturnsEachFeedWhenTheOffsetCantBeKept() =
+        withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+            scenario.onActivity {
+                fixture.a.sample = fixture.a.sample.copy(positionMs = 585_000)
+                fixture.b.sample = fixture.b.sample.copy(positionMs = -74_000); fixture.viewer.refresh()
+                button(fixture.viewer, "Forward 10 seconds").performClick()
+                assertTrue(fixture.a.seeks.isEmpty() && fixture.b.seeks.isEmpty())
+                assertEquals("B is outside its window; neither feed moved. Live brings it back.",
+                    fixture.notice.text.toString())
+                button(fixture.viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), fixture.a.seeks)
+                assertEquals(listOf(590_000L), fixture.b.seeks)
+                assertEquals("B was outside its window, so each feed returned to live; the offset was not kept.",
+                    fixture.notice.text.toString())
+                assertFalse(fixture.pair.requestedAdjustmentValid)
+                fixture.settle()
+                assertTrue(text(fixture.viewer, "LIVE").isShown)
+            }
+        }
+
+    @Test fun liveBringsASingleFeedBackFromBehindItsWindow() {
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            val member = Member(-74_000, live = true, livePoint = 590_000)
+            val controller = PrototypePlaybackController({ true }, singleFeed = true)
+            controller.setMember(NativeMixedSide.A, member)
+            lateinit var viewer: NativePairViewer
+            scenario.onActivity { activity ->
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "Sumo", "Commentary",
+                    { controller.pair }, {}, {}, {}, {}, {}, {}, {},
+                    members = { listOf(controller.member(NativeMixedSide.A), null) },
+                    playbackBusy = { controller.busy }, onSkip = { controller.seekTogether(it) },
+                    onLive = { controller.goLive() }, selectedSlots = setOf(NativeMixedSide.A))
+                activity.setContentView(viewer); viewer.open()
+            }
+            idle()
+            scenario.onActivity {
+                button(viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), member.seeks)
+                assertEquals("The feed was outside its window; it returned to live.",
+                    (viewer.getChildAt(2) as TextView).text.toString())
+                viewer.endSession(); controller.close()
+            }
+        }
+    }
+
     @Test fun replaysHaveNoLiveButton() = withFixture { scenario, fixture ->
         scenario.onActivity { assertEquals(View.GONE, button(fixture.viewer, "Live").visibility) }
     }

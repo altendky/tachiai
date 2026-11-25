@@ -23,6 +23,11 @@ internal object FrameTextTuning {
     const val SAMPLE_INTERVAL_MS = 2_000L
     /** The sampled frame's long edge, in pixels: 960 × 540 for 16:9 video. */
     const val SAMPLE_LONG_EDGE = 960
+    /** The higher-resolution capture's long edge, used only while a name's small reading is sought. */
+    const val DETAIL_LONG_EDGE = 1920
+    /** A crop above a name is enlarged to about this height, at most [DETAIL_MAX_ZOOM] times. */
+    const val DETAIL_CROP_HEIGHT = 160
+    const val DETAIL_MAX_ZOOM = 3f
     /** Lines shorter than this fraction of the frame height are skipped (16 px at 540). */
     const val MIN_LINE_HEIGHT_FRACTION = 0.03f
     /** Intersection over union at or above which two boxes are roughly the same place. */
@@ -44,10 +49,25 @@ internal object FrameTextTuning {
 }
 
 /** One recognized block in sampled-frame pixels. Held in memory only; never logged or stored. */
-internal data class FrameTextBlock(val text: String, val box: ViewerRect, val lineHeight: Int)
+internal data class FrameTextBlock(
+    val text: String,
+    val box: ViewerRect,
+    val lineHeight: Int,
+    /** The recognized lines with their boxes, when known; used to pair names with readings. */
+    val lines: List<FrameTextLine> = emptyList(),
+    /** A name's romanized printed reading, shown instead of a translation. */
+    val reading: String? = null,
+)
+
+/** A recognized line and its elements (words or characters), in sampled-frame pixels. */
+internal data class FrameTextLine(val text: String, val box: ViewerRect, val elements: List<FrameTextElement> = emptyList())
+
+internal data class FrameTextElement(val text: String, val box: ViewerRect)
 
 /** A stable block whose translation is shown until the block changes or disappears. */
-internal data class HeldFrameText(val id: Long, val text: String, val box: ViewerRect, val lineHeight: Int)
+internal data class HeldFrameText(val id: Long, val text: String, val box: ViewerRect, val lineHeight: Int,
+    /** A romanized reading shown instead of a translation. */
+    val literal: String? = null)
 
 /** A translation ready to show over its source block, in sampled-frame pixels. */
 internal data class FrameTextChip(val id: Long, val box: ViewerRect, val lineHeight: Int, val text: String)
@@ -213,23 +233,33 @@ internal class FrameTextStability(
     private val missesToDrop: Int = FrameTextTuning.MISSES_TO_DROP,
     private val maxHeld: Int = FrameTextTuning.MAX_HELD,
 ) {
-    private class Held(val id: Long, val text: String, var box: ViewerRect, var lineHeight: Int, var misses: Int = 0)
+    private class Held(val id: Long, val text: String, var box: ViewerRect, var lineHeight: Int, var literal: String?,
+        var misses: Int = 0)
     private var previous: List<FrameTextBlock> = emptyList()
     private val held = mutableListOf<Held>()
     private val replaced = mutableListOf<FrameTextBlock>()
     private var nextId = 1L
 
+    /** Blocks dropped by the minimum line height in the last update (diagnostics). */
+    var filteredSmall = 0
+        private set
+
     fun update(blocks: List<FrameTextBlock>, frameHeight: Int): List<HeldFrameText> {
         val minimum = frameHeight * minLineFraction
+        filteredSmall = 0
         val candidates = blocks.mapNotNull { block ->
             val text = normalizedFrameText(block.text)
+            if (text.any(Char::isLetter) && block.lineHeight < minimum) filteredSmall++
             block.copy(text = text).takeIf { text.any(Char::isLetter) && block.lineHeight >= minimum }
         }
         val unmatched = candidates.toMutableList()
         held.forEach { entry ->
             val match = unmatched.firstOrNull { it.text == entry.text && sameFrameTextBox(it.box, entry.box) }
             if (match == null) entry.misses++
-            else { unmatched.remove(match); entry.box = match.box; entry.lineHeight = match.lineHeight; entry.misses = 0 }
+            else {
+                unmatched.remove(match); entry.box = match.box; entry.lineHeight = match.lineHeight; entry.misses = 0
+                entry.literal = match.reading ?: entry.literal
+            }
         }
         held.removeAll { it.misses >= missesToDrop }
         // A replaced block stays suppressed while it is still read, so two
@@ -238,18 +268,14 @@ internal class FrameTextStability(
         unmatched.forEach { block ->
             if (!previous.any { it.text == block.text && sameFrameTextBox(it.box, block.box) }) return@forEach
             if (replaced.any { it.text == block.text && sameFrameTextBox(it.box, block.box) }) return@forEach
-            // A new stable block replaces any held block it overlaps, so chips never
-            // stack. A name and its printed reading touch but belong together.
-            val candidate = HeldFrameText(0, block.text, block.box, block.lineHeight)
+            // A new stable block replaces any held block it overlaps, so chips never stack.
             held.removeAll { old ->
-                (frameTextBoxesOverlap(old.box, block.box) &&
-                    !readingPair(HeldFrameText(old.id, old.text, old.box, old.lineHeight), candidate))
-                    .also { if (it) replaced += FrameTextBlock(old.text, old.box, old.lineHeight) }
+                frameTextBoxesOverlap(old.box, block.box).also { if (it) replaced += FrameTextBlock(old.text, old.box, old.lineHeight) }
             }
-            if (held.size < maxHeld) held += Held(nextId++, block.text, block.box, block.lineHeight)
+            if (held.size < maxHeld) held += Held(nextId++, block.text, block.box, block.lineHeight, block.reading)
         }
         previous = candidates
-        return held.map { HeldFrameText(it.id, it.text, it.box, it.lineHeight) }
+        return held.map { HeldFrameText(it.id, it.text, it.box, it.lineHeight, it.literal) }
     }
 
     fun clear() { previous = emptyList(); held.clear(); replaced.clear() }
@@ -263,6 +289,13 @@ internal interface FrameTextSample {
     val height: Int
     fun signature(): ByteArray
     fun recognize(): List<FrameTextBlock>
+    /**
+     * Lines read from [region] (in sample pixels) at a higher resolution, mapped
+     * back to sample pixels; null when no higher-resolution frame was captured.
+     */
+    fun recognizeRegion(region: ViewerRect): List<FrameTextLine>? = null
+    /** True when a higher-resolution frame was captured for this sample. */
+    val detailed: Boolean get() = false
 }
 
 /** Translation of recognized text, with its own small cache. Null keeps the original visible. */
@@ -282,14 +315,17 @@ internal data class FrameTextSampleTiming(
     val blocks: Int,
     val stable: Int,
     val shown: Int,
-    /** Shown chips holding a romanized reading rather than a translation. */
+    /** Held blocks showing a romanized reading rather than a translation. */
     val romanized: Int = 0,
+    /** True when the capture was at the higher resolution used to read small readings. */
+    val highRes: Boolean = false,
 )
 
 internal fun frameTextSampleLog(timing: FrameTextSampleTiming): String =
     "sample intervalMs=${timing.intervalMs} captureMs=${timing.captureMs} " +
         (timing.ocrMs?.let { "ocrMs=$it" } ?: "ocr=SKIPPED_UNCHANGED") +
-        " blocks=${timing.blocks} stable=${timing.stable} shown=${timing.shown} romanized=${timing.romanized}"
+        " blocks=${timing.blocks} stable=${timing.stable} shown=${timing.shown} romanized=${timing.romanized}" +
+        if (timing.highRes) " capture=HIGH_RES" else ""
 
 internal fun frameTextTranslateLog(ms: Long, translated: Boolean): String =
     "translate ms=$ms result=${if (translated) "TRANSLATED" else "ORIGINAL"}"
@@ -333,39 +369,41 @@ internal class FrameTextPipeline(
     private var signature: ByteArray? = null
     private var blocks: List<FrameTextBlock> = emptyList()
     private var held: List<HeldFrameText> = emptyList()
-    private var displays: Map<Long, FrameTextDisplay> = emptyMap()
+    private val names = FrameTextNames()
     private val pending = mutableSetOf<String>()
     // Held texts that keep their original (same language, unsure, unavailable); not retried while held.
     private val originals = mutableSetOf<String>()
 
+    /** True when the next capture should include a higher-resolution frame for small name readings. */
+    val wantsDetail: Boolean get() = names.wantsDetail
+
     fun process(sample: FrameTextSample, captureMs: Long, intervalMs: Long): List<FrameTextChip> {
         val next = sample.signature()
         var ocrMs: Long? = null
-        val recognized = if (frameUnchanged(signature, next)) blocks else {
+        val unchanged = frameUnchanged(signature, next)
+        val recognized = if (unchanged) blocks else {
             val started = clock()
             sample.recognize().also { ocrMs = clock() - started }
         }
         signature = next; blocks = recognized
-        val stable = stability.update(recognized, sample.height)
-        val plan = frameTextDisplays(stable, translator.romanizes())
-        val texts = stable.filter { plan[it.id] == FrameTextDisplay.Translate }.map { it.text }.toSet()
-        synchronized(lock) { held = stable; displays = plan; originals.retainAll(texts) }
+        // Names with a printed reading are found before the stability and height filters.
+        val pairing = names.pair(recognized, translator.romanizes(), sample.width, sample.height,
+            detail = if (unchanged) null else sample::recognizeRegion, clock = clock)
+        val stable = stability.update(pairing.blocks, sample.height)
+        val texts = stable.filter { it.literal == null }.map { it.text }.toSet()
+        synchronized(lock) { held = stable; originals.retainAll(texts) }
         texts.forEach(::request)
         val chips = chips()
-        val romanized = chips.count { plan[it.id] is FrameTextDisplay.Literal }
-        log(frameTextSampleLog(FrameTextSampleTiming(intervalMs, captureMs, ocrMs, recognized.size, stable.size, chips.size, romanized)))
+        val romanized = stable.count { it.literal != null }
+        log(frameTextSampleLog(FrameTextSampleTiming(intervalMs, captureMs, ocrMs, recognized.size, stable.size, chips.size, romanized, sample.detailed)))
+        if (pairing.stats.relevant) log(frameTextPairingLog(pairing.stats.copy(filteredSmall = stability.filteredSmall)))
         return chips
     }
 
     /** Held blocks with a romanized reading, or whose translation is ready. */
     fun chips(): List<FrameTextChip> = synchronized(lock) {
         held.mapNotNull { entry ->
-            val text = when (val display = displays[entry.id]) {
-                is FrameTextDisplay.Literal -> display.text
-                FrameTextDisplay.Hidden -> null
-                FrameTextDisplay.Translate, null -> translator.cached(entry.text)
-            }
-            text?.let { FrameTextChip(entry.id, entry.box, entry.lineHeight, it) }
+            (entry.literal ?: translator.cached(entry.text))?.let { FrameTextChip(entry.id, entry.box, entry.lineHeight, it) }
         }
     }
 
@@ -391,7 +429,7 @@ internal class FrameTextPipeline(
      * must settle again. Used on detach and on any position discontinuity.
      */
     fun clear() {
-        synchronized(lock) { held = emptyList(); displays = emptyMap(); pending.clear(); originals.clear() }
-        signature = null; blocks = emptyList(); stability.clear()
+        synchronized(lock) { held = emptyList(); pending.clear(); originals.clear() }
+        signature = null; blocks = emptyList(); stability.clear(); names.clear()
     }
 }

@@ -232,7 +232,7 @@ class FrameTextTranslationTest {
         assertEquals(2, sample.recognitions)
         val logged = synchronized(lines) { lines.toList() }
         assertTrue(logged.isNotEmpty())
-        val numeric = Regex("^(sample|translate)( [a-zA-Z]+=([0-9]+|[A-Z_]+))+$")
+        val numeric = Regex("^(sample|translate|pairing)( [a-zA-Z]+=(-?[0-9]+(\\.[0-9]+)?|[A-Z_]+))+$")
         logged.forEach { line ->
             assertTrue(line, numeric.matches(line))
             listOf(secret, other, translation).forEach { assertFalse(line.contains(it)) }
@@ -274,17 +274,16 @@ class FrameTextTranslationTest {
         assertEquals(setOf("Keio University", "Waseda University"), stability.update(listOf(new, side), 540).map { it.text }.toSet())
     }
 
-    @Test fun aNameAndItsReadingAreNotTreatedAsStackedChips() {
+    @Test fun aHeldRomanizedReadingStaysWithItsName() {
         val stability = FrameTextStability()
-        // The reading's box touches the name's box.
-        val reading = block("おうほう", left = 100, top = 300, width = 120, height = 30, line = 20)
-        val name0 = ViewerRect(95, 320, 130, 40)
-        assertTrue(frameTextBoxesOverlap(ViewerRect(100, 300, 120, 30), name0))
-        val name = block("王鵬", left = 95, top = 320, width = 130, height = 40, line = 40)
-        stability.update(listOf(reading), 540)
-        stability.update(listOf(reading), 540)
-        stability.update(listOf(reading, name), 540)
-        assertEquals(setOf("おうほう", "王鵬"), stability.update(listOf(reading, name), 540).map { it.text }.toSet())
+        val name = FrameTextBlock("髙安", ViewerRect(110, 114, 100, 36), 36, reading = "Takayasu")
+        stability.update(listOf(name), 540)
+        assertEquals("Takayasu", stability.update(listOf(name), 540).single().literal)
+        // A later sample without the reading keeps the held literal.
+        assertEquals("Takayasu", stability.update(listOf(name.copy(reading = null)), 540).single().literal)
+        // Small lines are counted for diagnostics.
+        stability.update(listOf(block("小", line = 10)), 540)
+        assertEquals(1, stability.filteredSmall)
     }
 
     @Test fun overlapIsMeasuredAgainstTheSmallerBox() {

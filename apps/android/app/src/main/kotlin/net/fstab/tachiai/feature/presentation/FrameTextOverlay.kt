@@ -3,7 +3,10 @@ package net.fstab.tachiai.feature.presentation
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Looper
@@ -36,6 +39,7 @@ import kotlinx.coroutines.withContext
 import net.fstab.tachiai.platform.translation.MlKitFrameTextRecognizer
 import net.fstab.tachiai.presentation.FRAME_TEXT_LOG_TAG
 import net.fstab.tachiai.presentation.FrameTextChip
+import net.fstab.tachiai.presentation.FrameTextLine
 import net.fstab.tachiai.presentation.FrameTextPipeline
 import net.fstab.tachiai.presentation.FrameTextResetCause
 import net.fstab.tachiai.presentation.FrameTextRun
@@ -183,6 +187,8 @@ internal class FrameTextRunner(context: Context) {
         val source: ProviderTextSource, val pipeline: FrameTextPipeline) {
         // Main thread only; the worker reads it only inside a sample.
         var frame: Bitmap? = null
+        // A higher-resolution frame, only while a name's small reading is sought.
+        var detail: Bitmap? = null
         var loop: Job? = null
         // Position discontinuities (#664): any jump drops held text and chips.
         lateinit var listener: Player.Listener
@@ -196,6 +202,7 @@ internal class FrameTextRunner(context: Context) {
     private var attached: Attached? = null
     private var closed = false
     private val window = Timeline.Window()
+    private val scalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private fun log(line: String) { Log.d(FRAME_TEXT_LOG_TAG, line) }
 
@@ -276,9 +283,10 @@ internal class FrameTextRunner(context: Context) {
         state.watched?.removeListener(state.listener); state.watched = null
         state.layer.clear()
         val frame = state.frame
-        state.frame = null
-        // Queued after any sample in progress, which keeps the bitmap until it returns.
-        worker.execute { state.pipeline.clear(); frame?.recycle(); pixels.fill(0) }
+        val detail = state.detail
+        state.frame = null; state.detail = null
+        // Queued after any sample in progress, which keeps the bitmaps until it returns.
+        worker.execute { state.pipeline.clear(); frame?.recycle(); detail?.recycle(); pixels.fill(0) }
         log(frameTextStateLog(FrameTextRun.OFF))
     }
 
@@ -309,12 +317,27 @@ internal class FrameTextRunner(context: Context) {
                     state.frame?.recycle()
                     createBitmap(width, height).also { state.frame = it }
                 }
-                surface.getBitmap(frame)
+                // While a steady name has no readable reading, capture at a higher
+                // resolution; the worker scales it down for the main read and crops
+                // above the name. Otherwise the higher-resolution frame is released.
+                val detailSize = if (state.pipeline.wantsDetail)
+                    frameTextSampleSize(surface.width, surface.height, FrameTextTuning.DETAIL_LONG_EDGE)
+                        ?.takeIf { it.first > width } else null
+                val detail = detailSize?.let { (w, h) ->
+                    state.detail?.takeIf { it.width == w && it.height == h } ?: run {
+                        state.detail?.recycle()
+                        createBitmap(w, h).also { state.detail = it }
+                    }
+                }
+                if (detail == null) { state.detail?.recycle(); state.detail = null }
+                surface.getBitmap(detail ?: frame)
                 val captureMs = SystemClock.elapsedRealtime() - started
                 val interval = if (lastStart == 0L) 0L else started - lastStart
                 lastStart = started
                 val generation = state.generation
-                val chips = withContext(workerDispatcher) { state.pipeline.process(frameSample(frame), captureMs, interval) }
+                val chips = withContext(workerDispatcher) {
+                    state.pipeline.process(frameSample(frame, detail), captureMs, interval)
+                }
                 // A reset during the sample means this frame may predate the jump.
                 if (attached === state && state.generation == generation) {
                     state.layer.show(chips, width, height)
@@ -328,18 +351,39 @@ internal class FrameTextRunner(context: Context) {
         }
     }
 
-    // Called on the worker thread.
-    private fun frameSample(frame: Bitmap) = object : FrameTextSample {
+    private fun recognizer() = recognizer ?: MlKitFrameTextRecognizer(context).also { recognizer = it }
+
+    // Called on the worker thread. With [detail], the sample frame is drawn from it first.
+    private fun frameSample(frame: Bitmap, detail: Bitmap?) = object : FrameTextSample {
         override val width = frame.width
         override val height = frame.height
+        override val detailed = detail != null
         override fun signature(): ByteArray {
+            if (detail != null) Canvas(frame).drawBitmap(detail, null, Rect(0, 0, width, height), scalePaint)
             val count = width * height
             if (pixels.size < count) pixels = IntArray(count)
             frame.getPixels(pixels, 0, width, 0, 0, width, height)
             return frameSignature(pixels, width, height)
         }
-        override fun recognize() =
-            (recognizer ?: MlKitFrameTextRecognizer(context).also { recognizer = it }).recognize(frame)
+        override fun recognize() = recognizer().recognize(frame)
+        override fun recognizeRegion(region: ViewerRect): List<FrameTextLine>? {
+            if (detail == null || region.width <= 0 || region.height <= 0) return null
+            val scale = detail.width.toFloat() / width
+            val left = (region.left * scale).toInt().coerceIn(0, detail.width - 1)
+            val top = (region.top * scale).toInt().coerceIn(0, detail.height - 1)
+            val w = (region.width * scale).toInt().coerceIn(1, detail.width - left)
+            val h = (region.height * scale).toInt().coerceIn(1, detail.height - top)
+            // Enlarged so small readings reach the recognizer's comfortable character size.
+            val zoom = (FrameTextTuning.DETAIL_CROP_HEIGHT.toFloat() / h).coerceIn(1f, FrameTextTuning.DETAIL_MAX_ZOOM)
+            val crop = Bitmap.createBitmap(detail, left, top, w, h, Matrix().apply { setScale(zoom, zoom) }, true)
+            try {
+                val toSample = scale * zoom
+                return recognizer().recognizeLines(crop) { box ->
+                    ViewerRect(((left * zoom + box.left) / toSample).toInt(), ((top * zoom + box.top) / toSample).toInt(),
+                        (box.width / toSample).toInt().coerceAtLeast(1), (box.height / toSample).toInt().coerceAtLeast(1))
+                }
+            } finally { if (crop !== detail) crop.recycle() }
+        }
     }
 
     // The feed's Source language with the device language as target. Uses its

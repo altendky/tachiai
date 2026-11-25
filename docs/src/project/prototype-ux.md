@@ -2020,14 +2020,32 @@ tablet and TV have the same setting, control and display.
 - **Names with a printed reading.** The offline translator garbles proper
   names (on the SHIELD 王鵬 became "Rang" and 伯乃富士 "Mt."), while broadcasts
   commonly print a name's kana reading directly above it. A short kanji-only
-  block (one to six kanji) with a kana-only block directly above it is
+  name (one to six kanji) with a kana-only reading directly above it is
   treated as a name with its reading (user decision, 2026-11-25). "Directly
-  above" means the blocks overlap horizontally by at least 60% of the narrower
-  width, and the gap is at most about one line of the name. The name's chip
-  shows the reading romanized instead of a translation, and the reading gets
-  no chip of its own: おうほう over 王鵬 shows Ōhō, and はくのふじ over 伯乃富士
-  shows Hakunofuji. One recognized block made of a reading line over a name
-  line is treated the same way.
+  above" means the reading covers at least 60% of the narrower width, and the
+  gap is at most about one line of the name. The name's chip shows the reading
+  romanized instead of a translation, and the reading gets no chip of its own:
+  おうほう over 王鵬 shows Ōhō, and はくのふじ over 伯乃富士 shows Hakunofuji.
+  - **Lines, not blocks.** Pairing uses recognized lines and elements, before
+    the stability and minimum-height filters, since a reading never gets its
+    own chip.
+    - A name may be a whole line, or a run of two or more kanji elements in a
+      longer line, for example beside a rank.
+    - A reading may be one line or several kana lines on one row, such as
+      letter-spaced characters. Letter spacing is removed unless the name
+      itself has a space.
+    - The rest of the card (a rank or record in the same block) is translated
+      piece by piece.
+  - **Remembered.** A pairing is remembered while its name stays, so a sample
+    that misses the small reading keeps it.
+  - **Small readings.** A sumo card's reading is only about 10–12 px tall at
+    540 lines, too small to read reliably. While a name has held still for two
+    samples without a readable reading, the next capture is taken at up to
+    1920 px wide. The worker scales it down for the normal read and reads an
+    enlarged crop of the area above the name. This is limited to three crops
+    per sample, and a name whose crop finds no reading is not retried while it
+    stays. Moving text never triggers it. The larger frame is released as soon
+    as no reading is sought.
   - Romanization is Hepburn. Long vowels take macrons (おう, おお → ō; うう → ū;
     ああ → ā; ええ → ē; katakana ー lengthens the previous vowel), while いい and
     えい are written out. Small ゃゅょ and small vowels combine (きゅう → kyū,
@@ -2042,7 +2060,8 @@ tablet and TV have the same setting, control and display.
 - **On-device and transient.** Frames, recognized text and translations stay
   in memory; they are never saved, logged or sent off the device. Frames are
   released when the feed stops being translated or the stream closes. Logs
-  under `TachiaiFrameText` hold only timings, block counts, states and the
+  under `TachiaiFrameText` hold only timings, block counts, states, pairing
+  geometry (counts, overlap and gap ratios, and heights in pixels) and the
   sampling cadence. Translations use a separate in-memory cache of 128
   entries, so they never evict title translations.
 

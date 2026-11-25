@@ -114,13 +114,19 @@ without a separate exception:
   text recognizer (`com.google.mlkit:text-recognition-japanese`) on the device.
   It is recycled when translation stops for that feed or the stream closes. No
   frame is written to disk, encoded, shared or sent.
+- **Higher-resolution frames** of up to 1920 px wide are captured the same way,
+  only while a steady name's small printed reading is sought. Small enlarged
+  crops above the name are read and recycled at once. The larger frame is
+  released when no reading is sought, when translation stops or when the
+  stream closes.
 - **Recognized text, translations and romanized name readings** are held in
   memory to show chips. Text is translated with the on-device translator, and
   readings are romanized locally. They are cleared with the frame;
   the translation cache for them is a separate 128-entry in-memory cache.
 - **Logs** under `TachiaiFrameText` hold only numbers and states: capture,
-  recognition and translation milliseconds, block counts, the sampling interval
-  and the running state. Failures are logged without exception text.
+  recognition and translation milliseconds, block counts, the sampling interval,
+  the running state, reset causes and name-pairing geometry (counts, overlap and
+  gap ratios, pixel heights). Failures are logged without exception text.
 - **Unreadable frames.** A feed decoded through a secure path (for example a
   future Widevine feed) is reported as unavailable for this feed. Tachiai does
   not change surfaces, decoders or DRM to read it.

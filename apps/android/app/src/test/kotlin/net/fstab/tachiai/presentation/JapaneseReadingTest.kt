@@ -68,53 +68,132 @@ class JapaneseReadingTest {
         assertFalse(shortKanjiOnly("序ノ口")); assertFalse(shortKanjiOnly("6回")); assertFalse(shortKanjiOnly("一二三四五六七"))
     }
 
-    // ---- Reading above a name ----
+    // ---- Pairing a reading with the name below it ----
 
-    private fun held(id: Long, text: String, left: Int, top: Int, width: Int, height: Int, line: Int = height) =
-        HeldFrameText(id, text, ViewerRect(left, top, width, height), line)
+    private fun line(text: String, left: Int, top: Int, width: Int, height: Int, elements: List<FrameTextElement> = emptyList()) =
+        FrameTextLine(text, ViewerRect(left, top, width, height), elements)
 
-    private val reading = held(1, "おうほう", 100, 300, 120, 20)
-    private val name = held(2, "王鵬", 95, 325, 130, 40)
-
-    @Test fun aKanjiNameWithItsReadingDirectlyAboveShowsTheReadingOnce() {
-        val other = held(3, "26歳", 100, 380, 80, 30)
-        val place = held(4, "東京都", 400, 100, 120, 30)
-        val cheer = held(5, "がんばれ", 600, 400, 160, 30)
-        val plan = frameTextDisplays(listOf(reading, name, other, place, cheer), romanize = true)
-        assertEquals(FrameTextDisplay.Literal("Ōhō"), plan[2])
-        assertEquals(FrameTextDisplay.Hidden, plan[1])
-        assertEquals(FrameTextDisplay.Translate, plan[3])
-        assertEquals(FrameTextDisplay.Translate, plan[4])
-        // Kana with no name below it is translated like any other text.
-        assertEquals(FrameTextDisplay.Translate, plan[5])
+    private fun block(vararg lines: FrameTextLine): FrameTextBlock {
+        val left = lines.minOf { it.box.left }; val top = lines.minOf { it.box.top }
+        val box = ViewerRect(left, top, lines.maxOf { it.box.left + it.box.width } - left, lines.maxOf { it.box.top + it.box.height } - top)
+        return FrameTextBlock(lines.joinToString("\n") { it.text }, box, lines.sumOf { it.box.height } / lines.size, lines.toList())
     }
 
-    @Test fun readingsThatAreNotDirectlyAboveDoNotPair() {
-        val far = held(1, "おうほう", 100, 200, 120, 20)
-        val beside = held(1, "おうほう", 300, 300, 120, 20)
-        val below = held(1, "おうほう", 100, 370, 120, 20)
-        val offset = held(1, "おうほう", 190, 300, 120, 20)
-        listOf(far, beside, below, offset).forEach { candidate ->
-            val plan = frameTextDisplays(listOf(candidate, name), romanize = true)
-            assertEquals(FrameTextDisplay.Translate, plan[2])
-            assertEquals(FrameTextDisplay.Translate, plan[1])
+    // A sumo-style card: rank, a small reading over the name, and the record, in one recognized block.
+    private val rank = line("前頭3", 100, 80, 60, 20)
+    private val reading = line("たかやす", 120, 100, 80, 12)
+    private val name = line("髙安", 110, 114, 100, 36)
+    private val record = line("○3 ●11", 110, 155, 100, 18)
+    private val card = block(rank, reading, name, record)
+
+    @Test fun aSmallReadingOverANameInOneBlockPairsAndTheRestIsSplit() {
+        val result = FrameTextNames().pair(listOf(card), romanize = true, frameWidth = 960, frameHeight = 540)
+        val named = result.blocks.single { it.reading != null }
+        assertEquals("髙安", named.text)
+        assertEquals("Takayasu", named.reading)
+        assertEquals(name.box, named.box)
+        // The reading gets no block of its own; the rank and record are translated separately.
+        assertEquals(setOf("前頭3", "○3 ●11"), result.blocks.filter { it.reading == null }.map { it.text }.toSet())
+        with(result.stats) {
+            assertEquals(1, paired); assertEquals(1, sameBlock); assertEquals(1, kanaOnly); assertEquals(1, shortKanji)
+            assertEquals(12, readingHeightPx); assertEquals(36, nameHeightPx)
         }
-        // A long kanji run is not treated as a name.
-        val long = held(2, "一二三四五六七", 95, 325, 130, 40)
-        assertEquals(FrameTextDisplay.Translate, frameTextDisplays(listOf(reading, long), romanize = true)[2])
+        // The reading (12 px) is under the chip minimum height (16 px at 540) yet still paired.
+        assertTrue(12 < 540 * FrameTextTuning.MIN_LINE_HEIGHT_FRACTION)
     }
 
-    @Test fun oneBlockWithAReadingLineOverANameLineShowsTheReading() {
-        val merged = held(1, "はくのふじ\n伯乃富士", 100, 300, 160, 70, line = 30)
-        assertEquals(FrameTextDisplay.Literal("Hakunofuji"), frameTextDisplays(listOf(merged), romanize = true)[1])
+    @Test fun letterSpacedReadingsPairWithTheirOwnNames() {
+        val spaced = "ふじせいうん".mapIndexed { index, c -> block(line(c.toString(), 300 + index * 22, 100, 14, 12)) }
+        val right = block(line("藤青雲", 300, 114, 130, 36))
+        val oneLine = block(line("ふ じ せ い う ん", 520, 100, 120, 12), line("藤青雲", 515, 114, 130, 36))
+        val result = FrameTextNames().pair(listOf(card) + spaced + right + oneLine, true, 960, 540)
+        assertEquals(listOf("Takayasu", "Fujiseiun", "Fujiseiun"), result.blocks.mapNotNull { it.reading })
+        assertTrue(result.blocks.none { kanaOnly(it.text) })
     }
 
-    @Test fun aJapaneseDeviceKeepsTranslatingEverything() {
-        val plan = frameTextDisplays(listOf(reading, name), romanize = false)
-        assertEquals(listOf(FrameTextDisplay.Translate, FrameTextDisplay.Translate), listOf(plan[1], plan[2]))
+    @Test fun aNameBesideOtherTextInALinePairsByElements() {
+        val elements = listOf(FrameTextElement("前頭2", ViewerRect(100, 114, 60, 36)),
+            FrameTextElement("藤", ViewerRect(170, 114, 36, 36)), FrameTextElement("青", ViewerRect(208, 114, 36, 36)),
+            FrameTextElement("雲", ViewerRect(246, 114, 36, 36)))
+        val mixed = block(line("ふじせいうん", 175, 100, 100, 12), line("前頭2 藤青雲", 100, 114, 182, 36, elements))
+        val result = FrameTextNames().pair(listOf(mixed), true, 960, 540)
+        val named = result.blocks.single { it.reading != null }
+        assertEquals("藤青雲", named.text); assertEquals("Fujiseiun", named.reading)
+        assertEquals(ViewerRect(170, 114, 112, 36), named.box)
+        assertEquals(listOf("前頭2"), result.blocks.filter { it.reading == null }.map { it.text })
     }
 
-    @Test fun pipelineShowsReadingsWithoutTranslatingThemAndLogsOnlyCounts() {
+    @Test fun textWithoutAReadingAboveIsLeftAsItIs() {
+        val place = block(line("東京都", 400, 300, 120, 30))
+        val far = block(line("たかやす", 120, 20, 80, 12), line("髙安", 110, 114, 100, 36))
+        val beside = block(line("たかやす", 300, 100, 80, 12), line("髙安", 110, 114, 100, 36))
+        val below = block(line("髙安", 110, 114, 100, 36), line("たかやす", 120, 152, 80, 12))
+        val cheer = block(line("がんばれ", 600, 400, 160, 30))
+        listOf(place, far, beside, below, cheer).forEach { input ->
+            val result = FrameTextNames().pair(listOf(input), true, 960, 540)
+            assertSame(input, result.blocks.single())
+        }
+        // A Japanese device language romanizes nothing.
+        assertSame(card, FrameTextNames().pair(listOf(card), false, 960, 540).blocks.single())
+    }
+
+    @Test fun aBlockWithoutLineBoxesHoldingAReadingLineOverANameLinePairs() {
+        val merged = FrameTextBlock("はくのふじ\n伯乃富士", ViewerRect(100, 300, 160, 70), 30)
+        assertEquals("Hakunofuji", FrameTextNames().pair(listOf(merged), true, 960, 540).blocks.single().reading)
+    }
+
+    @Test fun aPairingIsRememberedWhileTheNameStays() {
+        val names = FrameTextNames()
+        names.pair(listOf(card), true, 960, 540)
+        // The small reading is missed in the next sample.
+        val result = names.pair(listOf(block(rank, name, record)), true, 960, 540)
+        assertEquals("Takayasu", result.blocks.single { it.reading != null }.reading)
+        assertEquals(1, result.stats.remembered)
+        // Gone for longer than the allowed misses: forgotten.
+        repeat(FrameTextNameTuning.MAX_MISSES + 1) { names.pair(emptyList(), true, 960, 540) }
+        assertTrue(names.pair(listOf(block(rank, name, record)), true, 960, 540).blocks.none { it.reading != null })
+    }
+
+    @Test fun anUnreadableReadingIsReadFromAHigherResolutionCropOnceTheNameHoldsStill() {
+        val names = FrameTextNames()
+        val alone = listOf(block(rank, name, record))
+        val regions = mutableListOf<ViewerRect>()
+        val detail: (ViewerRect) -> List<FrameTextLine>? = { region -> regions += region; listOf(reading) }
+        // First sight: not yet steady, so no crop and no higher-resolution request.
+        assertTrue(names.pair(alone, true, 960, 540, detail).blocks.none { it.reading != null })
+        assertFalse(names.wantsDetail)
+        // Steady but no higher-resolution frame this sample: ask for one.
+        names.pair(alone, true, 960, 540, detail = null)
+        assertTrue(names.wantsDetail)
+        val result = names.pair(alone, true, 960, 540, detail)
+        assertEquals("Takayasu", result.blocks.single { it.reading != null }.reading)
+        assertEquals(1, result.stats.detail); assertEquals(1, result.stats.detailFound)
+        assertTrue(regions.single().let { it.top < name.box.top && it.top + it.height > name.box.top })
+        assertFalse(names.wantsDetail)
+    }
+
+    @Test fun aCropWithoutAReadingIsNotRetriedWhileTheNameStays() {
+        val names = FrameTextNames()
+        val place = listOf(block(line("東京都", 400, 300, 120, 30)))
+        var calls = 0
+        val detail: (ViewerRect) -> List<FrameTextLine>? = { calls++; emptyList() }
+        repeat(5) { names.pair(place, true, 960, 540, detail) }
+        assertEquals(1, calls)
+        assertFalse(names.wantsDetail)
+        // Moving text never asks for a crop.
+        repeat(5) { step -> names.pair(listOf(block(line("大雨", 100 + step * 120, 400, 60, 30))), true, 960, 540, detail) }
+        assertEquals(1, calls)
+    }
+
+    @Test fun pairingDiagnosticsCarryOnlyCountsAndGeometry() {
+        val stats = FrameTextNames().pair(listOf(card), true, 960, 540).stats.copy(filteredSmall = 2)
+        val line = frameTextPairingLog(stats)
+        assertTrue(line, Regex("^pairing( [a-zA-Z]+=(-?[0-9]+(\\.[0-9]+)?|[A-Z_]+))+$").matches(line))
+        assertTrue(line.contains("bestOverlap=1.00") && line.contains("readingHeightPx=12") && line.contains("filteredSmall=2"))
+        listOf("たかやす", "髙安", "Takayasu", "前頭").forEach { assertFalse(line.contains(it)) }
+    }
+
+    @Test fun pipelineShowsTheReadingOverTheNameWithoutTranslatingEither() {
         val lines = mutableListOf<String>()
         val requests = mutableListOf<String>()
         val translator = object : FrameTextTranslator {
@@ -126,16 +205,16 @@ class JapaneseReadingTest {
             override val width = 960
             override val height = 540
             override fun signature() = byteArrayOf(1)
-            override fun recognize() = listOf(
-                FrameTextBlock("おうほう", ViewerRect(100, 300, 120, 20), 20),
-                FrameTextBlock("王鵬", ViewerRect(95, 325, 130, 40), 40))
+            override fun recognize() = listOf(card)
         }
         pipeline.process(sample, 1, 0)
         val chips = pipeline.process(sample, 1, 2_000)
-        assertEquals(listOf(FrameTextChip(chips.single().id, ViewerRect(95, 325, 130, 40), 40, "Ōhō")), chips)
-        assertTrue(synchronized(requests) { requests.isEmpty() })
+        assertEquals("Takayasu", chips.single { it.box == name.box }.text)
+        Thread.sleep(200)
+        val asked = synchronized(requests) { requests.toSet() }
+        assertFalse(asked.any { "髙安" in it || "たかやす" in it })
         val logged = synchronized(lines) { lines.toList() }
-        assertTrue(logged.last().endsWith("shown=1 romanized=1"))
-        logged.forEach { line -> listOf("おうほう", "王鵬", "Ōhō").forEach { assertFalse(line.contains(it)) } }
+        assertTrue(logged.any { it.startsWith("pairing ") })
+        logged.forEach { line -> listOf("たかやす", "髙安", "Takayasu").forEach { assertFalse(line.contains(it)) } }
     }
 }

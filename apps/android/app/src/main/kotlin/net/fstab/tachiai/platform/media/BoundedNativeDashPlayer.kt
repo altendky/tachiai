@@ -290,7 +290,8 @@ internal class BoundedNativeDashPlayer(
             known(window.defaultPositionMs), player.isCurrentMediaItemLive, player.isCurrentMediaItemDynamic,
             player.isCurrentMediaItemSeekable && player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM),
             player.isCommandAvailable(Player.COMMAND_SEEK_TO_DEFAULT_POSITION), player.isPlayingAd,
-            player.isPlaying, player.playWhenReady, player.playbackState, player.playbackParameters.speed)
+            player.isPlaying, player.playWhenReady, player.playbackState, player.playbackParameters.speed,
+            window.liveConfiguration?.targetOffsetMs?.let(::known))
     }
 
     override fun diagnosticSnapshot(): NativePlaybackDiagnosticSnapshot? {

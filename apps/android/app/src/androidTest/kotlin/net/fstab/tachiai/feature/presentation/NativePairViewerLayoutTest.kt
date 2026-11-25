@@ -30,8 +30,9 @@ import org.junit.runner.RunWith
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class NativePairViewerLayoutTest {
+    // A live window with a content clock, so the live transport and Live show (#660).
     private class LiveMember : NativePairMember {
-        override fun timingSnapshot() = NativeTimingSnapshot(20_000, 60_000, 30_000, null, null, 55_000,
+        override fun timingSnapshot() = NativeTimingSnapshot(20_000, 60_000, 30_000, null, 1_000_000, 55_000,
             true, true, true, true, false, false, false, 3, 1f)
         override fun seekToMs(targetMs: Long) = NativeSeekPlan(NativeSeekOutcome.REQUESTED, targetMs)
         override fun setTimingPlaying(playing: Boolean) = true
@@ -212,26 +213,26 @@ class NativePairViewerLayoutTest {
         }
     }
 
-    @Test fun visibleLiveActionsKeepTargetsFocusAndTrayBoundsAtCompactLargeFontSizes() {
+    // Live sits right of 1 min ⏩ instead of a full-width Back to live bar
+    // (user, 2026-11-25); six controls still keep 48 dp targets.
+    @Test fun liveTransportKeepsTargetsFocusAndTrayBoundsAtCompactLargeFontSizes() {
         for (landscape in listOf(false, true)) withFixture(landscape, 1.8f, true) { scenario, f ->
             // A TV/D-pad focus assertion must leave Android touch mode first.
             InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
             scenario.onActivity {
                 f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
-                val actions = descendants(f.viewer).filterIsInstance<Button>().filter { it.text.startsWith("Back to live ") }
-                assertEquals(2, actions.size)
-                actions.forEach {
-                    assertTrue(it.isShown && it.isEnabled && it.isFocusable)
-                    assertTrue(it.width >= f.dp(48)); assertTrue(it.height >= f.dp(48))
-                    assertTrue(it.right <= (it.parent as View).width)
-                }
-                assertTrue(actions[0].requestFocus())
-                assertSame(actions[1], actions[0].focusSearch(View.FOCUS_RIGHT))
-                assertSame(actions[0], actions[1].focusSearch(View.FOCUS_LEFT))
+                assertTrue(descendants(f.viewer).filterIsInstance<Button>().none { it.text.startsWith("Back to live") })
+                val live = descendants(f.viewer).filterIsInstance<Button>().single { it.text.toString() == "Live" }
+                val forward = descendants(f.viewer).filterIsInstance<Button>().single { it.contentDescription == "Forward 1 minute" }
+                assertTrue(live.isShown && live.isEnabled && live.isFocusable)
+                assertTrue(live.width >= f.dp(48)); assertTrue(live.height >= f.dp(48))
+                assertTrue(live.right <= (live.parent as View).width)
+                assertSame(forward.parent, live.parent)
+                assertTrue(forward.requestFocus())
+                assertSame(live, forward.focusSearch(View.FOCUS_RIGHT))
+                assertSame(forward, live.focusSearch(View.FOCUS_LEFT))
                 button(f.viewer, "Timing").performClick()
                 f.layout(if (landscape) 640 else 320, if (landscape) 320 else 640)
-                val liveControls = f.bottomBar.getChildAt(0)
-                assertTrue(liveControls.height >= f.dp(48))
                 assertTrue(f.bottomBar.top >= f.topBar.bottom)
                 assertTrue(f.bottomBar.bottom <= f.overlay.height)
                 assertTrue(f.scroller.height <= (f.viewer.height * 0.6f).toInt())

@@ -25,7 +25,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import androidx.core.view.ViewCompat
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativeMixedSide
+import net.fstab.tachiai.platform.media.PrototypePlaybackController
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.platform.media.NativeTimingSnapshot
@@ -49,11 +52,13 @@ class NativePairViewerTransportTest {
         var sample = NativeTimingSnapshot(position, 600_000, position + 10_000, null,
             if (live) 1_000_000 else null, livePoint, live, live, true, true, false, false, false, 3, 1f)
         val seeks = mutableListOf<Long>()
+        // The player reports BUFFERING at a sought position until it is ready.
+        var buffering = false
         override fun timingSnapshot() = sample
         override fun seekToMs(targetMs: Long): NativeSeekPlan {
             seeks += targetMs
             val plan = nativeSeekPlan(sample, targetMs)
-            plan.targetMs?.let { sample = sample.copy(positionMs = it) }
+            plan.targetMs?.let { sample = sample.copy(positionMs = it, state = if (buffering) 2 else 3) }
             return plan
         }
         override fun setTimingPlaying(playing: Boolean): Boolean {
@@ -205,6 +210,66 @@ class NativePairViewerTransportTest {
         scenario.onActivity {
             assertEquals(listOf(120_000L), fixture.a.seeks)
             assertEquals(listOf(60_000L), fixture.b.seeks)
+        }
+    }
+
+    // Live (user, 2026-11-25) sits right of 1 min ⏩ and moves both feeds to
+    // the nearer live point, keeping their offset; at live it stays focusable
+    // but dimmed. Replays have no Live.
+    @Test fun liveMovesThePairToLiveKeepingItsOffset() = withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+        scenario.onActivity {
+            val live = button(fixture.viewer, "Live")
+            assertTrue(live.isShown && live.isEnabled)
+            assertTrue(button(fixture.viewer, "Forward 1 minute").requestFocus())
+            assertEquals(live, button(fixture.viewer, "Forward 1 minute").focusSearch(View.FOCUS_RIGHT))
+            live.performClick()
+            assertEquals(listOf(590_000L), fixture.a.seeks)
+            assertEquals(listOf(530_000L), fixture.b.seeks)
+            fixture.settle()
+            assertTrue(text(fixture.viewer, "LIVE").isShown)
+            assertTrue(live.isEnabled)
+            assertEquals(LIVE_AT_EDGE, ViewCompat.getStateDescription(live)?.toString())
+            live.performClick()
+            assertEquals(1, fixture.a.seeks.size)
+            assertEquals("Already live.", fixture.notice.text.toString())
+        }
+    }
+
+    @Test fun replaysHaveNoLiveButton() = withFixture { scenario, fixture ->
+        scenario.onActivity { assertEquals(View.GONE, button(fixture.viewer, "Live").visibility) }
+    }
+
+    // A single feed seeks without a hold; a skip pressed while it buffers at
+    // its new position waits and runs once it is ready, instead of being
+    // refused as "Skipping is unavailable right now." (#660 follow-up).
+    @Test fun aSkipWhileASingleFeedBuffersRunsOnceItIsReady() {
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            val member = Member(130_000).apply { buffering = true }
+            val controller = PrototypePlaybackController({ true }, singleFeed = true)
+            controller.setMember(NativeMixedSide.A, member)
+            lateinit var viewer: NativePairViewer
+            scenario.onActivity { activity ->
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "Sumo", "Commentary",
+                    { controller.pair }, {}, {}, {}, {}, {}, {}, {},
+                    members = { listOf(controller.member(NativeMixedSide.A), null) },
+                    playbackBusy = { controller.busy }, onSkip = { controller.seekTogether(it) },
+                    selectedSlots = setOf(NativeMixedSide.A))
+                activity.setContentView(viewer); viewer.open()
+            }
+            idle()
+            scenario.onActivity {
+                button(viewer, "Forward 10 seconds").performClick()
+                assertEquals(listOf(140_000L), member.seeks)
+                button(viewer, "Forward 10 seconds").performClick()
+                assertEquals(1, member.seeks.size)
+                member.sample = member.sample.copy(state = 3)
+                viewer.refresh()
+            }
+            idle()
+            scenario.onActivity {
+                assertEquals(listOf(140_000L, 150_000L), member.seeks)
+                viewer.endSession(); controller.close()
+            }
         }
     }
 

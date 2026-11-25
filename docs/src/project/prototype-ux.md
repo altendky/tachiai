@@ -615,10 +615,11 @@ rather than a bar that takes space from the feeds
 
 - **Top bar:** **‹ Stop** (formerly Back to sources, still asking "Stop
   playback?"), then **Audio**, **Timing** (pair only) and **⋯** (More) at the end.
-- **Bottom area:** each live feed's **Back to live A/B** with its hint, then
-  **Play/Pause** for the pair or single feed. It also holds the position row,
-  scrub bar and skips, on replays ([below](#replay-navigation--655-part-1))
-  and on live feeds ([#660](#live-skip-and-scrub--660)).
+- **Bottom area:** **Play/Pause** for the pair or single feed. It also holds
+  the position row, scrub bar and skips, on replays
+  ([below](#replay-navigation--655-part-1)) and on live feeds
+  ([#660](#live-skip-and-scrub--660)), where **Live** follows 1 min ⏩. Each
+  live feed's own **Back to live A/B** is in ⋯ More (user, 2026-11-25).
 
 Both bars sit on a dark translucent band (black at 60%) with light text, so
 they stay legible over any video in light and dark themes; buttons keep their
@@ -682,7 +683,7 @@ and [#656](https://github.com/altendky/tachiai/issues/656#issuecomment-710978748
   control and no jump to the broadcast's clock time (a later follow-up).
 - **Live:** live feeds and live + replay pairs have the same position row,
   skips and scrub bar, within what each live feed's window holds
-  ([below](#live-skip-and-scrub--660)). Back to live stays.
+  ([below](#live-skip-and-scrub--660)), plus **Live**.
 
 **Target and pairs.** The position shown is the primary feed's (after Swap,
 the other feed's); if the primary is waiting or failed, the other replay's. A
@@ -757,9 +758,8 @@ rewind buffer, or a Twitch feed's provider window. Skipping never builds
 delay; older footage that was never recorded can't be reached.
 
 - **Position:** the time reads how far the target feed is behind its live
-  point, such as `−1:35` (`h:mm:ss` from an hour), or **LIVE** within about
-  2 s of it. Screen readers hear "1:35 behind live" or "Live". There is no
-  total.
+  point, such as `−1:35` (`h:mm:ss` from an hour), or **LIVE** within 3 s of
+  it. Screen readers hear "1:35 behind live" or "Live". There is no total.
 - **Scrub bar:** spans the oldest available point on the left to the live
   point on the right. While choosing, the time shows the pending target, such
   as `→ −2:10` or `→ LIVE`. A pending choice keeps its distance behind live
@@ -772,28 +772,49 @@ delay; older footage that was never recorded can't be reached.
   its window so the target isn't dropped while the pair settles. At that point
   the existing notice applies, such as "B is at its start; neither feed
   moved."
+- **Live** (user, 2026-11-25): a compact button to the right of **1 min ⏩**,
+  reached with Right from it on TV, the same on phone and TV. It skips to the
+  right end: a single feed returns to its live point, and a pair moves both
+  feeds forward together, keeping their Timing offset, until the nearer feed
+  is live. Once the view is live it stays focusable but dimmed, reads "At
+  live" to screen readers and says "Already live." when pressed. A single
+  live feed without a transport (below) uses its Back to live instead.
 - **Pairs:** a skip moves both feeds by one amount, as for replays. Each
-  **Back to live A/B** stays, and still breaks the offset. A live feed's
-  target is confirmed on its content clock, since its window slides while the
-  pair is held. **Start over** is shown only on replay views.
+  feed's own **Back to live A · title** / **B · title** is in **⋯ More**
+  (a single feed: **Back to live · title**), and still breaks the offset; the
+  full-width Back to live bar and its hint line are gone (user, 2026-11-25).
+  A live feed's target is confirmed on its content clock, since its window
+  slides while the pair is held. **Start over** is shown only on replay views.
 - **Unavailable:** a live feed that isn't seekable, or has no live point or
-  stable content clock, has no transport; the view keeps LIVE / Back to live
-  and Left/Right reveal the overlay, as before.
+  stable content clock, has no skips or scrub bar, and Left/Right reveal the
+  overlay, as before. Back to live stays in More.
 
-The live point is the player's default position in the current window. It is
-recomputed as the window refreshes, so the distance behind live can move by up
-to about a segment between refreshes. Media3's live speed control may also
-nudge a resumed feed toward its target offset.
+The live point is where the player aims to play: its target live offset
+behind the live edge. The distance behind it is the player's continuous live
+offset less that target, so it doesn't jump as the window refreshes, and a
+skip or Live to the right end lands exactly on it and reads LIVE. A feed
+started at the window's default position, which the player snaps to a
+segment start, can sit a little behind it; the 3 s margin covers that. Where
+the player reports no target offset, the window's default position stands in;
+that one steps with each refresh. Media3's live speed control may also nudge
+a resumed feed toward its target offset.
+
+A skip pressed while the moved feed is still buffering at its new position
+(a single feed seeks without a hold) now waits and runs once the feed is
+ready, like presses during a pair skip, for up to 8 s. Before, it was refused
+as "Skipping is unavailable right now.", which appeared when a replay scrub
+committed while the previous scrub's seek was still loading.
 
 While a feed is behind the provider's own window, only the rendition the
 rewind buffer recorded is available; automatic quality could select another
 rendition that was never recorded. Track selection is not pinned for this
 yet (a follow-up with [#618](https://github.com/altendky/tachiai/issues/618)).
 
-The live skip plan (bounds, clamping, the live point, mixed pairs and
-content-clock settlement while the window slides) and the position text have
-JVM tests. New instrumentation tests for live position, hidden Left/Right,
-the live point and live scrubbing compile; they have not been run on a device
+The live skip plan (bounds, clamping, the target-aware live point, mixed
+pairs and content-clock settlement while the window slides) and the position
+text have JVM tests. Instrumentation tests for live position, hidden
+Left/Right, the live point, live scrubbing, Live, Back to live in More and a
+skip during single-feed buffering compile; they have not been run on a device
 for this change.
 
 ### Scrub previews — #673
@@ -1289,8 +1310,8 @@ settled. Helpers and routes stay owned until those receipts confirm completion.
 Actual cleanup failure still blocks another viewer and offers recovery; pending
 work alone does not count as failure or successful cleanup.
 
-The visible **Back to live A / B** controls target the named live feed, including
-a single surviving feed. Completed replay and missing feeds have no live action;
+The **Back to live A / B** actions (in ⋯ More since 2026-11-25) target the
+named live feed, including a single surviving feed. Completed replay and missing feeds have no live action;
 current readiness, advertisement, SDK default-position capability, ownership and
 busy checks determine whether the action is enabled. The same checks run again
 before dispatch. An expired position can recover when the SDK still advertises

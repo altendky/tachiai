@@ -87,8 +87,10 @@ reports no position. The controlled web fixture keeps only joint Play/Pause and
 has no replay position row, skips or scrub bar; it would need the same rules
 before offering them. Its layout formula already takes the measured bar heights.
 Live skip and scrub (#660) are Android-only as well: a live target is bounded by
-the Media3 window (oldest point to the default position) and settled on the
-window's content clock, and the web fixture has no live transport. Remembered replay positions and Start over (#655 part 2) are Android-only too:
+the Media3 window, from its oldest point to the live point at the window's
+resolved target live offset (the default position when none is reported), and
+settled on the window's content clock. The web fixture has no live transport
+or Live control. Remembered replay positions and Start over (#655 part 2) are Android-only too:
 the web fixture does not save or resume positions. So are scrub previews (#673),
 which need the scrub bar the web fixture lacks.
 

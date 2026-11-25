@@ -15,7 +15,10 @@ internal object ViewerTransportSteps {
     // A scrub key held this long switches to large steps.
     const val SCRUB_ACCELERATE_AFTER_MS = 500L
     // A live feed this close behind its live point reads LIVE (#660).
-    const val LIVE_EDGE_MS = 2_000L
+    const val LIVE_EDGE_MS = 3_000L
+    // Live skips by this much: far enough to reach any live point, and small
+    // enough that queued presses still add up without overflow.
+    const val TO_LIVE_MS = Long.MAX_VALUE / 4
 }
 
 // h:mm:ss, or m:ss while the total is under an hour. Negative values show 0.
@@ -33,7 +36,9 @@ internal fun formatPlaybackPosition(positionMs: Long, durationMs: Long): String 
     "${formatPlaybackTime(positionMs, durationMs)} / ${formatPlaybackTime(durationMs, durationMs)}"
 
 // A live feed's distance behind its live point: "−1:35" (h:mm:ss from an
-// hour), or "LIVE" within about 2 s of it (#660).
+// hour), or "LIVE" within 3 s of it (#660). The margin absorbs a feed started
+// at the window's default position, which the player snaps to the start of a
+// segment, slightly behind its live point.
 internal fun formatBehindLive(behindMs: Long): String =
     if (behindMs <= ViewerTransportSteps.LIVE_EDGE_MS) "LIVE" else "−${formatPlaybackTime(behindMs)}"
 

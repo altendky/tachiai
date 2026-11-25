@@ -163,6 +163,31 @@ class NativePairSkipTest {
         assertEquals(600_000L - SKIP_END_MARGIN_MS - 595_000L, end.movementMs)
     }
 
+    // With the player's target live offset, the live point follows its
+    // continuous live offset rather than the default position, which steps
+    // with each refresh. A skip to it lands exactly at the target (#660).
+    @Test fun theLivePointUsesTheTargetLiveOffsetWhenKnown() {
+        // 25 s behind the live edge with a 10 s target: 15 s behind the live point.
+        val sample = live(100_000, livePoint = 108_000).copy(liveOffsetMs = 25_000, targetLiveOffsetMs = 10_000)
+        assertEquals(15_000L, nativeBehindLivePointMs(sample))
+        assertEquals(115_000L, checkNotNull(nativeLiveSkipRange(sample)).liveMs)
+        val toLive = nativePairSkipPlan(mapOf(A to sample), Long.MAX_VALUE / 4)
+        assertEquals(15_000L, toLive.movementMs)
+        assertTrue(toLive.limitedAtLive)
+        // The same position after the window refreshed: the default moved, the
+        // live offset didn't, so neither does the live point.
+        val refreshed = sample.copy(defaultPositionMs = 112_000)
+        assertEquals(15_000L, nativeBehindLivePointMs(refreshed))
+        // Never past the window's end.
+        assertEquals(180_000L, checkNotNull(nativeLiveSkipRange(sample.copy(liveOffsetMs = 200_000, targetLiveOffsetMs = 0))).liveMs)
+        // Playing slightly ahead of the target reads as at the live point.
+        assertEquals(NativeSeekOutcome.NO_CHANGE,
+            nativePairSkipPlan(mapOf(A to sample.copy(liveOffsetMs = 9_500)), 10_000).outcome)
+        // Without a target, the default position stands in.
+        assertEquals(8_000L, nativeBehindLivePointMs(sample.copy(targetLiveOffsetMs = null)))
+        assertNull(nativeBehindLivePointMs(sample.copy(targetLiveOffsetMs = null, defaultPositionMs = null)))
+    }
+
     @Test fun liveFeedsWithoutAStableClockOrInsideTheirWindowRefuse() {
         val noClock = nativePairSkipPlan(mapOf(A to live(100_000).copy(windowStartMs = null)), -10_000)
         assertEquals(NativeSeekOutcome.UNSUPPORTED, noClock.outcome)

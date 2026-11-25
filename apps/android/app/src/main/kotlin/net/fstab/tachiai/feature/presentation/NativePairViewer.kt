@@ -37,6 +37,8 @@ import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.SKIP_END_MARGIN_MS
 import net.fstab.tachiai.platform.media.nativeLiveSkipRange
+import net.fstab.tachiai.platform.media.nativeBehindLivePointMs
+import net.fstab.tachiai.platform.media.nativePairSkipPlan
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.R
@@ -180,6 +182,7 @@ internal class NativePairViewer(
         val live: Boolean = false, val anyLive: Boolean = false)
     private var transport: TransportTarget? = null
     private var skipInFlight = false
+    private var skipStartedMs = 0L
     private var queuedSkipMs = 0L
     private var expectedPositionMs: Long? = null
     private var scrubbingMs: Long? = null
@@ -277,21 +280,21 @@ internal class NativePairViewer(
     private val fit = button("", "fit") { fitVideo = !fitVideo; updateLabels(); showControls() }.apply {
         contentDescription = "Fit video beside visible controls; toggle without restarting playback"
     }
-    private val backToLive = NativeMixedSide.entries.map { side ->
-        button("Back to live ${side.name}") { control -> requestBackToLive(side, control) }.apply {
-            id = View.generateViewId()
-            contentDescription = "Back to live ${side.name} · ${if (side == NativeMixedSide.A) labelA else labelB}"
-        }
-    }
-    private val liveHint = text("").apply { textSize = 12f; setTextColor(OVERLAY_TEXT) }
-    private val liveControls = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(row(*backToLive.toTypedArray()))
-        addView(liveHint)
+    // Each live feed's own Back to live (catch-up), which breaks a pair's
+    // offset. It is in More (user, 2026-11-25); this is whether the action
+    // shown there can run for the member it was shown for.
+    private val backToLiveEnabled = BooleanArray(2)
+    // Live (user, 2026-11-25): to the right of 1 min ⏩. It skips to the right
+    // end, so a pair moves together until the nearer feed is live, keeping
+    // its offset. Dimmed, but still focusable, once the view is live.
+    private var liveAtEdge = false
+    private val liveButton = button("Live", "live") { goLive() }.apply {
+        id = View.generateViewId(); maxLines = 1
+        contentDescription = "Live"
         visibility = GONE
     }
     // The top bar holds Stop and the secondary controls; the bottom area the
-    // live affordances, the position row (#655, live #660) and the transport.
+    // position row (#655, live #660) and the transport.
     private val topBar = LinearLayout(context).apply {
         gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
         background = overlayScrim()
@@ -352,14 +355,13 @@ internal class NativePairViewer(
     }
     private val transportRow = TransportRow().apply {
         gravity = Gravity.CENTER
-        listOf(skipButtons[0], skipButtons[1], play, skipButtons[2], skipButtons[3]).forEachIndexed { index, control ->
+        listOf(skipButtons[0], skipButtons[1], play, skipButtons[2], skipButtons[3], liveButton).forEachIndexed { index, control ->
             addView(control, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(4) })
         }
     }
     private val bottomBar = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8))
         background = overlayScrim()
-        addView(liveControls, LinearLayout.LayoutParams(-1, -2))
         addView(positionRow, LinearLayout.LayoutParams(-1, -2))
         addView(transportRow, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
     }
@@ -367,10 +369,6 @@ internal class NativePairViewer(
     init {
         timingControl.visibility = if (hasPairSlots) VISIBLE else GONE
         timingControl.isEnabled = hasPairSlots
-        if (hasPairSlots) {
-            backToLive[0].nextFocusRightId = backToLive[1].id
-            backToLive[1].nextFocusLeftId = backToLive[0].id
-        }
         for (index in advanceA.indices) {
             advanceA[index].nextFocusDownId = advanceB[index].id
             advanceB[index].nextFocusUpId = advanceA[index].id
@@ -537,12 +535,25 @@ internal class NativePairViewer(
         val side = (listOf(primary) + NativeMixedSide.entries).firstOrNull { it in targets } ?: return null
         return targets.getValue(side).copy(anyLive = anyLive)
     }
-    // Keys, gestures and buttons all skip here. While this viewer's own pair
-    // skip is settling, further presses add up and run next.
+    // A skip settles while this viewer's pair skip holds both feeds, and until
+    // the moved feeds stop buffering at their new position. A single feed seeks
+    // without a hold, so a second skip during that buffering would otherwise be
+    // refused as unavailable (#660). Bounded like the pair hold.
+    private fun skipSettling(): Boolean {
+        if (SystemClock.uptimeMillis() - skipStartedMs >= SKIP_SETTLE_LIMIT_MS) return false
+        return playbackBusy() || selectedMembers().any { member ->
+            member != null && runCatching { member.timingSnapshot() }.getOrNull()?.state == Player.STATE_BUFFERING
+        }
+    }
+    private fun skipDispatched(movedMs: Long?) {
+        skipInFlight = true; skipStartedMs = SystemClock.uptimeMillis(); expectedPositionMs = movedMs
+    }
+    // Keys, gestures and buttons all skip here. While this viewer's own skip
+    // is settling, further presses add up and run next.
     private fun requestSkip(deltaMs: Long, flash: Boolean) {
         if (!isAttachedToWindow || visibility != VISIBLE) return
         val target = transportTarget() ?: return
-        if (skipInFlight && playbackBusy()) {
+        if (skipInFlight && skipSettling()) {
             queuedSkipMs = runCatching { Math.addExact(queuedSkipMs, deltaMs) }.getOrDefault(queuedSkipMs)
             val end = if (target.live) target.durationMs else (target.durationMs - SKIP_END_MARGIN_MS).coerceAtLeast(0)
             val predicted = ((expectedPositionMs ?: target.positionMs) + queuedSkipMs).coerceIn(0, end)
@@ -556,11 +567,37 @@ internal class NativePairViewer(
         val plan = runCatching { onSkip(deltaMs) }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
         if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
             val moved = plan.targets.firstOrNull { it.side == target.side }?.targetMs ?: (target.positionMs + plan.movementMs)
-            skipInFlight = playbackBusy()
-            expectedPositionMs = moved.takeIf { skipInFlight }
+            skipDispatched(moved)
             if (flash) flashPosition(plan.movementMs, moved, target)
         } else viewerSkipRefusal(plan, deltaMs > 0, hasPairSlots)?.let(::showNotice)
         refresh()
+    }
+    // Live (user, 2026-11-25): a skip to the right end, so a pair moves
+    // together until the nearer feed is live and keeps its offset. A single
+    // live feed without a transport (no stable live point) uses Back to live.
+    private fun goLive() {
+        if (!isAttachedToWindow || visibility != VISIBLE) return
+        showControls()
+        if (liveAtEdge) { showNotice("Already live."); return }
+        val target = transportTarget()
+        if (target != null && target.anyLive) { requestSkip(ViewerTransportSteps.TO_LIVE_MS, flash = false); return }
+        val side = NativeMixedSide.entries.singleOrNull { it in selectedSides && liveTargets[it.ordinal] != null }
+        if (!hasPairSlots && side != null) requestBackToLive(side) else refresh()
+    }
+    // Whether Live would move nothing: the view is already within the LIVE
+    // margin of the nearer feed's live point.
+    private fun atLiveEdge(target: TransportTarget?): Boolean {
+        if (target == null) {
+            val member = NativeMixedSide.entries.firstNotNullOfOrNull { liveTargets[it.ordinal] } ?: return false
+            val behind = runCatching { member.timingSnapshot() }.getOrNull()?.let(::nativeBehindLivePointMs) ?: return false
+            return behind <= ViewerTransportSteps.LIVE_EDGE_MS
+        }
+        val available = selectedMembers()
+        val feeds = selectedSides.associateWith { side ->
+            available.getOrNull(side.ordinal)?.let { runCatching { it.timingSnapshot() }.getOrNull() }
+        }
+        val plan = nativePairSkipPlan(feeds, ViewerTransportSteps.TO_LIVE_MS)
+        return plan.limitedAtLive && plan.movementMs <= ViewerTransportSteps.LIVE_EDGE_MS
     }
     private fun startOver() {
         if (!isAttachedToWindow || visibility != VISIBLE) return
@@ -570,10 +607,7 @@ internal class NativePairViewer(
         cancelScrub(); queuedSkipMs = 0L
         val plan = runCatching { action() }.getOrElse { NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE) }
         val moved = plan.targets.firstOrNull { it.side == target.side }?.targetMs
-        if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) {
-            skipInFlight = playbackBusy()
-            expectedPositionMs = moved.takeIf { skipInFlight }
-        }
+        if (plan.outcome == NativeSeekOutcome.REQUESTED || plan.outcome == NativeSeekOutcome.CLAMPED) skipDispatched(moved)
         startOverNotice(plan, moved, target.durationMs, hasPairSlots)?.let(::showNotice)
         refresh()
     }
@@ -961,10 +995,9 @@ internal class NativePairViewer(
         if (snapshot.playingAd) return NativeSeekPlan(NativeSeekOutcome.AD_BLOCKED)
         return runCatching { catchUpPlan(side) }.getOrElse { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
     }
-    private fun requestBackToLive(side: NativeMixedSide, control: Button,
-        shown: NativePairMember? = liveTargets[side.ordinal]) {
+    private fun requestBackToLive(side: NativeMixedSide, shown: NativePairMember? = liveTargets[side.ordinal]) {
         val selectedPair = pair()
-        if (!control.isEnabled || !isAttachedToWindow || visibility != VISIBLE || overlay.visibility != VISIBLE ||
+        if (!backToLiveEnabled[side.ordinal] || !isAttachedToWindow || visibility != VISIBLE || overlay.visibility != VISIBLE ||
             shown == null || liveTargets[side.ordinal] !== shown || liveMember(side) !== shown ||
             currentCatchUpPlan(side, shown).outcome != NativeSeekOutcome.REQUESTED ||
             pair() !== selectedPair || liveMember(side) !== shown) {
@@ -1170,7 +1203,6 @@ internal class NativePairViewer(
 
     private fun showMore(anchor: View) {
         val shownPair = pair()
-        val holdLabel = if (selectedMembers().count { it != null } == 1) "holds this feed" else "holds both"
         showMenu(anchor) {
             if (onStartOver != null && transportTarget()?.anyLive == false) menu.add("Start over").apply {
                 isEnabled = !playbackBusy()
@@ -1203,14 +1235,16 @@ internal class NativePairViewer(
                     } }
                 }
             }
+            // Each live feed's own Back to live, which breaks a pair's offset;
+            // Live in the transport keeps it (user, 2026-11-25).
             NativeMixedSide.entries.filter { it in selectedSides }.forEach { side ->
-                val control = backToLive[side.ordinal]
-                val shown = liveTargets[side.ordinal]
-                menu.add("Catch up ${if (side == NativeMixedSide.A) labelA else labelB} ($holdLabel)").apply {
-                    isEnabled = control.isEnabled && shown != null && liveMember(side) === shown &&
+                val shown = liveTargets[side.ordinal] ?: return@forEach
+                val label = if (side == NativeMixedSide.A) labelA else labelB
+                menu.add(if (hasPairSlots) "Back to live ${side.name} · $label" else "Back to live · $label").apply {
+                    isEnabled = backToLiveEnabled[side.ordinal] && liveMember(side) === shown &&
                         currentCatchUpPlan(side, shown).outcome == NativeSeekOutcome.REQUESTED
                     setOnMenuItemClickListener {
-                        if (pair() === shownPair) requestBackToLive(side, control, shown) else refresh()
+                        if (pair() === shownPair) requestBackToLive(side, shown) else refresh()
                         true
                     }
                 }
@@ -1279,18 +1313,13 @@ internal class NativePairViewer(
         if (stage.bindPlayers()) volumeApplied = false
         stage.updateMessages()
         val available = selectedMembers()
-        backToLive.forEachIndexed { index, control ->
-            val side = NativeMixedSide.entries[index]
+        NativeMixedSide.entries.forEach { side ->
+            val index = side.ordinal
             val member = liveMember(side)
             liveTargets[index] = member
-            control.visibility = if (member == null) GONE else VISIBLE
-            control.isEnabled = member != null && currentCatchUpPlan(side, member).outcome == NativeSeekOutcome.REQUESTED &&
-                liveMember(side) === member
+            backToLiveEnabled[index] = member != null &&
+                currentCatchUpPlan(side, member).outcome == NativeSeekOutcome.REQUESTED && liveMember(side) === member
         }
-        liveControls.visibility = if (liveTargets.any { it != null }) VISIBLE else GONE
-        liveHint.text = if (available.count { it != null } > 1)
-            "Returns to live and resumes both feeds if both were playing. Realign afterward."
-            else "Returns to live and resumes if playing. Timing alignment is not restored."
         if (available.any { it != null } && !volumeApplied) applyVolume()
         val wasPlaying = requestedPlaying
         // A pair skip holds both feeds briefly; keep the requested state shown
@@ -1299,7 +1328,7 @@ internal class NativePairViewer(
         if (!holdingSkip) requestedPlaying = available.any { it?.timingSnapshot()?.playWhenReady == true }
         play.text = if (requestedPlaying || playbackBusy() && !holdingSkip) "Pause" else "Play"
         play.isEnabled = available.any { it != null }
-        refreshTransport(holdingSkip)
+        refreshTransport(skipInFlight && skipSettling())
         // A busy timing step stays enabled and keeps focus (#617). Disabling the
         // focused step let Android move focus to another control, where a quick
         // next Select acted on it (for example Back to sources). The step's
@@ -1394,6 +1423,13 @@ internal class NativePairViewer(
         transport = target
         positionRow.visibility = if (target == null) GONE else VISIBLE
         skipButtons.forEach { it.visibility = if (target == null) GONE else VISIBLE }
+        // Live shows on live views; it stays focusable once at live, only
+        // dimmed, so focus never jumps to another control (#617).
+        val liveView = target?.anyLive == true || target == null && !hasPairSlots && liveTargets.any { it != null }
+        liveButton.visibility = if (liveView) VISIBLE else GONE
+        liveAtEdge = liveView && atLiveEdge(target)
+        liveButton.alpha = if (liveAtEdge) 0.5f else 1f
+        ViewCompat.setStateDescription(liveButton, if (liveAtEdge) LIVE_AT_EDGE else null)
         if (target == null) {
             if (scrubbingMs != null) cancelScrub()
         } else {
@@ -1540,14 +1576,25 @@ internal class NativePairViewer(
         }
     }
 
-    // With skips shown, the five transport controls share up to 560 dp
-    // equally; otherwise Play/Pause keeps its own width.
+    // With skips shown, the five transport controls share up to 560 dp equally,
+    // or the six with Live up to 672 dp; otherwise Play/Pause and Live keep their widths.
     private inner class TransportRow : LinearLayout(context) {
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             val available = MeasureSpec.getSize(widthSpec)
-            val width = if (skipButtons.any { it.visibility != GONE }) minOf(available, dp(560)) else {
-                play.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), heightSpec)
-                minOf(available, play.measuredWidth)
+            val live = liveButton.visibility != GONE
+            // Six controls keep 48 dp targets on a 320 dp phone with 3 dp gaps.
+            val gap = dp(if (live) 3 else 4)
+            for (index in 1 until childCount) (getChildAt(index).layoutParams as LayoutParams).let {
+                if (it.marginStart != gap) it.marginStart = gap
+            }
+            val width = if (skipButtons.any { it.visibility != GONE }) minOf(available, dp(if (live) 672 else 560)) else {
+                var natural = 0
+                for (control in listOf(play, liveButton).filter { it.visibility != GONE }) {
+                    control.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), heightSpec)
+                    natural += control.measuredWidth
+                }
+                // Play/Pause alone keeps its existing width; Live adds itself and its gap.
+                minOf(available, natural + if (live) gap * 2 else 0)
             }
             super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), heightSpec)
         }
@@ -1772,3 +1819,8 @@ private const val OVERLAY_TEXT = 0xFFE8ECEE.toInt()
 
 // State description of a timing step while an adjustment is in progress.
 internal const val TIMING_BUSY = "Adjustment in progress"
+// A skip's settling (a pair hold, or a feed buffering at its new position)
+// stops queuing further presses after this long, like the pair hold.
+private const val SKIP_SETTLE_LIMIT_MS = 8_000L
+// State description of Live while the view is already at live (#660).
+internal const val LIVE_AT_EDGE = "At live"

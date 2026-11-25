@@ -28,16 +28,31 @@ internal const val SKIP_END_MARGIN_MS = 1_000L
 // pair skip settles (#660).
 internal const val LIVE_SKIP_START_MARGIN_MS = 5_000L
 
-// A live feed's skip range within its current window: from just after the
-// oldest available point to the live point (the player's default position).
-// Null when the window, its live point or a stable content clock is unknown.
+// How far a live feed plays behind its live point. The live point is where
+// the player aims to play: its target live offset behind the live edge. The
+// player's live offset is continuous, so this doesn't jump as the window
+// refreshes. Without a target, the window's default position stands in for
+// the live point; that one moves in steps with each refresh (#660).
+internal fun nativeBehindLivePointMs(sample: NativeTimingSnapshot): Long? {
+    val offset = sample.liveOffsetMs
+    val target = sample.targetLiveOffsetMs
+    if (offset != null && target != null) return offset - target
+    val position = sample.positionMs ?: return null
+    val default = sample.defaultPositionMs ?: return null
+    return default - position
+}
+
+// A live feed's skip range within its current window, as window positions:
+// from just after the oldest available point to the live point. Null when
+// the window, its live point or a stable content clock is unknown.
 internal data class NativeLiveSkipRange(val oldestMs: Long, val liveMs: Long, val positionMs: Long)
 
 internal fun nativeLiveSkipRange(sample: NativeTimingSnapshot): NativeLiveSkipRange? {
     if (!(sample.live || sample.dynamic)) return null
     val position = sample.positionMs ?: return null
     val duration = sample.durationMs?.takeIf { it > 0 } ?: return null
-    val live = sample.defaultPositionMs?.coerceAtMost(duration)?.takeIf { it > 0 } ?: return null
+    val behind = nativeBehindLivePointMs(sample) ?: return null
+    val live = (position + behind).coerceAtMost(duration).takeIf { it > 0 } ?: return null
     if (sample.contentTimeMs == null) return null
     return NativeLiveSkipRange(minOf(LIVE_SKIP_START_MARGIN_MS, live), live, position)
 }

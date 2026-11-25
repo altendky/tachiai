@@ -107,7 +107,8 @@ class ViewerTransportTest {
         assertEquals("LIVE", formatBehindLive(0))
         assertEquals("LIVE", formatBehindLive(-3_000)) // Ahead of the computed live point.
         assertEquals("LIVE", formatBehindLive(ViewerTransportSteps.LIVE_EDGE_MS))
-        assertEquals("−0:02", formatBehindLive(2_001))
+        assertEquals("LIVE", formatBehindLive(2_999)) // Within 3 s, including a just-short skip to the live point.
+        assertEquals("−0:03", formatBehindLive(3_001))
         assertEquals("−1:35", formatBehindLive(95_000))
         assertEquals("−59:59", formatBehindLive(3_599_999))
         assertEquals("−1:02:05", formatBehindLive(3_725_000))

@@ -56,6 +56,9 @@ internal class BoundedNativePlayer(
     readCosts: NativeMediaReadCosts? = null,
     coalesceMediaReads: Boolean = false,
     transportObserver: NativeMediaTransportObserver? = null,
+    // #618: a live feed's in-memory rewind buffer. Its HLS recorder keeps
+    // segments the provider dropped in the playlist while they are cached.
+    private val liveCache: NativeLiveSegmentCache? = null,
 ) : NativePairMember {
     private val handler = Handler(Looper.getMainLooper())
     private val acceptedPlaylist = AtomicBoolean(false)
@@ -75,8 +78,24 @@ internal class BoundedNativePlayer(
         onFailure = { stage, error ->
             if (stage == NativeFailureStage.MEDIA_DISCONNECT) cleanup.failed()
             observedFailure(stage, error)
-        }, readCosts = readCosts, coalesceMediaReads = coalesceMediaReads, transportObserver = transportObserver)
+        }, readCosts = readCosts, coalesceMediaReads = coalesceMediaReads, transportObserver = transportObserver,
+        cache = liveCache)
         .also { owned -> cleanup.own(10) { owned.close() } }
+        .also { owned ->
+            liveCache?.let { cache ->
+                cleanup.own(5) { cache.close() }
+                // The cache records through this player's own bounded transport.
+                cache.attach { uri ->
+                    val source = owned.create(C.DATA_TYPE_MEDIA, recorder = true)
+                    try {
+                        source.openUri(uri)
+                        val buffer = ByteArray(64 * 1024)
+                        while (source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) Unit
+                    } finally { source.close() }
+                }
+            }
+        }
+    private val liveRecorder = liveCache?.let(::NativeHlsLiveRecorder)
     val player: ExoPlayer
     private val quality = NativePlayerQuality(context).also { owned -> cleanup.own(40, ownerThread = true) {
         observeNativeFailure(NativeFailureStage.QUALITY_RELEASE, observedFailure) { owned.close() }
@@ -147,8 +166,17 @@ internal class BoundedNativePlayer(
             if (!budget.active || (!acceptedPlaylist.get() && System.nanoTime() / 1_000_000 >= acceptanceDeadlineMs)) {
                 onEvent(NativeMediaEvent.LIMIT_REACHED, 0)
                 cleanup.stopInternally(observedFailure, ::close)
-            } else handler.postDelayed(this, 250)
+            } else { reportBehindLive(); handler.postDelayed(this, 250) }
         }
+    }
+
+    // #618: the rewind buffer follows how far this feed is behind live,
+    // including while it is paused.
+    private fun reportBehindLive() {
+        val cache = liveCache ?: return
+        if (!player.isCurrentMediaItemDynamic) return
+        nativeBehindLiveMs(player.currentLiveOffset.takeIf { it != C.TIME_UNSET },
+            player.duration.takeIf { it != C.TIME_UNSET }, player.currentPosition)?.let(cache::setBehindLiveMs)
     }
 
     // liveTargetOffsetMs: for live HLS, how far behind the live edge to play,
@@ -278,8 +306,11 @@ internal class BoundedNativePlayer(
                         requests.report(NativeMediaEvent.ENCRYPTION_UNSUPPORTED)
                         throw IOException()
                     }
-                    // A provider adapter may normalize its own playlist tags.
-                    val rewritten = playlistRewrite(text)
+                    // A provider adapter may normalize its own playlist tags;
+                    // a live feed's recorder then keeps its retained segments.
+                    val rewritten = playlistRewrite(text).let { normalized ->
+                        liveRecorder?.rewrite(uri.toString(), normalized) ?: normalized
+                    }
                     if (rewritten !== text && (rewritten.length > 512 * 1024 || !unencryptedHls(rewritten))) {
                         requests.report(NativeMediaEvent.PLAYLIST_UNSUPPORTED)
                         throw IOException()

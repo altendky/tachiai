@@ -1159,7 +1159,7 @@ On 2026-11-25 the user sized the buffer to the feed's delay
   recorded point while paused, so playback resumed there." A feed that can't be
   sought still fails as before.
 
-Twitch feeds keep the provider's window. Live Twitch feeds play about 6 s behind
+Live Twitch feeds play about 6 s behind
 the live edge, using Twitch's low-latency playlists
 ([security and privacy](security-and-privacy.md#twitch-live-low-latency--2026-11-22)).
 
@@ -1173,8 +1173,10 @@ setting:
 | Plus a 6 s target | ≈ 7.9 s | 3–5 s |
 | Plus prefetch hints as segments | ≈ 6.0 s | 6–8 s |
 
-No setting rebuffered after startup. Sizing the buffer to the current offset
-is discussed in [#618](https://github.com/altendky/tachiai/issues/618).
+No setting rebuffered after startup. Since
+[#618](https://github.com/altendky/tachiai/issues/618), live Twitch feeds keep
+the same rewind buffer as ABEMA, beyond Twitch's window of about 30 s, with the
+same floor, growth and 6:00 cap; the low-latency live edge is unchanged.
 
 Each device stores its own encrypted, bounded pair preferences. Identity uses
 the exact public source and provider-instance identities, excluding titles,

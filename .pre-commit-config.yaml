@@ -80,6 +80,12 @@ repos:
         language: system
         files: '^scripts/(android-dev-device\.py|tests/android-dev-device\.test\.py)$|^apps/android/dev-(tv-)?device\.toml$'
         pass_filenames: false
+      - id: android-abema-renewal-check-tests
+        name: ABEMA renewal check parser and verdict tests
+        entry: uv run scripts/tests/android-abema-renewal-check.test.py
+        language: system
+        files: '^scripts/(android-abema-renewal-check\.py|android-dev-device\.py|tests/android-abema-renewal-check\.test\.py)$'
+        pass_filenames: false
 
       - id: release-isolation-tests
         name: Release manifest/assets isolation fixture tests

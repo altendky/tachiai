@@ -169,6 +169,33 @@ class AbemaRenewalTimerTest {
         assertEquals(1, f.fired.size)
     }
 
+    @Test fun theDebugTriggerFiresTheDueAttemptBeforeItsDueTime() {
+        val f = TimerFixture()
+        assertEquals(AbemaRenewalTrigger.NO_ACCOUNT, f.timer.trigger(INSTANCE))
+        f.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        assertEquals(AbemaRenewalTrigger.STARTED, f.timer.trigger(INSTANCE))
+        assertEquals(listOf(GENERATION), f.fired)
+        assertEquals(listOf("TIMER_SCHEDULED", "TIMER_TRIGGERED", "TIMER_FIRED"), f.logs)
+        assertEquals(AbemaRenewalTrigger.RUNNING, f.timer.trigger(INSTANCE))
+        f.done!!(false)
+        // It is the window's single attempt: neither a second trigger nor the due time fires again.
+        assertEquals(AbemaRenewalTrigger.WINDOW_SPENT, f.timer.trigger(INSTANCE))
+        f.clock.advance(60 * MINUTE)
+        assertEquals(1, f.fired.size)
+        assertTrue(f.clock.idle())
+    }
+
+    @Test fun theDebugTriggerRefusesWhileAManualApprovalHoldsTheBrowser() {
+        val f = TimerFixture()
+        f.manual = true
+        f.timer.reconcile(mapOf(INSTANCE to GENERATION))
+        assertEquals(AbemaRenewalTrigger.MANUAL_APPROVAL, f.timer.trigger(INSTANCE))
+        assertTrue(f.fired.isEmpty())
+        f.manual = false
+        f.clock.advance(45 * MINUTE)
+        assertEquals(listOf(GENERATION), f.fired)
+    }
+
     @Test fun firingReservesOnceAndObservesItsRenewalToTheResult() {
         val f = RunFixture()
         f.run()

@@ -118,13 +118,14 @@ internal object AndroidAbemaRenewalJobs {
         }
         private fun disable() {
             disabled.set(true)
-            running.snapshot().forEach { it.run.stop() }
-            runCatching { scheduler.allPendingJobs.filter { it.service == component }.forEach { scheduler.cancel(it.id) } }
+            running.snapshot().forEach { stop(it, "DISABLED") }
+            runCatching { scheduler.allPendingJobs.filter { it.service == component && it.id in AbemaRenewalJobLedger.JOB_IDS }
+                .forEach { scheduler.cancel(it.id) } }
         }
         fun changed() { epoch.incrementAndGet() }
         fun invalidate(instance: String) {
             epoch.incrementAndGet()
-            running.snapshot().filter { it.key.instance == instance }.forEach { it.run.stop() }
+            running.snapshot().filter { it.key.instance == instance }.forEach { stop(it, "FORGOTTEN") }
         }
         fun reconcileLater() = enqueue(::reconcile)
         fun reconcileTimer(reset: Boolean = false) = enqueue {
@@ -137,9 +138,9 @@ internal object AndroidAbemaRenewalJobs {
         // The foreground readiness path with the job's lead, but this process's
         // own route rather than a job Network, and never while a manual
         // approval holds the approval browser.
-        private fun renewEarly(instance: String, generation: AbemaRenewalGeneration, done: () -> Unit) {
+        private fun renewEarly(instance: String, generation: AbemaRenewalGeneration, done: (Boolean) -> Unit) {
             val began = SystemClock.elapsedRealtime()
-            if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { done(); return }
+            if (began < 0 || began > Long.MAX_VALUE - AbemaReadinessIpc.LIMIT_MS) { done(false); return }
             AbemaRenewalTimerRun(instance, generation, began + AbemaReadinessIpc.LIMIT_MS, worker,
                 SystemClock::elapsedRealtime, ::inspect,
                 { target, deadline, admitted -> AndroidAbemaRenewalReadiness.reserve(context, target, deadline,
@@ -172,7 +173,7 @@ internal object AndroidAbemaRenewalJobs {
             val instances = providerInstanceStore(context).read { legacyProviderSettings(context) }
                 .filter { it.service == PrototypeService.ABEMA }.map { it.id }.toSet()
             if (epoch.get() != capturedEpoch) return
-            running.reconcile(instances, ::inspect) { it.run.stop() }
+            running.reconcile(instances, ::inspect) { stop(it, "SCOPE_CHANGED") }
             if (epoch.get() != capturedEpoch) return
             val previous = ledger.snapshot()
             previous.filter { it.key.instance !in instances }.forEach { ledger.reconcile(it.key.instance, null) }
@@ -192,7 +193,8 @@ internal object AndroidAbemaRenewalJobs {
             }
             if (epoch.get() != capturedEpoch) return
             val desired = ledger.snapshot()
-            val pending = scheduler.allPendingJobs.filter { it.service == component }
+            // The renewal hold (#682) shares this service under an ID outside the ledger's.
+            val pending = scheduler.allPendingJobs.filter { it.service == component && it.id in AbemaRenewalJobLedger.JOB_IDS }
             pending.filter { job -> desired.none { it.pending && it.key.jobId == job.id && matches(job.extras, it.key) } }
                 .filter { running.owner(it.id) == null }.forEach { scheduler.cancel(it.id) }
             desired.filter { it.pending }.forEach { entry ->
@@ -244,7 +246,7 @@ internal object AndroidAbemaRenewalJobs {
                 { preflight -> AndroidAbemaRenewalReadiness.join(context, preflight.target, preflight.generation) },
                 { delay, action -> main.postDelayed(action, delay) })
             if (!running.register(key, owner)) return false
-            if (!main.postDelayed({ if (running.callback(key) === owner) owner.run.stop() },
+            if (!main.postDelayed({ if (running.callback(key) === owner) stop(owner, "DEADLINE") },
                     maxOf(0L, deadline - SystemClock.elapsedRealtime())) || !owner.run.start()) {
                 owner.stopped.set(true); owner.run.stop(); running.remove(key, owner); return false
             }
@@ -260,14 +262,19 @@ internal object AndroidAbemaRenewalJobs {
         }
         fun stop(params: JobParameters) {
             val owner = decode(params)?.let(running::callback) ?: return
-            owner.stopped.set(true); owner.run.stop()
+            owner.stopped.set(true); stop(owner, "SYSTEM")
         }
         fun networkChanged(params: JobParameters) {
             val owner = decode(params)?.let(running::callback) ?: return
-            owner.run.stop()
+            stop(owner, "NETWORK_CHANGED")
         }
         fun destroyed(service: AbemaRenewalJobService) {
-            running.snapshot().filter { it.service === service }.forEach { it.stopped.set(true); it.run.stop() }
+            running.snapshot().filter { it.service === service }.forEach { it.stopped.set(true); stop(it, "DESTROYED") }
+        }
+        // Which trigger stopped a running job (#682), logged before JOB_STOPPED. Closed constants only.
+        private fun stop(owner: Running, cause: String) {
+            log("JOB_STOP_CAUSE cause=$cause")
+            owner.run.stop()
         }
         private fun decode(params: JobParameters): AbemaRenewalJobKey? = runCatching {
             val fields = params.extras
@@ -282,8 +289,13 @@ internal object AndroidAbemaRenewalJobs {
 }
 
 class AbemaRenewalJobService : JobService() {
-    override fun onStartJob(params: JobParameters) = AndroidAbemaRenewalJobs.start(this, params)
-    override fun onStopJob(params: JobParameters): Boolean { AndroidAbemaRenewalJobs.stop(params); return false }
-    override fun onNetworkChanged(params: JobParameters) { AndroidAbemaRenewalJobs.networkChanged(params) }
+    private fun hold(params: JobParameters) = params.jobId == AndroidAbemaRenewalHold.JOB_ID
+    override fun onStartJob(params: JobParameters) =
+        if (hold(params)) AndroidAbemaRenewalHold.start(this, params) else AndroidAbemaRenewalJobs.start(this, params)
+    override fun onStopJob(params: JobParameters): Boolean {
+        if (hold(params)) return AndroidAbemaRenewalHold.stop(params)
+        AndroidAbemaRenewalJobs.stop(params); return false
+    }
+    override fun onNetworkChanged(params: JobParameters) { if (!hold(params)) AndroidAbemaRenewalJobs.networkChanged(params) }
     override fun onDestroy() { AndroidAbemaRenewalJobs.destroyed(this); super.onDestroy() }
 }

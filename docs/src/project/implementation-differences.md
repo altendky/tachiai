@@ -67,7 +67,10 @@ JobParameters Network and original deadline remain mandatory; API 26/27 retains
 foreground renewal. API 34 supplies a Network-change callback. These are internal
 scheduling mechanisms with no new account screen or notification. Runtime and
 physical-device acceptance remain separate from passing host fixtures; no web
-or Apple equivalent is established here.
+or Apple equivalent is established here. Since #682, every in-flight renewal
+also holds one unpersisted
+[JobScheduler hold job](source-network-routing.md#renewal-stalls-in-frozen-processes--2026-11-24),
+so Android's cached-app freezer doesn't stop it. This is internal as well.
 
 Android playback and the ABEMA guest and approval WebViews run in separate
 processes. Their WireGuard routes lease

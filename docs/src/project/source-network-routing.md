@@ -489,6 +489,58 @@ This smoke does not exercise provider renewal, a remembered session, actual
 Network Parcelable delivery or process-death recovery. Cold closed-app renewal
 and physical naturally expired acceptance remain open.
 
+#### Debug renew-now trigger and renewal check — 2026-11-24
+
+A renewal change used to be verifiable only at the next due time, hours away
+(#689). Debug builds add a renew-now trigger that runs the pre-expiry timer's
+own attempt now: the same timer entry, readiness admission and slot, operation,
+approval-browser service, route and grant handoff. Only the due time is
+bypassed. That check is enforced at the timer, at the readiness admission's
+renewal lead and in the operation's record match, so the trigger opens all
+three for the saved grant's current generation only. That admission closes at
+the next operation result, or after the timer run's and operation's limits
+(three minutes), whichever is first.
+
+- **Reach:** a `ContentProvider` in the default process, declared only in the
+  debug manifest. The system refuses it to callers without `DUMP`, which only
+  the shell and system hold, and `call()` also accepts only the shell or root
+  UID. It is disabled in the local inspection build, like the other debug
+  probes. The release manifest omits it, as `verifyReleaseIsolation` checks.
+  The main-source entry it calls returns `UNAVAILABLE` unless
+  `BuildConfig.DEBUG`.
+- **Refusals** (closed constants, also logged as `TRIGGER_RESULT result=…`):
+  `NO_ACCOUNT` without a saved ABEMA grant; `AMBIGUOUS` when several instances
+  have one and none was named; `RUNNING` while the timer, the job or the
+  device's single renewal slot (including an unconfirmed cleanup) is busy;
+  `WINDOW_SPENT` when this process's timer already attempted this grant
+  generation; `MANUAL_APPROVAL` while a manual approval holds the browser;
+  `UNAVAILABLE` otherwise.
+- An accepted trigger spends the window like the due attempt, so the due time
+  does not fire again for that generation in this process. The renewal job is
+  unchanged.
+
+`mise run android-abema-renewal-check <serial> …` drives one forced renewal on
+an explicitly chosen device; see the
+[development-device guide](android-development.md#abema-renewal-check). Each
+run is a real ABEMA account confirmation, so it stays manual: not in CI or a
+loop.
+
+On `tachiai-dev` (API 36, x86-64, software rendering) on 2026-11-24, with the
+stream picker in front:
+
+- **Without #687,** both processes were ranked cached (adjustment 905). The
+  freeze step froze them 4.2 s after the trigger, just after `PAGE_COMMITTED`.
+  In earlier runs without the step taking effect, the system's own freezer
+  froze them at about 11 s, after `REGION_HTTP_200`. On thaw after 100 s, the
+  overdue deadlines reported `OPERATION_RESULT result=TEMPORARY_FAILURE
+  cleanupConfirmed=false phase=LIFETIME reason=DEADLINE`: the #682 stall.
+- **With #687 merged locally,** the hold kept both processes out of the cached
+  state while they worked. `OPERATION_RESULT result=SUCCESS
+  cleanupConfirmed=true` came after 15.6 s and 17.8 s in two runs. In one of
+  them the system froze the approval browser's idle process after its
+  `BROWSER_RESULT result=DELIVERED` and confirmed cleanup, which the check
+  reports separately and does not count.
+
 #### Renewal diagnostics in logcat — 2026-11-20
 
 A stalled renewal used to leave no trace (#582). On the SHIELD, two attempts
@@ -507,6 +559,7 @@ grant or exception text):
 | `TachiaiAbemaRenewal` | `JOB_JOINED early=…`, `JOB_STOPPED early=…` and `JOB_SETTLED outcome=… early=… disposition=…` | default (job path only) |
 | `TachiaiAbemaRenewal` | `RETRY attempt=… reason=…` (`TEMPORARY_FAILURE` or `CANCELLED`) | default (foreground readiness only, #635) |
 | `TachiaiAbemaRenewal` | `TIMER_SCHEDULED`, `TIMER_POSTPONED reason=MANUAL_APPROVAL`, `TIMER_FIRED` and `TIMER_RESULT result=…` | default (pre-expiry timer, #635) |
+| `TachiaiAbemaRenewal` | `TIMER_TRIGGERED` and `TRIGGER_RESULT result=…` | default (debug renew-now trigger, #689) |
 
 The diagnostic fields are `phase`, `reason`, `progress`, `region`, `account`,
 `transport`, `transportPhase`, `transportCancelled`, `startup` and `cleanup`.

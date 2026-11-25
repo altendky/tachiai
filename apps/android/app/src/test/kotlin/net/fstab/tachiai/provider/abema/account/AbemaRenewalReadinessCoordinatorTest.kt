@@ -21,6 +21,21 @@ class AbemaRenewalReadinessCoordinatorTest {
         f.coordinator.finish(checkNotNull(first.ticket), true)
         assertEquals(AbemaRenewalReadinessCoordinator.Status.READY, f.coordinator.check("instance", "owner-record", "other").status)
     }
+    @Test fun busyWhileWorkIsInFlightOrUnconfirmedCleanupHoldsTheSlot() {
+        val f = Fixture()
+        assertFalse(f.coordinator.busy())
+        val first = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertTrue(f.coordinator.busy())
+        assertEquals("private", f.coordinator.claim(first))
+        f.coordinator.finish(first, true)
+        assertFalse(f.coordinator.busy())
+        f.now += 5000
+        val second = checkNotNull(f.coordinator.check("a", "record", "private").ticket)
+        assertEquals("private", f.coordinator.claim(second))
+        f.coordinator.finish(second, AbemaRenewalReadinessCoordinator.Status.TEMPORARY_FAILURE, cleanupConfirmed = false)
+        f.now += 5000
+        assertTrue(f.coordinator.busy())
+    }
     @Test fun sharedBrowserSerializesDifferentInstancesWithoutDiscardingOriginalFlight() {
         val f = Fixture()
         val first = checkNotNull(f.coordinator.check("a", "route", "a").ticket)

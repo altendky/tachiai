@@ -8,6 +8,12 @@
             android:name=".provider.abema.account.AbemaRenewalProbeService"
             android:exported="false"
             android:process=":abema_approval_browser" />
+        <!-- Renew-now trigger (#689): shell only, in the default process. -->
+        <provider
+            android:name=".provider.abema.account.AbemaRenewalTriggerProvider"
+            android:authorities="${applicationId}.debug.abema-renewal"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
         <activity
             android:name=".feature.diagnostic.InspectionControlActivity"
             android:theme="@style/Theme.Tachiai.Prototype"

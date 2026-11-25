@@ -11,6 +11,29 @@ internal const val ABEMA_RENEWAL_LEAD_MS = 15 * 60_000L
 // last scheduled attempt.
 internal val ABEMA_RENEWAL_EARLY_STEPS_MS = listOf(ABEMA_RENEWAL_LEAD_MS, 10 * 60_000L, 5 * 60_000L)
 
+// Debug builds only (#689): the renew-now trigger admits one saved grant
+// generation before its lead, so the automatic path runs now instead of at its
+// due time. It lasts until the next authoritative operation result or its
+// window, whichever is first. Main-process RAM; release builds never open it.
+internal object AbemaRenewalForcedAdmission {
+    private class Entry(val generation: AbemaRenewalGeneration, val untilMs: Long)
+    @Volatile private var entry: Entry? = null
+    private fun elapsed() = System.nanoTime() / 1_000_000
+    fun open(generation: AbemaRenewalGeneration, windowMs: Long) { entry = Entry(generation, elapsed() + windowMs) }
+    fun close() { entry = null }
+    fun admits(record: AbemaStoredAccount): Boolean {
+        val current = entry ?: return false
+        if (elapsed() >= current.untilMs) { entry = null; return false }
+        return current.generation.generation == record.generation &&
+            current.generation.acceptedWallMs == record.acceptedWallMs && current.generation.expiresWallMs == record.grant.expiresAtMs
+    }
+    override fun toString() = "AbemaRenewalForcedAdmission(redacted)"
+}
+
+// The renewal lead has been reached, or the debug trigger admitted this record.
+internal fun abemaRenewalLeadReached(record: AbemaStoredAccount, nowMs: Long, leadMs: Long = ABEMA_RENEWAL_LEAD_MS) =
+    nowMs >= record.grant.expiresAtMs - leadMs || AbemaRenewalForcedAdmission.admits(record)
+
 // A previously accepted exact record within the lead of its natural expiry, or
 // past it, is input to browser reacquisition. No token lifetime or renewal
 // protocol is invented; the candidate must still decode to a later expiry.
@@ -19,7 +42,7 @@ internal fun abemaRenewalSnapshotMatches(expected: AbemaAccountSnapshot, current
     val old = expected.record ?: return false
     val saved = current.record ?: return false
     return expected.revision >= 0 && current.revision == expected.revision && old.generation in 1 until Long.MAX_VALUE &&
-        old.acceptedWallMs >= 0 && nowMs >= old.acceptedWallMs && nowMs >= old.grant.expiresAtMs - ABEMA_RENEWAL_LEAD_MS &&
+        old.acceptedWallMs >= 0 && nowMs >= old.acceptedWallMs && abemaRenewalLeadReached(old, nowMs) &&
         old.grant.userId == saved.grant.userId && old.grant.bearer == saved.grant.bearer &&
         old.grant.expiresAtMs == saved.grant.expiresAtMs && old.acceptedWallMs == saved.acceptedWallMs &&
         old.generation == saved.generation && runCatching {

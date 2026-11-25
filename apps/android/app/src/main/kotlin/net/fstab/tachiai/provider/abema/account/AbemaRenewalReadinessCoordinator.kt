@@ -78,6 +78,13 @@ internal class AbemaRenewalReadinessCoordinator<T>(private val elapsed: () -> Lo
         return check(instance, scope, value, originalDeadline)
     }
     fun invalidate(instance: String) = invalidate(instance) { true }
+    // The debug-only renew-now trigger (#689): work in flight or still holding
+    // the device's single renewal slot, as check() would answer WAIT.
+    @Synchronized fun busy(): Boolean {
+        val now = now() ?: return true
+        prune(now)
+        return entries.any { it.finished == null || it.claimed && !it.released }
+    }
     @Synchronized fun invalidate(instance: String, matches: (T) -> Boolean) {
         val now = now() ?: 0
         entries.filter { it.instance == instance && it.finished == null && matches(it.value) }.forEach { it.finished = now }

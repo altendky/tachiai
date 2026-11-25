@@ -19,8 +19,11 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import net.fstab.tachiai.BuildConfig
 import net.fstab.tachiai.feature.connections.legacyProviderSettings
 import net.fstab.tachiai.feature.connections.providerInstanceStore
 import net.fstab.tachiai.presentation.PrototypeService
@@ -81,6 +84,12 @@ internal object AndroidAbemaRenewalJobs {
     fun stop(params: JobParameters) { synchronized(this) { runtime }?.stop(params) }
     fun networkChanged(params: JobParameters) { synchronized(this) { runtime }?.networkChanged(params) }
     fun destroyed(service: AbemaRenewalJobService) { synchronized(this) { runtime }?.destroyed(service) }
+    // Debug builds only (#689): the debug renew-now component's entry. It waits
+    // on the account worker, so it must not be called from that worker.
+    fun renewNow(context: Context, instance: String?): AbemaRenewalTrigger {
+        if (!BuildConfig.DEBUG || !supported(context) || AbemaAccountWorkers.onWorker()) return AbemaRenewalTrigger.UNAVAILABLE
+        return owner(context).also { it.initialize() }.renewNow(instance)
+    }
 
     private class Running(val service: AbemaRenewalJobService, val params: JobParameters,
         val key: AbemaRenewalJobKey) {
@@ -150,6 +159,47 @@ internal object AndroidAbemaRenewalJobs {
                 { wait, action -> main.postDelayed(action, wait) }, done, log).start()
         }
         fun forget(instance: String) = enqueue { ledger.reconcile(instance, null); reconcile() }
+
+        // Debug builds only (#689): the timer's own attempt for a saved grant,
+        // now. Queued behind any pending reconciliation on the account worker.
+        fun renewNow(instance: String?): AbemaRenewalTrigger {
+            val task = FutureTask { renewNowOnWorker(instance) }
+            try { worker.execute(task) } catch (_: Throwable) { return AbemaRenewalTrigger.UNAVAILABLE }
+            return try { task.get(10, TimeUnit.SECONDS) } catch (_: Throwable) {
+                // Not started yet: it never will. Started: report what it did.
+                if (task.cancel(false)) AbemaRenewalTrigger.UNAVAILABLE
+                else runCatching { task.get(30, TimeUnit.SECONDS) }.getOrDefault(AbemaRenewalTrigger.UNAVAILABLE)
+            }
+        }
+        private fun renewNowOnWorker(instance: String?): AbemaRenewalTrigger {
+            val result = try {
+                if (disabled.get() || !unlocked()) AbemaRenewalTrigger.UNAVAILABLE else {
+                    val instances = providerInstanceStore(context).read { legacyProviderSettings(context) }
+                        .filter { it.service == PrototypeService.ABEMA }.map { it.id }
+                    val plans = instances.associateWith { runCatching { inspect(it)?.generation }.getOrNull() }
+                    timer.reconcile(plans)
+                    val saved = plans.filterValues { it != null }.keys
+                    val selected = when {
+                        instance != null -> instance.takeIf { it in saved }
+                        saved.size == 1 -> saved.single()
+                        else -> null
+                    }
+                    when {
+                        selected == null -> if (instance == null && saved.size > 1) AbemaRenewalTrigger.AMBIGUOUS
+                            else AbemaRenewalTrigger.NO_ACCOUNT
+                        running.snapshot().isNotEmpty() || AndroidAbemaRenewalReadiness.busy() -> AbemaRenewalTrigger.RUNNING
+                        else -> {
+                            // The timer run's deadline, then the operation's own lifetime.
+                            AbemaRenewalForcedAdmission.open(checkNotNull(plans[selected]),
+                                AbemaReadinessIpc.LIMIT_MS + AbemaRenewalBrowserProtocol.LIMIT_MS)
+                            timer.trigger(selected).also { if (it != AbemaRenewalTrigger.STARTED) AbemaRenewalForcedAdmission.close() }
+                        }
+                    }
+                }
+            } catch (_: Throwable) { AbemaRenewalForcedAdmission.close(); AbemaRenewalTrigger.UNAVAILABLE }
+            log("TRIGGER_RESULT result=${result.name}")
+            return result
+        }
 
         private fun inspect(instance: String): AbemaRenewalJobPreflight? {
             check(unlocked())

@@ -55,6 +55,26 @@ internal class NativeMixedPair(
     private var skipPending: SkipPending? = null
     var lastSkipPlan: NativePairSkipPlan? = null
         private set
+    // Building delay (#618): one feed held on its frame while the other plays
+    // on. heldClockMs/peerClockMs are each feed's own clock when the hold
+    // began; only progress within each clock is compared. resumeClockMs is
+    // set once the held feed has been sought to its target and asked to play.
+    private class DelayBuild(val side: NativeMixedSide, val held: NativePairMember, val peer: NativePairMember,
+        val movementMs: Long, val deltaMs: Long, val heldClockMs: Long, val peerClockMs: Long, val peerLive: Boolean,
+        val startedMs: Long, val generation: Long) {
+        var remainingMs = -movementMs
+        var resumeClockMs: Long? = null
+        var resumeStartedMs = 0L
+    }
+    private var delayPending: DelayBuild? = null
+    // The held feed and the countdown to its resume, for its pane.
+    val delayBuild: NativeDelayBuildState? get() = delayPending?.let {
+        NativeDelayBuildState(it.side, it.remainingMs, -it.movementMs)
+    }
+    var lastDelayBuildEnd: NativeDelayBuildEnd? = null
+        private set
+    var lastDelayBuildPlan: NativeDelayBuildPlan? = null
+        private set
     private data class Pending(
         val side: NativeMixedSide,
         val targetClockMs: Long,
@@ -120,8 +140,13 @@ internal class NativeMixedPair(
 
     fun pause(): Boolean {
         if (closed) return false
+        // Pause cancels a building delay; the held feed returns to its
+        // previous relationship and both stay paused (#618).
+        val build = delayPending
+        val restore = build?.let(::restoreTarget)
         generation++
         val began = generation
+        val ended = build?.let { endDelayBuild(it, restore, play = false) { "$DELAY_BUILD_CANCELED; paused." } }
         if (alignmentPending != null) requestedAdjustmentValid = false
         alignmentPending = null
         recoveryPending = null
@@ -135,7 +160,7 @@ internal class NativeMixedPair(
         if (closed || generation != began) return false
         val pb = playing(b, false)
         if (closed || generation != began) return false
-        status = if (pa && pb) "Paused." else "Pause refused; Stop required."
+        status = if (!pa || !pb) "Pause refused; Stop required." else ended?.takeIf { it.canceled }?.message ?: "Paused."
         return pa && pb
     }
 
@@ -317,6 +342,20 @@ internal class NativeMixedPair(
         val sa = snapshot(a); val sb = snapshot(b)
         val plan = nativeRelativeNudgePlan(sa, sb, deltaMs)
         lastRelativePlan = plan
+        lastDelayBuildPlan = null
+        if (plan.outcome == NativeRelativeNudgeOutcome.NO_FULL_STEP) {
+            // #618: not enough recorded history, but within the delay limit.
+            val build = nativeDelayBuildPlan(sa, sb, deltaMs)
+            lastDelayBuildPlan = build
+            when (build.outcome) {
+                NativeDelayBuildOutcome.BUILD -> return startDelayBuild(build)
+                NativeDelayBuildOutcome.NOT_PLAYING -> {
+                    status = DELAY_BUILD_NEEDS_PLAYBACK
+                    return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+                }
+                else -> Unit
+            }
+        }
         if (plan.outcome != NativeRelativeNudgeOutcome.SELECTED) {
             status = if (plan.outcome == NativeRelativeNudgeOutcome.NO_FULL_STEP && nativeNudgeDelayLimited(sa, sb, deltaMs))
                 LIVE_DELAY_LIMIT_MESSAGE else "Relative shift: ${plan.outcome}; no full step selected."
@@ -329,6 +368,211 @@ internal class NativeMixedPair(
         // Exactly one dispatch. Do not try the other side after an uncertain
         // platform/hold/settlement failure. Existing transaction guards apply.
         return shift(checkNotNull(plan.side), checkNotNull(plan.movementMs), true)
+    }
+
+    // Building delay (#618): hold the feed to delay on its frame. Nothing is
+    // sought until it resumes; the other feed and its audio play on.
+    private fun startDelayBuild(plan: NativeDelayBuildPlan): NativeSeekPlan {
+        val side = checkNotNull(plan.side)
+        val peerSide = if (side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A
+        val held = member(side)
+        val peer = member(peerSide)
+        if (!timingAdmitted(generation)) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        generation++
+        val expected = generation
+        lastTimingAttempt = Any()
+        if (!playing(held, false) || !timingAdmitted(expected)) {
+            if (!closed && generation == expected) {
+                requestedAdjustmentValid = false
+                pause(); status = "Building delay refused; pause requested for both."
+            }
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        }
+        // Each clock as the hold began: the held feed's has stopped.
+        val heldValue = snapshot(held)
+        val peerValue = snapshot(peer)
+        if (!timingAdmitted(expected)) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        val heldClock = heldValue?.takeIf { it.live || it.dynamic }?.contentTimeMs
+        val peerLive = peerValue != null && (peerValue.live || peerValue.dynamic)
+        val peerClock = if (peerLive) peerValue?.contentTimeMs else peerValue?.positionMs
+        if (heldClock == null || peerClock == null || peerValue?.playWhenReady != true) {
+            // Held for a moment only: let it play on where it was.
+            playing(held, true)
+            status = "Building delay refused: a playback clock is unavailable."
+            return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        }
+        delayPending = DelayBuild(side, held, peer, plan.movementMs, plan.deltaMs, heldClock, peerClock, peerLive,
+            clockMs(), expected)
+        busy = true
+        status = "Building delay for $side; $peerSide keeps playing."
+        return NativeSeekPlan(NativeSeekOutcome.REQUESTED)
+    }
+
+    private fun peerSide(build: DelayBuild) = if (build.side == NativeMixedSide.A) NativeMixedSide.B else NativeMixedSide.A
+
+    // How far the held feed has fallen behind its previous relationship with
+    // the other feed: what moving it forward by this would restore.
+    private fun restoreShift(build: DelayBuild, held: NativeTimingSnapshot?, peer: NativeTimingSnapshot?): Long? {
+        val heldClock = held?.contentTimeMs ?: return null
+        val peerClock = (if (build.peerLive) peer?.contentTimeMs else peer?.positionMs) ?: return null
+        return try {
+            Math.subtractExact(Math.subtractExact(peerClock, build.peerClockMs), Math.subtractExact(heldClock, build.heldClockMs))
+        } catch (_: ArithmeticException) { null }?.coerceAtLeast(0)
+    }
+
+    // The held feed's window position for its previous relationship; null
+    // when it can't be known, or once it is already resuming at its target.
+    private fun restoreTarget(build: DelayBuild): Long? {
+        if (build.resumeClockMs != null) return null
+        val held = snapshot(build.held)
+        val shift = restoreShift(build, held, snapshot(build.peer)) ?: return null
+        val position = held?.positionMs ?: return null
+        return try { Math.addExact(position, shift) } catch (_: ArithmeticException) { null }
+    }
+
+    // The held feed as it would be had it kept playing, for a skip or Live
+    // that cancels a build: that one seek both restores and moves it.
+    private fun restoredView(build: DelayBuild, values: Map<NativeMixedSide, NativeTimingSnapshot?>): Map<NativeMixedSide, NativeTimingSnapshot?> {
+        val held = values[build.side] ?: return values
+        val shift = restoreShift(build, held, values[peerSide(build)]) ?: return values
+        return try {
+            values + (build.side to held.copy(positionMs = held.positionMs?.let { Math.addExact(it, shift) },
+                bufferedMs = held.bufferedMs?.let { Math.addExact(it, shift) },
+                liveOffsetMs = held.liveOffsetMs?.let { Math.subtractExact(it, shift) }))
+        } catch (_: ArithmeticException) { values }
+    }
+
+    // Ends a build without applying it. A build already resuming at its
+    // target is complete instead. Otherwise the held feed is sought to
+    // `restore` (its previous relationship), which also resets its live
+    // target offset; without that, the offset is unknown.
+    private fun endDelayBuild(build: DelayBuild, restore: Long?, play: Boolean,
+        message: (restored: Boolean) -> String): NativeDelayBuildEnd? {
+        if (delayPending !== build) return null
+        if (build.resumeClockMs != null) return completeDelayBuild(build)
+        delayPending = null
+        busy = false
+        val restored = restore != null && run {
+            val position = snapshot(build.held)?.positionMs
+            if (position == restore) return@run true
+            val accepted = try { build.held.seekToMs(restore) }
+                catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+            accepted.outcome == NativeSeekOutcome.REQUESTED && accepted.targetMs == restore
+        }
+        if (!restored) requestedAdjustmentValid = false
+        if (play) playing(build.held, true)
+        return NativeDelayBuildEnd(build.side, completed = false, restored = restored, canceled = true,
+            message = message(restored)).also { lastDelayBuildEnd = it }
+    }
+
+    private fun completeDelayBuild(build: DelayBuild): NativeDelayBuildEnd {
+        delayPending = null
+        busy = false
+        try { requestedAdjustmentMs = Math.addExact(requestedAdjustmentMs, build.deltaMs) }
+        catch (_: ArithmeticException) { requestedAdjustmentValid = false }
+        recordSettlement(build.deltaMs)
+        val message = "Delay built; ${build.side} resumed."
+        status = message
+        return NativeDelayBuildEnd(build.side, completed = true, restored = false, canceled = false, message = message)
+            .also { lastDelayBuildEnd = it }
+    }
+
+    private fun failDelayBuild(build: DelayBuild, reason: String) {
+        if (closed || delayPending !== build) return
+        delayPending = null
+        busy = false
+        requestedAdjustmentValid = false
+        val message = "Building delay stopped: $reason; both paused."
+        lastDelayBuildEnd = NativeDelayBuildEnd(build.side, completed = false, restored = false, canceled = false,
+            message = message)
+        val held = pause()
+        if (!closed) status = if (held) message else "Building delay stopped: $reason; pause refused; Stop required."
+    }
+
+    // Another Timing change cancels a building delay (#618). The held feed
+    // returns to its previous relationship with the other feed and plays on.
+    fun cancelDelayBuild(): NativeDelayBuildEnd? {
+        val build = delayPending ?: return null
+        if (closed) return null
+        val restore = restoreTarget(build)
+        generation++
+        val ended = endDelayBuild(build, restore, play = true) { restored ->
+            if (restored) "$DELAY_BUILD_CANCELED; the offset is unchanged." else "$DELAY_BUILD_CANCELED; the offset is unknown."
+        } ?: return null
+        status = ended.message
+        return ended
+    }
+
+    private fun pollDelayBuild(build: DelayBuild) {
+        fun current() = !closed && generation == build.generation && delayPending === build
+        fun admitted() = current() && timingAdmitted(build.generation) && current()
+        val heldName = build.side.name
+        val peerName = peerSide(build).name
+        if (!admitted()) { if (current()) failDelayBuild(build, "authorization lost"); return }
+        val now = clockMs()
+        val elapsed = try { Math.subtractExact(now, build.startedMs) } catch (_: ArithmeticException) { Long.MAX_VALUE }
+        if (elapsed < 0) { failDelayBuild(build, "its clock moved backward"); return }
+        val heldValue = snapshot(build.held)
+        val peerValue = snapshot(build.peer)
+        if (!admitted()) { if (current()) failDelayBuild(build, "authorization lost"); return }
+        build.resumeClockMs?.let { target ->
+            val since = now - build.resumeStartedMs
+            if (since < 0 || since >= DELAY_BUILD_RESUME_LIMIT_MS) { failDelayBuild(build, "$heldName didn't resume"); return }
+            val clock = heldValue?.contentTimeMs
+            if (heldValue != null && heldValue.state == 3 && heldValue.playing && heldValue.playWhenReady &&
+                !heldValue.playingAd && clock != null && clock >= target - 100) completeDelayBuild(build)
+            return
+        }
+        val limit = try { Math.addExact(-build.movementMs, DELAY_BUILD_SLACK_MS) } catch (_: ArithmeticException) { Long.MAX_VALUE }
+        if (elapsed >= limit) { failDelayBuild(build, "$peerName didn't play on long enough"); return }
+        if (heldValue == null || heldValue.playWhenReady || heldValue.playing || !(heldValue.live || heldValue.dynamic)) {
+            failDelayBuild(build, "$heldName changed while held"); return
+        }
+        if (peerValue == null || !peerValue.playWhenReady || (peerValue.live || peerValue.dynamic) != build.peerLive) {
+            failDelayBuild(build, "$peerName stopped playing"); return
+        }
+        val position = heldValue.positionMs
+        // Only the byte limit can drop history the hold still needs.
+        if (position != null && position < 0) { failDelayBuild(build, "$heldName's recorded history ran out"); return }
+        if (heldValue.state != 3 || heldValue.playingAd || peerValue.state != 3 || peerValue.playingAd) return
+        val heldClock = heldValue.contentTimeMs ?: return
+        val peerClock = (if (build.peerLive) peerValue.contentTimeMs else peerValue.positionMs) ?: return
+        if (position == null) return
+        val peerAdvance: Long
+        val heldAdvance: Long
+        try {
+            peerAdvance = Math.subtractExact(peerClock, build.peerClockMs)
+            heldAdvance = Math.subtractExact(heldClock, build.heldClockMs)
+        } catch (_: ArithmeticException) { failDelayBuild(build, "a playback clock is unavailable"); return }
+        val remaining = nativeDelayBuildRemainingMs(build.movementMs, peerAdvance, heldAdvance)
+        build.remainingMs = remaining
+        if (remaining > 0) return
+        // Enough has been built. Resume with a seek to where the held feed
+        // belongs now, at most a poll past it, and play at once: the seek also
+        // gives Media3's live speed control the built delay as its target, so
+        // it does not play the feed faster to catch up (#618).
+        val target: Long
+        try {
+            val required = Math.addExact(Math.addExact(build.heldClockMs, build.movementMs), peerAdvance)
+            val movement = Math.subtractExact(required, heldClock)
+            target = Math.addExact(position, if (movement == 0L) 1L else movement)
+        } catch (_: ArithmeticException) { failDelayBuild(build, "a playback clock is unavailable"); return }
+        val plan = nativeSeekPlan(heldValue, target)
+        if (plan.outcome != NativeSeekOutcome.REQUESTED || plan.targetMs != target) {
+            failDelayBuild(build, "$heldName's target left its window"); return
+        }
+        val accepted = try { build.held.seekToMs(target) }
+            catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+        if (!current()) return
+        if (accepted.outcome != NativeSeekOutcome.REQUESTED || accepted.targetMs != target ||
+            !playing(build.held, true)) {
+            if (current()) failDelayBuild(build, "$heldName's resume was refused")
+            return
+        }
+        if (!current()) return
+        build.resumeClockMs = heldClock + (target - position)
+        build.resumeStartedMs = clockMs()
+        build.remainingMs = 0
     }
 
     // User-marked alignment may split an exact movement across both windows.
@@ -345,6 +589,26 @@ internal class NativeMixedPair(
         val initial = nativeMarkedAlignmentPlan(sa, sb, deltaMs)
         if (!admitted()) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         lastAlignmentPlan = initial
+        lastDelayBuildPlan = null
+        // #618: a saved-offset restore, toggle or marked alignment that needs
+        // more recorded history than the feed to hold back has builds it.
+        if (initial.outcome != NativeSeekOutcome.REQUESTED && initial.outcome != NativeSeekOutcome.NO_CHANGE &&
+            !initial.delayLimited) {
+            val build = nativeDelayBuildPlan(sa, sb, deltaMs)
+            lastDelayBuildPlan = build
+            when (build.outcome) {
+                NativeDelayBuildOutcome.BUILD -> return startDelayBuild(build)
+                NativeDelayBuildOutcome.NOT_PLAYING -> {
+                    status = DELAY_BUILD_NEEDS_PLAYBACK
+                    return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+                }
+                NativeDelayBuildOutcome.DELAY_LIMITED -> {
+                    status = LIVE_DELAY_LIMIT_MESSAGE
+                    return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+                }
+                else -> Unit
+            }
+        }
         if (initial.outcome != NativeSeekOutcome.REQUESTED) {
             status = if (initial.outcome == NativeSeekOutcome.NO_CHANGE) "No adjustment needed for the marked event."
             else if (initial.delayLimited) LIVE_DELAY_LIMIT_MESSAGE
@@ -442,16 +706,49 @@ internal class NativeMixedPair(
 
     private fun moveTogether(planner: (Map<NativeMixedSide, NativeTimingSnapshot?>) -> NativePairSkipPlan): NativePairSkipPlan {
         lastSkipPlan = null
-        if (closed || busy) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (closed) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        // A skip or Live cancels a building delay (#618). One already resuming
+        // at its target is complete instead.
+        delayPending?.takeIf { it.resumeClockMs != null }?.let(::completeDelayBuild)
+        val build = delayPending
+        if (busy && build == null) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        // The held feed plans from its previous relationship with the other
+        // feed, so the one seek that moves it also restores it.
+        fun view(values: Map<NativeMixedSide, NativeTimingSnapshot?>) =
+            if (build == null) values else restoredView(build, values)
         val began = generation
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val sa = snapshot(a); val sb = snapshot(b)
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        val initial = planner(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb))
+        val pre = view(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb))
+        val initial = planner(pre)
         lastSkipPlan = initial
-        if (initial.outcome != NativeSeekOutcome.REQUESTED && initial.outcome != NativeSeekOutcome.CLAMPED) return initial
-        val before = status
-        val resume = sa?.playWhenReady == true && sb?.playWhenReady == true
+        if (initial.outcome != NativeSeekOutcome.REQUESTED && initial.outcome != NativeSeekOutcome.CLAMPED) {
+            if (build != null) cancelDelayBuild()
+            return initial
+        }
+        if (build == null) return moveHeldTogether(planner, null, pre, initial, began) {}
+        delayPending = null
+        busy = false
+        var restored = false
+        try {
+            return moveHeldTogether(planner, build, pre, initial, began) { restored = it }
+        } finally {
+            if (!restored) requestedAdjustmentValid = false
+            lastDelayBuildEnd = NativeDelayBuildEnd(build.side, completed = false, restored = restored,
+                canceled = true, message = "$DELAY_BUILD_CANCELED.")
+        }
+    }
+
+    private fun moveHeldTogether(planner: (Map<NativeMixedSide, NativeTimingSnapshot?>) -> NativePairSkipPlan,
+        build: DelayBuild?, pre: Map<NativeMixedSide, NativeTimingSnapshot?>, initial: NativePairSkipPlan, began: Long,
+        restored: (Boolean) -> Unit): NativePairSkipPlan {
+        fun view(values: Map<NativeMixedSide, NativeTimingSnapshot?>) =
+            if (build == null) values else restoredView(build, values)
+        val before = if (build != null) "$DELAY_BUILD_CANCELED." else status
+        // A building delay means the pair was playing.
+        val resume = build != null ||
+            pre[NativeMixedSide.A]?.playWhenReady == true && pre[NativeMixedSide.B]?.playWhenReady == true
         val expected = began + 1
         if (!pause() || !timingAdmitted(expected)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         fun current() = !closed && generation == expected && timingAdmitted(expected)
@@ -460,15 +757,17 @@ internal class NativeMixedPair(
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         }
         // Nothing has been sought yet: name the reason and let playback go on.
+        // A canceled build's held feed is restored on its own first.
         fun refuseUnmoved(plan: NativePairSkipPlan, reason: String): NativePairSkipPlan {
             if (closed || generation != expected) return plan.copy(reason = reason)
-            val resumed = resume && play()
-            status = if (resumed) "$reason; neither feed moved." else "$reason; neither feed moved; both paused."
+            val resumed = if (build != null) resumeCanceledBuild(build, restored) else resume && play()
+            val prefix = if (build != null) "$DELAY_BUILD_CANCELED. " else ""
+            status = prefix + if (resumed) "$reason; neither feed moved." else "$reason; neither feed moved; both paused."
             return plan.copy(reason = reason)
         }
         val freshA = snapshot(a); val freshB = snapshot(b)
         if (!current()) return refuse("Skip authorization lost; both paused.")
-        val held = mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB)
+        val held = view(mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB))
         held.entries.firstOrNull { !heldReady(it.value) }?.let { (side, _) ->
             return refuseUnmoved(NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side),
                 "$side wasn't ready once held")
@@ -481,7 +780,6 @@ internal class NativeMixedPair(
         if (fresh.outcome != NativeSeekOutcome.REQUESTED && fresh.outcome != NativeSeekOutcome.CLAMPED)
             return refuseUnmoved(fresh, heldRefusalReason(fresh))
         // Name the feed whose own move changed; a shared move changes for both.
-        val pre = mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb)
         val drifted = skipPlanDrift(initial, fresh)?.let { shared ->
             NativeMixedSide.entries.firstOrNull { side ->
                 skipPlanDrift(planner(mapOf(side to pre[side])), planner(mapOf(side to held[side]))) != null
@@ -510,6 +808,7 @@ internal class NativeMixedPair(
         }
         // Feeds moved by different amounts no longer hold the requested offset.
         requestedAdjustmentValid = wasValid && fresh.keepsOffset
+        restored(true)
         val started = clockMs()
         if (!current()) return refuse("Skip authorization lost; both paused.")
         skipPending = SkipPending(fresh.targets, resume, started, expected,
@@ -517,6 +816,21 @@ internal class NativeMixedPair(
         // Keep the previous status: a skip is not a status change to announce.
         status = before
         return fresh
+    }
+
+    // A skip or Live that canceled a build but moved neither feed: restore
+    // the held feed's previous relationship and play both on.
+    private fun resumeCanceledBuild(build: DelayBuild, restored: (Boolean) -> Unit): Boolean {
+        val restore = restoreTarget(build)
+        val position = snapshot(build.held)?.positionMs
+        val moved = restore != null && (position == restore || run {
+            val accepted = try { build.held.seekToMs(restore) }
+                catch (_: Exception) { NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) }
+            accepted.outcome == NativeSeekOutcome.REQUESTED && accepted.targetMs == restore
+        })
+        restored(moved)
+        val focused = try { acquireFocus() } catch (_: Exception) { false }
+        return focused && playing(a, true) && playing(b, true)
     }
 
     private fun heldRefusalReason(plan: NativePairSkipPlan): String {
@@ -574,10 +888,20 @@ internal class NativeMixedPair(
 
     // Explicit recovery, never a fallback for an ordinary timing nudge. The
     // SDK chooses its current live default, not an exact or future live edge.
+    // Back to live is offered while a delay builds, and cancels it (#618).
     fun catchUpPlan(side: NativeMixedSide): NativeSeekPlan =
-        if (closed || busy) NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) else recovery.plan(member(side))
+        if (closed || busy && delayPending == null) NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE) else recovery.plan(member(side))
 
     fun catchUp(side: NativeMixedSide): NativeSeekPlan {
+        // Back to live cancels a building delay (#618). It ends the pair's
+        // offset anyway, so the held feed is not restored first: a restoring
+        // seek would leave it buffering, which Back to live would refuse. The
+        // pair was playing, so it resumes.
+        var canceled: NativeDelayBuildEnd? = null
+        delayPending?.takeIf { !closed }?.let { build ->
+            generation++
+            canceled = endDelayBuild(build, null, play = false) { "$DELAY_BUILD_CANCELED." }?.takeIf { it.canceled }
+        }
         if (closed || busy) {
             if (!closed) status = "Catch-up refused: wait for the current seek check."
             return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
@@ -586,11 +910,15 @@ internal class NativeMixedPair(
         if (!timingAdmitted(began)) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         val sa = snapshot(a); val sb = snapshot(b)
         if (!timingAdmitted(began)) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
-        val resume = sa?.playing == true && sa.playWhenReady && sb?.playing == true && sb.playWhenReady
+        val resume = canceled != null || sa?.playing == true && sa.playWhenReady && sb?.playing == true && sb.playWhenReady
         // Keep reentrant timing commands out while recovery performs its own
         // hold/revalidation. Explicit Pause still cancels this generation.
         busy = true
         val result = recovery.start(member(side))
+        canceled?.let { ended ->
+            // Nothing was held: the canceled feed plays on beside the other.
+            if (result.state == NativeLiveRecoveryStartState.PREFLIGHT_REFUSED && !closed) playing(member(ended.side), true)
+        }
         if (!timingAdmitted(began)) {
             if (!closed && generation == began) {
                 if (result.state == NativeLiveRecoveryStartState.STARTED) {
@@ -633,6 +961,7 @@ internal class NativeMixedPair(
                 status = "Catch-up requested; waiting for held live window (8 s maximum)."
             }
         }
+        canceled?.let { if (!closed && generation == began) status = "${it.message} $status" }
         return result.plan
     }
 
@@ -650,6 +979,10 @@ internal class NativeMixedPair(
 
     private fun pollTransactions() {
         if (closed) return
+        delayPending?.let { build ->
+            pollDelayBuild(build)
+            return
+        }
         skipPending?.let { transaction ->
             pollSkip(transaction)
             return
@@ -909,6 +1242,11 @@ internal class NativeMixedPair(
     fun detach() {
         if (closed) return
         generation++
+        delayPending?.let { build ->
+            lastDelayBuildEnd = NativeDelayBuildEnd(build.side, completed = false, restored = false, canceled = true,
+                message = "$DELAY_BUILD_CANCELED; pair coordination ended.")
+        }
+        delayPending = null
         alignmentPending = null
         recoveryPending = null
         pending = null

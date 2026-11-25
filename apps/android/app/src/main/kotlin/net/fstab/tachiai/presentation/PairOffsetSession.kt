@@ -115,6 +115,15 @@ internal class PairOffsetSession(initialPreference: PairOffsetPreference?) {
         command = null; accepted = false; message = reason
     }
 
+    // #618: a building delay ended before it was applied. A restored feed is
+    // back in its previous relationship, so the applied offset is unchanged;
+    // otherwise its baseline is unknown. The saved preference never changes.
+    fun delayBuildEnded(token: Any, restored: Boolean, reason: String) {
+        if (pairToken !== token || command == null) return
+        if (accepted && !restored) { applied = null; enabledApplied = false; correspondenceEstablished = false }
+        command = null; accepted = false; message = reason
+    }
+
     private fun interruptPending(): Boolean {
         if (command == null) return false
         if (accepted) { applied = null; enabledApplied = false; correspondenceEstablished = false }

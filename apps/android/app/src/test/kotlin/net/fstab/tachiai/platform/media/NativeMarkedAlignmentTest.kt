@@ -64,20 +64,27 @@ class NativeMarkedAlignmentTest {
     @Test fun `both target clocks must settle before either resumes and manual nudge stays unchanged`() {
         val a = Member(sample(20_500, 1_000_000)); val b = Member(sample(50_000, 9_000_000))
         val pair = NativeMixedPair(a, b, { true }, {})
-        assertEquals(NativeSeekOutcome.UNAVAILABLE, pair.shiftRelative(-26_400).outcome)
+        // A manual nudge never splits across both feeds. Without a full step
+        // it builds the delay by holding A instead (#618), which is canceled
+        // here before anything moves.
+        assertEquals(NativeSeekOutcome.REQUESTED, pair.shiftRelative(-26_400).outcome)
+        assertEquals(NativeMixedSide.A, pair.delayBuild?.side)
+        assertNotNull(pair.cancelDelayBuild())
         assertEquals(0, a.seeks + b.seeks)
+        assertEquals(0L, pair.requestedAdjustmentMs)
+        assertEquals(1, a.plays)
         assertEquals(NativeSeekOutcome.REQUESTED, pair.alignRelative(-26_400).outcome)
         assertEquals(1, a.seeks); assertEquals(1, b.seeks)
         assertEquals(-26_400L, pair.requestedAdjustmentMs)
         assertEquals(2, pair.pendingSeekDiagnostics.size)
         val targetB = b.value.positionMs
         b.value = b.value.copy(positionMs = targetB!! - 1_000)
-        pair.poll(); assertTrue(pair.busy); assertEquals(0, a.plays + b.plays)
+        pair.poll(); assertTrue(pair.busy); assertEquals(1, a.plays + b.plays)
         assertEquals(9_057_950L, pair.pendingSeekDiagnostics.last().targetClockMs)
         assertEquals(9_056_950L, pair.pendingSeekDiagnostics.last().actualClockMs)
         b.value = b.value.copy(positionMs = targetB)
-        pair.poll(); assertFalse(pair.busy); assertEquals(1, a.plays); assertEquals(1, b.plays)
-        pair.poll(); assertEquals(1, a.plays); assertTrue(pair.pendingSeekDiagnostics.isEmpty())
+        pair.poll(); assertFalse(pair.busy); assertEquals(2, a.plays); assertEquals(1, b.plays)
+        pair.poll(); assertEquals(2, a.plays); assertTrue(pair.pendingSeekDiagnostics.isEmpty())
     }
 
     @Test fun `paused pair stays paused and live window slide preserves both clock targets`() {

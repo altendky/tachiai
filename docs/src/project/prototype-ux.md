@@ -1002,7 +1002,9 @@ video/background taps and Back retain their dismissal behavior.
 An Advance request uses one complete legal movement: advancing that feed or
 equivalently delaying its peer. Planning compares both options and prefers more
 live-window headroom, with A retained on equal margins. It does not split a nudge
-or dispatch an alternative after an uncertain seek.
+or dispatch an alternative after an uncertain seek. When neither option fits
+because a live feed's recorded history is too short, it builds the delay
+instead ([building delay](#remembered-pair-offsets), #618).
 
 Mark aligns a matching event. Press the first feed's Mark when an event appears
 or is heard, then the other feed's Mark when the same event happens there. The
@@ -1254,6 +1256,45 @@ On 2026-11-25 the user sized the buffer to the feed's delay
   after Back to live. A notice names the feed, for example "A passed the oldest
   recorded point while paused, so playback resumed there." A feed that can't be
   sought still fails as before.
+
+The user also decided on 2026-11-25 how a delay longer than the recorded
+history is built (decision 5 of
+[#618](https://github.com/altendky/tachiai/issues/618), user). It is
+implemented as follows and is not yet validated on a device:
+
+- **When.** A Timing step, a Mark alignment or a saved-offset restore needs a
+  live feed further behind live than its recorded history reaches, but within
+  the 6:00 limit. Past the limit it is still refused with "Delay is limited to
+  6:00". A request that the recorded history already covers moves the feed at
+  once, as before.
+- **Hold.** Instead of refusing, the feed to delay freezes on its frame. Its
+  pane shows "Building delay… 1:30", counting down the seconds still needed.
+  The other feed and its audio keep playing. The count comes from the two
+  feeds' own clocks, not a timer, so it pauses while the other feed buffers or
+  plays an advertisement. The held feed's rewind buffer grows while it is held,
+  so the frame it froze on stays recorded.
+- **Resume.** Once the other feed has played on by the requested amount, the
+  held feed resumes on its own, where it froze. It resumes with a seek to that
+  point, so Media3's live speed control keeps the new delay instead of
+  speeding up to recover it. The offset counts as applied only then, and a new
+  Timing change is saved only then.
+- **Cancel.** Pause, Back to live, Live, a skip, or another Timing step cancels
+  the build, and a brief notice says "Building delay canceled". Pause, a Timing
+  step, a skip and Live first return the held feed to where it would have been
+  without the build, so the pair's offset is unchanged. A skip or Live then
+  moves both feeds as usual. Back to live ends the offset anyway, so the held
+  feed just plays on. A Timing step while building only cancels; press it
+  again to make a new change.
+- **Only while playing.** A paused pair can't build a delay. The request is
+  refused with "That needs more recorded history; a delay builds only while
+  both feeds play."
+- **Stops.** If the other feed stops playing, the held feed's recorded history
+  runs out (the 256 MB limit), or the other feed hasn't played on within
+  60 s beyond the requested amount, the build stops, both feeds pause, and the
+  notice names the cause.
+- **Either feed.** Either feed can be held, ABEMA or Twitch, beside a live feed
+  or a replay. Only a live feed is held: a replay already has its history.
+- **Same everywhere.** Phone, tablet and TV show and handle it identically.
 
 Live Twitch feeds play about 6 s behind
 the live edge, using Twitch's low-latency playlists

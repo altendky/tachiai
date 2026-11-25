@@ -52,6 +52,7 @@ import net.fstab.tachiai.presentation.replayPositionKeys
 import net.fstab.tachiai.presentation.replayResumeNotice
 import net.fstab.tachiai.presentation.replayResumeTargetMs
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativeDelayBuildEnd
 import net.fstab.tachiai.platform.media.NativePendingSeekDiagnostic
 import net.fstab.tachiai.platform.diagnostics.TimingFailureKind
 import net.fstab.tachiai.platform.diagnostics.TimingFailureSide
@@ -293,6 +294,8 @@ open class PrototypeActivity : ComponentActivity() {
     private data class TimingEvidenceRequest(val pair: NativeMixedPair, val kind: TimingFailureKind,
         val deltaMs: Long, val beforeRevision: Long, var targets: List<NativePendingSeekDiagnostic>)
     private var timingEvidenceRequest: TimingEvidenceRequest? = null
+    // The last building-delay end the pair offset session has seen (#618).
+    private var handledDelayBuildEnd: NativeDelayBuildEnd? = null
     private var playbackIntentReason = PlaybackHealthIntent.STARTUP
     private var playbackIntentRevision = 0L
     private var lastHealthSampleMs = 0L
@@ -1070,12 +1073,19 @@ open class PrototypeActivity : ComponentActivity() {
                 lastTimingStatus = timingStatus
                 Log.d("TachiaiPrototype", "timingStatus=$timingStatus")
             }
-            if (playback?.busy == true && now - lastTimingSample >= 1_000) {
+            if (playback?.busy == true && playback?.pair?.delayBuild == null && now - lastTimingSample >= 1_000) {
                 lastTimingSample = now
                 logTimingSnapshots("CHECK")
                 playback?.pair?.pendingSeekDiagnostics?.forEach { target ->
                     val error = target.actualClockMs?.let { runCatching { Math.subtractExact(it, target.targetClockMs) }.getOrNull() }
                     Log.d("TachiaiPrototype", "timingTarget side=${target.side} errorMs=$error liveClock=${target.liveClock} state=${target.state}")
+                }
+            }
+            // A building delay (#618) can last minutes: one line every 10 s.
+            playback?.pair?.delayBuild?.let { build ->
+                if (now - lastTimingSample >= 10_000) {
+                    lastTimingSample = now
+                    Log.d("TachiaiPrototype", "timing=DELAY_BUILD_WAIT side=${build.side} remainingMs=${build.remainingMs}")
                 }
             }
             if (now - lastSample >= 5_000) {
@@ -1204,6 +1214,7 @@ open class PrototypeActivity : ComponentActivity() {
             onSkip = ::requestSkip,
             onLive = ::requestLive,
             onStartOver = ::requestStartOver,
+            onCancelDelayBuild = ::cancelDelayBuild,
             scrubPreviews = ScrubPreviewLoader(sources = { side -> scrubPreviewSource(side.ordinal) }),
             frameText = { side -> selection?.slots?.getOrNull(side.ordinal)?.let { feed ->
                 // Native feeds decode into the PlayerView's TextureView: Twitch and
@@ -1258,9 +1269,11 @@ open class PrototypeActivity : ComponentActivity() {
     // skip, and a single feed keeps playing through its seek.
     private fun requestSkip(delta: Long): NativePairSkipPlan {
         val current = playback ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true)
+        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true && current.pair?.delayBuild == null)
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        // A skip cancels a building delay (#618).
         val result = current.seekTogether(delta)
+        syncDelayBuild()
         if (result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED) invalidatePlay()
         Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}" +
             (result.blockedBy?.let { " blockedBy=$it" } ?: "") + (result.reason?.let { " reason=\"$it\"" } ?: ""))
@@ -1274,10 +1287,12 @@ open class PrototypeActivity : ComponentActivity() {
     // that drops the applied offset until the pair is reopened (#660).
     private fun requestLive(): NativePairSkipPlan {
         val current = playback ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true)
+        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true && current.pair?.delayBuild == null)
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val pair = current.pair
+        // Live cancels a building delay (#618).
         val result = current.goLive()
+        syncDelayBuild()
         val moved = result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED
         if (moved) invalidatePlay()
         if (moved && !result.keepsOffset && pair != null && current.pair === pair) {
@@ -1374,7 +1389,9 @@ open class PrototypeActivity : ComponentActivity() {
         val beforeAttempt = pair?.lastTimingAttempt
         setPlaybackIntent(false, PlaybackHealthIntent.BACK_TO_LIVE); invalidatePlay()
         logTimingSnapshots("BEFORE")
+        // Back to live cancels a building delay (#618).
         val result = playback?.catchUp(side) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        syncDelayBuild()
         if (result.outcome == NativeSeekOutcome.REQUESTED || pair?.lastTimingAttempt !== beforeAttempt)
             pairOffsetRetryEstimate.clear()
         if (pair != null && playback?.pair === pair && pair.lastTimingAttempt !== beforeAttempt) {
@@ -1419,7 +1436,39 @@ open class PrototypeActivity : ComponentActivity() {
             val relative = playback?.pair?.lastRelativePlan
             Log.d("TachiaiPrototype", "timing=RELATIVE deltaMs=$delta side=${relative?.side} movementMs=${relative?.movementMs} outcome=${result.outcome}")
         }
+        logDelayBuildStart()
         return result
+    }
+
+    private fun logDelayBuildStart() {
+        playback?.pair?.delayBuild?.let {
+            Log.d("TachiaiPrototype", "timing=DELAY_BUILD side=${it.side} totalMs=${it.totalMs} remainingMs=${it.remainingMs}")
+        }
+    }
+
+    // A building delay that ended before it was applied (#618) ends the pair
+    // offset command it carried: a canceled build restored the held feed, so
+    // the applied offset is unchanged; otherwise it is unknown. A completed
+    // build settles through the ordinary settlement observation.
+    private fun syncDelayBuild() {
+        val pair = playback?.pair ?: return
+        val end = pair.lastDelayBuildEnd ?: return
+        if (end === handledDelayBuildEnd) return
+        handledDelayBuildEnd = end
+        Log.d("TachiaiPrototype", "timing=DELAY_BUILD_END side=${end.side} completed=${end.completed} " +
+            "canceled=${end.canceled} restored=${end.restored}")
+        if (end.completed) return
+        // A user cancel is not a timing failure to record.
+        if (end.canceled && timingEvidenceRequest?.pair === pair) timingEvidenceRequest = null
+        pairOffsetSession?.delayBuildEnded(pair, end.restored, end.message)
+    }
+
+    // Another Timing change cancels a building delay (#618).
+    private fun cancelDelayBuild() {
+        val pair = playback?.pair ?: return
+        pair.cancelDelayBuild() ?: return
+        syncDelayBuild()
+        viewer?.refresh()
     }
 
     private fun loadPairOffset(selected: ConfiguredPlaybackSelection, run: Long) {
@@ -1488,7 +1537,8 @@ open class PrototypeActivity : ComponentActivity() {
         timingEvidenceRequest = null
         pairOffsetSkipStartup = true
         pairOffsetSession?.skipStartup()
-        playback?.pair?.let { pairOffsetSession?.cancelPending(it) }
+        // A building delay's command ends with the build itself (#618).
+        playback?.pair?.takeIf { it.delayBuild == null }?.let { pairOffsetSession?.cancelPending(it) }
     }
 
     private fun processPairOffset(allowStartup: Boolean = true) {
@@ -1508,6 +1558,7 @@ open class PrototypeActivity : ComponentActivity() {
             if (pairOffsetBaselineLost) state.invalidate(pair, "Waiting to restore the previous offset after feed recovery.")
             if (pairOffsetSkipStartup) state.skipStartup()
         }
+        syncDelayBuild()
         val previouslyKnown = state.state.appliedOffsetMs != null
         val previouslyBusy = state.state.busy
         val settlement = pair.lastTimingSettlement
@@ -1587,6 +1638,7 @@ open class PrototypeActivity : ComponentActivity() {
         }
         savePairOffsetIfNeeded()
         Log.d("TachiaiPrototype", "timing=PAIR_OFFSET origin=${command.origin} deltaMs=${command.deltaMs} outcome=${result.outcome}")
+        logDelayBuildStart()
     }
 
     private fun savePairOffsetIfNeeded() {
@@ -1885,7 +1937,8 @@ open class PrototypeActivity : ComponentActivity() {
     private fun invalidatePlay() { playBarrier?.cancel(); playBarrier = null; playMessage = null }
     private fun pausePair() {
         cancelPairOffsetPending()
-        setPlaybackIntent(false, PlaybackHealthIntent.USER_PAUSE); invalidatePlay(); playback?.pause(); viewer?.refresh(); publishPairTransport()
+        setPlaybackIntent(false, PlaybackHealthIntent.USER_PAUSE); invalidatePlay(); playback?.pause(); syncDelayBuild()
+        viewer?.refresh(); publishPairTransport()
         saveReplayPositions(force = true)
     }
 

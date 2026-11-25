@@ -326,7 +326,8 @@ internal class PrototypePlaybackController(
     }
 
     fun catchUpPlan(side: NativeMixedSide): NativeSeekPlan {
-        if (closed || busy) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
+        // Back to live stays offered while a pair builds delay, and cancels it (#618).
+        if (closed || busy && pair?.delayBuild == null) return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         pair?.let { return it.catchUpPlan(side) }
         val selected = member(side) ?: return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
         return recovery?.plan(selected) ?: NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)

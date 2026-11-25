@@ -132,7 +132,7 @@ internal object OpenConnectRouteProtocol : RouteProtocol {
             if (result.code.toInt() == 6) preparation.recordCleanupFailure()
             if (result.code.toInt() != 0 || route == null) throw IOException("OpenConnect route preparation failed")
             preparation.checkActive()
-            return NativeRouteBackend(checkNotNull(route)).also { route = null }
+            return NativeRouteBackend(checkNotNull(route), security.purpose).also { route = null }
         } catch (error: Exception) {
             if (!preparation.isCancelled) preparation.diagnostics.report(FailureStage.OPENCONNECT_PREPARE, error)
             registration?.close()

@@ -18,6 +18,7 @@ import net.fstab.tachiai.platform.media.NativeFailureStage
 import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
+import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.provider.abema.AbemaChannelException
 import net.fstab.tachiai.provider.abema.AbemaChannelFailure
@@ -85,6 +86,7 @@ internal enum class FailureCategory {
     ABEMA_READINESS_FAILURE, ABEMA_READINESS_TEMPORARY_FAILURE,
     ABEMA_READINESS_INTERACTION_REQUIRED, ABEMA_READINESS_STORAGE_FAILURE,
     TRANSPORT_DNS, TRANSPORT_CONNECT, TRANSPORT_TIMEOUT, TRANSPORT_TLS, TRANSPORT_CANCELLED, TRANSPORT_UNKNOWN,
+    TRANSPORT_ROUTE_REFUSED,
     MEDIA_REQUEST_DEADLINE, MEDIA_REQUEST_ADMISSION_REFUSED, MEDIA_PLAYBACK_INACTIVE,
     MEDIA_HTTP_REJECTED, MEDIA_RANGE_NOT_HONORED, MEDIA_RESPONSE_LIMIT,
     PLAYER_RELEASE_TIMEOUT,
@@ -143,7 +145,9 @@ internal data class SafeFailure(
     init { require(causes.size <= 4 && frames.size <= 8) }
     companion object {
         private fun transportCategory(value: ProviderTransportEvidence): FailureCategory =
-            if (value.localCancellationRequested) FailureCategory.TRANSPORT_CANCELLED else when (value.failure) {
+            if (value.localCancellationRequested) FailureCategory.TRANSPORT_CANCELLED
+            else if (value.exceptionKind == ProviderTransportExceptionKind.ROUTE_REFUSED) FailureCategory.TRANSPORT_ROUTE_REFUSED
+            else when (value.failure) {
                 ProviderTransportFailure.DNS -> FailureCategory.TRANSPORT_DNS
                 ProviderTransportFailure.CONNECT -> FailureCategory.TRANSPORT_CONNECT
                 ProviderTransportFailure.TIMEOUT -> FailureCategory.TRANSPORT_TIMEOUT
@@ -242,7 +246,9 @@ internal data class SafeFailure(
                 value is TwitchCatalogNetworkException -> providerCategory(value.category)
                 value is TwitchHelixNetworkException -> providerCategory(value.category)
                 value is TwitchCatalogStoreException -> providerCategory(value.failure)
-                value is NativeMediaRequestException -> mediaCategory(value.failure)
+                value is NativeMediaRequestException -> value.transportEvidence
+                    ?.takeIf { it.exceptionKind == ProviderTransportExceptionKind.ROUTE_REFUSED }
+                    ?.let(::transportCategory) ?: mediaCategory(value.failure)
                 value is NativePlayerReleaseTimeoutException -> FailureCategory.PLAYER_RELEASE_TIMEOUT
                 value is ProviderTransportException -> transportCategory(value.evidence)
                 value is java.util.concurrent.CancellationException -> FailureCategory.CANCELLED

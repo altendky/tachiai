@@ -2004,6 +2004,28 @@ tablet and TV have the same setting, control and display.
   Chips take no focus and no touches. Text that is already in the device's
   language, whose language is unclear or that cannot be translated keeps the
   picture as it is. Vertical text gets no special handling.
+- **Names with a printed reading.** The offline translator garbles proper
+  names (on the SHIELD 王鵬 became "Rang" and 伯乃富士 "Mt."), while broadcasts
+  commonly print a name's kana reading directly above it. A short kanji-only
+  block (one to six kanji) with a kana-only block directly above it is
+  treated as a name with its reading (user decision, 2026-11-25). "Directly
+  above" means the blocks overlap horizontally by at least 60% of the narrower
+  width, and the gap is at most about one line of the name. The name's chip
+  shows the reading romanized instead of a translation, and the reading gets
+  no chip of its own: おうほう over 王鵬 shows Ōhō, and はくのふじ over 伯乃富士
+  shows Hakunofuji. One recognized block made of a reading line over a name
+  line is treated the same way.
+  - Romanization is Hepburn. Long vowels take macrons (おう, おお → ō; うう → ū;
+    ああ → ā; ええ → ē; katakana ー lengthens the previous vowel), while いい and
+    えい are written out. Small ゃゅょ and small vowels combine (きゅう → kyū,
+    ファ → fa), っ doubles the next consonant (っち → tchi), and ん before a vowel
+    or y is written n'. Each word is capitalized.
+  - Only such pairs are romanized. Other kana, including kana with no name
+    below it, is translated like any other text. The rule follows the general
+    reading-above-name convention and is not specific to sumo.
+  - When the device language is Japanese, nothing is romanized.
+  - **Limitation:** a name with no printed reading is still translated, and may
+    be garbled. A name source such as provider metadata could come later.
 - **On-device and transient.** Frames, recognized text and translations stay
   in memory; they are never saved, logged or sent off the device. Frames are
   released when the feed stops being translated or the stream closes. Logs
@@ -2013,10 +2035,30 @@ tablet and TV have the same setting, control and display.
 
 Provider-free JVM tests cover stability and hold, box mapping and chip
 placement within the overlay insets, enablement (provider default, temporary
-override, unavailable frames, inset skipped), the unchanged-frame check, the
-stored setting and that logs carry only numbers. The #664 acceptance is open:
-sumo name and result cards translated over a replay on the SHIELD and phone,
-with CPU and latency measurements.
+override, unavailable frames, inset skipped), the unchanged-frame check,
+romanization, the reading-above-name pairing, the stored setting, and that
+logs carry only numbers.
+
+On 2026-11-25 the coordinator measured a SHIELD Android TV (Android 11)
+playing an ABEMA sumo day-15 replay as a single feed:
+
+| Measure | Median | p95 | Max |
+| --- | --- | --- | --- |
+| `captureMs` | 3 | 4 | 5 |
+| `ocrMs` | 212 | 423 | 604 |
+| `intervalMs` | 2,235 | 2,441 | |
+| `translate ms` | 53 | 193 | |
+
+- No frame was skipped as unchanged (0 of 38).
+- The player process used about 70% CPU (of 400%) with translation on and
+  about 42% with it off, roughly 0.3 of a core more.
+- There was no rebuffering in about 3 minutes.
+- The More item turned translation off at once, and the chips cleared.
+- Ordinary text translated well (26歳 → "26 years old", 東京都 → "Tokyo"), but
+  names were garbled, which led to the reading rule above.
+
+The #664 acceptance is still open: the Pixel 6 measurement, and the
+reading-over-name result on a device.
 
 ## Historical source configuration follow-up
 

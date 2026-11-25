@@ -114,8 +114,9 @@ without a separate exception:
   text recognizer (`com.google.mlkit:text-recognition-japanese`) on the device.
   It is recycled when translation stops for that feed or the stream closes. No
   frame is written to disk, encoded, shared or sent.
-- **Recognized text and translations** are held in memory to show chips and are
-  translated with the on-device translator. They are cleared with the frame;
+- **Recognized text, translations and romanized name readings** are held in
+  memory to show chips. Text is translated with the on-device translator, and
+  readings are romanized locally. They are cleared with the frame;
   the translation cache for them is a separate 128-entry in-memory cache.
 - **Logs** under `TachiaiFrameText` hold only numbers and states: capture,
   recognition and translation milliseconds, block counts, the sampling interval

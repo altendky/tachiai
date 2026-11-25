@@ -243,9 +243,9 @@ class FrameTextTranslationTest {
     }
 
     @Test fun logFormattersCarryOnlyTimingsCountsAndStates() {
-        assertEquals("sample intervalMs=2000 captureMs=4 ocrMs=120 blocks=3 stable=1 shown=1",
-            frameTextSampleLog(FrameTextSampleTiming(2_000, 4, 120, 3, 1, 1)))
-        assertEquals("sample intervalMs=2001 captureMs=5 ocr=SKIPPED_UNCHANGED blocks=3 stable=2 shown=0",
+        assertEquals("sample intervalMs=2000 captureMs=4 ocrMs=120 blocks=3 stable=1 shown=1 romanized=1",
+            frameTextSampleLog(FrameTextSampleTiming(2_000, 4, 120, 3, 1, 1, 1)))
+        assertEquals("sample intervalMs=2001 captureMs=5 ocr=SKIPPED_UNCHANGED blocks=3 stable=2 shown=0 romanized=0",
             frameTextSampleLog(FrameTextSampleTiming(2_001, 5, null, 3, 2, 0)))
         assertEquals("translate ms=80 result=TRANSLATED", frameTextTranslateLog(80, true))
         assertEquals("state=RUNNING sample=960x540", frameTextStateLog(FrameTextRun.RUNNING, 960, 540))

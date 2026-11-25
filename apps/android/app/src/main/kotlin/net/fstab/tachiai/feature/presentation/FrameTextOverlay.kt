@@ -275,6 +275,8 @@ internal class FrameTextRunner(context: Context) {
                 .languageRequest(text, source, translationTargetLanguage(Locale.getDefault()))
             override fun cached(text: String) = request(text)?.let(translator::cached)
             override suspend fun translate(text: String) = request(text)?.let { translator.translate(it) }
+            // Readings are romanized unless the device language is Japanese.
+            override fun romanizes() = translationTargetLanguage(Locale.getDefault()) != "ja"
         }
     }
 }

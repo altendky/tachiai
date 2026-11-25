@@ -225,6 +225,8 @@ internal interface FrameTextSample {
 internal interface FrameTextTranslator {
     fun cached(text: String): String?
     suspend fun translate(text: String): String?
+    /** True when Japanese readings are shown romanized: the target language is not Japanese. */
+    fun romanizes(): Boolean = true
 }
 
 /** Numbers only, so a log line cannot carry frame content or text. */
@@ -236,12 +238,14 @@ internal data class FrameTextSampleTiming(
     val blocks: Int,
     val stable: Int,
     val shown: Int,
+    /** Shown chips holding a romanized reading rather than a translation. */
+    val romanized: Int = 0,
 )
 
 internal fun frameTextSampleLog(timing: FrameTextSampleTiming): String =
     "sample intervalMs=${timing.intervalMs} captureMs=${timing.captureMs} " +
         (timing.ocrMs?.let { "ocrMs=$it" } ?: "ocr=SKIPPED_UNCHANGED") +
-        " blocks=${timing.blocks} stable=${timing.stable} shown=${timing.shown}"
+        " blocks=${timing.blocks} stable=${timing.stable} shown=${timing.shown} romanized=${timing.romanized}"
 
 internal fun frameTextTranslateLog(ms: Long, translated: Boolean): String =
     "translate ms=$ms result=${if (translated) "TRANSLATED" else "ORIGINAL"}"
@@ -267,6 +271,7 @@ internal class FrameTextPipeline(
     private var signature: ByteArray? = null
     private var blocks: List<FrameTextBlock> = emptyList()
     private var held: List<HeldFrameText> = emptyList()
+    private var displays: Map<Long, FrameTextDisplay> = emptyMap()
     private val pending = mutableSetOf<String>()
     // Held texts that keep their original (same language, unsure, unavailable); not retried while held.
     private val originals = mutableSetOf<String>()
@@ -280,17 +285,26 @@ internal class FrameTextPipeline(
         }
         signature = next; blocks = recognized
         val stable = stability.update(recognized, sample.height)
-        val texts = stable.map { it.text }.toSet()
-        synchronized(lock) { held = stable; originals.retainAll(texts) }
+        val plan = frameTextDisplays(stable, translator.romanizes())
+        val texts = stable.filter { plan[it.id] == FrameTextDisplay.Translate }.map { it.text }.toSet()
+        synchronized(lock) { held = stable; displays = plan; originals.retainAll(texts) }
         texts.forEach(::request)
         val chips = chips()
-        log(frameTextSampleLog(FrameTextSampleTiming(intervalMs, captureMs, ocrMs, recognized.size, stable.size, chips.size)))
+        val romanized = chips.count { plan[it.id] is FrameTextDisplay.Literal }
+        log(frameTextSampleLog(FrameTextSampleTiming(intervalMs, captureMs, ocrMs, recognized.size, stable.size, chips.size, romanized)))
         return chips
     }
 
-    /** Held blocks whose translation is ready. */
+    /** Held blocks with a romanized reading, or whose translation is ready. */
     fun chips(): List<FrameTextChip> = synchronized(lock) {
-        held.mapNotNull { entry -> translator.cached(entry.text)?.let { FrameTextChip(entry.id, entry.box, entry.lineHeight, it) } }
+        held.mapNotNull { entry ->
+            val text = when (val display = displays[entry.id]) {
+                is FrameTextDisplay.Literal -> display.text
+                FrameTextDisplay.Hidden -> null
+                FrameTextDisplay.Translate, null -> translator.cached(entry.text)
+            }
+            text?.let { FrameTextChip(entry.id, entry.box, entry.lineHeight, it) }
+        }
     }
 
     private fun request(text: String) {
@@ -312,7 +326,7 @@ internal class FrameTextPipeline(
 
     /** Forgets every frame-derived value; the next sample starts fresh. */
     fun clear() {
-        synchronized(lock) { held = emptyList(); pending.clear(); originals.clear() }
+        synchronized(lock) { held = emptyList(); displays = emptyMap(); pending.clear(); originals.clear() }
         signature = null; blocks = emptyList(); stability.clear()
     }
 }

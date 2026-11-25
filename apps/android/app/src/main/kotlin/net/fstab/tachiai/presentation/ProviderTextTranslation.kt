@@ -77,11 +77,25 @@ internal data class ProviderTextTranslationSettings(
     val enabled: Boolean = false,
     // Explicit per-instance choices only; an absent entry uses the provider default.
     val sourceLanguages: Map<String, ProviderSourceLanguage> = emptyMap(),
+    // Instances whose Translate text in video default is on (#664); absent means off.
+    val frameTextInstances: Set<String> = emptySet(),
 ) {
     init {
         require(sourceLanguages.size <= MAX_TRANSLATION_SETTINGS_ENTRIES)
         require(sourceLanguages.all { (id, language) -> validProviderInstanceId(id) && ProviderSourceLanguage.valid(language.tag) })
+        require(frameTextInstances.size <= MAX_TRANSLATION_SETTINGS_ENTRIES)
+        require(frameTextInstances.all(::validProviderInstanceId))
     }
+
+    /** The provider default for translating text in the video picture (#664); off unless chosen. */
+    fun frameText(instanceId: String?): Boolean = instanceId != null && instanceId in frameTextInstances
+
+    fun withFrameText(instance: ProviderInstance, on: Boolean, existingIds: Set<String>) =
+        copy(frameTextInstances = frameTextInstances.filter { it in existingIds && it != instance.id }.toSet() +
+            if (on) setOf(instance.id) else emptySet())
+
+    /** Settings without any choice for a removed instance. */
+    fun withoutInstance(id: String) = copy(sourceLanguages = sourceLanguages - id, frameTextInstances = frameTextInstances - id)
 
     fun sourceLanguage(source: ProviderTextSource): ProviderSourceLanguage =
         source.instanceId?.let(sourceLanguages::get) ?: defaultProviderSourceLanguage(source.service)
@@ -91,8 +105,16 @@ internal data class ProviderTextTranslationSettings(
             if (language == defaultProviderSourceLanguage(instance.service)) emptyMap() else mapOf(instance.id to language)))
 
     /** Null means show the original without consulting an engine. */
-    fun request(text: String, source: ProviderTextSource, target: String?): TranslationRequest? {
-        if (!enabled || target == null || text.length > MAX_TRANSLATED_TEXT || text.none(Char::isLetter)) return null
+    fun request(text: String, source: ProviderTextSource, target: String?): TranslationRequest? =
+        if (!enabled) null else languageRequest(text, source, target)
+
+    /**
+     * The same language rules without the Translate provider text switch. Text
+     * recognized in the video (#664) has its own per-provider switch and
+     * in-stream override, and uses this provider's Source language.
+     */
+    fun languageRequest(text: String, source: ProviderTextSource, target: String?): TranslationRequest? {
+        if (target == null || text.length > MAX_TRANSLATED_TEXT || text.none(Char::isLetter)) return null
         val language = sourceLanguage(source)
         if (!language.auto && (language.tag == target || !textMayBeInLanguage(text, language.tag))) return null
         return TranslationRequest(text, language, target)

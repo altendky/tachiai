@@ -1981,6 +1981,142 @@ phone and SHIELD, and the quality of representative ABEMA titles. The ML Kit
 usage terms raise a question for TV; see
 [open questions](open-questions.md#product).
 
+### Text in the video — #664
+
+[#664](https://github.com/altendky/tachiai/issues/664) translates text that
+appears in the video picture, such as ABEMA's sumo name and result cards, on
+the device. The user decided the design on 2026-11-25. It is common UX: phone,
+tablet and TV have the same setting, control and display.
+
+- **Setting.** Each provider's details have **Text in video → Translate text
+  in video**, beside its **Source language**. It is off by default for every
+  provider. It is independent of **Translate provider text**, uses the
+  provider's Source language and the same translation models, and turning it
+  on starts that model's download for a fixed Source language. Its status line
+  says when the model is downloading or translation is unavailable.
+- **In-stream override.** **⋯ → Translate text in video** is a checkable item
+  that turns it on or off for the stream being watched, overriding the provider
+  default. The choice is not saved: it ends when the stream is closed, and
+  reopening a stream uses the provider default. A brief notice confirms the
+  change.
+- **Main pane only.** It runs on the main (full-size) feed: the only feed, or
+  the primary feed of a pair. The floating inset feed is never sampled.
+  Swapping the primary feed moves translation to the new main feed, with that
+  feed's own default or override. ABEMA and Twitch both offer it.
+- **Unavailable feeds.** A feed whose frames cannot be read, such as a future
+  secure-decoder (Widevine) feed, shows the item as "Translate text in video
+  (unavailable for this feed)" and, when its default is on, a brief "Text in
+  video: unavailable for this feed" notice. Tachiai never works around an
+  unreadable picture. Today's native feeds are readable: Twitch and YouTube are
+  clear and ABEMA uses ClearKey with a software CDM.
+- **Stable text only.** About every 2 s the main feed's picture is sampled at
+  960 × 540 (keeping its aspect). Text counts only when the same recognized
+  text is in roughly the same box (overlap of at least half) in two
+  consecutive samples, with lines at least 3% of the frame height (16 px at
+  540). Tickers, moving and partial text are skipped. A translation is held
+  until its source block changes or disappears for two samples, so it does not
+  flicker. At most eight blocks are held. When the downscaled picture is
+  unchanged, recognition is skipped and the previous result counts as the
+  next sample.
+- **No stacking.** A newly stable block replaces any held block whose box
+  covers at least 30% of the smaller box, such as a new caption over an old
+  one. The replaced text stays suppressed while it is still read. A name and
+  its printed reading are not treated as overlapping.
+- **Jumps start over.** Any position discontinuity drops all held blocks and
+  chips for the feed, and text must settle again. This covers a seek or skip
+  from any control (transport, scrub, remote Left/Right, fast-forward and
+  rewind, double tap), Back to live, start over, a timing shift that seeks,
+  and a resume at a new position. It is detected from the player's seek,
+  seek-adjustment, skip, removal and item-change discontinuities, from a new
+  player instance, and from the position moving more than 3 s from what
+  playback explains between samples. A sample taken before the jump is
+  discarded.
+- **Display.** A near-opaque chip with the translation covers the source block,
+  replacing it in place, as #643 does for titles. It is at least the size of
+  the source, with text sized from the source's line height, and stays inside
+  the area left clear by the visible top bar, transport and panels (#656).
+  Chips take no focus and no touches. Text that is already in the device's
+  language, whose language is unclear or that cannot be translated keeps the
+  picture as it is. Vertical text gets no special handling.
+- **Names with a printed reading.** The offline translator garbles proper
+  names (on the SHIELD 王鵬 became "Rang" and 伯乃富士 "Mt."), while broadcasts
+  commonly print a name's kana reading directly above it. A short kanji-only
+  name (one to six kanji) with a kana-only reading directly above it is
+  treated as a name with its reading (user decision, 2026-11-25). "Directly
+  above" means the reading covers at least 60% of the narrower width, and the
+  gap is at most about one line of the name. The name's chip shows the reading
+  romanized instead of a translation, and the reading gets no chip of its own:
+  おうほう over 王鵬 shows Ōhō, and はくのふじ over 伯乃富士 shows Hakunofuji.
+  - **Lines, not blocks.** Pairing uses recognized lines and elements, before
+    the stability and minimum-height filters, since a reading never gets its
+    own chip.
+    - A name may be a whole line, or a run of two or more kanji elements in a
+      longer line, for example beside a rank.
+    - A reading may be one line or several kana lines on one row, such as
+      letter-spaced characters. Letter spacing is removed unless the name
+      itself has a space.
+    - The rest of the card (a rank or record in the same block) is translated
+      piece by piece.
+  - **Remembered.** A pairing is remembered while its name stays, so a sample
+    that misses the small reading keeps it.
+  - **Small readings.** A sumo card's reading is only about 10–12 px tall at
+    540 lines, too small to read reliably. While a name has held still for two
+    samples without a readable reading, the next capture is taken at up to
+    1920 px wide. The worker scales it down for the normal read and reads an
+    enlarged crop of the area above the name. This is limited to three crops
+    per sample, and a name whose crop finds no reading is not retried while it
+    stays. Moving text never triggers it. The larger frame is released as soon
+    as no reading is sought.
+  - Romanization is Hepburn. Long vowels take macrons (おう, おお → ō; うう → ū;
+    ああ → ā; ええ → ē; katakana ー lengthens the previous vowel), while いい and
+    えい are written out. Small ゃゅょ and small vowels combine (きゅう → kyū,
+    ファ → fa), っ doubles the next consonant (っち → tchi), and ん before a vowel
+    or y is written n'. Each word is capitalized.
+  - Only such pairs are romanized. Other kana, including kana with no name
+    below it, is translated like any other text. The rule follows the general
+    reading-above-name convention and is not specific to sumo.
+  - When the device language is Japanese, nothing is romanized.
+  - **Limitation:** a name with no printed reading is still translated, and may
+    be garbled. A name source such as provider metadata could come later.
+- **On-device and transient.** Frames, recognized text and translations stay
+  in memory; they are never saved, logged or sent off the device. Frames are
+  released when the feed stops being translated or the stream closes. Logs
+  under `TachiaiFrameText` hold only timings, block counts, states, pairing
+  geometry (counts, overlap and gap ratios, and heights in pixels) and the
+  sampling cadence. Translations use a separate in-memory cache of 128
+  entries, so they never evict title translations.
+
+Provider-free JVM tests cover stability and hold, box mapping and chip
+placement within the overlay insets, enablement (provider default, temporary
+override, unavailable frames, inset skipped), the unchanged-frame check,
+romanization, the reading-above-name pairing, the stored setting, and that
+logs carry only numbers.
+
+On 2026-11-25 the coordinator measured a SHIELD Android TV (Android 11)
+playing an ABEMA sumo day-15 replay as a single feed:
+
+| Measure | Median | p95 | Max |
+| --- | --- | --- | --- |
+| `captureMs` | 3 | 4 | 5 |
+| `ocrMs` | 212 | 423 | 604 |
+| `intervalMs` | 2,235 | 2,441 | |
+| `translate ms` | 53 | 193 | |
+
+- No frame was skipped as unchanged (0 of 38).
+- The player process used about 70% CPU (of 400%) with translation on and
+  about 42% with it off, roughly 0.3 of a core more.
+- There was no rebuffering in about 3 minutes.
+- The More item turned translation off at once, and the chips cleared.
+- Ordinary text translated well (26歳 → "26 years old", 東京都 → "Tokyo"), but
+  names were garbled, which led to the reading rule above.
+- On ABEMA News live, tables and captions translated well, and translation
+  stayed on while the live transport was used. A chip from before a 1-minute
+  skip back or a resume stayed on screen under new chips, which led to the
+  jump reset and overlap replacement above.
+
+The #664 acceptance is still open: the Pixel 6 measurement, and the
+reading-over-name result on a device.
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

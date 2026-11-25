@@ -149,6 +149,11 @@
   sends usage metrics (not the text) to Google, with no opt-out. Mozilla's
   on-device Bergamot engine is the alternative if this needs to change; it would
   be an implementation difference, not a UX change.
+- Text in the video ([#664](https://github.com/altendky/tachiai/issues/664))
+  is translated in a chip that replaces its stable source block, only on the
+  main pane, behind a per-provider default that is off and a temporary
+  in-stream override (user decision, 2026-11-25). Cadence and the final design
+  remain open until the SHIELD and phone measurements.
 
 ## Deferred
 

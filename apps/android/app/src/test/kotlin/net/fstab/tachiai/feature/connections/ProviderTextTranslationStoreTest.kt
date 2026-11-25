@@ -49,7 +49,26 @@ class ProviderTextTranslationStoreTest {
         val memory = Memory(); val store = ProviderTextTranslationStore(memory)
         memory.bytes = encoded()
         assertEquals(ProviderSourceLanguage("ja"), store.read().sourceLanguages[id])
-        listOf(encoded(version = 2), encoded(tag = "xx"), encoded(duplicate = true), encoded(trailing = true)).forEach {
+        // Version 1 records (before #664) read with no text-in-video choices; a
+        // version 2 record without its text-in-video list is truncated.
+        assertEquals(emptySet<String>(), store.read().frameTextInstances)
+        listOf(encoded(version = 2), encoded(version = 3), encoded(tag = "xx"), encoded(duplicate = true), encoded(trailing = true)).forEach {
+            memory.bytes = it
+            assertThrows(Exception::class.java) { store.read() }
+        }
+    }
+
+    @Test fun textInVideoChoicesRoundTripAndMalformedListsAreRejected() {
+        val memory = Memory(); val store = ProviderTextTranslationStore(memory)
+        val saved = store.update { it.copy(frameTextInstances = setOf(id)) }
+        assertEquals(saved, store.read())
+        assertTrue(store.read().frameText(id))
+        assertFalse(store.read().enabled)
+        fun encoded(vararg ids: String) = ByteArrayOutputStream().also { output -> DataOutputStream(output).use { data ->
+            data.writeInt(2); data.writeBoolean(false); data.writeInt(0)
+            data.writeInt(ids.size); ids.forEach(data::writeUTF)
+        } }.toByteArray()
+        listOf(encoded(id, id), encoded("not-an-instance")).forEach {
             memory.bytes = it
             assertThrows(Exception::class.java) { store.read() }
         }

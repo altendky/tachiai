@@ -97,6 +97,49 @@ on the device:
 ML Kit's usage terms limit TV use and ask for attribution. See
 [open questions](open-questions.md#product).
 
+## Text in the video — #664
+
+Translating text in the video picture
+([#664](https://github.com/altendky/tachiai/issues/664)) is transient
+on-device processing during playback, allowed by the
+[protected-media rule](#protected-media-handling--clarified-2026-11-23)
+without a separate exception:
+
+- **Off by default.** It runs only for the main feed when the provider's
+  Translate text in video default or the viewer's temporary override is on.
+  ML Kit text recognition is created only then.
+- **Frames.** About every 2 s the main feed's displayed picture is copied from
+  its `TextureView` into one reused in-memory bitmap of at most 960 × 540. The
+  bitmap is read for a coarse luminance grid and by ML Kit's bundled Japanese
+  text recognizer (`com.google.mlkit:text-recognition-japanese`) on the device.
+  It is recycled when translation stops for that feed or the stream closes. No
+  frame is written to disk, encoded, shared or sent.
+- **Higher-resolution frames** of up to 1920 px wide are captured the same way,
+  only while a steady name's small printed reading is sought. Small enlarged
+  crops above the name are read and recycled at once. The larger frame is
+  released when no reading is sought, when translation stops or when the
+  stream closes.
+- **Recognized text, translations and romanized name readings** are held in
+  memory to show chips. Text is translated with the on-device translator, and
+  readings are romanized locally. They are cleared with the frame;
+  the translation cache for them is a separate 128-entry in-memory cache.
+- **Logs** under `TachiaiFrameText` hold only numbers and states: capture,
+  recognition and translation milliseconds, block counts, the sampling interval,
+  the running state, reset causes and name-pairing geometry (counts, overlap and
+  gap ratios, pixel heights). Failures are logged without exception text.
+- **Unreadable frames.** A feed decoded through a secure path (for example a
+  future Widevine feed) is reported as unavailable for this feed. Tachiai does
+  not change surfaces, decoders or DRM to read it.
+- **Settings.** The stored preference adds only the instance IDs whose default
+  is on, in the same encrypted no-backup record.
+- **ML Kit diagnostics.** Per ML Kit's
+  [data disclosure](https://developers.google.com/ml-kit/android-data-disclosure),
+  recognition, like translation, reports device and app information,
+  per-installation identifiers, latency, API configuration such as image
+  format and resolution, input and output sizes, event types and error codes.
+  It does not list images or text. The setting's help says so. No network
+  capture has confirmed what it sends.
+
 ## Twitch live low latency — 2026-11-22
 
 On 2026-11-22 the user approved Twitch low latency for native live playback:

@@ -105,6 +105,65 @@ func TestApprovedSubdomainPatternsExcludeApexAndLookalikes(t *testing.T) {
 	}
 }
 
+func TestTwitchStoryboardPatternAdmitsOnlyTheAcceptedShape(t *testing.T) {
+	hosts, err := parseHosts("d*.cloudfront.net")
+	if err != nil {
+		t.Fatal("Storyboard pattern refused")
+	}
+	r := Route{allowed: hosts}
+	for _, host := range []string{"d1m7jfoe9zdc1j.cloudfront.net", "dgeft87wbj63p.cloudfront.net",
+		"dabcdefgh.cloudfront.net", "d" + strings.Repeat("a", 32) + ".cloudfront.net", "d12345678.cloudfront.net"} {
+		if !r.permits(host) {
+			t.Fatalf("Storyboard host refused: %s", host)
+		}
+	}
+	for _, host := range []string{"example.cloudfront.net", "d123.cloudfront.net", "dabcdefg.cloudfront.net",
+		"d" + strings.Repeat("a", 33) + ".cloudfront.net", "cloudfront.net", "d.cloudfront.net",
+		"one.d1m7jfoe9zdc1j.cloudfront.net", "d1m7jfoe9zdc1j.two.cloudfront.net", "dabcdefgh1.cloudfront.net.evil.example",
+		"dabcdefgh1.cloudfront.net.", "dabcdefgh1cloudfront.net", "dabcdefgh1.evilcloudfront.net",
+		"dabcd-efgh1.cloudfront.net", "Dabcdefgh1.cloudfront.net", "DABCDEFGH1.CLOUDFRONT.NET",
+		"ed1m7jfoe9zdc1j.cloudfront.net", "d1m7jfoe9zdc1j.cloudfront.com", "example.test", "usher.ttvnw.net"} {
+		if r.permits(host) {
+			t.Fatalf("Outside or invalid host admitted: %s", host)
+		}
+	}
+	for _, pattern := range []string{"*.cloudfront.net", "d*.cloudfront.com", "D*.CLOUDFRONT.NET", "e*.cloudfront.net", "*d.cloudfront.net"} {
+		if _, err := parseHosts(pattern); err == nil {
+			t.Fatalf("Unapproved pattern admitted: %s", pattern)
+		}
+	}
+	// Without the token, the shape is an ordinary exact host like any other.
+	exact := Route{allowed: []string{"d1m7jfoe9zdc1j.cloudfront.net"}}
+	if exact.permits("dabcdefgh1.cloudfront.net") {
+		t.Fatal("Exact CloudFront host admitted another distribution")
+	}
+
+	var calls atomic.Int32
+	route, err := newRoute(localUser, localPassword, localRealm, "example.test,d*.cloudfront.net", func(context.Context, string) (net.Conn, error) { calls.Add(1); return nil, errConnect }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer route.Close()
+	for _, test := range []struct {
+		target string
+		status int
+	}{
+		{"d1m7jfoe9zdc1j.cloudfront.net:443", 502}, {"d1m7jfoe9zdc1j.cloudfront.net:80", 403},
+		{"example.cloudfront.net:443", 403}, {"d123.cloudfront.net:443", 403},
+		{"one.d1m7jfoe9zdc1j.cloudfront.net:443", 403}, {"dabcdefgh1.cloudfront.net.evil.example:443", 403},
+		{"unrelated.example:443", 403},
+	} {
+		c, _, status := connect(t, route, test.target, localAuth())
+		c.Close()
+		if status != test.status {
+			t.Fatalf("Wrong admission status for %s: got %d wanted %d", test.target, status, test.status)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatal("Rejected requests contacted transport")
+	}
+}
+
 func TestMalformedHeadersAreBounded(t *testing.T) {
 	for _, data := range []string{"CONNECT example.test:443 HTTP/1.1\n\n", strings.Repeat("x", headerLimit+1), "CONNECT example.test:443 HTTP/1.1\r\nX: " + strings.Repeat("x", headerLimit) + "\r\n\r\n"} {
 		if _, err := readHeaders(bufio.NewReaderSize(strings.NewReader(data), headerLimit+1)); err == nil {

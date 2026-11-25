@@ -286,11 +286,26 @@ scrub preview fetches them, through the feed's own route:
 - **Twitch:** the storyboard JSON and sheets that GQL `seekPreviewsURL` names on
   the VOD's CloudFront storage distribution (`d….cloudfront.net`), only this
   video's files in that storyboard directory
-  ([details](twitch-catalog-access.md#vod-seek-previews--673)). No CloudFront
-  pattern was added to the CONNECT host list, so imported Twitch routes show no
-  previews.
+  ([details](twitch-catalog-access.md#vod-seek-previews--673)). The playback
+  route's CONNECT host list first had no CloudFront entry, so imported Twitch
+  routes showed no previews; see the next section.
 
 No redirects, cookies or disk caching; addresses are never logged.
+
+### Twitch storyboard hosts on imported routes — 2026-11-24
+
+On 2026-11-24 the user asked for the missing route host to be fixed so Twitch
+previews also work on imported routes
+([#683](https://github.com/altendky/tachiai/issues/683)). The playback route's
+CONNECT host list now carries the route bridge token `d*.cloudfront.net`, which
+admits exactly one DNS label of `d` followed by 8–32 lowercase ASCII letters or
+digits under `cloudfront.net`: the storyboard host shape the app already
+accepts. Other CloudFront names, nested subdomains, lookalike suffixes and
+uppercase or invalid hostnames are refused; only port 443 is eligible, as for
+every route host. This is not a general CloudFront approval: the app's own
+check still admits only that video's storyboard JSON and sheets, and Twitch
+media keeps its existing origin policy. The user kept the CONNECT allow-list
+for now, although they are not sure it is needed long term.
 
 ## Decisions
 
@@ -298,7 +313,7 @@ No redirects, cookies or disk caching; addresses are never logged.
 | --- | --- | --- | --- |
 | 2026-10-07 | `https://*-abematv.akamaized.net` | Approved by user | One DNS label ending in `-abematv`, including the observed `linear-abematv`, `ds-vod-abematv` and gateway-selected `vod-abematv` hosts. Cached native News/replay only. |
 | 2026-11-24 | `https://image.p-c2-x.abema-tv.com` | Approved by user | Scrub-preview timeline sprites of the selected slot or program only ([#673](https://github.com/altendky/tachiai/issues/673)). |
-| 2026-11-24 | Twitch storyboard host from `seekPreviewsURL` (`https://d….cloudfront.net`) | Approved by user | That video's storyboard JSON and sheets only ([#673](https://github.com/altendky/tachiai/issues/673)); not a general CloudFront approval. |
+| 2026-11-24 | Twitch storyboard host from `seekPreviewsURL` (`https://d….cloudfront.net`) | Approved by user | That video's storyboard JSON and sheets only ([#673](https://github.com/altendky/tachiai/issues/673)); not a general CloudFront approval. Playback route admits `d*.cloudfront.net` (`d` + 8–32 lowercase alphanumerics, one label) at the user's request ([#683](https://github.com/altendky/tachiai/issues/683)). |
 
 The observed domain is **akamaized.net**, not **akamized.net**. The wildcard
 means a nonempty ASCII DNS prefix in that single label, not nested subdomains,

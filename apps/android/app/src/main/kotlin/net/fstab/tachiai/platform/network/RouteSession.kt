@@ -21,6 +21,10 @@ import net.fstab.tachiai.platform.diagnostics.FailureReporter
 import net.fstab.tachiai.platform.diagnostics.FailureStage
 import net.fstab.tachiai.provider.abema.account.AbemaApprovalBrowserPolicy
 
+// Twitch storyboard distributions (#683): the route bridge's token for exactly
+// `d[a-z0-9]{8,32}.cloudfront.net`, the shape TwitchSeekPreviews accepts.
+internal const val TWITCH_STORYBOARD_ROUTE_HOSTS = "d*.cloudfront.net"
+
 // This CONNECT layer only admits the union of already-reviewed native
 // and helper HTTPS hosts. Provider adapters still enforce exact URI,
 // source identity, request method and media-origin policies above it.
@@ -28,7 +32,7 @@ private const val PLAYBACK_HOSTS = "abema.tv,api.p-c3-e.abema-tv.com,api.abema.i
     "streaming-api-cf.p-c2-x.abema-tv.com,license.p-c3-e.abema-tv.com,*-abematv.akamaized.net," +
     "id.twitch.tv,gql.twitch.tv,ttvnw.net,*.ttvnw.net,twitchcdn.net,*.twitchcdn.net,dgeft87wbj63p.cloudfront.net," +
     // Scrub-preview sprites (#673), user-approved 2026-11-24.
-    "image.p-c2-x.abema-tv.com"
+    "image.p-c2-x.abema-tv.com,$TWITCH_STORYBOARD_ROUTE_HOSTS"
 
 // A route owner in another process derives allowed hosts from this closed
 // purpose itself; a lease client never supplies a host list.

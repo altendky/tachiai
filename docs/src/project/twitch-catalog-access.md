@@ -253,8 +253,10 @@ Tachiai accepts only a storyboard URL ending in this video's `-info.json` on a
 `d[a-z0-9]{8,32}.cloudfront.net` host without query, port or fragment, prefers
 `high` sheets and fetches only `{videoId}-(high|low)-{n}.jpg` from the same
 directory. All three requests use the feed's route. On a System route that is
-the device network; an imported route's CONNECT host list does not include
-these CloudFront distributions (only the separately observed replay CDN host),
-so previews are currently unavailable there. A JVM check against the real
+the device network. An imported route's playback CONNECT host list admits these
+distributions through the route bridge token `d*.cloudfront.net`, which matches
+exactly the same host shape and no other CloudFront host
+([#683](https://github.com/altendky/tachiai/issues/683)); previews there await
+a device check. A JVM check against the real
 service resolved and fetched one of these storyboards; Android device acceptance
 is pending.

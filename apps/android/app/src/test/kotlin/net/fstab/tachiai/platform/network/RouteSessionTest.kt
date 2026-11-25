@@ -147,6 +147,22 @@ class RouteSessionTest {
         assertTrue(checkNotNull(legacy).allowedHosts.split(',').contains("gql.twitch.tv"))
     }
 
+    @Test fun onlyPlaybackRoutesAdmitTwitchStoryboardHosts() {
+        // The route bridge expands this token to `d[a-z0-9]{8,32}.cloudfront.net` only (#683).
+        assertEquals("d*.cloudfront.net", TWITCH_STORYBOARD_ROUTE_HOSTS)
+        var granted: RouteProxySecurity? = null
+        RouteSession.create(parseConnectionProfile("http://proxy.example.test:3128".toByteArray())) { _, security ->
+            granted = security; FakeBackend()
+        }.close()
+        val hosts = checkNotNull(granted).allowedHosts.split(',')
+        assertEquals(RoutePurpose.PLAYBACK.allowedHosts, granted!!.allowedHosts)
+        assertTrue(hosts.contains(TWITCH_STORYBOARD_ROUTE_HOSTS))
+        assertFalse(hosts.any { it.endsWith("cloudfront.net") && it != TWITCH_STORYBOARD_ROUTE_HOSTS &&
+            it != "dgeft87wbj63p.cloudfront.net" })
+        for (purpose in RoutePurpose.entries.filter { it != RoutePurpose.PLAYBACK })
+            assertFalse(purpose.allowedHosts.split(',').contains(TWITCH_STORYBOARD_ROUTE_HOSTS))
+    }
+
     @Test fun systemIsExplicitAndClosedSessionCannotFallback() {
         val route = RouteSession.create(null) { _, _ -> error("System route must not initialize a backend") }
         assertTrue(route.isSystem)

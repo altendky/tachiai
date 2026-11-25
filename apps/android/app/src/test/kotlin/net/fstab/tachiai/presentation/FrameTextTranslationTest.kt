@@ -250,5 +250,88 @@ class FrameTextTranslationTest {
         assertEquals("translate ms=80 result=TRANSLATED", frameTextTranslateLog(80, true))
         assertEquals("state=RUNNING sample=960x540", frameTextStateLog(FrameTextRun.RUNNING, 960, 540))
         assertEquals("state=OFF", frameTextStateLog(FrameTextRun.OFF))
+        assertEquals("reset cause=DISCONTINUITY", frameTextResetLog(FrameTextResetCause.DISCONTINUITY))
+    }
+
+    // ---- Overlapping chips ----
+
+    @Test fun aNewStableBlockReplacesTheHeldBlockItOverlaps() {
+        val stability = FrameTextStability()
+        val old = block("And 'double payment' is a sanctuary?", left = 100, top = 400, width = 700, height = 40)
+        stability.update(listOf(old), 540)
+        val oldId = stability.update(listOf(old), 540).single().id
+        // The new caption sits over the old one's area while the old is still read.
+        val new = block("Keio University", left = 300, top = 410, width = 300, height = 40)
+        assertEquals(listOf(oldId), stability.update(listOf(old, new), 540).map { it.id })
+        val held = stability.update(listOf(old, new), 540)
+        assertEquals(listOf("Keio University"), held.map { it.text })
+        // The replaced text does not come back while both are still read.
+        assertEquals(listOf("Keio University"), stability.update(listOf(old, new), 540).map { it.text })
+        assertEquals(listOf("Keio University"), stability.update(listOf(old, new), 540).map { it.text })
+        // Blocks that do not overlap are held side by side.
+        val side = block("Waseda University", left = 100, top = 100, width = 300, height = 40)
+        stability.update(listOf(new, side), 540)
+        assertEquals(setOf("Keio University", "Waseda University"), stability.update(listOf(new, side), 540).map { it.text }.toSet())
+    }
+
+    @Test fun aNameAndItsReadingAreNotTreatedAsStackedChips() {
+        val stability = FrameTextStability()
+        // The reading's box touches the name's box.
+        val reading = block("おうほう", left = 100, top = 300, width = 120, height = 30, line = 20)
+        val name0 = ViewerRect(95, 320, 130, 40)
+        assertTrue(frameTextBoxesOverlap(ViewerRect(100, 300, 120, 30), name0))
+        val name = block("王鵬", left = 95, top = 320, width = 130, height = 40, line = 40)
+        stability.update(listOf(reading), 540)
+        stability.update(listOf(reading), 540)
+        stability.update(listOf(reading, name), 540)
+        assertEquals(setOf("おうほう", "王鵬"), stability.update(listOf(reading, name), 540).map { it.text }.toSet())
+    }
+
+    @Test fun overlapIsMeasuredAgainstTheSmallerBox() {
+        val wide = ViewerRect(0, 0, 1000, 50)
+        assertTrue(frameTextBoxesOverlap(wide, ViewerRect(200, 10, 100, 30)))
+        assertTrue(frameTextBoxesOverlap(wide, ViewerRect(200, 30, 100, 40)))
+        assertFalse(frameTextBoxesOverlap(wide, ViewerRect(200, 45, 100, 40)))
+        assertFalse(frameTextBoxesOverlap(wide, ViewerRect(0, 60, 1000, 50)))
+    }
+
+    // ---- Position discontinuities ----
+
+    @Test fun seeksSkipsAndItemChangesReset() {
+        listOf(androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK,
+            androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+            androidx.media3.common.Player.DISCONTINUITY_REASON_SKIP,
+            androidx.media3.common.Player.DISCONTINUITY_REASON_REMOVE,
+            androidx.media3.common.Player.DISCONTINUITY_REASON_AUTO_TRANSITION).forEach { assertTrue(frameTextResetsOn(it)) }
+        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_INTERNAL))
+        assertFalse(frameTextResetsOn(androidx.media3.common.Player.DISCONTINUITY_REASON_SILENCE_SKIP))
+    }
+
+    @Test fun positionJumpsBeyondPlaybackAreDetected() {
+        // Playing for 2.2 s moves about 2.2 s: no jump, even with a slight rate change.
+        assertFalse(frameTextPositionJumped(60_000, 1_000, 62_200, 3_200, playing = true))
+        assertFalse(frameTextPositionJumped(60_000, 1_000, 61_000, 3_200, playing = true))
+        // Skip back a minute, or resume at a new position.
+        assertTrue(frameTextPositionJumped(60_000, 1_000, 2_200, 3_200, playing = true))
+        assertTrue(frameTextPositionJumped(60_000, 1_000, 90_000, 3_200, playing = true))
+        // Paused or just paused: staying put or moving under one interval is no jump.
+        assertFalse(frameTextPositionJumped(60_000, 1_000, 60_000, 3_200, playing = false))
+        assertFalse(frameTextPositionJumped(60_000, 1_000, 62_200, 3_200, playing = false))
+        assertTrue(frameTextPositionJumped(60_000, 1_000, 120_000, 3_200, playing = false))
+    }
+
+    @Test fun aResetDropsHeldTextAndTextMustSettleAgain() {
+        val lines = mutableListOf<String>()
+        val translator = FakeTranslator(emptyMap()).also { it.cache["Caption"] = "Caption EN" }
+        val pipeline = FrameTextPipeline(translator, scope, { synchronized(lines) { lines += it } }, { 0L }) {}
+        val sample = FakeSample(listOf(block("Caption")))
+        pipeline.process(sample, 1, 0)
+        assertEquals(listOf("Caption EN"), pipeline.process(sample, 1, 2_000).map { it.text })
+        pipeline.clear()
+        assertTrue(pipeline.chips().isEmpty())
+        // The same picture after the jump is recognized again and needs two samples.
+        assertTrue(pipeline.process(sample, 1, 2_000).isEmpty())
+        assertEquals(2, sample.recognitions)
+        assertEquals(listOf("Caption EN"), pipeline.process(sample, 1, 2_000).map { it.text })
     }
 }

@@ -1997,6 +1997,19 @@ tablet and TV have the same setting, control and display.
   flicker. At most eight blocks are held. When the downscaled picture is
   unchanged, recognition is skipped and the previous result counts as the
   next sample.
+- **No stacking.** A newly stable block replaces any held block whose box
+  covers at least 30% of the smaller box, such as a new caption over an old
+  one. The replaced text stays suppressed while it is still read. A name and
+  its printed reading are not treated as overlapping.
+- **Jumps start over.** Any position discontinuity drops all held blocks and
+  chips for the feed, and text must settle again. This covers a seek or skip
+  from any control (transport, scrub, remote Left/Right, fast-forward and
+  rewind, double tap), Back to live, start over, a timing shift that seeks,
+  and a resume at a new position. It is detected from the player's seek,
+  seek-adjustment, skip, removal and item-change discontinuities, from a new
+  player instance, and from the position moving more than 3 s from what
+  playback explains between samples. A sample taken before the jump is
+  discarded.
 - **Display.** A near-opaque chip with the translation covers the source block,
   replacing it in place, as #643 does for titles. It is at least the size of
   the source, with text sized from the source's line height, and stays inside
@@ -2056,6 +2069,10 @@ playing an ABEMA sumo day-15 replay as a single feed:
 - The More item turned translation off at once, and the chips cleared.
 - Ordinary text translated well (26歳 → "26 years old", 東京都 → "Tokyo"), but
   names were garbled, which led to the reading rule above.
+- On ABEMA News live, tables and captions translated well, and translation
+  stayed on while the live transport was used. A chip from before a 1-minute
+  skip back or a resume stayed on screen under new chips, which led to the
+  jump reset and overlap replacement above.
 
 The #664 acceptance is still open: the Pixel 6 measurement, and the
 reading-over-name result on a device.

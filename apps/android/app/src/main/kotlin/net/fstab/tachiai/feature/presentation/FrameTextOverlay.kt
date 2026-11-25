@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.os.Looper
 import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Log
@@ -15,6 +16,8 @@ import android.view.TextureView
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.graphics.createBitmap
+import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import java.util.Locale
@@ -34,6 +37,7 @@ import net.fstab.tachiai.platform.translation.MlKitFrameTextRecognizer
 import net.fstab.tachiai.presentation.FRAME_TEXT_LOG_TAG
 import net.fstab.tachiai.presentation.FrameTextChip
 import net.fstab.tachiai.presentation.FrameTextPipeline
+import net.fstab.tachiai.presentation.FrameTextResetCause
 import net.fstab.tachiai.presentation.FrameTextRun
 import net.fstab.tachiai.presentation.FrameTextSample
 import net.fstab.tachiai.presentation.FrameTextTranslator
@@ -43,6 +47,9 @@ import net.fstab.tachiai.presentation.ViewerInsets
 import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.frameSignature
 import net.fstab.tachiai.presentation.frameTextClearArea
+import net.fstab.tachiai.presentation.frameTextPositionJumped
+import net.fstab.tachiai.presentation.frameTextResetLog
+import net.fstab.tachiai.presentation.frameTextResetsOn
 import net.fstab.tachiai.presentation.frameTextSampleSize
 import net.fstab.tachiai.presentation.frameTextStateLog
 import net.fstab.tachiai.presentation.mapFrameTextBox
@@ -177,9 +184,18 @@ internal class FrameTextRunner(context: Context) {
         // Main thread only; the worker reads it only inside a sample.
         var frame: Bitmap? = null
         var loop: Job? = null
+        // Position discontinuities (#664): any jump drops held text and chips.
+        lateinit var listener: Player.Listener
+        var watched: Player? = null
+        var generation = 0L
+        var shownGeneration = 0L
+        var lastPositionMs = 0L
+        var lastAtMs = 0L
+        var lastPlaying = false
     }
     private var attached: Attached? = null
     private var closed = false
+    private val window = Timeline.Window()
 
     private fun log(line: String) { Log.d(FRAME_TEXT_LOG_TAG, line) }
 
@@ -192,12 +208,64 @@ internal class FrameTextRunner(context: Context) {
         val pipeline = FrameTextPipeline(translator(source), translations, ::log, SystemClock::elapsedRealtime) {
             main.launch {
                 val frame = state.frame
-                if (attached === state && frame != null) layer.show(state.pipeline.chips(), frame.width, frame.height)
+                // After a reset, wait for the next sample's result rather than showing stale text.
+                if (attached === state && frame != null && state.shownGeneration == state.generation)
+                    layer.show(state.pipeline.chips(), frame.width, frame.height)
             }
         }
         state = Attached(key, player, layer, source, pipeline)
+        state.listener = object : Player.Listener {
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (frameTextResetsOn(reason)) reset(state, FrameTextResetCause.DISCONTINUITY)
+            }
+        }
         attached = state
+        watch(state)
         state.loop = main.launch { sampleLoop(state) }
+    }
+
+    /**
+     * Drops every held block and chip for this feed after a seek, skip, Back
+     * to live, timing shift, resume at a new position or other jump; text must
+     * settle again before new chips appear. A sample in progress is discarded.
+     */
+    private fun reset(state: Attached, cause: FrameTextResetCause) {
+        if (attached !== state) return
+        state.generation++
+        state.layer.clear()
+        worker.execute { state.pipeline.clear() }
+        log(frameTextResetLog(cause))
+    }
+
+    // Listens to the feed's current player, on the main looper only.
+    private fun watch(state: Attached) {
+        val player = state.player.player?.takeIf { it.applicationLooper == Looper.getMainLooper() }
+        if (player === state.watched) return
+        val previous = state.watched
+        previous?.removeListener(state.listener)
+        state.watched = player
+        player?.addListener(state.listener)
+        state.lastAtMs = 0L
+        if (previous != null) reset(state, FrameTextResetCause.PLAYER_CHANGED)
+    }
+
+    // A position in the period, so a live window sliding forward is not a jump.
+    private fun periodPositionMs(player: Player): Long {
+        val timeline = player.currentTimeline
+        val offset = if (timeline.isEmpty || player.currentMediaItemIndex >= timeline.windowCount) 0L
+            else timeline.getWindow(player.currentMediaItemIndex, window).positionInFirstPeriodMs
+        return player.currentPosition + offset
+    }
+
+    // Catches jumps that report no seek, such as a resume after a hold.
+    private fun checkPositionJump(state: Attached) {
+        val player = state.watched ?: return
+        val position = periodPositionMs(player)
+        val at = SystemClock.elapsedRealtime()
+        val playing = player.isPlaying
+        if (state.lastAtMs != 0L && frameTextPositionJumped(state.lastPositionMs, state.lastAtMs, position, at,
+                playing && state.lastPlaying)) reset(state, FrameTextResetCause.POSITION_JUMP)
+        state.lastPositionMs = position; state.lastAtMs = at; state.lastPlaying = playing
     }
 
     /** Stops sampling, removes the chips and clears the frame and every derived value. */
@@ -205,6 +273,7 @@ internal class FrameTextRunner(context: Context) {
         val state = attached ?: return
         attached = null
         state.loop?.cancel(); state.loop = null
+        state.watched?.removeListener(state.listener); state.watched = null
         state.layer.clear()
         val frame = state.frame
         state.frame = null
@@ -227,6 +296,8 @@ internal class FrameTextRunner(context: Context) {
         var logged = false
         while (main.isActive) {
             delay(FrameTextTuning.SAMPLE_INTERVAL_MS)
+            watch(state)
+            checkPositionJump(state)
             val surface = state.player.videoSurfaceView as? TextureView ?: continue
             if (!state.player.isShown || !surface.isAvailable) continue
             val (width, height) = frameTextSampleSize(surface.width, surface.height) ?: continue
@@ -242,8 +313,13 @@ internal class FrameTextRunner(context: Context) {
                 val captureMs = SystemClock.elapsedRealtime() - started
                 val interval = if (lastStart == 0L) 0L else started - lastStart
                 lastStart = started
+                val generation = state.generation
                 val chips = withContext(workerDispatcher) { state.pipeline.process(frameSample(frame), captureMs, interval) }
-                if (attached === state) state.layer.show(chips, width, height)
+                // A reset during the sample means this frame may predate the jump.
+                if (attached === state && state.generation == generation) {
+                    state.layer.show(chips, width, height)
+                    state.shownGeneration = generation
+                }
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) {
                 // No exception text: it could describe frame content.

@@ -1,5 +1,6 @@
 package net.fstab.tachiai.presentation
 
+import androidx.media3.common.Player
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -26,6 +27,10 @@ internal object FrameTextTuning {
     const val MIN_LINE_HEIGHT_FRACTION = 0.03f
     /** Intersection over union at or above which two boxes are roughly the same place. */
     const val SAME_BOX_OVERLAP = 0.5f
+    /** A new stable block replaces a held one covering this fraction of the smaller box. */
+    const val REPLACE_OVERLAP = 0.3f
+    /** A position change this far from what playback explains counts as a jump. */
+    const val JUMP_TOLERANCE_MS = 3_000L
     /** A held translation goes after its source block is missing or changed for this many samples. */
     const val MISSES_TO_DROP = 2
     const val MAX_HELD = 8
@@ -171,6 +176,32 @@ internal fun sameFrameTextBox(a: ViewerRect, b: ViewerRect, overlap: Float = Fra
     return union > 0 && intersection >= union * overlap
 }
 
+/** True when the shared area is at least [fraction] of the smaller box, such as a new caption over an old one. */
+internal fun frameTextBoxesOverlap(a: ViewerRect, b: ViewerRect, fraction: Float = FrameTextTuning.REPLACE_OVERLAP): Boolean {
+    val w = min(a.left + a.width, b.left + b.width) - max(a.left, b.left)
+    val h = min(a.top + a.height, b.top + b.height) - max(a.top, b.top)
+    if (w <= 0 || h <= 0) return false
+    val smaller = min(a.width.toLong() * a.height, b.width.toLong() * b.height)
+    return smaller > 0 && w.toLong() * h >= smaller * fraction
+}
+
+/**
+ * True when the picture may have jumped between two samples: the position
+ * moved by more than [toleranceMs] away from what playing (or staying paused)
+ * explains. Catches jumps that report no seek, such as a resume after a hold.
+ */
+internal fun frameTextPositionJumped(
+    previousPositionMs: Long,
+    previousAtMs: Long,
+    positionMs: Long,
+    atMs: Long,
+    playing: Boolean,
+    toleranceMs: Long = FrameTextTuning.JUMP_TOLERANCE_MS,
+): Boolean {
+    val expected = if (playing) atMs - previousAtMs else 0L
+    return abs((positionMs - previousPositionMs) - expected) > toleranceMs
+}
+
 /**
  * Only stable text is translated: the same recognized text in roughly the same
  * box in two consecutive samples, with lines at least a minimum height. A held
@@ -185,6 +216,7 @@ internal class FrameTextStability(
     private class Held(val id: Long, val text: String, var box: ViewerRect, var lineHeight: Int, var misses: Int = 0)
     private var previous: List<FrameTextBlock> = emptyList()
     private val held = mutableListOf<Held>()
+    private val replaced = mutableListOf<FrameTextBlock>()
     private var nextId = 1L
 
     fun update(blocks: List<FrameTextBlock>, frameHeight: Int): List<HeldFrameText> {
@@ -200,15 +232,27 @@ internal class FrameTextStability(
             else { unmatched.remove(match); entry.box = match.box; entry.lineHeight = match.lineHeight; entry.misses = 0 }
         }
         held.removeAll { it.misses >= missesToDrop }
+        // A replaced block stays suppressed while it is still read, so two
+        // overlapping texts cannot take turns.
+        replaced.retainAll { gone -> candidates.any { it.text == gone.text && sameFrameTextBox(it.box, gone.box) } }
         unmatched.forEach { block ->
-            if (held.size < maxHeld && previous.any { it.text == block.text && sameFrameTextBox(it.box, block.box) })
-                held += Held(nextId++, block.text, block.box, block.lineHeight)
+            if (!previous.any { it.text == block.text && sameFrameTextBox(it.box, block.box) }) return@forEach
+            if (replaced.any { it.text == block.text && sameFrameTextBox(it.box, block.box) }) return@forEach
+            // A new stable block replaces any held block it overlaps, so chips never
+            // stack. A name and its printed reading touch but belong together.
+            val candidate = HeldFrameText(0, block.text, block.box, block.lineHeight)
+            held.removeAll { old ->
+                (frameTextBoxesOverlap(old.box, block.box) &&
+                    !readingPair(HeldFrameText(old.id, old.text, old.box, old.lineHeight), candidate))
+                    .also { if (it) replaced += FrameTextBlock(old.text, old.box, old.lineHeight) }
+            }
+            if (held.size < maxHeld) held += Held(nextId++, block.text, block.box, block.lineHeight)
         }
         previous = candidates
         return held.map { HeldFrameText(it.id, it.text, it.box, it.lineHeight) }
     }
 
-    fun clear() { previous = emptyList(); held.clear() }
+    fun clear() { previous = emptyList(); held.clear(); replaced.clear() }
 }
 
 // ---- Pipeline ----
@@ -249,6 +293,24 @@ internal fun frameTextSampleLog(timing: FrameTextSampleTiming): String =
 
 internal fun frameTextTranslateLog(ms: Long, translated: Boolean): String =
     "translate ms=$ms result=${if (translated) "TRANSLATED" else "ORIGINAL"}"
+
+/**
+ * Player discontinuities that move the picture to another position or item:
+ * a seek (transport, scrub, skip, Back to live, a timing shift), its
+ * adjustment, a skipped ad or period, or a removed or changed item. Held text
+ * and chips from before it are dropped.
+ */
+internal fun frameTextResetsOn(reason: Int): Boolean = reason in setOf(
+    Player.DISCONTINUITY_REASON_SEEK,
+    Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT,
+    Player.DISCONTINUITY_REASON_SKIP,
+    Player.DISCONTINUITY_REASON_REMOVE,
+    Player.DISCONTINUITY_REASON_AUTO_TRANSITION,
+)
+
+internal enum class FrameTextResetCause { DISCONTINUITY, POSITION_JUMP, PLAYER_CHANGED }
+
+internal fun frameTextResetLog(cause: FrameTextResetCause): String = "reset cause=${cause.name}"
 
 internal fun frameTextStateLog(run: FrameTextRun, sampleWidth: Int = 0, sampleHeight: Int = 0): String =
     "state=${run.name}" + if (sampleWidth > 0 && sampleHeight > 0) " sample=${sampleWidth}x$sampleHeight" else ""
@@ -324,7 +386,10 @@ internal class FrameTextPipeline(
         }
     }
 
-    /** Forgets every frame-derived value; the next sample starts fresh. */
+    /**
+     * Forgets every frame-derived value; the next sample starts fresh and text
+     * must settle again. Used on detach and on any position discontinuity.
+     */
     fun clear() {
         synchronized(lock) { held = emptyList(); displays = emptyMap(); pending.clear(); originals.clear() }
         signature = null; blocks = emptyList(); stability.clear()

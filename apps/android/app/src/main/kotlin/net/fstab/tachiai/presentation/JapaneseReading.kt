@@ -136,6 +136,11 @@ internal fun readingAbove(reading: HeldFrameText, name: HeldFrameText): Boolean 
 
 private const val READING_OVERLAP = 0.6f
 
+/** True when one block is the kana reading printed directly above the other, a short kanji name. */
+internal fun readingPair(a: HeldFrameText, b: HeldFrameText): Boolean =
+    kanaOnly(a.text) && shortKanjiOnly(b.text) && readingAbove(a, b) ||
+        kanaOnly(b.text) && shortKanjiOnly(a.text) && readingAbove(b, a)
+
 /**
  * Chooses each held block's display. With [romanize] (the device language
  * is not Japanese), a short kanji-only name with a kana-only reading directly

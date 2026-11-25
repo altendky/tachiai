@@ -70,10 +70,8 @@ class ProvidersActivity : ComponentActivity() {
     private fun remove(id: String) = mutate {
         runBlocking { ProviderPreferenceWrites.await(id) }
         providerInstanceStore(this).remove(id) { legacyProviderSettings(this) }.also {
-            // A removed instance's Source language choice is not kept (#643).
-            ProviderTextTranslation.update(this) { settings ->
-                settings.copy(sourceLanguages = settings.sourceLanguages - id)
-            }
+            // A removed instance's Source language and text-in-video choices are not kept (#643, #664).
+            ProviderTextTranslation.update(this) { it.withoutInstance(id) }
         }
     }
     private fun mutate(action: () -> List<ProviderInstance>): Job? {

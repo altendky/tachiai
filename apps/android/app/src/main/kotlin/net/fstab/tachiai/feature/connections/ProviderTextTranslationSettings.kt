@@ -90,10 +90,11 @@ internal fun ProviderSourceLanguageSettings(instance: ProviderInstance, instance
     val choices = listOf(ProviderSourceLanguage.AUTO) + PROVIDER_SOURCE_LANGUAGES.map { ProviderSourceLanguage(it.first) }
     fun label(language: ProviderSourceLanguage) =
         providerSourceLanguageLabel(language) + if (language == default) " (default)" else ""
-    SettingsSection("Source language", "The language of this provider's titles, used when Translate provider text is on in Providers. " +
+    SettingsSection("Source language", "The language of this provider's titles, used when Translate provider text is on in Providers, " +
+        "and of text in its video when Translate text in video is on. " +
         "Auto detects each text's language and keeps the original when unsure; a fixed language treats all of this " +
         "provider's text as that language, which avoids misdetecting short titles such as kanji-only Japanese.",
-        status = if (settings.enabled) null else "Translation is off")
+        status = if (settings.enabled || settings.frameText(instance.id)) null else "Translation is off")
     Box {
         OutlinedButton(onClick = { expanded = true }, enabled = enabled,
             modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Source language: ${label(current)}" },
@@ -112,5 +113,56 @@ internal fun ProviderSourceLanguageSettings(instance: ProviderInstance, instance
                 }, modifier = Modifier.semantics { selected = language == current })
             }
         }
+    }
+}
+
+private const val FRAME_TEXT_HELP = "Recognizes text that appears in the picture of this provider's video, such as name, " +
+    "result and score cards, and shows a translation over it in this device's language. It runs on the main " +
+    "(full-size) video only, never the floating feed. Only text that stays put is translated; moving text such as " +
+    "tickers is skipped, and each translation stays until its text changes or disappears." +
+    "\n\nThis is the default for this provider. While watching, More → Translate text in video turns it on or off " +
+    "for that stream only; the next stream starts from this default." +
+    "\n\nRecognition and translation run on this device with Google ML Kit. Video frames and recognized text are " +
+    "kept in memory only: they are not saved, logged or sent to any service. It uses the Source language above and " +
+    "the same translation models as Translate provider text, downloaded from Google once for each source language, " +
+    "about 30 MB each. ML Kit also reports diagnostics, such as timing, image size and the language pair, but not " +
+    "the images or text."
+
+/** A provider instance's Translate text in video default (#664), beside its Source language. Off by default. */
+@Composable
+internal fun ProviderFrameTextSettings(instance: ProviderInstance, instances: List<ProviderInstance>, enabled: Boolean) {
+    val context = LocalContext.current
+    val settings by ProviderTextTranslation.settings.collectAsState()
+    val on = settings.frameText(instance.id)
+    val target = translationTargetLanguage(LocalConfiguration.current.locales[0])
+    val language = settings.sourceLanguage(ProviderTextSource(instance.service, instance.id))
+    // The shared translator (and ML Kit) is created only once this is on.
+    val availabilityFlow = remember(on) {
+        if (on) ProviderTextTranslation.translator(context).availability
+        else MutableStateFlow<TranslationAvailability>(TranslationAvailability.Idle)
+    }
+    val availability by availabilityFlow.collectAsState()
+    LaunchedEffect(on, target, language) {
+        if (on && target != null && !language.auto) ProviderTextTranslation.translator(context).prepare(listOf(language.tag), target)
+    }
+    Column {
+        SettingsSection("Text in video", FRAME_TEXT_HELP)
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusIndicator()
+            .toggleable(on, enabled = enabled, role = Role.Checkbox) { value ->
+                val ids = instances.map { it.id }.toSet()
+                ProviderTextTranslation.update(context) { it.withFrameText(instance, value, ids) }
+            }, verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(on, onCheckedChange = null, enabled = enabled)
+            Text("Translate text in video", Modifier.padding(start = 8.dp))
+        }
+        Text(when {
+            !on -> "Off. Text in the video is shown as broadcast."
+            target == null -> "Translation is unavailable: this device language is not supported."
+            else -> when (availability) {
+                is TranslationAvailability.Downloading, is TranslationAvailability.DownloadFailed,
+                is TranslationAvailability.TargetUnsupported -> translationAvailabilityText(true, availability)
+                else -> "On. Steady text in the main video is translated in place."
+            }
+        }, style = MaterialTheme.typography.bodySmall)
     }
 }

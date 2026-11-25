@@ -616,8 +616,9 @@ rather than a bar that takes space from the feeds
 - **Top bar:** **‹ Stop** (formerly Back to sources, still asking "Stop
   playback?"), then **Audio**, **Timing** (pair only) and **⋯** (More) at the end.
 - **Bottom area:** each live feed's **Back to live A/B** with its hint, then
-  **Play/Pause** for the pair or single feed. On replays it also holds the
-  position row, scrub bar and skips ([below](#replay-navigation--655-part-1)).
+  **Play/Pause** for the pair or single feed. It also holds the position row,
+  scrub bar and skips, on replays ([below](#replay-navigation--655-part-1))
+  and on live feeds ([#660](#live-skip-and-scrub--660)).
 
 Both bars sit on a dark translucent band (black at 60%) with light text, so
 they stay legible over any video in light and dark themes; buttons keep their
@@ -655,8 +656,8 @@ the top bar, above the transport or a bottom panel and beside a side panel;
 the pane and its video keep their bounds.
 
 Remote handling is unchanged: the first key reveals the overlay without acting,
-except Select on a focused pane recovery button (#559) and replay Left/Right
-skips (#655), and focus restoration and the #617 protections remain. Keys
+except Select on a focused pane recovery button (#559) and Left/Right skips
+(#655, live #660), and focus restoration and the #617 protections remain. Keys
 while the overlay is hidden pass through one path. The phone orientation
 action stays in ⋯, and floating-feed drag and tap-to-swap are unchanged.
 
@@ -679,10 +680,9 @@ and [#656](https://github.com/altendky/tachiai/issues/656#issuecomment-710978748
   **1 min ⏩**. They share up to 560 dp equally; screen readers hear "Back 1
   minute" through "Forward 1 minute". There are no ±10 min skips, no speed
   control and no jump to the broadcast's clock time (a later follow-up).
-- **Live:** while any playing feed is live, the position row and skips are
-  hidden and the live controls (Back to live, catch-up) are unchanged. A pair
-  of one live and one replay feed counts as live. Rewinding a live buffer is
-  [#660](https://github.com/altendky/tachiai/issues/660).
+- **Live:** live feeds and live + replay pairs have the same position row,
+  skips and scrub bar, within what each live feed's window holds
+  ([below](#live-skip-and-scrub--660)). Back to live stays.
 
 **Target and pairs.** The position shown is the primary feed's (after Swap,
 the other feed's); if the primary is waiting or failed, the other replay's. A
@@ -692,7 +692,8 @@ amount is shortened so neither feed leaves its range (a forward skip stops one
 second before the nearer end, so skipping never ends a feed). If either feed
 can't move — an advertisement, a live or unseekable feed, a feed still
 preparing or buffering, or one at its start or end — neither moves and a brief
-notice names the feed, such as "B is at its end; neither feed moved." A pair
+notice names the feed, such as "B is at its end; neither feed moved." Live
+feeds have their own range ([below](#live-skip-and-scrub--660)). A pair
 that is missing a feed does not skip the remaining one. The skip holds both
 feeds, seeks both, waits up to 8 s for both held targets and resumes them if
 they were playing; Pause during that wait leaves both at their targets,
@@ -711,18 +712,19 @@ second without a change, commits; Back abandons it. Up/Down leave the bar and
 commit a pending choice. The larger steps followed the user's SHIELD trial on
 2026-11-23, where 10 s steps were too slow on 3–5 h replays.
 
-**TV remote.** While the overlay is hidden on a replay, **Left/Right skip
-−10 s/+10 s** and keep it hidden, flashing the new position as a brief notice
-such as `+10 s · 2:14:15 / 4:45:00`; a held key skips once. On live feeds they
-reveal the overlay as before. **Up/Down** reveal it on the last focused control
-and **Select** reveals it on Play/Pause. Media **fast-forward/rewind skip
-±10 s** (once per press) on replays; Play/Pause keys are unchanged. Focus moves
-top bar ↔ scrub bar ↔ transport with Up/Down.
+**TV remote.** While the overlay is hidden on a replay or live feed,
+**Left/Right skip −10 s/+10 s** and keep it hidden, flashing the new position
+as a brief notice such as `+10 s · 2:14:15 / 4:45:00`; a held key skips once.
+Where nothing can skip (a live feed that isn't seekable) they reveal the
+overlay. **Up/Down** reveal it on the last focused control and **Select**
+reveals it on Play/Pause. Media **fast-forward/rewind skip ±10 s** (once per
+press) wherever skipping is available; Play/Pause keys are unchanged. Focus
+moves top bar ↔ scrub bar ↔ transport with Up/Down.
 
 **Phone.** A **double tap** on the left or right half of the video skips
 −10 s/+10 s, and each further quick tap skips again. A single tap still shows
 or hides the overlay, after the double-tap interval while skipping is
-available (immediately on live views). The floating feed's tap still swaps at
+available (immediately otherwise). The floating feed's tap still swaps at
 once and has no double tap. With the overlay hidden, a double-tap skip flashes
 the position like the TV.
 
@@ -742,6 +744,57 @@ Pair skip planning, time formatting, key mapping, tap disambiguation and the
 pair/single-feed seek transactions have JVM tests. New instrumentation tests
 for the transport row, scrub focus, TV keys and phone double tap compile; they
 have not been run on a device for this change.
+
+### Live skip and scrub — #660
+
+Live feeds, and pairs of a live and a replay feed, have the same transport as
+replays: ±10 s and ±1 min skips, the scrub bar, TV Left/Right while the
+overlay is hidden, fast-forward/rewind and phone double tap
+([#660](https://github.com/altendky/tachiai/issues/660),
+[decision 4, 2026-11-25](https://github.com/altendky/tachiai/issues/660#issuecomment-7167711457)).
+They work within what the feed's window currently holds: a live ABEMA feed's
+rewind buffer, or a Twitch feed's provider window. Skipping never builds
+delay; older footage that was never recorded can't be reached.
+
+- **Position:** the time reads how far the target feed is behind its live
+  point, such as `−1:35` (`h:mm:ss` from an hour), or **LIVE** within about
+  2 s of it. Screen readers hear "1:35 behind live" or "Live". There is no
+  total.
+- **Scrub bar:** spans the oldest available point on the left to the live
+  point on the right. While choosing, the time shows the pending target, such
+  as `→ −2:10` or `→ LIVE`. A pending choice keeps its distance behind live
+  while the window moves. Remote steps are 10 s.
+- **Forward:** stops at the nearer feed's live point, so skipping or scrubbing
+  to the right end returns that feed to live and keeps the pair's offset. With
+  that feed already live, a forward skip moves neither and says
+  "A is live; neither feed moved." ("Already live." for a single feed).
+- **Backward:** stops at the tightest feed's oldest point, about 5 s inside
+  its window so the target isn't dropped while the pair settles. At that point
+  the existing notice applies, such as "B is at its start; neither feed
+  moved."
+- **Pairs:** a skip moves both feeds by one amount, as for replays. Each
+  **Back to live A/B** stays, and still breaks the offset. A live feed's
+  target is confirmed on its content clock, since its window slides while the
+  pair is held. **Start over** is shown only on replay views.
+- **Unavailable:** a live feed that isn't seekable, or has no live point or
+  stable content clock, has no transport; the view keeps LIVE / Back to live
+  and Left/Right reveal the overlay, as before.
+
+The live point is the player's default position in the current window. It is
+recomputed as the window refreshes, so the distance behind live can move by up
+to about a segment between refreshes. Media3's live speed control may also
+nudge a resumed feed toward its target offset.
+
+While a feed is behind the provider's own window, only the rendition the
+rewind buffer recorded is available; automatic quality could select another
+rendition that was never recorded. Track selection is not pinned for this
+yet (a follow-up with [#618](https://github.com/altendky/tachiai/issues/618)).
+
+The live skip plan (bounds, clamping, the live point, mixed pairs and
+content-clock settlement while the window slides) and the position text have
+JVM tests. New instrumentation tests for live position, hidden Left/Right,
+the live point and live scrubbing compile; they have not been run on a device
+for this change.
 
 ### Scrub previews — #673
 

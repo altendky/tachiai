@@ -1240,8 +1240,8 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    // Replay skip/scrub (#655). Both feeds of a pair move by one amount, so the
-    // pair offset, its saved preference and Timing history are left alone, and
+    // Skip/scrub, replay or live (#655, #660). Both feeds of a pair move by
+    // one amount, so the pair offset, its saved preference and Timing history are left alone, and
     // the requested play state is kept: the pair resumes itself after a held
     // skip, and a single feed keeps playing through its seek.
     private fun requestSkip(delta: Long): NativePairSkipPlan {

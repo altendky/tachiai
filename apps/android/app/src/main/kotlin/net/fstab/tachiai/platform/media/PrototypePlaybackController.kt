@@ -271,9 +271,9 @@ internal class PrototypePlaybackController(
         return NativeSeekPlan(NativeSeekOutcome.UNAVAILABLE)
     }
 
-    // Replay skip/scrub (#655). A pair moves both feeds together; a selected
-    // pair missing one feed does not move the other alone, which would lose
-    // their offset. A single feed seeks directly and keeps its play state.
+    // Skip/scrub, replay or live (#655, #660). A pair moves both feeds
+    // together; a selected pair missing one feed does not move the other
+    // alone, which would lose their offset. A single feed seeks directly and keeps its play state.
     fun seekTogether(deltaMs: Long): NativePairSkipPlan {
         if (closed) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         pair?.let { return it.seekTogether(deltaMs) }

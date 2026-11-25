@@ -48,8 +48,8 @@ internal class NativeMixedPair(
     private data class RecoveryPending(val side: NativeMixedSide, val generation: Long,
         val resume: Boolean, val continuation: BufferedContinuation?)
     private var recoveryPending: RecoveryPending? = null
-    // A replay skip or scrub moving both feeds by one amount (#655). It keeps
-    // the relative offset, so it records no timing settlement.
+    // A skip or scrub moving both feeds by one amount (#655, live #660). It
+    // keeps the relative offset, so it records no timing settlement.
     private data class SkipPending(val targets: List<NativeSkipTarget>, val resume: Boolean, val startedMs: Long,
         val generation: Long, val toleranceMs: Long, val statusBefore: String)
     private var skipPending: SkipPending? = null
@@ -387,10 +387,12 @@ internal class NativeMixedPair(
         return NativeSeekPlan(NativeSeekOutcome.REQUESTED)
     }
 
-    // Replay skip/scrub (#655): hold both, seek both by one checked movement,
-    // wait for both held targets, then resume if both were requested playing.
-    // The relative offset and its history are unchanged. If either feed cannot
+    // Skip/scrub (#655): hold both, seek both by one checked movement, wait
+    // for both held targets, then resume if both were requested playing. The
+    // relative offset and its history are unchanged. If either feed cannot
     // move, neither is sought; a refused second dispatch rolls the first back.
+    // A live feed's target is confirmed on its content clock, since its
+    // window can slide while the pair is held (#660).
     fun seekTogether(deltaMs: Long): NativePairSkipPlan {
         lastSkipPlan = null
         if (closed || busy) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
@@ -463,8 +465,9 @@ internal class NativeMixedPair(
             val elapsed = try { Math.subtractExact(clockMs(), skip.startedMs) } catch (_: ArithmeticException) { Long.MAX_VALUE }
             return skip.targets.map { target ->
                 val value = snapshot(member(target.side))
-                NativePendingSeekDiagnostic(target.side, target.targetMs, value?.positionMs, false,
-                    value != null && !value.live && !value.dynamic, value?.state, value?.playing,
+                NativePendingSeekDiagnostic(target.side, target.targetClockMs,
+                    if (target.liveClock) value?.contentTimeMs else value?.positionMs, target.liveClock,
+                    value != null && (value.live || value.dynamic) == target.liveClock, value?.state, value?.playing,
                     value?.playWhenReady, value?.playingAd, skip.toleranceMs, elapsed)
             }
         }
@@ -700,13 +703,15 @@ internal class NativeMixedPair(
         }
         if (values.values.any { !heldReady(it) }) return
         if (transaction.targets.any { target ->
-            val position = values[target.side]?.positionMs
-            position == null || kotlin.math.abs(position - target.targetMs) > transaction.toleranceMs
+            val value = values[target.side]
+            val clock = if (target.liveClock) value?.contentTimeMs else value?.positionMs
+            value == null || (value.live || value.dynamic) != target.liveClock || clock == null ||
+                kotlin.math.abs(clock - target.targetClockMs) > transaction.toleranceMs
         }) return
         if (!admitted()) return
-        if (transaction.resume) resumeTiming(transaction.generation, transaction.targets.associate { it.side to false },
+        if (transaction.resume) resumeTiming(transaction.generation, transaction.targets.associate { it.side to it.liveClock },
             null, "Skip", ::current, TimingResumeProof(transaction.targets.map {
-                TimingTargetProof(it.side, member(it.side), it.targetMs, false, transaction.toleranceMs)
+                TimingTargetProof(it.side, member(it.side), it.targetClockMs, it.liveClock, transaction.toleranceMs)
             }, transaction.startedMs, "Skip target"), successStatus = transaction.statusBefore)
         else status = transaction.statusBefore
         if (current()) { skipPending = null; busy = false }

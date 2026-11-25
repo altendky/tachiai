@@ -4,8 +4,9 @@ import android.view.KeyEvent
 import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
 
-// Replay navigation (#655 part 1): on-screen skips of 10 s and 1 min, remote
-// and gesture skips of 10 s, and a scrub bar. Larger jumps use the scrub bar.
+// Replay navigation (#655 part 1), also on live feeds (#660): on-screen skips
+// of 10 s and 1 min, remote and gesture skips of 10 s, and a scrub bar.
+// Larger jumps use the scrub bar.
 internal object ViewerTransportSteps {
     const val SHORT_MS = 10_000L
     const val LONG_MS = 60_000L
@@ -13,6 +14,8 @@ internal object ViewerTransportSteps {
     const val SCRUB_COMMIT_IDLE_MS = 1_000L
     // A scrub key held this long switches to large steps.
     const val SCRUB_ACCELERATE_AFTER_MS = 500L
+    // A live feed this close behind its live point reads LIVE (#660).
+    const val LIVE_EDGE_MS = 2_000L
 }
 
 // h:mm:ss, or m:ss while the total is under an hour. Negative values show 0.
@@ -29,6 +32,25 @@ private fun pad(value: Long) = value.toString().padStart(2, '0')
 internal fun formatPlaybackPosition(positionMs: Long, durationMs: Long): String =
     "${formatPlaybackTime(positionMs, durationMs)} / ${formatPlaybackTime(durationMs, durationMs)}"
 
+// A live feed's distance behind its live point: "−1:35" (h:mm:ss from an
+// hour), or "LIVE" within about 2 s of it (#660).
+internal fun formatBehindLive(behindMs: Long): String =
+    if (behindMs <= ViewerTransportSteps.LIVE_EDGE_MS) "LIVE" else "−${formatPlaybackTime(behindMs)}"
+
+// The position row's time. On a replay the scrub bar spans 0 to the duration;
+// on a live feed it spans the oldest available point to the live point, so
+// spanMs is the live point and the position reads as the distance behind it.
+internal fun formatTransportPosition(positionMs: Long, spanMs: Long, live: Boolean): String =
+    if (live) formatBehindLive(spanMs - positionMs) else formatPlaybackPosition(positionMs, spanMs)
+
+// The same position for screen readers: "2:14:05 of 4:45:00", "1:35 behind
+// live" or "Live".
+internal fun describeTransportPosition(positionMs: Long, spanMs: Long, live: Boolean): String {
+    if (!live) return "${formatPlaybackTime(positionMs, spanMs)} of ${formatPlaybackTime(spanMs, spanMs)}"
+    val behind = spanMs - positionMs
+    return if (behind <= ViewerTransportSteps.LIVE_EDGE_MS) "Live" else "${formatPlaybackTime(behind)} behind live"
+}
+
 // "+10 s", "−1 min", "+1 min 30 s".
 internal fun formatSkipAmount(deltaMs: Long): String {
     val sign = if (deltaMs < 0) "−" else "+"
@@ -44,8 +66,9 @@ internal fun formatSkipAmount(deltaMs: Long): String {
 
 internal enum class ViewerHiddenKey { SKIP_BACK, SKIP_FORWARD, REVEAL, REVEAL_ON_PLAY }
 
-// A remote key while the overlay is hidden. On a replay, Left/Right skip 10 s
-// and leave the overlay hidden; on live feeds they reveal it. Select reveals it
+// A remote key while the overlay is hidden. While skipping is available
+// (replays and seekable live feeds alike, #660), Left/Right skip 10 s and
+// leave the overlay hidden; otherwise they reveal it. Select reveals it
 // focused on Play/Pause; Up/Down reveal the last focused control.
 internal fun viewerHiddenKey(keyCode: Int, skippable: Boolean): ViewerHiddenKey = when (keyCode) {
     KeyEvent.KEYCODE_DPAD_LEFT -> if (skippable) ViewerHiddenKey.SKIP_BACK else ViewerHiddenKey.REVEAL
@@ -65,15 +88,18 @@ internal fun viewerMediaSkipMs(keyCode: Int): Long? = when (keyCode) {
 // Left/Right on the scrub bar step by 1% of the duration (at least 10 s), so
 // a 3:24 replay moves about 2 min per press. After half a second of holding,
 // steps grow to 5% (about 10 min there). The caller clamps to [0, duration].
+// On a live feed the duration is the bar's span, a few minutes, so steps
+// stay at 10 s.
 internal fun viewerScrubStepMs(heldMs: Long, durationMs: Long): Long {
     val duration = durationMs.coerceAtLeast(0)
     val base = maxOf(ViewerTransportSteps.SHORT_MS, duration / 100)
     return if (heldMs >= ViewerTransportSteps.SCRUB_ACCELERATE_AFTER_MS) maxOf(base, duration / 20) else base
 }
 
-// The scrub bar's pending target while choosing, before it commits.
-internal fun formatScrubTarget(targetMs: Long, durationMs: Long): String =
-    "→ ${formatPlaybackPosition(targetMs, durationMs)}"
+// The scrub bar's pending target while choosing, before it commits:
+// "→ 1:42:10 / 3:24:00", or "→ −1:35" or "→ LIVE" on a live feed.
+internal fun formatScrubTarget(targetMs: Long, durationMs: Long, live: Boolean = false): String =
+    "→ ${formatTransportPosition(targetMs, durationMs, live)}"
 
 internal enum class ViewerTap { TOGGLE_NOW, DEFER_TOGGLE, SKIP_BACK, SKIP_FORWARD }
 
@@ -113,7 +139,9 @@ internal fun viewerSkipRefusal(plan: NativePairSkipPlan, forward: Boolean, pair:
     return when (plan.outcome) {
         NativeSeekOutcome.REQUESTED, NativeSeekOutcome.CLAMPED -> null
         NativeSeekOutcome.NO_CHANGE -> when {
-            limited != null && forward -> "$limited is at its end; neither feed moved."
+            limited != null && plan.limitedAtLive -> "$limited is live; neither feed moved."
+            plan.limitedAtLive -> "Already live."
+            limited != null && forward ->"$limited is at its end; neither feed moved."
             limited != null -> "$limited is at its start; neither feed moved."
             plan.limitedBy == null -> null
             forward -> "At the end."

@@ -55,7 +55,8 @@ class NativePairSkipTest {
         assertTrue(plan.targets.isEmpty())
     }
 
-    @Test fun liveUnsupportedOrUnavailableFeedsRefuseBoth() {
+    @Test fun unsupportedOrUnavailableFeedsRefuseBoth() {
+        // A live feed without a live point can't be bounded (#660).
         val live = replay(50_000).copy(live = true, dynamic = true, windowStartMs = 1_000_000)
         assertEquals(NativeSeekOutcome.UNSUPPORTED, nativePairSkipPlan(mapOf(A to replay(1), B to live), 10_000).outcome)
         assertEquals(NativeSeekOutcome.UNSUPPORTED,
@@ -74,6 +75,110 @@ class NativePairSkipTest {
         assertEquals(NativeSeekOutcome.CLAMPED, plan.outcome)
         assertEquals(-100_000L, plan.movementMs)
         assertEquals(NativeSeekOutcome.CLAMPED, nativePairSkipPlan(mapOf(A to replay(100_000)), Long.MAX_VALUE).outcome)
+    }
+
+    // A live window of 180 s whose live point is 170 s in, starting at content
+    // time 1,000,000 (#660).
+    private fun live(position: Long, livePoint: Long = 170_000, windowStart: Long = 1_000_000, playing: Boolean = true) =
+        NativeTimingSnapshot(position, 180_000, position + 5_000, 15_000, windowStart, livePoint, true, true, true, true,
+            false, playing, playing, 3, 1f)
+
+    @Test fun liveSkipsMoveWithinTheWindowAndTargetTheContentClock() {
+        val plan = nativePairSkipPlan(mapOf(A to live(100_000)), -10_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        assertEquals(listOf(NativeSkipTarget(A, 100_000, 90_000, liveClock = true, targetClockMs = 1_090_000)), plan.targets)
+        assertFalse(plan.limitedAtLive)
+        assertEquals(NativeSeekOutcome.REQUESTED, nativePairSkipPlan(mapOf(A to live(100_000)), 60_000).outcome)
+    }
+
+    @Test fun liveForwardStopsAtTheLivePoint() {
+        val clamped = nativePairSkipPlan(mapOf(A to live(165_000)), 10_000)
+        assertEquals(NativeSeekOutcome.CLAMPED, clamped.outcome)
+        assertEquals(5_000L, clamped.movementMs)
+        assertEquals(170_000L, clamped.targets.single().targetMs)
+        assertEquals(A, clamped.limitedBy)
+        assertTrue(clamped.limitedAtLive)
+        for (position in listOf(170_000L, 175_000L)) { // At or ahead of the computed live point.
+            val atLive = nativePairSkipPlan(mapOf(A to live(position)), 10_000)
+            assertEquals(NativeSeekOutcome.NO_CHANGE, atLive.outcome)
+            assertEquals(A, atLive.limitedBy)
+            assertTrue(atLive.limitedAtLive)
+            assertTrue(atLive.targets.isEmpty())
+        }
+        // The live point is never past the window's end.
+        assertEquals(30_000L, nativePairSkipPlan(mapOf(A to live(150_000, livePoint = 400_000)), 60_000).movementMs)
+    }
+
+    @Test fun liveBackwardClampsAtTheOldestPointAndNeverBuildsDelay() {
+        val clamped = nativePairSkipPlan(mapOf(A to live(8_000)), -60_000)
+        assertEquals(NativeSeekOutcome.CLAMPED, clamped.outcome)
+        assertEquals(LIVE_SKIP_START_MARGIN_MS, clamped.targets.single().targetMs)
+        assertFalse(clamped.limitedAtLive)
+        val oldest = nativePairSkipPlan(mapOf(A to live(3_000)), -10_000)
+        assertEquals(NativeSeekOutcome.NO_CHANGE, oldest.outcome)
+        assertEquals(A, oldest.limitedBy)
+        assertFalse(oldest.limitedAtLive)
+        // Start over's extreme request also stops at the oldest point.
+        assertEquals(-95_000L, nativePairSkipPlan(mapOf(A to live(100_000)), -Long.MAX_VALUE).movementMs)
+    }
+
+    @Test fun aLivePairKeepsItsOffsetAndReturnsTheNearerFeedToLive() {
+        // A is 20 s behind live, B 50 s: one minute forward stops with A live.
+        val plan = nativePairSkipPlan(mapOf(A to live(150_000), B to live(120_000, windowStart = 7_000_000)), 60_000)
+        assertEquals(NativeSeekOutcome.CLAMPED, plan.outcome)
+        assertEquals(20_000L, plan.movementMs)
+        assertEquals(A, plan.limitedBy)
+        assertTrue(plan.limitedAtLive)
+        assertEquals(listOf(170_000L, 140_000L), plan.targets.map { it.targetMs })
+        assertEquals(listOf(1_170_000L, 7_140_000L), plan.targets.map { it.targetClockMs })
+        // With A live, a forward skip moves neither.
+        val atLive = nativePairSkipPlan(mapOf(A to live(170_000), B to live(140_000)), 10_000)
+        assertEquals(NativeSeekOutcome.NO_CHANGE, atLive.outcome)
+        assertEquals(A, atLive.limitedBy)
+        assertTrue(atLive.limitedAtLive)
+        // Backward is limited by the feed nearest its oldest point.
+        val back = nativePairSkipPlan(mapOf(A to live(150_000), B to live(20_000)), -60_000)
+        assertEquals(-(20_000L - LIVE_SKIP_START_MARGIN_MS), back.movementMs)
+        assertEquals(B, back.limitedBy)
+    }
+
+    @Test fun aMixedLiveAndReplayPairMovesBothByOneAmount() {
+        val back = nativePairSkipPlan(mapOf(A to live(100_000), B to replay(50_000)), -60_000)
+        assertEquals(NativeSeekOutcome.CLAMPED, back.outcome)
+        assertEquals(-50_000L, back.movementMs)
+        assertEquals(B, back.limitedBy)
+        assertEquals(listOf(NativeSkipTarget(A, 100_000, 50_000, true, 1_050_000), NativeSkipTarget(B, 50_000, 0)),
+            back.targets)
+        val forward = nativePairSkipPlan(mapOf(A to live(100_000), B to replay(50_000)), 60_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, forward.outcome)
+        assertEquals(listOf(160_000L, 110_000L), forward.targets.map { it.targetMs })
+        val toLive = nativePairSkipPlan(mapOf(A to replay(50_000), B to live(150_000)), 60_000)
+        assertEquals(20_000L, toLive.movementMs)
+        assertEquals(B, toLive.limitedBy)
+        assertTrue(toLive.limitedAtLive)
+        // A replay nearer its end than the live feed is to live limits as before.
+        val end = nativePairSkipPlan(mapOf(A to replay(595_000), B to live(100_000)), 60_000)
+        assertEquals(A, end.limitedBy)
+        assertFalse(end.limitedAtLive)
+        assertEquals(600_000L - SKIP_END_MARGIN_MS - 595_000L, end.movementMs)
+    }
+
+    @Test fun liveFeedsWithoutAStableClockOrInsideTheirWindowRefuse() {
+        val noClock = nativePairSkipPlan(mapOf(A to live(100_000).copy(windowStartMs = null)), -10_000)
+        assertEquals(NativeSeekOutcome.UNSUPPORTED, noClock.outcome)
+        assertEquals(A, noClock.blockedBy)
+        assertEquals(NativeSeekOutcome.UNSUPPORTED,
+            nativePairSkipPlan(mapOf(A to live(100_000).copy(defaultPositionMs = 0)), -10_000).outcome)
+        assertEquals(NativeSeekOutcome.UNSUPPORTED,
+            nativePairSkipPlan(mapOf(A to live(100_000).copy(seekable = false), B to replay(1)), -10_000).outcome)
+        // A paused feed that slid out of its window plays from its buffer, not a seek.
+        val expired = nativePairSkipPlan(mapOf(A to live(-2_000)), -10_000)
+        assertEquals(NativeSeekOutcome.OUTSIDE_WINDOW, expired.outcome)
+        assertEquals(A, expired.blockedBy)
+        assertEquals(NativeSeekOutcome.AD_BLOCKED,
+            nativePairSkipPlan(mapOf(A to live(100_000).copy(playingAd = true)), -10_000).outcome)
+        assertEquals(NativeLiveSkipRange(LIVE_SKIP_START_MARGIN_MS, 170_000, 100_000), nativeLiveSkipRange(live(100_000)))
+        assertNull(nativeLiveSkipRange(replay(100_000)))
     }
 
     private class Member(var sample: NativeTimingSnapshot) : NativePairMember {
@@ -214,5 +319,78 @@ class NativePairSkipTest {
         assertSame(NativeSeekOutcome.REQUESTED, both.seekTogether(-10_000).outcome)
         assertEquals(listOf(90_000L), first.seeks)
         assertEquals(listOf(20_000L), second.seeks)
+    }
+
+    // A held live window can slide before the seek settles: positions drop
+    // while the content clock stays put, and that is what settles (#660).
+    private fun slide(member: Member, byMs: Long) {
+        member.sample = member.sample.copy(positionMs = checkNotNull(member.sample.positionMs) - byMs,
+            windowStartMs = checkNotNull(member.sample.windowStartMs) + byMs, state = 3)
+    }
+
+    @Test fun aLivePairSkipSettlesOnTheContentClockWhileTheWindowSlides() {
+        val a = Member(live(150_000)); val b = Member(live(120_000, windowStart = 7_000_000))
+        a.buffering = true; b.buffering = true
+        var now = 0L
+        val pair = NativeMixedPair(a, b, { true }, {}, { now })
+        val status = pair.status
+        assertEquals(NativeSeekOutcome.REQUESTED, pair.seekTogether(-10_000).outcome)
+        assertEquals(listOf(140_000L), a.seeks)
+        assertEquals(listOf(110_000L), b.seeks)
+        val pending = pair.pendingSeekDiagnostics
+        assertEquals(listOf(1_140_000L, 7_110_000L), pending.map { it.targetClockMs })
+        assertTrue(pending.all { it.liveClock && it.clockKindMatches })
+        slide(a, 4_000); slide(b, 6_000)
+        now = 500
+        pair.poll()
+        assertFalse(pair.busy)
+        assertTrue(a.sample.playWhenReady && b.sample.playWhenReady)
+        assertTrue(pair.requestedAdjustmentValid)
+        assertNull(pair.lastTimingSettlement) // The pair offset is untouched.
+        assertEquals(status, pair.status)
+    }
+
+    @Test fun aLivePairSkipDoesNotSettleOnAMovedContentClock() {
+        val a = Member(live(150_000)); val b = Member(replay(50_000))
+        a.buffering = true
+        var now = 0L
+        val pair = NativeMixedPair(a, b, { true }, {}, { now })
+        assertEquals(NativeSeekOutcome.REQUESTED, pair.seekTogether(10_000).outcome)
+        assertEquals(listOf(160_000L), a.seeks)
+        assertEquals(listOf(60_000L), b.seeks)
+        // Same window position, but the window moved under it: not the target.
+        a.sample = a.sample.copy(windowStartMs = 1_004_000, state = 3)
+        now = 500
+        pair.poll()
+        assertTrue(pair.busy)
+        now = 8_000
+        pair.poll()
+        assertFalse(pair.busy)
+        assertFalse(a.sample.playWhenReady || b.sample.playWhenReady)
+    }
+
+    @Test fun aPausedLivePairSkipStaysPausedAtItsTargets() {
+        val a = Member(live(100_000, playing = false)); val b = Member(live(60_000, playing = false))
+        val pair = NativeMixedPair(a, b, { true }, {}, { 0L })
+        val plan = pair.seekTogether(60_000)
+        assertEquals(NativeSeekOutcome.REQUESTED, plan.outcome)
+        pair.poll()
+        assertFalse(pair.busy)
+        assertFalse(a.sample.playWhenReady || b.sample.playWhenReady)
+        assertEquals(160_000L, a.sample.positionMs)
+        assertEquals(120_000L, b.sample.positionMs)
+    }
+
+    @Test fun controllerSkipsASingleLiveFeedUpToItsLivePoint() {
+        val single = PrototypePlaybackController({ true }, singleFeed = true)
+        val member = Member(live(165_000))
+        single.setMember(NativeMixedSide.A, member)
+        val plan = single.seekTogether(10_000)
+        assertEquals(NativeSeekOutcome.CLAMPED, plan.outcome)
+        assertTrue(plan.limitedAtLive)
+        assertEquals(listOf(170_000L), member.seeks)
+        assertTrue(member.sample.playWhenReady)
+        assertEquals(NativeSeekOutcome.NO_CHANGE, single.seekTogether(10_000).outcome)
+        assertEquals(1, member.seeks.size)
     }
 }

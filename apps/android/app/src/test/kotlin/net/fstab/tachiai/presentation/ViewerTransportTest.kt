@@ -25,7 +25,7 @@ class ViewerTransportTest {
         assertEquals("−0 s", formatSkipAmount(-400))
     }
 
-    @Test fun hiddenOverlayLeftRightSkipOnlyReplays() {
+    @Test fun hiddenOverlayLeftRightSkipWhileSkippingIsAvailable() {
         assertEquals(ViewerHiddenKey.SKIP_BACK, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_LEFT, true))
         assertEquals(ViewerHiddenKey.SKIP_FORWARD, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_RIGHT, true))
         assertEquals(ViewerHiddenKey.REVEAL, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_LEFT, false))
@@ -100,5 +100,37 @@ class ViewerTransportTest {
         assertEquals("Skipping waits for B; neither feed moved.",
             viewerSkipRefusal(plan(NativeSeekOutcome.UNAVAILABLE, NativeMixedSide.B), true, true))
         assertEquals("Skipping is unavailable right now.", viewerSkipRefusal(plan(NativeSeekOutcome.OUTSIDE_WINDOW), true, true))
+    }
+
+    // #660: a live feed reads how far behind its live point it is.
+    @Test fun liveReadsBehindLiveOrLiveWithinTwoSeconds() {
+        assertEquals("LIVE", formatBehindLive(0))
+        assertEquals("LIVE", formatBehindLive(-3_000)) // Ahead of the computed live point.
+        assertEquals("LIVE", formatBehindLive(ViewerTransportSteps.LIVE_EDGE_MS))
+        assertEquals("−0:02", formatBehindLive(2_001))
+        assertEquals("−1:35", formatBehindLive(95_000))
+        assertEquals("−59:59", formatBehindLive(3_599_999))
+        assertEquals("−1:02:05", formatBehindLive(3_725_000))
+        // The bar spans the window to the live point; the position is behind it.
+        assertEquals("−1:35", formatTransportPosition(85_000, 180_000, live = true))
+        assertEquals("LIVE", formatTransportPosition(179_000, 180_000, live = true))
+        assertEquals("1:25 / 3:00", formatTransportPosition(85_000, 180_000, live = false))
+        assertEquals("→ −1:35", formatScrubTarget(85_000, 180_000, live = true))
+        assertEquals("→ LIVE", formatScrubTarget(180_000, 180_000, live = true))
+        assertEquals("→ 1:25 / 3:00", formatScrubTarget(85_000, 180_000))
+        assertEquals("1:35 behind live", describeTransportPosition(85_000, 180_000, live = true))
+        assertEquals("Live", describeTransportPosition(180_000, 180_000, live = true))
+        assertEquals("1:25 of 3:00", describeTransportPosition(85_000, 180_000, live = false))
+    }
+
+    @Test fun aSkipStoppedAtTheLivePointSaysSo() {
+        val atLive = NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = NativeMixedSide.A, limitedAtLive = true)
+        assertEquals("A is live; neither feed moved.", viewerSkipRefusal(atLive, true, true))
+        assertEquals("Already live.", viewerSkipRefusal(atLive, true, false))
+        // Reaching the live point part of the way is a successful skip.
+        assertNull(viewerSkipRefusal(atLive.copy(outcome = NativeSeekOutcome.CLAMPED, movementMs = 4_000), true, true))
+        // The oldest point keeps the replay start wording.
+        assertEquals("B is at its start; neither feed moved.", viewerSkipRefusal(
+            NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = NativeMixedSide.B), false, true))
     }
 }

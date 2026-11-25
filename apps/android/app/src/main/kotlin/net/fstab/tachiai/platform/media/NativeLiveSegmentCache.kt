@@ -8,25 +8,27 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 
-// #568: an in-memory rewind buffer for one live DASH feed. It keeps the media
-// this player fetched, plus segments of the rendition in use that would leave
-// the provider's window before the player reaches them, so a held feed can sit
+// #568: an in-memory rewind buffer for one live feed. It keeps the media this
+// player fetched, plus segments of the rendition in use that would leave the
+// provider's window before the player reaches them, so a held feed can sit
 // further behind live than the provider allows. Bodies live in shared memory
 // outside the Java heap (a direct buffer where that is unavailable),
 // are bounded by time and bytes, are never written, exported or logged, and are
-// discarded with the player.
+// discarded with the player. #618: it is provider-general. A format-specific
+// recorder (the DASH manifest parser, or NativeHlsLiveRecorder) declares the
+// segments; the span follows liveRewindSpanMs.
 internal class NativeLiveSegmentCache(
-    // Kept beyond the provider's own window.
-    private val retentionMs: Long = 120_000,
-    private val maxBytes: Long = 160L * 1024 * 1024,
+    private val maxBytes: Long = LIVE_REWIND_MAX_BYTES,
     // A segment this close to leaving the provider's window is fetched by the
-    // cache if the player has not fetched it yet.
+    // cache if the player has not fetched it yet (at most half the window).
     private val recordMarginMs: Long = 30_000,
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
         Thread(task, "native-live-segment-cache").apply { isDaemon = true }
     },
 ) : AutoCloseable {
-    // What the manifest declared a URI to be. Times are absolute (Unix ms).
+    // What the manifest or playlist declared a URI to be. Times are on one
+    // content clock per feed (Unix ms for DASH). HLS uses one period and
+    // adaptation, with each media playlist as a rendition.
     internal data class Segment(
         val periodKey: String, val adaptationIndex: Int, val track: Int,
         val representationId: String, val bandwidth: Int,
@@ -54,11 +56,12 @@ internal class NativeLiveSegmentCache(
     private val bodies = LinkedHashMap<URI, Stored>()
     private var storedBytes = 0L
     private val inFlight = HashSet<URI>()
-    // Rendition the player is using, per track type; and how far back it began.
+    // Rendition the player is using, per track type.
     private val activeRendition = HashMap<Int, Pair<String, Int>>()
-    private val earliestRequestedMs = HashMap<Int, Long>()
     private var newestEndMs = Long.MIN_VALUE
     private var providerWindowMs = 0L
+    // #618: the feed's current distance behind live, from its player.
+    @Volatile private var behindLiveMs = 0L
     @Volatile private var fetcher: ((URI) -> Unit)? = null
     @Volatile private var closed = false
 
@@ -67,12 +70,25 @@ internal class NativeLiveSegmentCache(
     // The player supplies its own bounded, policy-checked media transport.
     fun attach(fetch: (URI) -> Unit) { fetcher = fetch }
 
-    // Called by the manifest parser with every URI it declared this refresh.
-    fun publish(segments: Map<URI, Segment>, windowMs: Long) {
+    // The player reports how far behind live it is; the next refresh resizes.
+    fun setBehindLiveMs(value: Long) { behindLiveMs = value.coerceAtLeast(0) }
+
+    // How much history to keep behind the newest declared media.
+    fun retentionSpanMs(): Long = synchronized(lock) { liveRewindSpanMs(providerWindowMs, behindLiveMs) }
+
+    // How far beyond a provider window of this size the manifest may reach.
+    fun retentionBeyondWindowMs(windowMs: Long): Long =
+        liveRewindSpanMs(windowMs, behindLiveMs) - maxOf(0L, windowMs)
+
+    // Called by the recorder with every URI it declared this refresh. A
+    // recorder that declares one rendition per refresh (HLS) names it, so other
+    // renditions' declarations stay until they age out.
+    fun publish(segments: Map<URI, Segment>, windowMs: Long, rendition: String? = null) {
         val work = synchronized(lock) {
             if (closed) return
             providerWindowMs = maxOf(0L, windowMs)
-            declared.keys.retainAll { it in segments || it in bodies }
+            declared.entries.removeAll { (uri, segment) -> uri !in segments && uri !in bodies &&
+                (rendition == null || segment.representationId == rendition) }
             declared.putAll(segments)
             segments.values.forEach { if (!it.initialization) newestEndMs = maxOf(newestEndMs, it.absoluteEndMs) }
             evictLocked()
@@ -95,6 +111,8 @@ internal class NativeLiveSegmentCache(
     fun notePlayerRequest(uri: URI) { synchronized(lock) { if (!closed) notePlayerLocked(uri) } }
 
     fun accepts(uri: URI): Boolean = synchronized(lock) { !closed && uri in declared }
+
+    fun cached(uri: URI): Boolean = synchronized(lock) { !closed && uri in bodies }
 
     fun put(uri: URI, body: ByteArray) {
         if (body.isEmpty() || body.size > maxBytes) return
@@ -164,8 +182,6 @@ internal class NativeLiveSegmentCache(
     private fun notePlayerLocked(uri: URI) {
         val segment = declared[uri] ?: return
         activeRendition[segment.track] = segment.representationId to segment.bandwidth
-        if (!segment.initialization) earliestRequestedMs[segment.track] =
-            minOf(earliestRequestedMs[segment.track] ?: Long.MAX_VALUE, segment.absoluteStartMs)
     }
 
     // The same rendition in another period, or the closest bandwidth.
@@ -178,16 +194,26 @@ internal class NativeLiveSegmentCache(
     }
 
     private fun evictLocked() {
-        val horizon = if (newestEndMs == Long.MIN_VALUE) Long.MIN_VALUE else newestEndMs - providerWindowMs - retentionMs
-        // Oldest media first; initialization segments are small and needed by
-        // every retained media segment of their rendition.
+        val horizon = if (newestEndMs == Long.MIN_VALUE) Long.MIN_VALUE
+            else newestEndMs - liveRewindSpanMs(providerWindowMs, behindLiveMs)
         val iterator = bodies.entries.iterator()
         while (iterator.hasNext()) {
             val (uri, stored) = iterator.next()
             val segment = declared[uri]
-            val expired = segment == null || (!segment.initialization && segment.absoluteEndMs < horizon)
-            if (expired || (storedBytes > maxBytes && segment?.initialization != true)) {
+            if (segment == null || (!segment.initialization && segment.absoluteEndMs < horizon)) {
                 dropLocked(stored); iterator.remove()
+            }
+        }
+        // Over the byte cap, the oldest media by content time goes first, not
+        // by arrival: backfill records older segments after newer ones (#618).
+        // Initialization segments are small and needed by every retained
+        // media segment of their rendition.
+        if (storedBytes > maxBytes) {
+            val oldest = bodies.keys.filter { declared[it]?.initialization == false }
+                .sortedBy { checkNotNull(declared[it]).absoluteStartMs }
+            for (uri in oldest) {
+                if (storedBytes <= maxBytes) break
+                bodies.remove(uri)?.let(::dropLocked)
             }
         }
         declared.keys.retainAll { uri -> uri in bodies || declared[uri]?.let { it.initialization || it.absoluteEndMs >= horizon } == true }
@@ -195,12 +221,13 @@ internal class NativeLiveSegmentCache(
 
     private fun recordableLocked(): List<URI> {
         if (fetcher == null || newestEndMs == Long.MIN_VALUE) return emptyList()
-        val due = newestEndMs - providerWindowMs + recordMarginMs
+        // #618 startup backfill: the provider's window behind the starting
+        // point is recorded too, each segment just before it would leave.
+        val due = newestEndMs - providerWindowMs + minOf(recordMarginMs, providerWindowMs / 2)
         return declared.entries.filter { (uri, segment) ->
             uri !in bodies && uri !in inFlight &&
                 renditionLocked(segment.periodKey, segment.adaptationIndex) == segment.representationId &&
-                (segment.initialization || (segment.absoluteStartMs >= (earliestRequestedMs[segment.track] ?: Long.MAX_VALUE) &&
-                    segment.absoluteEndMs <= due))
+                (segment.initialization || segment.absoluteEndMs <= due)
         }.sortedBy { it.value.absoluteStartMs }.map { it.key }.onEach { inFlight.add(it) }
     }
 

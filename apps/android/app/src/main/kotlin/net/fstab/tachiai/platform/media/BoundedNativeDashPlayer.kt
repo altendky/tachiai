@@ -260,8 +260,17 @@ internal class BoundedNativeDashPlayer(
         override fun run() {
             if (released) return
             if (!budget.active) { onEvent(NativeDashEvent.LIMIT_REACHED, 0); cleanup.stopInternally(observedFailure, ::close) }
-            else handler.postDelayed(this, 250)
+            else { reportBehindLive(); handler.postDelayed(this, 250) }
         }
+    }
+
+    // #618: the rewind buffer follows how far this feed is behind live,
+    // including while it is paused.
+    private fun reportBehindLive() {
+        val cache = liveCache ?: return
+        if (!player.isCurrentMediaItemDynamic) return
+        nativeBehindLiveMs(player.currentLiveOffset.takeIf { it != C.TIME_UNSET },
+            player.duration.takeIf { it != C.TIME_UNSET }, player.currentPosition)?.let(cache::setBehindLiveMs)
     }
 
     fun start(uri: URI, playWhenReady: Boolean = true) {

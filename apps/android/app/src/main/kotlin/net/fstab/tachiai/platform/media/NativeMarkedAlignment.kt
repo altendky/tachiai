@@ -6,7 +6,7 @@ internal data class NativeTimingSettlement(val revision: Long, val deltaMs: Long
 internal data class NativeAlignmentTarget(val side: NativeMixedSide, val movementMs: Long,
     val targetMs: Long, val targetClockMs: Long, val liveClock: Boolean)
 internal data class NativeAlignmentPlan(val outcome: NativeSeekOutcome, val targets: List<NativeAlignmentTarget> = emptyList(),
-    val availableMagnitudeMs: Long? = null)
+    val availableMagnitudeMs: Long? = null, val delayLimited: Boolean = false)
 internal data class NativePendingSeekDiagnostic(val side: NativeMixedSide, val targetClockMs: Long,
     val actualClockMs: Long?, val liveClock: Boolean, val clockKindMatches: Boolean,
     val state: Int?, val playing: Boolean?, val playWhenReady: Boolean?, val playingAd: Boolean?,
@@ -27,6 +27,8 @@ internal fun nativeMarkedAlignmentPlan(a: NativeTimingSnapshot?, b: NativeTiming
         if (duration <= 0 || position < 0 || position > duration) return null
         val live = sample.live || sample.dynamic
         val clock = (if (live) sample.contentTimeMs else position) ?: return null
+        // #618: never hold a live feed further behind live than the delay limit.
+        if (live && nativeLiveDelayExceeded(sample, movement)) return null
         return try {
             val value = Math.addExact(position, movement)
             val clockValue = Math.addExact(clock, movement)
@@ -49,15 +51,21 @@ internal fun nativeMarkedAlignmentPlan(a: NativeTimingSnapshot?, b: NativeTiming
     val singles = listOfNotNull(target(NativeMixedSide.A, a, delta), target(NativeMixedSide.B, b, -delta))
     // Keep A on equal margins, preserving the existing single-side preference.
     val bestSingle = singles.maxByOrNull { headroom(listOf(it)) }
+    // Whether the delay limit, rather than recorded history, bounds the room.
+    var delayLimited = false
     fun singleOrUnavailable(available: Long): NativeAlignmentPlan = bestSingle?.let {
         NativeAlignmentPlan(NativeSeekOutcome.REQUESTED, listOf(it))
-    } ?: NativeAlignmentPlan(NativeSeekOutcome.UNAVAILABLE, availableMagnitudeMs = available)
+    } ?: NativeAlignmentPlan(NativeSeekOutcome.UNAVAILABLE, availableMagnitudeMs = available, delayLimited = delayLimited)
     fun room(sample: NativeTimingSnapshot, forward: Boolean): Long {
         val position = sample.positionMs ?: return 0
         val duration = sample.durationMs ?: return 0
         val clock = (if (sample.live || sample.dynamic) sample.contentTimeMs else position) ?: return 0
         if (!sample.seekable || duration <= 0 || position < 0 || position > duration || clock < 0) return 0
-        return if (forward) minOf(duration - position, Long.MAX_VALUE - clock) else minOf(position, clock)
+        if (forward) return minOf(duration - position, Long.MAX_VALUE - clock)
+        val recorded = minOf(position, clock)
+        val limit = nativeLiveDelayRoomMs(sample) ?: return recorded
+        if (limit < recorded) delayLimited = true
+        return minOf(recorded, limit)
     }
     val magnitude = kotlin.math.abs(delta)
     val roomA = room(a, delta > 0)

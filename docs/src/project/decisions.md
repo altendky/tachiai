@@ -91,8 +91,10 @@
   with one initial exchange, without a full provider page. This remains an
   unsupported experiment with conservative free-replay and network gates.
 - Exact mix curve/defaults, floating size and control-hide timing are
-  provisional. Native timing acts within advertised capabilities, not an
-  unlimited live buffer or an automatic content-matching guarantee.
+  provisional. Native timing acts within advertised capabilities and a bounded
+  live rewind buffer (a 6:00 delay or 256 MB per feed,
+  [#618](https://github.com/altendky/tachiai/issues/618)), not an unlimited
+  live buffer or an automatic content-matching guarantee.
 - Android's historical mixed-audio browser candidate uses one
   WebView/WebContents with ABEMA top-level and Twitch's official player in a
   cross-origin child frame.

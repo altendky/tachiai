@@ -1202,6 +1202,7 @@ open class PrototypeActivity : ComponentActivity() {
             onPairOffsetEnabled = ::togglePairOffset,
             onMarkedCorrespondence = { delta, correspondence -> requestTimingAdjustment(delta, true, correspondence) },
             onSkip = ::requestSkip,
+            onLive = ::requestLive,
             onStartOver = ::requestStartOver,
             scrubPreviews = ScrubPreviewLoader(sources = { side -> scrubPreviewSource(side.ordinal) }),
             frameText = { side -> selection?.slots?.getOrNull(side.ordinal)?.let { feed ->
@@ -1251,8 +1252,8 @@ open class PrototypeActivity : ComponentActivity() {
         }
     }
 
-    // Replay skip/scrub (#655). Both feeds of a pair move by one amount, so the
-    // pair offset, its saved preference and Timing history are left alone, and
+    // Skip/scrub, replay or live (#655, #660). Both feeds of a pair move by
+    // one amount, so the pair offset, its saved preference and Timing history are left alone, and
     // the requested play state is kept: the pair resumes itself after a held
     // skip, and a single feed keeps playing through its seek.
     private fun requestSkip(delta: Long): NativePairSkipPlan {
@@ -1261,7 +1262,35 @@ open class PrototypeActivity : ComponentActivity() {
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val result = current.seekTogether(delta)
         if (result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED) invalidatePlay()
-        Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}")
+        Log.d("TachiaiPrototype", "transport=SKIP deltaMs=$delta movementMs=${result.movementMs} outcome=${result.outcome}" +
+            (result.blockedBy?.let { " blockedBy=$it" } ?: "") + (result.reason?.let { " reason=\"$it\"" } ?: ""))
+        publishPairTransport()
+        return result
+    }
+
+    // Live (user, 2026-11-25): a held move to the nearer live point keeping
+    // the offset. When a feed outside its window can't come back that way,
+    // each live feed returns to its own live point instead; like Back to live,
+    // that drops the applied offset until the pair is reopened (#660).
+    private fun requestLive(): NativePairSkipPlan {
+        val current = playback ?: return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        if (pairOffsetLoading || pairOffsetSession?.state?.busy == true)
+            return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
+        val pair = current.pair
+        val result = current.goLive()
+        val moved = result.outcome == NativeSeekOutcome.REQUESTED || result.outcome == NativeSeekOutcome.CLAMPED
+        if (moved) invalidatePlay()
+        if (moved && !result.keepsOffset && pair != null && current.pair === pair) {
+            cancelRetryPlaybackIntent()
+            pairOffsetSkipStartup = true
+            pairOffsetSession?.skipStartup()
+            pairOffsetRetryEstimate.clear()
+            pairOffsetBaselineLost = true
+            retryIntentPolicy.backToLiveDispatched()
+            pairOffsetSession?.invalidate(pair, "Returned to live; reopen this pair to reapply its saved offset.")
+        }
+        Log.d("TachiaiPrototype", "transport=LIVE movementMs=${result.movementMs} keepsOffset=${result.keepsOffset} " +
+            "outcome=${result.outcome}" + (result.blockedBy?.let { " blockedBy=$it" } ?: "") + (result.reason?.let { " reason=\"$it\"" } ?: ""))
         publishPairTransport()
         return result
     }

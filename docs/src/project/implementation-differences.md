@@ -14,7 +14,7 @@ application, Kotlin provider/player/storage code and Rust timing core.
 
 | Area | Implemented difference | System purpose and boundary | Evidence |
 | --- | --- | --- | --- |
-| Foreground media integration | TV creates a foreground pair media session and sets the Activity's media controller; phone does not create that TV-specific session. Both use the existing guarded pair play/pause operations. Fast-forward/rewind keys reach the viewer's replay skip on both form factors through ordinary key dispatch (#655); the TV session also routes them, and controller fast-forward/rewind commands, to that same skip. | Connect Android media-key delivery to the foreground TV viewer, with no second audio-focus owner or new background playback service. This records wiring, not approval of remote button UX. | [Activity][media-session] |
+| Foreground media integration | TV creates a foreground pair media session and sets the Activity's media controller; phone does not create that TV-specific session. Both use the existing guarded pair play/pause operations. Fast-forward/rewind keys reach the viewer's skip (replay or live) on both form factors through ordinary key dispatch (#655, #660); the TV session also routes them, and controller fast-forward/rewind commands, to that same skip. | Connect Android media-key delivery to the foreground TV viewer, with no second audio-focus owner or new background playback service. This records wiring, not approval of remote button UX. | [Activity][media-session] |
 | Launcher integration | The same APK declares ordinary Android and Leanback launcher categories, with Leanback and touchscreen support marked optional. | Make the app discoverable through the platform's applicable launcher without requiring a touchscreen. This records manifest integration, not approval of different in-app navigation or visual design. | [Manifest][manifest] |
 | Device-mode detection | TV adaptations use Android's Configuration UI mode; ordinary phone mode uses the shared default path. | Select the applicable system integration inside one application. Detection is not authorization for every UX branch it selects. | [Configuration detection][detection] |
 
@@ -109,7 +109,11 @@ relative-seek rule and resumes them, and the TV session's playback state still
 reports no position. The controlled web fixture keeps only joint Play/Pause and
 has no replay position row, skips or scrub bar; it would need the same rules
 before offering them. Its layout formula already takes the measured bar heights.
-Remembered replay positions and Start over (#655 part 2) are Android-only too:
+Live skip and scrub (#660) are Android-only as well: a live target is bounded by
+the Media3 window, from its oldest point to the live point at the window's
+resolved target live offset (the default position when none is reported), and
+settled on the window's content clock. The web fixture has no live transport
+or Live control. Remembered replay positions and Start over (#655 part 2) are Android-only too:
 the web fixture does not save or resume positions. So are scrub previews (#673),
 which need the scrub bar the web fixture lacks.
 

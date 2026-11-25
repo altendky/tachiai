@@ -48,8 +48,8 @@ internal class NativeMixedPair(
     private data class RecoveryPending(val side: NativeMixedSide, val generation: Long,
         val resume: Boolean, val continuation: BufferedContinuation?)
     private var recoveryPending: RecoveryPending? = null
-    // A replay skip or scrub moving both feeds by one amount (#655). It keeps
-    // the relative offset, so it records no timing settlement.
+    // A skip or scrub moving both feeds by one amount (#655, live #660). It
+    // keeps the relative offset, so it records no timing settlement.
     private data class SkipPending(val targets: List<NativeSkipTarget>, val resume: Boolean, val startedMs: Long,
         val generation: Long, val toleranceMs: Long, val statusBefore: String)
     private var skipPending: SkipPending? = null
@@ -426,18 +426,28 @@ internal class NativeMixedPair(
         return NativeSeekPlan(NativeSeekOutcome.REQUESTED)
     }
 
-    // Replay skip/scrub (#655): hold both, seek both by one checked movement,
-    // wait for both held targets, then resume if both were requested playing.
-    // The relative offset and its history are unchanged. If either feed cannot
+    // Skip/scrub (#655): hold both, seek both by one checked movement, wait
+    // for both held targets, then resume if both were requested playing. The
+    // relative offset and its history are unchanged. If either feed cannot
     // move, neither is sought; a refused second dispatch rolls the first back.
-    fun seekTogether(deltaMs: Long): NativePairSkipPlan {
+    // A live feed's target is confirmed on its content clock, since its
+    // window can slide while the pair is held (#660).
+    fun seekTogether(deltaMs: Long): NativePairSkipPlan = moveTogether { nativePairSkipPlan(it, deltaMs) }
+
+    // Live (user, 2026-11-25): the same held transaction to the nearer live
+    // point, keeping the offset. If a feed is outside its window and that
+    // can't bring it back, each live feed goes to its own live point instead,
+    // and the requested offset is no longer valid (#660).
+    fun goLive(): NativePairSkipPlan = moveTogether(::nativeLivePlan)
+
+    private fun moveTogether(planner: (Map<NativeMixedSide, NativeTimingSnapshot?>) -> NativePairSkipPlan): NativePairSkipPlan {
         lastSkipPlan = null
         if (closed || busy) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val began = generation
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         val sa = snapshot(a); val sb = snapshot(b)
         if (!timingAdmitted(began)) return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
-        val initial = nativePairSkipPlan(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb), deltaMs)
+        val initial = planner(mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb))
         lastSkipPlan = initial
         if (initial.outcome != NativeSeekOutcome.REQUESTED && initial.outcome != NativeSeekOutcome.CLAMPED) return initial
         val before = status
@@ -449,12 +459,36 @@ internal class NativeMixedPair(
             if (!closed && generation == expected) { pause(); status = message }
             return NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE)
         }
+        // Nothing has been sought yet: name the reason and let playback go on.
+        fun refuseUnmoved(plan: NativePairSkipPlan, reason: String): NativePairSkipPlan {
+            if (closed || generation != expected) return plan.copy(reason = reason)
+            val resumed = resume && play()
+            status = if (resumed) "$reason; neither feed moved." else "$reason; neither feed moved; both paused."
+            return plan.copy(reason = reason)
+        }
         val freshA = snapshot(a); val freshB = snapshot(b)
-        // Recheck the held feeds with exactly the planned movement.
-        val fresh = nativePairSkipPlan(mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB), initial.movementMs)
-        if (!current() || !heldReady(freshA) || !heldReady(freshB) ||
-            fresh.outcome != NativeSeekOutcome.REQUESTED || fresh.movementMs != initial.movementMs)
-            return refuse("Skip refused after holding both feeds; both paused.")
+        if (!current()) return refuse("Skip authorization lost; both paused.")
+        val held = mapOf(NativeMixedSide.A to freshA, NativeMixedSide.B to freshB)
+        held.entries.firstOrNull { !heldReady(it.value) }?.let { (side, _) ->
+            return refuseUnmoved(NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = side),
+                "$side wasn't ready once held")
+        }
+        // Recheck the held feeds with the same plan. A playing feed's position,
+        // and a live point taken from the continuous live offset, advance
+        // between the two reads, so targets agree within a small tolerance;
+        // the fresh, held targets are the ones dispatched (#660).
+        val fresh = planner(held)
+        if (fresh.outcome != NativeSeekOutcome.REQUESTED && fresh.outcome != NativeSeekOutcome.CLAMPED)
+            return refuseUnmoved(fresh, heldRefusalReason(fresh))
+        // Name the feed whose own move changed; a shared move changes for both.
+        val pre = mapOf(NativeMixedSide.A to sa, NativeMixedSide.B to sb)
+        val drifted = skipPlanDrift(initial, fresh)?.let { shared ->
+            NativeMixedSide.entries.firstOrNull { side ->
+                skipPlanDrift(planner(mapOf(side to pre[side])), planner(mapOf(side to held[side]))) != null
+            } ?: shared
+        }
+        if (drifted != null) return refuseUnmoved(NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = drifted),
+            "$drifted changed while holding both feeds")
         val wasValid = requestedAdjustmentValid
         busy = true
         lastTimingAttempt = Any()
@@ -474,14 +508,27 @@ internal class NativeMixedPair(
                 return refuse("Skip refused by ${target.side}; both paused.")
             }
         }
-        requestedAdjustmentValid = wasValid
+        // Feeds moved by different amounts no longer hold the requested offset.
+        requestedAdjustmentValid = wasValid && fresh.keepsOffset
         val started = clockMs()
         if (!current()) return refuse("Skip authorization lost; both paused.")
         skipPending = SkipPending(fresh.targets, resume, started, expected,
-            minOf(100L, kotlin.math.abs(initial.movementMs) / 2), before)
+            minOf(100L, fresh.targets.minOf { kotlin.math.abs(it.targetMs - it.fromMs) } / 2), before)
         // Keep the previous status: a skip is not a status change to announce.
         status = before
-        return initial
+        return fresh
+    }
+
+    private fun heldRefusalReason(plan: NativePairSkipPlan): String {
+        val side = plan.blockedBy ?: plan.limitedBy
+        val subject = side?.name ?: "A feed"
+        return when (plan.outcome) {
+            NativeSeekOutcome.AD_BLOCKED -> "$subject started an advertisement while holding both feeds"
+            NativeSeekOutcome.UNSUPPORTED -> "$subject can no longer skip"
+            NativeSeekOutcome.OUTSIDE_WINDOW -> "$subject is outside its window"
+            NativeSeekOutcome.NO_CHANGE -> if (plan.limitedAtLive) "$subject is live" else "$subject can't move any further"
+            else -> "$subject wasn't ready once held"
+        }
     }
 
     // Return already moved feeds to where they were. If that is refused, the
@@ -502,8 +549,9 @@ internal class NativeMixedPair(
             val elapsed = try { Math.subtractExact(clockMs(), skip.startedMs) } catch (_: ArithmeticException) { Long.MAX_VALUE }
             return skip.targets.map { target ->
                 val value = snapshot(member(target.side))
-                NativePendingSeekDiagnostic(target.side, target.targetMs, value?.positionMs, false,
-                    value != null && !value.live && !value.dynamic, value?.state, value?.playing,
+                NativePendingSeekDiagnostic(target.side, target.targetClockMs,
+                    if (target.liveClock) value?.contentTimeMs else value?.positionMs, target.liveClock,
+                    value != null && (value.live || value.dynamic) == target.liveClock, value?.state, value?.playing,
                     value?.playWhenReady, value?.playingAd, skip.toleranceMs, elapsed)
             }
         }
@@ -739,13 +787,15 @@ internal class NativeMixedPair(
         }
         if (values.values.any { !heldReady(it) }) return
         if (transaction.targets.any { target ->
-            val position = values[target.side]?.positionMs
-            position == null || kotlin.math.abs(position - target.targetMs) > transaction.toleranceMs
+            val value = values[target.side]
+            val clock = if (target.liveClock) value?.contentTimeMs else value?.positionMs
+            value == null || (value.live || value.dynamic) != target.liveClock || clock == null ||
+                kotlin.math.abs(clock - target.targetClockMs) > transaction.toleranceMs
         }) return
         if (!admitted()) return
-        if (transaction.resume) resumeTiming(transaction.generation, transaction.targets.associate { it.side to false },
+        if (transaction.resume) resumeTiming(transaction.generation, transaction.targets.associate { it.side to it.liveClock },
             null, "Skip", ::current, TimingResumeProof(transaction.targets.map {
-                TimingTargetProof(it.side, member(it.side), it.targetMs, false, transaction.toleranceMs)
+                TimingTargetProof(it.side, member(it.side), it.targetClockMs, it.liveClock, transaction.toleranceMs)
             }, transaction.startedMs, "Skip target"), successStatus = transaction.statusBefore)
         else status = transaction.statusBefore
         if (current()) { skipPending = null; busy = false }

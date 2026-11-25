@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import net.fstab.tachiai.platform.media.NativeMixedSide
 import net.fstab.tachiai.platform.media.NativePairSkipPlan
 import net.fstab.tachiai.platform.media.NativeSeekOutcome
+import net.fstab.tachiai.platform.media.NativeSkipTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -25,7 +26,7 @@ class ViewerTransportTest {
         assertEquals("−0 s", formatSkipAmount(-400))
     }
 
-    @Test fun hiddenOverlayLeftRightSkipOnlyReplays() {
+    @Test fun hiddenOverlayLeftRightSkipWhileSkippingIsAvailable() {
         assertEquals(ViewerHiddenKey.SKIP_BACK, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_LEFT, true))
         assertEquals(ViewerHiddenKey.SKIP_FORWARD, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_RIGHT, true))
         assertEquals(ViewerHiddenKey.REVEAL, viewerHiddenKey(KeyEvent.KEYCODE_DPAD_LEFT, false))
@@ -99,6 +100,72 @@ class ViewerTransportTest {
             viewerSkipRefusal(plan(NativeSeekOutcome.UNSUPPORTED, NativeMixedSide.A), true, true))
         assertEquals("Skipping waits for B; neither feed moved.",
             viewerSkipRefusal(plan(NativeSeekOutcome.UNAVAILABLE, NativeMixedSide.B), true, true))
-        assertEquals("Skipping is unavailable right now.", viewerSkipRefusal(plan(NativeSeekOutcome.OUTSIDE_WINDOW), true, true))
+        assertEquals("Skipping is unavailable right now.", viewerSkipRefusal(plan(NativeSeekOutcome.UNAVAILABLE), true, true))
+    }
+
+    // #660: a live feed reads how far behind its live point it is.
+    @Test fun liveReadsBehindLiveOrLiveWithinTwoSeconds() {
+        assertEquals("LIVE", formatBehindLive(0))
+        assertEquals("LIVE", formatBehindLive(-3_000)) // Ahead of the computed live point.
+        assertEquals("LIVE", formatBehindLive(ViewerTransportSteps.LIVE_EDGE_MS))
+        assertEquals("LIVE", formatBehindLive(2_999)) // Within 3 s, including a just-short skip to the live point.
+        assertEquals("−0:03", formatBehindLive(3_001))
+        assertEquals("−1:35", formatBehindLive(95_000))
+        assertEquals("−59:59", formatBehindLive(3_599_999))
+        assertEquals("−1:02:05", formatBehindLive(3_725_000))
+        // The bar spans the window to the live point; the position is behind it.
+        assertEquals("−1:35", formatTransportPosition(85_000, 180_000, live = true))
+        assertEquals("LIVE", formatTransportPosition(179_000, 180_000, live = true))
+        assertEquals("1:25 / 3:00", formatTransportPosition(85_000, 180_000, live = false))
+        assertEquals("→ −1:35", formatScrubTarget(85_000, 180_000, live = true))
+        assertEquals("→ LIVE", formatScrubTarget(180_000, 180_000, live = true))
+        assertEquals("→ 1:25 / 3:00", formatScrubTarget(85_000, 180_000))
+        assertEquals("1:35 behind live", describeTransportPosition(85_000, 180_000, live = true))
+        assertEquals("Live", describeTransportPosition(180_000, 180_000, live = true))
+        assertEquals("1:25 of 3:00", describeTransportPosition(85_000, 180_000, live = false))
+    }
+
+    @Test fun aSkipStoppedAtTheLivePointSaysSo() {
+        val atLive = NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = NativeMixedSide.A, limitedAtLive = true)
+        assertEquals("A is live; neither feed moved.", viewerSkipRefusal(atLive, true, true))
+        assertEquals("Already live.", viewerSkipRefusal(atLive, true, false))
+        // Reaching the live point part of the way is a successful skip.
+        assertNull(viewerSkipRefusal(atLive.copy(outcome = NativeSeekOutcome.CLAMPED, movementMs = 4_000), true, true))
+        // The oldest point keeps the replay start wording.
+        assertEquals("B is at its start; neither feed moved.", viewerSkipRefusal(
+            NativePairSkipPlan(NativeSeekOutcome.NO_CHANGE, limitedBy = NativeMixedSide.B), false, true))
+    }
+
+    // #660: a feed outside its window is named, with what brings it back.
+    @Test fun aFeedOutsideItsWindowIsNamedWithWhatBringsItBack() {
+        val outside = NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = NativeMixedSide.B)
+        assertEquals("B is outside its window; neither feed moved. Live brings it back.",
+            viewerSkipRefusal(outside, true, true))
+        assertEquals("The feed is outside its window. Live brings it back.", viewerSkipRefusal(outside, false, false))
+        assertEquals("B is outside its window; use Back to live B in ⋯ More.",
+            viewerSkipRefusal(outside, true, true, live = true))
+        assertEquals("The feed is outside its window; use Back to live in ⋯ More.",
+            viewerSkipRefusal(outside, true, false, live = true))
+        // A pair's refusal after holding both feeds carries its own reason.
+        assertEquals("B changed while holding both feeds; neither feed moved.", viewerSkipRefusal(
+            NativePairSkipPlan(NativeSeekOutcome.UNAVAILABLE, blockedBy = NativeMixedSide.B,
+                reason = "B changed while holding both feeds"), true, true, live = true))
+    }
+
+    @Test fun liveSaysWhetherAPairKeptItsOffsetAfterBringingAFeedBack() {
+        val a = NativeSkipTarget(NativeMixedSide.A, 150_000, 170_000, true, 1_170_000)
+        val b = NativeSkipTarget(NativeMixedSide.B, -74_000, 170_000, true, 7_170_000)
+        assertEquals("B was outside its window, so each feed returned to live; the offset was not kept.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000, listOf(a, b), keepsOffset = false), true))
+        assertEquals("B was outside its window; both feeds moved forward to live together, keeping the offset.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 20_000, listOf(a, b.copy(targetMs = 90_000))), true))
+        assertEquals("Both feeds were outside their windows, so each feed returned to live; the offset was not kept.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000,
+                listOf(a.copy(fromMs = -1_000), b), keepsOffset = false), true))
+        assertEquals("The feed was outside its window; it returned to live.",
+            viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 244_000, listOf(b)), false))
+        // An ordinary move to live, or a refusal, needs no notice.
+        assertNull(viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.REQUESTED, 20_000, listOf(a)), true))
+        assertNull(viewerLiveNotice(NativePairSkipPlan(NativeSeekOutcome.OUTSIDE_WINDOW, blockedBy = NativeMixedSide.B), true))
     }
 }

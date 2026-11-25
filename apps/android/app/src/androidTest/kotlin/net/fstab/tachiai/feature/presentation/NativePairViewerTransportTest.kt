@@ -25,7 +25,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import androidx.core.view.ViewCompat
 import net.fstab.tachiai.platform.media.NativeMixedPair
+import net.fstab.tachiai.platform.media.NativeMixedSide
+import net.fstab.tachiai.platform.media.PrototypePlaybackController
 import net.fstab.tachiai.platform.media.NativePairMember
 import net.fstab.tachiai.platform.media.NativeSeekPlan
 import net.fstab.tachiai.platform.media.NativeTimingSnapshot
@@ -43,15 +46,19 @@ import org.junit.runner.RunWith
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class NativePairViewerTransportTest {
-    private class Member(position: Long, live: Boolean = false) : NativePairMember {
+    // A live member's window starts at content time 1,000,000; livePoint is its
+    // default position, without which it has no live transport (#660).
+    private class Member(position: Long, live: Boolean = false, livePoint: Long? = null) : NativePairMember {
         var sample = NativeTimingSnapshot(position, 600_000, position + 10_000, null,
-            if (live) 1_000_000 else null, null, live, live, true, true, false, false, false, 3, 1f)
+            if (live) 1_000_000 else null, livePoint, live, live, true, true, false, false, false, 3, 1f)
         val seeks = mutableListOf<Long>()
+        // The player reports BUFFERING at a sought position until it is ready.
+        var buffering = false
         override fun timingSnapshot() = sample
         override fun seekToMs(targetMs: Long): NativeSeekPlan {
             seeks += targetMs
             val plan = nativeSeekPlan(sample, targetMs)
-            plan.targetMs?.let { sample = sample.copy(positionMs = it) }
+            plan.targetMs?.let { sample = sample.copy(positionMs = it, state = if (buffering) 2 else 3) }
             return plan
         }
         override fun setTimingPlaying(playing: Boolean): Boolean {
@@ -61,9 +68,10 @@ class NativePairViewerTransportTest {
         override fun close() {}
     }
 
-    private class Fixture(private val activity: ComponentActivity, television: Boolean, live: Boolean) {
-        val a = Member(130_000, live)
-        val b = Member(70_000, live)
+    private class Fixture(private val activity: ComponentActivity, television: Boolean, live: Boolean,
+        livePoint: Long?) {
+        val a = Member(130_000, live, livePoint)
+        val b = Member(70_000, live, livePoint)
         val pair = NativeMixedPair(a, b, { true }, {})
         val context = activity.createConfigurationContext(Configuration(activity.resources.configuration).apply {
             if (television) uiMode = uiMode and Configuration.UI_MODE_TYPE_MASK.inv() or Configuration.UI_MODE_TYPE_TELEVISION
@@ -134,7 +142,9 @@ class NativePairViewerTransportTest {
         }
     }
 
-    @Test fun liveFeedsHideTheTransportAndLeftRightOnlyReveal() = withFixture(live = true) { scenario, fixture ->
+    // A live feed without a live point can't bound a skip, so it keeps only
+    // LIVE / Back to live and Left/Right reveal (#660).
+    @Test fun liveFeedsWithoutALivePointHideTheTransportAndLeftRightOnlyReveal() = withFixture(live = true) { scenario, fixture ->
         scenario.onActivity {
             assertFalse(button(fixture.viewer, "Forward 10 seconds").isShown)
             assertFalse(scrub(fixture.viewer).isShown)
@@ -144,6 +154,185 @@ class NativePairViewerTransportTest {
         scenario.onActivity {
             assertEquals(View.VISIBLE, fixture.overlay.visibility)
             assertTrue(fixture.a.seeks.isEmpty() && fixture.b.seeks.isEmpty())
+        }
+    }
+
+    // #660: live feeds skip like replays, within their windows. The position
+    // reads how far behind live the target feed is.
+    @Test fun liveFeedsShowTheirDistanceBehindLiveAndHiddenLeftRightSkip() =
+        withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+            scenario.onActivity {
+                assertTrue(text(fixture.viewer, "A · Sumo").isShown)
+                assertTrue(text(fixture.viewer, "−7:40").isShown)
+                assertTrue(scrub(fixture.viewer).isShown)
+                assertTrue(button(fixture.viewer, "Forward 10 seconds").isShown)
+            }
+            hide(scenario, fixture)
+            key(scenario, fixture, KeyEvent.KEYCODE_DPAD_LEFT)
+            scenario.onActivity {
+                assertEquals(View.GONE, fixture.overlay.visibility)
+                assertEquals(listOf(120_000L), fixture.a.seeks)
+                assertEquals(listOf(60_000L), fixture.b.seeks)
+                assertTrue(fixture.notice.text.startsWith("−10 s · −7:50"))
+                fixture.settle()
+            }
+            key(scenario, fixture, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
+            scenario.onActivity { assertEquals(listOf(120_000L, 130_000L), fixture.a.seeks) }
+        }
+
+    // A forward skip stops at the nearer feed's live point, keeping the offset;
+    // once that feed is live, a forward skip moves neither.
+    @Test fun liveForwardSkipStopsAtTheLivePoint() = withFixture(live = true, livePoint = 135_000) { scenario, fixture ->
+        scenario.onActivity { assertTrue(text(fixture.viewer, "−0:05").isShown) }
+        hide(scenario, fixture)
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_RIGHT)
+        scenario.onActivity {
+            assertEquals(listOf(135_000L), fixture.a.seeks)
+            assertEquals(listOf(75_000L), fixture.b.seeks)
+            assertTrue(fixture.notice.text.startsWith("+5 s · LIVE"))
+            fixture.settle()
+        }
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_RIGHT)
+        scenario.onActivity {
+            assertEquals(1, fixture.a.seeks.size)
+            assertEquals("A is live; neither feed moved.", fixture.notice.text.toString())
+        }
+    }
+
+    @Test fun liveScrubShowsTheTargetBehindLive() = withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+        scenario.onActivity { assertTrue(scrub(fixture.viewer).requestFocus()) }
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_LEFT)
+        scenario.onActivity {
+            assertTrue(fixture.a.seeks.isEmpty())
+            assertTrue(text(fixture.viewer, "→ −7:50").isShown)
+        }
+        key(scenario, fixture, KeyEvent.KEYCODE_DPAD_CENTER)
+        scenario.onActivity {
+            assertEquals(listOf(120_000L), fixture.a.seeks)
+            assertEquals(listOf(60_000L), fixture.b.seeks)
+        }
+    }
+
+    // Live (user, 2026-11-25) sits right of 1 min ⏩ and moves both feeds to
+    // the nearer live point, keeping their offset; at live it stays focusable
+    // but dimmed. Replays have no Live.
+    @Test fun liveMovesThePairToLiveKeepingItsOffset() = withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+        scenario.onActivity {
+            val live = button(fixture.viewer, "Live")
+            assertTrue(live.isShown && live.isEnabled)
+            assertTrue(button(fixture.viewer, "Forward 1 minute").requestFocus())
+            assertEquals(live, button(fixture.viewer, "Forward 1 minute").focusSearch(View.FOCUS_RIGHT))
+            live.performClick()
+            assertEquals(listOf(590_000L), fixture.a.seeks)
+            assertEquals(listOf(530_000L), fixture.b.seeks)
+            fixture.settle()
+            assertTrue(text(fixture.viewer, "LIVE").isShown)
+            assertTrue(live.isEnabled)
+            assertEquals(LIVE_AT_EDGE, ViewCompat.getStateDescription(live)?.toString())
+            live.performClick()
+            assertEquals(1, fixture.a.seeks.size)
+            assertEquals("Already live.", fixture.notice.text.toString())
+        }
+    }
+
+    // #660: Live still brings the view to live with a feed behind its window,
+    // keeping the offset when the shared move re-enters that window.
+    @Test fun liveBringsAFeedBackFromBehindItsWindowKeepingTheOffset() =
+        withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+            scenario.onActivity {
+                fixture.b.sample = fixture.b.sample.copy(positionMs = -74_000); fixture.viewer.refresh()
+                button(fixture.viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), fixture.a.seeks)
+                assertEquals(listOf(386_000L), fixture.b.seeks)
+                assertEquals("B was outside its window; both feeds moved forward to live together, keeping the offset.",
+                    fixture.notice.text.toString())
+                fixture.settle()
+                assertTrue(fixture.pair.requestedAdjustmentValid)
+            }
+        }
+
+    // Otherwise each live feed returns to its own live point, and the notice
+    // says the offset was not kept. Ordinary skips name the feed instead.
+    @Test fun liveReturnsEachFeedWhenTheOffsetCantBeKept() =
+        withFixture(live = true, livePoint = 590_000) { scenario, fixture ->
+            scenario.onActivity {
+                fixture.a.sample = fixture.a.sample.copy(positionMs = 585_000)
+                fixture.b.sample = fixture.b.sample.copy(positionMs = -74_000); fixture.viewer.refresh()
+                button(fixture.viewer, "Forward 10 seconds").performClick()
+                assertTrue(fixture.a.seeks.isEmpty() && fixture.b.seeks.isEmpty())
+                assertEquals("B is outside its window; neither feed moved. Live brings it back.",
+                    fixture.notice.text.toString())
+                button(fixture.viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), fixture.a.seeks)
+                assertEquals(listOf(590_000L), fixture.b.seeks)
+                assertEquals("B was outside its window, so each feed returned to live; the offset was not kept.",
+                    fixture.notice.text.toString())
+                assertFalse(fixture.pair.requestedAdjustmentValid)
+                fixture.settle()
+                assertTrue(text(fixture.viewer, "LIVE").isShown)
+            }
+        }
+
+    @Test fun liveBringsASingleFeedBackFromBehindItsWindow() {
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            val member = Member(-74_000, live = true, livePoint = 590_000)
+            val controller = PrototypePlaybackController({ true }, singleFeed = true)
+            controller.setMember(NativeMixedSide.A, member)
+            lateinit var viewer: NativePairViewer
+            scenario.onActivity { activity ->
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "Sumo", "Commentary",
+                    { controller.pair }, {}, {}, {}, {}, {}, {}, {},
+                    members = { listOf(controller.member(NativeMixedSide.A), null) },
+                    playbackBusy = { controller.busy }, onSkip = { controller.seekTogether(it) },
+                    onLive = { controller.goLive() }, selectedSlots = setOf(NativeMixedSide.A))
+                activity.setContentView(viewer); viewer.open()
+            }
+            idle()
+            scenario.onActivity {
+                button(viewer, "Live").performClick()
+                assertEquals(listOf(590_000L), member.seeks)
+                assertEquals("The feed was outside its window; it returned to live.",
+                    (viewer.getChildAt(2) as TextView).text.toString())
+                viewer.endSession(); controller.close()
+            }
+        }
+    }
+
+    @Test fun replaysHaveNoLiveButton() = withFixture { scenario, fixture ->
+        scenario.onActivity { assertEquals(View.GONE, button(fixture.viewer, "Live").visibility) }
+    }
+
+    // A single feed seeks without a hold; a skip pressed while it buffers at
+    // its new position waits and runs once it is ready, instead of being
+    // refused as "Skipping is unavailable right now." (#660 follow-up).
+    @Test fun aSkipWhileASingleFeedBuffersRunsOnceItIsReady() {
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            val member = Member(130_000).apply { buffering = true }
+            val controller = PrototypePlaybackController({ true }, singleFeed = true)
+            controller.setMember(NativeMixedSide.A, member)
+            lateinit var viewer: NativePairViewer
+            scenario.onActivity { activity ->
+                viewer = NativePairViewer(activity, PlayerView(activity), PlayerView(activity), "Sumo", "Commentary",
+                    { controller.pair }, {}, {}, {}, {}, {}, {}, {},
+                    members = { listOf(controller.member(NativeMixedSide.A), null) },
+                    playbackBusy = { controller.busy }, onSkip = { controller.seekTogether(it) },
+                    selectedSlots = setOf(NativeMixedSide.A))
+                activity.setContentView(viewer); viewer.open()
+            }
+            idle()
+            scenario.onActivity {
+                button(viewer, "Forward 10 seconds").performClick()
+                assertEquals(listOf(140_000L), member.seeks)
+                button(viewer, "Forward 10 seconds").performClick()
+                assertEquals(1, member.seeks.size)
+                member.sample = member.sample.copy(state = 3)
+                viewer.refresh()
+            }
+            idle()
+            scenario.onActivity {
+                assertEquals(listOf(140_000L, 150_000L), member.seeks)
+                viewer.endSession(); controller.close()
+            }
         }
     }
 
@@ -270,11 +459,11 @@ class NativePairViewerTransportTest {
             try { viewer.dispatchTouchEvent(event) } finally { event.recycle() }
         }
     }
-    private fun withFixture(television: Boolean = true, live: Boolean = false,
+    private fun withFixture(television: Boolean = true, live: Boolean = false, livePoint: Long? = null,
         test: (ActivityScenario<ComponentActivity>, Fixture) -> Unit) {
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
             lateinit var fixture: Fixture
-            scenario.onActivity { fixture = Fixture(it, television, live); fixture.viewer.refresh() }
+            scenario.onActivity { fixture = Fixture(it, television, live, livePoint); fixture.viewer.refresh() }
             idle()
             try { test(scenario, fixture) } finally { scenario.onActivity { fixture.close() } }
         }

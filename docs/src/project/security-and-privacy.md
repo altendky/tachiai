@@ -168,7 +168,11 @@ confirmed it is an in-memory cache, does not need to stay encrypted, and keeps
 
 What is retained:
 
-- **Scope.** Each live ABEMA DASH feed. Replays and Twitch are not included.
+- **Scope.** Each live ABEMA DASH feed and, since 2026-11-25, each live Twitch
+  HLS feed: the user decided the buffer is general across providers, with only
+  the recorder provider specific
+  ([#618](https://github.com/altendky/tachiai/issues/618)). Replays are not
+  included.
 - **Content.** The media bytes this feed's player fetched, plus segments of the
   rendition the player is using that the cache fetches just before they leave
   the provider's window. Every request goes through the same bounded,
@@ -198,6 +202,19 @@ What is retained:
   entries and periods the provider dropped, but only while the rendition in use
   has them cached. It widens the window to match, and the declared-media
   allowlist admits only those retained segments.
+- **Playlist continuity (Twitch).** The HLS recorder keeps segments Twitch
+  dropped from a live media playlist in the playlist the player reads, with
+  their original duration, date and discontinuity, only while their bodies are
+  cached and contiguous with the provider's window. Only segments a playlist
+  declared are kept or recorded, from the same allowlisted Twitch media hosts
+  through the same bounded transport. Twitch segments are unencrypted and kept
+  as fetched. The low-latency prefetch hints at the live edge are unchanged. A
+  segment recorded in another rendition of the same feed stands in when the
+  rendition in use has none, so an adaptive switch while held stays inside the
+  recorded history. Recording follows the rendition whose playlist the player
+  refreshes, and reads from the buffer are not counted as network bandwidth, so
+  adaptive selection is not pushed toward an unrecorded rendition. Playlists of
+  any other shape are left unchanged.
 
 ## Route refusal logging — 2026-11-24
 

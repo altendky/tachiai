@@ -180,10 +180,10 @@ internal class BoundedMediaRequests(
                         readBytes = 0
                         inputEnded = false
                         remaining = end - position
-                        if (transferSpec != null) {
-                            transferOpen = true
-                            transferStarted(transferSpec)
-                        }
+                        // #618: a memory read is not a network transfer. Reported
+                        // to the bandwidth meter it would inflate the estimate,
+                        // and adaptive selection would switch to a rendition
+                        // the rewind buffer has not recorded.
                         costs?.opened()
                         if (remaining == 0L) costs?.bodyComplete()
                         return remaining

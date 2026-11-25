@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 import net.fstab.tachiai.platform.media.BoundedNativePlayer
+import net.fstab.tachiai.platform.media.NativeLiveSegmentCache
 import net.fstab.tachiai.platform.media.NativeMediaEvent
 import net.fstab.tachiai.platform.media.NativeMediaReadCosts
 import net.fstab.tachiai.platform.media.NativePairMember
@@ -204,7 +205,9 @@ internal class PrototypeTwitchSession(
                                 Log.d("TachiaiPrototypeTwitch", "rejection=${parseTwitchManifestRejection(code, body).name} http=$code")
                             }, onEvent = mediaEvents::dispatch,
                             // Twitch live low latency (user approval, 2026-11-22).
-                            playlistRewrite = if (replay) { text -> text } else ::twitchLowLatencyPlaylist)
+                            playlistRewrite = if (replay) { text -> text } else ::twitchLowLatencyPlaylist,
+                            // #618: live feeds keep an in-memory rewind buffer beyond Twitch's window.
+                            liveCache = if (replay) null else NativeLiveSegmentCache())
                         host = created
                         created.start(source.uri, playWhenReady = false,
                             liveTargetOffsetMs = if (replay) null else TWITCH_LIVE_TARGET_OFFSET_MS)

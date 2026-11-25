@@ -58,6 +58,14 @@ internal class NativeLiveSegmentCache(
     private val inFlight = HashSet<URI>()
     // Rendition the player is using, per track type.
     private val activeRendition = HashMap<Int, Pair<String, Int>>()
+    // HLS: the rendition whose playlist the player refreshed last. That is the
+    // one it follows, even while it plays stand-ins recorded in another.
+    private val refreshedRendition = HashMap<Int, String>()
+    // Closed counters for diagnostics; no identifiers.
+    private var recordedCount = 0L
+    private var recordFailures = 0L
+    private var evictedByHorizon = 0L
+    private var evictedByBytes = 0L
     private var newestEndMs = Long.MIN_VALUE
     private var providerWindowMs = 0L
     // #618: the feed's current distance behind live, from its player.
@@ -66,6 +74,15 @@ internal class NativeLiveSegmentCache(
     @Volatile private var closed = false
 
     val bytes: Long get() = synchronized(lock) { storedBytes }
+
+    internal data class Diagnostics(val bytes: Long, val bodies: Int, val spanMs: Long, val behindLiveMs: Long,
+        val recorded: Long, val recordFailures: Long, val evictedByHorizon: Long, val evictedByBytes: Long, val inFlight: Int)
+
+    // Counts and sizes only, for closed diagnostics.
+    fun diagnostics(): Diagnostics = synchronized(lock) {
+        Diagnostics(storedBytes, bodies.size, liveRewindSpanMs(providerWindowMs, behindLiveMs), behindLiveMs,
+            recordedCount, recordFailures, evictedByHorizon, evictedByBytes, inFlight.size)
+    }
 
     // The player supplies its own bounded, policy-checked media transport.
     fun attach(fetch: (URI) -> Unit) { fetcher = fetch }
@@ -90,6 +107,9 @@ internal class NativeLiveSegmentCache(
             declared.entries.removeAll { (uri, segment) -> uri !in segments && uri !in bodies &&
                 (rendition == null || segment.representationId == rendition) }
             declared.putAll(segments)
+            if (rendition != null) segments.values.firstOrNull { it.representationId == rendition }?.let {
+                refreshedRendition[it.track] = rendition
+            }
             segments.values.forEach { if (!it.initialization) newestEndMs = maxOf(newestEndMs, it.absoluteEndMs) }
             evictLocked()
             recordableLocked()
@@ -188,6 +208,7 @@ internal class NativeLiveSegmentCache(
     private fun renditionLocked(periodKey: String, adaptationIndex: Int): String? {
         val candidates = declared.values.filter { it.periodKey == periodKey && it.adaptationIndex == adaptationIndex }
         val track = candidates.firstOrNull()?.track ?: return null
+        refreshedRendition[track]?.let { refreshed -> if (candidates.any { it.representationId == refreshed }) return refreshed }
         val (id, bandwidth) = activeRendition[track] ?: return null
         val renditions = candidates.associate { it.representationId to it.bandwidth }
         return if (id in renditions) id else renditions.minByOrNull { kotlin.math.abs(it.value.toLong() - bandwidth) }?.key
@@ -201,7 +222,7 @@ internal class NativeLiveSegmentCache(
             val (uri, stored) = iterator.next()
             val segment = declared[uri]
             if (segment == null || (!segment.initialization && segment.absoluteEndMs < horizon)) {
-                dropLocked(stored); iterator.remove()
+                dropLocked(stored); iterator.remove(); evictedByHorizon++
             }
         }
         // Over the byte cap, the oldest media by content time goes first, not
@@ -213,7 +234,7 @@ internal class NativeLiveSegmentCache(
                 .sortedBy { checkNotNull(declared[it]).absoluteStartMs }
             for (uri in oldest) {
                 if (storedBytes <= maxBytes) break
-                bodies.remove(uri)?.let(::dropLocked)
+                bodies.remove(uri)?.let(::dropLocked); evictedByBytes++
             }
         }
         declared.keys.retainAll { uri -> uri in bodies || declared[uri]?.let { it.initialization || it.absoluteEndMs >= horizon } == true }
@@ -234,9 +255,13 @@ internal class NativeLiveSegmentCache(
     private fun schedule(uri: URI) {
         try {
             executor.execute {
+                var failed = false
                 try { if (!closed) fetcher?.invoke(uri) }
-                catch (_: Exception) { /* A missed recording only narrows the window. */ }
-                finally { synchronized(lock) { inFlight.remove(uri) } }
+                catch (_: Exception) { failed = true /* A missed recording only narrows the window. */ }
+                finally { synchronized(lock) {
+                    inFlight.remove(uri)
+                    if (failed || uri !in bodies) recordFailures++ else recordedCount++
+                } }
             }
         } catch (_: RejectedExecutionException) { synchronized(lock) { inFlight.remove(uri) } }
     }

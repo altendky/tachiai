@@ -177,6 +177,19 @@ internal class BoundedNativePlayer(
         if (!player.isCurrentMediaItemDynamic) return
         nativeBehindLiveMs(player.currentLiveOffset.takeIf { it != C.TIME_UNSET },
             player.duration.takeIf { it != C.TIME_UNSET }, player.currentPosition)?.let(cache::setBehindLiveMs)
+        // A playing feed whose loaded media all lies before its window start
+        // needs history that is no longer listed: resume it from the oldest
+        // listed point, as Play does, instead of failing behind live.
+        val position = player.currentPosition
+        val buffered = player.bufferedPosition
+        val duration = player.duration
+        if (player.playWhenReady && !player.isPlayingAd && duration != C.TIME_UNSET && duration > 0 &&
+            position < 0 && buffered != C.TIME_UNSET && buffered <= 0) {
+            val target = minOf(LIVE_OLDEST_RESUME_MARGIN_MS, duration / 2)
+            android.util.Log.d("TachiaiLiveRewind", "oldestResume playing positionMs=$position bufferedMs=$buffered " +
+                "durationMs=$duration targetMs=$target")
+            player.seekTo(target)
+        }
     }
 
     // liveTargetOffsetMs: for live HLS, how far behind the live edge to play,

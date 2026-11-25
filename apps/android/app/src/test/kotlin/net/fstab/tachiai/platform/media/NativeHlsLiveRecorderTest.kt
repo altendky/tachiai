@@ -146,16 +146,19 @@ class NativeHlsLiveRecorderTest {
             uris(switched))
     }
 
-    @Test fun `the cache records due segments of the rendition in use`() {
+    @Test fun `the cache records due segments of the refreshed rendition`() {
         val fetched = mutableListOf<URI>()
         val (cache, recorder) = fixture()
         cache.attach { fetched += it }
+        // The refreshed playlist is the rendition the player follows, even
+        // before (or instead of) its own segment requests naming it. A 30 s
+        // window: segments within 15 s of leaving it are recorded.
         recorder.rewrite(playlist, text(100, 114))
-        cache.notePlayerRequest(segment(112))
-        recorder.rewrite(playlist, text(100, 114))
-        // A 30 s window: segments within 15 s of leaving it are recorded,
-        // including those behind the player's starting point.
         assertEquals((100L..106).map(::segment), fetched)
+        // Unrecorded segments stay due on the next refresh while declared.
+        fetched.clear()
+        recorder.rewrite(playlist, text(101, 115))
+        assertEquals((101L..107).map(::segment), fetched)
     }
 
     @Test fun `other shapes are left unchanged`() {
@@ -184,5 +187,104 @@ class NativeHlsLiveRecorderTest {
         assertEquals(0L, tag(restarted, "#EXT-X-MEDIA-SEQUENCE"))
         assertEquals((0L..4).map { segment(it).toString() }, uris(restarted))
         assertFalse(restarted.contains(segment(100).toString()))
+    }
+
+    // A player that plays near live, then is skipped back behind Twitch's
+    // window, paused while refreshes continue, and resumed (the 2026-11-25
+    // SHIELD collapse). It reads every segment through the cache, which tees
+    // network bodies; the cache records what the player does not fetch.
+    private class Feed(val cache: NativeLiveSegmentCache, val recorder: NativeHlsLiveRecorder) {
+        var readNext = 0L
+        val windows = mutableListOf<NativeHlsLiveRecorder.Refresh>()
+        // A player read: a cached body, else the network body the cache tees.
+        fun read(uri: URI) {
+            cache.lease(uri, player = true)?.close() ?: cache.put(uri, byteArrayOf(1))
+        }
+        fun refresh(playlist: String, first: Long, last: Long, rendition: String, readUpTo: Long?) {
+            recorder.rewrite(playlist, buildString {
+                append("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:$first\n")
+                for (index in first..last) append("#EXTINF:2.000,live\nhttps://edge.example/$rendition/seg-$index.ts\n")
+            })
+            windows += checkNotNull(recorder.lastRefresh)
+            // The player reads the rendition it last listed for each sequence.
+            if (readUpTo != null) while (readNext <= readUpTo) {
+                val listed = if (readNext >= first) URI("https://edge.example/$rendition/seg-$readNext.ts")
+                    else URI("https://edge.example/v1/seg-$readNext.ts")
+                read(listed); readNext++
+            }
+        }
+    }
+
+    private fun feed(): Feed {
+        val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        cache.attach { uri -> cache.put(uri, byteArrayOf(1)) }
+        return Feed(cache, NativeHlsLiveRecorder(cache, log = {}))
+    }
+
+    @Test fun `a feed skipped back, paused and resumed keeps its history`() {
+        val feed = feed()
+        feed.readNext = 100
+        // Play near live: a 15-segment (30 s) window, the player 3 behind.
+        for (last in 114L..180L) feed.refresh(playlist, last - 14, last, "v1", last - 3)
+        // Skip back a minute and pause: the player reads nothing new, and is
+        // reported further behind live as refreshes continue.
+        feed.readNext = 148
+        for (last in 181L..195L) {
+            feed.cache.setBehindLiveMs(70_000 + (last - 180) * 2_000)
+            feed.refresh(playlist, last - 14, last, "v1", null)
+        }
+        // Resume: the player reads on from its buffered point.
+        for (last in 196L..240L) feed.refresh(playlist, last - 14, last, "v1", feed.readNext + 1)
+        assertCollapseFree(feed)
+    }
+
+    @Test fun `an adaptive switch while behind the window keeps recording the refreshed rendition`() {
+        val feed = feed()
+        feed.readNext = 100
+        for (last in 114L..180L) feed.refresh(playlist, last - 14, last, "v1", last - 3)
+        feed.readNext = 148
+        feed.cache.setBehindLiveMs(70_000)
+        // Media3 now refreshes another variant's playlist while it plays the
+        // first variant's recorded stand-ins behind the window.
+        val other = "https://edge.example/v2/index-live.m3u8"
+        for (last in 181L..260L) feed.refresh(other, last - 14, last, "v2", feed.readNext + 1)
+        assertCollapseFree(feed)
+        assertEquals(2, feed.windows.last().rendition)
+    }
+
+    private fun assertCollapseFree(feed: Feed) {
+        var previous: NativeHlsLiveRecorder.Refresh? = null
+        // The first refresh has nothing older yet.
+        for (window in feed.windows.drop(1)) {
+            assertTrue("history stopped: $window", window.stop !in setOf(NativeHlsLiveRecorder.Stop.NOT_CACHED,
+                NativeHlsLiveRecorder.Stop.NOT_DECLARED, NativeHlsLiveRecorder.Stop.DISCONTINUITY))
+            previous?.let { before -> assertTrue("history shrank: $before -> $window",
+                window.stop == NativeHlsLiveRecorder.Stop.HORIZON ||
+                    window.retained + window.providerSegments >= before.retained + before.providerSegments) }
+            previous = window
+        }
+        assertEquals(0L, feed.cache.diagnostics().recordFailures)
+        // The listed history still reaches back past the player.
+        assertTrue(feed.windows.last().firstSequence <= feed.readNext)
+    }
+
+    @Test fun `diagnostics give closed reasons and counts without urls`() {
+        val log = mutableListOf<String>()
+        val cache = NativeLiveSegmentCache(executor = InlineExecutor())
+        val recorder = NativeHlsLiveRecorder(cache, log = { log += it }, clockMs = { 0L })
+        recorder.rewrite(playlist, text(100, 104))
+        (101L..104).forEach { cache.put(segment(it), byteArrayOf(1)) }
+        recorder.rewrite(playlist, text(103, 107))
+        assertEquals(NativeHlsLiveRecorder.Stop.NOT_CACHED, recorder.lastRefresh?.stop)
+        assertEquals(2, recorder.lastRefresh?.retained)
+        assertEquals(4_000L, recorder.lastRefresh?.retainedMs)
+        assertEquals(101L, recorder.lastRefresh?.firstSequence)
+        recorder.rewrite(playlist, text(103, 108))
+        assertEquals(NativeHlsLiveRecorder.Stop.PREVIOUS_START, recorder.lastRefresh?.stop)
+        // An unchanged reason within 10 s is not repeated.
+        recorder.rewrite(playlist, text(103, 109))
+        assertEquals(3, log.size)
+        assertTrue(log.all { it.startsWith("rewrite rendition=1 ") && "://" !in it && "edge.example" !in it })
+        assertTrue(log[1], log[1].contains("retained=2 retainedMs=4000 firstSeq=101 discSeq=0 stop=NOT_CACHED"))
     }
 }

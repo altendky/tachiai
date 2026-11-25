@@ -1,5 +1,6 @@
 package net.fstab.tachiai.platform.media
 
+import android.util.Log
 import androidx.media3.common.C
 import java.math.BigDecimal
 import java.net.URI
@@ -20,10 +21,39 @@ import java.util.TreeMap
 //   switch while held does not fall out of the recorded history.
 // - Any other playlist shape (multivariant, ended, event/VOD, byte ranges,
 //   initialization maps, partial segments, keys) is left unchanged.
-internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) {
+internal class NativeHlsLiveRecorder(
+    private val cache: NativeLiveSegmentCache,
+    // Closed, text-free diagnostics: counts, sequence numbers and reasons only,
+    // never a playlist or segment URL (they can carry tokens).
+    private val log: (String) -> Unit = { Log.d("TachiaiLiveRewind", it) },
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
+) {
+    // Why listing retained segments stopped at the oldest one listed.
+    internal enum class Stop {
+        // The oldest segment listed before; the start never moves back.
+        PREVIOUS_START,
+        // No segment of this sequence number was ever declared to the recorder.
+        NOT_DECLARED,
+        // Declared but not cached: never recorded, or evicted by bytes.
+        NOT_CACHED,
+        // Evicted at the buffer's horizon, as sized.
+        HORIZON,
+        DISCONTINUITY, SIZE, COUNT, SEQUENCE_START,
+    }
+    // What happened to history that does not join this refresh.
+    internal enum class Reset { NONE, RESTARTED_SEQUENCE, NO_OVERLAP }
+    internal data class Refresh(val rendition: Int, val providerSegments: Int, val providerCached: Int,
+        val retained: Int, val retainedMs: Long, val firstSequence: Long, val discontinuitySequence: Long,
+        val stop: Stop, val reset: Reset)
+    // The last refresh, for tests and diagnostics.
+    @Volatile var lastRefresh: Refresh? = null
+        private set
+    private var lastLogged: Refresh? = null
+    private var lastLoggedMs = Long.MIN_VALUE
+
     private class Entry(val rendition: String, val uri: URI, val info: String, val dateTime: String?,
         val discontinuity: Boolean, val discontinuityNumber: Long, val startMs: Long, val endMs: Long)
-    private class Rendition {
+    private class Rendition(val index: Int) {
         val entries = TreeMap<Long, Entry>()
         var firstEmitted = Long.MIN_VALUE
         var used = 0L
@@ -37,6 +67,7 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
     private val renditions = LinkedHashMap<String, Rendition>()
     private var newestEndMs: Long? = null
     private var uses = 0L
+    private var renditionCount = 0
 
     // Called with each media playlist's text after provider normalization.
     // Returns the text unchanged when it is not a supported live shape.
@@ -46,14 +77,16 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
     } catch (_: Exception) { text }
 
     private fun rewriteLocked(key: String, playlist: Playlist): String? {
-        val own = renditions.getOrPut(key) { Rendition() }
+        val own = renditions.getOrPut(key) { Rendition(++renditionCount) }
         own.used = ++uses
         while (renditions.size > MAX_RENDITIONS) renditions.remove(renditions.entries.minBy { it.value.used }.key)
         val segments = playlist.segments
         val first = segments.first()
+        var reset = Reset.NONE
         // A restarted sequence keeps nothing from before.
         if (own.firstEmitted != Long.MIN_VALUE && first.sequence < own.firstEmitted) {
             own.entries.clear(); own.firstEmitted = Long.MIN_VALUE
+            reset = Reset.RESTARTED_SEQUENCE
         }
         fun overlap(rendition: Rendition) = segments.withIndex().firstOrNull { it.value.sequence in rendition.entries }
         val ownOverlap = overlap(own)
@@ -76,7 +109,10 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
             else -> (newestEndMs ?: totalMs) - totalMs
         }
         // History that does not join this playlist cannot be listed again.
-        if (ownOverlap == null) own.entries.clear()
+        if (ownOverlap == null) {
+            if (own.entries.isNotEmpty() && reset == Reset.NONE) reset = Reset.NO_OVERLAP
+            own.entries.clear()
+        }
         own.entries.tailMap(segments.last().sequence, false).clear()
         var startMs = firstStartMs
         val current = segments.map { segment ->
@@ -90,13 +126,22 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
         var next = current.first()
         var sequence = first.sequence - 1
         var size = playlist.lines.sumOf { it.length + 1 }
-        while (prepended.size < MAX_PREPENDED && sequence >= 0 && sequence >= own.firstEmitted) {
-            val candidates = listOf(own) + renditions.values.filter { it !== own }.sortedByDescending { it.used }
-            val entry = candidates.firstNotNullOfOrNull { rendition ->
-                rendition.entries[sequence]?.takeIf { cache.cached(it.uri) } } ?: break
-            if (entry.discontinuityNumber != next.discontinuityNumber - (if (next.discontinuity) 1 else 0)) break
+        val candidates = listOf(own) + renditions.values.filter { it !== own }.sortedByDescending { it.used }
+        val horizonMs = (newestEndMs ?: current.last().endMs).coerceAtLeast(current.last().endMs) - cache.retentionSpanMs()
+        val stop: Stop
+        while (true) {
+            if (prepended.size >= MAX_PREPENDED) { stop = Stop.COUNT; break }
+            if (sequence < 0) { stop = Stop.SEQUENCE_START; break }
+            if (sequence < own.firstEmitted) { stop = Stop.PREVIOUS_START; break }
+            val declared = candidates.mapNotNull { it.entries[sequence] }
+            if (declared.isEmpty()) { stop = Stop.NOT_DECLARED; break }
+            val entry = declared.firstOrNull { cache.cached(it.uri) }
+            if (entry == null) { stop = if (declared.all { it.endMs < horizonMs }) Stop.HORIZON else Stop.NOT_CACHED; break }
+            if (entry.discontinuityNumber != next.discontinuityNumber - (if (next.discontinuity) 1 else 0)) {
+                stop = Stop.DISCONTINUITY; break
+            }
             size += lines(entry).sumOf { it.length + 1 }
-            if (size > MAX_TEXT) break
+            if (size > MAX_TEXT) { stop = Stop.SIZE; break }
             prepended.addFirst(entry)
             next = entry
             sequence--
@@ -115,6 +160,9 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
                 Math.multiplyExact(entry.startMs, 1000L), entry.startMs, entry.endMs, false)
         }, totalMs, rendition = key)
 
+        report(Refresh(own.index, current.size, current.count { cache.cached(it.uri) }, prepended.size,
+            prepended.sumOf { it.endMs - it.startMs }, firstOut, discontinuitySequence, stop, reset))
+
         val out = ArrayList<String>(playlist.lines.size + prepended.size * 4 + 2)
         // Both sequence tags precede every segment, retained ones included.
         val sequencesAt = minOf(playlist.sequenceLines.firstOrNull() ?: 1, playlist.firstSegmentLine)
@@ -127,6 +175,26 @@ internal class NativeHlsLiveRecorder(private val cache: NativeLiveSegmentCache) 
             if (index !in playlist.sequenceLines) out += line
         }
         return out.joinToString("\n", postfix = "\n")
+    }
+
+    // Logged when the reason, rendition or reset changes, when the listed
+    // history shrinks, and otherwise at most every 10 s.
+    private fun report(refresh: Refresh) {
+        lastRefresh = refresh
+        val previous = lastLogged
+        val now = clockMs()
+        if (previous != null && previous.stop == refresh.stop && previous.rendition == refresh.rendition &&
+            refresh.reset == Reset.NONE && refresh.retained >= previous.retained &&
+            lastLoggedMs != Long.MIN_VALUE && now - lastLoggedMs in 0 until 10_000) return
+        lastLogged = refresh; lastLoggedMs = now
+        val shrank = previous != null && refresh.retained < previous.retained
+        val c = cache.diagnostics()
+        log("rewrite rendition=${refresh.rendition} provider=${refresh.providerSegments} " +
+            "providerCached=${refresh.providerCached} retained=${refresh.retained} retainedMs=${refresh.retainedMs} " +
+            "firstSeq=${refresh.firstSequence} discSeq=${refresh.discontinuitySequence} stop=${refresh.stop} " +
+            "reset=${refresh.reset} shrank=$shrank cacheBytes=${c.bytes} cacheBodies=${c.bodies} spanMs=${c.spanMs} " +
+            "behindMs=${c.behindLiveMs} recorded=${c.recorded} recordFailed=${c.recordFailures} " +
+            "evictedHorizon=${c.evictedByHorizon} evictedBytes=${c.evictedByBytes} inFlight=${c.inFlight}")
     }
 
     // Entries older than any span the cache could keep are dropped.

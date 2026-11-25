@@ -168,7 +168,10 @@ What is retained:
   as fetched. The low-latency prefetch hints at the live edge are unchanged. A
   segment recorded in another rendition of the same feed stands in when the
   rendition in use has none, so an adaptive switch while held stays inside the
-  recorded history. Playlists of any other shape are left unchanged.
+  recorded history. Recording follows the rendition whose playlist the player
+  refreshes, and reads from the buffer are not counted as network bandwidth, so
+  adaptive selection is not pushed toward an unrecorded rendition. Playlists of
+  any other shape are left unchanged.
 
 ## Route refusal logging — 2026-11-24
 

@@ -456,8 +456,10 @@ lead, but the process's own route rather than a job Network, the device's single
 renewal slot and the readiness retry loop. It joins a renewal already in flight,
 including the job's, and the job joins the timer's. It makes one attempt per
 grant generation, or one more after a route or setup change, and is postponed
-while a manual approval holds the approval browser. The job remains the wake-up
-when the process is dead.
+while a manual approval holds the approval browser. Since 2026-11-24 (#682), an
+attempt that ends without a result is retried up to twice, as described under
+[renewal stalls in frozen processes](#renewal-stalls-in-frozen-processes--2026-11-24).
+The job remains the wake-up when the process is dead.
 
 Scheduling failure preserves desired metadata for later reconciliation without
 consuming a provider attempt. Running jobs are not replaced merely to update
@@ -522,6 +524,97 @@ Why the 16:12 main frame never committed is not established. The route proxy
 had accepted the request, and the renderer stayed alive until the system killed
 the process five minutes later, after the attempt had ended. A later attempt on
 the same route and device succeeded within three seconds.
+
+#### Renewal stalls in frozen processes — 2026-11-24
+
+An automatic renewal on a Pixel 6 stalled after `PAGE_COMMITTED` and was
+recorded only when the user returned to Tachiai, about a minute after its
+deadline (#682). The cause is Android's cached-app freezer. Renewal runs in the
+main process (route engine, deadlines, grant handoff) and in the
+`:abema_approval_browser` process that the main process binds. A launcher
+start hands off from `MainActivity` to the stream picker and viewer
+(`CachedPrototypeActivity`), which run in the `:prototype_cached_player`
+process. So the main process is visible only while a screen such as Providers
+or Routes is open. Otherwise, with no job running, Android ranks both renewal
+processes as cached and freezes them about 10 seconds later. That stops the page, the route and every deadline until
+the main process is visible again.
+
+This was reproduced on `tachiai-dev` (API 36, WebView 133) in two ways. One was
+`install -r` followed by a launcher start: the timer fired, the stream picker
+opened in the player process, and `ActivityManager` froze both processes after
+`REGION_HTTP_200`. The
+other was a cold boot, where the renewal job ended before the timer's renewal
+finished. In both cases `dumpsys activity lru` listed both processes as cached
+and frozen, and the browser's WebView DevTools socket did not answer. Returning
+to the main screen thawed them. Both overdue deadlines then ran in the same
+instant, and the main process recorded `cleanupConfirmed=false` before the
+browser could report its confirmed cleanup. The SHIELD's 16:12 attempt above
+also ended with both processes killed while cached, which fits the same
+mechanism. That attempt was not reproduced.
+
+The following changes address this:
+
+- While any renewal operation is in flight (job, timer, readiness or account
+  access), the main process keeps one JobScheduler job running. It is a hold
+  job under ID `0x54410010`, just past the ledger's range, and it runs in
+  `AbemaRenewalJobService`. It is expedited on API 31+ when the platform
+  accepts that, and otherwise an ordinary job. Its only constraint is a
+  network. An executing job keeps the main process, and the browser process it
+  binds, out of the cached state. The hold carries no account data, Network or
+  route, starts no provider work and is not persisted. It ends when the
+  operation completes, or 30 seconds after the operation's deadline if
+  completion never arrives. Ledger reconciliation never cancels it. A refused
+  hold leaves renewal as before, and the next renewal asks again. If the
+  platform stops the job early, a new one is requested at once rather than
+  after JobScheduler's backoff, which is longer than the freezer's delay. If
+  the process dies, a hold left pending may still start it once; the hold
+  then finishes at once. It adds no notification, foreground service or
+  Activity.
+- In the main process, the browser's lost-result guard (deadline + 7 s) no
+  longer fires when the deadline's own cancellation has already armed its
+  7-second watchdog. After a freeze, the browser still gets 7 seconds to report
+  cleanup, so a thawed attempt is not left with unconfirmed cleanup that is
+  never retried and holds the device's renewal slot.
+- The pre-expiry timer (#635 step 5) retries an attempt that ended without a
+  result, 30 seconds and then 2 minutes later, at most twice per window. An
+  attempt without a result is `TEMPORARY_FAILURE`, or `STOPPED` or `TIMED_OUT`
+  before any result. The readiness retry loop can't cover these: it needs 20
+  seconds left before the caller's original deadline, and a deadline failure
+  leaves none. #582 left retry policy unchanged, and this is the case it
+  didn't cover. Final, interaction and storage results are still not retried.
+  An unconfirmed cleanup reads as a temporary failure, but its retained work
+  keeps the renewal slot, so a retry only observes that result again. A
+  retry still waits for a manual approval, and a
+  renewed or replaced grant has its own schedule. The job's ledger policy is
+  unchanged.
+
+New logcat lines use closed constants and counts only (no URL, host, identity,
+nonce, grant or exception text):
+
+| Tag | Line | Process |
+| --- | --- | --- |
+| `TachiaiAbemaRenewal` | `HOLD_SCHEDULED`, `HOLD_REFUSED`, `HOLD_STARTED`, `HOLD_STOPPED`, `HOLD_ENDED` | default |
+| `TachiaiAbemaRenewal` | `BROWSER_DEADLINE lateMs=…` | default |
+| `TachiaiAbemaRenewal` | `BROWSER_STALL lateMs=… sinceProgressMs=… page=… pendingMain=… pendingRegion=… admitted=… policyRefused=… inactiveRefused=… errors=…` at the browser's lifetime deadline | approval browser |
+| `TachiaiAbemaApproval` | `PAGE_COMMIT_STALL` with the same fields, after `PAGE_COMMIT_TIMEOUT` | approval browser |
+| `TachiaiAbemaRenewal` | `TIMER_RETRY_SCHEDULED attempt=…` | default |
+| `TachiaiAbemaRenewal` | `JOB_STOP_CAUSE cause=…` (`SYSTEM`, `NETWORK_CHANGED`, `SCOPE_CHANGED`, `DEADLINE`, `FORGOTTEN`, `DISABLED` or `DESTROYED`) before `JOB_STOPPED` | default (job path only) |
+
+What the stall fields mean:
+
+- `lateMs` is how far past its due time the deadline callback ran. A large
+  value means the process was frozen or otherwise not running.
+- `sinceProgressMs` is the time since the page's last state change or admitted
+  request.
+- `admitted`, `policyRefused`, `inactiveRefused` and `errors` are counts for
+  each request kind: `main`, `gateway`, `region` and `other`.
+- WebView reports no completion for ordinary subresources. Only the main frame
+  (until it commits or fails) and the region check this app performs itself
+  report a pending count.
+
+The job stop that cancelled the phone's first attempt right after the update
+(`JOB_STOPPED early=false`) also appeared at the emulator's cold boot. Its
+trigger is not established. `JOB_STOP_CAUSE` now records it.
 
 ### Private Network parcel fixture
 

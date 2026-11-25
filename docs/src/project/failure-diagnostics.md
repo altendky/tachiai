@@ -142,6 +142,22 @@ provider entitlement, admission, retries or recovery decisions. Local fixture
 tests establish observation boundaries only. No new device/provider trial or
 cause for the intermittent failures in #297 is established by this change.
 
+## Live rewind buffer
+
+Each live Twitch playlist refresh logs a closed `TachiaiLiveRewind` record
+([#618](https://github.com/altendky/tachiai/issues/618)) when its stop reason,
+rendition or reset changes, when the listed history shrinks, and otherwise at
+most every 10 s. It has a per-feed rendition number, the provider's segment
+count and how many are cached, the retained segments spliced before the
+provider's window and their duration, the first media sequence, the
+discontinuity sequence, why splicing stopped (`PREVIOUS_START`,
+`NOT_DECLARED`, `NOT_CACHED`, `HORIZON`, `DISCONTINUITY`, `SIZE`,
+`COUNT`, `SEQUENCE_START`), any history reset, and the cache's bytes, span,
+distance behind live and recording and eviction counts. A playing feed whose
+loaded media all lies before its window logs `oldestResume playing` with its
+positions when it is moved to the oldest listed point. No playlist or segment
+URL, header or media is logged.
+
 ## Playback health and retry intent
 
 Debug builds emit a closed numeric `TachiaiPairOffset` record every five seconds.

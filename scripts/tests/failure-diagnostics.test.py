@@ -105,7 +105,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_media_origin_categories_and_stages_round_trip_with_independent_cleanup(self):
         expected = {"TRANSPORT_DNS", "TRANSPORT_CONNECT", "TRANSPORT_TIMEOUT", "TRANSPORT_TLS",
-                    "TRANSPORT_CANCELLED", "TRANSPORT_UNKNOWN", "MEDIA_REQUEST_DEADLINE",
+                    "TRANSPORT_CANCELLED", "TRANSPORT_UNKNOWN", "TRANSPORT_ROUTE_REFUSED", "MEDIA_REQUEST_DEADLINE",
                     "MEDIA_REQUEST_ADMISSION_REFUSED", "MEDIA_PLAYBACK_INACTIVE",
                     "MEDIA_HTTP_REJECTED", "MEDIA_RANGE_NOT_HONORED", "MEDIA_RESPONSE_LIMIT"}
         words = module.vocabulary()

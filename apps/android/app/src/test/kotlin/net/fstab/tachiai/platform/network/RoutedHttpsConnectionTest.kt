@@ -177,7 +177,7 @@ class RoutedHttpsConnectionTest {
         private val slowBody: Boolean = false, private val blockHeaders: Boolean = false,
         private val originHost: String = "127.0.0.1", private val responseBody: String = "ok",
         private val responseType: String = "text/plain", private val responseStatus: Int = 200,
-        private val requestCount: Int = 1) : AutoCloseable {
+        private val requestCount: Int = 1, private val connectStatus: Int? = null) : AutoCloseable {
         private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
         val port get() = server.localPort
         val accepted = CountDownLatch(1)
@@ -209,6 +209,10 @@ class RoutedHttpsConnectionTest {
                 val authenticated = headers.any { it == "Proxy-Authorization: ${Credentials.basic(user, secret)}" }
                 if (refusal || !authenticated) {
                     socket.getOutputStream().write("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"$authRealm\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                    return@Thread
+                }
+                if (connectStatus != null) {
+                    socket.getOutputStream().write("HTTP/1.1 $connectStatus Fixture\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".toByteArray())
                     return@Thread
                 }
                 assertEquals("CONNECT $originHost:443 HTTP/1.1", headers.first())
@@ -565,6 +569,38 @@ class RoutedHttpsConnectionTest {
             assertEquals(ProviderTransportExceptionKind.IO, providerTransportEvidence(failure).exceptionKind)
             assertEquals(ProviderTransportOperation.CONNECT, providerTransportEvidence(failure).operation)
             assertNull(fixture.originHeaders.get()); assertTrue(fixture.outbound.all { it.port == fixture.port })
+            connection.disconnect()
+        }
+    }
+
+    @Test fun ownRouteConnectRefusalIsNamedWithoutChangingCoarseFailure() {
+        for (status in listOf(400, 403)) ProxyFixture(connectStatus = status).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            assertTrue(connection.observeFailures { })
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
+            assertEquals(RoutedHttpsFailureCategory.ROUTE_REFUSED, checkNotNull(connection.failureDiagnostic).category)
+            val evidence = providerTransportEvidence(failure)
+            assertEquals(ProviderTransportExceptionKind.ROUTE_REFUSED, evidence.exceptionKind)
+            assertEquals(ProviderTransportFailure.UNKNOWN, evidence.failure)
+            assertFalse(evidence.localCancellationRequested); assertFalse(evidence.retryableAvailability)
+            assertEquals(ProviderTransportOperation.CONNECT, evidence.operation)
+            assertEquals("Route refused connection", failure.message)
+            assertNull(fixture.originHeaders.get())
+            connection.disconnect()
+        }
+        // An origin's own 403 is an HTTP response, not a route refusal.
+        ProxyFixture(responseStatus = 403).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            assertEquals(403, connection.responseCode)
+            assertNull(connection.failureDiagnostic)
+            connection.disconnect()
+        }
+        // Other CONNECT statuses (such as the route's 502 dial failure) stay generic.
+        ProxyFixture(connectStatus = 502).use { fixture ->
+            val connection = RoutedHttpsConnection(url, fixture.client(), { true })
+            val failure = assertThrows(IOException::class.java) { connection.responseCode }
+            assertEquals(ProviderTransportExceptionKind.IO, providerTransportEvidence(failure).exceptionKind)
+            assertEquals("Routed HTTPS request failed", failure.message)
             connection.disconnect()
         }
     }

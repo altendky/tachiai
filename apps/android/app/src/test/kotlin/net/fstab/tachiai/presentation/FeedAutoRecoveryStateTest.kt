@@ -33,7 +33,9 @@ class FeedAutoRecoveryStateTest {
 
     @Test fun `unspecified IO accepts only current typed media network or retryable HTTP evidence`() {
         val network = listOf(transport(ProviderTransportFailure.DNS), transport(ProviderTransportFailure.CONNECT),
-            transport(ProviderTransportFailure.TIMEOUT), transport(), transport(stage = NativeFailureStage.MEDIA_REQUEST_READ))
+            transport(ProviderTransportFailure.TIMEOUT), transport(), transport(stage = NativeFailureStage.MEDIA_REQUEST_READ),
+            // A route refusal keeps the generic IO recovery it had before it was named.
+            transport(kind = ProviderTransportExceptionKind.ROUTE_REFUSED))
         for (live in listOf(false, true)) {
             for (evidence in network) {
                 val state = FeedAutoRecoveryState(); val member = Any()

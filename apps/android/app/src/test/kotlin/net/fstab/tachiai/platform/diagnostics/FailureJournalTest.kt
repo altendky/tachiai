@@ -15,6 +15,7 @@ import net.fstab.tachiai.platform.media.nativeMediaRequestException
 import net.fstab.tachiai.platform.media.NativePlayerReleaseTimeoutException
 import net.fstab.tachiai.platform.network.ProviderTransportEvidence
 import net.fstab.tachiai.platform.network.ProviderTransportException
+import net.fstab.tachiai.platform.network.ProviderTransportExceptionKind
 import net.fstab.tachiai.platform.network.ProviderTransportFailure
 import net.fstab.tachiai.provider.abema.AbemaChannelException
 import net.fstab.tachiai.provider.abema.AbemaChannelFailure
@@ -140,6 +141,13 @@ class FailureJournalTest {
                     SafeFailure.capture(error).category)
             }
         }
+        val refused = ProviderTransportEvidence(ProviderTransportFailure.UNKNOWN,
+            exceptionKind = ProviderTransportExceptionKind.ROUTE_REFUSED)
+        assertEquals(FailureCategory.TRANSPORT_ROUTE_REFUSED, SafeFailure.capture(ProviderTransportException(refused)).category)
+        assertEquals(FailureCategory.TRANSPORT_ROUTE_REFUSED, SafeFailure.capture(
+            NativeMediaRequestException(NativeMediaRequestFailure.TRANSPORT_UNKNOWN, refused)).category)
+        assertEquals(FailureCategory.TRANSPORT_CANCELLED, SafeFailure.capture(ProviderTransportException(
+            refused.copy(localCancellationRequested = true))).category)
     }
 
     @Test fun `first failure survives secondary cleanup and repeated viewer blocks across recreation`() {

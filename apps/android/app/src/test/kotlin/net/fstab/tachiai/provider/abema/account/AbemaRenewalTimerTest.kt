@@ -177,7 +177,7 @@ class AbemaRenewalTimerTest {
         assertEquals(listOf(GENERATION), f.fired)
         assertEquals(listOf("TIMER_SCHEDULED", "TIMER_TRIGGERED", "TIMER_FIRED"), f.logs)
         assertEquals(AbemaRenewalTrigger.RUNNING, f.timer.trigger(INSTANCE))
-        f.done!!()
+        f.done!!(false)
         // It is the window's single attempt: neither a second trigger nor the due time fires again.
         assertEquals(AbemaRenewalTrigger.WINDOW_SPENT, f.timer.trigger(INSTANCE))
         f.clock.advance(60 * MINUTE)

@@ -35,6 +35,13 @@ var subdomainPatterns = map[string]bool{
 	"*.abema-tv.com":  true,
 }
 
+// Twitch VOD storyboards (#683) live on per-VOD CloudFront distributions. This
+// token admits exactly the app's accepted shape, one label of "d" plus 8-32
+// lowercase alphanumerics, never other CloudFront, nested or lookalike hosts.
+const twitchStoryboardHosts = "d*.cloudfront.net"
+
+var twitchStoryboardHost = regexp.MustCompile(`^d[a-z0-9]{8,32}\.cloudfront\.net$`)
+
 var errConfig = errors.New("Invalid route configuration")
 var errClosed = errors.New("Route closed")
 var errConnect = errors.New("Route connection failed")
@@ -80,7 +87,7 @@ func parseHosts(input string) ([]string, error) {
 		return nil, errConfig
 	}
 	for _, host := range hosts {
-		if host != "*-abematv.akamaized.net" && !subdomainPatterns[host] && !validHost(host) {
+		if host != "*-abematv.akamaized.net" && host != twitchStoryboardHosts && !subdomainPatterns[host] && !validHost(host) {
 			return nil, errConfig
 		}
 	}
@@ -100,6 +107,9 @@ func (r *Route) permits(host string) bool {
 			if prefix != "" && !strings.Contains(prefix, ".") {
 				return true
 			}
+		}
+		if allowed == twitchStoryboardHosts && twitchStoryboardHost.MatchString(host) {
+			return true
 		}
 		if subdomainPatterns[allowed] && strings.HasSuffix(host, allowed[1:]) {
 			prefix := strings.TrimSuffix(host, allowed[1:])

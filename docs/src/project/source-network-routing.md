@@ -608,9 +608,11 @@ Evidence:
 Later, scrub-preview images (#673: ABEMA timeline sprites, the Twitch
 storyboard query, JSON and sheets) use the feed's own route session through
 native bounded HTTPS, not the System network, although ABEMA's image host needs
-no Japanese exit. The ABEMA image host is in the playback CONNECT host list;
-Twitch's per-VOD CloudFront storyboard hosts are not, so imported Twitch routes
-show no previews.
+no Japanese exit. The ABEMA image host is in the playback CONNECT host list.
+Twitch's per-VOD CloudFront storyboard hosts are admitted there by the route
+bridge token `d*.cloudfront.net` (#683, user request 2026-11-24): exactly one
+label of `d` plus 8–32 lowercase alphanumerics, the shape the app accepts, not
+other CloudFront hosts, so imported Twitch routes can show previews too.
 
 Both feed slots currently run in one presentation process. Historical and
 cached prototypes have different named processes and WebView data-directory

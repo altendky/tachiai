@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.fstab.tachiai.feature.connections.providerTextTranslationStore
 import net.fstab.tachiai.platform.translation.MlKitTextTranslationEngine
+import net.fstab.tachiai.presentation.FrameTextTuning
 import net.fstab.tachiai.presentation.ProviderTextSource
 import net.fstab.tachiai.presentation.catalogTitleSource
 import net.fstab.tachiai.provider.catalog.CatalogResource
@@ -43,10 +44,25 @@ internal object ProviderTextTranslation {
     val saveFailed: StateFlow<Boolean> = mutableSaveFailed
     @Volatile private var loaded = false
     @Volatile private var instance: ProviderTextTranslator? = null
+    @Volatile private var frameInstance: ProviderTextTranslator? = null
+    @Volatile private var engine: MlKitTextTranslationEngine? = null
     private val viewRequests = mutableSetOf<TranslationRequest>()
 
+    private fun engine(context: Context): MlKitTextTranslationEngine = engine ?: synchronized(this) {
+        engine ?: MlKitTextTranslationEngine(context).also { engine = it }
+    }
+
     fun translator(context: Context): ProviderTextTranslator = instance ?: synchronized(this) {
-        instance ?: ProviderTextTranslator(MlKitTextTranslationEngine(context), scope).also { instance = it }
+        instance ?: ProviderTextTranslator(engine(context), scope).also { instance = it }
+    }
+
+    /**
+     * Text recognized in the video (#664) shares the engine and its models but
+     * has its own small cache, so frequent on-screen text never evicts titles.
+     */
+    fun frameTranslator(context: Context): ProviderTextTranslator = frameInstance ?: synchronized(this) {
+        frameInstance ?: ProviderTextTranslator(engine(context), scope, cacheEntries = FrameTextTuning.CACHE_ENTRIES)
+            .also { frameInstance = it }
     }
 
     /** Rereads the stored preference, for example when a screen resumes after another process changed it. */

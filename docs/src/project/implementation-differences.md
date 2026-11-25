@@ -38,6 +38,19 @@ traffic. Phone and TV share the same code and settings. The same rules are
 expected to use Apple's Translation framework on iOS and macOS and Chrome's
 built-in Translator API on the web; neither is implemented.
 
+Android translates text in the video
+([#664](prototype-ux.md#text-in-the-video--664)) by copying the main feed's
+`TextureView` picture into a reused bitmap with `TextureView.getBitmap`, then
+recognizing text with ML Kit's bundled Japanese text recognition v2
+(`com.google.mlkit:text-recognition-japanese` 16.0.1, about 4 MB per ABI) on
+one worker thread and translating with the #643 engine. It works because the
+native viewer renders into a `TextureView` and its feeds are clear or ClearKey
+with a software CDM; a secure-decoder feed would be reported unavailable.
+Phone and TV share the code, setting and More item. The controlled browser
+fixture and the web client do not implement it, and no Apple implementation
+exists; a web version would need readable frames (for example a canvas copy of
+a non-protected video element) and its own recognizer.
+
 Android also has an internal, explicitly selected account-transport
 [Network-binding prerequisite](source-network-routing.md#explicit-android-network-prerequisite).
 It binds direct HTTPS and supported proxy/tunnel outer sockets to one supplied

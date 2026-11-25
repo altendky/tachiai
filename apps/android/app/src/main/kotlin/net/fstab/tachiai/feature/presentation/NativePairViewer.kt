@@ -48,6 +48,12 @@ import net.fstab.tachiai.presentation.ViewerPairOffsetReadback
 import net.fstab.tachiai.presentation.PairOffsetCorrespondence
 import net.fstab.tachiai.presentation.FloatingPosition
 import net.fstab.tachiai.presentation.FloatingFeedSize
+import net.fstab.tachiai.presentation.FrameTextFeed
+import net.fstab.tachiai.presentation.FrameTextOverrides
+import net.fstab.tachiai.presentation.FrameTextRun
+import net.fstab.tachiai.presentation.frameTextEnabled
+import net.fstab.tachiai.presentation.frameTextMainFeed
+import net.fstab.tachiai.presentation.frameTextRun
 import net.fstab.tachiai.presentation.TwoFeedMix
 import net.fstab.tachiai.presentation.ViewerRect
 import net.fstab.tachiai.presentation.ViewerTimingStep
@@ -125,11 +131,18 @@ internal class NativePairViewer(
     private val onStartOver: (() -> NativePairSkipPlan)? = null,
     // The target feed's thumbnail above the scrub bar while choosing (#673).
     private val scrubPreviews: ViewerScrubPreviews? = null,
+    // A feed's Translate text in video inputs (#664); null leaves the feature out.
+    private val frameText: ((NativeMixedSide) -> FrameTextFeed?)? = null,
     selectedSlots: Set<NativeMixedSide> = NativeMixedSide.entries.toSet(),
 ) : FrameLayout(context) {
     // Feed labels may change once a provider title's translation is ready (#643).
     private var labelA = labelA
     private var labelB = labelB
+    // Translate text in video (#664): the in-stream choice lives only in this
+    // viewer session, so reopening a stream uses the provider default.
+    private val frameTextOverrides = FrameTextOverrides<NativeMixedSide>()
+    private val frameTextUnavailableShown = mutableSetOf<NativeMixedSide>()
+    private var frameTextRunner: FrameTextRunner? = null
     fun updateLabels(a: String, b: String) {
         labelA = a; labelB = b
         refresh()
@@ -1162,6 +1175,7 @@ internal class NativePairViewer(
                 isEnabled = selectedSides.any { qualityState(it, NativeQualityKind.VIDEO) != null }
                 setOnMenuItemClickListener { togglePanel("Quality"); true }
             }
+            addFrameTextChoice(menu)
             if (!television) menu.add(if (hasPairSlots) {
                 if (landscape()) "Portrait / stacked layout" else "Landscape / PiP layout"
             } else if (landscape()) "Portrait layout" else "Landscape layout")
@@ -1199,6 +1213,51 @@ internal class NativePairViewer(
             menu.add(setupLabel).setOnMenuItemClickListener { suspendControls(); onDiagnostics(); true }
             menu.add(if (hasPairSlots) "Stop both" else "Stop playback").setOnMenuItemClickListener { suspendControls(); onStop(); true }
         }
+    }
+
+    // Translate text in video (#664) for the main feed: the provider default,
+    // overridden for this stream only. Unreadable frames are reported, not worked around.
+    private fun frameTextMain(): NativeMixedSide? = frameTextMainFeed(selectedSides, stage.primarySide)
+    private fun frameTextPlayer(side: NativeMixedSide) = if (side == NativeMixedSide.A) a else b
+    private fun frameTextReadable(side: NativeMixedSide, feed: FrameTextFeed) =
+        feed.framesReadable && frameTextPlayer(side).videoSurfaceView is android.view.TextureView
+
+    private fun addFrameTextChoice(menu: android.view.Menu) {
+        val feeds = frameText ?: return
+        val side = frameTextMain() ?: return
+        val feed = feeds(side) ?: return
+        val readable = frameTextReadable(side, feed)
+        menu.add(if (readable) FRAME_TEXT_CHOICE else "$FRAME_TEXT_CHOICE ($FRAME_TEXT_UNAVAILABLE)").apply {
+            isCheckable = true
+            isChecked = readable && frameTextEnabled(feed, frameTextOverrides[side])
+            isEnabled = readable
+            setOnMenuItemClickListener {
+                val on = frameTextOverrides.toggle(side, feed)
+                refresh()
+                showNotice(if (on) "Translating text in video for this stream" else "Not translating text in video for this stream")
+                true
+            }
+        }
+    }
+
+    private fun updateFrameText() {
+        val feeds = frameText ?: return
+        val side = frameTextMain()
+        val feed = side?.let(feeds)
+        val run = if (side == null || !isAttachedToWindow) FrameTextRun.OFF
+            else frameTextRun(feed, frameTextOverrides[side], mainPane = true,
+                surfaceReadable = frameTextPlayer(side).videoSurfaceView is android.view.TextureView)
+        if (run == FrameTextRun.RUNNING && side != null && feed != null) {
+            (frameTextRunner ?: FrameTextRunner(context).also { frameTextRunner = it })
+                .attach(side, frameTextPlayer(side), stage.textLayer(side), feed.source)
+        } else frameTextRunner?.detach()
+        if (run == FrameTextRun.UNAVAILABLE && side != null && frameTextUnavailableShown.add(side))
+            showNotice("Text in video: $FRAME_TEXT_UNAVAILABLE")
+    }
+
+    private fun closeFrameText() {
+        frameTextRunner?.close(); frameTextRunner = null
+        frameTextOverrides.clear(); frameTextUnavailableShown.clear()
     }
 
     private fun showQualityChoices(anchor: View, side: NativeMixedSide, kind: NativeQualityKind) {
@@ -1259,6 +1318,7 @@ internal class NativePairViewer(
         reconcileMarkAlignment(current)
         if (stage.bindPlayers()) volumeApplied = false
         stage.updateMessages()
+        updateFrameText()
         val available = selectedMembers()
         backToLive.forEachIndexed { index, control ->
             val side = NativeMixedSide.entries[index]
@@ -1419,13 +1479,17 @@ internal class NativePairViewer(
         return false
     }
     fun open() { visibility = VISIBLE; startFocusPending = panel == null && overlayFocus == null; showControls(); refresh(); restoreRemoteFocus(key = panel?.let(panelFocus::get) ?: overlayFocus) }
-    fun endSession() { suspendControls(); scrubPreviews?.clear(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
+    fun endSession() { suspendControls(); closeFrameText(); scrubPreviews?.clear(); clearNotice(); notices.reset(); panelFocus.clear(); overlayFocus = null; suppressedFocusPress = null; stage.unbindPlayers(); observedPair = null; eventMarks.clear(); markGeneration++; pendingMarkAlignment = null; markAlignmentMessage = null; visibility = GONE }
     fun suspendControls() {
         invalidateFocusIntent()
         dismissMenu(false); cancelRepeats(); revealPress = null; removeCallbacks(hideControls)
         cancelScrub(); removeCallbacks(deferredToggle); tapGesture.reset(); queuedSkipMs = 0L
     }
-    override fun onDetachedFromWindow() { suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() {
+        // Detaching stops sampling and clears frames; the in-stream choice stays until endSession.
+        frameTextRunner?.close(); frameTextRunner = null
+        suspendControls(); clearNotice(); stage.unbindPlayers(); super.onDetachedFromWindow()
+    }
     // A brief notice from the owner, such as where remembered positions resumed.
     fun announce(message: String) { if (isAttachedToWindow && visibility == VISIBLE) showNotice(message) }
     private fun showNotice(message: String) {
@@ -1566,6 +1630,10 @@ internal class NativePairViewer(
         private val paneB = pane(b, labelB, false)
         private val noticeA = notice(paneA, NativeMixedSide.A)
         private val noticeB = notice(paneB, NativeMixedSide.B)
+        // Translated text in video (#664) sits over the video, below the pane's notice.
+        private val textA = FrameTextLayer(context, a).also { paneA.addView(it, 1, LayoutParams(-1, -1)) }
+        private val textB = FrameTextLayer(context, b).also { paneB.addView(it, 1, LayoutParams(-1, -1)) }
+        fun textLayer(side: NativeMixedSide) = if (side == NativeMixedSide.A) textA else textB
         private inner class FeedNotice(val scroll: ScrollView, val message: TextView, val recovery: Button)
         init {
             setOnClickListener { videoTap() }
@@ -1708,9 +1776,11 @@ internal class NativePairViewer(
             if (television) isFocusable = false
         }
         // Notice content avoids the visible bars and panels without moving the video.
+        // Translated text in video (#664) keeps to the same unobscured range.
         private fun insetNotice(notice: FeedNotice, rect: ViewerRect) {
             val insets = viewerPaneInsets(rect, floatingTop, floatingRight, floatingBottom)
             notice.scroll.setPadding(0, insets.top, insets.right, insets.bottom)
+            (if (notice === noticeA) textA else textB).insets = insets
         }
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             setMeasuredDimension(MeasureSpec.getSize(widthSpec), MeasureSpec.getSize(heightSpec))
@@ -1746,6 +1816,8 @@ internal class NativePairViewer(
 }
 
 private const val STOP_KEY = "Stop"
+private const val FRAME_TEXT_CHOICE = "Translate text in video"
+private const val FRAME_TEXT_UNAVAILABLE = "unavailable for this feed"
 private const val OVERLAY_SCRIM = 0x99000000.toInt() // Black at 60%.
 private const val OVERLAY_TEXT = 0xFFE8ECEE.toInt()
 

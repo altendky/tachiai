@@ -1960,6 +1960,64 @@ phone and SHIELD, and the quality of representative ABEMA titles. The ML Kit
 usage terms raise a question for TV; see
 [open questions](open-questions.md#product).
 
+### Text in the video — #664
+
+[#664](https://github.com/altendky/tachiai/issues/664) translates text that
+appears in the video picture, such as ABEMA's sumo name and result cards, on
+the device. The user decided the design on 2026-11-25. It is common UX: phone,
+tablet and TV have the same setting, control and display.
+
+- **Setting.** Each provider's details have **Text in video → Translate text
+  in video**, beside its **Source language**. It is off by default for every
+  provider. It is independent of **Translate provider text**, uses the
+  provider's Source language and the same translation models, and turning it
+  on starts that model's download for a fixed Source language. Its status line
+  says when the model is downloading or translation is unavailable.
+- **In-stream override.** **⋯ → Translate text in video** is a checkable item
+  that turns it on or off for the stream being watched, overriding the provider
+  default. The choice is not saved: it ends when the stream is closed, and
+  reopening a stream uses the provider default. A brief notice confirms the
+  change.
+- **Main pane only.** It runs on the main (full-size) feed: the only feed, or
+  the primary feed of a pair. The floating inset feed is never sampled.
+  Swapping the primary feed moves translation to the new main feed, with that
+  feed's own default or override. ABEMA and Twitch both offer it.
+- **Unavailable feeds.** A feed whose frames cannot be read, such as a future
+  secure-decoder (Widevine) feed, shows the item as "Translate text in video
+  (unavailable for this feed)" and, when its default is on, a brief "Text in
+  video: unavailable for this feed" notice. Tachiai never works around an
+  unreadable picture. Today's native feeds are readable: Twitch and YouTube are
+  clear and ABEMA uses ClearKey with a software CDM.
+- **Stable text only.** About every 2 s the main feed's picture is sampled at
+  960 × 540 (keeping its aspect). Text counts only when the same recognized
+  text is in roughly the same box (overlap of at least half) in two
+  consecutive samples, with lines at least 3% of the frame height (16 px at
+  540). Tickers, moving and partial text are skipped. A translation is held
+  until its source block changes or disappears for two samples, so it does not
+  flicker. At most eight blocks are held. When the downscaled picture is
+  unchanged, recognition is skipped and the previous result counts as the
+  next sample.
+- **Display.** A near-opaque chip with the translation covers the source block,
+  replacing it in place, as #643 does for titles. It is at least the size of
+  the source, with text sized from the source's line height, and stays inside
+  the area left clear by the visible top bar, transport and panels (#656).
+  Chips take no focus and no touches. Text that is already in the device's
+  language, whose language is unclear or that cannot be translated keeps the
+  picture as it is. Vertical text gets no special handling.
+- **On-device and transient.** Frames, recognized text and translations stay
+  in memory; they are never saved, logged or sent off the device. Frames are
+  released when the feed stops being translated or the stream closes. Logs
+  under `TachiaiFrameText` hold only timings, block counts, states and the
+  sampling cadence. Translations use a separate in-memory cache of 128
+  entries, so they never evict title translations.
+
+Provider-free JVM tests cover stability and hold, box mapping and chip
+placement within the overlay insets, enablement (provider default, temporary
+override, unavailable frames, inset skipped), the unchanged-frame check, the
+stored setting and that logs carry only numbers. The #664 acceptance is open:
+sumo name and result cards translated over a replay on the SHIELD and phone,
+with CPU and latency measurements.
+
 ## Historical source configuration follow-up
 
 The earlier **Source setup** on each picker row edited that resource's display name, default

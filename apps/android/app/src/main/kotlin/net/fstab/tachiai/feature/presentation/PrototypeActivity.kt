@@ -60,6 +60,7 @@ import net.fstab.tachiai.platform.diagnostics.TimingFailureEvidence
 import net.fstab.tachiai.platform.diagnostics.TimingFailureJournal
 import net.fstab.tachiai.presentation.PairOffsetIdentity
 import net.fstab.tachiai.presentation.ProviderTextSource
+import net.fstab.tachiai.presentation.FrameTextFeed
 import net.fstab.tachiai.presentation.configuredSourceTextSource
 import net.fstab.tachiai.presentation.tachiaiCatalogTitle
 import net.fstab.tachiai.presentation.PairOffsetPreference
@@ -1203,7 +1204,17 @@ open class PrototypeActivity : ComponentActivity() {
             onSkip = ::requestSkip,
             onStartOver = ::requestStartOver,
             scrubPreviews = ScrubPreviewLoader(sources = { side -> scrubPreviewSource(side.ordinal) }),
+            frameText = { side -> selection?.slots?.getOrNull(side.ordinal)?.let { feed ->
+                // Native feeds decode into the PlayerView's TextureView: Twitch and
+                // YouTube are clear, and ABEMA uses ClearKey with a software CDM and
+                // no secure decoder. A future secure-decoder (Widevine) feed must
+                // report false here; its frames are never worked around (#664).
+                FrameTextFeed(ProviderTextSource(feed.service, feed.instanceId),
+                    ProviderTextTranslation.settings.value.frameText(feed.instanceId), framesReadable = true)
+            } },
             selectedSlots = selectedSlotIndices().map { NativeMixedSide.entries[it] }.toSet())
+        // The Translate text in video default may have changed in Providers.
+        ProviderTextTranslation.refresh(this) { if (viewer === pane) pane.refresh() }
         viewer = pane
         root?.addView(pane, FrameLayout.LayoutParams(-1, -1))
         if (isTelevision(resources.configuration)) {

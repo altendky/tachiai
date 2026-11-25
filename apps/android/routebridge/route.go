@@ -60,6 +60,7 @@ type Route struct {
 	once     sync.Once
 	workers  sync.WaitGroup
 	slots    chan struct{}
+	refusals refusalReporter
 
 	// Bound transports verify callback cleanup after their dial workers join.
 	afterCleanup func() error
@@ -164,6 +165,7 @@ func (r *Route) Close() error {
 			}
 		}
 		r.workers.Wait()
+		r.refusals.close()
 		if r.afterCleanup != nil && r.afterCleanup() != nil {
 			r.closeErr = errRouteCleanup
 		}
@@ -200,6 +202,7 @@ func (r *Route) accept() {
 		case r.slots <- struct{}{}:
 		default:
 			socket.Close()
+			r.refusals.refuse(refusalCapacity, "", 0)
 			continue
 		}
 		if !r.track(socket) {
@@ -232,21 +235,42 @@ func readHeaders(reader *bufio.Reader) (*http.Request, error) {
 func (r *Route) serve(client net.Conn) {
 	client.SetDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReaderSize(client, headerLimit+1)
+	// A socket closed or idle before its first byte asked for nothing.
+	if _, err := reader.Peek(1); err != nil {
+		return
+	}
 	request, err := readHeaders(reader)
 	if err != nil {
+		r.refusals.refuse(refusalMalformed, "", 0)
 		return
 	}
 	if request.Method != "CONNECT" || request.Proto != "HTTP/1.1" || request.ContentLength > 0 || len(request.TransferEncoding) != 0 || request.URL.User != nil {
+		r.refusals.refuse(refusalMalformed, "", 0)
 		io.WriteString(client, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
 		return
 	}
+	host, port, err := net.SplitHostPort(request.Host)
 	provided := request.Header.Values("Proxy-Authorization")
 	if len(provided) != 1 || subtle.ConstantTimeCompare([]byte(provided[0]), []byte(r.auth)) != 1 {
+		// A first CONNECT without credentials is the normal Basic challenge
+		// (WebView answers it); wrong or repeated credentials are refused.
+		reason := refusalAuth
+		if len(provided) == 0 {
+			reason = refusalAuthChallenge
+		}
+		r.refusals.refuse(reason, refusalHost(host), refusalPort(port))
 		io.WriteString(client, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\""+r.realm+"\"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
 		return
 	}
-	host, port, err := net.SplitHostPort(request.Host)
 	if err != nil || port != "443" || request.URL.Host != request.Host || !r.permits(host) {
+		switch {
+		case err != nil || request.URL.Host != request.Host:
+			r.refusals.refuse(refusalMalformed, "", 0)
+		case port != "443":
+			r.refusals.refuse(refusalBadPort, refusalHost(host), refusalPort(port))
+		default:
+			r.refusals.refuse(refusalNotAllowed, refusalHost(host), 443)
+		}
 		io.WriteString(client, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
 		return
 	}

@@ -14,7 +14,7 @@ internal object Socks5RouteProtocol : RouteProtocol {
     override fun recognizes(text: String) = text.startsWith("socks5://")
     override fun configurationIdentity(profile: ConnectionProfile) = profile.configuration
     override fun createBackend(profile: ConnectionProfile, security: RouteProxySecurity, preparation: RoutePreparation): RouteBackend = NativeRouteBackend(
-        Routebridge.newSocks5(profile.configuration, security.username, security.password, security.realm, security.allowedHosts),
+        Routebridge.newSocks5(profile.configuration, security.username, security.password, security.realm, security.allowedHosts), security.purpose,
     )
 
     override fun parse(text: String): ConnectionProfile {

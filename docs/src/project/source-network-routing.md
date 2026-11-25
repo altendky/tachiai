@@ -50,6 +50,26 @@ closed engine events under `TachiaiRouteEngine`: process role,
 the lease count, or `ENGINE_CLEANUP_UNCONFIRMED`. No configuration, key or host
 is logged.
 
+Every connection a route's loopback bridge refuses is also logged, as a warning
+under the same tag
+([#684](https://github.com/altendky/tachiai/issues/684)):
+`ROUTE_REFUSED process=… purpose=… reason=… host=… port=… count=…`. The reason
+is closed: `NOT_ALLOWED` (host not on the purpose's allow-list), `BAD_PORT`
+(not 443), `MALFORMED` (not a well-formed CONNECT; no host), `AUTH` (missing or
+wrong local route credentials) or `CAPACITY` (the connection cap was full; no
+host). A CONNECT with no credentials at all gets the ordinary 407 challenge,
+which WebView answers; it is logged at info level as `ROUTE_CHALLENGED
+reason=AUTH_CHALLENGE` instead, so the warning stays specific. The host is only the requested DNS name or IP literal, validated by both
+the bridge and the app and otherwise shown as `-`. Paths, queries, headers and
+credentials are never logged. The first refusal of a reason, host and port is
+logged at once. Identical repeats are counted into one `collapsed=true` summary
+per 30 seconds and when the route closes, so none is dropped. Routed HTTPS
+callers name the refusal too: their transport evidence reports
+`ROUTE_REFUSED` instead of generic I/O, and the failure journal records
+`TRANSPORT_ROUTE_REFUSED`. Coarse failure and retry decisions are unchanged.
+A WebView behind a route sees only its own tunnel error, so the bridge's
+warning is the record there.
+
 On 2026-11-21 on the NVIDIA SHIELD (Android 11, Windscribe Tokyo WireGuard,
 saved ABEMA account):
 

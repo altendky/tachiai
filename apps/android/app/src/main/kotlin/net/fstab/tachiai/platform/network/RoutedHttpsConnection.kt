@@ -33,6 +33,7 @@ import okhttp3.Response
 
 internal enum class RoutedHttpsFailureCategory {
     TLS_HANDSHAKE, TLS_PEER, TLS_OTHER, SOCKET_TIMEOUT, DNS, CONNECT, PROTOCOL, INTERRUPTED_IO, IO, OTHER,
+    ROUTE_REFUSED,
 }
 internal enum class RoutedHttpsCallPhase {
     NOT_STARTED, CALL, DNS, CONNECT, TLS, REQUEST_HEADERS, REQUEST_HEADERS_COMPLETE, REQUEST_BODY, RESPONSE_HEADERS, RESPONSE_BODY,
@@ -266,7 +267,12 @@ internal class RoutedHttpsConnection(
             RoutedHttpsCallPhase.RESPONSE_HEADERS, RoutedHttpsCallPhase.RESPONSE_BODY -> ProviderTransportPhase.RESPONSE
             else -> ProviderTransportPhase.UNKNOWN
         }
-        val classified = providerTransportEvidence(error)
+        // Our route's CONNECT refusal keeps its coarse UNKNOWN failure (and so
+        // existing retry decisions) but is named in diagnostics and messages.
+        val routeRefused = !cancelled && usingProxy() && isRouteConnectRefusal(error)
+        val classified = providerTransportEvidence(error).let {
+            if (routeRefused) it.copy(exceptionKind = ProviderTransportExceptionKind.ROUTE_REFUSED) else it
+        }
         val base = if (cancelled) ProviderTransportEvidence(ProviderTransportFailure.CANCELLED, observedPhase, true)
             else if (setupExpired) ProviderTransportEvidence(ProviderTransportFailure.TIMEOUT, observedPhase)
             else classified.let { if (it.phase == ProviderTransportPhase.UNKNOWN) it.copy(phase = observedPhase) else it }
@@ -291,7 +297,8 @@ internal class RoutedHttpsConnection(
             phaseAvailable = classified.phaseAvailable || phaseAvailable.get(), proxyPresent = usingProxy())
         val observers = synchronized(lock) { failureObserver to additionalFailureObserver }
         if (observers.first == null && observers.second == null) return evidence
-        val category = if (setupExpired && !cancelled) RoutedHttpsFailureCategory.SOCKET_TIMEOUT else when (error) {
+        val category = if (setupExpired && !cancelled) RoutedHttpsFailureCategory.SOCKET_TIMEOUT
+        else if (routeRefused) RoutedHttpsFailureCategory.ROUTE_REFUSED else when (error) {
             is SSLHandshakeException -> RoutedHttpsFailureCategory.TLS_HANDSHAKE
             is SSLPeerUnverifiedException -> RoutedHttpsFailureCategory.TLS_PEER
             is SSLException -> RoutedHttpsFailureCategory.TLS_OTHER

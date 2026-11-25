@@ -146,6 +146,22 @@ What is retained:
   has them cached. It widens the window to match, and the declared-media
   allowlist admits only those retained segments.
 
+## Route refusal logging — 2026-11-24
+
+The user required that every route refusal be clearly visible to anyone
+debugging, even when not looking for it
+([#684](https://github.com/altendky/tachiai/issues/684)). Route bridges log
+each refused connection at warning level (an ordinary credential challenge at
+info level) with the route purpose, a closed reason, and the requested host and
+port. The host name or IP literal is the
+only request-derived value. The bridge and the app both validate it with a
+bounded hostname character set and otherwise omit it. Paths, queries, request
+headers, `Proxy-Authorization`, local route credentials and configurations are
+never logged. Repeats are counted into periodic summaries rather than dropped.
+Logcat is not persistent. The failure journal gains only the closed
+`TRANSPORT_ROUTE_REFUSED` category, never a host. See
+[source network routing](source-network-routing.md#subsequent-native-transport-implementation).
+
 ## General provider integration approval — 2026-10-10
 
 The user approved general ABEMA and Twitch discovery, account/session access and

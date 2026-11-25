@@ -7,11 +7,15 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 // The concrete Go binding stays behind the backend contract. Long native ports
 // are validated before narrowing; RouteSession validates any backend's port too.
-internal class NativeRouteBackend(private val route: Route) : RouteBackend {
+// Every refusal by the bridge is logged under its route purpose.
+internal class NativeRouteBackend(private val route: Route, purpose: RoutePurpose?) : RouteBackend {
+    // Logging setup must never fail or leak an already created route.
+    init { runCatching { route.setRefusalListener(RouteRefusalLog(purpose)) } }
+
     companion object {
         private val retainedBindings = ConcurrentLinkedQueue<NetworkBinding>()
         fun createSystem(security: RouteProxySecurity): RouteBackend = NativeRouteBackend(
-            Routebridge.newSystem(security.username, security.password, security.realm, security.allowedHosts),
+            Routebridge.newSystem(security.username, security.password, security.realm, security.allowedHosts), security.purpose,
         )
 
         // Explicit opt-in only; ordinary route factories retain their existing
@@ -31,7 +35,7 @@ internal class NativeRouteBackend(private val route: Route) : RouteBackend {
                         security.realm, security.allowedHosts, binding)
                     else -> throw java.io.IOException("Bound route unsupported")
                 }
-                return NativeRouteBackend(route)
+                return NativeRouteBackend(route, security.purpose)
             } catch (error: Throwable) {
                 val confirmed = runCatching { binding.cancel(); binding.isCleanupConfirmed() }.getOrDefault(false)
                 if (!confirmed || error is Error) {

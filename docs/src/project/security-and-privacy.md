@@ -136,9 +136,19 @@ What is retained:
 - **Where.** Android shared memory outside the Java heap, mapped read-only for
   playback. Nothing is written to disk or app storage, exported, shared, logged,
   or included in diagnostics or crash reports.
-- **How much and how long.**
-  - Segments older than the provider's window plus 2 minutes are evicted, and
-    the cache is capped at 160 MB per feed, evicting the oldest first.
+- **How much and how long.** On 2026-11-25 the user replaced the fixed size
+  with a floor plus growth, up to a cap
+  ([#618](https://github.com/altendky/tachiai/issues/618)):
+  - **Floor.** The provider's window plus 2 minutes, as before.
+  - **Growth.** While the feed is held or offset further behind live, the
+    buffer covers its current distance behind live plus 30 s. The size is
+    recomputed on every manifest refresh and shrinks, oldest first, as soon as
+    the delay drops.
+  - **Cap.** A 6:00 delay (the buffer reaching 6:30 behind the newest media) or
+    256 MB per feed, whichever comes first, evicting the oldest first. A delay
+    request past 6:00 is refused.
+  - **Start.** The provider's window already behind the starting point is
+    recorded too, so history begins at about the full window.
   - It is discarded with the feed's player: on Stop, background, retry, failure
     and session end.
 - **Manifest continuity.** The bounded manifest normalizer keeps timeline

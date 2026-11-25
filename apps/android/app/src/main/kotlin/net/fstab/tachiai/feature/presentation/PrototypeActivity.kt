@@ -1909,6 +1909,8 @@ open class PrototypeActivity : ComponentActivity() {
                     desiredPlaying && budget?.active == true
                 val retryStart = retryPlaybackStart
                 retryPlaybackStart = null
+                val pair = current.pair
+                val resumedBefore = pair?.lastOldestResume
                 val played = active() && if (retryStart != null) {
                     current.rejoin(retryStart.side, retryStart.replacement, retryStart.sibling)
                 } else current.play { side, member ->
@@ -1916,6 +1918,15 @@ open class PrototypeActivity : ComponentActivity() {
                     if (!active() || sessions[index]?.member !== member) false else {
                         failFeed(index, PrototypeFeedFailure(PrototypeFailureReason.LIVE_WINDOW_EXPIRED))
                         active()
+                    }
+                }
+                // #618: a feed that resumed from its oldest recorded point alone
+                // no longer holds the applied offset, as after Back to live.
+                pair?.lastOldestResume?.takeIf { it !== resumedBefore }?.let { resume ->
+                    Log.d("TachiaiPrototype", "timing=OLDEST_RESUME sides=${resume.stale} keptOffset=${resume.keepsOffset}")
+                    if (!resume.keepsOffset && current.pair === pair) {
+                        pairOffsetBaselineLost = true
+                        pairOffsetSession?.invalidate(pair, "A feed resumed from its oldest recorded point; reopen this pair to reapply its saved offset.")
                     }
                 }
                 if (!played && playback === current) setPlaybackIntent(false, PlaybackHealthIntent.PLAY_REFUSED)

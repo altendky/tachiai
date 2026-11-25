@@ -25,6 +25,15 @@ the live edge
 changes how far behind live the Twitch feed plays, not the controls or flow. No
 equivalent mechanism is established for the web viewer or Apple.
 
+Android native live ABEMA playback keeps an in-memory rewind buffer per feed,
+sized to the feed's delay up to a 6:00 delay or 256 MB
+([#618](prototype-ux.md#remembered-pair-offsets);
+[limits](security-and-privacy.md#live-rewind-buffer--2026-11-21)). The
+recorder is format specific: ABEMA's DASH manifest normalizer keeps retained
+timeline entries. The 6:00 delay limit, its refusal message and resuming a feed
+paused past its oldest recorded point are the common UX the user approved on
+2026-11-25; no equivalent buffer is established for the web viewer or Apple.
+
 Android translates provider text
 ([#643](prototype-ux.md#provider-text-translation--643)) with Google ML Kit's
 on-device Translation (`com.google.mlkit:translate` 17.0.3) and bundled

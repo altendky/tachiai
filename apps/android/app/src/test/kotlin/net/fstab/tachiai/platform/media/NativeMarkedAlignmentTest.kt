@@ -148,7 +148,11 @@ class NativeMarkedAlignmentTest {
             assertEquals(2, a.plays + b.plays)
             assertEquals(NativeTimingSettlement(1, -5_000), pair.lastTimingSettlement)
             assertTrue((a.seekTargets + b.seekTargets).all { it >= 0 })
-            pair.pause(); assertFalse(pair.play())
+            // Explicit Play resumes from the oldest recorded point (#618), not
+            // the buffered point; only the selected feed can move.
+            pair.pause(); assertTrue(pair.play())
+            assertEquals(5_000L, selected.seekTargets.last())
+            assertEquals(2, selected.seeks)
         }
     }
 

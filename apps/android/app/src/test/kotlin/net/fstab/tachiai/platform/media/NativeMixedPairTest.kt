@@ -118,12 +118,15 @@ class NativeMixedPairTest {
             assertEquals(-1_000L, pair.lastTimingSettlement?.deltaMs)
             assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
 
-            // The transaction's proof cannot authorize a later explicit Play.
+            // The transaction's proof cannot authorize a later explicit Play
+            // from the buffered point: Play resumes from the oldest recorded
+            // point instead (#618), and only A can move.
             assertTrue(pair.pause())
-            assertFalse(pair.play())
-            assertFalse(a.sample.playWhenReady || b.sample.playWhenReady)
-            assertEquals(1, a.playRequests); assertEquals(1, b.playRequests)
-            assertEquals(1, a.seekCalls); assertEquals(0, b.seekCalls)
+            assertTrue(pair.play())
+            assertEquals(5_000L, a.sample.positionMs)
+            assertFalse(pair.requestedAdjustmentValid)
+            assertEquals(2, a.playRequests); assertEquals(2, b.playRequests)
+            assertEquals(2, a.seekCalls); assertEquals(0, b.seekCalls)
         } finally { pair.close() }
     }
 
@@ -194,9 +197,11 @@ class NativeMixedPairTest {
             assertFalse(fixture.pair.busy)
             assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
             assertFalse(fixture.a.sample.playWhenReady || fixture.b.sample.playWhenReady)
-            assertFalse(fixture.pair.play())
-            assertEquals(0, fixture.a.playRequests + fixture.b.playRequests)
-            assertEquals(1, fixture.a.seekCalls); assertEquals(0, fixture.b.seekCalls)
+            // An explicit Play resumes from the oldest recorded point (#618),
+            // not the expired target's buffered point.
+            assertTrue(fixture.pair.play())
+            assertEquals(5_000L, fixture.a.sample.positionMs)
+            assertEquals(2, fixture.a.seekCalls); assertEquals(0, fixture.b.seekCalls)
         }
     }
 
@@ -238,8 +243,12 @@ class NativeMixedPairTest {
             assertEquals(1, a.playRequests); assertEquals(1, b.playRequests)
             assertEquals(-1_000L, pair.requestedAdjustmentMs)
             pair.pause()
-            assertFalse("Explicit Play keeps the strict live-window policy", pair.play())
-            assertEquals(0, a.seekCalls); assertEquals(1, b.seekCalls)
+            // Explicit Play does not continue the buffered point: both feeds
+            // move forward together to A's oldest recorded point (#618).
+            assertTrue(pair.play())
+            assertEquals(5_000L, a.sample.positionMs)
+            assertEquals(1, a.seekCalls); assertEquals(2, b.seekCalls)
+            assertEquals(-1_000L, pair.requestedAdjustmentMs)
             pair.close()
         }
     }

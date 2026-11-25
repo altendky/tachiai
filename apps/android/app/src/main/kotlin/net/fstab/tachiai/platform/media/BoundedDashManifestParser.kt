@@ -25,8 +25,9 @@ import org.xmlpull.v1.XmlPullParser
 
 internal enum class DashManifestPolicyEvent { DECLARED_PATHS, REFUSED }
 
-// #568: how far beyond the provider's window a live rewind buffer may reach.
-internal const val RETAINED_WINDOW_MS = 150_000L
+// #568/#618: the manifest window reaches this far beyond the rewind buffer's
+// span, so a retained segment straddling the eviction horizon stays inside it.
+internal const val RETAINED_WINDOW_SLACK_MS = 30_000L
 internal enum class DashManifestPolicyStage {
     INPUT, PREFLIGHT, SDK_PARSE, MODEL_COUNTS, REPRESENTATIONS, SEGMENT_INDEX, SEGMENT_RANGE, RANGED_URI, MODEL_POLICY, PUBLISH,
 }
@@ -65,6 +66,12 @@ internal class BoundedDashManifestParser(
                 output.write(buffer, 0, size)
             }
             val bytes = output.toByteArray()
+            // #618: one live value sizes both this manifest's window and the
+            // cache's eviction horizon, read once per refresh.
+            var extensionMs: Long? = null
+            fun widened(depthMs: Long): Long = if (liveCache == null || depthMs <= 0) depthMs else
+                depthMs + (extensionMs ?: (liveCache.retentionBeyondWindowMs(depthMs) + RETAINED_WINDOW_SLACK_MS)
+                    .also { extensionMs = it })
             stage = DashManifestPolicyStage.PREFLIGHT
             require(preflight(bytes.toString(Charsets.UTF_8)))
             stage = DashManifestPolicyStage.SDK_PARSE
@@ -132,8 +139,7 @@ internal class BoundedDashManifestParser(
                     }
                     return defaultTemplate(initialization, timescale, presentationTimeOffset, start, endNumber,
                         duration, merged, availabilityTimeOffsetUs, initializationTemplate, mediaTemplate,
-                        if (cache != null && timeShiftBufferDepthMs > 0) timeShiftBufferDepthMs + RETAINED_WINDOW_MS
-                        else timeShiftBufferDepthMs, periodStartUnixTimeMs)
+                        widened(timeShiftBufferDepthMs), periodStartUnixTimeMs)
                 }
                 override fun parseBaseUrl(parser: XmlPullParser, parents: List<BaseUrl>, dvb: Boolean): List<BaseUrl> {
                     require(++baseCalls <= 64 && parents.size <= 16 && canRun())
@@ -152,8 +158,7 @@ internal class BoundedDashManifestParser(
             val periods = (keptPeriods + serverPeriods).takeLast(16)
             // Retained periods were bounded when the provider declared them.
             val firstServerPeriod = periods.size - serverPeriods.size
-            val windowMs = if (liveCache != null && parsed.dynamic && parsed.timeShiftBufferDepthMs > 0)
-                parsed.timeShiftBufferDepthMs + RETAINED_WINDOW_MS else parsed.timeShiftBufferDepthMs
+            val windowMs = if (parsed.dynamic) widened(parsed.timeShiftBufferDepthMs) else parsed.timeShiftBufferDepthMs
             val paths = linkedSetOf<URI>()
             val cacheSegments = HashMap<URI, NativeLiveSegmentCache.Segment>()
             var generated = 0

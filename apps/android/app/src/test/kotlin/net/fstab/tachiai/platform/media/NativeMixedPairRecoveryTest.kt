@@ -53,7 +53,8 @@ class NativeMixedPairRecoveryTest {
 
     @Test fun `expired live recovery holds both dispatches one default and requires explicit play`() {
         for (side in NativeMixedSide.entries) {
-            val a = Member(live); val b = Member(live)
+            // Unseekable, so Play cannot resume them from their oldest point (#618).
+            val a = Member(live.copy(seekable = false)); val b = Member(live.copy(seekable = false))
             val pair = pair(a, b)
             pair.play()
             assertEquals(NativeSeekOutcome.REQUESTED, pair.catchUp(side).outcome)
@@ -195,7 +196,8 @@ class NativeMixedPairRecoveryTest {
     }
 
     @Test fun `guarded play refuses an expired or unknown live window before focus or play`() {
-        for (bad in listOf(live, live.copy(positionMs = null), live.copy(durationMs = null),
+        // A seekable feed before its window resumes from its oldest point (#618).
+        for (bad in listOf(live.copy(seekable = false), live.copy(positionMs = null), live.copy(durationMs = null),
                 live.copy(durationMs = 0), live.copy(positionMs = 60_001))) {
             for (badSide in NativeMixedSide.entries) {
                 val good = live.copy(positionMs = 20_000)
@@ -219,12 +221,13 @@ class NativeMixedPairRecoveryTest {
     }
 
     @Test fun `guard keeps Stop required on failed hold and handles dynamic or endpoint windows`() {
-        val a = Member(live.copy(playing = true, playWhenReady = true)).apply { refusePause = true }
-        val b = Member(live)
+        val stale = live.copy(seekable = false) // Not resumable from its oldest point (#618).
+        val a = Member(stale.copy(playing = true, playWhenReady = true)).apply { refusePause = true }
+        val b = Member(stale)
         val failed = pair(a, b)
         assertFalse(failed.play()); assertTrue(failed.status.contains("Stop required"))
         assertTrue(a.sample.playing); assertFalse(b.sample.playing)
-        assertFalse(pair(Member(live.copy(live = false)), Member(live)).play())
+        assertFalse(pair(Member(stale.copy(live = false)), Member(stale)).play())
         assertTrue(pair(Member(live.copy(positionMs = 0)), Member(live.copy(positionMs = 60_000))).play())
     }
 
